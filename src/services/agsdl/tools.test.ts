@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { ArchitectPlanRecord } from "../architectPlanService";
 import type { AgsdlEditorDocument } from "../../types/agsdl";
+import type { AIModel, AIProvider } from "../../types";
 import { createExample } from "./examples";
 
 let plan: ArchitectPlanRecord;
@@ -34,6 +35,19 @@ const { useAgsdlStore, agsdlSessionKey } = await import(
   "../../stores/useAgsdlStore"
 );
 const { handleAgsdlToolCall } = await import("./tools");
+const { useProviderStore } = await import("../../stores/useProviderStore");
+let restoreProviderCatalog: (() => void) | undefined;
+const providers = [
+  { id: 'provider-active', name: 'Active', status: 'online' },
+  { id: 'provider-disabled', name: 'Disabled', status: 'offline', isEnabled: false },
+] satisfies AIProvider[];
+const modelsByProvider = {
+  'provider-active': [
+    { id: 'model-active', name: 'Available', provider_id: 'provider-active' },
+    { id: 'model-disabled', name: 'Unavailable', provider_id: 'provider-active', isEnabled: false },
+  ],
+  'provider-disabled': [{ id: 'model-hidden', name: 'Hidden', provider_id: 'provider-disabled' }],
+} satisfies Record<string, AIModel[]>;
 const target = { branchName: "develop", planId: "plan-test" };
 const current = () =>
   useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
@@ -51,6 +65,13 @@ const call = (
   });
 
 beforeEach(() => {
+  const originalGetState = useProviderStore.getState;
+  const providerCatalog = spyOn(useProviderStore, 'getState').mockImplementation(() => ({
+    ...originalGetState(),
+    providers,
+    modelsByProvider,
+  }));
+  restoreProviderCatalog = () => providerCatalog.mockRestore();
   plan = {
     id: target.planId,
     title: "Test",
@@ -71,6 +92,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   releaseSave?.();
+  restoreProviderCatalog?.();
 });
 
 describe("shared AgSDL authoring session", () => {
@@ -114,6 +136,9 @@ describe("shared AgSDL authoring session", () => {
   it("shares agent edits with the panel and requires current revisions", async () => {
     const read = JSON.parse(await call("agsdl_get"));
     expect(read.source).toBe(current().source);
+    expect(read.macro_models).toEqual([
+      { providerId: 'provider-active', name: 'Active', models: [{ modelId: 'model-active', name: 'Available' }] },
+    ]);
     const result = JSON.parse(
       await call("agsdl_update", {
         expected_revision: read.revision,

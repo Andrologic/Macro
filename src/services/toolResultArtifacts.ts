@@ -1,3 +1,4 @@
+import type { ToolCallResolution } from './ai/contracts';
 import {
   TOOL_OUTPUT_LIMITS,
   truncateUtf8Middle,
@@ -49,3 +50,20 @@ export const buildSpilledToolResultPreview = (params: {
     omittedBytes: truncated.omittedBytes,
   };
 };
+
+/** Spill text only. Media stays bounded and typed in the conversation history. */
+export async function preserveToolResultContent(
+  toolName: string,
+  resolution: ToolCallResolution | string | void,
+  spill: (text: string) => Promise<string>,
+): Promise<ToolCallResolution | string | void> {
+  const text = typeof resolution === 'string' ? resolution : resolution?.result;
+  if (text === undefined || !shouldSpillToolResult(toolName, text)) return resolution;
+  const preview = await spill(text);
+  if (typeof resolution === 'string' || !resolution) return preview;
+  return { ...resolution, result: preview,
+    ...(resolution.kind === 'result' && resolution.blocks ? {
+      blocks: [{ type: 'text' as const, text: preview }, ...resolution.blocks.filter(block => block.type !== 'text')],
+    } : {}),
+  };
+}

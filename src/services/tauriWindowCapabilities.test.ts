@@ -52,3 +52,22 @@ describe('Tauri window close permissions', () => {
     expect(permissionIds).not.toContain('core:window:allow-is-fullscreen');
   });
 });
+
+
+describe('desktop window configuration', () => {
+  it('grants precisely the monitor reads and native color operation used by restoration', () => {
+    const capability = JSON.parse(readRepoFile('src-tauri', 'capabilities', 'default.json')) as CapabilityFile;
+    const permissions = capability.permissions.map(permissionIdentifier);
+    for (const operation of ['available-monitors', 'current-monitor', 'primary-monitor', 'set-background-color']) {
+      expect(permissions).toContain(`core:window:allow-${operation}`);
+    }
+    expect(permissions).not.toContain('core:window:default');
+  });
+
+  it('delivers native file drops to DOM handlers in every distributed window configuration', () => {
+    for (const name of ['tauri.conf.json', 'tauri.macos.conf.json']) {
+      const config = JSON.parse(readRepoFile('src-tauri', name));
+      for (const window of config.app.windows) expect(window.dragDropEnabled).toBe(false);
+    }
+  });
+});

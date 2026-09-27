@@ -267,3 +267,27 @@ describe("runAssistantStream", () => {
     expect(events).toEqual(["error:provider failed"]);
   });
 });
+
+test("duplicate terminal callbacks cannot replace the pending persistence promise", async () => {
+  let save!: () => void;
+  const persistence = new Promise<void>(resolve => { save = resolve; });
+  let returned = false;
+  const complete = mock(async () => { await persistence; });
+  const error = mock(() => {});
+  const running = runAssistantStream({
+    ...minimalStreamOptions,
+    lifecycle: { appendTokenChunk: () => {}, onComplete: complete, onError: error },
+    streamChatImpl: async options => {
+      options.onComplete({ visibleContent: "answer", toolTraces: [] });
+      options.onComplete({ visibleContent: "duplicate", toolTraces: [] });
+      options.onError(new Error("late transport error"));
+    },
+  }).then(() => { returned = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(returned).toBe(false);
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(error).not.toHaveBeenCalled();
+  save();
+  await running;
+  expect(returned).toBe(true);
+});

@@ -153,7 +153,7 @@ export function propertyChanges(fields: ComponentProperty[], values: string[]): 
     const value = values[index];
     if (field.readonly || value === field.value || value === undefined) return [];
     if (value === "") return field.removePath ? [{ op: "remove", path: field.removePath }] : [];
-    if (field.options && !field.options.some(option => option.value === value)) throw new Error("Invalid property selection.");
+    if (field.options && !field.options.some(option => option.value === value)) throw new Error("agsdl.viewer.invalidPropertySelection");
     if (field.relationSource) return [{ op: "set", path: field.path, valueJson: `{"source":${field.relationSource},"relation":"uses","target":${value},"expectedKind":"Tool"}` }];
     const isReference = /\/(target|interface|resources\/(?:\d+|-))$/.test(field.path);
     return [{ op: "set", path: field.path, valueJson: isReference ? value : JSON.stringify(value) }];

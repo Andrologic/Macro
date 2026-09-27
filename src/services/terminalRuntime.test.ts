@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Theme } from '../types/theme';
 import type { terminalRuntime as TerminalRuntime } from './terminalRuntime';
+import { terminalRenderingLifecycle } from './terminalRenderingLifecycle';
 
 const macroDarkTheme: Theme = {
   name: 'Macro Dark',
@@ -42,10 +43,11 @@ const macroLightTheme: Theme = {
 };
 
 class ResizeObserverMock {
+  static instances: ResizeObserverMock[] = [];
   observe = mock(() => undefined);
   disconnect = mock(() => undefined);
 
-  constructor(readonly callback: ResizeObserverCallback) {}
+  constructor(readonly callback: ResizeObserverCallback) { ResizeObserverMock.instances.push(this); }
 }
 
 class FakeFitAddon {
@@ -78,6 +80,9 @@ class FakeFitAddon {
 
 class FakeTerminal {
   static instances: FakeTerminal[] = [];
+  static failOnData = false;
+  static failOpen = false;
+  static deferWrites = false;
 
   _core = {
     _renderService: {
@@ -97,6 +102,9 @@ class FakeTerminal {
   resetCount = 0;
   rows = 0;
   writes: string[] = [];
+  writeCallbacks: Array<() => void> = [];
+  linkDispose = mock(() => undefined);
+  inputDispose = mock(() => undefined);
 
   constructor(readonly options: Record<string, unknown>) {
     FakeTerminal.instances.push(this);
@@ -107,10 +115,11 @@ class FakeTerminal {
   }
 
   registerLinkProvider() {
-    return { dispose: mock(() => undefined) };
+    return { dispose: this.linkDispose };
   }
 
   open(mount: HTMLElement) {
+    if (FakeTerminal.failOpen) throw new Error('open failed');
     this.opened = true;
     this.element = document.createElement('div');
     this.element.className = 'xterm';
@@ -123,13 +132,15 @@ class FakeTerminal {
   }
 
   onData(handler: (data: string) => void) {
+    if (FakeTerminal.failOnData) throw new Error('input subscription failed');
     this.dataHandler = handler;
-    return { dispose: mock(() => undefined) };
+    return { dispose: this.inputDispose };
   }
 
   write(data: string | Uint8Array, callback?: () => void) {
     this.writes.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
-    callback?.();
+    if (callback && FakeTerminal.deferWrites) this.writeCallbacks.push(callback);
+    else callback?.();
   }
 
   reset() {
@@ -175,6 +186,8 @@ const flushFrames = async (count = 3) => {
 };
 
 let importCounter = 0;
+const runtimes: Array<typeof TerminalRuntime> = [];
+let originalFonts: PropertyDescriptor | undefined;
 let originalResizeObserver: typeof ResizeObserver | undefined;
 
 const loadTerminalRuntime = async (): Promise<typeof TerminalRuntime> => {
@@ -194,18 +207,28 @@ const loadTerminalRuntime = async (): Promise<typeof TerminalRuntime> => {
     openExternalUrl: mock(async () => undefined),
   }));
 
+  terminalRenderingLifecycle.install();
   const module = await import(`./terminalRuntime.ts?terminal-runtime-test=${importCounter}`);
+  runtimes.push(module.terminalRuntime);
   return module.terminalRuntime;
 };
 
 describe('terminalRuntime', () => {
   beforeEach(() => {
     mock.restore();
+    FakeTerminal.failOnData = false;
+    FakeTerminal.failOpen = false;
+    FakeTerminal.deferWrites = false;
+    ResizeObserverMock.instances = [];
+    originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
   });
 
   afterEach(() => {
+    for (const runtime of runtimes.splice(0)) runtime.disposeAll();
+    if (originalFonts) Object.defineProperty(document, 'fonts', originalFonts);
+    else Reflect.deleteProperty(document, 'fonts');
     document.body.replaceChildren();
     if (originalResizeObserver) {
       globalThis.ResizeObserver = originalResizeObserver;
@@ -341,4 +364,157 @@ describe('terminalRuntime', () => {
     expect(fitAddon.fitCount).toBe(initialFitCount + 1);
     expect(FakeTerminal.instances[0].refreshes.length).toBeGreaterThan(0);
   });
+
+  it('keeps six detached sessions in addition to every attached session', async () => {
+    const runtime = await loadTerminalRuntime();
+    const attach = (tabId: string) => {
+      const hostElement = buildHost();
+      runtime.attachTab({ tabId, hostElement, snapshot: '', hasLiveSession: true,
+        onInput: () => undefined, onResize: () => undefined });
+      return hostElement;
+    };
+    for (let index = 0; index < 8; index++) attach(`attached-${index}`);
+    for (let index = 0; index < 7; index++) {
+      const host = attach(`detached-${index}`);
+      runtime.detachTab(`detached-${index}`, host);
+    }
+    expect(FakeTerminal.instances.slice(0, 8).every((terminal) => terminal.disposeCount === 0)).toBe(true);
+    expect(FakeTerminal.instances[8].disposeCount).toBe(1);
+    expect(FakeTerminal.instances.slice(9).every((terminal) => terminal.disposeCount === 0)).toBe(true);
+    attach('detached-1');
+    expect(FakeTerminal.instances).toHaveLength(15);
+    runtime.disposeAll();
+    runtime.disposeAll();
+    expect(FakeTerminal.instances.every((terminal) => terminal.disposeCount === 1)).toBe(true);
+    expect(ResizeObserverMock.instances.every((observer) => observer.disconnect.mock.calls.length === 1)).toBe(true);
+  });
+
+  it('ignores fonts, write callbacks, input, observer and RAF callbacks after disposal', async () => {
+    const runtime = await loadTerminalRuntime();
+    let fontsReady!: () => void;
+    Object.defineProperty(document, 'fonts', { configurable: true,
+      value: { ready: new Promise<void>((resolve) => { fontsReady = resolve; }) } });
+    const frames = new Map<number, FrameRequestCallback>();
+    const cancelled: number[] = [];
+    let nextFrame = 0;
+    spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { cancelled.push(id); });
+    const addWindow = spyOn(window, 'addEventListener');
+    const removeWindow = spyOn(window, 'removeEventListener');
+    const addDocument = spyOn(document, 'addEventListener');
+    const removeDocument = spyOn(document, 'removeEventListener');
+    FakeTerminal.deferWrites = true;
+    const onInput = mock(() => undefined);
+    const onResize = mock(() => undefined);
+    runtime.attachTab({ tabId: 'late', hostElement: buildHost(), snapshot: 'ready',
+      hasLiveSession: true, onInput, onResize });
+    const terminal = FakeTerminal.instances[0];
+    for (const callback of [...frames.values()]) callback(0);
+    expect(terminal.writeCallbacks).toHaveLength(1);
+    runtime.syncTab({ tabId: 'late', snapshot: 'ready again', hasLiveSession: true, onInput, onResize });
+    runtime.resizeTab('late');
+    runtime.disposeTab('late');
+    runtime.disposeTab('late');
+    const refreshCount = terminal.refreshes.length;
+    const fitCount = FakeFitAddon.instances[0].fitCount;
+    const resizeCount = onResize.mock.calls.length;
+    const writeCount = terminal.writes.length;
+    const frameCount = frames.size;
+    terminal.dataHandler?.('input');
+    terminal.writeCallbacks.forEach((callback) => callback());
+    ResizeObserverMock.instances[0].callback([], {} as ResizeObserver);
+    for (const callback of frames.values()) callback(0);
+    fontsReady();
+    await Promise.resolve();
+    expect(terminal.disposeCount).toBe(1);
+    expect(terminal.linkDispose).toHaveBeenCalledTimes(1);
+    expect(terminal.inputDispose).toHaveBeenCalledTimes(1);
+    expect(ResizeObserverMock.instances[0].disconnect).toHaveBeenCalledTimes(1);
+    expect(terminal.refreshes).toHaveLength(refreshCount);
+    expect(terminal.writes).toHaveLength(writeCount);
+    expect(FakeFitAddon.instances[0].fitCount).toBe(fitCount);
+    expect(onResize).toHaveBeenCalledTimes(resizeCount);
+    expect(onInput).not.toHaveBeenCalled();
+    expect(frames.size).toBe(frameCount);
+    expect(cancelled).toHaveLength(2);
+    const resizeListener = addWindow.mock.calls.find(([name]) => name === 'resize')![1];
+    const visibilityListener = addDocument.mock.calls.find(([name]) => name === 'visibilitychange')![1];
+    expect(removeWindow).toHaveBeenCalledWith('resize', resizeListener);
+    expect(removeDocument).toHaveBeenCalledWith('visibilitychange', visibilityListener);
+  });
+
+  it('releases partial acquisition and a failed mount before retrying', async () => {
+    const runtime = await loadTerminalRuntime();
+    const params = { tabId: 'partial', hostElement: buildHost(), snapshot: '',
+      hasLiveSession: true, onInput: () => undefined, onResize: () => undefined };
+    FakeTerminal.failOnData = true;
+    expect(() => runtime.attachTab(params)).toThrow('input subscription failed');
+    expect(FakeTerminal.instances[0].disposeCount).toBe(1);
+    expect(FakeTerminal.instances[0].linkDispose).toHaveBeenCalledTimes(1);
+    FakeTerminal.failOnData = false;
+    FakeTerminal.failOpen = true;
+    expect(() => runtime.attachTab(params)).toThrow('open failed');
+    expect(FakeTerminal.instances[1].disposeCount).toBe(1);
+    expect(ResizeObserverMock.instances[0].disconnect).toHaveBeenCalledTimes(1);
+    expect(params.hostElement.children).toHaveLength(0);
+    FakeTerminal.failOpen = false;
+    runtime.attachTab(params);
+    expect(FakeTerminal.instances[2].disposeCount).toBe(0);
+    runtime.disposeTab('partial');
+    expect(FakeTerminal.instances[2].disposeCount).toBe(1);
+  });
+
+  it('rejects a late renderer attachment after application stop and permits the next owner', async () => {
+    const runtime = await loadTerminalRuntime();
+    const owner = terminalRenderingLifecycle.install();
+    const params = { tabId: 'owned', snapshot: '', hasLiveSession: true,
+      hostElement: buildHost(), onInput: () => undefined, onResize: () => undefined };
+    runtime.attachTab(params);
+    let release!: () => void;
+    const lateAttachment = new Promise<void>((resolve) => { release = resolve; })
+      .then(() => runtime.attachTab({ ...params, tabId: 'late' }));
+    owner.stop();
+    release();
+    await lateAttachment;
+    expect(FakeTerminal.instances).toHaveLength(1);
+    expect(FakeTerminal.instances[0].disposeCount).toBe(1);
+    expect(params.hostElement.children).toHaveLength(0);
+
+    const next = terminalRenderingLifecycle.install();
+    runtime.attachTab({ ...params, tabId: 'next' });
+    owner.stop();
+    expect(FakeTerminal.instances).toHaveLength(2);
+    expect(FakeTerminal.instances[1].disposeCount).toBe(0);
+    next.stop();
+    next.stop();
+    expect(FakeTerminal.instances[1].disposeCount).toBe(1);
+  });
+
+  it('keeps runtimes independent and ignores a detach from a previous host', async () => {
+    const first = await loadTerminalRuntime();
+    const { createTerminalRuntime } = await import(`./terminalRuntime.ts?terminal-runtime-test=${importCounter}`);
+    const second = createTerminalRuntime();
+    runtimes.push(second);
+    const oldHost = buildHost();
+    const newHost = buildHost();
+    const onInput = mock(() => undefined);
+    const params = { tabId: 'same-id', snapshot: '', hasLiveSession: true,
+      onInput, onResize: () => undefined };
+    first.attachTab({ ...params, hostElement: oldHost });
+    first.attachTab({ ...params, hostElement: newHost });
+    first.detachTab('same-id', oldHost);
+    expect(newHost.children).toHaveLength(1);
+    second.attachTab({ ...params, hostElement: buildHost() });
+    first.disposeAll();
+    expect(FakeTerminal.instances[0].disposeCount).toBe(1);
+    expect(FakeTerminal.instances[1].disposeCount).toBe(0);
+    second.detachTab('same-id');
+    FakeTerminal.instances[1].dataHandler?.('detached input');
+    expect(onInput).not.toHaveBeenCalled();
+    expect(FakeTerminal.instances[1].disposeCount).toBe(0);
+  });
+
 });

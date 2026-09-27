@@ -253,9 +253,9 @@ export const createLoadImplementTaskCatalog = (
     updateArchitectPlan,
   }
 ) => {
-  return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
+  return async (fallbackTasks: Task[], options?: { persistedOnly?: boolean }): Promise<ImplementTaskCatalog> => {
     const appState = await dependencies.getAppState();
-    const reconciliationProjectIds = resolveRelevantProjectIds(appState);
+    const reconciliationProjectIds = options?.persistedOnly ? collectKnownProjects(appState).map((project) => project.id) : resolveRelevantProjectIds(appState);
     const validProjects = collectKnownProjects(appState);
     const validProjectIds = validProjects.map((project) => project.id);
     const activeTargetBranch = resolveCandidateTargetBranches(
@@ -267,7 +267,8 @@ export const createLoadImplementTaskCatalog = (
     let discoveredTargetBranches: string[] = [];
     try {
       discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
-    } catch {
+    } catch (error) {
+      if (options?.persistedOnly) throw error;
       // Discovery is advisory; the active and Git-flow base branches remain valid fallbacks.
     }
       const candidateTargetBranches = resolveCandidateTargetBranches(
@@ -292,7 +293,8 @@ export const createLoadImplementTaskCatalog = (
                   { scopedProjectIdsHint: undefined }
                 ),
               };
-            } catch {
+            } catch (error) {
+              if (options?.persistedOnly) throw error;
               return null;
             }
           })
@@ -315,13 +317,15 @@ export const createLoadImplementTaskCatalog = (
         executablePlanRefs.map(async ({ branchName, planId }) => {
           try {
             const plan = await dependencies.getArchitectPlan(branchName, planId);
+            if (!plan && options?.persistedOnly) throw new Error('An Architect plan disappeared during admission.');
             return plan
               ? retargetPlanForExecution(plan, {
                   scopedProjectIds: reconciliationProjectIds,
                   knownProjectIds: validProjectIds,
                 })
               : null;
-          } catch {
+          } catch (error) {
+            if (options?.persistedOnly) throw error;
             return null;
           }
         })
@@ -337,7 +341,7 @@ export const createLoadImplementTaskCatalog = (
       );
 
     const activePlan = buildExecutableActivePlanRecord(appState);
-    if (activePlan) {
+    if (activePlan && !options?.persistedOnly) {
       plans = upsertPlanRecord(
         plans,
         retargetPlanForExecution(activePlan, {
@@ -348,7 +352,7 @@ export const createLoadImplementTaskCatalog = (
     }
     plans = await Promise.all(plans.map(async (plan) => {
       const migration = migrateLegacyPlanExecutionModes(plan, appState);
-      if (!migration.changed || !dependencies.updateArchitectPlan) {
+      if (options?.persistedOnly || !migration.changed || !dependencies.updateArchitectPlan) {
         return migration.plan;
       }
       try {

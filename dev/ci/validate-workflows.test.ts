@@ -86,6 +86,8 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('exact successful main CI run'))).toBe(true);
     expect(errors.some((error) => error.includes('job "linux" must run unless'))).toBe(true);
     expect(errors.some((error) => error.includes('job "windows" must run unless'))).toBe(true);
+    expect(errors.some((error) => error.includes('job "linux" must install Rust'))).toBe(true);
+    expect(errors.some((error) => error.includes('job "windows" must install Rust'))).toBe(true);
   });
 
   test('requires release validation to fetch the annotated tag object', () => {
@@ -211,6 +213,27 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('PE architecture'))).toBe(true);
   });
 
+  test.each([undefined, 'pwsh'])('rejects preview version expansion with shell %s', (shell) => {
+    const errors = validateWorkflowDocument({
+      name: 'Preview',
+      on: { workflow_dispatch: {} },
+      permissions: { contents: 'read' },
+      jobs: {
+        build: {
+          'runs-on': '${{ matrix.runner }}',
+          steps: [{
+            name: 'Apply preview version',
+            shell,
+            env: { VERSION: '${{ needs.validate.outputs.version }}' },
+            run: 'bun dev/version/bump.mjs "$VERSION"',
+          }],
+        },
+      },
+    }, '.github/workflows/preview.yml');
+
+    expect(errors.some((error) => error.includes('environment variables work on Windows runners'))).toBe(true);
+  });
+
   test('requires channel workflows to use the shared publisher', () => {
     const errors = validateWorkflowDocument({
       name: 'Publish update channel',
@@ -228,6 +251,7 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('required manual tag'))).toBe(true);
     expect(errors.some((error) => error.includes('shared channel branch publisher'))).toBe(true);
     expect(errors.some((error) => error.includes('downloaded updater assets and checksums'))).toBe(true);
+    expect(errors.some((error) => error.includes('publish stable channel must install Rust') || error.includes('stable channel publication must install Rust'))).toBe(true);
     expect(errors.some((error) => error.includes('already-empty orphan worktree'))).toBe(true);
   });
 });

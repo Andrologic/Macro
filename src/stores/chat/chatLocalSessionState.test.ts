@@ -2,21 +2,30 @@ import { usePersistenceHealth } from "../../services/persistenceHealth";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import type {
+  ChatMessage,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
+  PersistedContextReference,
 } from "../../types";
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
+  UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+  clearUnsavedAssistantResponsesForConversations,
   clearQuestionnaireDraftsForConversations,
   loadComposerDraftsFromStorage,
+  parseComposerDraft,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  loadUnsavedAssistantResponsesFromStorage,
+  removeUnsavedAssistantResponseFromStorage,
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
+  saveUnsavedAssistantResponseToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
   type MessageImageAttachment,
+  type PersistedComposerDraft,
 } from "./chatLocalSessionState";
 
 class MemoryLocalStorage {
@@ -28,6 +37,10 @@ class MemoryLocalStorage {
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
   }
 
   clear(): void {
@@ -196,6 +209,105 @@ describe("chatLocalSessionState", () => {
     expect(loadMessageImagesFromStorage()).toEqual({ "message-1": [image] });
   });
 
+  it("keeps failed assistant responses in local recovery storage", () => {
+    const message: ChatMessage = {
+      id: "assistant-1",
+      turn_id: "turn-1",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "Réponse à récupérer",
+      timestamp: "2026-08-30T08:00:00.000Z",
+      hidden_context: "contexte ".repeat(600),
+      tool_traces: [],
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(true);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([message]);
+
+    expect(removeUnsavedAssistantResponseFromStorage(message.id)).toBe(true);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("rejects an oversized recovery record before reporting it as saved", () => {
+    const message: ChatMessage = {
+      id: "assistant-too-large",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "x".repeat(4_000_001),
+      timestamp: "2026-08-30T08:00:00.000Z",
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("rejects a recovery record whose combined serialized fields exceed the limit", () => {
+    const message: ChatMessage = {
+      id: "assistant-combined-too-large",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "x".repeat(2_100_000),
+      hidden_context: "y".repeat(2_100_000),
+      timestamp: "2026-08-30T08:00:00.000Z",
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("restores an interrupted retry as failed and prunes deleted conversations", () => {
+    window.localStorage.setItem(
+      UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+      JSON.stringify({
+        "assistant-1": {
+          id: "assistant-1",
+          turn_id: "turn-1",
+          task_id: "",
+          conversation_id: "conv-1",
+          role: "assistant",
+          content: "Réponse locale",
+          timestamp: "2026-08-30T08:00:00.000Z",
+          persistence_state: "retrying",
+          persistence_error: "Échec initial",
+        },
+        invalid: {
+          id: "user-1",
+          task_id: "",
+          conversation_id: "conv-2",
+          role: "user",
+          content: "Ne pas restaurer",
+          timestamp: "2026-08-30T08:01:00.000Z",
+        },
+      }),
+    );
+
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        persistence_state: "failed",
+      }),
+    ]);
+
+    expect(clearUnsavedAssistantResponsesForConversations(["conv-1"])).toBe(true);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+  });
+
   it("round-trips a composer draft with an image and a context reference", () => {
     saveComposerDraftsToStorage({
       "conversation:conv-a": {
@@ -230,6 +342,96 @@ describe("chatLocalSessionState", () => {
         })],
       },
     });
+  });
+
+  it("validates composer draft pieces without mutating the caller content", () => {
+    const image: MessageImageAttachment = {
+      id: "image-1",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AQID",
+      createdAt: "2026-08-29T09:00:00.000Z",
+    };
+    const reference: PersistedContextReference = {
+      id: "file:README.md",
+      kind: "file",
+      title: "README.md",
+      path: "README.md",
+    };
+
+    expect(parseComposerDraft({ text: "draft", images: [image], contextRefs: [reference] }))
+      .toEqual({ text: "draft", images: [image], contextRefs: [reference] });
+    expect(parseComposerDraft({ text: "x".repeat(200_001), images: [], contextRefs: [] }))
+      .toBeNull();
+    expect(parseComposerDraft({ text: "draft", images: [{ ...image, mimeType: "text/plain" }], contextRefs: [] }))
+      .toBeNull();
+    expect(parseComposerDraft({ text: "draft", images: [], contextRefs: [{ ...reference, kind: "unknown" }] }))
+      .toBeNull();
+  });
+
+  it("rejects every composer draft writer limit and keeps the previous storage", () => {
+    const image: MessageImageAttachment = {
+      id: "image-1",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AQID",
+      createdAt: "2026-08-29T09:00:00.000Z",
+    };
+    const reference: PersistedContextReference = {
+      id: "file:README.md",
+      kind: "file",
+      title: "README.md",
+      path: "README.md",
+    };
+    const previous = {
+      "conversation:previous": { text: "previous", images: [], contextRefs: [] },
+    };
+    expect(saveComposerDraftsToStorage(previous)).toBe(true);
+    const previousRaw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    const overLimitCases: Array<Record<string, PersistedComposerDraft>> = [
+      Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+        `conversation:${index}`,
+        { text: "draft", images: [], contextRefs: [] },
+      ])),
+      { "conversation:text": { text: "x".repeat(200_001), images: [], contextRefs: [] } },
+      { "conversation:images": { text: "draft", images: Array.from({ length: 11 }, () => image), contextRefs: [] } },
+      { "conversation:refs": { text: "draft", images: [], contextRefs: Array.from({ length: 51 }, () => reference) } },
+    ];
+
+    for (const candidate of overLimitCases) {
+      expect(saveComposerDraftsToStorage(candidate)).toBe(false);
+      expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(previousRaw);
+      expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toBeDefined();
+    }
+  });
+
+  it("recovers valid drafts beyond the old reader limit and reports recoverable loss", () => {
+    const drafts = Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+      `conversation:${index}`,
+      { text: `draft-${index}`, images: [], contextRefs: [] },
+    ]));
+    const raw = JSON.stringify(drafts);
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, raw);
+
+    const restored = loadComposerDraftsFromStorage();
+
+    expect(Object.keys(restored)).toHaveLength(50);
+    expect(restored["conversation:0"]?.text).toBe("draft-0");
+    expect(restored["conversation:50"]).toBeUndefined();
+    expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
+    expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("recovered");
+  });
+
+  it("recovers valid drafts beside invalid content and preserves the original value", () => {
+    const raw = JSON.stringify({
+      "conversation:valid": { text: "kept", images: [], contextRefs: [] },
+      "conversation:invalid": { text: "x".repeat(200_001), images: [], contextRefs: [] },
+    });
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, raw);
+
+    expect(loadComposerDraftsFromStorage()).toEqual({
+      "conversation:valid": { text: "kept", images: [], contextRefs: [] },
+    });
+    expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
+    expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("original data");
   });
 
   it("ignores invalid composer draft storage without throwing", () => {

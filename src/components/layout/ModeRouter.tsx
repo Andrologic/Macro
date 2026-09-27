@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { useAppStore } from '../../stores/useAppStore';
+import { useWorkspaceShell } from '../../composition/useWorkspaceShell';
+import { workspaceDefinitions } from '../../domains/shell/workspace';
 import type { AppMode } from '../../types';
 import { Skeleton } from '../shared/Skeleton';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import {
-  modePanelLoaders,
   preloadModePanels,
   resetModePanelLoader,
   type ModePanelComponent,
@@ -91,14 +91,15 @@ interface AsyncPanelProps {
 export const AsyncPanel: React.FC<AsyncPanelProps> = ({ loader, fallback }) => {
   const [retryKey, setRetryKey] = useState(0);
   const [state, setState] = useState<{
+    loader: ModePanelLoader;
     status: 'loading' | 'ready' | 'error';
     component: ModePanelComponent | null;
     error: unknown;
   }>(() => {
     const cachedComponent = loader.getCachedComponent();
     return cachedComponent
-      ? { status: 'ready', component: cachedComponent, error: null }
-      : { status: 'loading', component: null, error: null };
+      ? { loader, status: 'ready', component: cachedComponent, error: null }
+      : { loader, status: 'loading', component: null, error: null };
   });
 
   useEffect(() => {
@@ -106,25 +107,25 @@ export const AsyncPanel: React.FC<AsyncPanelProps> = ({ loader, fallback }) => {
     const cachedComponent = loader.getCachedComponent();
 
     if (cachedComponent) {
-      setState({ status: 'ready', component: cachedComponent, error: null });
+      setState({ loader, status: 'ready', component: cachedComponent, error: null });
       return () => {
         cancelled = true;
       };
     }
 
-    setState({ status: 'loading', component: null, error: null });
+    setState({ loader, status: 'loading', component: null, error: null });
 
     void loader
       .load()
       .then((component) => {
         if (!cancelled) {
-          setState({ status: 'ready', component, error: null });
+          setState({ loader, status: 'ready', component, error: null });
         }
       })
       .catch((error) => {
         if (!cancelled) {
           console.error(`[ModeRouter] Failed to load ${loader.label}`, error);
-          setState({ status: 'error', component: null, error });
+          setState({ loader, status: 'error', component: null, error });
         }
       });
 
@@ -132,6 +133,11 @@ export const AsyncPanel: React.FC<AsyncPanelProps> = ({ loader, fallback }) => {
       cancelled = true;
     };
   }, [loader, retryKey]);
+
+  // Effects run after commit; never render state owned by a previous loader.
+  if (state.loader !== loader) {
+    return <>{fallback}</>;
+  }
 
   if (state.status === 'ready' && state.component) {
     const Component = state.component;
@@ -194,15 +200,15 @@ interface ModeRouterProps {
  * - Prevents unnecessary re-renders with stable references
  */
 export const ModeRouter: React.FC<ModeRouterProps> = ({ panel }) => {
-  const mode = useAppStore((state) => state.mode);
-  const loader = modePanelLoaders[mode][panel];
+  const { session, view } = useWorkspaceShell();
+  const loader = view?.panels[panel];
   const fallback = panelSkeletons[panel];
 
   if (!loader) {
     return null;
   }
 
-  return <AsyncPanel loader={loader} fallback={fallback} />;
+  return <AsyncPanel key={view?.stateScope === 'domain' ? 'domain' : session.id} loader={loader} fallback={fallback} />;
 };
 
 // =============================================================================
@@ -225,16 +231,12 @@ export const preloadAllModes = (): void => {
   // Use requestIdleCallback for non-critical preloading
   if ('requestIdleCallback' in window) {
     window.requestIdleCallback(() => {
-      preloadModeComponents('Architect');
-      preloadModeComponents('Implement');
-      preloadModeComponents('Chat');
+      Object.values(workspaceDefinitions).forEach(({ semanticMode }) => preloadModeComponents(semanticMode));
     }, { timeout: 2000 });
   } else {
     // Fallback for browsers without requestIdleCallback
     setTimeout(() => {
-      preloadModeComponents('Architect');
-      preloadModeComponents('Implement');
-      preloadModeComponents('Chat');
+      Object.values(workspaceDefinitions).forEach(({ semanticMode }) => preloadModeComponents(semanticMode));
     }, 2000);
   }
 };

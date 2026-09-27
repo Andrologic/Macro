@@ -1689,3 +1689,24 @@ describe('invalidateCompactionFromMessage', () => {
     expect(invalidateCompactionFromMessage(state, orderedMessages, 'u3')).toBe(false);
   });
 });
+
+
+it('compaction preserves older typed MCP media and its paired call without slicing binary data', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const ordered = [makeMessage('u1', 'user', 'Inspect'), makeMessage('a1', 'assistant', 'Earlier result'), makeMessage('a2', 'assistant', 'Latest tool result'), makeMessage('u2', 'user', 'Continue')];
+  const prepared = makePreparedMessages(ordered);
+  const items = [{ type: 'function_call', call_id: 'c1', name: 'mcp__fixture__read', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: 'fallback', macro_tool_result: { version: 1, blocks: fixture.content, isError: true } }];
+  prepared[1].provider_input_items = items;
+  prepared[2].provider_input_items = [{ type: 'function_call_output', call_id: 'c2', output: 'new result' }];
+  for (const pass of ['forced', 'ultra'] as const) {
+    const compacted = compactProviderInputItemsForContext(prepared, ordered, pass);
+    expect(compacted.messages[1].provider_input_items).toEqual(items);
+  }
+});
+
+it('does not count retained audio bytes as text tokens when replay sends a fallback', () => {
+  const item = { type: 'function_call_output', call_id: 'audio', output: 'audio retained', macro_tool_result: { version: 1, isError: false, blocks: [{ type: 'audio', mimeType: 'audio/wav', data: 'AAAA'.repeat(250_000) }] } };
+  for (const providerType of ['chatgpt', 'copilot', 'openai']) {
+    expect(estimateBlockableTokensForStreamMessages([{ role: 'tool', content: 'audio retained', provider_input_items: [item] }], { context: { providerType } })).toBeLessThan(500);
+  }
+});

@@ -131,33 +131,6 @@ fn config_dir_runtime_file() -> crate::core::Result<Option<PathBuf>> {
     Ok(Some(directory.join("runtime.json")))
 }
 
-fn workspace_path_source_for_runtime(path: &Path) -> crate::core::Result<WorkspacePathSource> {
-    if !path.exists() {
-        return Ok(WorkspacePathSource::Default);
-    }
-    let raw = std::fs::read(path).map_err(|error| crate::core::error::BackendError::Config {
-        message: format!("Impossible de lire {} : {error}", path.display()),
-    })?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&raw).map_err(|error| crate::core::error::BackendError::Config {
-            message: format!(
-                "Configuration JSON invalide dans {} : {error}",
-                path.display()
-            ),
-        })?;
-    Ok(
-        if value
-            .get("defaultWorkspace")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|path| !path.trim().is_empty())
-        {
-            WorkspacePathSource::Configured
-        } else {
-            WorkspacePathSource::Default
-        },
-    )
-}
-
 pub fn resolve_desktop_default_workspace_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace")
 }
@@ -225,8 +198,10 @@ fn load_config_from_sources(
     runtime_file: Option<PathBuf>,
     legacy_settings_file: Option<&str>,
 ) -> crate::core::Result<AppConfig> {
-    let workspace_path_source = if let Some(path) = runtime_file.as_deref() {
-        workspace_path_source_for_runtime(path)?
+    let workspace_path_source = if runtime_file.is_some() {
+        // Only ConfigManager may select the validated/approved runtime snapshot.
+        // Inspecting the raw document here would prevent recovery from starting.
+        WorkspacePathSource::Default
     } else {
         workspace_path_source_for_config(legacy_settings_file)?
     };

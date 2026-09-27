@@ -184,6 +184,7 @@
     "correctIssue": "チャットで修正を準備",
     "resourceRequired": "呼び出しには少なくとも1つのリソースが必要です。",
     "duplicateReference": "リスト内の参照は重複できません。",
+    "invalidPropertySelection": "無効なプロパティの選択です。",
     "detail": {
       "prompt": "プロンプト",
       "inputs": "入力",

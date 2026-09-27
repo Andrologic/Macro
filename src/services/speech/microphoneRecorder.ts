@@ -96,6 +96,7 @@ export class MicrophoneRecorder {
   private stopPromise: Promise<RecordedAudio> | null = null;
   private resolveStop: ((audio: RecordedAudio) => void) | null = null;
   private rejectStop: ((error: Error) => void) | null = null;
+  private stopRequested = false;
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
   private cancelled = false;
   private audioContext: AudioContext | null = null;
@@ -108,6 +109,7 @@ export class MicrophoneRecorder {
     }
     if (this.recorder) throw new Error('A microphone recording is already active.');
     this.cancelled = false;
+    this.stopRequested = false;
 
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -141,6 +143,7 @@ export class MicrophoneRecorder {
       this.cleanup();
     });
     this.recorder.addEventListener('stop', () => {
+      if (this.cancelled) return;
       const mimeType = this.recorder?.mimeType || format.mimeType || 'audio/webm';
       const blob = new Blob(this.chunks, { type: mimeType });
       void convertRecordingToWav(blob)
@@ -184,12 +187,15 @@ export class MicrophoneRecorder {
       throw new Error('No microphone recording is active.');
     }
     const result = this.stopPromise;
+    this.stopRequested = true;
     if (this.recorder.state === 'recording') this.recorder.stop();
     return result;
   }
 
   cancel(): void {
     this.cancelled = true;
+    const reject = this.stopRequested ? this.rejectStop : null;
+    reject?.(new Error('Microphone recording cancelled.'));
     if (this.recorder?.state === 'recording') {
       this.recorder.stop();
     }
@@ -239,5 +245,6 @@ export class MicrophoneRecorder {
     this.stopPromise = null;
     this.resolveStop = null;
     this.rejectStop = null;
+    this.stopRequested = false;
   }
 }

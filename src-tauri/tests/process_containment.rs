@@ -153,37 +153,43 @@ mod unix_tests {
 
     #[tokio::test]
     async fn terminate_kills_descendant_after_group_leader_exits() {
-        let seconds = next_unique_sleep_seconds();
-        let descendant_pattern = format!("sleep {seconds}");
-        let mut command = background_contained_tokio_command("sh");
-        command.args([
-            "-c",
-            &format!("sh -c \"trap '' TERM; sleep {seconds}\" & exit 0"),
-        ]);
-        let mut contained = ContainedBackgroundProcess::spawn(command).expect("spawn");
-        assert!(
-            poll_until(
-                || descendant_survives(&descendant_pattern),
-                Duration::from_secs(3)
-            )
-            .await,
-            "detached descendant process never appeared",
-        );
-        let leader_status = contained.wait().await.expect("wait for group leader");
-        assert!(leader_status.success());
+        for drop_owner in [false, true] {
+            let seconds = next_unique_sleep_seconds();
+            let descendant_pattern = format!("sleep {seconds}");
+            let mut command = background_contained_tokio_command("sh");
+            command.args([
+                "-c",
+                &format!("sh -c \"trap '' TERM; sleep {seconds}\" & exit 0"),
+            ]);
+            let mut contained = ContainedBackgroundProcess::spawn(command).expect("spawn");
+            assert!(
+                poll_until(
+                    || descendant_survives(&descendant_pattern),
+                    Duration::from_secs(3)
+                )
+                .await,
+                "detached descendant process never appeared",
+            );
+            let leader_status = contained.wait().await.expect("wait for group leader");
+            assert!(leader_status.success());
 
-        contained
-            .terminate_with_grace(Duration::from_millis(100))
-            .await
-            .expect("terminate remaining group");
-        assert!(
-            poll_until(
-                || !descendant_survives(&descendant_pattern),
-                Duration::from_secs(5)
-            )
-            .await,
-            "descendant survived after its group leader exited",
-        );
+            if drop_owner {
+                drop(contained);
+            } else {
+                contained
+                    .terminate_with_grace(Duration::from_millis(100))
+                    .await
+                    .expect("terminate remaining group");
+            }
+            assert!(
+                poll_until(
+                    || !descendant_survives(&descendant_pattern),
+                    Duration::from_secs(5)
+                )
+                .await,
+                "descendant survived after its group leader exited",
+            );
+        }
     }
 }
 
@@ -226,7 +232,8 @@ mod windows_tests {
 
     async fn spawn_cmd_with_descendant() -> ContainedBackgroundProcess {
         let mut command = background_contained_tokio_command("cmd");
-        command.args(["/C", "ping -n 300 127.0.0.1"]);
+        command.args(["/D", "/S", "/C"]);
+        command.raw_arg(r#"""%SystemRoot%\System32\ping.exe" -n 300 127.0.0.1""#);
         let contained = ContainedBackgroundProcess::spawn(command).expect("spawn contained cmd");
         assert!(
             poll_until(|| image_running("ping.exe"), Duration::from_secs(10)).await,

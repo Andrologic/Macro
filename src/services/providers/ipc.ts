@@ -165,10 +165,10 @@ export const listMessages = async (conversationId?: string): Promise<MessagesDto
   return { messages: sortedMessages.map(toMessageDto) };
 };
 
-export const listTasks = async (): Promise<TaskCatalogDto> => {
+export const listTasks = async (options?: { persistedOnly?: boolean }): Promise<TaskCatalogDto> => {
   const taskCatalog = await tauriIpc.workspaceListTasks();
 
-  return loadImplementTaskCatalog(taskCatalog.tasks as Task[]);
+  return loadImplementTaskCatalog(taskCatalog.tasks as Task[], options);
 };
 
 export const getGitTreeForProject = async (projectId: string): Promise<GitTreeDto> => {
@@ -191,6 +191,7 @@ export const gitWorktreeCreate = async (
   taskId: string;
   worktreePath: string;
   branchName: string;
+  createdByThisCall?: boolean;
   status: 'created' | 'reused' | 'repaired';
 }> => {
   const project = useAppStore.getState().getProjectById(projectId);

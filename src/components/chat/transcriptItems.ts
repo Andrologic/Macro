@@ -166,3 +166,39 @@ export const getTranscriptMessageIndexById = (
   );
   return index >= 0 ? index : null;
 };
+
+/** Message navigation indexes include the interleaved compaction rows. */
+export const buildTranscriptMessageIndex = (items: ChatTranscriptItem[]): Map<string, number> => {
+  const indexed = new Map<string, number>();
+  items.forEach((item, index) => {
+    if (item.kind === 'message' && !indexed.has(item.message.id)) {
+      indexed.set(item.message.id, index);
+    }
+  });
+  return indexed;
+};
+
+// Before the scroll element has dimensions, mount only the recent conversation tail.
+// Keep offsets for the whole transcript so the initial bottom jump still works.
+export const CHAT_TRANSCRIPT_BOOTSTRAP_LIMIT = 20;
+export const buildTranscriptBootstrapWindow = (
+  items: ChatTranscriptItem[],
+  estimateSize: (item: ChatTranscriptItem) => number,
+  gap: number,
+) => {
+  const firstIndex = Math.max(0, items.length - CHAT_TRANSCRIPT_BOOTSTRAP_LIMIT);
+  const rows: Array<{
+    index: number;
+    key: string;
+    size: number;
+    start: number;
+    item: ChatTranscriptItem;
+  }> = [];
+  let start = 0;
+  items.forEach((item, index) => {
+    const size = estimateSize(item);
+    if (index >= firstIndex) rows.push({ index, key: item.key, size, start, item });
+    start += size + gap;
+  });
+  return { rows, totalSize: Math.max(0, start - gap) };
+};

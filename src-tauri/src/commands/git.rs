@@ -1,13 +1,22 @@
+pub(crate) use crate::git::operations::*;
+pub use crate::git::operations::{
+    build_git_log, build_git_tree, validate_repo_path, GitBranch, GitCommitDto, GitFilePairDto,
+    GitFileStatus, GitMergeCheckDto, GitNode, GitStartMergeResolutionDto, GitStatusDto,
+    PredictedGitTreeDto,
+};
 // Git Commands
 
 #[path = "git/review.rs"]
 mod review;
+#[path = "git/workflow.rs"]
+pub(crate) mod workflow;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -15,30 +24,25 @@ use std::time::{Duration, Instant};
 
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
-use chrono::{DateTime, Utc};
-use git2::{
-    BranchType, Commit, ConfigLevel, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState,
-    ResetType, StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
-};
+use chrono::Utc;
+use git2::{BranchType, ConfigLevel, Oid, Repository};
+#[cfg(test)]
+use git2::{RepositoryState, Status};
 use serde::Serialize;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
+use crate::commands::{get_pool, DbPool};
 use crate::core::error::{BackendError, Result};
-use crate::core::process::{
-    background_command, background_contained_tokio_command, ContainedBackgroundProcess,
-};
-use crate::fs::{normalize_path, validate_path};
-use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
+#[cfg(test)]
+use crate::core::process::{background_command, background_contained_tokio_command};
+use crate::git::repo::{get_branch_name, get_head_commit, get_status_options};
 use crate::git::{
     GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME,
     MACRO_WORKTREE_DIR_NAME,
 };
-use crate::project_path::{
-    parse_wsl_unc_path, run_wsl_command_allow_failure, run_wsl_git_allow_failure,
-    run_wsl_git_bounded_allow_failure, WslCommandOutput, WslProjectPath,
-};
+use crate::project_path::{parse_wsl_unc_path, run_wsl_git_allow_failure, WslProjectPath};
 use crate::workspace;
 use crate::workspace::metadata::{
     direct_checkpoint_id, direct_checkpoint_task_segment, WorkspaceRecoverMissingMetadataRequestDto,
@@ -46,15 +50,7 @@ use crate::workspace::metadata::{
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 
 const DEFAULT_LOG_LIMIT: usize = 50;
-const DEFAULT_REMOTE_NAME: &str = "origin";
-const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
-    "Commit message must follow Conventional Commits: type: subject";
 const MAX_CONFLICT_FILE_BYTES: usize = 1_000_000;
-const WSL_GIT_TIMEOUT: Duration = Duration::from_secs(8);
-const WSL_GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
-const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
-const GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_GIT_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct GitReviewCancellationRegistry {
@@ -70,6 +66,31 @@ const MAX_DIRECT_REVIEW_SNAPSHOTS: usize = 256;
 const MAX_DIRECT_REVIEW_PATHS: usize = 4_096;
 const MAX_DIRECT_REVIEW_REVISION_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DIRECT_CHECKPOINT_VERIFICATION_OBJECTS: usize = 100_000;
+
+async fn acquire_archived_task_cleanup_guard(
+    workspace_path: &Path,
+    git_state: &GitState,
+    archive_task_id: Option<&str>,
+    archive_token: Option<&str>,
+) -> Result<Option<workspace::ArchivedTaskCleanupGuard>> {
+    let (Some(task_id), Some(token)) = (archive_task_id, archive_token) else {
+        if archive_task_id.is_some() || archive_token.is_some() {
+            return Err(BackendError::Validation(
+                "Le nettoyage requiert la tâche archivée et son jeton.".to_string(),
+            ));
+        }
+        return Ok(None);
+    };
+    let metadata_root = crate::commands::workspace::resolve_metadata_root(
+        workspace_path.to_path_buf(),
+        git_state.clone(),
+    )
+    .await?;
+    let guard = workspace::lock_archived_task_cleanup(&metadata_root, task_id).await?;
+    workspace::validate_archived_task_cleanup_token(workspace_path, &metadata_root, task_id, token)
+        .await?;
+    Ok(Some(guard))
+}
 
 struct DirectCheckpointVerificationBudget {
     remaining_bytes: usize,
@@ -108,186 +129,34 @@ struct DirectReviewAuthorization {
 static DIRECT_REVIEW_AUTHORIZATIONS: OnceLock<Mutex<HashMap<String, DirectReviewAuthorization>>> =
     OnceLock::new();
 
-#[derive(Serialize)]
-pub struct GitStatusDto {
-    pub branch: String,
-    pub head_commit: Option<GitCommitDto>,
-    pub staged_files: Vec<GitFileStatus>,
-    pub unstaged_files: Vec<GitFileStatus>,
-    pub untracked_files: Vec<GitFileStatus>,
-    pub conflicted_files: Vec<String>,
-    pub merge_in_progress: bool,
-    pub is_clean: bool,
-    pub has_origin: bool,
-    pub has_upstream: bool,
-    pub ahead: u32,
-    pub behind: u32,
-}
-
-#[derive(Serialize)]
-pub struct GitFileStatus {
-    pub path: String,
-    pub status: String,
-    pub old_path: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct GitCommitDto {
-    pub id: String,
-    pub hash: String,
-    pub message: String,
-    pub author: String,
-    pub date: String,
-    pub status: String,
-    pub parent_ids: Vec<String>,
-    pub graph_depth: usize,
-    pub is_branch_point: bool,
-    pub task_id: Option<String>,
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 pub struct GitLogPageDto {
     pub commits: Vec<GitCommitDto>,
     pub revision: String,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct GitLogSnapshot {
-    pub revision: String,
-    tip: Option<String>,
-    has_staged: bool,
-    has_unstaged: bool,
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 pub struct GitBranchesDto {
     pub local: Vec<GitBranch>,
     pub remote: Vec<GitBranch>,
     pub current: Option<String>,
 }
 
-#[derive(Serialize)]
-pub struct GitBranch {
-    pub name: String,
-    pub is_head: bool,
-    pub commit: String,
-}
-
-pub(crate) struct GitBranchesToolPage {
-    pub local: Vec<GitBranch>,
-    pub remote: Vec<GitBranch>,
-    pub current: Option<String>,
-    pub has_more: bool,
-}
-
-pub(crate) fn git_branch_snapshot_revision(repo: &Repository) -> Result<String> {
-    let mut reference_digests = Vec::<[u8; 32]>::new();
-    for pattern in ["refs/heads/*", "refs/remotes/*"] {
-        for reference in repo.references_glob(pattern)? {
-            let reference = reference?;
-            let mut hasher = Sha256::new();
-            hasher.update(reference.name_bytes());
-            hasher.update([0]);
-            if let Some(target) = reference.target() {
-                hasher.update(target.as_bytes());
-            }
-            hasher.update([0]);
-            if let Some(symbolic_target) = reference.symbolic_target()? {
-                hasher.update(symbolic_target.as_bytes());
-            }
-            reference_digests.push(hasher.finalize().into());
-        }
-    }
-    reference_digests.sort_unstable();
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"macro-git-branches-v1\0");
-    for digest in reference_digests {
-        hasher.update(digest);
-    }
-    hasher.update([0]);
-    if let Some(current) = get_branch_name(repo)? {
-        hasher.update(current.as_bytes());
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-pub(crate) async fn wsl_git_branch_snapshot_revision(repo_path: &WslProjectPath) -> Result<String> {
-    let script = r#"
-tmp=$(mktemp) || exit $?
-trap 'rm -f -- "$tmp"' EXIT
-git -C "$1" for-each-ref --sort=refname \
-  --format='%(refname)%00%(objectname)%00%(symref)' \
-  refs/heads refs/remotes >"$tmp" || exit $?
-current=$(git -C "$1" symbolic-ref -q --short HEAD)
-symbolic_status=$?
-if [[ $symbolic_status -gt 1 ]]; then exit $symbolic_status; fi
-printf 'HEAD\0%s\n' "$current" >>"$tmp" || exit $?
-sha256sum -- "$tmp"
-"#;
-    let output = run_wsl_command_allow_failure(
-        repo_path,
-        "bash",
-        &[
-            "-c".to_string(),
-            script.to_string(),
-            "macro-git-branch-revision".to_string(),
-            repo_path.linux_path.clone(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        return Err(wsl_git_failure(
-            &output,
-            "git branch snapshot revision WSL failed",
-        ));
-    }
-    output
-        .stdout_text()
-        .split_whitespace()
-        .next()
-        .filter(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
-        .map(str::to_string)
-        .ok_or_else(|| BackendError::Git {
-            message: "git branch snapshot revision WSL returned an invalid digest".to_string(),
-        })
-}
-
-pub(crate) struct GitTreeToolPage {
-    pub branch: String,
-    pub structure: Vec<GitNode>,
-    pub modified_files_count: u32,
-    pub has_more: bool,
-    pub revision: String,
-}
-
-#[derive(Serialize)]
-pub struct PredictedGitTreeDto {
-    pub branch: String,
-    pub structure: Vec<GitNode>,
-    pub modified_files_count: u32,
-}
-
-#[derive(Serialize, Clone)]
-pub struct GitNode {
-    pub name: String,
-    pub path: String,
-    #[serde(rename = "type")]
-    pub node_type: String,
-    pub status: Option<String>,
-    pub children: Option<Vec<GitNode>>,
-    pub hash: Option<String>,
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 pub struct GitSyncDto {
     pub branch: String,
     pub remote: String,
     pub output: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
+pub struct GitPreparedBranchSyncDto {
+    pub target_commit: String,
+}
+
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct GitRemoteDto {
     pub remote: String,
     pub url: String,
@@ -295,6 +164,7 @@ pub struct GitRemoteDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitWorktreeInspectionDto {
     pub task_id: String,
     pub worktree_path: String,
@@ -305,6 +175,7 @@ pub struct GitWorktreeInspectionDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitAvailableWorktreeDto {
     pub name: String,
     pub path: String,
@@ -314,6 +185,7 @@ pub struct GitAvailableWorktreeDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitAvailableTaskBranchDto {
     pub name: String,
     pub commit: String,
@@ -321,6 +193,7 @@ pub struct GitAvailableTaskBranchDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitTaskStartPointsDto {
     pub worktrees: Vec<GitAvailableWorktreeDto>,
     pub branches: Vec<GitAvailableTaskBranchDto>,
@@ -328,6 +201,7 @@ pub struct GitTaskStartPointsDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitBranchWorktreeInspectionDto {
     pub worktree_key: String,
     pub worktree_path: String,
@@ -338,7 +212,9 @@ pub struct GitBranchWorktreeInspectionDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitWorktreeEnsureDto {
+    pub created_by_this_call: bool,
     pub task_id: String,
     pub worktree_path: String,
     pub branch_name: String,
@@ -347,6 +223,7 @@ pub struct GitWorktreeEnsureDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitBranchWorktreeEnsureDto {
     pub worktree_key: String,
     pub worktree_path: String,
@@ -356,6 +233,7 @@ pub struct GitBranchWorktreeEnsureDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitWorktreeRemoveDto {
     pub task_id: String,
     pub worktree_path: String,
@@ -366,6 +244,7 @@ pub struct GitWorktreeRemoveDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitBranchWorktreeRemoveDto {
     pub worktree_key: String,
     pub worktree_path: String,
@@ -374,39 +253,26 @@ pub struct GitBranchWorktreeRemoveDto {
     pub already_absent: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct GitMergeCheckDto {
-    pub mergeable: bool,
-    pub conflict_files: Vec<String>,
-    pub has_changes: bool,
-    pub ahead: u32,
-    pub behind: u32,
+#[derive(ts_rs::TS)]
+pub struct GitGuardedMergeStateDto {
+    pub status: String,
+    pub target_commit: String,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitRebaseCheckDto {
     pub rebaseable: bool,
     pub conflict_files: Vec<String>,
     pub output: String,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitFilePairDto {
-    pub head_exists: bool,
-    pub head_content: String,
-    pub index_exists: bool,
-    pub index_content: String,
-    pub worktree_exists: bool,
-    pub worktree_content: String,
-    pub original_content: String,
-    pub modified_content: String,
-}
-
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitReviewDiffLineDto {
     #[serde(rename = "type")]
     pub line_type: String,
@@ -417,6 +283,7 @@ pub struct GitReviewDiffLineDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitReviewDiffHunkDto {
     pub header: String,
     pub old_start: u32,
@@ -428,6 +295,7 @@ pub struct GitReviewDiffHunkDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitReviewParsedDiffDto {
     pub original_content: String,
     pub modified_content: String,
@@ -438,6 +306,7 @@ pub struct GitReviewParsedDiffDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitReviewChangeDto {
     pub path: String,
     pub status: String,
@@ -459,6 +328,7 @@ pub struct GitReviewChangeDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitReviewSnapshotDto {
     pub branch: String,
     pub staged_paths: Vec<String>,
@@ -470,6 +340,7 @@ pub struct GitReviewSnapshotDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct DirectReviewSnapshotDto {
     #[serde(flatten)]
     pub snapshot: GitReviewSnapshotDto,
@@ -480,6 +351,7 @@ pub struct DirectReviewSnapshotDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitReviewFileDto {
     pub path: String,
     pub status: String,
@@ -501,21 +373,18 @@ pub struct GitReviewFileDto {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct GitStartMergeResolutionDto {
-    pub status: String,
-    pub conflict_files: Vec<String>,
-    pub output: String,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitConflictFileSideDto {
     pub exists: bool,
     pub content: String,
+    pub size_bytes: usize,
+    pub is_binary: bool,
+    pub too_large: bool,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct GitConflictFileDto {
     pub path: String,
     pub base: GitConflictFileSideDto,
@@ -547,7 +416,7 @@ impl RestoreTarget {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
 pub struct MacroBranchSyncDto {
     pub branch: String,
     pub state: String,
@@ -564,69 +433,6 @@ pub struct MacroBranchSyncDto {
     pub next_action: Option<String>,
     pub output: Option<String>,
     pub error: Option<String>,
-}
-
-pub(crate) fn to_join_error(err: tokio::task::JoinError) -> BackendError {
-    BackendError::Internal {
-        message: format!("Git task join error: {}", err),
-    }
-}
-
-struct GitCommandOutput {
-    success: bool,
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
-    let repo = Repository::discover(cwd)?;
-    ensure_safe_config(&repo)?;
-
-    let mut command = background_command("git");
-    command
-        .env_clear()
-        .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())));
-    command.current_dir(cwd).args(args);
-    let output = command.output().map_err(|e| BackendError::Git {
-        message: format!("Failed to run git command '{}': {}", args.join(" "), e),
-    })?;
-
-    Ok(GitCommandOutput {
-        success: output.status.success(),
-        code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    })
-}
-
-fn run_git_command_with_timeout(
-    cwd: &Path,
-    args: &[String],
-    timeout_duration: Duration,
-) -> Result<GitCommandOutput> {
-    run_contained_git_command_with_timeout(cwd, args, timeout_duration, false)
-}
-
-fn is_git_environment_variable(key: &OsStr) -> bool {
-    key.to_string_lossy()
-        .to_ascii_uppercase()
-        .starts_with("GIT_")
-}
-
-fn command_output_text(output: &GitCommandOutput) -> String {
-    let stdout = output.stdout.trim();
-    let stderr = output.stderr.trim();
-    if stdout.is_empty() && stderr.is_empty() {
-        return String::new();
-    }
-    if stdout.is_empty() {
-        return stderr.to_string();
-    }
-    if stderr.is_empty() {
-        return stdout.to_string();
-    }
-    format!("{}\n{}", stdout, stderr)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -822,198 +628,6 @@ fn sanitize_git_diagnostic(output: &str, repo_root: &Path, redactions: &[String]
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn run_contained_git_command_with_timeout(
-    cwd: &Path,
-    args: &[String],
-    timeout_duration: Duration,
-    fail_on_truncated_output: bool,
-) -> Result<GitCommandOutput> {
-    run_contained_git_command_with_timeout_and_cancellation(
-        cwd,
-        args,
-        timeout_duration,
-        fail_on_truncated_output,
-        None,
-    )
-}
-
-fn run_contained_git_command_with_timeout_and_cancellation(
-    cwd: &Path,
-    args: &[String],
-    timeout_duration: Duration,
-    fail_on_truncated_output: bool,
-    cancellation: Option<Arc<AtomicBool>>,
-) -> Result<GitCommandOutput> {
-    let repo = Repository::discover(cwd)?;
-    ensure_safe_config(&repo)?;
-    let cwd = cwd.to_path_buf();
-    let args = args.to_vec();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to create Git command runtime: {error}"),
-        })?;
-
-    runtime.block_on(async move {
-        let mut command = background_contained_tokio_command("git");
-        command.env_clear().envs(
-            std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())),
-        );
-        configure_noninteractive_git_command(&mut command);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(&cwd)
-            .args(&args);
-        let mut process =
-            ContainedBackgroundProcess::spawn(command).map_err(|error| BackendError::Git {
-                message: format!("Failed to run git command '{}': {error}", args.join(" ")),
-            })?;
-        let stdout = process.take_stdout().ok_or_else(|| BackendError::Git {
-            message: format!(
-                "Failed to capture stdout for git command '{}'.",
-                args.join(" ")
-            ),
-        })?;
-        let stderr = process.take_stderr().ok_or_else(|| BackendError::Git {
-            message: format!(
-                "Failed to capture stderr for git command '{}'.",
-                args.join(" ")
-            ),
-        })?;
-        let stdout_reader =
-            tokio::spawn(async move { read_bounded_git_command_output(stdout).await });
-        let stderr_reader =
-            tokio::spawn(async move { read_bounded_git_command_output(stderr).await });
-
-        enum WaitOutcome {
-            Completed(std::io::Result<std::process::ExitStatus>),
-            Cancelled,
-            TimedOut,
-        }
-        let wait_for_cancellation = async {
-            if let Some(cancellation) = cancellation {
-                loop {
-                    if cancellation.load(Ordering::Acquire) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
-        let outcome = tokio::select! {
-            status = process.wait() => WaitOutcome::Completed(status),
-            _ = wait_for_cancellation => WaitOutcome::Cancelled,
-            _ = tokio::time::sleep(timeout_duration) => WaitOutcome::TimedOut,
-        };
-        let status = match outcome {
-            WaitOutcome::Completed(status) => status.map_err(|error| BackendError::Git {
-                message: format!(
-                    "Failed while waiting for git command '{}': {error}",
-                    args.join(" ")
-                ),
-            })?,
-            WaitOutcome::Cancelled => {
-                let _ = process.terminate_bounded().await;
-                stdout_reader.abort();
-                stderr_reader.abort();
-                return Err(BackendError::Git {
-                    message: "Git review was cancelled.".to_string(),
-                });
-            }
-            WaitOutcome::TimedOut => {
-                let _ = process.terminate_bounded().await;
-                stdout_reader.abort();
-                stderr_reader.abort();
-                return Err(BackendError::Git {
-                    message: format!("Git command '{}' timed out.", args.join(" ")),
-                });
-            }
-        };
-        let _ = process.terminate_with_grace(Duration::ZERO).await;
-        let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
-            tokio::time::timeout(GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT, async {
-                let stdout = stdout_reader.await.map_err(|error| BackendError::Git {
-                    message: format!("Git stdout reader failed for '{}': {error}", args.join(" ")),
-                })??;
-                let stderr = stderr_reader.await.map_err(|error| BackendError::Git {
-                    message: format!("Git stderr reader failed for '{}': {error}", args.join(" ")),
-                })??;
-                Ok::<_, BackendError>((stdout, stderr))
-            })
-            .await
-            .map_err(|_| BackendError::Git {
-                message: format!(
-                    "Git command '{}' did not close its output streams.",
-                    args.join(" ")
-                ),
-            })??;
-        if fail_on_truncated_output && (stdout_truncated || stderr_truncated) {
-            return Err(BackendError::Git {
-                message: format!("Git command '{}' produced too much output.", args.join(" ")),
-            });
-        }
-        let append_truncation_notice = |bytes: &[u8], truncated: bool| {
-            let mut value = String::from_utf8_lossy(bytes).to_string();
-            if truncated {
-                value.push_str("\n[Git output truncated by Macro]");
-            }
-            value
-        };
-        Ok(GitCommandOutput {
-            success: status.success(),
-            code: status.code(),
-            stdout: append_truncation_notice(&stdout, stdout_truncated),
-            stderr: append_truncation_notice(&stderr, stderr_truncated),
-        })
-    })
-}
-
-fn configure_noninteractive_git_command(command: &mut tokio::process::Command) {
-    command
-        .env_remove("GIT_ASKPASS")
-        .env_remove("SSH_ASKPASS")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "0")
-        .env("GCM_GUI_PROMPT", "0")
-        .env("GIT_ALLOW_PROTOCOL", "git:http:https:ssh")
-        .env("GIT_CONFIG_COUNT", "3")
-        .env("GIT_CONFIG_KEY_0", "core.askPass")
-        .env("GIT_CONFIG_VALUE_0", "")
-        .env("GIT_CONFIG_KEY_1", "maintenance.auto")
-        .env("GIT_CONFIG_VALUE_1", "false")
-        .env("GIT_CONFIG_KEY_2", "gc.recentObjectsHook")
-        .env("GIT_CONFIG_VALUE_2", "")
-        .env("SSH_ASKPASS_REQUIRE", "never")
-        .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
-}
-
-async fn read_bounded_git_command_output<R>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    use tokio::io::AsyncReadExt;
-
-    let mut retained = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        let remaining = (MAX_GIT_COMMAND_OUTPUT_BYTES as usize).saturating_sub(retained.len());
-        let keep = remaining.min(read);
-        retained.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < read;
-    }
-    Ok((retained, truncated))
 }
 
 fn run_review_with_missing_object_retry<T, F>(
@@ -1286,499 +900,6 @@ pub(crate) fn cancel_all_git_reviews() {
     }
 }
 
-fn wsl_output_text(output: &WslCommandOutput) -> String {
-    let stdout = output.stdout_text();
-    let stderr = output.stderr_text();
-    match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => stdout,
-        (true, false) => stderr,
-        (false, false) => format!("{}\n{}", stdout, stderr),
-    }
-}
-
-fn wsl_git_failure(output: &WslCommandOutput, fallback: &str) -> BackendError {
-    let details = wsl_output_text(output);
-    BackendError::Git {
-        message: if details.is_empty() {
-            fallback.to_string()
-        } else {
-            details
-        },
-    }
-}
-
-async fn run_wsl_git_checked(
-    repo_path: &WslProjectPath,
-    args: &[String],
-    timeout: Duration,
-    fallback: &str,
-) -> Result<WslCommandOutput> {
-    let output = run_wsl_git_allow_failure(repo_path, args, timeout).await?;
-    if output.status.success() {
-        Ok(output)
-    } else {
-        Err(wsl_git_failure(&output, fallback))
-    }
-}
-
-fn validate_git_cli_operand(value: &str, label: &str) -> Result<()> {
-    if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
-        return Err(BackendError::Validation(format!(
-            "Invalid {label}: Git option-like and control-character values are not allowed"
-        )));
-    }
-    Ok(())
-}
-
-async fn wsl_resolve_commit_oid(
-    repo_path: &WslProjectPath,
-    revision: &str,
-    label: &str,
-) -> Result<String> {
-    let revision = revision.trim();
-    validate_git_cli_operand(revision, label)?;
-    let peeled = format!("{revision}^{{commit}}");
-    let output = run_wsl_git_checked(
-        repo_path,
-        &[
-            "rev-parse".to_string(),
-            "--verify".to_string(),
-            "--end-of-options".to_string(),
-            peeled,
-        ],
-        WSL_GIT_TIMEOUT,
-        "git revision resolution WSL failed",
-    )
-    .await?;
-    let oid = output.stdout_text();
-    if !matches!(oid.len(), 40 | 64) || !oid.chars().all(|character| character.is_ascii_hexdigit())
-    {
-        return Err(BackendError::Validation(format!(
-            "Invalid {label}: Git did not resolve it to an immutable object ID"
-        )));
-    }
-    Ok(oid)
-}
-
-pub(crate) fn parse_wsl_repo_path(repo_path: &str) -> Option<WslProjectPath> {
-    parse_wsl_unc_path(repo_path)
-}
-
-fn wsl_status_label(code: char) -> String {
-    match code {
-        'A' => "added",
-        'D' => "deleted",
-        'R' => "renamed",
-        'C' => "copied",
-        '?' => "untracked",
-        'U' => "conflicted",
-        _ => "modified",
-    }
-    .to_string()
-}
-
-fn parse_wsl_branch_line(line: &str) -> String {
-    let value = line.strip_prefix("## ").unwrap_or(line).trim();
-    if let Some(branch) = value.strip_prefix("No commits yet on ") {
-        return branch.trim().to_string();
-    }
-    if value.starts_with("HEAD ") || value.starts_with("HEAD(") || value == "HEAD" {
-        return "DETACHED".to_string();
-    }
-    value
-        .split("...")
-        .next()
-        .unwrap_or(value)
-        .split_whitespace()
-        .next()
-        .unwrap_or("DETACHED")
-        .to_string()
-}
-
-struct ParsedWslPorcelainStatus {
-    branch: String,
-    staged_files: Vec<GitFileStatus>,
-    unstaged_files: Vec<GitFileStatus>,
-    untracked_files: Vec<GitFileStatus>,
-    conflicted_files: Vec<String>,
-}
-
-fn parse_wsl_porcelain_v1_z(stdout: &[u8]) -> ParsedWslPorcelainStatus {
-    let records = stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
-    let mut parsed = ParsedWslPorcelainStatus {
-        branch: "DETACHED".to_string(),
-        staged_files: Vec::new(),
-        unstaged_files: Vec::new(),
-        untracked_files: Vec::new(),
-        conflicted_files: Vec::new(),
-    };
-    let mut index = 0usize;
-    while index < records.len() {
-        let record = records[index];
-        index += 1;
-        if record.is_empty() {
-            continue;
-        }
-        if record.starts_with(b"## ") {
-            parsed.branch = parse_wsl_branch_line(&String::from_utf8_lossy(record));
-            continue;
-        }
-        if record.len() < 3 {
-            continue;
-        }
-
-        let index_status = record[0] as char;
-        let worktree_status = record[1] as char;
-        let path = String::from_utf8_lossy(&record[3..]).into_owned();
-        if path.is_empty() {
-            continue;
-        }
-        let is_rename_or_copy =
-            matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C');
-        let old_path = if is_rename_or_copy && index < records.len() {
-            let original = String::from_utf8_lossy(records[index]).into_owned();
-            index += 1;
-            Some(original)
-        } else {
-            None
-        };
-        let is_conflict = index_status == 'U'
-            || worktree_status == 'U'
-            || matches!((index_status, worktree_status), ('A', 'A') | ('D', 'D'));
-        if is_conflict {
-            parsed.conflicted_files.push(path);
-            continue;
-        }
-        if index_status == '?' && worktree_status == '?' {
-            parsed.untracked_files.push(GitFileStatus {
-                path,
-                status: "untracked".to_string(),
-                old_path: None,
-            });
-            continue;
-        }
-        if index_status != ' ' {
-            parsed.staged_files.push(GitFileStatus {
-                path: path.clone(),
-                status: wsl_status_label(index_status),
-                old_path: old_path.clone(),
-            });
-        }
-        if worktree_status != ' ' {
-            parsed.unstaged_files.push(GitFileStatus {
-                path,
-                status: wsl_status_label(worktree_status),
-                old_path,
-            });
-        }
-    }
-    parsed
-}
-
-fn parse_wsl_commit_line(line: &str) -> Option<GitCommitDto> {
-    let parts = line.split('\x1f').collect::<Vec<_>>();
-    if parts.len() < 6 {
-        return None;
-    }
-    let id = parts[0].to_string();
-    let message = parts[2].to_string();
-    Some(GitCommitDto {
-        id: id.clone(),
-        hash: parts[1].to_string(),
-        message: message.clone(),
-        author: parts[3].to_string(),
-        date: parts[4].to_string(),
-        status: "committed".to_string(),
-        parent_ids: parts[5]
-            .split_whitespace()
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect(),
-        graph_depth: 0,
-        is_branch_point: false,
-        task_id: parse_task_id(&message),
-    })
-}
-
-fn annotate_commit_graph(commits: &mut [GitCommitDto]) {
-    let mut child_counts: HashMap<String, usize> = HashMap::new();
-    for commit in commits.iter() {
-        for parent_id in commit.parent_ids.iter() {
-            *child_counts.entry(parent_id.clone()).or_default() += 1;
-        }
-    }
-
-    let mut depth_map: HashMap<String, usize> = HashMap::new();
-    let mut child_seen: HashMap<String, usize> = HashMap::new();
-    let mut next_depth = 0usize;
-    for commit in commits.iter_mut() {
-        let mut depth = 0usize;
-        if let Some(parent) = commit.parent_ids.first() {
-            let base_depth = depth_map.get(parent).copied().unwrap_or(0);
-            let seen = child_seen.entry(parent.clone()).or_default();
-            depth = if *seen == 0 {
-                base_depth
-            } else {
-                next_depth + 1
-            };
-            *seen += 1;
-        }
-        if depth > next_depth {
-            next_depth = depth;
-        }
-        commit.graph_depth = depth;
-        commit.is_branch_point = child_counts.get(&commit.id).copied().unwrap_or(0) > 1;
-        depth_map.insert(commit.id.clone(), depth);
-    }
-}
-
-async fn wsl_head_commit(repo_path: &WslProjectPath) -> Result<Option<GitCommitDto>> {
-    let output = run_wsl_git_allow_failure(
-        repo_path,
-        &[
-            "log".to_string(),
-            "-1".to_string(),
-            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    Ok(output
-        .stdout_text()
-        .lines()
-        .next()
-        .and_then(parse_wsl_commit_line))
-}
-
-pub(crate) async fn build_wsl_git_status(repo_path: &WslProjectPath) -> Result<GitStatusDto> {
-    let status_output = run_wsl_git_checked(
-        repo_path,
-        &[
-            "status".to_string(),
-            "--porcelain=v1".to_string(),
-            "-z".to_string(),
-            "--branch".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-        "git status WSL failed",
-    )
-    .await?;
-    let parsed_status = parse_wsl_porcelain_v1_z(&status_output.stdout);
-    let branch = parsed_status.branch;
-    let staged_files = parsed_status.staged_files;
-    let unstaged_files = parsed_status.unstaged_files;
-    let untracked_files = parsed_status.untracked_files;
-    let conflicted_files = parsed_status.conflicted_files;
-
-    let head_commit = wsl_head_commit(repo_path).await?;
-    let has_origin = run_wsl_git_allow_failure(
-        repo_path,
-        &[
-            "remote".to_string(),
-            "get-url".to_string(),
-            DEFAULT_REMOTE_NAME.to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?
-    .status
-    .success();
-    let upstream = run_wsl_git_allow_failure(
-        repo_path,
-        &[
-            "rev-parse".to_string(),
-            "--abbrev-ref".to_string(),
-            "--symbolic-full-name".to_string(),
-            "@{u}".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    let has_upstream = upstream.status.success();
-    let mut ahead = 0u32;
-    let mut behind = 0u32;
-    if has_upstream {
-        let counts = run_wsl_git_allow_failure(
-            repo_path,
-            &[
-                "rev-list".to_string(),
-                "--left-right".to_string(),
-                "--count".to_string(),
-                "@{u}...HEAD".to_string(),
-            ],
-            WSL_GIT_TIMEOUT,
-        )
-        .await?;
-        if counts.status.success() {
-            let values = counts.stdout_text();
-            let mut parts = values.split_whitespace();
-            behind = parts
-                .next()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            ahead = parts
-                .next()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-        }
-    }
-    let merge_in_progress = run_wsl_git_allow_failure(
-        repo_path,
-        &[
-            "rev-parse".to_string(),
-            "-q".to_string(),
-            "--verify".to_string(),
-            "MERGE_HEAD".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?
-    .status
-    .success();
-    let is_clean = !merge_in_progress
-        && staged_files.is_empty()
-        && unstaged_files.is_empty()
-        && untracked_files.is_empty()
-        && conflicted_files.is_empty();
-
-    Ok(GitStatusDto {
-        branch,
-        head_commit,
-        staged_files,
-        unstaged_files,
-        untracked_files,
-        conflicted_files,
-        merge_in_progress,
-        is_clean,
-        has_origin,
-        has_upstream,
-        ahead,
-        behind,
-    })
-}
-
-pub(crate) async fn build_wsl_git_log(
-    repo_path: &WslProjectPath,
-    limit: usize,
-    branch: Option<&str>,
-) -> Result<Vec<GitCommitDto>> {
-    if let Some(branch) = branch {
-        validate_refspec(branch)?;
-    }
-    let status = build_wsl_git_status(repo_path).await?;
-    let mut commits = Vec::new();
-    if !status.unstaged_files.is_empty() || !status.untracked_files.is_empty() {
-        commits.push(build_virtual_commit("in-progress", "Working tree changes"));
-    }
-    if !status.staged_files.is_empty() {
-        commits.push(build_virtual_commit("planned", "Staged changes"));
-    }
-    let mut args = vec![
-        "log".to_string(),
-        format!("--max-count={}", limit),
-        "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
-    ];
-    if let Some(branch) = branch {
-        args.push("--end-of-options".to_string());
-        args.push(branch.to_string());
-    }
-    let output = run_wsl_git_allow_failure(repo_path, &args, WSL_GIT_TIMEOUT).await?;
-    if output.status.success() {
-        commits.extend(
-            output
-                .stdout_text()
-                .lines()
-                .filter_map(parse_wsl_commit_line),
-        );
-    }
-    annotate_commit_graph(&mut commits);
-    Ok(commits)
-}
-
-pub(crate) async fn build_wsl_git_log_page(
-    repo_path: &WslProjectPath,
-    offset: usize,
-    max_items: usize,
-    snapshot: &GitLogSnapshot,
-) -> Result<Vec<GitCommitDto>> {
-    let mut virtual_commits = Vec::new();
-    if snapshot.has_unstaged {
-        virtual_commits.push(build_virtual_commit("in-progress", "Working tree changes"));
-    }
-    if snapshot.has_staged {
-        virtual_commits.push(build_virtual_commit("planned", "Staged changes"));
-    }
-    let virtual_count = virtual_commits.len();
-    let mut commits = virtual_commits
-        .into_iter()
-        .skip(offset)
-        .take(max_items)
-        .collect::<Vec<_>>();
-    let real_limit = max_items.saturating_sub(commits.len());
-    if real_limit > 0 && snapshot.tip.is_some() {
-        let real_offset = offset.saturating_sub(virtual_count);
-        let mut args = vec![
-            "log".to_string(),
-            format!("--skip={real_offset}"),
-            format!("--max-count={real_limit}"),
-            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
-        ];
-        args.push(snapshot.tip.clone().expect("checked snapshot tip"));
-        let output =
-            run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git log WSL failed").await?;
-        commits.extend(
-            output
-                .stdout_text()
-                .lines()
-                .filter_map(parse_wsl_commit_line),
-        );
-    }
-    annotate_commit_graph(&mut commits);
-    Ok(commits)
-}
-
-pub(crate) async fn build_wsl_git_log_snapshot(
-    repo_path: &WslProjectPath,
-    branch: Option<&str>,
-) -> Result<GitLogSnapshot> {
-    if let Some(branch) = branch {
-        validate_refspec(branch)?;
-    }
-    let status = build_wsl_git_status(repo_path).await?;
-    let tip = if let Some(branch) = branch {
-        let output = run_wsl_git_checked(
-            repo_path,
-            &[
-                "rev-parse".to_string(),
-                "--verify".to_string(),
-                "--end-of-options".to_string(),
-                format!("{branch}^{{commit}}"),
-            ],
-            WSL_GIT_TIMEOUT,
-            "git log reference resolution failed",
-        )
-        .await?;
-        Some(output.stdout_text())
-    } else {
-        status.head_commit.as_ref().map(|commit| commit.id.clone())
-    };
-    let has_staged = !status.staged_files.is_empty();
-    let has_unstaged = !status.unstaged_files.is_empty() || !status.untracked_files.is_empty();
-    Ok(GitLogSnapshot {
-        revision: format!(
-            "{}:{has_staged}:{has_unstaged}",
-            tip.as_deref().unwrap_or("unborn")
-        ),
-        tip,
-        has_staged,
-        has_unstaged,
-    })
-}
-
 pub(crate) async fn build_wsl_git_branches(repo_path: &WslProjectPath) -> Result<GitBranchesDto> {
     let current_output = run_wsl_git_allow_failure(
         repo_path,
@@ -1838,188 +959,6 @@ pub(crate) async fn build_wsl_git_branches(repo_path: &WslProjectPath) -> Result
     })
 }
 
-/// Paginate the concatenated local-then-remote branch listing without masking
-/// failures: each source list was produced by its own checked command and is
-/// already clamped to `offset + limit + 1` entries, so a full clamped list
-/// proves at least one entry remains beyond the requested window.
-fn paginate_wsl_branch_refs(
-    local: Vec<GitBranch>,
-    remote: Vec<GitBranch>,
-    offset: usize,
-    limit: usize,
-) -> (Vec<GitBranch>, Vec<GitBranch>, bool) {
-    let window_end = offset.saturating_add(limit);
-    let fetch_bound = window_end.saturating_add(1);
-    let has_more = if local.len() >= fetch_bound || remote.len() >= fetch_bound {
-        true
-    } else {
-        local.len() + remote.len() > window_end
-    };
-
-    let mut local_page = Vec::new();
-    let mut remote_page = Vec::new();
-    for (position, (branch, is_local)) in local
-        .into_iter()
-        .map(|branch| (branch, true))
-        .chain(remote.into_iter().map(|branch| (branch, false)))
-        .enumerate()
-    {
-        if position >= window_end {
-            break;
-        }
-        if position >= offset {
-            if is_local {
-                local_page.push(branch);
-            } else {
-                remote_page.push(branch);
-            }
-        }
-    }
-    (local_page, remote_page, has_more)
-}
-
-fn parse_wsl_branch_ref_lines(stdout: String) -> Vec<(String, String)> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let (name, commit) = line.split_once('\t')?;
-            (!name.is_empty()).then(|| (name.to_string(), commit.to_string()))
-        })
-        .collect()
-}
-
-pub(crate) async fn run_wsl_branch_ref_list(
-    repo_path: &WslProjectPath,
-    pattern: &str,
-    fetch_bound: usize,
-) -> Result<WslCommandOutput> {
-    // Each for-each-ref runs as an independently checked command so a failure
-    // on either side propagates instead of being swallowed by a shell
-    // tail/head pipeline. --count bounds every listing to the pagination
-    // window plus one sentinel entry used for has_more detection.
-    let args = vec![
-        "for-each-ref".to_string(),
-        "--sort=refname".to_string(),
-        format!("--count={fetch_bound}"),
-        "--format=%(refname:short)\t%(objectname:short)".to_string(),
-        pattern.to_string(),
-    ];
-    run_wsl_git_checked(
-        repo_path,
-        &args,
-        WSL_GIT_TIMEOUT,
-        "git branch list WSL failed",
-    )
-    .await
-}
-
-pub(crate) async fn build_wsl_git_branches_tool_page(
-    repo_path: &WslProjectPath,
-    offset: usize,
-    limit: usize,
-) -> Result<GitBranchesToolPage> {
-    let current_output = run_wsl_git_allow_failure(
-        repo_path,
-        &["branch".to_string(), "--show-current".to_string()],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    let current = current_output
-        .status
-        .success()
-        .then(|| current_output.stdout_text())
-        .filter(|value| !value.is_empty());
-
-    // Each for-each-ref side is fetched independently and clamped to the
-    // pagination window plus one sentinel entry used for has_more detection;
-    // any git failure propagates from its checked command.
-    let fetch_bound = offset.saturating_add(limit).saturating_add(1);
-    let local_output = run_wsl_branch_ref_list(repo_path, "refs/heads", fetch_bound).await?;
-    let remote_output = run_wsl_branch_ref_list(repo_path, "refs/remotes", fetch_bound).await?;
-
-    let local = parse_wsl_branch_ref_lines(local_output.stdout_text())
-        .into_iter()
-        .take(fetch_bound)
-        .map(|(name, commit)| GitBranch {
-            is_head: current.as_deref() == Some(name.as_str()),
-            name,
-            commit,
-        })
-        .collect::<Vec<_>>();
-    let remote = parse_wsl_branch_ref_lines(remote_output.stdout_text())
-        .into_iter()
-        .take(fetch_bound)
-        .map(|(name, commit)| GitBranch {
-            is_head: false,
-            name,
-            commit,
-        })
-        .collect::<Vec<_>>();
-
-    let (local, remote, has_more) = paginate_wsl_branch_refs(local, remote, offset, limit);
-    Ok(GitBranchesToolPage {
-        local,
-        remote,
-        current,
-        has_more,
-    })
-}
-
-pub(crate) async fn wsl_git_add(repo_path: &WslProjectPath, paths: &[String]) -> Result<()> {
-    let mut args = vec!["add".to_string(), "--".to_string()];
-    if paths.is_empty() {
-        args.push(".".to_string());
-    } else {
-        args.extend(paths.iter().cloned());
-    }
-    run_wsl_git_checked(
-        repo_path,
-        &args,
-        WSL_GIT_MUTATION_TIMEOUT,
-        "git add WSL failed",
-    )
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn wsl_git_commit(
-    repo_path: &WslProjectPath,
-    message: &str,
-    stage_all: bool,
-) -> Result<String> {
-    validate_commit_message(message)?;
-    if stage_all {
-        wsl_git_add(repo_path, &[".".to_string()]).await?;
-    }
-    run_wsl_git_checked(
-        repo_path,
-        &[
-            "-c".to_string(),
-            "user.name=Macro".to_string(),
-            "-c".to_string(),
-            "user.email=macro@local".to_string(),
-            "commit".to_string(),
-            "-m".to_string(),
-            message.to_string(),
-        ],
-        WSL_GIT_MUTATION_TIMEOUT,
-        "git commit WSL failed",
-    )
-    .await?;
-    let hash = run_wsl_git_checked(
-        repo_path,
-        &[
-            "rev-parse".to_string(),
-            "--short=12".to_string(),
-            "HEAD".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-        "git rev-parse WSL failed",
-    )
-    .await?;
-    Ok(hash.stdout_text())
-}
-
 async fn wsl_git_restore_paths(
     repo_path: &WslProjectPath,
     paths: &[String],
@@ -2047,238 +986,6 @@ async fn wsl_git_restore_paths(
     )
     .await?;
     Ok(())
-}
-
-pub(crate) async fn wsl_git_reset(
-    repo_path: &WslProjectPath,
-    mode: &str,
-    commit: Option<String>,
-    confirm: Option<bool>,
-) -> Result<()> {
-    let reset_mode = match mode {
-        "soft" | "mixed" | "hard" => mode,
-        other => {
-            return Err(BackendError::Validation(format!(
-                "Invalid reset mode: {}",
-                other
-            )))
-        }
-    };
-    if reset_mode == "hard" && !confirm.unwrap_or(false) {
-        return Err(BackendError::Git {
-            message: "Hard reset is destructive; set confirm=true".to_string(),
-        });
-    }
-    let resolved_commit = match commit {
-        Some(commit) => Some(wsl_resolve_commit_oid(repo_path, &commit, "reset commit").await?),
-        None => None,
-    };
-    let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
-    if let Some(commit) = resolved_commit {
-        args.push(commit);
-    }
-    run_wsl_git_checked(
-        repo_path,
-        &args,
-        WSL_GIT_MUTATION_TIMEOUT,
-        "git reset WSL failed",
-    )
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn wsl_git_checkout(
-    repo_path: &WslProjectPath,
-    branch_or_commit: &str,
-    create: bool,
-) -> Result<()> {
-    if create {
-        validate_branch_name(branch_or_commit)?;
-    } else {
-        validate_refspec(branch_or_commit)?;
-    }
-    let mut args = vec!["checkout".to_string()];
-    if create {
-        args.push("-b".to_string());
-    }
-    args.push(branch_or_commit.to_string());
-    run_wsl_git_checked(
-        repo_path,
-        &args,
-        WSL_GIT_MUTATION_TIMEOUT,
-        "git checkout WSL failed",
-    )
-    .await?;
-    Ok(())
-}
-
-async fn wsl_current_branch(repo_path: &WslProjectPath) -> Result<Option<String>> {
-    let output = run_wsl_git_checked(
-        repo_path,
-        &["branch".to_string(), "--show-current".to_string()],
-        WSL_GIT_TIMEOUT,
-        "Cannot determine current WSL branch",
-    )
-    .await?;
-    let branch = output.stdout_text();
-    Ok((!branch.is_empty()).then_some(branch))
-}
-
-async fn wsl_ensure_clean(repo_path: &WslProjectPath) -> Result<()> {
-    if !build_wsl_git_status(repo_path).await?.is_clean {
-        return Err(BackendError::GitRepositoryNotClean {
-            message: "Please commit or stash your changes first".to_string(),
-        });
-    }
-    Ok(())
-}
-
-pub(crate) async fn wsl_git_merge(
-    repo_path: &WslProjectPath,
-    branch_name: &str,
-    into_branch: &str,
-) -> Result<String> {
-    validate_branch_name(branch_name)?;
-    validate_branch_name(into_branch)?;
-    wsl_ensure_clean(repo_path).await?;
-    let branch_oid = wsl_resolve_commit_oid(repo_path, branch_name, "merge branch").await?;
-    let into_oid = wsl_resolve_commit_oid(repo_path, into_branch, "merge target").await?;
-    let ancestor = run_wsl_git_allow_failure(
-        repo_path,
-        &[
-            "merge-base".to_string(),
-            "--is-ancestor".to_string(),
-            branch_oid,
-            into_oid,
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    match ancestor.status.code() {
-        Some(0) => {
-            return Ok(format!(
-                "Branch {} is already integrated into {}",
-                branch_name, into_branch
-            ))
-        }
-        Some(1) => {}
-        _ => return Err(wsl_git_failure(&ancestor, "git merge preflight WSL failed")),
-    }
-
-    let original_branch = wsl_current_branch(repo_path).await?;
-    if original_branch.as_deref() != Some(into_branch) {
-        wsl_git_checkout(repo_path, into_branch, false).await?;
-    }
-    let output = run_wsl_git_allow_failure(
-        repo_path,
-        &[
-            "merge".to_string(),
-            "--no-ff".to_string(),
-            "--no-edit".to_string(),
-            branch_name.to_string(),
-        ],
-        WSL_GIT_MUTATION_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        let merge_head = run_wsl_git_allow_failure(
-            repo_path,
-            &[
-                "rev-parse".to_string(),
-                "--verify".to_string(),
-                "-q".to_string(),
-                "MERGE_HEAD".to_string(),
-            ],
-            WSL_GIT_TIMEOUT,
-        )
-        .await?;
-        let had_merge_head = merge_head.status.success();
-        if had_merge_head {
-            let abort = run_wsl_git_allow_failure(
-                repo_path,
-                &["merge".to_string(), "--abort".to_string()],
-                WSL_GIT_MUTATION_TIMEOUT,
-            )
-            .await?;
-            if !abort.status.success() {
-                return Err(wsl_git_failure(
-                    &abort,
-                    "git merge WSL failed and merge --abort also failed",
-                ));
-            }
-        } else if !matches!(merge_head.status.code(), Some(1)) {
-            return Err(wsl_git_failure(
-                &merge_head,
-                "git merge WSL failed and merge state could not be inspected",
-            ));
-        }
-        if let Some(original_branch) = original_branch.as_deref() {
-            if original_branch != into_branch {
-                wsl_git_checkout(repo_path, original_branch, false).await?;
-            }
-        }
-        if !had_merge_head {
-            return Err(wsl_git_failure(&output, "git merge WSL failed"));
-        }
-        let details = output.stderr_text();
-        return Err(BackendError::GitMergeConflict {
-            message: if details.is_empty() {
-                format!("Cannot merge {} into {}", branch_name, into_branch)
-            } else {
-                details
-            },
-        });
-    }
-    if let Some(original_branch) = original_branch.as_deref() {
-        if original_branch != into_branch {
-            wsl_git_checkout(repo_path, original_branch, false).await?;
-        }
-    }
-    let details = output.stdout_text();
-    Ok(if details.is_empty() {
-        format!("Merged {} into {}", branch_name, into_branch)
-    } else {
-        details
-    })
-}
-
-pub(crate) async fn wsl_git_stash(
-    repo_path: &WslProjectPath,
-    message: Option<String>,
-) -> Result<String> {
-    let status = build_wsl_git_status(repo_path).await?;
-    if status.is_clean {
-        return Err(BackendError::Git {
-            message: "No changes to stash".to_string(),
-        });
-    }
-    let mut args = vec![
-        "stash".to_string(),
-        "push".to_string(),
-        "--include-untracked".to_string(),
-    ];
-    args.push("--message".to_string());
-    args.push(message.unwrap_or_else(|| "WIP".to_string()));
-    run_wsl_git_checked(
-        repo_path,
-        &args,
-        WSL_GIT_MUTATION_TIMEOUT,
-        "git stash WSL failed",
-    )
-    .await?;
-    let output = run_wsl_git_checked(
-        repo_path,
-        &[
-            "rev-parse".to_string(),
-            "--short".to_string(),
-            "--verify".to_string(),
-            "refs/stash".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-        "git stash revision WSL failed",
-    )
-    .await?;
-    Ok(output.stdout_text())
 }
 
 async fn wsl_git_branch_create(
@@ -2317,245 +1024,6 @@ async fn wsl_git_branch_delete(
     )
     .await?;
     Ok(())
-}
-
-pub(crate) async fn wsl_git_diff(
-    repo_path: &WslProjectPath,
-    base: Option<&str>,
-    head: Option<&str>,
-    options: DiffRequestOptions,
-) -> Result<String> {
-    let path_filters = options.paths.clone().unwrap_or_default();
-    let mut args = vec!["diff".to_string()];
-    if options.mode == GitDiffMode::Stat {
-        args.push("--stat".to_string());
-    } else if options.mode == GitDiffMode::NameOnly {
-        args.push("--name-only".to_string());
-    }
-    if options.mode == GitDiffMode::Patch {
-        if let Some(context_lines) = options.context_lines {
-            args.push(format!("--unified={}", context_lines));
-        }
-    }
-    if options.ignore_whitespace {
-        args.push("--ignore-all-space".to_string());
-    }
-    let resolved_base = match base {
-        Some(base) => Some(wsl_resolve_commit_oid(repo_path, base, "diff base").await?),
-        None => None,
-    };
-    let resolved_head = match head {
-        Some(head) => Some(wsl_resolve_commit_oid(repo_path, head, "diff head").await?),
-        None => None,
-    };
-    if let Some(range) = wsl_diff_range(resolved_base.as_deref(), resolved_head.as_deref()) {
-        args.push(range);
-    }
-    if let Some(paths) = options.paths {
-        if !paths.is_empty() {
-            args.push("--".to_string());
-            args.extend(paths);
-        }
-    }
-    if resolved_head.is_none() {
-        return wsl_git_diff_with_untracked(
-            repo_path,
-            &args,
-            &path_filters,
-            options.mode,
-            options.context_lines,
-            options.ignore_whitespace,
-            options.max_bytes,
-            options.require_complete,
-        )
-        .await;
-    }
-    let Some(max_bytes) = options.max_bytes else {
-        let output =
-            run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git diff WSL failed").await?;
-        return Ok(output.stdout_text());
-    };
-    let output =
-        run_wsl_git_bounded_allow_failure(repo_path, &args, WSL_GIT_TIMEOUT, max_bytes).await?;
-    if !output.status.success() {
-        let details = output.stderr.text("WSL STDERR");
-        return Err(BackendError::Git {
-            message: if details.is_empty() {
-                "git diff WSL failed".to_string()
-            } else {
-                details
-            },
-        });
-    }
-    if options.require_complete && output.stdout.truncated() {
-        return Err(BackendError::Git {
-            message: format!(
-                "Git diff output requires {} bytes and exceeds the inline limit of {} retained bytes. Narrow paths, use mode=stat or mode=name_only, or retry without require_complete.",
-                output.stdout.total_bytes(), output.stdout.retained_bytes()
-            ),
-        });
-    }
-    Ok(output.stdout.text("GIT DIFF"))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn wsl_git_diff_with_untracked(
-    repo_path: &WslProjectPath,
-    diff_args: &[String],
-    path_filters: &[String],
-    mode: GitDiffMode,
-    context_lines: Option<u32>,
-    ignore_whitespace: bool,
-    max_bytes: Option<usize>,
-    require_complete: bool,
-) -> Result<String> {
-    let script = wsl_git_diff_with_untracked_script();
-    let mut args = vec![
-        "-c".to_string(),
-        script.to_string(),
-        "macro-git-diff".to_string(),
-        repo_path.linux_path.clone(),
-        max_bytes.map(|value| value.max(2)).unwrap_or(0).to_string(),
-        mode.as_str().to_string(),
-        context_lines
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        if ignore_whitespace { "1" } else { "0" }.to_string(),
-        diff_args.len().to_string(),
-        path_filters.len().to_string(),
-    ];
-    args.extend(diff_args.iter().cloned());
-    args.extend(path_filters.iter().cloned());
-    let output = run_wsl_command_allow_failure(repo_path, "bash", &args, WSL_GIT_TIMEOUT).await?;
-    if !output.status.success() {
-        return Err(wsl_git_failure(&output, "git diff WSL failed"));
-    }
-    let Some(separator) = output.stdout.iter().position(|byte| *byte == 0) else {
-        return Err(BackendError::Git {
-            message: "git diff WSL returned an invalid bounded-output header".to_string(),
-        });
-    };
-    let header = String::from_utf8_lossy(&output.stdout[..separator]);
-    let mut header = header.split('\t');
-    if header.next() != Some("macro-diff") {
-        return Err(BackendError::Git {
-            message: "git diff WSL returned an invalid output header".to_string(),
-        });
-    }
-    let parse_size = |value: Option<&str>| {
-        value
-            .and_then(|value| value.parse::<usize>().ok())
-            .ok_or_else(|| BackendError::Git {
-                message: "git diff WSL returned an invalid output size".to_string(),
-            })
-    };
-    let total_bytes = parse_size(header.next())?;
-    let head_bytes = parse_size(header.next())?;
-    let tail_bytes = parse_size(header.next())?;
-    let retained = &output.stdout[separator.saturating_add(1)..];
-    if retained.len() != head_bytes.saturating_add(tail_bytes) {
-        return Err(BackendError::Git {
-            message: "git diff WSL returned an incomplete bounded payload".to_string(),
-        });
-    }
-    let truncated = total_bytes > retained.len();
-    if truncated && require_complete {
-        return Err(BackendError::Git {
-            message: format!(
-                "Git diff output requires {} bytes and exceeds the inline limit of {} retained bytes. Narrow paths, use mode=stat or mode=name_only, or retry without require_complete.",
-                total_bytes,
-                retained.len()
-            ),
-        });
-    }
-    let mut text = String::from_utf8_lossy(&retained[..head_bytes]).into_owned();
-    if truncated {
-        text.push_str(&format!(
-            "\n\n[... GIT DIFF TRUNCATED: omitted {} bytes; retained the first {} and last {} bytes ...]\n\n",
-            total_bytes.saturating_sub(retained.len()),
-            head_bytes,
-            tail_bytes
-        ));
-    }
-    if tail_bytes > 0 {
-        text.push_str(&String::from_utf8_lossy(&retained[head_bytes..]));
-    }
-    Ok(text)
-}
-
-fn wsl_git_diff_with_untracked_script() -> &'static str {
-    r#"
-set -u
-repo=$1
-max_bytes=$2
-mode=$3
-context=$4
-ignore_whitespace=$5
-diff_count=$6
-path_count=$7
-shift 7
-diff_args=("${@:1:diff_count}")
-shift "$diff_count"
-paths=("${@:1:path_count}")
-tmpdir=$(mktemp -d) || exit 70
-trap 'rm -rf -- "$tmpdir"' EXIT
-combined=$tmpdir/combined
-untracked=$tmpdir/untracked
-
-git -C "$repo" "${diff_args[@]}" >"$combined" || exit $?
-ls_args=(ls-files --others --exclude-standard -z)
-if (( path_count > 0 )); then ls_args+=(-- "${paths[@]}"); fi
-git -C "$repo" "${ls_args[@]}" >"$untracked" || exit $?
-
-if [[ "$mode" != name_only ]]; then
-  untracked_count=0
-  while IFS= read -r -d '' _path; do
-    untracked_count=$((untracked_count + 1))
-    if (( untracked_count > 2000 )); then
-      printf 'git diff WSL found more than 2000 untracked files; narrow paths or use mode=name_only\n' >&2
-      exit 74
-    fi
-  done <"$untracked"
-fi
-
-while IFS= read -r -d '' path; do
-  if [[ "$mode" == name_only ]]; then
-    printf '%s\n' "$path" >>"$combined" || exit $?
-    continue
-  fi
-  extra=(diff --no-index)
-  [[ "$mode" == stat ]] && extra+=(--stat)
-  [[ "$mode" == patch && -n "$context" ]] && extra+=("--unified=$context")
-  [[ "$ignore_whitespace" == 1 ]] && extra+=(--ignore-all-space)
-  set +e
-  git -C "$repo" "${extra[@]}" -- /dev/null "$path" >>"$combined"
-  code=$?
-  set -e
-  [[ $code -eq 0 || $code -eq 1 ]] || exit "$code"
-done <"$untracked"
-
-total=$(wc -c <"$combined") || exit $?
-total=${total//[[:space:]]/}
-if [[ "$max_bytes" == 0 || "$total" -le "$max_bytes" ]]; then
-  printf 'macro-diff\t%s\t%s\t0\0' "$total" "$total"
-  cat -- "$combined"
-else
-  tail_bytes=$((max_bytes / 4))
-  head_bytes=$((max_bytes - tail_bytes))
-  printf 'macro-diff\t%s\t%s\t%s\0' "$total" "$head_bytes" "$tail_bytes"
-  head -c "$head_bytes" -- "$combined"
-  tail -c "$tail_bytes" -- "$combined"
-fi
-"#
-}
-
-fn wsl_diff_range(base: Option<&str>, head: Option<&str>) -> Option<String> {
-    match (base, head) {
-        (Some(base), Some(head)) => Some(format!("{}..{}", base, head)),
-        (Some(base), None) => Some(base.to_string()),
-        (None, Some(head)) => Some(format!("HEAD..{}", head)),
-        (None, None) => None,
-    }
 }
 
 pub(crate) async fn build_wsl_git_tree(
@@ -2615,271 +1083,6 @@ pub(crate) async fn build_wsl_git_tree(
         structure,
         modified_files_count: status_count,
     })
-}
-
-pub(crate) async fn build_wsl_git_tree_tool_page(
-    repo_path: &WslProjectPath,
-    branch: Option<&str>,
-    offset: usize,
-    limit: usize,
-) -> Result<GitTreeToolPage> {
-    let branch_name = if let Some(branch) = branch {
-        validate_refspec(branch)?;
-        branch.to_string()
-    } else {
-        wsl_current_branch(repo_path)
-            .await?
-            .unwrap_or_else(|| "DETACHED".to_string())
-    };
-    let tree_ref = if branch_name == "DETACHED" {
-        wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?
-    } else {
-        wsl_resolve_commit_oid(repo_path, &branch_name, "tree reference").await?
-    };
-    let script = wsl_git_tree_page_script();
-    let output = run_wsl_command_allow_failure(
-        repo_path,
-        "bash",
-        &[
-            "-c".to_string(),
-            script.to_string(),
-            "macro-git-tree".to_string(),
-            repo_path.linux_path.clone(),
-            tree_ref.clone(),
-            offset.saturating_add(1).to_string(),
-            limit.saturating_add(1).to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        return Err(wsl_git_failure(&output, "git tree WSL failed"));
-    }
-    let mut records = output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-        .collect::<Vec<_>>();
-    let header = records.first().copied().unwrap_or_default();
-    let header = String::from_utf8_lossy(header);
-    let mut header_fields = header.splitn(3, '\t');
-    if header_fields.next() != Some("macro-tree") {
-        return Err(BackendError::Git {
-            message: "git tree WSL returned an invalid page header".to_string(),
-        });
-    }
-    let modified_files_count = header_fields
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .ok_or_else(|| BackendError::Git {
-            message: "git tree WSL returned an invalid status count".to_string(),
-        })?;
-    let status_digest = header_fields
-        .next()
-        .filter(|value| value.len() == 64)
-        .ok_or_else(|| BackendError::Git {
-            message: "git tree WSL returned an invalid status revision".to_string(),
-        })?;
-    records.remove(0);
-    let has_more = records.len() > limit;
-    let mut structure = Vec::with_capacity(limit.min(records.len()));
-    for record in records.into_iter().take(limit) {
-        let mut fields = record.splitn(3, |byte| *byte == b'\t');
-        let hash = String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
-        let kind = String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
-        let path = String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
-        if path.is_empty() {
-            continue;
-        }
-        let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
-        structure.push(GitNode {
-            name,
-            path,
-            node_type: if matches!(kind.as_str(), "tree" | "commit") {
-                "directory"
-            } else {
-                "file"
-            }
-            .to_string(),
-            status: None,
-            children: None,
-            hash: (!hash.is_empty()).then_some(hash),
-        });
-    }
-    apply_wsl_tree_page_statuses(repo_path, &mut structure).await?;
-    Ok(GitTreeToolPage {
-        branch: branch_name,
-        structure,
-        modified_files_count,
-        has_more,
-        revision: format!("{}:{}", tree_ref, status_digest),
-    })
-}
-
-fn wsl_git_tree_page_script() -> &'static str {
-    r#"
-set -u
-export LC_ALL=C
-repo=$1
-tree_ref=$2
-start=$3
-count=$4
-tmpdir=$(mktemp -d) || exit 70
-trap 'rm -rf -- "$tmpdir"' EXIT
-
-tracked=$tmpdir/tracked
-tracked_paths=$tmpdir/tracked-paths
-status=$tmpdir/status
-status_only=$tmpdir/status-only
-status_only_sorted=$tmpdir/status-only-sorted
-tracked_paths_sorted=$tmpdir/tracked-paths-sorted
-new_paths=$tmpdir/new-paths
-combined=$tmpdir/combined
-
-# Finish and check each Git producer before paginating its output. This avoids
-# losing an ls-tree/status failure behind a successful tail/head consumer.
-git -C "$repo" ls-tree -r -z \
-  --format='%(objectname)%x09%(objecttype)%x09%(path)' "$tree_ref" >"$tracked" || exit $?
-git -C "$repo" status --porcelain=v1 -z --untracked-files=all >"$status" || exit $?
-
-: >"$tracked_paths"
-while IFS= read -r -d '' record; do
-  rest=${record#*$'\t'}
-  path=${rest#*$'\t'}
-  printf '%s\0' "$path" >>"$tracked_paths" || exit $?
-done <"$tracked"
-
-: >"$status_only"
-modified=0
-exec 3<"$status"
-while IFS= read -r -d '' record <&3; do
-  modified=$((modified + 1))
-  x=${record:0:1}
-  y=${record:1:1}
-  path=${record:3}
-  if [[ "$x" == R || "$x" == C || "$y" == R || "$y" == C ]]; then
-    IFS= read -r -d '' _old_path <&3 || exit 71
-  fi
-  if [[ "$x$y" == '??' || "$x" == A || "$x" == R || "$x" == C || "$y" == R || "$y" == C ]]; then
-    printf '%s\0' "$path" >>"$status_only" || exit $?
-  fi
-done
-
-sort -z -u "$tracked_paths" >"$tracked_paths_sorted" || exit $?
-sort -z -u "$status_only" >"$status_only_sorted" || exit $?
-comm -z -23 "$status_only_sorted" "$tracked_paths_sorted" >"$new_paths" || exit $?
-cp -- "$tracked" "$combined" || exit $?
-while IFS= read -r -d '' path; do
-  printf '\tblob\t%s\0' "$path" >>"$combined" || exit $?
-done <"$new_paths"
-
-status_digest=$(sha256sum -- "$status") || exit $?
-status_digest=${status_digest%% *}
-printf 'macro-tree\t%s\t%s\0' "$modified" "$status_digest"
-tail -z -n +"$start" -- "$combined" | head -z -n "$count"
-pipe_status=("${PIPESTATUS[@]}")
-[[ (${pipe_status[0]} -eq 0 || ${pipe_status[0]} -eq 141) && ${pipe_status[1]} -eq 0 ]] || exit 72
-"#
-}
-
-async fn apply_wsl_tree_page_statuses(
-    repo_path: &WslProjectPath,
-    structure: &mut [GitNode],
-) -> Result<()> {
-    const STATUS_PATH_CHUNK_BYTES: usize = 96 * 1024;
-    let mut labels = HashMap::with_capacity(structure.len());
-    let mut start = 0usize;
-    while start < structure.len() {
-        let mut end = start;
-        let mut bytes = 0usize;
-        while end < structure.len() {
-            let next = structure[end].path.len().saturating_add(1);
-            if end > start && bytes.saturating_add(next) > STATUS_PATH_CHUNK_BYTES {
-                break;
-            }
-            bytes = bytes.saturating_add(next);
-            end += 1;
-        }
-        let mut args = vec![
-            "--literal-pathspecs".to_string(),
-            "status".to_string(),
-            "--porcelain=v1".to_string(),
-            "-z".to_string(),
-            "--untracked-files=all".to_string(),
-            "--".to_string(),
-        ];
-        args.extend(structure[start..end].iter().map(|node| node.path.clone()));
-        let output = run_wsl_git_checked(
-            repo_path,
-            &args,
-            WSL_GIT_TIMEOUT,
-            "git tree status WSL failed",
-        )
-        .await?;
-        let parsed = parse_wsl_porcelain_v1_z(&output.stdout);
-        for file in parsed.untracked_files {
-            labels
-                .entry(file.path)
-                .or_insert_with(|| "added".to_string());
-        }
-        for file in parsed.unstaged_files {
-            labels.insert(file.path, file.status);
-        }
-        for file in parsed.staged_files {
-            labels.insert(file.path, file.status);
-        }
-        for path in parsed.conflicted_files {
-            labels.insert(path, "conflicted".to_string());
-        }
-        start = end;
-    }
-    for node in structure {
-        node.status = labels.remove(&node.path);
-    }
-    Ok(())
-}
-
-pub(crate) async fn wsl_git_tree_revision(
-    repo_path: &WslProjectPath,
-    branch: Option<&str>,
-) -> Result<String> {
-    let tree_ref = match branch {
-        Some(branch) => {
-            validate_refspec(branch)?;
-            wsl_resolve_commit_oid(repo_path, branch, "tree reference").await?
-        }
-        None => wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?,
-    };
-    let script = r#"
-set -o pipefail
-git -C "$1" status --porcelain=v1 -z --untracked-files=all | sha256sum
-statuses=("${PIPESTATUS[@]}")
-[[ ${statuses[0]} -eq 0 && ${statuses[1]} -eq 0 ]] || exit 73
-"#;
-    let output = run_wsl_command_allow_failure(
-        repo_path,
-        "bash",
-        &[
-            "-c".to_string(),
-            script.to_string(),
-            "macro-git-tree-revision".to_string(),
-            repo_path.linux_path.clone(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        return Err(wsl_git_failure(&output, "git tree revision WSL failed"));
-    }
-    let stdout = output.stdout_text();
-    let digest = stdout
-        .split_whitespace()
-        .next()
-        .filter(|value| value.len() == 64)
-        .ok_or_else(|| BackendError::Git {
-            message: "git tree revision WSL returned an invalid digest".to_string(),
-        })?;
-    Ok(format!("{}:{}", tree_ref, digest))
 }
 
 async fn wsl_resolve_target_branch(
@@ -2997,15 +1200,6 @@ async fn wsl_git_remote_add_origin(repo_path: &WslProjectPath, url: &str) -> Res
         remote: DEFAULT_REMOTE_NAME.to_string(),
         url: normalized_url,
     })
-}
-
-fn unsupported_wsl_git_operation(name: &str) -> BackendError {
-    BackendError::Git {
-        message: format!(
-            "L'opération Git WSL '{}' n'est pas encore prise en charge sans fallback Windows.",
-            name
-        ),
-    }
 }
 
 fn sanitize_temp_segment(value: &str) -> String {
@@ -3163,10 +1357,6 @@ fn gather_macro_conflicted_files(repo: &Repository) -> Result<Vec<String>> {
         }
     }
     Ok(conflicted)
-}
-
-fn is_merge_in_progress(repo: &Repository) -> bool {
-    repo.path().join("MERGE_HEAD").exists()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3401,189 +1591,6 @@ fn build_macro_sync_dto(
     })
 }
 
-pub fn validate_repo_path(repo_path: &str, workspace: &Path) -> Result<PathBuf> {
-    let repo_path = Path::new(repo_path);
-    let validated = if repo_path.is_absolute() {
-        let canonical = repo_path
-            .canonicalize()
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => BackendError::FilesystemNotFound {
-                    message: format!("Repository path {:?} does not exist", repo_path),
-                },
-                _ => BackendError::Io {
-                    message: format!(
-                        "Failed to canonicalize repository path {:?}: {}",
-                        repo_path, error
-                    ),
-                    source: error,
-                },
-            })?;
-        if !canonical.is_dir() {
-            return Err(BackendError::GitRepositoryNotFound {
-                message: format!("Repository path {:?} is not a directory", repo_path),
-            });
-        }
-        canonical
-    } else {
-        validate_path(repo_path, workspace)?
-    };
-    for component in validated.components() {
-        if let std::path::Component::Normal(part) = component {
-            if part == ".git" {
-                return Err(BackendError::GitRepositoryNotFound {
-                    message: "Direct .git access is not allowed".to_string(),
-                });
-            }
-        }
-    }
-    Ok(validated)
-}
-
-fn validate_branch_name(branch: &str) -> Result<()> {
-    validate_git_cli_operand(branch, "branch name")?;
-    let ref_name = format!("refs/heads/{}", branch);
-    if git2::Reference::is_valid_name(&ref_name) {
-        Ok(())
-    } else {
-        Err(BackendError::GitBranchNotFound {
-            message: format!("Invalid branch name: {}", branch),
-        })
-    }
-}
-
-fn short_hash(oid: Oid) -> String {
-    oid.to_string().chars().take(12).collect()
-}
-
-fn is_glob_pattern(value: &str) -> bool {
-    value.contains('*') || value.contains('?') || value.contains('[')
-}
-
-fn is_hex_oid(value: &str) -> bool {
-    let len = value.len();
-    if !(7..=40).contains(&len) {
-        return false;
-    }
-    value.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-fn validate_refspec(spec: &str) -> Result<()> {
-    validate_git_cli_operand(spec, "reference")?;
-    if is_hex_oid(spec) {
-        return Ok(());
-    }
-
-    let branch_ref = format!("refs/heads/{}", spec);
-    let tag_ref = format!("refs/tags/{}", spec);
-    if git2::Reference::is_valid_name(&branch_ref) || git2::Reference::is_valid_name(&tag_ref) {
-        Ok(())
-    } else {
-        Err(BackendError::Validation(format!(
-            "Invalid reference: {}",
-            spec
-        )))
-    }
-}
-
-fn validate_commit_message(message: &str) -> Result<()> {
-    let trimmed = message.trim();
-    let header = trimmed.lines().next().unwrap_or("").trim();
-
-    if header.is_empty() {
-        return Err(BackendError::Validation(
-            GENERIC_CONVENTIONAL_COMMIT_MESSAGE.to_string(),
-        ));
-    }
-
-    let Some((header, subject)) = header.split_once(": ") else {
-        return Err(BackendError::Validation(
-            GENERIC_CONVENTIONAL_COMMIT_MESSAGE.to_string(),
-        ));
-    };
-    if subject.trim().is_empty() {
-        return Err(BackendError::Validation(
-            "Commit subject is required".to_string(),
-        ));
-    }
-
-    let header = header.strip_suffix('!').unwrap_or(header);
-    let (commit_type, scope) = if let Some(idx) = header.find('(') {
-        if !header.ends_with(')') {
-            return Err(BackendError::Validation(
-                "Commit scope must close with ')'".to_string(),
-            ));
-        }
-        (&header[..idx], Some(&header[idx + 1..header.len() - 1]))
-    } else {
-        (header, None)
-    };
-
-    if commit_type.is_empty() {
-        return Err(BackendError::Validation(
-            "Commit type is required".to_string(),
-        ));
-    }
-
-    if let Some(scope) = scope {
-        if scope.trim().is_empty() {
-            return Err(BackendError::Validation(
-                "Commit scope cannot be empty".to_string(),
-            ));
-        }
-        let valid_scope = scope
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-            && scope
-                .chars()
-                .next()
-                .map(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-                .unwrap_or(false);
-        if !valid_scope {
-            return Err(BackendError::Validation(
-                "Commit scope must be kebab-case".to_string(),
-            ));
-        }
-    }
-
-    let allowed = [
-        "feat", "fix", "perf", "build", "chore", "ci", "docs", "refactor", "style", "test",
-        "revert",
-    ];
-    if !allowed.contains(&commit_type) {
-        return Err(BackendError::Validation(
-            "Commit type must be one of: feat, fix, perf, build, chore, ci, docs, refactor, style, test, revert".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-fn ensure_safe_config(repo: &Repository) -> Result<()> {
-    let config = repo.config()?;
-    if let Ok(value) = config.get_string("core.hooksPath") {
-        if !value.trim().is_empty() {
-            let hooks_path = Path::new(&value);
-            let repo_root = repo_root(repo)?;
-            let configured_hooks_path = if hooks_path.is_absolute() {
-                hooks_path.to_path_buf()
-            } else {
-                repo_root.join(hooks_path)
-            };
-            let resolved_hooks_path = normalize_path(&configured_hooks_path);
-            let lexical_escape = !resolved_hooks_path.starts_with(&repo_root);
-            let linked_escape = resolved_hooks_path
-                .canonicalize()
-                .is_ok_and(|canonical| !canonical.starts_with(&repo_root));
-            if lexical_escape || linked_escape {
-                return Err(BackendError::Git {
-                    message: "core.hooksPath must be inside the repository".to_string(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 fn ensure_safe_automatic_hydration_config(repo: &Repository) -> Result<()> {
     ensure_safe_config(repo)?;
     let config = repo.config()?;
@@ -3645,122 +1652,6 @@ fn is_local_git_remote_url(value: &str) -> bool {
         || (!value.contains("://") && !scp_remote)
 }
 
-fn repo_root(repo: &Repository) -> Result<PathBuf> {
-    repo.workdir()
-        .map(|p| p.to_path_buf())
-        .ok_or_else(|| BackendError::Git {
-            message: "Bare repositories are not supported".to_string(),
-        })
-}
-
-fn to_repo_relative(repo_root: &Path, path: &Path) -> Result<PathBuf> {
-    path.strip_prefix(repo_root)
-        .map(|p| p.to_path_buf())
-        .map_err(|_| BackendError::FilesystemPathOutsideWorkspace {
-            message: format!("Path is outside repository: {}", path.display()),
-        })
-}
-
-fn collect_files(path: &Path) -> Result<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-
-    if path.is_dir() {
-        let mut files = Vec::new();
-        for entry in walkdir::WalkDir::new(path) {
-            let entry = entry.map_err(|e| BackendError::Io {
-                message: e.to_string(),
-                source: std::io::Error::other(e),
-            })?;
-            if entry.file_type().is_file() {
-                let file_path = entry.path().to_path_buf();
-                if file_path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::Normal(p) if p == ".git"))
-                {
-                    continue;
-                }
-                files.push(file_path);
-            }
-        }
-        return Ok(files);
-    }
-
-    Err(BackendError::FilesystemNotFound {
-        message: format!("Path not found: {}", path.display()),
-    })
-}
-
-fn expand_paths(repo_root: &Path, input: &str) -> Result<Vec<PathBuf>> {
-    let input_path = Path::new(input);
-    let absolute = if input_path.is_absolute() {
-        input_path.to_path_buf()
-    } else {
-        repo_root.join(input)
-    };
-
-    if is_glob_pattern(input) {
-        let mut matches = Vec::new();
-        for entry in
-            glob::glob(absolute.to_string_lossy().as_ref()).map_err(|e| BackendError::Git {
-                message: e.to_string(),
-            })?
-        {
-            let path = entry.map_err(|e| BackendError::Git {
-                message: e.to_string(),
-            })?;
-            matches.push(path);
-        }
-
-        if matches.is_empty() {
-            return Err(BackendError::FilesystemNotFound {
-                message: format!("No files matched pattern: {}", input),
-            });
-        }
-
-        return Ok(matches);
-    }
-
-    Ok(vec![absolute])
-}
-
-pub(crate) fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
-    let repo_root = repo_root(repo)?;
-    let mut index = repo.index()?;
-    let mut added = 0usize;
-
-    for path in paths {
-        for candidate in expand_paths(&repo_root, path)? {
-            for file in collect_files(&candidate)? {
-                let relative = to_repo_relative(&repo_root, &file)?;
-                index.add_path(&relative)?;
-                added += 1;
-            }
-        }
-    }
-
-    if added == 0 {
-        return Err(BackendError::Git {
-            message: "No files were added to the index".to_string(),
-        });
-    }
-
-    index.write()?;
-    Ok(())
-}
-
-fn head_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
-    let Some(head_commit) = get_head_commit(repo)? else {
-        return Ok(false);
-    };
-    let tree = head_commit.tree()?;
-    match tree.get_path(path) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
-    }
-}
-
 fn index_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
     let mut index = repo.index()?;
     index.read(true)?;
@@ -3778,10 +1669,33 @@ pub(crate) fn restore_paths(
         });
     }
 
+    if matches!(target, RestoreTarget::Staged) {
+        let paths = mutation_paths(repo, paths, true)?;
+        let mut args: Vec<String> = if get_head_commit(repo)?.is_some() {
+            vec![
+                "--literal-pathspecs".into(),
+                "restore".into(),
+                "--staged".into(),
+                "--".into(),
+            ]
+        } else {
+            vec![
+                "--literal-pathspecs".into(),
+                "rm".into(),
+                "--cached".into(),
+                "-r".into(),
+                "-f".into(),
+                "--ignore-unmatch".into(),
+                "--".into(),
+            ]
+        };
+        args.extend(paths);
+        return run_index_mutation(repo, &args);
+    }
+
     let repo_root = repo_root(repo)?;
     let mut restore_from_head_paths = Vec::new();
     let mut restore_from_index_paths = Vec::new();
-    let mut restore_from_head_to_index_paths = Vec::new();
     let mut remove_new_paths = Vec::new();
     let mut remove_untracked_worktree_paths = Vec::new();
 
@@ -3803,11 +1717,7 @@ pub(crate) fn restore_paths(
                     remove_untracked_worktree_paths.push(relative);
                 }
             }
-            RestoreTarget::Staged => {
-                if in_index {
-                    restore_from_head_to_index_paths.push(relative);
-                }
-            }
+            RestoreTarget::Staged => unreachable!("handled before worktree restoration"),
             RestoreTarget::StagedAndWorktree => {
                 if in_head {
                     restore_from_head_paths.push(relative);
@@ -3815,30 +1725,6 @@ pub(crate) fn restore_paths(
                     remove_new_paths.push(relative);
                 }
             }
-        }
-    }
-
-    if !restore_from_head_to_index_paths.is_empty() {
-        let mut args = vec![
-            "restore".to_string(),
-            "--staged".to_string(),
-            "--".to_string(),
-        ];
-        args.extend(
-            restore_from_head_to_index_paths
-                .iter()
-                .map(|path| path.to_string_lossy().to_string()),
-        );
-        let output = run_git_command(&repo_root, &args)?;
-        if !output.success {
-            let details = command_output_text(&output);
-            return Err(BackendError::Git {
-                message: if details.is_empty() {
-                    "Failed to unstage paths".to_string()
-                } else {
-                    details
-                },
-            });
         }
     }
 
@@ -3855,7 +1741,7 @@ pub(crate) fn restore_paths(
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
-        let output = run_git_command(&repo_root, &args)?;
+        let output = run_git_mutation_command(&repo_root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             return Err(BackendError::Git {
@@ -3879,7 +1765,7 @@ pub(crate) fn restore_paths(
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
-        let output = run_git_command(&repo_root, &args)?;
+        let output = run_git_mutation_command(&repo_root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             return Err(BackendError::Git {
@@ -3905,7 +1791,7 @@ pub(crate) fn restore_paths(
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
-        let output = run_git_command(&repo_root, &rm_args)?;
+        let output = run_git_mutation_command(&repo_root, &rm_args)?;
         if !output.success {
             let details = command_output_text(&output);
             return Err(BackendError::Git {
@@ -3961,699 +1847,52 @@ pub(crate) fn restore_paths(
     Ok(())
 }
 
-pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<()> {
-    let target = if let Some(spec) = commit {
-        resolve_commit(repo, &spec)?
-    } else {
-        get_head_commit(repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
-            message: "No commits found".to_string(),
-        })?
-    };
-
-    let reset_type = match mode {
-        "soft" => ResetType::Soft,
-        "mixed" => ResetType::Mixed,
-        "hard" => {
-            let status = repo.statuses(Some(&mut get_status_options()))?;
-            if !status.is_empty() {
-                return Err(BackendError::GitRepositoryNotClean {
-                    message: "Hard reset requires a clean working tree".to_string(),
-                });
-            }
-            ResetType::Hard
-        }
-        other => {
-            return Err(BackendError::Validation(format!(
-                "Invalid reset mode: {}",
-                other
-            )))
-        }
-    };
-
-    repo.reset(target.as_object(), reset_type, None)?;
-    Ok(())
+#[cfg(test)]
+fn install_native_hard_reset_after_preflight_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset test hooks")
+        .insert(repo_root, Box::new(hook));
 }
 
-pub(crate) fn abort_merge(repo: &Repository) -> Result<()> {
-    if repo.state() != RepositoryState::Merge {
-        return Err(BackendError::Git {
-            message: "No merge in progress".to_string(),
-        });
-    }
-
-    let original_head = repo
-        .revparse_single("ORIG_HEAD")
-        .map_err(|_| BackendError::Git {
-            message: "Cannot abort merge because ORIG_HEAD is missing".to_string(),
-        })?;
-    repo.reset(&original_head, ResetType::Hard, None)?;
-    repo.cleanup_state()?;
-    Ok(())
+#[cfg(test)]
+fn install_native_hard_reset_before_final_reset_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset final test hooks")
+        .insert(repo_root, Box::new(hook));
 }
 
-pub(crate) fn abort_merge_with_confirmation(
-    repo: &Repository,
-    confirm: Option<bool>,
-) -> Result<()> {
-    if !confirm.unwrap_or(false) {
-        return Err(BackendError::Git {
-            message: "Abort merge requires confirm=true".to_string(),
-        });
-    }
-
-    abort_merge(repo)
+#[cfg(test)]
+fn install_native_hard_reset_before_tracked_isolation_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_BEFORE_TRACKED_ISOLATION_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset isolation test hooks")
+        .insert(repo_root, Box::new(hook));
 }
 
-pub(crate) fn stash_repo(repo: &mut Repository, message: Option<String>) -> Result<String> {
-    let statuses = repo.statuses(Some(&mut get_status_options()))?;
-    if statuses.is_empty() {
-        return Err(BackendError::Git {
-            message: "No changes to stash".to_string(),
-        });
-    }
-    drop(statuses);
-
-    let signature = repo
-        .signature()
-        .unwrap_or_else(|_| git2::Signature::now("Macro", "macro@local").unwrap());
-    let msg = message.unwrap_or_else(|| "WIP".to_string());
-    let oid = repo.stash_save(&signature, &msg, Some(StashFlags::INCLUDE_UNTRACKED))?;
-    Ok(short_hash(oid))
-}
-
-fn commit_to_dto(commit: &Commit<'_>) -> GitCommitDto {
-    let message = commit
-        .summary()
-        .ok()
-        .flatten()
-        .unwrap_or("(no message)")
-        .to_string();
-    let author = commit.author().name().unwrap_or("Unknown").to_string();
-    let time = commit.time();
-    let date = DateTime::<Utc>::from_timestamp(time.seconds(), 0)
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap())
-        .to_rfc3339();
-
-    let task_id = parse_task_id(&message);
-    let parent_ids = commit.parent_ids().map(|id| id.to_string()).collect();
-
-    GitCommitDto {
-        id: commit.id().to_string(),
-        hash: short_hash(commit.id()),
-        message,
-        author,
-        date,
-        status: "done".to_string(),
-        parent_ids,
-        graph_depth: 0,
-        is_branch_point: false,
-        task_id,
-    }
-}
-
-fn build_virtual_commit(status: &str, message: &str) -> GitCommitDto {
-    let now = Utc::now().to_rfc3339();
-    GitCommitDto {
-        id: format!("virtual-{}", status),
-        hash: status.to_uppercase(),
-        message: message.to_string(),
-        author: "Working Tree".to_string(),
-        date: now,
-        status: status.to_string(),
-        parent_ids: Vec::new(),
-        graph_depth: 0,
-        is_branch_point: false,
-        task_id: None,
-    }
-}
-
-fn get_working_status_flags(repo: &Repository) -> Result<(bool, bool)> {
-    let statuses = repo.statuses(Some(&mut get_status_options()))?;
-    let mut staged = false;
-    let mut unstaged = false;
-    for entry in statuses.iter() {
-        let status = entry.status();
-        if status.is_index_new()
-            || status.is_index_modified()
-            || status.is_index_deleted()
-            || status.is_index_renamed()
-        {
-            staged = true;
-        }
-        if status.is_wt_new()
-            || status.is_wt_modified()
-            || status.is_wt_deleted()
-            || status.is_wt_renamed()
-        {
-            unstaged = true;
-        }
-    }
-    Ok((staged, unstaged))
-}
-
-fn parse_task_id(message: &str) -> Option<String> {
-    let marker = "#";
-    if let Some(idx) = message.find(marker) {
-        let rest = &message[idx + 1..];
-        let token: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if !token.is_empty() {
-            return Some(token);
-        }
-    }
-
-    if let Some(idx) = message.find("task-") {
-        let rest = &message[idx..];
-        let token: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if !token.is_empty() {
-            return Some(token);
-        }
-    }
-
-    None
-}
-
-fn status_to_label(status: Status) -> Option<String> {
-    if status.is_wt_new() || status.is_index_new() {
-        Some("added".to_string())
-    } else if status.is_wt_deleted() || status.is_index_deleted() {
-        Some("deleted".to_string())
-    } else if status.is_wt_renamed() || status.is_index_renamed() {
-        Some("renamed".to_string())
-    } else if status.is_wt_modified() || status.is_index_modified() {
-        Some("modified".to_string())
-    } else {
-        None
-    }
-}
-
-fn status_entry_paths(entry: &StatusEntry<'_>) -> (Option<String>, Option<String>) {
-    if let Some(delta) = entry.head_to_index() {
-        let old_path = delta
-            .old_file()
-            .path()
-            .and_then(|p| p.to_str())
-            .map(|s| s.to_string());
-        let new_path = delta
-            .new_file()
-            .path()
-            .and_then(|p| p.to_str())
-            .map(|s| s.to_string());
-        return (old_path, new_path);
-    }
-
-    if let Some(delta) = entry.index_to_workdir() {
-        let old_path = delta
-            .old_file()
-            .path()
-            .and_then(|p| p.to_str())
-            .map(|s| s.to_string());
-        let new_path = delta
-            .new_file()
-            .path()
-            .and_then(|p| p.to_str())
-            .map(|s| s.to_string());
-        return (old_path, new_path);
-    }
-
-    (
-        entry.path().ok().map(str::to_string),
-        entry.path().ok().map(str::to_string),
-    )
-}
-
-fn build_status_map(repo: &Repository) -> Result<HashMap<String, String>> {
-    let mut map = HashMap::new();
-    let statuses = repo.statuses(Some(&mut get_status_options()))?;
-
-    for entry in statuses.iter() {
-        if let Some(label) = status_to_label(entry.status()) {
-            let (_, path) = status_entry_paths(&entry);
-            if let Some(path) = path {
-                map.insert(path, label);
-            }
-        }
-    }
-
-    Ok(map)
-}
-
-fn build_submodule_status_map(repo: &Repository) -> Result<HashMap<String, String>> {
-    let mut map = HashMap::new();
-    let submodules = repo.submodules().map_err(|e| BackendError::Git {
-        message: e.to_string(),
-    })?;
-
-    for submodule in submodules {
-        if let Some(path) = submodule.path().to_str().map(|s| s.to_string()) {
-            if let Ok(sub_repo) = submodule.open() {
-                if get_status(&sub_repo)? != Status::CURRENT {
-                    map.insert(path, "modified".to_string());
-                }
-            } else {
-                map.insert(path, "modified".to_string());
-            }
-        }
-    }
-
-    Ok(map)
-}
-
-fn insert_node(nodes: &mut Vec<GitNode>, parts: &[&str], prefix: &str, status: &str) {
-    if parts.is_empty() {
-        return;
-    }
-
-    let name = parts[0];
-    let path = if prefix.is_empty() {
-        name.to_string()
-    } else {
-        format!("{}/{}", prefix, name)
-    };
-
-    if parts.len() == 1 {
-        if let Some(existing) = nodes.iter_mut().find(|n| n.path == path) {
-            existing.status = Some(status.to_string());
-        } else {
-            nodes.push(GitNode {
-                name: name.to_string(),
-                path,
-                node_type: "file".to_string(),
-                status: Some(status.to_string()),
-                children: None,
-                hash: None,
-            });
-        }
-        return;
-    }
-
-    let idx = if let Some(idx) = nodes
-        .iter()
-        .position(|n| n.name == name && n.node_type == "directory")
-    {
-        idx
-    } else {
-        nodes.push(GitNode {
-            name: name.to_string(),
-            path: path.clone(),
-            node_type: "directory".to_string(),
-            status: None,
-            children: Some(Vec::new()),
-            hash: None,
-        });
-        nodes.len() - 1
-    };
-
-    if nodes[idx].children.is_none() {
-        nodes[idx].children = Some(Vec::new());
-    }
-
-    let children = nodes[idx].children.as_mut().unwrap();
-    insert_node(children, &parts[1..], &path, status);
-}
-
-fn build_tree_nodes(
-    repo: &Repository,
-    tree: &git2::Tree<'_>,
-    prefix: &str,
-    status_map: &HashMap<String, String>,
-    seen_paths: &mut HashSet<String>,
-) -> Vec<GitNode> {
-    let mut nodes = Vec::new();
-
-    for entry in tree.iter() {
-        let name = entry.name().unwrap_or("").to_string();
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{}", prefix, name)
-        };
-
-        match entry.kind() {
-            Some(git2::ObjectType::Tree) => {
-                let child = entry.to_object(repo).ok();
-                let child_tree = child.and_then(|obj| obj.as_tree().cloned());
-                let children = child_tree
-                    .map(|t| build_tree_nodes(repo, &t, &path, status_map, seen_paths))
-                    .unwrap_or_default();
-
-                nodes.push(GitNode {
-                    name,
-                    path: path.clone(),
-                    node_type: "directory".to_string(),
-                    status: None,
-                    children: Some(children),
-                    hash: Some(entry.id().to_string()),
-                });
-                seen_paths.insert(path);
-            }
-            Some(git2::ObjectType::Blob) => {
-                let status = status_map.get(&path).cloned();
-                nodes.push(GitNode {
-                    name,
-                    path: path.clone(),
-                    node_type: "file".to_string(),
-                    status,
-                    children: None,
-                    hash: Some(entry.id().to_string()),
-                });
-                seen_paths.insert(path);
-            }
-            Some(git2::ObjectType::Commit) => {
-                let status = status_map.get(&path).cloned();
-                nodes.push(GitNode {
-                    name,
-                    path: path.clone(),
-                    node_type: "directory".to_string(),
-                    status,
-                    children: None,
-                    hash: Some(entry.id().to_string()),
-                });
-                seen_paths.insert(path);
-            }
-            _ => {}
-        }
-    }
-
-    nodes
-}
-
-fn resolve_commit<'repo>(repo: &'repo Repository, spec: &str) -> Result<Commit<'repo>> {
-    if let Ok(reference) = repo.find_reference(&format!("refs/heads/{}", spec)) {
-        return reference.peel_to_commit().map_err(|e| BackendError::Git {
-            message: e.to_string(),
-        });
-    }
-
-    repo.revparse_single(spec)
-        .and_then(|obj| obj.peel_to_commit())
-        .map_err(|e| BackendError::Git {
-            message: e.to_string(),
-        })
-}
-
-fn ensure_clean(repo: &Repository) -> Result<()> {
-    let status = get_status(repo)?;
-    if status != Status::CURRENT {
-        return Err(BackendError::GitRepositoryNotClean {
-            message: "Please commit or stash your changes first".to_string(),
-        });
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GitDiffMode {
-    Patch,
-    Stat,
-    NameOnly,
-}
-
-impl GitDiffMode {
-    pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
-        match value.unwrap_or("patch").trim() {
-            "patch" | "" => Ok(Self::Patch),
-            "stat" => Ok(Self::Stat),
-            "name_only" => Ok(Self::NameOnly),
-            value => Err(BackendError::Validation(format!(
-                "Unsupported git diff mode '{}'. Expected patch, stat, or name_only.",
-                value
-            ))),
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Patch => "patch",
-            Self::Stat => "stat",
-            Self::NameOnly => "name_only",
-        }
-    }
-}
-
-pub(crate) struct DiffRequestOptions {
-    pub context_lines: Option<u32>,
-    pub ignore_whitespace: bool,
-    pub paths: Option<Vec<String>>,
-    pub mode: GitDiffMode,
-    pub max_bytes: Option<usize>,
-    pub require_complete: bool,
-}
-
-pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
-    let branch = get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string());
-    let head_commit = get_head_commit(repo)?.map(|c| commit_to_dto(&c));
-    let has_origin = repo.find_remote(DEFAULT_REMOTE_NAME).is_ok();
-    let mut has_upstream = false;
-    let mut ahead = 0u32;
-    let mut behind = 0u32;
-
-    if branch != "DETACHED" {
-        if let Ok(local_branch) = repo.find_branch(&branch, BranchType::Local) {
-            if let Ok(upstream) = local_branch.upstream() {
-                has_upstream = true;
-                if let (Some(local_oid), Some(upstream_oid)) =
-                    (local_branch.get().target(), upstream.get().target())
-                {
-                    let (ahead_count, behind_count) =
-                        repo.graph_ahead_behind(local_oid, upstream_oid)?;
-                    ahead = ahead_count as u32;
-                    behind = behind_count as u32;
-                }
-            }
-        }
-    }
-
-    let statuses = repo.statuses(Some(&mut get_status_options()))?;
-    let mut staged = Vec::new();
-    let mut unstaged = Vec::new();
-    let mut untracked = Vec::new();
-    let mut conflicted_files = Vec::new();
-
-    for entry in statuses.iter() {
-        let status = entry.status();
-        let (old_path, path) = status_entry_paths(&entry);
-
-        if status.is_conflicted() {
-            if let Some(path) = path.clone() {
-                conflicted_files.push(path);
-            }
-            continue;
-        }
-
-        if status.is_index_new()
-            || status.is_index_modified()
-            || status.is_index_deleted()
-            || status.is_index_renamed()
-        {
-            if let Some(path) = path.clone() {
-                staged.push(GitFileStatus {
-                    path,
-                    status: status_to_label(status).unwrap_or_else(|| "modified".to_string()),
-                    old_path: old_path.clone(),
-                });
-            }
-        }
-
-        if status.is_wt_modified() || status.is_wt_deleted() || status.is_wt_renamed() {
-            if let Some(path) = path.clone() {
-                unstaged.push(GitFileStatus {
-                    path,
-                    status: status_to_label(status).unwrap_or_else(|| "modified".to_string()),
-                    old_path,
-                });
-            }
-        }
-
-        if status.is_wt_new() {
-            if let Some(path) = path {
-                untracked.push(GitFileStatus {
-                    path,
-                    status: "untracked".to_string(),
-                    old_path: None,
-                });
-            }
-        }
-    }
-
-    for (path, status) in build_submodule_status_map(repo)? {
-        unstaged.push(GitFileStatus {
-            path,
-            status,
-            old_path: None,
-        });
-    }
-
-    conflicted_files.sort();
-    conflicted_files.dedup();
-    let merge_in_progress = is_merge_in_progress(repo);
-
-    Ok(GitStatusDto {
-        branch,
-        head_commit,
-        staged_files: staged,
-        unstaged_files: unstaged,
-        untracked_files: untracked,
-        conflicted_files,
-        merge_in_progress,
-        is_clean: statuses.is_empty(),
-        has_origin,
-        has_upstream,
-        ahead,
-        behind,
-    })
-}
-
-pub fn build_git_log(
-    repo: &Repository,
-    limit: usize,
-    branch: Option<&str>,
-) -> Result<Vec<GitCommitDto>> {
-    let (has_staged, has_unstaged) = get_working_status_flags(repo)?;
-
-    if let Some(branch) = branch {
-        validate_refspec(branch)?;
-    }
-
-    let mut revwalk = repo.revwalk()?;
-
-    if let Some(branch) = branch {
-        let commit = resolve_commit(repo, branch)?;
-        revwalk.push(commit.id())?;
-    } else if let Ok(head) = repo.head() {
-        if let Some(target) = head.target() {
-            revwalk.push(target)?;
-        } else {
-            return Ok(Vec::new());
-        }
-    } else {
-        return Ok(Vec::new());
-    }
-
-    let mut commits = Vec::new();
-    if has_unstaged {
-        commits.push(build_virtual_commit("in-progress", "Working tree changes"));
-    }
-    if has_staged {
-        commits.push(build_virtual_commit("planned", "Staged changes"));
-    }
-    for oid in revwalk.take(limit) {
-        let oid = oid.map_err(|e| BackendError::Git {
-            message: e.to_string(),
-        })?;
-        let commit = repo.find_commit(oid)?;
-        commits.push(commit_to_dto(&commit));
-    }
-
-    let mut child_counts: HashMap<String, usize> = HashMap::new();
-    for commit in commits.iter() {
-        for parent_id in commit.parent_ids.iter() {
-            *child_counts.entry(parent_id.clone()).or_default() += 1;
-        }
-    }
-
-    let mut depth_map: HashMap<String, usize> = HashMap::new();
-    let mut child_seen: HashMap<String, usize> = HashMap::new();
-    let mut next_depth = 0usize;
-    for commit in commits.iter_mut() {
-        let mut depth = 0usize;
-        if let Some(parent) = commit.parent_ids.first() {
-            let base_depth = depth_map.get(parent).copied().unwrap_or(0);
-            let seen = child_seen.entry(parent.clone()).or_default();
-            depth = if *seen == 0 {
-                base_depth
-            } else {
-                next_depth + 1
-            };
-            *seen += 1;
-        }
-        if depth > next_depth {
-            next_depth = depth;
-        }
-        commit.graph_depth = depth;
-        commit.is_branch_point = child_counts.get(&commit.id).copied().unwrap_or(0) > 1;
-        depth_map.insert(commit.id.clone(), depth);
-    }
-
-    Ok(commits)
-}
-
-pub(crate) fn build_git_log_page(
-    repo: &Repository,
-    offset: usize,
-    max_items: usize,
-    snapshot: &GitLogSnapshot,
-) -> Result<Vec<GitCommitDto>> {
-    let mut virtual_commits = Vec::new();
-    if snapshot.has_unstaged {
-        virtual_commits.push(build_virtual_commit("in-progress", "Working tree changes"));
-    }
-    if snapshot.has_staged {
-        virtual_commits.push(build_virtual_commit("planned", "Staged changes"));
-    }
-    let virtual_count = virtual_commits.len();
-    let mut commits = virtual_commits
-        .into_iter()
-        .skip(offset)
-        .take(max_items)
-        .collect::<Vec<_>>();
-    let real_limit = max_items.saturating_sub(commits.len());
-    if real_limit == 0 {
-        annotate_commit_graph(&mut commits);
-        return Ok(commits);
-    }
-
-    let Some(tip) = snapshot.tip.as_deref() else {
-        annotate_commit_graph(&mut commits);
-        return Ok(commits);
-    };
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push(Oid::from_str(tip).map_err(|error| BackendError::Git {
-        message: format!("Invalid git log snapshot tip: {error}"),
-    })?)?;
-
-    let real_offset = offset.saturating_sub(virtual_count);
-    for oid in revwalk.skip(real_offset).take(real_limit) {
-        let oid = oid.map_err(|error| BackendError::Git {
-            message: error.to_string(),
-        })?;
-        let commit = repo.find_commit(oid)?;
-        commits.push(commit_to_dto(&commit));
-    }
-    annotate_commit_graph(&mut commits);
-    Ok(commits)
-}
-
-pub(crate) fn build_git_log_snapshot(
-    repo: &Repository,
-    branch: Option<&str>,
-) -> Result<GitLogSnapshot> {
-    let (has_staged, has_unstaged) = get_working_status_flags(repo)?;
-    if let Some(branch) = branch {
-        validate_refspec(branch)?;
-    }
-    let tip = if let Some(branch) = branch {
-        Some(resolve_commit(repo, branch)?.id().to_string())
-    } else {
-        repo.head()
-            .ok()
-            .and_then(|head| head.target())
-            .map(|oid| oid.to_string())
-    };
-    Ok(GitLogSnapshot {
-        revision: format!(
-            "{}:{has_staged}:{has_unstaged}",
-            tip.as_deref().unwrap_or("unborn")
-        ),
-        tip,
-        has_staged,
-        has_unstaged,
-    })
+#[cfg(test)]
+fn install_native_hard_reset_after_tracked_isolation_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_AFTER_TRACKED_ISOLATION_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset post-isolation test hooks")
+        .insert(repo_root, Box::new(hook));
 }
 
 pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
@@ -4668,7 +1907,7 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
         let commit = branch
             .get()
             .peel_to_commit()
-            .map(|c| short_hash(c.id()))
+            .map(|c| c.id().to_string())
             .unwrap_or_default();
         local.push(GitBranch {
             name,
@@ -4683,7 +1922,7 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
         let commit = branch
             .get()
             .peel_to_commit()
-            .map(|c| short_hash(c.id()))
+            .map(|c| c.id().to_string())
             .unwrap_or_default();
         remote.push(GitBranch {
             name,
@@ -4699,115 +1938,6 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
     })
 }
 
-pub(crate) fn build_git_branches_tool_page(
-    repo: &Repository,
-    offset: usize,
-    limit: usize,
-) -> Result<GitBranchesToolPage> {
-    let current = get_branch_name(repo)?;
-    let mut local = Vec::new();
-    let mut remote = Vec::new();
-    let mut position = 0usize;
-    let mut retained = 0usize;
-    let mut has_more = false;
-
-    for (branch_type, destination) in [
-        (BranchType::Local, &mut local),
-        (BranchType::Remote, &mut remote),
-    ] {
-        for branch in repo.branches(Some(branch_type))? {
-            let (branch, _) = branch?;
-            if position < offset {
-                position += 1;
-                continue;
-            }
-            if retained >= limit {
-                has_more = true;
-                break;
-            }
-            let name = branch.name()?.unwrap_or("").to_string();
-            let commit = branch
-                .get()
-                .peel_to_commit()
-                .map(|commit| short_hash(commit.id()))
-                .unwrap_or_default();
-            destination.push(GitBranch {
-                is_head: branch_type == BranchType::Local
-                    && current.as_deref() == Some(name.as_str()),
-                name,
-                commit,
-            });
-            position += 1;
-            retained += 1;
-        }
-        if has_more {
-            break;
-        }
-    }
-
-    Ok(GitBranchesToolPage {
-        local,
-        remote,
-        current,
-        has_more,
-    })
-}
-
-pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Result<()> {
-    ensure_clean(repo)?;
-
-    let mut checkout = git2::build::CheckoutBuilder::new();
-    checkout.safe();
-
-    if create {
-        validate_branch_name(branch_or_commit)?;
-        let head_commit = repo
-            .head()
-            .and_then(|head| head.peel_to_commit())
-            .map_err(|_| BackendError::Git {
-                message: "Cannot create branch without an initial commit".to_string(),
-            })?;
-        repo.branch(branch_or_commit, &head_commit, false)?;
-        let ref_name = format!("refs/heads/{}", branch_or_commit);
-        repo.set_head(&ref_name)?;
-    } else if repo
-        .find_reference(&format!("refs/heads/{}", branch_or_commit))
-        .is_ok()
-    {
-        let ref_name = format!("refs/heads/{}", branch_or_commit);
-        let object = repo.revparse_single(&ref_name)?;
-        repo.checkout_tree(&object, Some(&mut checkout))
-            .map_err(|e| BackendError::GitConflict {
-                message: e.to_string(),
-            })?;
-        repo.set_head(&ref_name)?;
-    } else {
-        validate_refspec(branch_or_commit)?;
-        let ref_name = format!("refs/heads/{}", branch_or_commit);
-        if git2::Reference::is_valid_name(&ref_name) {
-            return Err(BackendError::GitBranchNotFound {
-                message: format!("Branch not found: {}", branch_or_commit),
-            });
-        }
-
-        let commit =
-            resolve_commit(repo, branch_or_commit).map_err(|_| BackendError::GitInvalidCommit {
-                message: format!("Commit not found: {}", branch_or_commit),
-            })?;
-        repo.checkout_tree(commit.as_object(), Some(&mut checkout))
-            .map_err(|e| BackendError::GitConflict {
-                message: e.to_string(),
-            })?;
-        repo.set_head_detached(commit.id())?;
-    }
-
-    if repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
-        return Err(BackendError::GitMergeConflict {
-            message: "Checkout resulted in merge conflicts".to_string(),
-        });
-    }
-    Ok(())
-}
 fn create_branch_from_ref(repo: &Repository, branch_name: &str, from_ref: &str) -> Result<()> {
     validate_branch_name(branch_name)?;
     validate_refspec(from_ref)?;
@@ -4830,7 +1960,12 @@ fn create_branch_from_ref(repo: &Repository, branch_name: &str, from_ref: &str) 
     Ok(())
 }
 
-fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Result<()> {
+fn delete_local_branch(
+    repo: &Repository,
+    branch_name: &str,
+    force: bool,
+    expected_commit: Option<&str>,
+) -> Result<()> {
     let current = get_branch_name(repo)?;
     if current.as_deref() == Some(branch_name) {
         return Err(BackendError::Git {
@@ -4838,11 +1973,38 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
         });
     }
 
-    let mut branch = repo
+    if find_worktree_path_for_branch(&repo_root(repo)?, branch_name)?.is_some() {
+        return Err(BackendError::Git {
+            message: format!("Cannot delete checked out branch: {}", branch_name),
+        });
+    }
+
+    let branch = repo
         .find_branch(branch_name, BranchType::Local)
         .map_err(|_| BackendError::GitBranchNotFound {
             message: format!("Branch not found: {}", branch_name),
         })?;
+
+    let actual_commit = branch
+        .get()
+        .peel_to_commit()
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?
+        .id();
+    if let Some(expected_commit) = expected_commit {
+        let expected_commit = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!("Invalid expected commit for branch {}", branch_name),
+        })?;
+        if actual_commit != expected_commit {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to delete branch {} because its durable identity changed",
+                    branch_name
+                ),
+            });
+        }
+    }
 
     if !force {
         if let Ok(head_commit) = repo.head().and_then(|head| head.peel_to_commit()) {
@@ -4852,11 +2014,12 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
                 .map_err(|e| BackendError::Git {
                     message: e.to_string(),
                 })?;
-            let is_merged = repo
-                .graph_descendant_of(head_commit.id(), branch_commit.id())
-                .map_err(|e| BackendError::Git {
-                    message: e.to_string(),
-                })?;
+            let is_merged = head_commit.id() == branch_commit.id()
+                || repo
+                    .graph_descendant_of(head_commit.id(), branch_commit.id())
+                    .map_err(|e| BackendError::Git {
+                        message: e.to_string(),
+                    })?;
             if !is_merged {
                 return Err(BackendError::Git {
                     message: format!(
@@ -4868,122 +2031,41 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
         }
     }
 
-    branch.delete().map_err(|e| BackendError::Git {
-        message: e.to_string(),
+    drop(branch);
+    let ref_name = format!("refs/heads/{branch_name}");
+    let mut transaction = repo.transaction().map_err(|error| BackendError::Git {
+        message: error.to_string(),
+    })?;
+    transaction
+        .lock_ref(&ref_name)
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+    let locked_commit = repo
+        .find_reference(&ref_name)
+        .and_then(|reference| reference.peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?
+        .id();
+    if locked_commit != actual_commit {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to delete branch {} because its durable identity changed",
+                branch_name
+            ),
+        });
+    }
+    transaction
+        .remove(&ref_name)
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+    transaction.commit().map_err(|error| BackendError::Git {
+        message: error.to_string(),
     })?;
 
     Ok(())
-}
-
-fn collect_index_conflict_paths(index: &git2::Index) -> Result<Vec<String>> {
-    let mut conflict_files = Vec::new();
-    let conflicts = index.conflicts().map_err(|e| BackendError::Git {
-        message: e.to_string(),
-    })?;
-
-    for conflict in conflicts {
-        let conflict = conflict.map_err(|e| BackendError::Git {
-            message: e.to_string(),
-        })?;
-        let path = conflict
-            .our
-            .as_ref()
-            .or(conflict.their.as_ref())
-            .or(conflict.ancestor.as_ref())
-            .map(|entry| String::from_utf8_lossy(&entry.path).to_string());
-
-        if let Some(path) = path {
-            conflict_files.push(path);
-        }
-    }
-
-    conflict_files.sort();
-    conflict_files.dedup();
-    Ok(conflict_files)
-}
-
-pub(crate) fn build_git_merge_check(
-    repo: &Repository,
-    branch_name: &str,
-    into_branch: &str,
-) -> Result<GitMergeCheckDto> {
-    validate_branch_name(branch_name)?;
-    validate_branch_name(into_branch)?;
-
-    let into_commit = resolve_commit(repo, into_branch)?;
-    let branch_commit = resolve_commit(repo, branch_name)?;
-    let (ahead_count, behind_count) = repo
-        .graph_ahead_behind(branch_commit.id(), into_commit.id())
-        .map_err(|e| BackendError::Git {
-            message: e.to_string(),
-        })?;
-    let ahead = ahead_count as u32;
-    let behind = behind_count as u32;
-
-    let diff = diff_repo(
-        repo,
-        Some(into_branch),
-        Some(branch_name),
-        DiffRequestOptions {
-            context_lines: Some(0),
-            ignore_whitespace: false,
-            paths: None,
-            mode: GitDiffMode::Patch,
-            max_bytes: None,
-            require_complete: false,
-        },
-    )?;
-    let has_changes = !diff.trim().is_empty();
-    if !has_changes {
-        return Ok(GitMergeCheckDto {
-            mergeable: true,
-            conflict_files: Vec::new(),
-            has_changes: false,
-            ahead,
-            behind,
-        });
-    }
-
-    let index = repo
-        .merge_commits(&into_commit, &branch_commit, None)
-        .map_err(|e| BackendError::Git {
-            message: e.to_string(),
-        })?;
-    let conflict_files = if index.has_conflicts() {
-        collect_index_conflict_paths(&index)?
-    } else {
-        Vec::new()
-    };
-
-    Ok(GitMergeCheckDto {
-        mergeable: conflict_files.is_empty(),
-        conflict_files,
-        has_changes,
-        ahead,
-        behind,
-    })
-}
-
-fn collect_command_conflict_files(cwd: &Path) -> Vec<String> {
-    let output = run_git_command(
-        cwd,
-        &[
-            "diff".to_string(),
-            "--name-only".to_string(),
-            "--diff-filter=U".to_string(),
-        ],
-    );
-
-    match output {
-        Ok(output) if output.success => output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(ToString::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 fn has_binary_marker(bytes: &[u8]) -> bool {
@@ -4995,19 +2077,32 @@ fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
         return GitConflictFileSideDto {
             exists: false,
             content: String::new(),
+            size_bytes: 0,
+            is_binary: false,
+            too_large: false,
         };
     };
 
-    if bytes.len() > MAX_CONFLICT_FILE_BYTES || has_binary_marker(bytes) {
+    let size_bytes = bytes.len();
+    let is_binary = has_binary_marker(bytes);
+    let too_large = size_bytes > MAX_CONFLICT_FILE_BYTES;
+
+    if too_large || is_binary {
         return GitConflictFileSideDto {
             exists: true,
             content: String::new(),
+            size_bytes,
+            is_binary,
+            too_large,
         };
     }
 
     GitConflictFileSideDto {
         exists: true,
         content: String::from_utf8_lossy(bytes).to_string(),
+        size_bytes,
+        is_binary,
+        too_large,
     }
 }
 
@@ -5020,6 +2115,9 @@ fn read_conflict_entry_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5031,6 +2129,9 @@ fn read_conflict_entry_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5065,6 +2166,9 @@ fn read_worktree_conflict_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5095,9 +2199,10 @@ fn conflict_matches_path(conflict: &git2::IndexConflict, relative_path: &Path) -
 
 fn stage_repo_relative_path(repo: &Repository, relative_path: &Path) -> Result<()> {
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
+            "--literal-pathspecs".to_string(),
             "add".to_string(),
             "--".to_string(),
             relative_path.to_string_lossy().to_string(),
@@ -5118,118 +2223,48 @@ fn stage_repo_relative_path(repo: &Repository, relative_path: &Path) -> Result<(
     Ok(())
 }
 
-pub(crate) fn start_merge_resolution_repo(
-    repo: &Repository,
-    branch_name: &str,
-    into_branch: &str,
-) -> Result<GitStartMergeResolutionDto> {
-    validate_branch_name(branch_name)?;
-    validate_branch_name(into_branch)?;
-    resolve_commit(repo, branch_name)?;
-    resolve_commit(repo, into_branch)?;
-
-    if is_merge_in_progress(repo) || repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
-        return Ok(GitStartMergeResolutionDto {
-            status: "conflicted".to_string(),
-            conflict_files: collect_command_conflict_files(&repo_root(repo)?),
-            output: "Merge already in progress.".to_string(),
-        });
-    }
-
-    ensure_clean(repo)?;
-
-    let original_branch = get_branch_name(repo)?;
-    if original_branch.as_deref() != Some(into_branch) {
-        checkout_repo(repo, into_branch, false)?;
-    }
-
-    let root = repo_root(repo)?;
-    let output = run_git_command(
-        &root,
-        &[
-            "merge".to_string(),
-            "--no-ff".to_string(),
-            "--no-edit".to_string(),
-            branch_name.to_string(),
-        ],
-    )?;
-    let details = command_output_text(&output);
-
-    if output.success {
-        if let Some(original_branch) = original_branch.as_deref() {
-            if original_branch != into_branch {
-                checkout_repo(repo, original_branch, false)?;
-            }
-        }
-
-        return Ok(GitStartMergeResolutionDto {
-            status: "merged".to_string(),
-            conflict_files: Vec::new(),
-            output: if details.is_empty() {
-                format!("Merged {} into {}", branch_name, into_branch)
-            } else {
-                details
-            },
-        });
-    }
-
-    let mut conflict_files = collect_command_conflict_files(&root)
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    conflict_files.sort();
-
-    if conflict_files.is_empty() && !is_merge_in_progress(repo) {
-        if let Some(original_branch) = original_branch.as_deref() {
-            if original_branch != into_branch {
-                let _ = checkout_repo(repo, original_branch, false);
-            }
-        }
-
-        return Err(BackendError::Git {
-            message: if details.is_empty() {
-                format!("git merge failed (exit code: {:?})", output.code)
-            } else {
-                details
-            },
-        });
-    }
-
-    Ok(GitStartMergeResolutionDto {
-        status: "conflicted".to_string(),
-        conflict_files,
-        output: if details.is_empty() {
-            "Merge stopped with file conflicts.".to_string()
-        } else {
-            details
-        },
-    })
-}
-
-fn cleanup_temp_worktree(root: &Path, worktree_path: &Path) {
-    let remove_output = run_git_command(
+fn cleanup_temp_worktree(
+    root: &Path,
+    worktree_path: &Path,
+    run: &impl Fn(&Path, &[String]) -> Result<GitCommandOutput>,
+) -> Result<()> {
+    let result = run(
         root,
         &[
-            "worktree".to_string(),
-            "remove".to_string(),
-            "--force".to_string(),
-            worktree_path.to_string_lossy().to_string(),
+            "worktree".into(),
+            "remove".into(),
+            "--force".into(),
+            worktree_path.to_string_lossy().into_owned(),
         ],
     );
-
-    if remove_output.map(|output| output.success).unwrap_or(false) {
-        return;
-    }
-
-    let _ = fs::remove_dir_all(worktree_path);
-    let _ = run_git_command(root, &["worktree".to_string(), "prune".to_string()]);
+    let details = match result {
+        Ok(output) if output.success => return Ok(()),
+        Ok(output) => command_output_text(&output),
+        Err(error) => error.to_string(),
+    };
+    // Preserve both the files and registration if Git cannot finish removal.
+    // A recursive filesystem fallback could itself block without a deadline.
+    Err(BackendError::Git {
+        message: format!(
+            "Temporary rebase worktree cleanup failed at {}: {details}. Inspect this path and its Git worktree registration before retrying removal. An interrupted creation may leave a locked registration; verify that no Git process owns it before unlocking it.",
+            worktree_path.display()
+        ),
+    })
 }
 
 pub(crate) fn build_git_rebase_check(
     repo: &Repository,
     branch_name: &str,
     onto_branch: &str,
+) -> Result<GitRebaseCheckDto> {
+    build_git_rebase_check_with_runner(repo, branch_name, onto_branch, &run_git_mutation_command)
+}
+
+fn build_git_rebase_check_with_runner(
+    repo: &Repository,
+    branch_name: &str,
+    onto_branch: &str,
+    run: &impl Fn(&Path, &[String]) -> Result<GitCommandOutput>,
 ) -> Result<GitRebaseCheckDto> {
     validate_branch_name(branch_name)?;
     validate_branch_name(onto_branch)?;
@@ -5248,148 +2283,51 @@ pub(crate) fn build_git_rebase_check(
         unique_id
     ));
 
-    let add_output = run_git_command(
-        &root,
-        &[
-            "worktree".to_string(),
-            "add".to_string(),
-            "--detach".to_string(),
-            temp_path.to_string_lossy().to_string(),
-            branch_name.to_string(),
-        ],
-    )?;
-    if !add_output.success {
-        let details = command_output_text(&add_output);
-        return Err(BackendError::Git {
-            message: if details.is_empty() {
-                format!("git worktree add failed (exit code: {:?})", add_output.code)
-            } else {
-                details
-            },
-        });
-    }
+    // Creation can partially succeed before a timeout or output-limit error.
+    // Every exit after attempting it must also attempt bounded cleanup.
+    let result = (|| {
+        let add_output = run(
+            &root,
+            &[
+                "worktree".into(),
+                "add".into(),
+                "--detach".into(),
+                temp_path.to_string_lossy().into_owned(),
+                branch_name.to_string(),
+            ],
+        )?;
+        if !add_output.success {
+            return Err(BackendError::Git {
+                message: format!(
+                    "git worktree add failed: {}",
+                    command_output_text(&add_output)
+                ),
+            });
+        }
 
-    let rebase_output =
-        match run_git_command(&temp_path, &["rebase".to_string(), onto_branch.to_string()]) {
-            Ok(output) => output,
-            Err(error) => {
-                cleanup_temp_worktree(&root, &temp_path);
-                return Err(error);
-            }
+        let rebase_output = run(&temp_path, &["rebase".into(), onto_branch.to_string()])?;
+        let mut conflict_files = if rebase_output.success {
+            Vec::new()
+        } else {
+            // Inspect the index directly so a failed or truncated command cannot
+            // masquerade as an empty conflict list.
+            collect_command_conflict_files(&temp_path)?
         };
-    let conflict_files = if rebase_output.success {
-        Vec::new()
-    } else {
-        collect_command_conflict_files(&temp_path)
-    };
-    let output = command_output_text(&rebase_output);
-    cleanup_temp_worktree(&root, &temp_path);
-
-    let mut conflict_files = conflict_files
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    conflict_files.sort();
-
-    Ok(GitRebaseCheckDto {
-        rebaseable: rebase_output.success,
-        conflict_files,
-        output,
-    })
-}
-
-fn find_worktree_path_for_branch(root: &Path, branch_name: &str) -> Result<Option<PathBuf>> {
-    let output = run_git_command(
-        root,
-        &[
-            "worktree".to_string(),
-            "list".to_string(),
-            "--porcelain".to_string(),
-        ],
-    )?;
-    if !output.success {
-        let details = command_output_text(&output);
-        return Err(BackendError::Git {
-            message: if details.is_empty() {
-                format!("git worktree list failed (exit code: {:?})", output.code)
-            } else {
-                details
-            },
-        });
-    }
-
-    let wanted = format!("refs/heads/{}", branch_name);
-    let mut current_path: Option<PathBuf> = None;
-    for line in output.stdout.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            current_path = Some(PathBuf::from(path.trim()));
-            continue;
-        }
-
-        if line.trim() == format!("branch {}", wanted) {
-            return Ok(current_path);
-        }
-
-        if line.trim().is_empty() {
-            current_path = None;
-        }
-    }
-
-    Ok(None)
-}
-
-pub(crate) fn fast_forward_repo(
-    repo: &Repository,
-    source_branch: &str,
-    target_branch: &str,
-) -> Result<String> {
-    ensure_clean(repo)?;
-    validate_branch_name(source_branch)?;
-    validate_branch_name(target_branch)?;
-    resolve_commit(repo, source_branch)?;
-    resolve_commit(repo, target_branch)?;
-
-    let original_branch = get_branch_name(repo)?;
-    if original_branch.as_deref() != Some(target_branch) {
-        checkout_repo(repo, target_branch, false)?;
-    }
-
-    let root = repo_root(repo)?;
-    let output = run_git_command(
-        &root,
-        &[
-            "merge".to_string(),
-            "--ff-only".to_string(),
-            source_branch.to_string(),
-        ],
-    )?;
-
-    if let Some(original_branch) = original_branch.as_deref() {
-        if original_branch != target_branch {
-            let _ = checkout_repo(repo, original_branch, false);
-        }
-    }
-
-    if !output.success {
-        let details = command_output_text(&output);
-        return Err(BackendError::GitConflict {
-            message: if details.is_empty() {
-                format!("git merge --ff-only failed (exit code: {:?})", output.code)
-            } else {
-                details
-            },
-        });
-    }
-
-    let details = command_output_text(&output);
-    if details.is_empty() {
-        Ok(format!(
-            "Fast-forwarded {} to {}",
-            target_branch, source_branch
-        ))
-    } else {
-        Ok(details)
+        conflict_files.sort();
+        conflict_files.dedup();
+        Ok(GitRebaseCheckDto {
+            rebaseable: rebase_output.success,
+            conflict_files,
+            output: command_output_text(&rebase_output),
+        })
+    })();
+    let cleanup = cleanup_temp_worktree(&root, &temp_path, run);
+    match (result, cleanup) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(error), Err(cleanup)) => Err(BackendError::Git {
+            message: format!("{error} {cleanup}"),
+        }),
     }
 }
 
@@ -5399,471 +2337,303 @@ pub(crate) fn rebase_branch_repo(
     onto_branch: &str,
     confirm: Option<bool>,
 ) -> Result<String> {
-    if !confirm.unwrap_or(false) {
-        return Err(BackendError::Git {
-            message: "Rebase requires confirm=true".to_string(),
-        });
-    }
-
-    ensure_clean(repo)?;
-    validate_branch_name(branch_name)?;
-    validate_branch_name(onto_branch)?;
-    resolve_commit(repo, branch_name)?;
-    resolve_commit(repo, onto_branch)?;
-
-    let root = repo_root(repo)?;
-    let branch_worktree = find_worktree_path_for_branch(&root, branch_name)?;
-    let original_branch = get_branch_name(repo)?;
-    let command_root = if let Some(path) = branch_worktree {
-        let worktree_repo = Repository::open(&path).map_err(|e| BackendError::Git {
-            message: format!(
-                "Failed to open branch worktree at {}: {}",
-                path.display(),
-                e
-            ),
-        })?;
-        ensure_clean(&worktree_repo)?;
-        path
-    } else {
-        if original_branch.as_deref() != Some(branch_name) {
-            checkout_repo(repo, branch_name, false)?;
-        }
-        root.clone()
-    };
-
-    let output = run_git_command(
-        &command_root,
-        &["rebase".to_string(), onto_branch.to_string()],
-    )?;
-
-    if !output.success {
-        let conflict_files = collect_command_conflict_files(&command_root);
-        let _ = run_git_command(
-            &command_root,
-            &["rebase".to_string(), "--abort".to_string()],
-        );
-        if command_root == root {
-            if let Some(original_branch) = original_branch.as_deref() {
-                if original_branch != branch_name {
-                    let _ = checkout_repo(repo, original_branch, false);
-                }
-            }
-        }
-        let details = command_output_text(&output);
-        let conflict_suffix = if conflict_files.is_empty() {
-            String::new()
-        } else {
-            format!(" Conflicts: {}", conflict_files.join(", "))
-        };
-        return Err(BackendError::GitMergeConflict {
-            message: if details.is_empty() {
-                format!(
-                    "git rebase failed (exit code: {:?}).{}",
-                    output.code, conflict_suffix
-                )
-            } else {
-                format!("{}{}", details, conflict_suffix)
-            },
-        });
-    }
-
-    if command_root == root {
-        if let Some(original_branch) = original_branch.as_deref() {
-            if original_branch != branch_name {
-                checkout_repo(repo, original_branch, false)?;
-            }
-        }
-    }
-
-    let details = command_output_text(&output);
-    if details.is_empty() {
-        Ok(format!("Rebased {} onto {}", branch_name, onto_branch))
-    } else {
-        Ok(details)
-    }
+    rebase_branch_repo_with_reflog_action(repo, branch_name, onto_branch, confirm, None)
 }
 
-pub(crate) fn merge_repo(
+fn verify_expected_merge_identity(
     repo: &Repository,
     branch_name: &str,
     into_branch: &str,
-) -> Result<String> {
-    ensure_clean(repo)?;
-
-    let merge_check = build_git_merge_check(repo, branch_name, into_branch)?;
-    if !merge_check.has_changes {
-        return Ok(format!(
-            "Branch {} is already integrated into {}",
-            branch_name, into_branch
-        ));
-    }
-    if !merge_check.mergeable {
-        let detail = if merge_check.conflict_files.is_empty() {
-            format!("Cannot merge {} into {}", branch_name, into_branch)
-        } else {
-            format!(
-                "Cannot merge {} into {} because of conflicts in: {}",
-                branch_name,
-                into_branch,
-                merge_check.conflict_files.join(", ")
-            )
+    expected_branch_commit: Option<&str>,
+    expected_into_commit: Option<&str>,
+) -> Result<()> {
+    for (branch_name, expected_commit, role) in [
+        (branch_name, expected_branch_commit, "source"),
+        (into_branch, expected_into_commit, "target"),
+    ] {
+        let Some(expected_commit) = expected_commit else {
+            continue;
         };
-        return Err(BackendError::GitMergeConflict { message: detail });
+        let expected_oid = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!(
+                "Invalid expected {} commit for branch {}",
+                role, branch_name
+            ),
+        })?;
+        let actual_oid = repo
+            .find_branch(branch_name, BranchType::Local)
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve merge {} branch {}: {}",
+                    role, branch_name, error
+                ),
+            })?
+            .id();
+        if actual_oid != expected_oid {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to merge because the durable {} identity of branch {} changed",
+                    role, branch_name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn build_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(into_branch)?;
+
+    let expected_branch_oid =
+        Oid::from_str(expected_branch_commit).map_err(|_| BackendError::Git {
+            message: format!("Invalid expected source commit for branch {}", branch_name),
+        })?;
+    let expected_into_oid = Oid::from_str(expected_into_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected target commit for branch {}", into_branch),
+    })?;
+    let actual_branch_oid = repo
+        .find_branch(branch_name, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge source branch {}: {}",
+                branch_name, error
+            ),
+        })?
+        .id();
+    if actual_branch_oid != expected_branch_oid {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to reconcile merge because the durable source identity of branch {} changed from {} to {}",
+                branch_name, expected_branch_oid, actual_branch_oid
+            ),
+        });
     }
 
-    let original_branch = get_branch_name(repo)?;
-    if original_branch.as_deref() != Some(into_branch) {
-        checkout_repo(repo, into_branch, false)?;
+    let actual_into_commit = repo
+        .find_branch(into_branch, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge target branch {}: {}",
+                into_branch, error
+            ),
+        })?;
+    let actual_into_oid = actual_into_commit.id();
+    if actual_into_oid == expected_into_oid {
+        return Ok(GitGuardedMergeStateDto {
+            status: "pending".to_string(),
+            target_commit: actual_into_oid.to_string(),
+        });
     }
 
+    let is_expected_merge = actual_into_commit.parent_count() == 2
+        && actual_into_commit.parent_id(0).ok() == Some(expected_into_oid)
+        && actual_into_commit.parent_id(1).ok() == Some(expected_branch_oid);
+    if is_expected_merge {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_into_oid.to_string(),
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to reconcile merge because target branch {} changed from {} to unrelated commit {}",
+            into_branch, expected_into_oid, actual_into_oid
+        ),
+    })
+}
+
+fn complete_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    let state = build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )?;
+    if state.status == "integrated" {
+        return Ok(state);
+    }
+    if verify_exact_incomplete_merge(
+        repo,
+        into_branch,
+        expected_into_commit,
+        expected_branch_commit,
+    )? {
+        complete_merge_repo(repo)?;
+    }
+    build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )
+}
+
+fn reconcile_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    abort_exact_incomplete_merge(
+        repo,
+        into_branch,
+        expected_into_commit,
+        expected_branch_commit,
+    )?;
+    build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )
+}
+
+fn build_guarded_branch_sync_state(
+    repo: &Repository,
+    branch_name: &str,
+    expected_branch_commit: &str,
+    sync_target_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    validate_branch_name(branch_name)?;
+    let expected_oid = Oid::from_str(expected_branch_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected sync commit for branch {}", branch_name),
+    })?;
+    let sync_target_oid = Oid::from_str(sync_target_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid prepared sync target for branch {}", branch_name),
+    })?;
+    let actual_commit = repo
+        .find_branch(branch_name, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to resolve sync branch {}: {}", branch_name, error),
+        })?;
+    let actual_oid = actual_commit.id();
+
+    if actual_oid == expected_oid {
+        let target_already_integrated = expected_oid == sync_target_oid
+            || repo
+                .graph_descendant_of(expected_oid, sync_target_oid)
+                .map_err(|error| BackendError::Git {
+                    message: format!("Failed to inspect prepared sync ancestry: {}", error),
+                })?;
+        return Ok(GitGuardedMergeStateDto {
+            status: if target_already_integrated {
+                "integrated"
+            } else {
+                "pending"
+            }
+            .to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+
+    if actual_oid == sync_target_oid {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+    let is_expected_merge = actual_commit.parent_count() == 2
+        && actual_commit.parent_id(0).ok() == Some(expected_oid)
+        && actual_commit.parent_id(1).ok() == Some(sync_target_oid);
+    if is_expected_merge {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to reconcile sync because branch {} changed from {} to unrelated commit {}",
+            branch_name, expected_oid, actual_oid
+        ),
+    })
+}
+
+fn apply_guarded_branch_sync(
+    repo: &Repository,
+    branch_name: &str,
+    expected_branch_commit: &str,
+    sync_target_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    abort_exact_incomplete_merge(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    let initial = build_guarded_branch_sync_state(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    if initial.status == "integrated" {
+        return Ok(initial);
+    }
+
+    ensure_clean(repo)?;
+    if get_branch_name(repo)?.as_deref() != Some(branch_name) {
+        checkout_repo(repo, branch_name, false)?;
+    }
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "merge".to_string(),
-            "--no-ff".to_string(),
             "--no-edit".to_string(),
-            branch_name.to_string(),
+            sync_target_commit.to_string(),
         ],
     )?;
-
     if !output.success {
         let merge_head_path = repo.path().join("MERGE_HEAD");
         if merge_head_path.exists() {
-            let abort_output =
-                run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
-            if !abort_output.success {
-                let abort_details = command_output_text(&abort_output);
-                return Err(BackendError::Git {
-                    message: if abort_details.is_empty() {
-                        format!(
-                            "git merge failed and merge --abort also failed (exit code: {:?})",
-                            abort_output.code
-                        )
-                    } else {
-                        abort_details
-                    },
-                });
-            }
+            let _ = run_git_mutation_command(&root, &["merge".to_string(), "--abort".to_string()]);
         }
-
-        if let Some(original_branch) = original_branch.as_deref() {
-            if original_branch != into_branch {
-                let _ = checkout_repo(repo, original_branch, false);
-            }
-        }
-
         let details = command_output_text(&output);
-        return Err(BackendError::Git {
+        return Err(BackendError::GitConflict {
             message: if details.is_empty() {
-                format!("git merge failed (exit code: {:?})", output.code)
+                format!("git sync merge failed (exit code: {:?})", output.code)
             } else {
                 details
             },
         });
     }
 
-    if let Some(original_branch) = original_branch.as_deref() {
-        if original_branch != into_branch {
-            checkout_repo(repo, original_branch, false)?;
-        }
-    }
-
-    let details = command_output_text(&output);
-    if details.is_empty() {
-        Ok(format!("Merged {} into {}", branch_name, into_branch))
-    } else {
-        Ok(details)
-    }
-}
-
-pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
-    validate_commit_message(message)?;
-    ensure_safe_config(repo)?;
-
-    if stage_all {
-        let mut index = repo.index()?;
-        let statuses = repo.statuses(Some(&mut get_status_options()))?;
-        for entry in statuses.iter() {
-            let status = entry.status();
-            let (old_path, path) = status_entry_paths(&entry);
-            if status.is_wt_deleted() || status.is_index_deleted() {
-                if let Some(path) = path {
-                    let _ = index.remove_path(Path::new(&path));
-                }
-                continue;
-            }
-
-            if let Some(path) = path {
-                index.add_path(Path::new(&path))?;
-            }
-
-            if status.is_index_renamed() {
-                if let Some(old_path) = old_path {
-                    let _ = index.remove_path(Path::new(&old_path));
-                }
-            }
-        }
-        index.write()?;
-    }
-
-    let statuses = repo.statuses(Some(&mut get_status_options()))?;
-    if statuses.is_empty() {
+    let completed = build_guarded_branch_sync_state(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    if completed.status != "integrated" {
         return Err(BackendError::Git {
-            message: "No changes to commit".to_string(),
+            message: format!("Prepared sync for branch {} did not converge", branch_name),
         });
     }
-
-    let mut index = repo.index()?;
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
-
-    let signature = repo
-        .signature()
-        .unwrap_or_else(|_| git2::Signature::now("Macro", "macro@local").unwrap());
-
-    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-
-    let oid = if let Some(parent) = parent {
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &[&parent],
-        )?
-    } else {
-        repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])?
-    };
-
-    Ok(short_hash(oid))
-}
-
-enum DiffTextSink {
-    Full(String),
-    Bounded(super::tool_output::BoundedTextCollector),
-}
-
-impl DiffTextSink {
-    fn new(max_bytes: Option<usize>) -> Self {
-        match max_bytes {
-            Some(max_bytes) => {
-                Self::Bounded(super::tool_output::BoundedTextCollector::new(max_bytes))
-            }
-            None => Self::Full(String::new()),
-        }
-    }
-
-    fn push_str(&mut self, value: &str) {
-        match self {
-            Self::Full(output) => output.push_str(value),
-            Self::Bounded(output) => output.push_str(value),
-        }
-    }
-
-    fn finish(self, require_complete: bool) -> Result<String> {
-        match self {
-            Self::Full(output) => Ok(output),
-            Self::Bounded(output) => {
-                let output = output.finish("GIT DIFF");
-                if require_complete && output.truncated {
-                    return Err(BackendError::Git {
-                        message: format!(
-                            "Git diff output requires {} bytes and exceeds the inline limit of {} retained bytes. Narrow paths, use mode=stat or mode=name_only, or retry without require_complete.",
-                            output.total_bytes, output.retained_bytes
-                        ),
-                    });
-                }
-                Ok(output.text)
-            }
-        }
-    }
-}
-
-pub(crate) fn diff_repo(
-    repo: &Repository,
-    base: Option<&str>,
-    head: Option<&str>,
-    options: DiffRequestOptions,
-) -> Result<String> {
-    let base_commit = if let Some(base) = base {
-        Some(resolve_commit(repo, base)?)
-    } else {
-        get_head_commit(repo)?
-    };
-
-    let base_tree = if let Some(commit) = base_commit.as_ref() {
-        Some(commit.tree()?)
-    } else {
-        None
-    };
-
-    let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
-        .include_unmodified(false);
-
-    if let Some(lines) = options.context_lines {
-        opts.context_lines(lines);
-    }
-
-    if options.ignore_whitespace {
-        opts.ignore_whitespace(true);
-    }
-
-    if let Some(paths) = options.paths.as_ref() {
-        for path in paths {
-            opts.pathspec(path);
-        }
-    }
-
-    let mut output = DiffTextSink::new(options.max_bytes);
-    let mut render_diff = |diff: &git2::Diff<'_>| -> Result<()> {
-        match options.mode {
-            GitDiffMode::Patch => {
-                diff.print(
-                    DiffFormat::Patch,
-                    |_delta: git2::DiffDelta<'_>,
-                     _hunk: Option<git2::DiffHunk<'_>>,
-                     line: git2::DiffLine<'_>| {
-                        let origin = line.origin();
-                        if matches!(origin, '+' | '-' | ' ') {
-                            output.push_str(&origin.to_string());
-                        }
-                        output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-                        true
-                    },
-                )?;
-            }
-            GitDiffMode::Stat => {
-                let stats = diff.stats()?;
-                let buffer = stats.to_buf(DiffStatsFormat::FULL, 80)?;
-                output.push_str(std::str::from_utf8(buffer.as_ref()).unwrap_or(""));
-            }
-            GitDiffMode::NameOnly => {
-                let mut previous_path = None;
-                for path in diff
-                    .deltas()
-                    .filter_map(|delta| delta.new_file().path().or_else(|| delta.old_file().path()))
-                    .map(|path| path.to_string_lossy().replace('\\', "/"))
-                {
-                    if previous_path.as_deref() == Some(path.as_str()) {
-                        continue;
-                    }
-                    output.push_str(&path);
-                    output.push_str("\n");
-                    previous_path = Some(path);
-                }
-            }
-        }
-        Ok(())
-    };
-
-    if let Some(head) = head {
-        let head_commit = resolve_commit(repo, head)?;
-        let head_tree = head_commit.tree()?;
-        let diff = repo.diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), Some(&mut opts))?;
-        render_diff(&diff)?;
-    } else {
-        let diff = repo.diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut opts))?;
-        render_diff(&diff)?;
-    }
-
-    output.finish(options.require_complete)
-}
-
-pub(crate) fn validate_repo_relative_file_path(path: &str) -> Result<PathBuf> {
-    let candidate = PathBuf::from(path);
-    if candidate.as_os_str().is_empty() || candidate.is_absolute() {
-        return Err(BackendError::Validation(format!(
-            "Invalid repository-relative file path: {}",
-            path
-        )));
-    }
-
-    for component in candidate.components() {
-        match component {
-            std::path::Component::Normal(part) if part != ".git" => {}
-            _ => {
-                return Err(BackendError::Validation(format!(
-                    "Invalid repository-relative file path: {}",
-                    path
-                )))
-            }
-        }
-    }
-
-    Ok(candidate)
-}
-
-fn read_head_file_content(repo: &Repository, relative_path: &Path) -> Result<Option<String>> {
-    let Some(commit) = get_head_commit(repo)? else {
-        return Ok(None);
-    };
-
-    let tree = commit.tree()?;
-    let entry = match tree.get_path(relative_path) {
-        Ok(entry) => entry,
-        Err(_) => return Ok(None),
-    };
-    let object = entry.to_object(repo)?;
-    let Some(blob) = object.as_blob() else {
-        return Ok(None);
-    };
-
-    Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
-}
-
-fn read_index_file_content(repo: &Repository, relative_path: &Path) -> Result<Option<String>> {
-    let mut index = repo.index()?;
-    index.read(true)?;
-    let Some(entry) = index.get_path(relative_path, 0) else {
-        return Ok(None);
-    };
-
-    let blob = repo.find_blob(entry.id)?;
-    Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
-}
-
-fn read_worktree_file_content(repo_root: &Path, relative_path: &Path) -> Result<Option<String>> {
-    let absolute_path = repo_root.join(relative_path);
-
-    match fs::read(&absolute_path) {
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(BackendError::Io {
-            message: format!(
-                "Failed to read worktree file {:?}: {}",
-                absolute_path, error
-            ),
-            source: error,
-        }),
-    }
-}
-
-pub(crate) fn read_git_file_pair(
-    repo: &Repository,
-    repo_root: &Path,
-    relative_path: &Path,
-) -> Result<GitFilePairDto> {
-    let head_content = read_head_file_content(repo, relative_path)?;
-    let index_content = read_index_file_content(repo, relative_path)?;
-    let worktree_content = read_worktree_file_content(repo_root, relative_path)?;
-    let original_content = head_content.clone().unwrap_or_default();
-    let modified_content = worktree_content.clone().unwrap_or_default();
-
-    Ok(GitFilePairDto {
-        head_exists: head_content.is_some(),
-        head_content: original_content.clone(),
-        index_exists: index_content.is_some(),
-        index_content: index_content.unwrap_or_default(),
-        worktree_exists: worktree_content.is_some(),
-        worktree_content: modified_content.clone(),
-        original_content,
-        modified_content,
-    })
+    Ok(completed)
 }
 
 pub(crate) fn read_git_conflict_file(
@@ -5920,6 +2690,16 @@ pub(crate) fn write_git_conflict_resolution(
     content: &str,
     stage: bool,
 ) -> Result<()> {
+    write_git_conflict_resolution_bytes(repo, repo_root, relative_path, content.as_bytes(), stage)
+}
+
+fn write_git_conflict_resolution_bytes(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+    content: &[u8],
+    stage: bool,
+) -> Result<()> {
     let absolute_path = repo_root.join(relative_path);
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(|error| BackendError::Io {
@@ -5949,21 +2729,79 @@ pub(crate) fn accept_git_conflict_side(
     relative_path: &Path,
     side: &str,
 ) -> Result<()> {
-    let conflict_file = read_git_conflict_file(repo, repo_root, relative_path)?;
-    let selected = match side {
-        "ours" => conflict_file.ours,
-        "theirs" => conflict_file.theirs,
-        other => {
-            return Err(BackendError::Validation(format!(
-                "Invalid conflict side: {}",
-                other
-            )))
+    if side != "ours" && side != "theirs" {
+        return Err(BackendError::Validation(format!(
+            "Invalid conflict side: {}",
+            side
+        )));
+    }
+
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let conflicts = index.conflicts().map_err(|error| BackendError::Git {
+        message: error.to_string(),
+    })?;
+    let mut selected = None;
+    let mut found = false;
+    for conflict in conflicts {
+        let conflict = conflict.map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+        if !conflict_matches_path(&conflict, relative_path) {
+            continue;
         }
-    };
+
+        let entry = if side == "ours" {
+            conflict.our.as_ref()
+        } else {
+            conflict.their.as_ref()
+        };
+        selected = entry.map(|entry| (entry.mode, entry.id));
+        found = true;
+        break;
+    }
+    if !found {
+        return Err(BackendError::Git {
+            message: format!(
+                "No unresolved conflict found for {}",
+                relative_path.to_string_lossy()
+            ),
+        });
+    }
     let absolute_path = repo_root.join(relative_path);
 
-    if selected.exists {
-        write_git_conflict_resolution(repo, repo_root, relative_path, &selected.content, true)?;
+    if let Some((mode, oid)) = selected {
+        if !matches!(mode, 0o100644 | 0o100755 | 0o120000) {
+            return Err(BackendError::Git {
+                message: "Unsupported conflict entry mode".to_string(),
+            });
+        }
+        let output = run_git_mutation_command(
+            repo_root,
+            &[
+                "--literal-pathspecs".into(),
+                "checkout".into(),
+                format!("--{side}"),
+                "--".into(),
+                relative_path.to_string_lossy().into_owned(),
+            ],
+        )?;
+        if !output.success {
+            return Err(BackendError::Git {
+                message: command_output_text(&output),
+            });
+        }
+        // Stage the source entry itself: add could change the chosen mode when
+        // core.filemode is false, or re-encode the blob through clean filters.
+        run_index_mutation(
+            repo,
+            &[
+                "update-index".into(),
+                "--add".into(),
+                "--cacheinfo".into(),
+                format!("{mode:o},{oid},{}", relative_path.to_string_lossy()),
+            ],
+        )?;
     } else {
         match fs::remove_file(&absolute_path) {
             Ok(_) => {}
@@ -5982,279 +2820,6 @@ pub(crate) fn accept_git_conflict_side(
     }
 
     Ok(())
-}
-
-pub(crate) fn complete_merge_repo(repo: &Repository) -> Result<String> {
-    if !is_merge_in_progress(repo) {
-        return Err(BackendError::Git {
-            message: "No merge in progress".to_string(),
-        });
-    }
-
-    let mut index = repo.index()?;
-    index.read(true)?;
-    if index.has_conflicts() {
-        let conflict_files = collect_index_conflict_paths(&index)?;
-        return Err(BackendError::GitMergeConflict {
-            message: if conflict_files.is_empty() {
-                "Resolve all conflicts before completing the merge.".to_string()
-            } else {
-                format!(
-                    "Resolve all conflicts before completing the merge: {}",
-                    conflict_files.join(", ")
-                )
-            },
-        });
-    }
-
-    let root = repo_root(repo)?;
-    let output = run_git_command(
-        &root,
-        &[
-            "-c".to_string(),
-            "user.name=Macro".to_string(),
-            "-c".to_string(),
-            "user.email=macro@local".to_string(),
-            "commit".to_string(),
-            "--no-edit".to_string(),
-        ],
-    )?;
-    let details = command_output_text(&output);
-    if !output.success {
-        return Err(BackendError::Git {
-            message: if details.is_empty() {
-                format!("git commit --no-edit failed (exit code: {:?})", output.code)
-            } else {
-                details
-            },
-        });
-    }
-
-    if details.is_empty() {
-        Ok("Merge completed.".to_string())
-    } else {
-        Ok(details)
-    }
-}
-
-pub fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<PredictedGitTreeDto> {
-    let branch_name = if let Some(branch) = branch {
-        validate_refspec(branch)?;
-        branch.to_string()
-    } else {
-        get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string())
-    };
-
-    let commit = resolve_commit(repo, &branch_name).or_else(|_| {
-        get_head_commit(repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
-            message: "No commits found".to_string(),
-        })
-    })?;
-
-    let tree = commit.tree()?;
-    let mut status_map = build_status_map(repo)?;
-    for (path, status) in build_submodule_status_map(repo)? {
-        status_map.insert(path, status);
-    }
-    let mut seen_paths = HashSet::new();
-    let mut structure = build_tree_nodes(repo, &tree, "", &status_map, &mut seen_paths);
-
-    for (path, status) in status_map.iter() {
-        if !seen_paths.contains(path) {
-            let parts: Vec<&str> = path.split('/').collect();
-            insert_node(&mut structure, &parts, "", status);
-        }
-    }
-
-    Ok(PredictedGitTreeDto {
-        branch: branch_name,
-        structure,
-        modified_files_count: status_map.len() as u32,
-    })
-}
-
-pub(crate) fn build_git_tree_tool_page(
-    repo: &Repository,
-    branch: Option<&str>,
-    offset: usize,
-    limit: usize,
-) -> Result<GitTreeToolPage> {
-    let branch_name = if let Some(branch) = branch {
-        validate_refspec(branch)?;
-        branch.to_string()
-    } else {
-        get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string())
-    };
-    let commit = resolve_commit(repo, &branch_name).or_else(|_| {
-        get_head_commit(repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
-            message: "No commits found".to_string(),
-        })
-    })?;
-    let tree = commit.tree()?;
-    let mut position = 0usize;
-    let mut structure = Vec::with_capacity(limit.saturating_add(1));
-    tree.walk(TreeWalkMode::PreOrder, |root, entry| {
-        let Ok(name) = entry.name() else {
-            return TreeWalkResult::Ok;
-        };
-        let node_type = match entry.kind() {
-            Some(git2::ObjectType::Blob) => "file",
-            Some(git2::ObjectType::Commit) => "directory",
-            _ => return TreeWalkResult::Ok,
-        };
-        if position < offset {
-            position += 1;
-            return TreeWalkResult::Ok;
-        }
-        if structure.len() > limit {
-            return TreeWalkResult::Abort;
-        }
-        let path = format!("{}{}", root, name);
-        structure.push(GitNode {
-            name: name.to_string(),
-            status: None,
-            path,
-            node_type: node_type.to_string(),
-            children: None,
-            hash: Some(entry.id().to_string()),
-        });
-        position += 1;
-        TreeWalkResult::Ok
-    })?;
-    let mut status_options = get_status_options();
-    status_options.sort_case_sensitively(true);
-    let statuses = repo.statuses(Some(&mut status_options))?;
-    let submodule_statuses = build_submodule_status_map(repo)?;
-    let revision = git_tree_revision_from_statuses(commit.id(), &statuses, &submodule_statuses);
-    let mut modified_files_count = 0u32;
-    let page_paths = structure
-        .iter()
-        .map(|node| node.path.clone())
-        .collect::<HashSet<_>>();
-    let mut page_statuses = HashMap::with_capacity(page_paths.len());
-    for entry in statuses.iter() {
-        let status = entry.status();
-        let Some(label) = tree_status_label(status) else {
-            continue;
-        };
-        let (_, path) = status_entry_paths(&entry);
-        let Some(path) = path else {
-            continue;
-        };
-        modified_files_count = modified_files_count.saturating_add(1);
-        if page_paths.contains(&path) {
-            page_statuses.insert(path, label.to_string());
-            continue;
-        }
-        if tree.get_path(Path::new(&path)).is_ok() {
-            continue;
-        }
-        if position >= offset && structure.len() <= limit {
-            let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
-            structure.push(GitNode {
-                name,
-                path,
-                node_type: "file".to_string(),
-                status: Some(label.to_string()),
-                children: None,
-                hash: None,
-            });
-        }
-        position = position.saturating_add(1);
-    }
-    for (path, label) in &submodule_statuses {
-        let already_counted = statuses
-            .iter()
-            .any(|entry| entry.path_bytes() == path.as_bytes());
-        if !already_counted {
-            modified_files_count = modified_files_count.saturating_add(1);
-        }
-        if page_paths.contains(path) {
-            page_statuses
-                .entry(path.clone())
-                .or_insert_with(|| label.clone());
-        }
-    }
-    for node in &mut structure {
-        if node.status.is_none() {
-            node.status = page_statuses.remove(&node.path);
-        }
-    }
-    let has_more = structure.len() > limit;
-    structure.truncate(limit);
-    Ok(GitTreeToolPage {
-        branch: branch_name,
-        structure,
-        modified_files_count,
-        has_more,
-        revision,
-    })
-}
-
-fn tree_status_label(status: Status) -> Option<&'static str> {
-    if status.is_conflicted() {
-        Some("conflicted")
-    } else if status.is_wt_new() || status.is_index_new() {
-        Some("added")
-    } else if status.is_wt_deleted() || status.is_index_deleted() {
-        Some("deleted")
-    } else if status.is_wt_renamed() || status.is_index_renamed() {
-        Some("renamed")
-    } else if status.is_wt_modified()
-        || status.is_index_modified()
-        || status.is_wt_typechange()
-        || status.is_index_typechange()
-    {
-        Some("modified")
-    } else {
-        None
-    }
-}
-
-fn git_tree_revision_from_statuses(
-    commit_id: Oid,
-    statuses: &git2::Statuses<'_>,
-    submodule_statuses: &HashMap<String, String>,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(commit_id.as_bytes());
-    for entry in statuses.iter() {
-        hasher.update(entry.status().bits().to_le_bytes());
-        hasher.update(entry.path_bytes());
-        hasher.update([0]);
-    }
-    let mut submodules = submodule_statuses.iter().collect::<Vec<_>>();
-    submodules.sort_unstable_by(|left, right| left.0.cmp(right.0));
-    for (path, status) in submodules {
-        hasher.update(path.as_bytes());
-        hasher.update([0]);
-        hasher.update(status.as_bytes());
-        hasher.update([0]);
-    }
-    format!("{}:{:x}", commit_id, hasher.finalize())
-}
-
-pub(crate) fn git_tree_revision(repo: &Repository, branch: Option<&str>) -> Result<String> {
-    let branch_name = if let Some(branch) = branch {
-        validate_refspec(branch)?;
-        branch.to_string()
-    } else {
-        get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string())
-    };
-    let commit = resolve_commit(repo, &branch_name).or_else(|_| {
-        get_head_commit(repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
-            message: "No commits found".to_string(),
-        })
-    })?;
-    let mut status_options = get_status_options();
-    status_options.sort_case_sensitively(true);
-    let statuses = repo.statuses(Some(&mut status_options))?;
-    let submodule_statuses = build_submodule_status_map(repo)?;
-    Ok(git_tree_revision_from_statuses(
-        commit.id(),
-        &statuses,
-        &submodule_statuses,
-    ))
 }
 
 #[tauri::command]
@@ -6405,12 +2970,16 @@ pub async fn git_branch_create(
     from_ref: String,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_branch_create(&wsl_repo_path, &branch_name, &from_ref).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6432,14 +3001,32 @@ pub async fn git_branch_delete(
     repo_path: String,
     branch_name: String,
     force: Option<bool>,
+    archive_task_id: Option<String>,
+    archive_token: Option<String>,
+    expected_commit: Option<String>,
 ) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let _cleanup_guard = acquire_archived_task_cleanup_guard(
+        &workspace,
+        &git_state,
+        archive_task_id.as_deref(),
+        archive_token.as_deref(),
+    )
+    .await?;
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
+        if expected_commit.is_some() {
+            return Err(unsupported_wsl_git_operation(
+                "git_branch_delete with a durable identity",
+            ));
+        }
         return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
     }
 
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
-
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6447,7 +3034,12 @@ pub async fn git_branch_delete(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        delete_local_branch(&repo, &branch_name, force.unwrap_or(false))
+        delete_local_branch(
+            &repo,
+            &branch_name,
+            force.unwrap_or(false),
+            expected_commit.as_deref(),
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6461,22 +3053,61 @@ pub async fn git_branch_delete_remote(
     repo_path: String,
     branch_name: String,
     remote: Option<String>,
+    expected_commit: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         validate_branch_name(&branch_name)?;
         let remote_name = remote
             .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
             .trim()
             .to_string();
         validate_remote_name(&remote_name)?;
+        if let Some(expected_commit) = expected_commit.as_deref() {
+            Oid::from_str(expected_commit).map_err(|_| BackendError::GitInvalidCommit {
+                message: format!("Invalid expected remote branch commit: {expected_commit}"),
+            })?;
+            let output = run_wsl_git_allow_failure(
+                &wsl_repo_path,
+                &[
+                    "ls-remote".to_string(),
+                    "--heads".to_string(),
+                    remote_name.clone(),
+                    format!("refs/heads/{branch_name}"),
+                ],
+                WSL_GIT_MUTATION_TIMEOUT,
+            )
+            .await?;
+            if !output.status.success() {
+                return Err(wsl_git_failure(&output, "git ls-remote WSL failed"));
+            }
+            let stdout = output.stdout_text();
+            let remote_oid = stdout
+                .lines()
+                .find_map(|line| line.split_whitespace().next())
+                .filter(|oid| !oid.is_empty());
+            let Some(remote_oid) = remote_oid else {
+                return Ok(());
+            };
+            if remote_oid != expected_commit {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Refusing remote branch deletion because {remote_name}/{branch_name} changed from {expected_commit} to {remote_oid}."
+                    ),
+                });
+            }
+        }
+        let mut args = vec!["push".to_string(), remote_name, "--delete".to_string()];
+        if let Some(expected_commit) = expected_commit {
+            args.push(format!(
+                "--force-with-lease=refs/heads/{branch_name}:{expected_commit}"
+            ));
+        }
+        args.push(branch_name);
         run_wsl_git_checked(
             &wsl_repo_path,
-            &[
-                "push".to_string(),
-                remote_name,
-                "--delete".to_string(),
-                branch_name,
-            ],
+            &args,
             WSL_GIT_MUTATION_TIMEOUT,
             "git push --delete WSL failed",
         )
@@ -6486,6 +3117,9 @@ pub async fn git_branch_delete_remote(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6500,19 +3134,58 @@ pub async fn git_branch_delete_remote(
             .trim()
             .to_string();
         validate_remote_name(&remote_name)?;
+        if let Some(expected_commit) = expected_commit.as_deref() {
+            Oid::from_str(expected_commit).map_err(|_| BackendError::GitInvalidCommit {
+                message: format!("Invalid expected remote branch commit: {expected_commit}"),
+            })?;
+        }
 
         let root = repo_root(&repo)?;
         drop(repo);
 
-        let output = run_git_command(
-            &root,
-            &[
-                "push".to_string(),
-                remote_name.clone(),
-                "--delete".to_string(),
-                branch_name.clone(),
-            ],
-        )?;
+        if let Some(expected_commit) = expected_commit.as_deref() {
+            let output = run_git_command(
+                &root,
+                &[
+                    "ls-remote".to_string(),
+                    "--heads".to_string(),
+                    remote_name.clone(),
+                    format!("refs/heads/{branch_name}"),
+                ],
+            )?;
+            if !output.success {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "git ls-remote failed: {}",
+                        command_output_text(&output)
+                    ),
+                });
+            }
+            let remote_oid = output
+                .stdout
+                .lines()
+                .find_map(|line| line.split_whitespace().next())
+                .filter(|oid| !oid.is_empty());
+            let Some(remote_oid) = remote_oid else {
+                return Ok(());
+            };
+            if remote_oid != expected_commit {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Refusing remote branch deletion because {remote_name}/{branch_name} changed from {expected_commit} to {remote_oid}."
+                    ),
+                });
+            }
+        }
+
+        let mut args = vec!["push".to_string(), remote_name, "--delete".to_string()];
+        if let Some(expected_commit) = expected_commit {
+            args.push(format!(
+                "--force-with-lease=refs/heads/{branch_name}:{expected_commit}"
+            ));
+        }
+        args.push(branch_name);
+        let output = run_git_mutation_command(&root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             let message = if details.is_empty() {
@@ -6539,12 +3212,16 @@ pub async fn git_checkout(
     create: bool,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6592,17 +3269,30 @@ pub async fn git_merge_check(
 pub async fn git_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
+    expected_branch_commit: Option<String>,
+    expected_into_commit: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
+        if expected_branch_commit.is_some() || expected_into_commit.is_some() {
+            return Err(unsupported_wsl_git_operation(
+                "git_merge with durable identity",
+            ));
+        }
         return wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6610,7 +3300,61 @@ pub async fn git_merge(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        verify_expected_merge_identity(
+            &repo,
+            &branch_name,
+            &into_branch,
+            expected_branch_commit.as_deref(),
+            expected_into_commit.as_deref(),
+        )?;
         merge_repo(&repo, &branch_name, &into_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Reconcile a durable merge intent with the exact merge commit produced by `git_merge`.
+pub async fn git_guarded_merge_state(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
+    repo_path: String,
+    branch_name: String,
+    into_branch: String,
+    expected_branch_commit: String,
+    expected_into_commit: String,
+    complete_merge: Option<bool>,
+) -> Result<GitGuardedMergeStateDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_guarded_merge_state"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let reconcile = if complete_merge.unwrap_or(false) {
+            complete_guarded_merge_state
+        } else {
+            reconcile_guarded_merge_state
+        };
+        reconcile(
+            &repo,
+            &branch_name,
+            &into_branch,
+            &expected_branch_commit,
+            &expected_into_commit,
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6621,6 +3365,7 @@ pub async fn git_merge(
 pub async fn git_start_merge_resolution(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -6632,6 +3377,9 @@ pub async fn git_start_merge_resolution(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6650,6 +3398,7 @@ pub async fn git_start_merge_resolution(
 pub async fn git_fast_forward(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     source_branch: String,
     target_branch: String,
@@ -6661,6 +3410,9 @@ pub async fn git_fast_forward(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6690,6 +3442,9 @@ pub async fn git_rebase_check(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6708,6 +3463,7 @@ pub async fn git_rebase_check(
 pub async fn git_rebase_branch(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     onto_branch: String,
@@ -6720,6 +3476,9 @@ pub async fn git_rebase_branch(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6743,12 +3502,16 @@ pub async fn git_commit(
     stage_all: bool,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_commit(&wsl_repo_path, &message, stage_all).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6771,11 +3534,16 @@ pub async fn git_add(
     paths: Vec<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_add(&wsl_repo_path, &paths).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6800,6 +3568,8 @@ pub async fn git_restore_paths(
     target: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_restore_paths(
             &wsl_repo_path,
             &paths,
@@ -6810,6 +3580,9 @@ pub async fn git_restore_paths(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6829,7 +3602,7 @@ pub async fn git_restore_paths(
 }
 
 #[tauri::command]
-/// Reset the repository to a given commit.
+/// Reset HEAD and optionally the index and tracked working files to a commit.
 pub async fn git_reset(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
@@ -6839,12 +3612,16 @@ pub async fn git_reset(
     confirm: Option<bool>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_reset(&wsl_repo_path, &mode, commit, confirm).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6869,6 +3646,7 @@ pub async fn git_reset(
 pub async fn git_abort_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     confirm: Option<bool>,
 ) -> Result<()> {
@@ -6885,6 +3663,9 @@ pub async fn git_abort_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6907,12 +3688,16 @@ pub async fn git_stash(
     message: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_stash(&wsl_repo_path, message).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6946,7 +3731,7 @@ pub async fn git_diff(
     let max_bytes = max_bytes.map(|value| {
         (value as usize)
             .max(1)
-            .min(super::tool_output::GIT_DIFF_MAX_BYTES)
+            .min(crate::core::workspace_execution::tool_output::GIT_DIFF_MAX_BYTES)
     });
     let require_complete = require_complete.unwrap_or(false);
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
@@ -7039,9 +3824,10 @@ pub async fn git_review_snapshot(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
             review::build_git_review_snapshot_with_cancellation(repo, &validated, || {
@@ -7856,6 +4642,32 @@ fn open_direct_checkpoint(
     open_direct_checkpoint_at(&app_data_dir, task_id, project_path, checkpoint_id, create)
 }
 
+fn resolve_direct_checkpoint_storage_lock_path(app: &AppHandle) -> Result<PathBuf> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| BackendError::Filesystem {
+            message: format!("Failed to resolve Macro application data directory: {error}"),
+        })?;
+    Ok(app_data_dir.join(DIRECT_CHECKPOINTS_DIR))
+}
+
+async fn lock_direct_checkpoint_repositories(
+    app: &AppHandle,
+    workspace: &Path,
+    project_path: &str,
+) -> Result<(workspace::GitRepositoryGuard, workspace::GitRepositoryGuard)> {
+    reject_unsupported_direct_project_path(project_path)?;
+    let validated = validate_repo_path(project_path, workspace)?;
+    let storage_path = resolve_direct_checkpoint_storage_lock_path(app)?;
+    // Keep a stable order for every direct-review command. The project lock
+    // protects the configured worktree, while the storage lock protects the
+    // internal checkpoint repositories and their tombstones.
+    let project_guard = workspace::lock_git_repository(&validated).await?;
+    let storage_guard = workspace::lock_git_repository(&storage_path).await?;
+    Ok((project_guard, storage_guard))
+}
+
 fn initialize_created_direct_checkpoint<F>(
     checkpoint_path: &Path,
     checkpoint_id: &str,
@@ -8138,9 +4950,18 @@ fn direct_checkpoint_repo_id(repo: &Repository) -> String {
         .to_string()
 }
 
-fn verify_direct_checkpoint_blob(
+fn direct_checkpoint_mode_kind(mode: u32) -> Option<git2::ObjectType> {
+    match mode {
+        0o040000 => Some(git2::ObjectType::Tree),
+        0o100644 | 0o100755 | 0o120000 => Some(git2::ObjectType::Blob),
+        _ => None,
+    }
+}
+
+fn verify_direct_checkpoint_object_hash(
     repo: &Repository,
     oid: Oid,
+    expected_kind: git2::ObjectType,
     operation: &str,
     cancellation: Option<&Arc<AtomicBool>>,
     budget: &mut DirectCheckpointVerificationBudget,
@@ -8152,9 +4973,9 @@ fn verify_direct_checkpoint_blob(
     let (mut reader, size, kind) = odb.reader(oid).map_err(|error| {
         BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
     })?;
-    if kind != git2::ObjectType::Blob {
+    if kind != expected_kind {
         return Err(BackendError::DirectCheckpointCorrupt {
-            message: "Macro's internal review checkpoint contains an invalid file object."
+            message: "Macro's internal review checkpoint contains an invalid object type."
                 .to_string(),
             checkpoint_id: direct_checkpoint_repo_id(repo),
             object_id: Some(oid.to_string()),
@@ -8171,7 +4992,7 @@ fn verify_direct_checkpoint_blob(
     }
     budget.remaining_bytes -= size;
     let mut hasher = Sha1::new();
-    hasher.update(format!("blob {size}\0").as_bytes());
+    hasher.update(format!("{} {size}\0", kind.str()).as_bytes());
     let mut bytes_read_total = 0usize;
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -8194,9 +5015,27 @@ fn verify_direct_checkpoint_blob(
         Oid::from_bytes(hasher.finalize().as_slice()).map_err(|error| BackendError::Git {
             message: format!("Failed to verify direct checkpoint object identity: {error}"),
         })?;
+    validate_direct_checkpoint_object_identity(
+        repo,
+        oid,
+        operation,
+        size,
+        bytes_read_total,
+        actual_oid,
+    )
+}
+
+fn validate_direct_checkpoint_object_identity(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    size: usize,
+    bytes_read_total: usize,
+    actual_oid: Oid,
+) -> Result<()> {
     if bytes_read_total != size || actual_oid != oid {
         return Err(BackendError::DirectCheckpointCorrupt {
-            message: "Macro's internal review checkpoint contains an altered file object."
+            message: "Macro's internal review checkpoint contains an altered Git object."
                 .to_string(),
             checkpoint_id: direct_checkpoint_repo_id(repo),
             object_id: Some(oid.to_string()),
@@ -8207,6 +5046,23 @@ fn verify_direct_checkpoint_blob(
         });
     }
     Ok(())
+}
+
+fn verify_direct_checkpoint_blob(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
+    budget: &mut DirectCheckpointVerificationBudget,
+) -> Result<()> {
+    verify_direct_checkpoint_object_hash(
+        repo,
+        oid,
+        git2::ObjectType::Blob,
+        operation,
+        cancellation,
+        budget,
+    )
 }
 
 fn verify_direct_checkpoint_tree(
@@ -8225,7 +5081,14 @@ fn verify_direct_checkpoint_tree(
     if !visited_trees.insert(tree_id) {
         return Ok(());
     }
-    budget.consume_object()?;
+    verify_direct_checkpoint_object_hash(
+        repo,
+        tree_id,
+        git2::ObjectType::Tree,
+        "direct_checkpoint_head_tree",
+        cancellation,
+        budget,
+    )?;
     let tree = repo.find_tree(tree_id).map_err(|error| {
         BackendError::git_object_missing(
             error,
@@ -8239,7 +5102,8 @@ fn verify_direct_checkpoint_tree(
                 message: "Git review was cancelled.".to_string(),
             });
         }
-        if entry.filemode() == 0o160000 {
+        let mode = entry.filemode_raw() as u32;
+        if mode == 0o160000 {
             return Err(BackendError::DirectCheckpointCorrupt {
                 message: "Macro's internal review checkpoint contains an unsupported nested Git repository.".to_string(),
                 checkpoint_id: direct_checkpoint_repo_id(repo),
@@ -8250,7 +5114,7 @@ fn verify_direct_checkpoint_tree(
                 git_output: None,
             });
         }
-        match entry.kind() {
+        match direct_checkpoint_mode_kind(mode) {
             Some(git2::ObjectType::Tree) => verify_direct_checkpoint_tree(
                 repo,
                 entry.id(),
@@ -8271,7 +5135,19 @@ fn verify_direct_checkpoint_tree(
                     budget,
                 )?;
             }
-            _ => {}
+            _ => {
+                return Err(BackendError::DirectCheckpointCorrupt {
+                    message:
+                        "Macro's internal review checkpoint contains an invalid tree entry mode."
+                            .to_string(),
+                    checkpoint_id: direct_checkpoint_repo_id(repo),
+                    object_id: Some(entry.id().to_string()),
+                    operation: Some("direct_checkpoint_head_mode".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: true,
+                    git_output: None,
+                });
+            }
         }
     }
     Ok(())
@@ -8327,7 +5203,14 @@ fn verify_direct_checkpoint_history_with_budget(
         if !visited.insert(commit_id) {
             continue;
         }
-        budget.consume_object()?;
+        verify_direct_checkpoint_object_hash(
+            repo,
+            commit_id,
+            git2::ObjectType::Commit,
+            "direct_checkpoint_head_commit",
+            cancellation,
+            budget,
+        )?;
         let commit = repo.find_commit(commit_id).map_err(|error| {
             BackendError::git_object_missing(
                 error,
@@ -8409,6 +5292,18 @@ fn verify_direct_checkpoint_index_entries_with_budget(
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Err(BackendError::Git {
                 message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if direct_checkpoint_mode_kind(entry.mode) != Some(git2::ObjectType::Blob) {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint contains an invalid index entry mode."
+                    .to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: Some(entry.id.to_string()),
+                operation: Some("direct_checkpoint_index_mode".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
             });
         }
         if entry.flags & 0x3000 != 0 {
@@ -9033,6 +5928,8 @@ pub async fn direct_checkpoint_resolve_id(
     project_path: String,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&project_path, &workspace)?;
         if task_id.trim().is_empty() {
@@ -9061,6 +5958,8 @@ pub async fn direct_checkpoint_remove(
     project_path: String,
 ) -> Result<bool> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         validate_direct_checkpoint_owner(&checkpoint_id, &task_id)?;
         let validated = validate_repo_path(&project_path, &workspace)?;
@@ -9088,6 +5987,8 @@ pub async fn direct_checkpoint_ensure(
     checkpoint_id: Option<String>,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -9113,6 +6014,8 @@ pub async fn direct_review_snapshot(
     request_id: Option<String>,
 ) -> Result<DirectReviewSnapshotDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) =
         register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
@@ -9239,6 +6142,8 @@ pub async fn direct_review_file(
     request_id: Option<String>,
 ) -> Result<GitReviewFileDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) =
         register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
@@ -9755,6 +6660,8 @@ pub async fn direct_stage_paths(
         });
     }
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -9794,6 +6701,8 @@ pub async fn direct_unstage_paths(
     paths: Vec<String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -11369,6 +8278,8 @@ pub async fn direct_restore_worktree_paths(
         });
     }
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) = register_git_review_cancellation(Some(&request_id))?;
     tokio::task::spawn_blocking(move || {
         let _cancellation_guard = cancellation_guard;
@@ -11429,6 +8340,8 @@ pub async fn direct_accept_changes(
     checkpoint_id: Option<String>,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -11465,8 +8378,9 @@ pub async fn git_review_file(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
         let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
@@ -11504,8 +8418,10 @@ pub async fn git_review_file(
 pub async fn git_read_conflict_file(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     path: String,
+    workflow_session: Option<workflow::GitWorkflowSessionIdentity>,
 ) -> Result<GitConflictFileDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_read_conflict_file"));
@@ -11513,16 +8429,56 @@ pub async fn git_read_conflict_file(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    let workflow_context = if let Some(identity) = workflow_session {
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
+        let request_repo = git_state.open_repo(&validated)?;
+        let (key, common_dir) = {
+            let repo = request_repo.lock().map_err(|_| BackendError::Internal {
+                message: "Failed to lock repository".to_string(),
+            })?;
+            (
+                workflow::workflow_key(
+                    &repo,
+                    &identity.task_id,
+                    &identity.source_branch,
+                    &identity.target_branch,
+                )?,
+                workflow::repository_common_dir(&repo)?,
+            )
+        };
+        workflow::ensure_workflow_exclusive(&db_pool, &common_dir, &key).await?;
+        let journal = workflow::load_journal_for_key(&db_pool, &key).await?;
+        let operation_path = validate_repo_path(
+            &workflow::journal_repo_path(&journal).to_string_lossy(),
+            &workspace,
+        )?;
+        Some((journal, identity, operation_path))
+    } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+        None
+    };
 
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
+        let operation_path = workflow_context
+            .as_ref()
+            .map(|(_, _, path)| path.clone())
+            .unwrap_or(validated);
+        let repo = git_state.open_repo(&operation_path)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+        if let Some((journal, identity, _)) = workflow_context.as_ref() {
+            workflow::verify_conflict_journal(&repo, journal, identity)?;
+        }
 
-        read_git_conflict_file(&repo, &validated, &relative_path)
+        read_git_conflict_file(&repo, &repo_root(&repo)?, &relative_path)
     })
     .await
     .map_err(to_join_error)?
@@ -11533,10 +8489,12 @@ pub async fn git_read_conflict_file(
 pub async fn git_write_conflict_resolution(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     path: String,
     content: String,
     stage: Option<bool>,
+    workflow_session: Option<workflow::GitWorkflowSessionIdentity>,
 ) -> Result<()> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation(
@@ -11547,17 +8505,58 @@ pub async fn git_write_conflict_resolution(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    let workflow_context = if let Some(identity) = workflow_session {
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
+        let request_repo = git_state.open_repo(&validated)?;
+        let (key, common_dir) = {
+            let repo = request_repo.lock().map_err(|_| BackendError::Internal {
+                message: "Failed to lock repository".to_string(),
+            })?;
+            (
+                workflow::workflow_key(
+                    &repo,
+                    &identity.task_id,
+                    &identity.source_branch,
+                    &identity.target_branch,
+                )?,
+                workflow::repository_common_dir(&repo)?,
+            )
+        };
+        workflow::ensure_workflow_exclusive(&db_pool, &common_dir, &key).await?;
+        let journal = workflow::load_journal_for_key(&db_pool, &key).await?;
+        let operation_path = validate_repo_path(
+            &workflow::journal_repo_path(&journal).to_string_lossy(),
+            &workspace,
+        )?;
+        Some((journal, identity, operation_path))
+    } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+        None
+    };
+
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
+        let operation_path = workflow_context
+            .as_ref()
+            .map(|(_, _, path)| path.clone())
+            .unwrap_or(validated);
+        let repo = git_state.open_repo(&operation_path)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+        if let Some((journal, identity, _)) = workflow_context.as_ref() {
+            workflow::verify_conflict_journal(&repo, journal, identity)?;
+        }
 
         write_git_conflict_resolution(
             &repo,
-            &validated,
+            &repo_root(&repo)?,
             &relative_path,
             &content,
             stage.unwrap_or(true),
@@ -11572,9 +8571,11 @@ pub async fn git_write_conflict_resolution(
 pub async fn git_accept_conflict_side(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     path: String,
     side: String,
+    workflow_session: Option<workflow::GitWorkflowSessionIdentity>,
 ) -> Result<()> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_accept_conflict_side"));
@@ -11583,15 +8584,55 @@ pub async fn git_accept_conflict_side(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    let workflow_context = if let Some(identity) = workflow_session {
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
+        let request_repo = git_state.open_repo(&validated)?;
+        let (key, common_dir) = {
+            let repo = request_repo.lock().map_err(|_| BackendError::Internal {
+                message: "Failed to lock repository".to_string(),
+            })?;
+            (
+                workflow::workflow_key(
+                    &repo,
+                    &identity.task_id,
+                    &identity.source_branch,
+                    &identity.target_branch,
+                )?,
+                workflow::repository_common_dir(&repo)?,
+            )
+        };
+        workflow::ensure_workflow_exclusive(&db_pool, &common_dir, &key).await?;
+        let journal = workflow::load_journal_for_key(&db_pool, &key).await?;
+        let operation_path = validate_repo_path(
+            &workflow::journal_repo_path(&journal).to_string_lossy(),
+            &workspace,
+        )?;
+        Some((journal, identity, operation_path))
+    } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+        None
+    };
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
+        let operation_path = workflow_context
+            .as_ref()
+            .map(|(_, _, path)| path.clone())
+            .unwrap_or(validated);
+        let repo = git_state.open_repo(&operation_path)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+        if let Some((journal, identity, _)) = workflow_context.as_ref() {
+            workflow::verify_conflict_journal(&repo, journal, identity)?;
+        }
 
-        accept_git_conflict_side(&repo, &validated, &relative_path, &side)
+        accept_git_conflict_side(&repo, &repo_root(&repo)?, &relative_path, &side)
     })
     .await
     .map_err(to_join_error)?
@@ -11602,6 +8643,7 @@ pub async fn git_accept_conflict_side(
 pub async fn git_complete_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
 ) -> Result<String> {
     if parse_wsl_repo_path(&repo_path).is_some() {
@@ -11611,6 +8653,9 @@ pub async fn git_complete_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11668,6 +8713,9 @@ pub async fn git_worktree_inspect(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -11831,6 +8879,8 @@ pub async fn git_worktree_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11854,6 +8904,7 @@ pub async fn git_worktree_create(
             &fallback_branches,
         )?;
         Ok(GitWorktreeEnsureDto {
+            created_by_this_call: ensured.created_by_this_call,
             task_id: ensured.task_id,
             worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),
             branch_name: ensured.branch_name,
@@ -11884,6 +8935,9 @@ pub async fn git_branch_worktree_inspect(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -11932,6 +8986,8 @@ pub async fn git_branch_worktree_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11972,6 +9028,8 @@ pub async fn git_branch_worktree_remove(
     worktree_key: String,
     branch_name: String,
     force: Option<bool>,
+    expected_commit: Option<String>,
+    expected_worktree_path: Option<String>,
 ) -> Result<GitBranchWorktreeRemoveDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_branch_worktree_remove"));
@@ -11980,12 +9038,24 @@ pub async fn git_branch_worktree_remove(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+
+        let inspection = git_state.inspect_branch_worktree(&repo, &worktree_key, &branch_name)?;
+        verify_expected_worktree_identity(
+            &repo,
+            &branch_name,
+            &inspection.worktree_path,
+            inspection.branch_name.as_deref(),
+            expected_commit.as_deref(),
+            expected_worktree_path.as_deref(),
+        )?;
 
         let removed = git_state.remove_branch_worktree(
             &repo,
@@ -12014,20 +9084,46 @@ pub async fn git_worktree_remove(
     task_id: String,
     force: Option<bool>,
     branch_name: Option<String>,
+    archive_task_id: Option<String>,
+    archive_token: Option<String>,
+    expected_commit: Option<String>,
+    expected_worktree_path: Option<String>,
 ) -> Result<GitWorktreeRemoveDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let _cleanup_guard = acquire_archived_task_cleanup_guard(
+        &workspace,
+        &git_state,
+        archive_task_id.as_deref(),
+        archive_token.as_deref(),
+    )
+    .await?;
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_remove"));
     }
 
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
-
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+
+        let inspection = if let Some(branch_name) = branch_name.as_deref() {
+            git_state.inspect_task_worktree_for_branch(&repo, &task_id, branch_name)?
+        } else {
+            git_state.inspect_task_worktree(&repo, &task_id)?
+        };
+        verify_expected_worktree_identity(
+            &repo,
+            branch_name.as_deref().unwrap_or(""),
+            &inspection.worktree_path,
+            inspection.branch_name.as_deref(),
+            expected_commit.as_deref(),
+            expected_worktree_path.as_deref(),
+        )?;
 
         let removed = git_state.remove_task_worktree(
             &repo,
@@ -12060,12 +9156,16 @@ pub async fn git_fetch(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "fetch", remote, branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12108,6 +9208,137 @@ pub async fn git_fetch(
 }
 
 #[tauri::command]
+/// Fetch and capture the exact upstream commit for a later durable branch sync.
+pub async fn git_prepare_guarded_branch_sync(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    expected_branch_commit: String,
+) -> Result<GitPreparedBranchSyncDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation(
+            "git_prepare_guarded_branch_sync",
+        ));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        build_guarded_branch_sync_state(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &expected_branch_commit,
+        )?;
+        let local_ref = format!("refs/heads/{}", branch_name);
+        let remote_name = repo
+            .branch_upstream_remote(&local_ref)
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Branch {} has no configured upstream: {}",
+                    branch_name, error
+                ),
+            })?
+            .as_str()
+            .map_err(|_| BackendError::Git {
+                message: format!("Branch {} has a non-UTF-8 upstream remote", branch_name),
+            })?
+            .to_string();
+        validate_remote_name(&remote_name)?;
+        let root = repo_root(&repo)?;
+        drop(repo);
+
+        let output = run_git_command_with_timeout(
+            &root,
+            &["fetch".to_string(), remote_name],
+            NATIVE_GIT_NETWORK_TIMEOUT,
+        )?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    format!("git fetch failed (exit code: {:?})", output.code)
+                } else {
+                    details
+                },
+            });
+        }
+
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        build_guarded_branch_sync_state(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &expected_branch_commit,
+        )?;
+        let target_commit = repo
+            .find_branch(&branch_name, BranchType::Local)
+            .and_then(|branch| branch.upstream())
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve upstream for branch {}: {}",
+                    branch_name, error
+                ),
+            })?
+            .id()
+            .to_string();
+        Ok(GitPreparedBranchSyncDto { target_commit })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Apply or reconcile a branch sync whose local and upstream commits were journaled first.
+pub async fn git_guarded_branch_sync(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
+    repo_path: String,
+    branch_name: String,
+    expected_branch_commit: String,
+    sync_target_commit: String,
+) -> Result<GitGuardedMergeStateDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_guarded_branch_sync"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        apply_guarded_branch_sync(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &sync_target_commit,
+        )
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Push the current branch (or provided branch) to remote.
 pub async fn git_push(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -12117,12 +9348,16 @@ pub async fn git_push(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "push", remote, branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12174,11 +9409,16 @@ pub async fn git_remote_add_origin(
     url: String,
 ) -> Result<GitRemoteDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_remote_add_origin(&wsl_repo_path, &url).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -12197,17 +9437,23 @@ pub async fn git_remote_add_origin(
 pub async fn git_pull(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "pull", remote, branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12269,6 +9515,7 @@ pub async fn macro_branch_ensure(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, repaired_after_move) =
@@ -12306,6 +9553,7 @@ pub async fn macro_branch_status(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, repaired_after_move) =
@@ -12338,6 +9586,7 @@ pub async fn macro_branch_commit_if_dirty(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
     let commit_message = message
         .unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
         .trim()
@@ -12345,10 +9594,17 @@ pub async fn macro_branch_commit_if_dirty(
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
 
-        let add_output = run_git_command(
+        let add_output = run_git_mutation_command(
             &worktree_path,
-            &["add".to_string(), "-A".to_string(), ".".to_string()],
+            &[
+                "add".to_string(),
+                "-A".to_string(),
+                "--".to_string(),
+                ".".to_string(),
+                ":!.workspace.json.lock".to_string(),
+            ],
         )?;
         if !add_output.success {
             let details = command_output_text(&add_output);
@@ -12369,7 +9625,7 @@ pub async fn macro_branch_commit_if_dirty(
             );
         }
 
-        let staged_check = run_git_command(
+        let staged_check = run_git_mutation_command(
             &worktree_path,
             &[
                 "diff".to_string(),
@@ -12408,7 +9664,7 @@ pub async fn macro_branch_commit_if_dirty(
             );
         }
 
-        let commit_output = run_git_command(
+        let commit_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "-c".to_string(),
@@ -12472,10 +9728,12 @@ pub async fn macro_branch_push(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
-        let push_output = run_git_command(
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
+        let push_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "push".to_string(),
@@ -12504,7 +9762,7 @@ pub async fn macro_branch_push(
             );
         }
 
-        let recovery_report = workspace::recover_missing_metadata_sync(
+        let recovery_report = workspace::recover_missing_metadata_sync_unlocked(
             &workspace,
             &worktree_path,
             &WorkspaceRecoverMissingMetadataRequestDto {
@@ -12550,10 +9808,12 @@ pub async fn macro_branch_pull(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
-        let pull_output = run_git_command(
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
+        let pull_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "pull".to_string(),
@@ -13277,6 +10537,11 @@ mod tests {
         };
 
         assert!(error.to_string().contains("produced too much output"));
+        let error = match run_git_command(temp.path(), &args) {
+            Ok(_) => panic!("default launcher must reject incomplete output"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("produced too much output"));
     }
 
     #[test]
@@ -13511,6 +10776,7 @@ mod tests {
         let mut index = repo.index().expect("index");
         index.add_path(Path::new("README.md")).expect("add");
         let tree_id = index.write_tree().expect("write tree");
+        index.write().expect("persist initial index");
         {
             let tree = repo.find_tree(tree_id).expect("tree");
             let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
@@ -13519,6 +10785,23 @@ mod tests {
         }
 
         (temp, repo)
+    }
+
+    fn cleanup_test_hard_reset_recovery(error: &BackendError) {
+        let message = error.to_string();
+        let prefix = format!("macro-hard-reset-{}-", std::process::id());
+        let temp_root = std::env::temp_dir();
+        for entry in fs::read_dir(&temp_root).expect("read temporary directory") {
+            let entry = entry.expect("read temporary entry");
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(&prefix) {
+                continue;
+            }
+            let path = entry.path();
+            if message.contains(&path.to_string_lossy().to_string()) {
+                fs::remove_dir_all(path).expect("remove test recovery directory");
+            }
+        }
     }
 
     fn init_direct_checkpoint() -> (TempDir, PathBuf, Repository) {
@@ -15550,7 +12833,46 @@ mod tests {
         assert_eq!(entry.filemode(), 0o120000);
         let blob = repo.find_blob(entry.id()).expect("link blob");
         assert_eq!(blob.content(), b"missing-pending-target");
+        fs::remove_file(project.join("linked.txt")).expect("remove accepted link");
+        symlink("another-target", project.join("linked.txt")).expect("later link edit");
+        restore_direct_worktree_paths(&repo, &project, vec!["linked.txt".to_string()])
+            .expect("restore accepted link");
+        assert_eq!(
+            fs::read_link(project.join("linked.txt")).expect("restored link target"),
+            Path::new("missing-pending-target")
+        );
         assert!(!project.join(".git").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_checkpoint_captures_and_restores_an_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp, project, repo) = init_direct_checkpoint();
+        let script = project.join("script.sh");
+        fs::write(&script, "#!/bin/sh\nexit 0\n").expect("script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
+        ensure_direct_checkpoint_head(&repo).expect("capture executable");
+        fs::write(&script, "pending\n").expect("pending edit");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).expect("pending mode");
+
+        restore_direct_worktree_paths(&repo, &project, vec!["script.sh".to_string()])
+            .expect("restore executable");
+
+        assert_eq!(
+            fs::read_to_string(&script).expect("restored script"),
+            "#!/bin/sh\nexit 0\n"
+        );
+        assert_eq!(
+            fs::metadata(&script)
+                .expect("restored mode")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        ensure_direct_checkpoint_integrity(&repo).expect("checkpoint remains readable");
     }
 
     #[test]
@@ -16052,6 +13374,153 @@ mod tests {
             &HashMap::from([("file.txt".to_string(), "v1:regular:test".to_string())]),
         )
         .expect("the frozen snapshot matches the restored checkpoint revision");
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_rejects_incorrect_hash_or_length() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        for (kind, operation) in [
+            (git2::ObjectType::Commit, "direct_checkpoint_head_commit"),
+            (git2::ObjectType::Tree, "direct_checkpoint_head_tree"),
+            (git2::ObjectType::Blob, "direct_checkpoint_head_blob"),
+        ] {
+            // Exercise the digest comparison without altering the object database.
+            let expected = Oid::hash_object(kind, b"original").expect("expected digest");
+            let changed = Oid::hash_object(kind, b"modified").expect("different digest");
+            for (actual, length) in [(changed, 8), (expected, 7)] {
+                let error = validate_direct_checkpoint_object_identity(
+                    &repo, expected, operation, 8, length, actual,
+                )
+                .expect_err("mismatched identity or length must be rejected");
+                assert!(matches!(
+                    error,
+                    BackendError::DirectCheckpointCorrupt {
+                        object_id: Some(ref object_id),
+                        operation: Some(ref reported_operation),
+                        accepted_history_at_risk: true,
+                        ..
+                    } if object_id == &expected.to_string() && reported_operation == operation
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_preserves_supported_file_modes() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        let blob_id = repo.blob(b"content\n").expect("file contents");
+        let link_id = repo.blob(b"regular.txt").expect("link target");
+        let mut subtree = repo.treebuilder(None).expect("subtree builder");
+        subtree
+            .insert("nested.txt", blob_id, 0o100644)
+            .expect("nested file");
+        let subtree_id = subtree.write().expect("subtree");
+        let mut builder = repo.treebuilder(None).expect("tree builder");
+        builder
+            .insert("regular.txt", blob_id, 0o100644)
+            .expect("regular file");
+        builder
+            .insert("script.sh", blob_id, 0o100755)
+            .expect("executable file");
+        builder
+            .insert("link.txt", link_id, 0o120000)
+            .expect("symbolic link");
+        builder
+            .insert("directory", subtree_id, 0o040000)
+            .expect("directory");
+        let tree = repo
+            .find_tree(builder.write().expect("tree"))
+            .expect("read tree");
+        let signature = git2::Signature::now("Macro", "macro@local").expect("signature");
+        repo.commit(Some("HEAD"), &signature, &signature, "baseline", &tree, &[])
+            .expect("baseline commit");
+        let mut index = repo.index().expect("index");
+        index.read_tree(&tree).expect("populate complete index");
+        index.write().expect("persist index");
+
+        ensure_direct_checkpoint_integrity(&repo).expect("all supported modes remain readable");
+        for mode in [0, 0o100600, 0o100664, 0o140000, 0o160000] {
+            assert_eq!(direct_checkpoint_mode_kind(mode), None, "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_counts_commit_tree_and_blob_bytes() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let commit = repo.head().expect("head").peel_to_commit().expect("commit");
+        let tree = commit.tree().expect("tree");
+        let blob_id = tree.get_path(Path::new("file.txt")).expect("file").id();
+        let odb = repo.odb().expect("object database");
+        let total_bytes = [commit.id(), tree.id(), blob_id]
+            .into_iter()
+            .map(|oid| odb.read_header(oid).expect("object header").0)
+            .sum::<usize>();
+        let mut budget = DirectCheckpointVerificationBudget {
+            remaining_bytes: total_bytes,
+            remaining_objects: 3,
+        };
+
+        assert_eq!(
+            verify_direct_checkpoint_history_with_budget(&repo, None, &mut budget)
+                .expect("verify all object hashes within the exact budget"),
+            commit.id()
+        );
+        assert_eq!(budget.remaining_bytes, 0);
+        assert_eq!(budget.remaining_objects, 0);
+
+        let mut short_budget = DirectCheckpointVerificationBudget {
+            remaining_bytes: total_bytes - 1,
+            remaining_objects: 3,
+        };
+        assert!(matches!(
+            verify_direct_checkpoint_history_with_budget(&repo, None, &mut short_budget),
+            Err(BackendError::FilesystemFileTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn direct_checkpoint_object_verification_checks_type_and_cancellation() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let commit = repo.head().expect("head").peel_to_commit().expect("commit");
+        let mut budget = DirectCheckpointVerificationBudget::new();
+        let error = verify_direct_checkpoint_object_hash(
+            &repo,
+            commit.id(),
+            git2::ObjectType::Tree,
+            "direct_checkpoint_head_tree",
+            None,
+            &mut budget,
+        )
+        .expect_err("a commit is not a tree");
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                object_id: Some(ref object_id),
+                operation: Some(ref operation),
+                accepted_history_at_risk: true,
+                ..
+            } if object_id == &commit.id().to_string()
+                && operation == "direct_checkpoint_head_tree"
+        ));
+
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let error = verify_direct_checkpoint_object_hash(
+            &repo,
+            commit.id(),
+            git2::ObjectType::Commit,
+            "direct_checkpoint_head_commit",
+            Some(&cancelled),
+            &mut budget,
+        )
+        .expect_err("cancelled verification must stop before reading content");
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "Git review was cancelled."
+        ));
     }
 
     #[test]
@@ -17159,6 +14628,67 @@ mod tests {
         let (_temp, repo) = init_repo();
         let branches = build_git_branches(&repo).unwrap();
         assert!(branches.local.iter().any(|b| b.is_head));
+        assert!(branches
+            .local
+            .iter()
+            .all(|branch| branch.commit.len() == 40));
+    }
+
+    #[test]
+    fn branch_delete_refuses_a_recreated_branch_identity() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/recreated", &head, false).unwrap();
+
+        let error = delete_local_branch(
+            &repo,
+            "feature/recreated",
+            true,
+            Some("0000000000000000000000000000000000000000"),
+        )
+        .expect_err("a mismatched durable identity must fence branch deletion");
+
+        assert!(error.to_string().contains("durable identity changed"));
+        assert!(repo
+            .find_branch("feature/recreated", BranchType::Local)
+            .is_ok());
+    }
+
+    #[test]
+    fn branch_delete_uses_the_locked_reference_transaction() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/delete", &head, false).unwrap();
+        let expected_commit = head.id().to_string();
+
+        delete_local_branch(&repo, "feature/delete", true, Some(&expected_commit))
+            .expect("branch with unchanged identity should be deleted");
+
+        assert!(repo
+            .find_branch("feature/delete", BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn worktree_remove_refuses_a_recreated_branch_identity() {
+        let (temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/recreated", &head, false).unwrap();
+        let worktree_path = temp.path().join("worktree");
+
+        let error = verify_expected_worktree_identity(
+            &repo,
+            "feature/recreated",
+            &worktree_path,
+            Some("feature/recreated"),
+            Some("0000000000000000000000000000000000000000"),
+            Some(&worktree_path.to_string_lossy()),
+        )
+        .expect_err("a mismatched durable identity must fence worktree deletion");
+
+        assert!(error
+            .to_string()
+            .contains("durable commit identity changed"));
     }
 
     #[test]
@@ -17204,6 +14734,274 @@ mod tests {
     }
 
     #[test]
+    fn guarded_merge_rejects_a_target_branch_that_changed_after_preflight() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "late base change").unwrap();
+        commit_repo(&repo, "chore: late base change", true).unwrap();
+
+        let error = verify_expected_merge_identity(
+            &repo,
+            "feature",
+            &base_branch,
+            Some(&feature_commit.to_string()),
+            Some(&expected_base.to_string()),
+        )
+        .expect_err("a changed target ref must fence the merge");
+
+        assert!(error.to_string().contains("durable target identity"));
+    }
+
+    #[test]
+    fn guarded_merge_state_recognizes_only_the_exact_intended_merge_commit() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        let pending = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(pending.status, "pending");
+        assert_eq!(pending.target_commit, expected_base.to_string());
+
+        merge_repo(&repo, "feature", &base_branch).unwrap();
+        let integrated = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(integrated.status, "integrated");
+        assert_ne!(integrated.target_commit, expected_base.to_string());
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("unrelated.txt"), "unrelated change").unwrap();
+        commit_repo(&repo, "chore: unrelated change", true).unwrap();
+        let error = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .expect_err("a later target commit must not impersonate the intended merge");
+        assert!(error.to_string().contains("unrelated commit"));
+    }
+
+    #[test]
+    fn guarded_branch_sync_replays_a_completed_fast_forward_without_mutating_again() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "prepared-upstream", true).unwrap();
+        fs::write(temp.path().join("upstream.txt"), "upstream change").unwrap();
+        commit_repo(&repo, "feat: upstream change", true).unwrap();
+        let sync_target = repo
+            .find_branch("prepared-upstream", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        let first = apply_guarded_branch_sync(
+            &repo,
+            &base_branch,
+            &expected_base.to_string(),
+            &sync_target.to_string(),
+        )
+        .unwrap();
+        assert_eq!(first.status, "integrated");
+        assert_eq!(first.target_commit, sync_target.to_string());
+
+        let replay = apply_guarded_branch_sync(
+            &repo,
+            &base_branch,
+            &expected_base.to_string(),
+            &sync_target.to_string(),
+        )
+        .unwrap();
+        assert_eq!(replay.status, "integrated");
+        assert_eq!(replay.target_commit, first.target_commit);
+    }
+
+    #[test]
+    fn guarded_merge_completion_preserves_staged_resolution_and_fences_foreign_heads() {
+        let (temp, repo) = init_repo();
+        let base = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature", true).unwrap();
+        let source = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        checkout_repo(&repo, &base, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base change").unwrap();
+        commit_repo(&repo, "feat: base", true).unwrap();
+        let target = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        let output = run_git_command(
+            temp.path(),
+            &["merge".into(), "--no-ff".into(), "feature".into()],
+        )
+        .unwrap();
+        assert!(!output.success);
+        fs::write(temp.path().join("README.md"), "resolved content").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        assert!(!index.has_conflicts());
+        // A different MERGE_HEAD must leave the user's resolution untouched.
+        fs::write(repo.path().join("MERGE_HEAD"), &target).unwrap();
+        assert!(complete_guarded_merge_state(&repo, "feature", &base, &source, &target).is_err());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "resolved content"
+        );
+        assert_eq!(repo.state(), RepositoryState::Merge);
+        fs::write(repo.path().join("MERGE_HEAD"), &source).unwrap();
+        let result =
+            complete_guarded_merge_state(&repo, "feature", &base, &source, &target).unwrap();
+        assert_eq!(result.status, "integrated");
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_id(0).unwrap().to_string(), target);
+        assert_eq!(commit.parent_id(1).unwrap().to_string(), source);
+        let entry = commit
+            .tree()
+            .unwrap()
+            .get_path(Path::new("README.md"))
+            .unwrap();
+        assert_eq!(
+            repo.find_blob(entry.id()).unwrap().content(),
+            b"resolved content"
+        );
+        assert_eq!(
+            complete_guarded_merge_state(&repo, "feature", &base, &source, &target)
+                .unwrap()
+                .target_commit,
+            result.target_commit
+        );
+    }
+
+    #[test]
+    fn guarded_merge_recovery_aborts_only_its_exact_incomplete_merge() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        let root = repo_root(&repo).unwrap();
+        let output = run_git_command(
+            &root,
+            &[
+                "merge".to_string(),
+                "--no-ff".to_string(),
+                "--no-commit".to_string(),
+                "feature".to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(output.success);
+        assert_eq!(repo.state(), RepositoryState::Merge);
+
+        let reconciled = reconcile_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(reconciled.status, "pending");
+        assert_eq!(repo.state(), RepositoryState::Clean);
+        assert_eq!(
+            repo.find_branch(&base_branch, BranchType::Local)
+                .unwrap()
+                .get()
+                .peel_to_commit()
+                .unwrap()
+                .id(),
+            expected_base
+        );
+    }
+
+    #[test]
     fn test_git_merge_check_detects_conflicts() {
         let (temp, repo) = init_repo();
         let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
@@ -17244,6 +15042,9 @@ mod tests {
 
         let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert_eq!(file.base.content, "hello");
+        assert_eq!(file.base.size_bytes, 5);
+        assert!(!file.base.is_binary);
+        assert!(!file.base.too_large);
         assert_eq!(file.ours.content, "base branch change");
         assert_eq!(file.theirs.content, "feature branch change");
         assert!(file.worktree.content.contains("<<<<<<<"));
@@ -17315,6 +15116,68 @@ mod tests {
     }
 
     #[test]
+    fn test_accept_binary_conflict_side_preserves_selected_bytes() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let incoming = vec![0, 1, 2, 3, 4];
+        let current = vec![0, 5, 6, 7, 8];
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), &incoming).unwrap();
+        commit_repo(&repo, "feat: update binary readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), &current).unwrap();
+        commit_repo(&repo, "feat: update binary readme on base", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert!(file.is_binary);
+        assert!(file.theirs.content.is_empty());
+        assert_eq!(file.theirs.size_bytes, incoming.len());
+        assert!(file.theirs.is_binary);
+        assert!(!file.theirs.too_large);
+
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
+
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), current);
+        assert_eq!(integrity_index_blob(&repo, "README.md"), current);
+        assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
+    }
+
+    #[test]
+    fn test_accept_large_conflict_side_preserves_selected_bytes() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let incoming = vec![b'i'; MAX_CONFLICT_FILE_BYTES + 1];
+        let current = vec![b'c'; MAX_CONFLICT_FILE_BYTES + 1];
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), &incoming).unwrap();
+        commit_repo(&repo, "feat: update large readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), &current).unwrap();
+        commit_repo(&repo, "feat: update large readme on base", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert!(file.too_large);
+        assert!(file.theirs.content.is_empty());
+        assert_eq!(file.theirs.size_bytes, incoming.len());
+        assert!(!file.theirs.is_binary);
+        assert!(file.theirs.too_large);
+
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), incoming);
+        assert_eq!(integrity_index_blob(&repo, "README.md"), incoming);
+        assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
+    }
+
+    #[test]
     fn test_git_fast_forward_advances_target_branch() {
         let (temp, repo) = init_repo();
         let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
@@ -17347,6 +15210,7 @@ mod tests {
         let check = build_git_rebase_check(&repo, "feature", &base_branch).unwrap();
         assert!(check.rebaseable);
         assert!(check.conflict_files.is_empty());
+        assert!(repo.worktrees().unwrap().is_empty());
     }
 
     #[test]
@@ -17365,6 +15229,287 @@ mod tests {
         let check = build_git_rebase_check(&repo, "feature", &base_branch).unwrap();
         assert!(!check.rebaseable);
         assert!(check.conflict_files.iter().any(|path| path == "README.md"));
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_git_rebase_check_cleans_up_after_bounded_command_errors() {
+        let (_temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        for fail_during_add in [false, true] {
+            for excessive_output in [false, true] {
+                let observed = std::cell::RefCell::new(None::<PathBuf>);
+                let runner = |cwd: &Path, args: &[String]| {
+                    if args.get(1).map(String::as_str) == Some("add") {
+                        *observed.borrow_mut() = Some(PathBuf::from(&args[3]));
+                        let output = run_git_command(cwd, args)?;
+                        assert!(output.success);
+                        if !fail_during_add {
+                            return Ok(output);
+                        }
+                    } else if args.first().map(String::as_str) != Some("rebase") {
+                        return run_git_command(cwd, args);
+                    }
+                    let script = if excessive_output {
+                        "alias.fixture=!printf '%0300000d' 0"
+                    } else {
+                        "alias.fixture=!sh -c 'sleep 30 & wait'"
+                    };
+                    run_contained_git_command_with_timeout(
+                        cwd,
+                        &["-c".into(), script.into(), "fixture".into()],
+                        Duration::from_millis(200),
+                        true,
+                    )
+                };
+                let error =
+                    match build_git_rebase_check_with_runner(&repo, &branch, &branch, &runner) {
+                        Ok(_) => panic!("bounded command must fail"),
+                        Err(error) => error.to_string(),
+                    };
+                assert!(
+                    error.contains(if excessive_output {
+                        "too much output"
+                    } else {
+                        "timed out"
+                    }),
+                    "{error}"
+                );
+                assert!(!observed.borrow().as_ref().unwrap().exists());
+                assert!(repo.worktrees().unwrap().is_empty());
+                assert_eq!(
+                    get_branch_name(&repo).unwrap().as_deref(),
+                    Some(branch.as_str())
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_git_rebase_check_cleans_interrupted_worktree_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        let hook = repo.path().join("hooks/post-checkout");
+        fs::write(&hook, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let observed = std::cell::RefCell::new(None::<PathBuf>);
+        let runner = |cwd: &Path, args: &[String]| {
+            if args.get(1).map(String::as_str) == Some("add") {
+                *observed.borrow_mut() = Some(PathBuf::from(&args[3]));
+                return run_contained_git_command_with_timeout(
+                    cwd,
+                    args,
+                    Duration::from_secs(1),
+                    false,
+                );
+            }
+            run_git_mutation_command(cwd, args)
+        };
+        let error = match build_git_rebase_check_with_runner(&repo, &branch, &branch, &runner) {
+            Ok(_) => panic!("worktree creation hook must time out"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("timed out"), "{error}");
+        let path = observed.into_inner().unwrap();
+        // Git can leave its initialization lock. Either removal completed or
+        // the returned error must identify the retained recoverable worktree.
+        if path.exists() {
+            assert!(error.contains("cleanup failed"), "{error}");
+            assert!(error.contains(path.to_str().unwrap()), "{error}");
+            let output = run_git_mutation_command(
+                &repo_root(&repo).unwrap(),
+                &[
+                    "worktree".into(),
+                    "remove".into(),
+                    "--force".into(),
+                    "--force".into(),
+                    path.to_string_lossy().into_owned(),
+                ],
+            )
+            .unwrap();
+            assert!(output.success, "{}", output.stderr);
+        }
+        assert!(!path.exists());
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_git_rebase_check_reports_recoverable_cleanup_failure() {
+        let (_temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        let retained = std::cell::RefCell::new(None::<PathBuf>);
+        let runner = |cwd: &Path, args: &[String]| {
+            if args.get(1).map(String::as_str) == Some("remove") {
+                *retained.borrow_mut() = Some(PathBuf::from(&args[3]));
+                return Err(BackendError::Git {
+                    message: "fixture cleanup timeout".into(),
+                });
+            }
+            run_git_command(cwd, args)
+        };
+        let error = match build_git_rebase_check_with_runner(&repo, &branch, &branch, &runner) {
+            Ok(_) => panic!("cleanup failure must not report success"),
+            Err(error) => error.to_string(),
+        };
+        let path = retained.into_inner().unwrap();
+        assert!(error.contains("fixture cleanup timeout"));
+        assert!(error.contains(path.to_str().unwrap()));
+        assert!(path.exists());
+        assert_eq!(repo.worktrees().unwrap().len(), 1);
+        cleanup_temp_worktree(&repo_root(&repo).unwrap(), &path, &run_git_command).unwrap();
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_git_rebase_refused_by_hook_restores_original_branch() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, repo) = init_repo();
+        let base = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature").unwrap();
+        commit_repo(&repo, "feat: feature", true).unwrap();
+        checkout_repo(&repo, &base, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "base").unwrap();
+        commit_repo(&repo, "feat: base", true).unwrap();
+        let hook = repo.path().join("hooks/pre-rebase");
+        fs::write(&hook, "#!/bin/sh\necho fixture-refusal >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = rebase_branch_repo(&repo, "feature", &base, Some(true)).unwrap_err();
+        assert!(error.to_string().contains("fixture-refusal"));
+        assert_eq!(
+            get_branch_name(&repo).unwrap().as_deref(),
+            Some(base.as_str())
+        );
+        assert_eq!(repo.state(), RepositoryState::Clean);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_git_explicit_operation_preserves_repository_ssh_command() {
+        let (temp, repo) = init_repo();
+        repo.config()
+            .unwrap()
+            .set_str("core.sshCommand", "echo fixture-ssh-selected >&2; exit 1")
+            .unwrap();
+        let output = run_git_command(
+            temp.path(),
+            &["ls-remote".into(), "ssh://fixture.invalid/repo".into()],
+        )
+        .unwrap();
+        assert!(!output.success);
+        assert!(
+            output.stderr.contains("fixture-ssh-selected"),
+            "{}",
+            output.stderr
+        );
+    }
+
+    #[test]
+    fn contained_git_mutation_preserves_success_with_large_diagnostics() {
+        let (temp, _repo) = init_repo();
+        let output = run_git_mutation_command(
+            temp.path(),
+            &[
+                "-c".into(),
+                "alias.fixture=!printf '%0300000d' 0".into(),
+                "fixture".into(),
+            ],
+        )
+        .unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("[Git output truncated by Macro]"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_git_timeout_reports_retained_index_lock_and_kills_filter() {
+        let (temp, repo) = init_repo();
+        fs::write(
+            temp.path().join(".gitattributes"),
+            "README.md filter=fixture\n",
+        )
+        .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str(
+                "filter.fixture.clean",
+                "echo $$ > filter.pid; exec sleep 30",
+            )
+            .unwrap();
+        fs::write(temp.path().join("README.md"), "new content").unwrap();
+        let error = match run_contained_git_command_with_timeout(
+            temp.path(),
+            &["add".into(), "README.md".into()],
+            Duration::from_secs(1),
+            false,
+        ) {
+            Ok(_) => panic!("filter must time out"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("timed out"), "{error}");
+        assert!(error.contains("index.lock"), "{error}");
+        assert!(repo.path().join("index.lock").exists());
+        let pid: i32 = fs::read_to_string(temp.path().join("filter.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "filter survived termination"
+        );
+        // The fixture owns this lock. Production must not remove an unproven lock.
+        fs::remove_file(repo.path().join("index.lock")).unwrap();
+        repo.config()
+            .unwrap()
+            .remove("filter.fixture.clean")
+            .unwrap();
+        assert!(
+            run_git_mutation_command(temp.path(), &["add".into(), "README.md".into()])
+                .unwrap()
+                .success
+        );
+    }
+
+    #[test]
+    fn test_git_rebase_branch_preserves_reflog_evidence() {
+        let (temp, repo) = init_repo();
+        let base = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature").unwrap();
+        commit_repo(&repo, "feat: feature", true).unwrap();
+        checkout_repo(&repo, &base, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "base").unwrap();
+        commit_repo(&repo, "feat: base", true).unwrap();
+        rebase_branch_repo_with_reflog_action(
+            &repo,
+            "feature",
+            &base,
+            Some(true),
+            Some("macro-fixture-proof"),
+        )
+        .unwrap();
+        assert!(repo
+            .reflog("refs/heads/feature")
+            .unwrap()
+            .iter()
+            .any(|entry| entry
+                .message()
+                .unwrap()
+                .unwrap_or("")
+                .contains("macro-fixture-proof")));
+        assert_eq!(
+            get_branch_name(&repo).unwrap().as_deref(),
+            Some(base.as_str())
+        );
     }
 
     #[test]
@@ -17388,12 +15533,336 @@ mod tests {
         assert_eq!(check.behind, 0);
     }
 
+    fn integrity_git(repo: &Repository, args: &[&str]) {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let output = run_git_command(&repo_root(repo).unwrap(), &args).unwrap();
+        assert!(output.success, "{}", command_output_text(&output));
+    }
+
+    fn integrity_index_blob(repo: &Repository, path: &str) -> Vec<u8> {
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        let entry = index.get_path(Path::new(path), 0).unwrap();
+        repo.find_blob(entry.id).unwrap().content().to_vec()
+    }
+
+    #[test]
+    fn integrity_stage_preserves_external_stage_and_respects_lock() {
+        let (temp, repo) = init_repo();
+        let _cached = repo.index().unwrap();
+        fs::write(temp.path().join("external.txt"), "prepared only").unwrap();
+        integrity_git(&repo, &["add", "external.txt"]);
+        fs::write(temp.path().join("external.txt"), "later worktree").unwrap();
+        fs::write(temp.path().join("README.md"), "selected").unwrap();
+        fs::write(repo.path().join("index.lock"), "other writer").unwrap();
+        let before = fs::read(repo.path().join("index")).unwrap();
+        assert!(add_paths(&repo, &["README.md".into()]).is_err());
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), before);
+        fs::remove_file(repo.path().join("index.lock")).unwrap();
+        add_paths(&repo, &["README.md".into()]).unwrap();
+        assert_eq!(
+            integrity_index_blob(&repo, "external.txt"),
+            b"prepared only"
+        );
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"selected");
+        restore_paths(&repo, &["README.md".into()], RestoreTarget::Staged).unwrap();
+        assert_eq!(
+            integrity_index_blob(&repo, "external.txt"),
+            b"prepared only"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("README.md")).unwrap(),
+            b"selected"
+        );
+    }
+
+    #[test]
+    fn integrity_commit_uses_only_prepared_index_content() {
+        let (temp, repo) = init_repo();
+        let original = repo.head().unwrap().target().unwrap();
+        fs::write(temp.path().join("README.md"), "prepared").unwrap();
+        add_paths(&repo, &["README.md".into()]).unwrap();
+        fs::write(temp.path().join("README.md"), "later worktree").unwrap();
+        commit_repo(&repo, "test: commit prepared index", false).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_id(0).unwrap(), original);
+        let tree = commit.tree().unwrap();
+        let entry = tree.get_path(Path::new("README.md")).unwrap();
+        assert_eq!(repo.find_blob(entry.id()).unwrap().content(), b"prepared");
+        assert_eq!(
+            fs::read(temp.path().join("README.md")).unwrap(),
+            b"later worktree"
+        );
+        assert!(commit_repo(&repo, "test: refuse unchanged index", false).is_err());
+        assert_eq!(repo.head().unwrap().target(), Some(commit.id()));
+    }
+
+    #[test]
+    fn integrity_stage_and_unstage_deletion_and_rename() {
+        let (temp, repo) = init_repo();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        fs::write(temp.path().join("extra.txt"), "extra").unwrap();
+        add_paths(&repo, &["README.md".into(), "extra.txt".into()]).unwrap();
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("README.md"), 0)
+            .is_none());
+        restore_paths(&repo, &["README.md".into()], RestoreTarget::Staged).unwrap();
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"hello");
+        assert!(!temp.path().join("README.md").exists());
+        assert_eq!(integrity_index_blob(&repo, "extra.txt"), b"extra");
+        fs::write(temp.path().join("renamed.md"), "hello").unwrap();
+        add_paths(&repo, &["renamed.md".into()]).unwrap();
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("README.md"), 0)
+            .is_none());
+        assert_eq!(integrity_index_blob(&repo, "renamed.md"), b"hello");
+        fs::write(temp.path().join("renamed.md"), "later worktree").unwrap();
+        restore_paths(&repo, &["renamed.md".into()], RestoreTarget::Staged).unwrap();
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"hello");
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("renamed.md"), 0)
+            .is_none());
+        assert_eq!(
+            fs::read(temp.path().join("renamed.md")).unwrap(),
+            b"later worktree"
+        );
+    }
+
+    #[test]
+    fn integrity_unstage_unborn_repository_preserves_worktree() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join("new.txt"), "staged").unwrap();
+        add_paths(&repo, &["new.txt".into()]).unwrap();
+        fs::write(temp.path().join("new.txt"), "later").unwrap();
+        restore_paths(&repo, &["new.txt".into()], RestoreTarget::Staged).unwrap();
+        assert!(repo.index().unwrap().is_empty());
+        assert_eq!(fs::read(temp.path().join("new.txt")).unwrap(), b"later");
+    }
+
+    #[test]
+    fn integrity_checkout_resolves_commits_and_tags_without_partial_mutation() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        let oid = repo.head().unwrap().target().unwrap();
+        integrity_git(&repo, &["tag", "light"]);
+        integrity_git(&repo, &["tag", "-a", "annotated", "-m", "tag"]);
+        for target in [
+            oid.to_string(),
+            oid.to_string()[..9].to_string(),
+            "light".into(),
+            "annotated".into(),
+        ] {
+            checkout_repo(&repo, &target, false).unwrap();
+            assert!(repo.head_detached().unwrap());
+            assert_eq!(repo.head().unwrap().target(), Some(oid));
+        }
+        checkout_repo(&repo, &branch, false).unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::write(temp.path().join("README.md"), "topic").unwrap();
+        commit_repo(&repo, "test: topic", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        let linked = temp.path().join("linked");
+        integrity_git(
+            &repo,
+            &["worktree", "add", linked.to_str().unwrap(), "topic"],
+        );
+        // Keep the synthetic linked checkout outside the visible worktree status.
+        fs::write(repo.path().join("info/exclude"), "/linked/\n").unwrap();
+        let before = repo.index().unwrap().write_tree().unwrap();
+        assert!(checkout_repo(&repo, "topic", false).is_err());
+        assert!(checkout_repo(&repo, "absent-ref", false).is_err());
+        assert_eq!(get_branch_name(&repo).unwrap(), Some(branch));
+        let mut refreshed_index = repo.index().unwrap();
+        refreshed_index.read(true).unwrap();
+        assert_eq!(refreshed_index.write_tree().unwrap(), before);
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), b"hello");
+        assert!(delete_local_branch(&repo, "topic", true, None).is_err());
+    }
+
+    #[test]
+    fn integrity_general_commit_refuses_merge_and_finalizer_preserves_parents() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::write(temp.path().join("README.md"), "topic").unwrap();
+        commit_repo(&repo, "test: topic", true).unwrap();
+        let theirs = repo.head().unwrap().target().unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base").unwrap();
+        commit_repo(&repo, "test: base", true).unwrap();
+        let ours = repo.head().unwrap().target().unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        assert!(commit_repo(&repo, "test: unresolved", true).is_err());
+        let mut unresolved_index = repo.index().unwrap();
+        unresolved_index.read(true).unwrap();
+        assert!(unresolved_index.has_conflicts());
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
+        assert!(commit_repo(&repo, "test: resolved", false).is_err());
+        assert_eq!(repo.head().unwrap().target(), Some(ours));
+        complete_merge_repo(&repo).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_ids().collect::<Vec<_>>(), vec![ours, theirs]);
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+    }
+
+    #[test]
+    fn integrity_delete_branch_accepts_equal_and_ancestor_but_refuses_divergent() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        integrity_git(&repo, &["branch", "equal"]);
+        delete_local_branch(&repo, "equal", false, None).unwrap();
+        assert!(repo.find_branch("equal", BranchType::Local).is_err());
+        integrity_git(&repo, &["branch", "ancestor"]);
+        fs::write(temp.path().join("README.md"), "advance").unwrap();
+        commit_repo(&repo, "test: advance", true).unwrap();
+        delete_local_branch(&repo, "ancestor", false, None).unwrap();
+        checkout_repo(&repo, "divergent", true).unwrap();
+        fs::write(temp.path().join("README.md"), "divergent").unwrap();
+        commit_repo(&repo, "test: divergent", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        assert!(delete_local_branch(&repo, "divergent", false, None).is_err());
+        assert!(delete_local_branch(&repo, &branch, true, None).is_err());
+    }
+
+    #[test]
+    fn integrity_accept_deleted_conflict_side_stages_deletion() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: delete incoming file", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "ours").unwrap();
+        commit_repo(&repo, "test: modify current file", true).unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert!(!index.has_conflicts());
+        assert!(index.get_path(Path::new("README.md"), 0).is_none());
+        assert!(!temp.path().join("README.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integrity_accept_conflict_preserves_executable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::write(temp.path().join("README.md"), "incoming executable").unwrap();
+        fs::set_permissions(
+            temp.path().join("README.md"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        commit_repo(&repo, "test: executable incoming", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "ours regular").unwrap();
+        commit_repo(&repo, "test: regular current", true).unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.filemode", false)
+            .unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert_eq!(
+            index.get_path(Path::new("README.md"), 0).unwrap().mode,
+            0o100755
+        );
+        assert_ne!(
+            fs::metadata(temp.path().join("README.md"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(
+            integrity_index_blob(&repo, "README.md"),
+            b"incoming executable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integrity_accept_conflict_preserves_symlink_mode() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        std::os::unix::fs::symlink("base-target", temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: base link", true).unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        std::os::unix::fs::symlink("topic-target", temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: topic link", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        std::os::unix::fs::symlink("ours-target", temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: ours link", true).unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+        assert_eq!(
+            fs::read_link(temp.path().join("README.md")).unwrap(),
+            Path::new("topic-target")
+        );
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert_eq!(
+            index.get_path(Path::new("README.md"), 0).unwrap().mode,
+            0o120000
+        );
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"topic-target");
+    }
+
     #[test]
     fn test_git_commit_new_file() {
         let (temp, repo) = init_repo();
         fs::write(temp.path().join("notes.txt"), "notes").unwrap();
         let hash = commit_repo(&repo, "feat: add notes", true).unwrap();
         assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn test_git_commit_without_stage_all_rejects_unstaged_only_change() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "unstaged change").unwrap();
+
+        let error = commit_repo(&repo, "fix: should not be empty", false)
+            .expect_err("unstaged-only commit must fail before git commit");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "No staged changes to commit"
+        ));
+    }
+
+    #[test]
+    fn test_git_commit_without_stage_all_rejects_untracked_only_root_commit() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = Repository::init(temp.path()).expect("init empty repo");
+        fs::write(temp.path().join("untracked.txt"), "untracked").expect("write untracked file");
+
+        let error = commit_repo(&repo, "feat: should not be empty", false)
+            .expect_err("untracked-only root commit must fail");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "No staged changes to commit"
+        ));
+        assert!(
+            repo.head().is_err(),
+            "an empty root commit must not be created"
+        );
     }
 
     #[test]
@@ -17736,7 +16205,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_repo_hard() {
+    fn test_reset_repo_hard_discards_tracked_changes_and_preserves_untracked_files() {
         let (temp, repo) = init_repo();
         let initial_commit = repo.head().unwrap().target().unwrap().to_string();
 
@@ -17750,10 +16219,577 @@ mod tests {
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
             .unwrap();
+        drop(parent);
+        drop(tree);
 
-        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+        fs::write(&file_path, "staged dirty change").unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        fs::write(&file_path, "worktree dirty change").unwrap();
+        let staged_only_path = temp.path().join("staged-only.txt");
+        fs::write(&staged_only_path, "discard staged addition").unwrap();
+        index.add_path(Path::new("staged-only.txt")).unwrap();
+        index.write().unwrap();
+        let untracked_path = temp.path().join("untracked.txt");
+        fs::write(&untracked_path, "keep untracked").unwrap();
+
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
         let contents = fs::read_to_string(&file_path).unwrap();
         assert_eq!(contents, "hello");
+        let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(pair.index_content, "hello");
+        assert_eq!(pair.worktree_content, "hello");
+        assert!(
+            !staged_only_path.exists(),
+            "hard reset must discard staged additions that are absent from the target"
+        );
+        assert_eq!(
+            fs::read_to_string(untracked_path).unwrap(),
+            "keep untracked"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_rejects_untracked_file_and_directory_collisions() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("collision.txt"), "tracked target").unwrap();
+        fs::create_dir_all(temp.path().join("target-directory")).unwrap();
+        fs::write(
+            temp.path().join("target-directory/tracked.txt"),
+            "tracked target",
+        )
+        .unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset targets", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "collision.txt\n").unwrap();
+        fs::write(temp.path().join("collision.txt"), "untracked file").unwrap();
+        let file_error = reset_repo(&repo, "hard", Some(target_commit.clone()))
+            .expect_err("hard reset must reject an untracked file collision");
+        assert!(file_error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("collision.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("collision.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+
+        fs::remove_file(temp.path().join("collision.txt")).unwrap();
+        fs::create_dir_all(temp.path().join("target-directory/tracked.txt")).unwrap();
+        fs::write(
+            temp.path().join("target-directory/tracked.txt/local.txt"),
+            "untracked directory contents",
+        )
+        .unwrap();
+        let directory_error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject an untracked directory collision");
+        assert!(directory_error
+            .to_string()
+            .contains("target-directory/tracked.txt/local.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("target-directory/tracked.txt/local.txt")).unwrap(),
+            "untracked directory contents"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_collision_created_after_preflight() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        let collision_path = temp.path().join("late-collision.txt");
+        fs::write(&collision_path, "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add late reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        fs::write(repo.path().join("info/exclude"), "late-collision.txt\n").unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+
+        let hook_collision_path = collision_path.clone();
+        install_native_hard_reset_after_preflight_hook(repo_root(&repo).unwrap(), move || {
+            fs::write(hook_collision_path, "concurrent untracked file").unwrap();
+        });
+
+        reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("checkout must refuse a collision created after the preflight");
+
+        assert_eq!(
+            fs::read_to_string(collision_path).unwrap(),
+            "concurrent untracked file"
+        );
+        let readme = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(readme.index_content, "hello");
+        assert_eq!(readme.worktree_content, "dirty tracked worktree");
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_a_tracked_path_replaced_during_backup() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        let readme_path = temp.path().join("README.md");
+        let displaced_path = temp.path().join("README.before-concurrent-replacement");
+        fs::write(&readme_path, "dirty tracked worktree").unwrap();
+        let hook_readme_path = readme_path.clone();
+        let hook_displaced_path = displaced_path.clone();
+        install_native_hard_reset_before_tracked_isolation_hook(
+            repo_root(&repo).unwrap(),
+            move || {
+                fs::rename(&hook_readme_path, &hook_displaced_path).unwrap();
+                fs::write(&hook_readme_path, "concurrent replacement").unwrap();
+            },
+        );
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject a tracked path replacement during backup");
+
+        assert!(error.to_string().contains("concurrently replaced path"));
+        assert_eq!(
+            fs::read_to_string(readme_path).unwrap(),
+            "concurrent replacement"
+        );
+        assert_eq!(
+            fs::read_to_string(displaced_path).unwrap(),
+            "dirty tracked worktree"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        assert_eq!(
+            read_git_file_pair(&repo, temp.path(), Path::new("README.md"))
+                .unwrap()
+                .index_content,
+            "hello"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_a_tracked_path_modified_during_backup() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        let readme_path = temp.path().join("README.md");
+        fs::write(&readme_path, "dirty tracked worktree").unwrap();
+        let hook_readme_path = readme_path.clone();
+        install_native_hard_reset_before_tracked_isolation_hook(
+            repo_root(&repo).unwrap(),
+            move || {
+                fs::write(&hook_readme_path, "concurrent in-place update").unwrap();
+            },
+        );
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject a tracked path update during backup");
+
+        assert!(error
+            .to_string()
+            .contains("concurrently modified tracked path 'README.md'"));
+        assert_eq!(
+            fs::read_to_string(readme_path).unwrap(),
+            "concurrent in-place update"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        assert_eq!(
+            read_git_file_pair(&repo, temp.path(), Path::new("README.md"))
+                .unwrap()
+                .index_content,
+            "hello"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_retains_writes_through_an_open_file_handle() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+
+        let readme_path = temp.path().join("README.md");
+        fs::write(&readme_path, "dirty tracked worktree").unwrap();
+        let mut open_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&readme_path)
+            .unwrap();
+        install_native_hard_reset_after_tracked_isolation_hook(
+            repo_root(&repo).unwrap(),
+            move || {
+                open_writer.set_len(0).unwrap();
+                open_writer
+                    .write_all(b"concurrent open-handle update")
+                    .unwrap();
+                open_writer.sync_all().unwrap();
+            },
+        );
+
+        reset_repo(&repo, "hard", Some(target_commit)).unwrap();
+
+        assert_eq!(fs::read_to_string(readme_path).unwrap(), "target readme");
+        let recovery_root = repo.path().join("macro-hard-reset-recovery");
+        let retained = fs::read_dir(recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("original/README.md"))
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .any(|contents| contents == "concurrent open-handle update");
+        assert!(
+            retained,
+            "the inode updated through the open handle must remain recoverable"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_recovery_survives_linked_worktree_removal() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        let worktree_temp = TempDir::new().unwrap();
+        let worktree_path = worktree_temp.path().join("linked-reset-worktree");
+        let add_output = run_git_command(
+            temp.path(),
+            &[
+                "worktree".to_string(),
+                "add".to_string(),
+                "-b".to_string(),
+                "recovery-check".to_string(),
+                worktree_path.to_string_lossy().into_owned(),
+                initial_commit,
+            ],
+        )
+        .unwrap();
+        assert!(add_output.success, "{}", add_output.stderr);
+
+        let worktree_repo = Repository::open(&worktree_path).unwrap();
+        fs::write(worktree_path.join("README.md"), "discarded worktree data").unwrap();
+        reset_repo(&worktree_repo, "hard", Some(target_commit)).unwrap();
+        let recovery_root = repo.commondir().join("macro-hard-reset-recovery");
+        let retained_path = fs::read_dir(&recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("original/README.md"))
+            .find(|path| {
+                fs::read_to_string(path).is_ok_and(|contents| contents == "discarded worktree data")
+            })
+            .expect("the linked worktree recovery must use the common Git directory");
+        drop(worktree_repo);
+
+        let remove_output = run_git_command(
+            temp.path(),
+            &[
+                "worktree".to_string(),
+                "remove".to_string(),
+                worktree_path.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(remove_output.success, "{}", remove_output.stderr);
+        assert_eq!(
+            fs::read_to_string(retained_path).unwrap(),
+            "discarded worktree data"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_rolls_back_a_finalization_failure() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        fs::write(temp.path().join("target-only.txt"), "target only").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add final reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(temp.path().join("README.md"), "staged readme").unwrap();
+        add_paths(&repo, &["README.md".to_string()]).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty readme").unwrap();
+        fs::write(temp.path().join("staged-only.txt"), "staged only").unwrap();
+        add_paths(&repo, &["staged-only.txt".to_string()]).unwrap();
+
+        install_native_hard_reset_before_final_reset_hook(repo_root(&repo).unwrap(), || {});
+        let reset_error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must roll back");
+        assert!(
+            !reset_error.to_string().contains("rollback was incomplete"),
+            "{reset_error}"
+        );
+
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        let readme = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(readme.index_content, "staged readme");
+        assert_eq!(readme.worktree_content, "dirty readme");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("staged-only.txt")).unwrap(),
+            "staged only"
+        );
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("staged-only.txt"), 0)
+            .is_some());
+        assert!(!temp.path().join("target-only.txt").exists());
+    }
+
+    #[test]
+    fn test_reset_repo_hard_does_not_overwrite_a_concurrently_modified_index() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+        fs::write(
+            temp.path().join("concurrent-index.txt"),
+            "concurrent staged data",
+        )
+        .unwrap();
+        let hook_repo_root = repo_root(&repo).unwrap();
+        install_native_hard_reset_before_final_reset_hook(hook_repo_root.clone(), move || {
+            let concurrent_repo = Repository::open(&hook_repo_root).unwrap();
+            let mut concurrent_index = concurrent_repo.index().unwrap();
+            concurrent_index
+                .add_path(Path::new("concurrent-index.txt"))
+                .unwrap();
+            concurrent_index.write().unwrap();
+        });
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must retain a concurrent index update");
+
+        assert!(error
+            .to_string()
+            .contains("concurrently modified Git index"));
+        let mut retained_index = repo.index().unwrap();
+        retained_index.read(true).unwrap();
+        assert!(retained_index
+            .get_path(Path::new("concurrent-index.txt"), 0)
+            .is_some());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("concurrent-index.txt")).unwrap(),
+            "concurrent staged data"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "dirty tracked worktree"
+        );
+        cleanup_test_hard_reset_recovery(&error);
+    }
+
+    #[test]
+    fn test_reset_repo_hard_does_not_delete_a_concurrently_modified_target_file() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+
+        let hook_readme = temp.path().join("README.md");
+        install_native_hard_reset_before_final_reset_hook(repo_root(&repo).unwrap(), move || {
+            fs::write(hook_readme, "concurrent target modification").unwrap();
+        });
+
+        let error = reset_repo(&repo, "hard", Some(target_commit)).expect_err(
+            "injected finalization failure must retain a concurrent target modification",
+        );
+
+        assert!(error
+            .to_string()
+            .contains("Injected hard reset finalization failure"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "dirty tracked worktree"
+        );
+        let recovery_root = repo.path().join("macro-hard-reset-recovery");
+        let retained = fs::read_dir(recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("rollback-target/README.md"))
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .any(|contents| contents == "concurrent target modification");
+        assert!(
+            retained,
+            "the concurrently modified reset target must remain recoverable"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        let mut restored_index = repo.index().unwrap();
+        restored_index.read(true).unwrap();
+        assert_eq!(
+            repo.find_blob(
+                restored_index
+                    .get_path(Path::new("README.md"), 0)
+                    .unwrap()
+                    .id
+            )
+            .unwrap()
+            .content(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_does_not_overwrite_a_concurrently_moved_head() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        fs::write(temp.path().join("README.md"), "concurrent commit").unwrap();
+        let concurrent_commit = commit_repo(&repo, "feat: concurrent commit", true).unwrap();
+        let concurrent_oid = repo.revparse_single(&concurrent_commit).unwrap().id();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+
+        let hook_repo_root = repo_root(&repo).unwrap();
+        let head_name = repo.head().unwrap().name().unwrap().to_string();
+        install_native_hard_reset_before_final_reset_hook(hook_repo_root.clone(), move || {
+            let concurrent_repo = Repository::open(&hook_repo_root).unwrap();
+            concurrent_repo
+                .reference(&head_name, concurrent_oid, true, "concurrent branch update")
+                .unwrap();
+        });
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must retain a concurrent HEAD update");
+
+        assert!(error
+            .to_string()
+            .contains("concurrent update of refs/heads/"));
+        assert!(repo
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string()
+            .starts_with(&concurrent_commit));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "dirty tracked worktree"
+        );
+        cleanup_test_hard_reset_recovery(&error);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_reset_repo_hard_rejects_case_alias_in_insensitive_directory() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("case-collision.txt"), "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add case collision target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "CASE-COLLISION.txt\n").unwrap();
+        fs::write(temp.path().join("CASE-COLLISION.txt"), "untracked file").unwrap();
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject an alias on a case-insensitive directory");
+
+        assert!(error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("case-collision.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("CASE-COLLISION.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_reset_repo_hard_allows_distinct_case_in_case_sensitive_directory() {
+        let (temp, repo) = init_repo();
+        let case_sensitive_directory = temp.path().join("case-sensitive");
+        fs::create_dir(&case_sensitive_directory).unwrap();
+        let status = background_command("fsutil.exe")
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(&case_sensitive_directory)
+            .arg("enable")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !status.is_ok_and(|status| status.success()) {
+            return;
+        }
+
+        let lowercase_probe = case_sensitive_directory.join("case-probe");
+        let uppercase_probe = case_sensitive_directory.join("CASE-PROBE");
+        fs::write(&lowercase_probe, "lowercase probe").unwrap();
+        let distinct_case_is_supported = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&uppercase_probe)
+            .is_ok();
+        fs::remove_file(&lowercase_probe).unwrap();
+        if distinct_case_is_supported {
+            fs::remove_file(&uppercase_probe).unwrap();
+        } else {
+            return;
+        }
+
+        repo.config()
+            .unwrap()
+            .set_bool("core.ignorecase", false)
+            .unwrap();
+        fs::write(case_sensitive_directory.join(".keep"), "keep directory").unwrap();
+        commit_repo(&repo, "test: retain case-sensitive directory", true).unwrap();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(case_sensitive_directory.join("foo.txt"), "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add case-sensitive target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "case-sensitive/FOO.txt\n").unwrap();
+        fs::write(case_sensitive_directory.join("FOO.txt"), "untracked file").unwrap();
+
+        reset_repo(&repo, "hard", Some(target_commit)).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(case_sensitive_directory.join("FOO.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            fs::read_to_string(case_sensitive_directory.join("foo.txt")).unwrap(),
+            "tracked target"
+        );
     }
 
     #[test]

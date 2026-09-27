@@ -29,6 +29,7 @@ import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
 import { $createMentionNode } from './MentionNode';
 import { $createGoalCommandNode } from './GoalCommandNode';
+import { isComposerCompositionEvent } from './composerSubmitKey';
 import {
   hasFileQueryIntent,
   rankSlashContextCandidates,
@@ -174,7 +175,13 @@ const formatFileLocation = (file: WorkspaceFileReference): string => {
   return file.projectName ? `${file.projectName}/${relativePath}` : file.path;
 };
 
-export const SlashContextMenuPlugin: React.FC = () => {
+interface SlashContextMenuPluginProps {
+  compositionActiveRef: React.RefObject<boolean>;
+}
+
+export const SlashContextMenuPlugin: React.FC<SlashContextMenuPluginProps> = ({
+  compositionActiveRef,
+}) => {
   const { t } = useTranslation();
   const [editor] = useLexicalComposerContext();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -334,15 +341,14 @@ export const SlashContextMenuPlugin: React.FC = () => {
       Boolean(executionContext.workspacePath || executionContext.projectMounts.length > 0) &&
       (query.length >= 2 || hasFileQueryIntent(query));
 
+    const requestId = ++fileSearchRequestRef.current;
+    setFileResults((previous) => (previous.length === 0 ? previous : []));
+
     if (!shouldSearchFiles) {
-      fileSearchRequestRef.current += 1;
-      setFileResults((previous) => (previous.length === 0 ? previous : []));
       setIsSearchingFiles(false);
       return undefined;
     }
 
-    const requestId = fileSearchRequestRef.current + 1;
-    fileSearchRequestRef.current = requestId;
     setIsSearchingFiles(true);
 
     const timeoutId = window.setTimeout(() => {
@@ -370,7 +376,12 @@ export const SlashContextMenuPlugin: React.FC = () => {
         });
     }, 120);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (fileSearchRequestRef.current === requestId) {
+        fileSearchRequestRef.current += 1;
+      }
+    };
   }, [executionContext, trigger]);
 
   const menuItems = useMemo<SlashContextMenuItem[]>(() => {
@@ -650,6 +661,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
     return editor.registerCommand(
       KEY_ENTER_COMMAND,
       (event: KeyboardEvent | null) => {
+        if (!event || isComposerCompositionEvent(event, compositionActiveRef.current)) {
+          return false;
+        }
         event?.preventDefault();
         const item = menuItems[activeIndex];
         if (item && !item.disabled) {
@@ -659,7 +673,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
       },
       COMMAND_PRIORITY_CRITICAL,
     );
-  }, [activeIndex, editor, insertItem, menuItems, trigger]);
+  }, [activeIndex, compositionActiveRef, editor, insertItem, menuItems, trigger]);
 
   useEffect(() => {
     if (!trigger) return undefined;

@@ -20,3 +20,8 @@ pub use error::BackendError;
 pub use error::Result;
 pub use logging::init_logging;
 pub(crate) use logging::platform_log_dir;
+
+pub mod command_error;
+pub mod db_state;
+pub(crate) mod mcp_ids;
+pub mod workspace_execution;

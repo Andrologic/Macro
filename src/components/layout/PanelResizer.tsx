@@ -26,14 +26,23 @@ export function PanelResizer({
   const isDraggingRef = useRef(false);
   const startPos = useRef(0);
   const onResizeRef = useRef(onResize);
+  const previousBodyStylesRef = useRef<{ userSelect: string; cursor: string } | null>(null);
 
   // Keep onResize ref up to date
   useEffect(() => {
     onResizeRef.current = onResize;
   }, [onResize]);
 
+  const restoreBodyStyles = useCallback(() => {
+    const previousBodyStyles = previousBodyStylesRef.current;
+    if (!previousBodyStyles) return;
+    document.body.style.userSelect = previousBodyStyles.userSelect;
+    document.body.style.cursor = previousBodyStyles.cursor;
+    previousBodyStylesRef.current = null;
+  }, []);
+
   const handleMouseDown = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (disabled) return;
+    if (disabled || isDraggingRef.current) return;
     e.preventDefault();
     isDraggingRef.current = true;
     setIsDragging(true);
@@ -47,6 +56,10 @@ export function PanelResizer({
           : e.touches[0].clientX;
 
     // Disable text selection during drag
+    previousBodyStylesRef.current = {
+      userSelect: document.body.style.userSelect,
+      cursor: document.body.style.cursor,
+    };
     document.body.style.userSelect = 'none';
     document.body.style.cursor = orientation === 'vertical' ? 'row-resize' : 'col-resize';
   }, [disabled, orientation]);
@@ -92,8 +105,7 @@ export function PanelResizer({
       if (isDraggingRef.current) {
         isDraggingRef.current = false;
         setIsDragging(false);
-        document.body.style.userSelect = '';
-        document.body.style.cursor = '';
+        restoreBodyStyles();
       }
     };
 
@@ -107,8 +119,12 @@ export function PanelResizer({
       document.removeEventListener('touchmove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
       document.removeEventListener('touchend', handleMouseUp);
+      if (isDraggingRef.current) {
+        isDraggingRef.current = false;
+        restoreBodyStyles();
+      }
     };
-  }, [orientation]);
+  }, [orientation, restoreBodyStyles]);
 
   return (
     <div

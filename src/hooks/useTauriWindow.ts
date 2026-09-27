@@ -5,6 +5,7 @@ import {
   windowIsMaximized,
   windowMaximize,
   windowMinimize,
+  windowOnResized,
   windowStartDragging,
   windowToggleMaximize,
   windowUnmaximize,
@@ -21,6 +22,7 @@ export function useTauriWindow() {
     }
 
     let mounted = true;
+    let unlisten: (() => void) | undefined;
 
     const loadInitialWindowState = async () => {
       try {
@@ -36,10 +38,17 @@ export function useTauriWindow() {
       }
     };
 
+    void windowOnResized(() => { void loadInitialWindowState(); })
+      .then((cleanup) => {
+        if (mounted) unlisten = cleanup;
+        else cleanup();
+      })
+      .catch((error) => console.error('Failed to observe window state:', error));
     void loadInitialWindowState();
 
     return () => {
       mounted = false;
+      unlisten?.();
     };
   }, [isAvailable]);
 

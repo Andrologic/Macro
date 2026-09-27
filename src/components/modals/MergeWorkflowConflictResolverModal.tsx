@@ -7,6 +7,9 @@ import {
   gitStatus,
   gitWriteConflictResolution,
   type GitConflictFileDto,
+  type GitConflictFileSideDto,
+  type GitWorkflowSessionDto,
+  type GitWorkflowSessionIdentity,
 } from '../../services/tauriIpc';
 import { toServiceError } from '../../services/contracts/errors';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -29,7 +32,8 @@ type ConflictPresentationMode = 'focused' | 'full';
 type ConflictDraftOrigin = 'ours' | 'theirs' | 'worktree' | 'edited' | 'empty';
 type PendingDiscardAction =
   | { type: 'close' }
-  | { type: 'select_file'; path: string };
+  | { type: 'select_file'; path: string }
+  | { type: 'reload_file' };
 const CONFLICT_OPERATION_TIMEOUT_MS = 15_000;
 const GIT_CONFLICT_MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)(?:\s|$)/m;
 
@@ -66,8 +70,8 @@ const inferLanguageFromPath = (path: string): string => {
 
 const sideContent = (file: GitConflictFileDto | null, side: ConflictReferenceSide): string => {
   if (!file) return '';
-  if (side === 'ours') return file.ours.content;
-  return file.theirs.content;
+  const selectedSide = side === 'ours' ? file.ours : file.theirs;
+  return selectedSide.exists ? selectedSide.content ?? '' : '';
 };
 
 const hasGitConflictMarkers = (content: string): boolean =>
@@ -85,11 +89,12 @@ const createInitialDraft = (
   file: GitConflictFileDto | null
 ): { content: string; origin: ConflictDraftOrigin } => {
   if (!file) return { content: '', origin: 'empty' };
-  if (file.worktree.exists && !hasGitConflictMarkers(file.worktree.content)) {
-    return { content: file.worktree.content, origin: 'worktree' };
+  const worktreeContent = file.worktree.exists ? file.worktree.content ?? '' : '';
+  if (file.worktree.exists && !hasGitConflictMarkers(worktreeContent)) {
+    return { content: worktreeContent, origin: 'worktree' };
   }
-  if (file.ours.exists) return { content: file.ours.content, origin: 'ours' };
-  if (file.theirs.exists) return { content: file.theirs.content, origin: 'theirs' };
+  if (file.ours.exists) return { content: sideContent(file, 'ours'), origin: 'ours' };
+  if (file.theirs.exists) return { content: sideContent(file, 'theirs'), origin: 'theirs' };
   return { content: '', origin: 'empty' };
 };
 
@@ -110,6 +115,10 @@ const resolveReferenceSideForDraft = (
     return fallbackSide;
   }
 
+  if (!sideExists(file, preferredSide) && !sideExists(file, fallbackSide)) {
+    return preferredSide;
+  }
+
   return sideExists(file, preferredSide) ? preferredSide : fallbackSide;
 };
 
@@ -123,8 +132,28 @@ const getInitialReferenceSide = (
   return resolveReferenceSideForDraft(file, draft, 'theirs');
 };
 
-const shouldPrepareManualMerge = (repository: MergeWorkflowRepositoryResult): boolean =>
-  !(repository.mergeInProgress && repository.conflictFiles.length > 0);
+const getWorkflowSessionIdentity = (
+  session: GitWorkflowSessionDto | undefined,
+  taskId: string,
+  sourceBranch: string,
+  targetBranch: string
+): GitWorkflowSessionIdentity | null => {
+  if (
+    !session ||
+    session.taskId !== taskId ||
+    session.sourceBranch !== sourceBranch ||
+    session.targetBranch !== targetBranch ||
+    session.status !== 'conflicted'
+  ) {
+    return null;
+  }
+  return {
+    taskId: session.taskId,
+    sessionId: session.sessionId,
+    sourceBranch: session.sourceBranch,
+    targetBranch: session.targetBranch,
+  };
+};
 
 const getNonRenderableFileMessage = (
   file: GitConflictFileDto | null,
@@ -145,6 +174,32 @@ const getNonRenderableFileMessage = (
   return translate('implement.noTextualDiff', 'No textual diff is available for this file.');
 };
 
+const formatFileSize = (sizeBytes: number): string => {
+  if (sizeBytes < 1_024) return `${sizeBytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = sizeBytes / 1_024;
+  let unitIndex = 0;
+  while (value >= 1_024 && unitIndex < units.length - 1) {
+    value /= 1_024;
+    unitIndex += 1;
+  }
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} ${units[unitIndex]}`;
+};
+
+const getConflictSideDescription = (
+  side: GitConflictFileSideDto,
+  translate: ReturnType<typeof useTranslation>['t']
+): string => {
+  if (!side.exists) return translate('implement.conflictSideAbsent', 'Absent');
+  const type = side.isBinary
+    ? translate('implement.binaryFileType', 'Binary')
+    : translate('implement.textFileType', 'Text');
+  const limit = side.tooLarge
+    ? ` · ${translate('implement.overEditorLimit', 'over editor limit')}`
+    : '';
+  return `${type} · ${formatFileSize(side.sizeBytes)}${limit}`;
+};
+
 const withTimeout = async <T,>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -163,6 +218,16 @@ const withTimeout = async <T,>(
   }
 };
 
+interface RefreshConflictStatusOptions {
+  preserveDraft?: boolean;
+  isCurrent?: () => boolean;
+}
+
+interface PreparationRequest {
+  key: string;
+  cancelled: boolean;
+}
+
 export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictResolverModalProps> = ({
   taskId,
   repository,
@@ -170,6 +235,70 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
 }) => {
   const { t } = useTranslation();
   const titleId = useId();
+  const repositoryWorkflowSessionTaskId = repository.workflowSession?.taskId;
+  const repositoryWorkflowSessionId = repository.workflowSession?.sessionId;
+  const repositoryWorkflowSessionSourceBranch = repository.workflowSession?.sourceBranch;
+  const repositoryWorkflowSessionTargetBranch = repository.workflowSession?.targetBranch;
+  const repositoryWorkflowSessionStatus = repository.workflowSession?.status;
+  const repositoryWorkflowSession = useMemo(
+    () => {
+      if (
+        !repositoryWorkflowSessionTaskId ||
+        !repositoryWorkflowSessionId ||
+        !repositoryWorkflowSessionSourceBranch ||
+        !repositoryWorkflowSessionTargetBranch ||
+        repositoryWorkflowSessionTaskId !== taskId ||
+        repositoryWorkflowSessionSourceBranch !== repository.sourceBranchName ||
+        repositoryWorkflowSessionTargetBranch !== repository.targetBranchName ||
+        repositoryWorkflowSessionStatus !== 'conflicted'
+      ) {
+        return null;
+      }
+      return {
+        taskId: repositoryWorkflowSessionTaskId,
+        sessionId: repositoryWorkflowSessionId,
+        sourceBranch: repositoryWorkflowSessionSourceBranch,
+        targetBranch: repositoryWorkflowSessionTargetBranch,
+      } satisfies GitWorkflowSessionIdentity;
+    },
+    [
+      repository.sourceBranchName,
+      repository.targetBranchName,
+      repositoryWorkflowSessionId,
+      repositoryWorkflowSessionSourceBranch,
+      repositoryWorkflowSessionStatus,
+      repositoryWorkflowSessionTargetBranch,
+      repositoryWorkflowSessionTaskId,
+      taskId,
+    ]
+  );
+  const repositoryScopeKey = [
+    taskId,
+    repository.id,
+    repository.repoPath,
+    repository.sourceBranchName,
+    repository.targetBranchName,
+  ].join(':');
+  const [preparedSessionState, setPreparedSessionState] = useState<{
+    scopeKey: string;
+    session: GitWorkflowSessionIdentity;
+  } | null>(null);
+  const preparedWorkflowSession = preparedSessionState?.scopeKey === repositoryScopeKey
+    ? preparedSessionState.session
+    : null;
+  const workflowSession = repositoryWorkflowSession ?? preparedWorkflowSession;
+  const hasForeignWorkflowSession = Boolean(
+    repository.workflowSession && repository.workflowSession.taskId !== taskId
+  );
+  const hasWorkflowSessionProof = workflowSession !== null;
+  const workflowSessionKey = workflowSession
+    ? [
+        workflowSession.sessionId,
+        workflowSession.taskId,
+        workflowSession.sourceBranch,
+        workflowSession.targetBranch,
+      ].join(':')
+    : 'unproven';
   const startManualResolution = useTaskStore((state) => state.startMergeWorkflowManualResolution);
   const completeManualResolution = useTaskStore((state) => state.completeMergeWorkflowManualResolution);
   const abortManualResolution = useTaskStore((state) => state.abortMergeWorkflowManualResolution);
@@ -183,6 +312,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const [savedDraft, setSavedDraft] = useState('');
   const [draftOrigin, setDraftOrigin] = useState<ConflictDraftOrigin>('empty');
   const [savedDraftOrigin, setSavedDraftOrigin] = useState<ConflictDraftOrigin>('empty');
+  const [draftDeletionSide, setDraftDeletionSide] = useState<ConflictReferenceSide | null>(null);
+  const [savedDraftDeletionSide, setSavedDraftDeletionSide] = useState<ConflictReferenceSide | null>(null);
   const [resolvedPaths, setResolvedPaths] = useState<Set<string>>(() => new Set());
   const [isPreparing, setIsPreparing] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
@@ -193,6 +324,11 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const [error, setError] = useState<string | null>(null);
   const [fileLoadRetryToken, setFileLoadRetryToken] = useState(0);
   const knownFilesRef = useRef<string[]>(repository.conflictFiles);
+  const preparationRequestRef = useRef<PreparationRequest | null>(null);
+  const selectedPathRef = useRef<string | null>(selectedPath);
+  const isDraftDirtyRef = useRef(false);
+  const filesRef = useRef(files);
+  const onCloseRef = useRef(onClose);
 
   const isBusy = isPreparing || isLoadingFile || isSaving || isCompleting;
   const listedFiles = useMemo(
@@ -204,9 +340,13 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     files.length === 0 &&
     listedFiles.every((file) => resolvedPaths.has(file));
   const selectedResolved = selectedPath ? resolvedPaths.has(selectedPath) : false;
-  const canRenderFile = Boolean(currentFile && !currentFile.isBinary && !currentFile.tooLarge);
+  const canRenderFile = Boolean(
+    hasWorkflowSessionProof && currentFile && !currentFile.isBinary && !currentFile.tooLarge
+  );
   const resultContainsConflictMarkers = canRenderFile && hasGitConflictMarkers(draft);
-  const isDraftDirty = canRenderFile && !selectedResolved && draft !== savedDraft;
+  const isDraftDirty = canRenderFile && !selectedResolved && (
+    draft !== savedDraft || draftDeletionSide !== savedDraftDeletionSide
+  );
   const referenceOptions: Array<{ side: ConflictReferenceSide; label: string }> = [
     { side: 'theirs', label: t('implement.compareIncoming', 'Compare incoming') },
     { side: 'ours', label: t('implement.compareCurrent', 'Compare current') },
@@ -233,6 +373,22 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
         : draftOrigin === 'edited'
           ? t('implement.resultEdited', 'Result edited')
           : t('implement.resultReady', 'Result ready');
+
+  useEffect(() => {
+    selectedPathRef.current = selectedPath;
+  }, [selectedPath]);
+
+  useEffect(() => {
+    isDraftDirtyRef.current = isDraftDirty;
+  }, [isDraftDirty]);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     knownFilesRef.current = Array.from(new Set([...knownFilesRef.current, ...repository.conflictFiles, ...files]));
@@ -264,20 +420,41 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     };
   }, []);
 
-  const refreshConflictStatus = useCallback(async () => {
+  const refreshConflictStatus = useCallback(async (
+    options: RefreshConflictStatusOptions = {}
+  ) => {
     const status = await gitStatus(repository.repoPath);
     const nextFiles = status.conflictedFiles ?? status.conflicted_files ?? [];
-    setFiles(nextFiles);
-    setResolvedPaths((previous) => {
-      const next = new Set(previous);
-      for (const path of knownFilesRef.current) {
-        if (!nextFiles.includes(path)) next.add(path);
-      }
-      return next;
-    });
-    setSelectedPath((current) =>
-      current && nextFiles.includes(current) ? current : nextFiles[0] ?? null
+    if (options.isCurrent && !options.isCurrent()) return;
+
+    const currentPath = selectedPathRef.current;
+    const preserveDraft = options.preserveDraft ?? isDraftDirtyRef.current;
+    const preserveDetachedDraft = Boolean(
+      preserveDraft && currentPath && !nextFiles.includes(currentPath)
     );
+    const knownFiles = Array.from(new Set([
+      ...knownFilesRef.current,
+      ...filesRef.current,
+      ...nextFiles,
+    ]));
+    knownFilesRef.current = knownFiles;
+
+    setFiles(nextFiles);
+    setResolvedPaths(new Set(
+      knownFiles.filter((path) => !nextFiles.includes(path) && (
+        !preserveDetachedDraft || path !== currentPath
+      ))
+    ));
+    const nextSelectedPath = nextFiles[0] ?? null;
+    if (!preserveDetachedDraft) {
+      setSelectedPath((current) =>
+        current && nextFiles.includes(current) ? current : nextSelectedPath
+      );
+    } else if (currentPath && nextSelectedPath !== currentPath) {
+      setPendingDiscardAction({ type: 'select_file', path: nextSelectedPath ?? '' });
+      setIsConfirmingDiscard(true);
+    }
+    if (options.isCurrent && !options.isCurrent()) return;
     await loadMergeWorkflowReview(taskId, { force: true });
   }, [loadMergeWorkflowReview, repository.repoPath, taskId]);
 
@@ -291,12 +468,33 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
 
   useEffect(() => {
     let cancelled = false;
+    const preparationKey = `${repositoryScopeKey}:${workflowSessionKey}`;
+
+    if (preparationRequestRef.current?.key === preparationKey) return;
+    if (preparationRequestRef.current) {
+      preparationRequestRef.current.cancelled = true;
+    }
+    const request: PreparationRequest = { key: preparationKey, cancelled: false };
+    preparationRequestRef.current = request;
 
     const prepare = async () => {
       setError(null);
-      if (!shouldPrepareManualMerge(repository)) {
-        setFiles(repository.conflictFiles);
-        setSelectedPath((current) => current ?? repository.conflictFiles[0] ?? null);
+      if (hasForeignWorkflowSession) {
+        if (preparationRequestRef.current === request) {
+          preparationRequestRef.current = null;
+          setIsPreparing(false);
+        }
+        setError(t(
+          'implement.conflictSessionBelongsToAnotherTask',
+          'This merge session belongs to another task. Refresh the merge review before editing.'
+        ));
+        return;
+      }
+      if (hasWorkflowSessionProof) {
+        if (preparationRequestRef.current === request) {
+          preparationRequestRef.current = null;
+          setIsPreparing(false);
+        }
         return;
       }
 
@@ -310,48 +508,79 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
             'Preparing conflict resolution is taking too long. Refresh the conflicts or try again.'
           )
         );
-        if (cancelled) return;
+        if (cancelled || request.cancelled || preparationRequestRef.current !== request) return;
         if (result?.status === 'merged') {
           notify.success(t('implement.mergeCompleted', 'Merge completed.'));
-          onClose();
+          onCloseRef.current();
           return;
+        }
+        if (result?.workflowSession) {
+          const preparedWorkflowSession = getWorkflowSessionIdentity(
+            result.workflowSession,
+            taskId,
+            repository.sourceBranchName,
+            repository.targetBranchName
+          );
+          if (preparedWorkflowSession) {
+            setPreparedSessionState({
+              scopeKey: repositoryScopeKey,
+              session: preparedWorkflowSession,
+            });
+          }
         }
         if (result?.conflictFiles?.length) {
           setFiles(result.conflictFiles);
           setSelectedPath((current) => current ?? result.conflictFiles[0] ?? null);
         } else {
-          await refreshConflictStatus();
+          await refreshConflictStatus({
+            preserveDraft: false,
+            isCurrent: () => !cancelled && !request.cancelled && preparationRequestRef.current === request,
+          });
         }
       } catch (cause) {
-        if (!cancelled) setError(toServiceError(cause).message);
+        if (!cancelled && !request.cancelled && preparationRequestRef.current === request) {
+          setError(toServiceError(cause).message);
+        }
       } finally {
-        if (!cancelled) setIsPreparing(false);
+        if (!cancelled && !request.cancelled && preparationRequestRef.current === request) {
+          preparationRequestRef.current = null;
+          setIsPreparing(false);
+        }
       }
     };
 
     void prepare();
     return () => {
       cancelled = true;
+      request.cancelled = true;
+      if (preparationRequestRef.current === request) {
+        preparationRequestRef.current = null;
+        setIsPreparing(false);
+      }
     };
   }, [
-    onClose,
     refreshConflictStatus,
-    repository,
+    repositoryScopeKey,
     repository.id,
-    repository.conflictFiles,
-    repository.mergeInProgress,
+    repository.sourceBranchName,
+    repository.targetBranchName,
+    hasForeignWorkflowSession,
+    hasWorkflowSessionProof,
+    workflowSessionKey,
     startManualResolution,
     t,
     taskId,
   ]);
 
   useEffect(() => {
-    if (!selectedPath || resolvedPaths.has(selectedPath)) {
+    if (!hasWorkflowSessionProof || !selectedPath || selectedResolved) {
       setCurrentFile(null);
       setDraft('');
       setSavedDraft('');
       setDraftOrigin('empty');
       setSavedDraftOrigin('empty');
+      setDraftDeletionSide(null);
+      setSavedDraftDeletionSide(null);
       return;
     }
 
@@ -363,6 +592,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
         const file = await withTimeout(
           gitReadConflictFile({
             repoPath: repository.repoPath,
+            workflowSession: workflowSession ?? undefined,
             path: selectedPath,
           }),
           CONFLICT_OPERATION_TIMEOUT_MS,
@@ -378,6 +608,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
         setSavedDraft(initialDraft.content);
         setDraftOrigin(initialDraft.origin);
         setSavedDraftOrigin(initialDraft.origin);
+        setDraftDeletionSide(null);
+        setSavedDraftDeletionSide(null);
         setReferenceSide(getInitialReferenceSide(file, initialDraft.content, initialDraft.origin));
       } catch (cause) {
         if (!cancelled) {
@@ -386,6 +618,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
           setSavedDraft('');
           setDraftOrigin('empty');
           setSavedDraftOrigin('empty');
+          setDraftDeletionSide(null);
+          setSavedDraftDeletionSide(null);
           setError(toServiceError(cause).message);
         }
       } finally {
@@ -397,7 +631,16 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     return () => {
       cancelled = true;
     };
-  }, [fileLoadRetryToken, repository.repoPath, resolvedPaths, selectedPath, t]);
+  }, [
+    fileLoadRetryToken,
+    hasWorkflowSessionProof,
+    repository.id,
+    repository.repoPath,
+    selectedPath,
+    selectedResolved,
+    t,
+    workflowSession,
+  ]);
 
   const attemptClose = useCallback(() => {
     if (isDraftDirty) {
@@ -435,15 +678,19 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     setPendingDiscardAction(null);
     setDraft(savedDraft);
     setDraftOrigin(savedDraftOrigin);
+    setDraftDeletionSide(savedDraftDeletionSide);
 
     if (action?.type === 'close') {
       onClose();
       return;
     }
     if (action?.type === 'select_file') {
-      setSelectedPath(action.path);
+      setSelectedPath(action.path || null);
     }
-  }, [onClose, pendingDiscardAction, savedDraft, savedDraftOrigin]);
+    if (action?.type === 'reload_file') {
+      setFileLoadRetryToken((current) => current + 1);
+    }
+  }, [onClose, pendingDiscardAction, savedDraft, savedDraftDeletionSide, savedDraftOrigin]);
 
   const handleCancelDiscard = useCallback(() => {
     setIsConfirmingDiscard(false);
@@ -460,20 +707,27 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   }, [isBusy, presentationMode]);
 
   const handleRetryFile = useCallback(() => {
+    if (isDraftDirty) {
+      setPendingDiscardAction({ type: 'reload_file' });
+      setIsConfirmingDiscard(true);
+      return;
+    }
     setError(null);
     setFileLoadRetryToken((current) => current + 1);
-  }, []);
+  }, [isDraftDirty]);
 
   const handleResetDraft = useCallback(() => {
     if (isBusy || !canRenderFile) return;
     setDraft(savedDraft);
     setDraftOrigin(savedDraftOrigin);
+    setDraftDeletionSide(savedDraftDeletionSide);
     setError(null);
-  }, [canRenderFile, isBusy, savedDraft, savedDraftOrigin]);
+  }, [canRenderFile, isBusy, savedDraft, savedDraftDeletionSide, savedDraftOrigin]);
 
   const handleDraftChange = useCallback((value: string) => {
     setDraft(value);
     setDraftOrigin('edited');
+    setDraftDeletionSide(null);
   }, []);
 
   const handleRefreshConflicts = useCallback(async () => {
@@ -481,16 +735,16 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     setIsLoadingFile(true);
     setError(null);
     try {
-      await refreshConflictStatus();
+      await refreshConflictStatus({ preserveDraft: isDraftDirty });
     } catch (cause) {
       setError(toServiceError(cause).message);
     } finally {
       setIsLoadingFile(false);
     }
-  }, [isBusy, refreshConflictStatus]);
+  }, [isBusy, isDraftDirty, refreshConflictStatus]);
 
   const handleSave = useCallback(async () => {
-    if (!selectedPath || !currentFile || isBusy) return;
+    if (!hasWorkflowSessionProof || !selectedPath || !currentFile || isBusy) return;
     if (hasGitConflictMarkers(draft)) {
       setError(t(
         'implement.conflictMarkersStillPresent',
@@ -501,32 +755,55 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     setIsSaving(true);
     setError(null);
     try {
-      await gitWriteConflictResolution({
-        repoPath: repository.repoPath,
-        path: selectedPath,
-        content: draft,
-        stage: true,
-      });
+      if (draftDeletionSide) {
+        await gitAcceptConflictSide({
+          repoPath: repository.repoPath,
+          workflowSession: workflowSession ?? undefined,
+          path: selectedPath,
+          side: draftDeletionSide,
+        });
+      } else {
+        await gitWriteConflictResolution({
+          repoPath: repository.repoPath,
+          workflowSession: workflowSession ?? undefined,
+          path: selectedPath,
+          content: draft,
+          stage: true,
+        });
+      }
       setSavedDraft(draft);
       setDraftOrigin('worktree');
       setSavedDraftOrigin('worktree');
+      setSavedDraftDeletionSide(draftDeletionSide);
       setResolvedPaths((previous) => new Set(previous).add(selectedPath));
-      await refreshConflictStatus();
+      await refreshConflictStatus({ preserveDraft: false });
     } catch (cause) {
       setError(toServiceError(cause).message);
     } finally {
       setIsSaving(false);
     }
-  }, [currentFile, draft, isBusy, refreshConflictStatus, repository.repoPath, selectedPath, t]);
+  }, [
+    currentFile,
+    draft,
+    draftDeletionSide,
+    hasWorkflowSessionProof,
+    isBusy,
+    refreshConflictStatus,
+    repository.repoPath,
+    selectedPath,
+    t,
+    workflowSession,
+  ]);
 
   const handleUseSide = useCallback(async (side: ConflictReferenceSide) => {
-    if (!selectedPath || isBusy) return;
+    if (!hasWorkflowSessionProof || !selectedPath || isBusy) return;
 
     if (canRenderFile && currentFile && !selectedResolved) {
       const nextDraft = sideContent(currentFile, side);
       setReferenceSide(resolveReferenceSideForDraft(currentFile, nextDraft, oppositeSide(side)));
       setDraft(nextDraft);
       setDraftOrigin(side);
+      setDraftDeletionSide(sideExists(currentFile, side) ? null : side);
       setError(null);
       return;
     }
@@ -536,17 +813,28 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     try {
       await gitAcceptConflictSide({
         repoPath: repository.repoPath,
+        workflowSession: workflowSession ?? undefined,
         path: selectedPath,
         side,
       });
       setResolvedPaths((previous) => new Set(previous).add(selectedPath));
-      await refreshConflictStatus();
+      await refreshConflictStatus({ preserveDraft: false });
     } catch (cause) {
       setError(toServiceError(cause).message);
     } finally {
       setIsSaving(false);
     }
-  }, [canRenderFile, currentFile, isBusy, refreshConflictStatus, repository.repoPath, selectedPath, selectedResolved]);
+  }, [
+    canRenderFile,
+    currentFile,
+    hasWorkflowSessionProof,
+    isBusy,
+    refreshConflictStatus,
+    repository.repoPath,
+    selectedPath,
+    selectedResolved,
+    workflowSession,
+  ]);
 
   const handleComplete = useCallback(async () => {
     if (isBusy || !allFilesResolved) return;
@@ -762,13 +1050,57 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
                 {t('implement.conflictFileResolved', 'This file is resolved and staged.')}
               </div>
+            ) : !hasWorkflowSessionProof ? (
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
+                {t('implement.verifyingConflictSession', 'Verifying the merge session before enabling file editing...')}
+              </div>
             ) : !canRenderFile ? (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
-                <div className="max-w-lg rounded-xl border border-border bg-card px-4 py-4 text-center shadow-sm">
+                <div className="w-full max-w-xl rounded-xl border border-border bg-card px-5 py-5 shadow-sm">
                   <Icon name="file-text" size={24} className="mx-auto mb-3 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-center text-sm font-medium text-foreground">
                     {getNonRenderableFileMessage(currentFile, t)}
                   </p>
+                  {currentFile && (
+                    <div className="mt-5 overflow-hidden rounded-lg border border-border/70 text-xs">
+                      {([
+                        ['base', t('implement.conflictBase', 'Common ancestor'), currentFile.base],
+                        ['ours', t('implement.conflictCurrent', 'Current'), currentFile.ours],
+                        ['theirs', t('implement.conflictIncoming', 'Incoming'), currentFile.theirs],
+                        ['worktree', t('implement.conflictWorktree', 'Working copy'), currentFile.worktree],
+                      ] as const).map(([key, label, side]) => (
+                        <div
+                          key={key}
+                          className="grid grid-cols-[minmax(8rem,0.8fr)_minmax(10rem,1fr)] gap-3 border-b border-border/60 px-3 py-2.5 last:border-b-0"
+                        >
+                          <span className="font-medium text-foreground">{label}</span>
+                          <span className="text-right text-muted-foreground">
+                            {getConflictSideDescription(side, t)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleUseSide('ours')}
+                      disabled={isBusy || !hasWorkflowSessionProof || !selectedPath}
+                    >
+                      {t('implement.chooseCurrentVersion', 'Choose current version')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => void handleUseSide('theirs')}
+                      disabled={isBusy || !hasWorkflowSessionProof || !selectedPath}
+                    >
+                      {t('implement.chooseIncomingVersion', 'Choose incoming version')}
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : resultContainsConflictMarkers ? (
@@ -855,12 +1187,16 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               </Button>
               {!allFilesResolved && (
                 <>
-                  <Button variant="secondary" size="sm" onClick={() => void handleUseSide('ours')} disabled={isBusy || !selectedPath}>
-                    {t('implement.useAllCurrent', 'Use all current')}
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={() => void handleUseSide('theirs')} disabled={isBusy || !selectedPath}>
-                    {t('implement.useAllIncoming', 'Use all incoming')}
-                  </Button>
+                  {canRenderFile && (
+                    <>
+                      <Button variant="secondary" size="sm" onClick={() => void handleUseSide('ours')} disabled={isBusy || !selectedPath}>
+                        {t('implement.useAllCurrent', 'Use all current')}
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => void handleUseSide('theirs')} disabled={isBusy || !selectedPath}>
+                        {t('implement.useAllIncoming', 'Use all incoming')}
+                      </Button>
+                    </>
+                  )}
                   {isDraftDirty && (
                     <Button variant="ghost" size="sm" onClick={handleResetDraft} disabled={isBusy || !canRenderFile}>
                       {t('implement.resetDraft', 'Reset draft')}

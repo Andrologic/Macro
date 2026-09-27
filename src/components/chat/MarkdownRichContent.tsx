@@ -21,6 +21,7 @@ import sql from 'highlight.js/lib/languages/sql';
 import type { ContextRefKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { notify } from '../ui/toastService';
 import { ContextReferenceChip } from './ContextReferenceChip';
 
 const MermaidRenderer = lazy(() => import('./MermaidRenderer'));
@@ -366,11 +367,16 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', block
     }
   }, [content, normalizedLang]);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [content]);
+  const handleCopy = useCallback(async () => {
+    setCopied(false);
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      notify.error(t('codeViewer.copyFailed', 'Unable to copy the code.'));
+    }
+  }, [content, t]);
 
   const displayLang = language && language !== 'text' ? language : 'plaintext';
 

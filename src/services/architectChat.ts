@@ -1,6 +1,6 @@
 import type { PlanNode, PredictedBranch } from '../types';
 import { normalizePlanNodeTodos } from './planNodeTodos';
-import { normalizeArtifactContracts } from './architectPlanArtifactService';
+import { normalizeArtifactContracts } from '../domains/plans/artifactContracts';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import type {
   FrozenPlanNode,
@@ -17,8 +17,7 @@ import { getArchitectPlanDisplayName, isCanonicalArchitectPlan } from './archite
 export const ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION =
   'After using an Architect tool, always answer in natural language with a concise recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.';
 
-export const ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT =
-  'You completed the requested planning action. Now answer in natural language with a concise recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.';
+export { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../domains/chat/prompts';
 
 export const ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX =
   'Keep every strategy node inside the active plan project scope: omit project_ids to use the plan projectIds, and never include unrelated Macro projects. Declare artifactContracts only for critical required handoffs that dependent tasks truly need, such as audit findings, migration maps, API contracts, and risk registers; do not add them to every node, and leave opportunistic artifacts to Implement agents. After the tool call, answer in natural language with what changed, a short summary of the strategy, and the next useful step.';

@@ -22,11 +22,42 @@ interface SearchableTerminalBuffer {
   };
 }
 
+interface CaseFoldedText {
+  text: string;
+  originalStarts: number[];
+  originalEnds: number[];
+}
+
+const foldCaseWithOriginalIndices = (value: string): CaseFoldedText => {
+  const originalStarts: number[] = [];
+  const originalEnds: number[] = [];
+  let originalIndex = 0;
+
+  for (const character of value) {
+    const originalEnd = originalIndex + character.length;
+    const foldedLength = character.toLowerCase().length;
+
+    for (let foldedIndex = 0; foldedIndex < foldedLength; foldedIndex += 1) {
+      originalStarts.push(originalIndex);
+      originalEnds.push(originalEnd);
+    }
+
+    originalIndex = originalEnd;
+  }
+
+  return {
+    text: value.toLowerCase(),
+    originalStarts,
+    originalEnds,
+  };
+};
+
 export const findTerminalSearchMatches = (
   terminal: SearchableTerminalBuffer,
   query: string
 ): TerminalSearchMatch[] => {
-  const normalizedQuery = query.trim().toLowerCase();
+  const trimmedQuery = query.trim();
+  const normalizedQuery = trimmedQuery.toLowerCase();
   if (!normalizedQuery) {
     return [];
   }
@@ -41,20 +72,27 @@ export const findTerminalSearchMatches = (
     }
 
     const text = line.translateToString(true);
-    const normalizedText = text.toLowerCase();
+    const foldedText = foldCaseWithOriginalIndices(text);
     let searchFrom = 0;
-    while (searchFrom <= normalizedText.length - normalizedQuery.length) {
-      const column = normalizedText.indexOf(normalizedQuery, searchFrom);
-      if (column === -1) {
+    while (searchFrom <= foldedText.text.length - normalizedQuery.length) {
+      const foldedColumn = foldedText.text.indexOf(normalizedQuery, searchFrom);
+      if (foldedColumn === -1) {
+        break;
+      }
+
+      const foldedEnd = foldedColumn + normalizedQuery.length - 1;
+      const column = foldedText.originalStarts[foldedColumn];
+      const originalEnd = foldedText.originalEnds[foldedEnd];
+      if (column === undefined || originalEnd === undefined) {
         break;
       }
 
       matches.push({
         row,
         column,
-        length: query.trim().length,
+        length: originalEnd - column,
       });
-      searchFrom = column + Math.max(1, normalizedQuery.length);
+      searchFrom = foldedColumn + Math.max(1, normalizedQuery.length);
     }
   }
 

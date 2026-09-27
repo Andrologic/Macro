@@ -30,6 +30,22 @@ describe('terminalSearch', () => {
     ]);
   });
 
+  it('keeps original columns and selection lengths when Unicode case folding expands text', () => {
+    const matches = findTerminalSearchMatches(
+      buildTerminal(['🧪İ ERROR', 'Code İ OK']),
+      'i'
+    );
+
+    expect(matches).toEqual([
+      { row: 0, column: 2, length: 1 },
+      { row: 1, column: 5, length: 1 },
+    ]);
+
+    expect(findTerminalSearchMatches(buildTerminal(['İstanbul ERROR']), 'error')).toEqual([
+      { row: 0, column: 9, length: 5 },
+    ]);
+  });
+
   it('cycles forward and backward through matches', () => {
     expect(getNextTerminalSearchIndex(3, null, 'next')).toBe(0);
     expect(getNextTerminalSearchIndex(3, 2, 'next')).toBe(0);

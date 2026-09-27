@@ -183,6 +183,7 @@ interface SelectedDiffTarget {
 
 export interface FileDiffModalSession {
   reviewVisitId?: number;
+  sessionId: string;
   repositoryId: string;
   changeId: string;
   originalContent: string;
@@ -192,6 +193,7 @@ export interface FileDiffModalSession {
   isSaving: boolean;
   isHydratingFullContext: boolean;
   detachedWarning?: string | null;
+  editRevision: string | null;
   directSnapshotId?: string;
   restoreRevision?: string;
 }
@@ -199,6 +201,7 @@ export interface FileDiffModalSession {
 interface LoadCurrentChangesOptions {
   silent?: boolean;
   preserveDiffModalSession?: boolean;
+  expectedDiffModalSessionId?: string;
   preserveReviewSuspension?: boolean;
   refreshExpired?: boolean;
 }
@@ -1355,6 +1358,7 @@ const buildDiffModalSession = (
   change: FileChangeEntry,
   overrides: Partial<FileDiffModalSession> = {}
 ): FileDiffModalSession => ({
+  sessionId: crypto.randomUUID(),
   repositoryId,
   changeId: change.id,
   originalContent: change.originalContent,
@@ -1364,6 +1368,7 @@ const buildDiffModalSession = (
   isSaving: false,
   isHydratingFullContext: false,
   detachedWarning: null,
+  editRevision: null,
   ...overrides,
 });
 
@@ -1444,6 +1449,10 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
       isSaving: false,
       isHydratingFullContext: needsHydration,
       detachedWarning,
+      editRevision:
+        session.lastLoadedModifiedContent === refreshedChange.modifiedContent
+          ? session.editRevision
+          : null,
     },
     isDiffModalOpen: true,
   };
@@ -1575,37 +1584,50 @@ export const createFileChangesStore = (
         activeMutationRequests.delete(request.repositoryId);
       }
     };
-    const hydrateDiffModalFile = async (repositoryId: string, changeId: string) => {
+    const hydrateDiffModalFile = async (
+      repositoryId: string,
+      changeId: string,
+      hydrateFullContext: boolean,
+    ) => {
       const repository = get().getRepository(repositoryId);
       const change = get().getChange(repositoryId, changeId);
       if (!repository || !change) {
         return;
       }
+      const requestSession = get().diffModalSession;
+      if (
+        !requestSession ||
+        requestSession.repositoryId !== repositoryId ||
+        requestSession.changeId !== changeId
+      ) {
+        return;
+      }
+      const requestSessionId = requestSession.sessionId;
       const requestTaskId = resolveSelectedTask(deps)?.id ?? null;
       const requestLoadId = get().loadRequestId;
       const requestHydrationGeneration = hydrationGeneration;
 
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          loadingChangeId: changeId,
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        return {
+          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            loadingChangeId: changeId,
+            lastError: null,
+          })),
+          diffModalSession: {
+            ...state.diffModalSession,
+            isHydratingFullContext: true,
+          },
           lastError: null,
-        })),
-        diffModalSession:
-          state.diffModalSession &&
-          state.diffModalSession.repositoryId === repositoryId &&
-          state.diffModalSession.changeId === changeId
-            ? {
-              ...state.diffModalSession,
-              isHydratingFullContext: true,
-            }
-            : state.diffModalSession,
-        lastError: null,
-      }));
+        };
+      });
 
       try {
-        let hydratedChange: FileChangeEntry;
-        if (repository.executionMode === 'direct') {
+        let hydratedChange = change;
+        if (hydrateFullContext && repository.executionMode === 'direct') {
           const task = ensureReviewTask(deps);
           const reviewRequestId = nextReviewRequestId('direct-file');
           try {
@@ -1626,7 +1648,7 @@ export const createFileChangesStore = (
           } finally {
             activeReviewRequestIds.delete(reviewRequestId);
           }
-        } else if (deps.tauri.gitReviewFile) {
+        } else if (hydrateFullContext && deps.tauri.gitReviewFile) {
           const reviewRequestId = nextReviewRequestId('file');
           try {
             const reviewFile = await deps.tauri.gitReviewFile({
@@ -1658,7 +1680,7 @@ export const createFileChangesStore = (
           } finally {
             activeReviewRequestIds.delete(reviewRequestId);
           }
-        } else {
+        } else if (hydrateFullContext) {
           const pair = await deps.tauri.gitReadFilePair({
             repoPath: repository.worktreePath,
             path: change.path,
@@ -1683,16 +1705,49 @@ export const createFileChangesStore = (
           };
         }
 
-        if (get().loadRequestId !== requestLoadId || hydrationGeneration !== requestHydrationGeneration ||
-            resolveSelectedTask(deps)?.id !== requestTaskId) {
+        let editRevision: string | null = null;
+        if (hydratedChange.canEdit) {
+          const path = resolveChangeFilePath(repository.worktreePath, hydratedChange.path);
+          const workspaceOptions = { workspacePath: repository.worktreePath };
+          const exists = await deps.tauri.fsExists(path, workspaceOptions);
+          if (exists) {
+            const current = await deps.tauri.fsReadFileWithOptions({
+              path,
+              allowOutsideWorkspace: false,
+              ...workspaceOptions,
+            });
+            if (!current.revision) {
+              throw new Error(
+                `Cannot safely edit ${hydratedChange.path}: the loaded revision is unavailable. Reopen the diff and retry.`,
+              );
+            }
+            editRevision = current.revision;
+            hydratedChange = {
+              ...hydratedChange,
+              modifiedContent: current.content,
+            };
+          } else {
+            editRevision = 'absent';
+            hydratedChange = {
+              ...hydratedChange,
+              modifiedContent: '',
+            };
+          }
+        }
+
+        if (
+          get().loadRequestId !== requestLoadId ||
+          hydrationGeneration !== requestHydrationGeneration ||
+          resolveSelectedTask(deps)?.id !== requestTaskId ||
+          get().diffModalSession?.sessionId !== requestSessionId
+        ) {
           return;
         }
 
         set((state) => {
-          const isCurrentSession =
-            state.diffModalSession &&
-            state.diffModalSession.repositoryId === repositoryId &&
-            state.diffModalSession.changeId === changeId;
+          if (state.diffModalSession?.sessionId !== requestSessionId) {
+            return state;
+          }
 
           return {
             repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -1701,23 +1756,28 @@ export const createFileChangesStore = (
               loadingChangeId: null,
               lastError: null,
             })),
-            diffModalSession: isCurrentSession && state.diffModalSession
-              ? {
-                ...state.diffModalSession,
-                originalContent: hydratedChange.originalContent,
-                rightDraftContent: state.diffModalSession.isDirty
-                  ? state.diffModalSession.rightDraftContent
-                  : hydratedChange.modifiedContent,
-                lastLoadedModifiedContent: hydratedChange.modifiedContent,
-                isHydratingFullContext: false,
-              }
-              : state.diffModalSession,
+            diffModalSession: {
+              ...state.diffModalSession,
+              originalContent: hydratedChange.originalContent,
+              rightDraftContent: state.diffModalSession.isDirty
+                ? state.diffModalSession.rightDraftContent
+                : hydratedChange.modifiedContent,
+              lastLoadedModifiedContent: state.diffModalSession.isDirty
+                ? state.diffModalSession.lastLoadedModifiedContent
+                : hydratedChange.modifiedContent,
+              isHydratingFullContext: false,
+              editRevision: state.diffModalSession.isDirty ? null : editRevision,
+            },
             lastError: null,
           };
         });
       } catch (error) {
-        if (get().loadRequestId !== requestLoadId || hydrationGeneration !== requestHydrationGeneration ||
-            resolveSelectedTask(deps)?.id !== requestTaskId) {
+        if (
+          get().loadRequestId !== requestLoadId ||
+          hydrationGeneration !== requestHydrationGeneration ||
+          resolveSelectedTask(deps)?.id !== requestTaskId ||
+          get().diffModalSession?.sessionId !== requestSessionId
+        ) {
           return;
         }
         const serviceError = withReviewProjectContext(error, repository.projectId);
@@ -1726,46 +1786,49 @@ export const createFileChangesStore = (
           if (!requestTaskId || currentTaskId !== requestTaskId) {
             return;
           }
-          set((state) => ({
-            repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-              ...currentRepository,
-              loadingChangeId: null,
+          set((state) => {
+            if (state.diffModalSession?.sessionId !== requestSessionId) {
+              return state;
+            }
+            return {
+              repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+                ...currentRepository,
+                loadingChangeId: null,
+                lastError: null,
+              })),
+              diffModalSession: {
+                ...state.diffModalSession,
+                isHydratingFullContext: false,
+              },
               lastError: null,
-            })),
-            diffModalSession:
-              state.diffModalSession &&
-              state.diffModalSession.repositoryId === repositoryId &&
-              state.diffModalSession.changeId === changeId
-                ? { ...state.diffModalSession, isHydratingFullContext: false }
-                : state.diffModalSession,
-            lastError: null,
-            reviewSuspension: {
-              taskId: requestTaskId,
-              error: serviceError,
-              retrying: false,
-            },
-          }));
+              reviewSuspension: {
+                taskId: requestTaskId,
+                error: serviceError,
+                retrying: false,
+              },
+            };
+          });
           return;
         }
         const message = serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
-        set((state) => ({
-          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-            ...currentRepository,
-            loadingChangeId: null,
+        set((state) => {
+          if (state.diffModalSession?.sessionId !== requestSessionId) {
+            return state;
+          }
+          return {
+            repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+              ...currentRepository,
+              loadingChangeId: null,
+              lastError: message,
+            })),
+            diffModalSession: {
+              ...state.diffModalSession,
+              isHydratingFullContext: false,
+            },
             lastError: message,
-          })),
-          diffModalSession:
-            state.diffModalSession &&
-            state.diffModalSession.repositoryId === repositoryId &&
-            state.diffModalSession.changeId === changeId
-              ? {
-                ...state.diffModalSession,
-                isHydratingFullContext: false,
-              }
-              : state.diffModalSession,
-          lastError: message,
-        }));
+          };
+        });
       }
     };
 
@@ -1866,6 +1929,12 @@ export const createFileChangesStore = (
 
   loadCurrentChanges: async (options) => {
     if (get().staleDirectRepositoryId && resolveSelectedTask(deps)?.id === get().currentTaskId && !options?.refreshExpired) return;
+    if (
+      options?.expectedDiffModalSessionId &&
+      get().diffModalSession?.sessionId !== options.expectedDiffModalSessionId
+    ) {
+      return;
+    }
     cancelActiveReviewRequests();
     const previousState = get();
     const task = resolveSelectedTask(deps);
@@ -1888,6 +1957,12 @@ export const createFileChangesStore = (
     const isStaleRequest = (requestId: number, taskId: string | null): boolean => {
       const latestState = get();
       if (latestState.loadRequestId !== requestId) {
+        return true;
+      }
+      if (
+        options?.expectedDiffModalSessionId &&
+        latestState.diffModalSession?.sessionId !== options.expectedDiffModalSessionId
+      ) {
         return true;
       }
       const selectedTask = resolveSelectedTask(deps);
@@ -2128,7 +2203,7 @@ export const createFileChangesStore = (
       });
       const visibleTarget = latestDiffModalState.selectedDiffTarget;
       if (visibleTarget && latestDiffModalState.diffModalSession?.isHydratingFullContext) {
-        await hydrateDiffModalFile(visibleTarget.repositoryId, visibleTarget.changeId);
+        await hydrateDiffModalFile(visibleTarget.repositoryId, visibleTarget.changeId, true);
       }
     } catch (error) {
       if (isStaleRequest(nextLoadRequestId, task.id)) {
@@ -2261,19 +2336,43 @@ export const createFileChangesStore = (
       }),
       isDiffModalOpen: true,
     });
-    if (change.requiresHydration && !change.tooLarge && !change.isBinary) {
-      void hydrateDiffModalFile(repositoryId, changeId);
+    const shouldHydrateFullContext = Boolean(
+      change.requiresHydration && !change.tooLarge && !change.isBinary,
+    );
+    const shouldCaptureEditRevision = Boolean(
+      change.canEdit && !change.tooLarge && !change.isBinary,
+    );
+    if (shouldHydrateFullContext || shouldCaptureEditRevision) {
+      void hydrateDiffModalFile(repositoryId, changeId, shouldHydrateFullContext);
     }
   },
 
   closeDiffModal: () => {
     const state = get();
+    const closingTarget = state.selectedDiffTarget;
     debugFileDiffStoreLog('closeDiffModal', {
-      selectedDiffTarget: state.selectedDiffTarget,
+      selectedDiffTarget: closingTarget,
       hadSession: Boolean(state.diffModalSession),
     });
     reviewVisitSequence += 1;
     set({
+      repositories: closingTarget
+        ? updateRepositoryState(
+          state.repositories,
+          closingTarget.repositoryId,
+          (repository) => ({
+            ...repository,
+            loadingChangeId:
+              repository.loadingChangeId === closingTarget.changeId
+                ? null
+                : repository.loadingChangeId,
+            savingChangeId:
+              repository.savingChangeId === closingTarget.changeId
+                ? null
+                : repository.savingChangeId,
+          }),
+        )
+        : state.repositories,
       selectedDiffTarget: null,
       diffModalSession: null,
       isDiffModalOpen: false,
@@ -2760,45 +2859,70 @@ export const createFileChangesStore = (
 
     const nextContent = session.rightDraftContent;
     const mutationRequest = beginMutationRequest(repository);
+    const requestSessionId = session.sessionId;
+    const path = resolveChangeFilePath(repository.worktreePath, change.path);
+    let writeAttempted = false;
 
-    set((state) => ({
-      repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-        ...currentRepository,
-        savingChangeId: session.changeId,
-        lastError: null,
-      })),
-      diffModalSession: state.diffModalSession
-        ? {
+    const publishSuccessfulSave = async (revision: string | null): Promise<void> => {
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: null,
+        }));
+        return {
+          repositories,
+          ...deriveReviewState(repositories),
+          diffModalSession: {
+            ...state.diffModalSession,
+            rightDraftContent: state.diffModalSession.rightDraftContent,
+            lastLoadedModifiedContent: nextContent,
+            isDirty: state.diffModalSession.rightDraftContent !== nextContent,
+            isSaving: false,
+            editRevision: revision,
+          },
+        };
+      });
+
+      await get().loadCurrentChanges({
+        silent: true,
+        preserveDiffModalSession: true,
+        expectedDiffModalSessionId: requestSessionId,
+      });
+    };
+
+    set((state) => {
+      if (state.diffModalSession?.sessionId !== requestSessionId) {
+        return state;
+      }
+      return {
+        repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: session.changeId,
+          lastError: null,
+        })),
+        diffModalSession: {
           ...state.diffModalSession,
           isSaving: true,
-        }
-        : null,
-      lastError: null,
-    }));
+        },
+        lastError: null,
+      };
+    });
 
     try {
-      const path = resolveChangeFilePath(repository.worktreePath, change.path);
-      const workspaceOptions = {
-        workspacePath: repository.worktreePath,
-      };
-      const exists = await deps.tauri.fsExists(path, workspaceOptions);
-      let expectedRevision = 'absent';
-      if (exists) {
-        const current = await deps.tauri.fsReadFileWithOptions({
-          path,
-          allowOutsideWorkspace: false,
-          ...workspaceOptions,
-        });
-        if (!current.revision) {
-          throw new Error(
-            `Cannot safely save ${change.path}: the current revision is unavailable. Reload the diff and retry.`,
-          );
-        }
-        expectedRevision = current.revision;
+      const expectedRevision = session.editRevision;
+      if (!expectedRevision) {
+        throw new Error(
+          `Cannot safely save ${change.path}: the loaded revision is unavailable. Reopen the diff and retry.`,
+        );
       }
 
       ensureReviewFresh();
-      await deps.tauri.fsWriteFile({
+      writeAttempted = true;
+      const writeResult = await deps.tauri.fsWriteFile({
         path,
         content: nextContent,
         createDirs: true,
@@ -2818,30 +2942,7 @@ export const createFileChangesStore = (
         }));
         return;
       }
-      set((state) => ({
-        ...(() => {
-          const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-            ...currentRepository,
-            savingChangeId: null,
-            lastError: null,
-          }));
-          return {
-            repositories,
-            ...deriveReviewState(repositories),
-          };
-        })(),
-        diffModalSession: state.diffModalSession
-          ? {
-            ...state.diffModalSession,
-            rightDraftContent: nextContent,
-            lastLoadedModifiedContent: nextContent,
-            isDirty: false,
-            isSaving: false,
-          }
-          : null,
-      }));
-
-      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      await publishSuccessfulSave(writeResult.revision ?? null);
     } catch (error) {
       if (!isMutationRequestCurrent(mutationRequest)) throw error;
       if (reviewVisitSequence !== mutationRequest.reviewVisitSequence) {
@@ -2854,22 +2955,47 @@ export const createFileChangesStore = (
         }));
         throw error;
       }
+      if (
+        writeAttempted &&
+        get().diffModalSession?.sessionId === requestSessionId
+      ) {
+        try {
+          const durableFile = await deps.tauri.fsReadFileWithOptions({
+            path,
+            allowOutsideWorkspace: false,
+            workspacePath: repository.worktreePath,
+          });
+          if (
+            get().diffModalSession?.sessionId === requestSessionId &&
+            durableFile.content === nextContent &&
+            durableFile.revision
+          ) {
+            await publishSuccessfulSave(durableFile.revision);
+            return;
+          }
+        } catch {
+          // Preserve the original write error when durable reconciliation is unavailable.
+        }
+      }
       const message = toServiceError(error).message ||
         tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          savingChangeId: null,
-          lastError: message,
-        })),
-        diffModalSession: state.diffModalSession
-          ? {
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        return {
+          repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            savingChangeId: null,
+            lastError: message,
+          })),
+          diffModalSession: {
             ...state.diffModalSession,
             isSaving: false,
-          }
-          : null,
-        lastError: message,
-      }));
+          },
+          lastError: message,
+        };
+      });
       throw error;
     } finally {
       finishMutationRequest(mutationRequest);

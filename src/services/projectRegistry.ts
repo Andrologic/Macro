@@ -32,11 +32,13 @@ export interface NormalizeProjectRegistryResult {
   report: ProjectRegistryRepairReport;
 }
 
-const normalizePath = (value: string): string => {
+export const normalizeProjectPathIdentity = (value: string): string => {
   const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-  const isWindowsPath = /^(?:[a-z]:\/|\/\/)/i.test(normalized);
-  return isWindowsPath ? normalized.toLowerCase() : normalized;
+  const wsl = normalized.match(/^\/\/wsl(?:\$|\.localhost)\/([^/]+)(.*)$/i);
+  if (wsl) return `//wsl.localhost/${wsl[1].toLowerCase()}${wsl[2]}`;
+  return /^(?:[a-z]:\/|\/\/)/i.test(normalized) ? normalized.toLowerCase() : normalized;
 };
+const normalizePath = normalizeProjectPathIdentity;
 
 const isSyntheticGroupId = (value: string | null | undefined): boolean =>
   Boolean(value && value.startsWith('session-group-'));
@@ -438,29 +440,7 @@ export const resolveCanonicalProjectGroup = (
     return directMatch;
   }
 
-  const targetPaths = new Set(
-    targetGroup.projects
-      .map((project) => normalizePath(project.path))
-      .filter((path) => path.length > 0)
-  );
-  if (targetPaths.size > 0) {
-    const pathMatch = projectGroups.find((group) =>
-      group.projects.some((project) => targetPaths.has(normalizePath(project.path)))
-    );
-    if (pathMatch) {
-      return pathMatch;
-    }
-  }
-
-  const normalizedName = targetGroup.name.trim().toLowerCase();
-  if (!normalizedName) {
-    return null;
-  }
-
-  const nameMatches = projectGroups.filter(
-    (group) => group.name.trim().toLowerCase() === normalizedName
-  );
-  return nameMatches.length === 1 ? nameMatches[0] : null;
+  return null;
 };
 
 export const resolveCanonicalProject = (
@@ -477,24 +457,7 @@ export const resolveCanonicalProject = (
     return directMatch;
   }
 
-  const normalizedTargetPath = normalizePath(targetProject.path);
-  if (normalizedTargetPath) {
-    const pathMatch =
-      allProjects.find((project) => normalizePath(project.path) === normalizedTargetPath) ?? null;
-    if (pathMatch) {
-      return pathMatch;
-    }
-  }
-
-  const normalizedName = targetProject.name.trim().toLowerCase();
-  if (!normalizedName) {
-    return null;
-  }
-
-  const nameMatches = allProjects.filter(
-    (project) => project.name.trim().toLowerCase() === normalizedName
-  );
-  return nameMatches.length === 1 ? nameMatches[0] : null;
+  return null;
 };
 
 export const formatProjectRegistryRepairSummary = (

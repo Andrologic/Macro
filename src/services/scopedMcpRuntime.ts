@@ -1,7 +1,10 @@
+import { normalizeToolResultBlocks, projectToolResultText } from '../shared/toolResultContent';
+import type { ToolResultResolution } from './ai/contracts';
+import { bindMcpRuntimeKey, readMcpRuntimeKey } from "./mcp/runtimeSnapshot";
+import { assertUniqueMCPToolIds } from './mcp/normalization';
 import type { MCPServer, MCPTool } from '../types';
 import type {
   MCPCatalogDto,
-  MCPRuntimeKey,
   MCPRuntimeSelector,
   MCPRuntimeServerSnapshot,
 } from './contracts/serviceProvider';
@@ -99,10 +102,7 @@ const normalizeProjectScope = (projectIds?: readonly string[]): string[] =>
   Array.from(new Set((projectIds ?? []).map((id) => id.trim()).filter(Boolean))).sort();
 
 const selectorCacheKey = (serverId: string, projectIds: readonly string[]): string =>
-  `${serverId}@${projectIds.join(',')}`;
-
-const runtimeKey = Symbol('scopedMcpRuntimeKey');
-type RuntimeBoundMcpServer = MCPServer & { [runtimeKey]?: MCPRuntimeKey };
+  JSON.stringify([serverId, projectIds]);
 
 // Only in-flight connects are deduplicated. Completed runtime keys stay bound
 // to the resolved turn objects; the backend remains the sole catalog cache.
@@ -179,11 +179,6 @@ const toRuntimeServer = (id: string, definition: Record<string, unknown>): MCPSe
     config: { enabled: definition.enabled === true },
   });
 
-const bindRuntimeKey = (server: MCPServer, key: MCPRuntimeKey): RuntimeBoundMcpServer => {
-  Object.defineProperty(server, runtimeKey, { value: key, enumerable: false });
-  return server;
-};
-
 let operationCounter = 0;
 const createOperationId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -220,9 +215,10 @@ export const resolveScopedMcpRuntime = async (
     }> => {
       try {
         const catalog = await ensureScopedServerCatalog(server.id, projectIds, deps);
+        assertUniqueMCPToolIds(catalog.tools);
         const online = normalizeMCPServer({ ...server, status: 'online', tools: catalog.tools });
         return {
-          server: bindRuntimeKey(
+          server: bindMcpRuntimeKey(
             { ...online, tools: normalizeMCPServerTools(online) },
             catalog.key,
           ),
@@ -242,6 +238,7 @@ export const resolveScopedMcpRuntime = async (
     }),
   );
   const servers = settled.flatMap((result) => result.server ? [result.server] : []);
+  assertUniqueMCPToolIds(servers.flatMap((server) => normalizeMCPServerTools(server)));
   return {
     servers,
     tools: servers.flatMap((server) =>
@@ -256,8 +253,9 @@ export const callScopedMcpTool = async (
   args: Record<string, unknown>,
   servers: readonly MCPServer[],
   options: CallScopedMcpToolOptions = {},
-): Promise<string> => {
+): Promise<string | ToolResultResolution> => {
   assertCanonicalUniqueServerIds(servers.map((server) => server.id));
+  assertUniqueMCPToolIds(servers.flatMap((server) => normalizeMCPServerTools(server)));
   const deps = resolveDeps(options.deps);
   const projectIds = normalizeProjectScope(options.projectIds);
   for (const server of servers) {
@@ -266,10 +264,10 @@ export const callScopedMcpTool = async (
 
     if (options.signal?.aborted) throw abortError();
 
-    let lease = (server as RuntimeBoundMcpServer)[runtimeKey];
+    let lease = readMcpRuntimeKey(server);
     if (lease && options.projectIds !== undefined) {
       const leaseProjectIds = normalizeProjectScope(lease.projectIds);
-      if (leaseProjectIds.join('\0') !== projectIds.join('\0')) {
+      if (JSON.stringify(leaseProjectIds) !== JSON.stringify(projectIds)) {
         throw new Error(
           `MCP runtime scope changed for server ${server.id}; refusing to reuse its frozen key.`,
         );
@@ -277,6 +275,7 @@ export const callScopedMcpTool = async (
     }
     if (!lease || lease.serverId !== server.id) {
       const catalog = await ensureScopedServerCatalog(server.id, projectIds, deps);
+      assertUniqueMCPToolIds(catalog.tools);
       lease = catalog.key;
     }
 
@@ -303,6 +302,11 @@ export const callScopedMcpTool = async (
             }),
           ])
         : await call;
+      if (response.blocks?.length) {
+        const blocks = normalizeToolResultBlocks(response.blocks);
+        return { kind: 'result', result: `${response.isError ? '[MCP tool reported an error]\n' : ''}${projectToolResultText(blocks)}`, blocks,
+          isError: response.isError || blocks.some(block => block.type === 'unavailable') };
+      }
       if (response.isError) {
         throw new ScopedMcpToolReportedError(
           response.content || `MCP tool ${tool.name} reported an error.`,

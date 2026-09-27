@@ -163,10 +163,31 @@ const findVisiblePlanById = (
 
 const findBranchForPlan = (
   branches: ArchitectPlanCatalogBranch[],
-  planId: string,
-): string | null =>
-  branches.find((branch) => branch.plans.some((plan) => plan.id === planId))
-    ?.branchName ?? null;
+  plan: ArchitectPlanSummary,
+): string | null => {
+  const exactBranch = branches.find((branch) =>
+    branch.plans.some((candidate) => candidate === plan),
+  );
+  if (exactBranch) {
+    return exactBranch.branchName;
+  }
+
+  const branchMatches = branches.filter((branch) =>
+    branch.plans.some(
+      (candidate) =>
+        candidate.id === plan.id &&
+        candidate.targetBranch === plan.targetBranch,
+    ),
+  );
+  if (branchMatches.length === 1) {
+    return branchMatches[0]?.branchName ?? null;
+  }
+
+  const legacyMatches = branches.filter((branch) =>
+    branch.plans.some((candidate) => candidate.id === plan.id),
+  );
+  return legacyMatches.length === 1 ? legacyMatches[0]?.branchName ?? null : null;
+};
 
 const selectCatalogPlan = (params: {
   branches: ArchitectPlanCatalogBranch[];
@@ -185,7 +206,7 @@ const selectCatalogPlan = (params: {
   if (rememberedPlan) {
     return {
       plan: rememberedPlan,
-      branchName: findBranchForPlan(params.branches, rememberedPlan.id),
+      branchName: findBranchForPlan(params.branches, rememberedPlan),
       reason: 'remembered_plan',
     };
   }
@@ -197,16 +218,19 @@ const selectCatalogPlan = (params: {
   if (currentPlan) {
     return {
       plan: currentPlan,
-      branchName: findBranchForPlan(params.branches, currentPlan.id),
+      branchName: findBranchForPlan(params.branches, currentPlan),
       reason: 'current_plan',
     };
   }
 
   for (const branch of params.branches) {
-    const branchActivePlan = findVisiblePlanById(
-      params.visiblePlans,
-      branch.activePlanId,
-    );
+    const branchActivePlan = branch.activePlanId
+      ? branch.plans.find(
+          (plan) =>
+            plan.id === branch.activePlanId &&
+            params.visiblePlans.includes(plan),
+        ) ?? null
+      : null;
     if (branchActivePlan) {
       return {
         plan: branchActivePlan,
@@ -221,7 +245,7 @@ const selectCatalogPlan = (params: {
   )[0] ?? null;
   return {
     plan: recentPlan,
-    branchName: recentPlan ? findBranchForPlan(params.branches, recentPlan.id) : null,
+    branchName: recentPlan ? findBranchForPlan(params.branches, recentPlan) : null,
     reason: recentPlan ? 'recently_updated' : 'none',
   };
 };

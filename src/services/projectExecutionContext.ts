@@ -177,7 +177,7 @@ export const resolveProjectExecutionContext = (
         )?.id
       : null) ||
     null;
-  const hasTaskScope = hasDeclaredTaskScope || taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
+  const hasTaskScope = Boolean(taskId) || hasDeclaredTaskScope || taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
   const scopedProjectIds = uniqueStrings([
     ...(hasTaskScope
       ? [...taskProjectIds, ...taskContextProjectIds]
@@ -227,9 +227,7 @@ export const resolveProjectExecutionContext = (
   const projectId =
     cleanString(executionTarget?.projectId) ||
     taskProjectIds[0] ||
-    knownConversationProjectId ||
-    focusedProjectId ||
-    scopedProjectIds[0] ||
+    (!hasTaskScope ? knownConversationProjectId || focusedProjectId || scopedProjectIds[0] : null) ||
     null;
   const project = projectId ? projectById.get(projectId) || null : null;
 
@@ -247,7 +245,8 @@ export const resolveProjectExecutionContext = (
 
   const workspacePathsByProjectId = scopedProjectIds.reduce<Record<string, string>>((acc, scopedProjectId) => {
     const matchingTarget = executionTargets.find((target) => target.projectId === scopedProjectId) || null;
-    const workspacePathOverride = input.workspacePathOverridesByProjectId
+    const workspacePathOverride = input.workspacePathOverridesByProjectId &&
+      (!taskId || taskId === selectedTaskId)
       ? cleanString(input.workspacePathOverridesByProjectId[scopedProjectId])
       : null;
     const branchWorktree = input.branchWorktrees
@@ -257,12 +256,17 @@ export const resolveProjectExecutionContext = (
             : null
         )
       : null;
-    const resolvedPath =
-      workspacePathOverride ||
-      branchWorktree ||
-      cleanString(projectById.get(scopedProjectId)?.path) ||
-      cleanString(matchingTarget?.repoPath) ||
-      null;
+    const mode = resolveScopedMode(scopedProjectId).mode;
+    const needsTaskWorktree = Boolean(
+      taskId && actionableProjectIdSet.has(scopedProjectId) && mode === 'git' &&
+      matchingTarget?.executionKind !== 'repository_root'
+    );
+    const resolvedPath = needsTaskWorktree
+      ? workspacePathOverride || branchWorktree
+      : workspacePathOverride ||
+        cleanString(projectById.get(scopedProjectId)?.path) ||
+        cleanString(matchingTarget?.repoPath) ||
+        null;
 
     if (resolvedPath) {
       acc[scopedProjectId] = resolvedPath;
@@ -270,8 +274,9 @@ export const resolveProjectExecutionContext = (
     return acc;
   }, {});
 
-  const defaultWorkspacePath =
-    (projectId ? workspacePathsByProjectId[projectId] : null) ||
+  const defaultWorkspacePath = taskId
+    ? (projectId ? workspacePathsByProjectId[projectId] ?? null : null)
+    : (projectId ? workspacePathsByProjectId[projectId] : null) ||
     (canReuseActiveRepository ? cleanString(input.activeRepositoryPath) : null) ||
     cleanString(project?.path) ||
     Object.values(workspacePathsByProjectId)[0] ||
@@ -301,7 +306,9 @@ export const resolveProjectExecutionContext = (
           });
           return mounts;
         }, []);
-  const scopedProjectMounts = fallbackProjectMounts.map((mount) => {
+  const scopedProjectMounts = fallbackProjectMounts.filter((mount) =>
+    !hasTaskScope || scopedProjectIds.includes(mount.projectId)
+  ).map((mount) => {
     const target = resolveTargetForProject(mount.projectId);
     const resolution = resolveProjectExecutionMode({
       project: projectById.get(mount.projectId),
@@ -309,6 +316,7 @@ export const resolveProjectExecutionContext = (
     });
     return {
       ...mount,
+      workspacePath: taskId ? workspacePathsByProjectId[mount.projectId] ?? null : mount.workspacePath,
       isReadOnly: hasTaskScope
         ? contextProjectIds.includes(mount.projectId) || mount.isReadOnly ||
           (resolution.mode !== 'git' && resolution.mode !== 'direct')
@@ -336,4 +344,39 @@ export const resolveProjectExecutionContext = (
     branchName,
     workspacePath: defaultWorkspacePath,
   };
+};
+
+/** Complete preparation without consulting the current conversation or UI selection. */
+export const completePreparedTaskExecutionContext = (
+  captured: ProjectExecutionContext,
+  input: Pick<ResolveProjectExecutionContextInput,
+    'projects' | 'projectGroups' | 'tasks' | 'branchWorktrees' | 'workspacePathOverridesByProjectId'> & { taskId: string },
+): ProjectExecutionContext => {
+  if (captured.taskId && captured.taskId !== input.taskId) {
+    throw new Error('The captured execution task changed before preparation completed.');
+  }
+  const task = input.tasks?.find((candidate) => candidate.id === input.taskId);
+  if (!task) throw new Error('The captured execution task is no longer available.');
+  const current = resolveProjectExecutionContext({
+    ...input,
+    tasks: [task],
+    mode: 'Implement',
+    selectedTaskId: input.taskId,
+    selectedProjectId: captured.projectId,
+    selectedGroupId: captured.groupId,
+  });
+  if (current.projectId !== captured.projectId ||
+    current.projectIds.length !== captured.projectIds.length ||
+    captured.projectIds.some((id) => !current.projectIds.includes(id)) ||
+    captured.projectIds.some((id) => {
+      const path = captured.workspacePathsByProjectId[id];
+      return path && path !== current.workspacePathsByProjectId[id];
+    })) {
+    throw new Error('The captured execution project or workspace changed during preparation.');
+  }
+  if (!current.projectId || !current.workspacePath ||
+    current.actionableProjectIds.some((id) => !current.workspacePathsByProjectId[id])) {
+    throw new Error('The captured execution workspace is unavailable after task preparation.');
+  }
+  return current;
 };

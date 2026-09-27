@@ -1,6 +1,6 @@
 use crate::commands::{command_error, CommandResult};
 use crate::config::{ConfigDocumentKind, ConfigManager, SkillsDocument};
-use crate::core::process::background_tokio_command;
+use crate::core::process::{background_contained_tokio_command, ContainedBackgroundProcess};
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
@@ -10,15 +10,21 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+#[cfg(test)]
+use std::sync::{Arc, Barrier, LazyLock};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
+use tokio::io::AsyncReadExt;
 use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 mod types;
+
+#[cfg(all(test, unix))]
+mod configured_execution_tests;
 
 pub use types::*;
 
@@ -27,6 +33,8 @@ const LOWERCASE_SKILL_FILE: &str = "skill.md";
 const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const RESOURCE_MAX_BYTES: u64 = 512 * 1024;
 const SCRIPT_OUTPUT_MAX_CHARS: usize = 20_000;
+const SCRIPT_OUTPUT_TRUNCATION_MARKER: &str = "\n[truncated]";
+const SCRIPT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const MAX_DISCOVERY_DEPTH: usize = 6;
@@ -36,6 +44,16 @@ const MAX_SKILL_HASH_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const MAX_COMPATIBILITY_LENGTH: usize = 500;
+
+struct SkillRunTempDir(Option<PathBuf>);
+
+impl Drop for SkillRunTempDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
 
 const FRONTMATTER_FIELDS: &[&str] = &[
     "name",
@@ -1670,13 +1688,104 @@ fn resolve_resource_path(
     Ok(target_canonical)
 }
 
+fn truncate_with_marker(value: String, max_chars: usize) -> String {
+    let marker_chars = SCRIPT_OUTPUT_TRUNCATION_MARKER.chars().count();
+    if marker_chars >= max_chars {
+        return SCRIPT_OUTPUT_TRUNCATION_MARKER
+            .chars()
+            .take(max_chars)
+            .collect();
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars - marker_chars)
+        .collect::<String>();
+    truncated.push_str(SCRIPT_OUTPUT_TRUNCATION_MARKER);
+    truncated
+}
+
 fn truncate_chars(value: String, max_chars: usize) -> (String, bool) {
     if value.chars().count() <= max_chars {
         return (value, false);
     }
-    let mut truncated = value.chars().take(max_chars).collect::<String>();
-    truncated.push_str("\n[truncated]");
-    (truncated, true)
+    (truncate_with_marker(value, max_chars), true)
+}
+
+fn finalize_bounded_skill_output(raw: String, discarded: bool) -> (String, bool) {
+    let (output, char_truncated) = truncate_chars(raw, SCRIPT_OUTPUT_MAX_CHARS);
+    if discarded && !char_truncated {
+        return (truncate_with_marker(output, SCRIPT_OUTPUT_MAX_CHARS), true);
+    }
+    (output, discarded || char_truncated)
+}
+
+async fn read_bounded_skill_output<R>(mut reader: R) -> std::io::Result<(String, bool)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let byte_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_mul(4);
+    let mut retained = Vec::with_capacity(byte_limit);
+    let mut discarded = false;
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = byte_limit.saturating_sub(retained.len());
+        let keep = remaining.min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        discarded |= keep < read;
+    }
+    let raw = String::from_utf8_lossy(&retained).into_owned();
+    Ok(finalize_bounded_skill_output(raw, discarded))
+}
+
+async fn finish_skill_output_tasks(
+    mut stdout_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    mut stderr_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    drain_timeout: Duration,
+) -> CommandResult<((String, bool), (String, bool))> {
+    let joined = timeout(drain_timeout, async {
+        tokio::join!(&mut stdout_task, &mut stderr_task)
+    })
+    .await;
+    match joined {
+        Ok((stdout, stderr)) => {
+            let stdout = stdout
+                .map_err(|error| command_error(format!("Failed to join skill stdout: {error}")))?
+                .map_err(|error| command_error(format!("Failed to read skill stdout: {error}")))?;
+            let stderr = stderr
+                .map_err(|error| command_error(format!("Failed to join skill stderr: {error}")))?
+                .map_err(|error| command_error(format!("Failed to read skill stderr: {error}")))?;
+            Ok((stdout, stderr))
+        }
+        Err(_) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let marker = SCRIPT_OUTPUT_TRUNCATION_MARKER
+                .trim_start_matches('\n')
+                .to_string();
+            Ok(((marker.clone(), true), (marker, true)))
+        }
+    }
+}
+
+fn append_skill_timeout_message(stderr: String, timeout_ms: u64) -> (String, bool) {
+    let message = format!("Skill script timed out after {} ms.", timeout_ms);
+    if stderr.is_empty() {
+        return (message, false);
+    }
+    let separator = "\n";
+    let untruncated_chars =
+        stderr.chars().count() + separator.chars().count() + message.chars().count();
+    if untruncated_chars <= SCRIPT_OUTPUT_MAX_CHARS {
+        return (format!("{stderr}{separator}{message}"), false);
+    }
+    let suffix = format!("{SCRIPT_OUTPUT_TRUNCATION_MARKER}{separator}{message}");
+    let stderr_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_sub(suffix.chars().count());
+    let stderr = stderr.chars().take(stderr_limit).collect::<String>();
+    (format!("{stderr}{suffix}"), true)
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
@@ -1684,8 +1793,10 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
         .map_err(|error| command_error(format!("Failed to create skill destination: {}", error)))?;
     for entry in fs::read_dir(source)
         .map_err(|error| command_error(format!("Failed to read skill source: {}", error)))?
-        .flatten()
     {
+        let entry = entry.map_err(|error| {
+            command_error(format!("Failed to read a skill source entry: {}", error))
+        })?;
         let source_path = entry.path();
         let relative = source_path
             .strip_prefix(source)
@@ -1717,9 +1828,228 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
     Ok(())
 }
 
+fn validate_installable_skill_file(path: &Path) -> CommandResult<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| command_error("Selected folder does not contain SKILL.md."))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(command_error(
+            "Selected folder must contain a real SKILL.md file.",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_installable_skill_error(parsed: &ParsedSkillFile) -> crate::commands::CommandError {
+    let details = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect::<Vec<_>>()
+        .join(" ");
+    command_error(format!(
+        "Selected skill is not AgentSkills spec-compliant. {}",
+        details
+    ))
+}
+
+struct InstallableSkillSource {
+    parsed: ParsedSkillFile,
+    skill_file_contents: Vec<u8>,
+}
+
+fn read_installable_skill_source(source: &Path) -> CommandResult<InstallableSkillSource> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|error| command_error(format!("Failed to inspect selected folder: {}", error)))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(command_error("Selected path must be a real skill folder."));
+    }
+
+    let skill_file = source.join(SKILL_FILE);
+    validate_installable_skill_file(&skill_file)?;
+    let parsed = parse_skill_file(&skill_file);
+    if !parsed.is_valid || !parsed.spec_compliant {
+        return Err(invalid_installable_skill_error(&parsed));
+    }
+    let skill_file_contents = fs::read(&skill_file)
+        .map_err(|error| command_error(format!("Failed to read selected SKILL.md: {}", error)))?;
+    Ok(InstallableSkillSource {
+        parsed,
+        skill_file_contents,
+    })
+}
+
+struct SkillInstallStaging {
+    root: PathBuf,
+}
+
+impl Drop for SkillInstallStaging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[cfg(windows)]
+fn atomic_publish_skill_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn atomic_publish_skill_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn atomic_publish_skill_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    if unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+compile_error!("Atomic skill publication is unsupported on this platform.");
+
+#[cfg(test)]
+#[derive(Clone)]
+struct SkillInstallTestBarrier {
+    reached: Arc<Barrier>,
+    resume: Arc<Barrier>,
+}
+
+#[cfg(test)]
+static SKILL_INSTALL_TEST_BARRIERS: LazyLock<Mutex<HashMap<PathBuf, SkillInstallTestBarrier>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn wait_for_skill_install_test_barrier(source: &Path) {
+    let barrier = SKILL_INSTALL_TEST_BARRIERS
+        .lock()
+        .expect("lock skill install test barriers")
+        .remove(source);
+    if let Some(barrier) = barrier {
+        barrier.reached.wait();
+        barrier.resume.wait();
+    }
+}
+
+#[cfg(not(test))]
+fn wait_for_skill_install_test_barrier(_source: &Path) {}
+
+fn install_skill_from_local_source(
+    source: &Path,
+    destination_base: &Path,
+    source_descriptor: SkillSourceDto,
+) -> CommandResult<SkillManifestDto> {
+    let initial = read_installable_skill_source(source)?;
+    fs::create_dir_all(destination_base)
+        .map_err(|error| command_error(format!("Failed to create skill destination: {}", error)))?;
+
+    let destination = destination_base.join(&initial.parsed.name);
+    if destination.exists() {
+        return Err(command_error(format!(
+            "A skill already exists at {}.",
+            destination.display()
+        )));
+    }
+
+    let staging_root =
+        destination_base.join(format!(".macro-skill-install-{}", Uuid::new_v4().simple()));
+    fs::create_dir(&staging_root).map_err(|error| {
+        command_error(format!(
+            "Failed to create skill installation staging folder: {}",
+            error
+        ))
+    })?;
+    let staging = SkillInstallStaging { root: staging_root };
+    let staged_skill = staging.root.join(&initial.parsed.name);
+
+    wait_for_skill_install_test_barrier(source);
+    copy_dir_recursive(source, &staged_skill)?;
+
+    let copied = read_installable_skill_source(&staged_skill)?;
+    if copied.skill_file_contents != initial.skill_file_contents {
+        return Err(command_error(
+            "Selected SKILL.md changed during installation. Try again.",
+        ));
+    }
+    if copied.parsed.name != initial.parsed.name {
+        return Err(command_error(
+            "Selected skill name changed during installation. Try again.",
+        ));
+    }
+
+    atomic_publish_skill_directory(&staged_skill, &destination).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists || destination.exists() {
+            command_error(format!(
+                "A skill already exists at {}.",
+                destination.display()
+            ))
+        } else {
+            command_error(format!("Failed to publish installed skill: {}", error))
+        }
+    })?;
+
+    build_manifest_cached(&destination, source_descriptor)
+}
+
 fn resolve_workspace_cwd(
     workspace_path: Option<String>,
-    project_roots: &[SkillProjectRootDto],
+    workspace_roots: &[SkillProjectRootDto],
 ) -> CommandResult<PathBuf> {
     let raw_path = workspace_path
         .filter(|path| !path.trim().is_empty())
@@ -1732,14 +2062,14 @@ fn resolve_workspace_cwd(
         return Err(command_error("Workspace path is not a directory."));
     }
 
-    let allowed = project_roots.iter().any(|project| {
+    let allowed = workspace_roots.iter().any(|project| {
         fs::canonicalize(&project.path)
             .map(|project_root| path_is_inside(&project_root, &cwd))
             .unwrap_or(false)
     });
     if !allowed {
         return Err(command_error(
-            "Workspace path is not one of the active Macro project roots.",
+            "Workspace path is outside the authorized execution roots.",
         ));
     }
 
@@ -1805,39 +2135,9 @@ pub async fn skills_install_from_local_path(
     source_path: String,
 ) -> CommandResult<SkillManifestDto> {
     let source = PathBuf::from(source_path.trim());
-    let metadata = fs::symlink_metadata(&source)
-        .map_err(|error| command_error(format!("Failed to inspect selected folder: {}", error)))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(command_error("Selected path must be a real skill folder."));
-    }
-    if !source.join(SKILL_FILE).is_file() {
-        return Err(command_error("Selected folder does not contain SKILL.md."));
-    }
-    let parsed = parse_skill_file(&source.join(SKILL_FILE));
-    if !parsed.is_valid || !parsed.spec_compliant {
-        let details = parsed
-            .diagnostics
-            .iter()
-            .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
-            .collect::<Vec<_>>()
-            .join(" ");
-        return Err(command_error(format!(
-            "Selected skill is not AgentSkills spec-compliant. {}",
-            details
-        )));
-    }
-
     let (destination_base, source_descriptor) =
         resolve_configured_destination(manager.inner(), "global", None, None, &[]).await?;
-    let destination = destination_base.join(&parsed.name);
-    if destination.exists() {
-        return Err(command_error(format!(
-            "A skill already exists at {}.",
-            destination.display()
-        )));
-    }
-    copy_dir_recursive(&source, &destination)?;
-    build_manifest_cached(&destination, source_descriptor)
+    install_skill_from_local_source(&source, &destination_base, source_descriptor)
 }
 
 async fn resolve_configured_destination(
@@ -2127,9 +2427,36 @@ pub async fn skills_run_script(
     allow_workspace: bool,
     workspace_path: Option<String>,
     project_roots: Vec<SkillProjectRootDto>,
+    workspace_root: Option<SkillScriptWorkspaceDto>,
 ) -> CommandResult<SkillScriptRunResponse> {
-    let skill = resolve_configured_skill(manager.inner(), &skill_id, &project_roots).await?;
-    let permission = configured_skill_permission(manager.inner(), &skill_id)
+    run_configured_skill_script(
+        manager.inner(),
+        skill_id,
+        script_path,
+        args,
+        timeout_ms,
+        allow_workspace,
+        workspace_path,
+        project_roots,
+        workspace_root,
+    )
+    .await
+}
+
+async fn run_configured_skill_script(
+    manager: &ConfigManager,
+    skill_id: String,
+    script_path: String,
+    args: Vec<String>,
+    timeout_ms: Option<u64>,
+    allow_workspace: bool,
+    workspace_path: Option<String>,
+    project_roots: Vec<SkillProjectRootDto>,
+    workspace_root: Option<SkillScriptWorkspaceDto>,
+) -> CommandResult<SkillScriptRunResponse> {
+    // Source resolution and its permission record use discovery roots only.
+    let skill = resolve_configured_skill(manager, &skill_id, &project_roots).await?;
+    let permission = configured_skill_permission(manager, &skill_id)
         .await?
         .ok_or_else(|| command_error("This skill has no local permission record."))?;
     if permission.enabled != Some(true) || permission.scripts_enabled != Some(true) {
@@ -2148,6 +2475,24 @@ pub async fn skills_run_script(
         ));
     }
 
+    let workspace_roots = if allow_workspace {
+        if let Some(root) = workspace_root {
+            let project = project_roots
+                .iter()
+                .find(|project| project.project_id == root.project_id)
+                .ok_or_else(|| command_error("The captured workspace project is not available."))?;
+            vec![SkillProjectRootDto {
+                project_id: root.project_id,
+                project_name: project.project_name.clone(),
+                path: root.path,
+            }]
+        } else {
+            // Compatibility for callers confined to an original project root.
+            project_roots
+        }
+    } else {
+        Vec::new()
+    };
     run_skill_script_with_manifest(
         skill,
         skill_id,
@@ -2156,7 +2501,7 @@ pub async fn skills_run_script(
         timeout_ms,
         allow_workspace,
         workspace_path,
-        project_roots,
+        workspace_roots,
     )
     .await
 }
@@ -2169,7 +2514,7 @@ async fn run_skill_script_with_manifest(
     timeout_ms: Option<u64>,
     allow_workspace: bool,
     workspace_path: Option<String>,
-    project_roots: Vec<SkillProjectRootDto>,
+    workspace_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillScriptRunResponse> {
     let script = resolve_resource_path(&skill, &script_path, &["scripts"])?;
     let timeout_ms = timeout_ms
@@ -2203,19 +2548,19 @@ async fn run_skill_script_with_manifest(
     };
     command_args.extend(args);
 
-    let mut temp_run_dir: Option<PathBuf> = None;
+    let mut temp_run_dir = SkillRunTempDir(None);
     let run_cwd = if allow_workspace {
-        resolve_workspace_cwd(workspace_path, &project_roots)?
+        resolve_workspace_cwd(workspace_path, &workspace_roots)?
     } else {
         let path = std::env::temp_dir().join(format!("macro-skill-run-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).map_err(|error| {
             command_error(format!("Failed to create skill run directory: {}", error))
         })?;
-        temp_run_dir = Some(path.clone());
+        temp_run_dir.0 = Some(path.clone());
         path
     };
 
-    let mut command = background_tokio_command(program);
+    let mut command = background_contained_tokio_command(program);
     command
         .args(command_args)
         .current_dir(run_cwd)
@@ -2223,7 +2568,6 @@ async fn run_skill_script_with_manifest(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear();
-    command.kill_on_drop(true);
     let preserved_env_vars = if cfg!(windows) {
         ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"].as_slice()
     } else {
@@ -2235,41 +2579,74 @@ async fn run_skill_script_with_manifest(
         }
     }
 
-    let result = timeout(Duration::from_millis(timeout_ms), command.output()).await;
-    let response = match result {
-        Ok(Ok(output)) => {
-            let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
-            let (stdout, stdout_truncated) = truncate_chars(stdout_raw, SCRIPT_OUTPUT_MAX_CHARS);
-            let (stderr, stderr_truncated) = truncate_chars(stderr_raw, SCRIPT_OUTPUT_MAX_CHARS);
-            Ok(SkillScriptRunResponse {
-                skill_id,
-                script_path,
-                stdout,
-                stderr,
-                exit_code: output.status.code(),
-                timed_out: false,
-                truncated: stdout_truncated || stderr_truncated,
-            })
+    let mut process = ContainedBackgroundProcess::spawn(command)
+        .map_err(|error| command_error(format!("Failed to run skill script: {}", error)))?;
+    let stdout_pipe = process
+        .take_stdout()
+        .ok_or_else(|| command_error("Failed to capture skill script stdout."))?;
+    let stderr_pipe = process
+        .take_stderr()
+        .ok_or_else(|| command_error("Failed to capture skill script stderr."))?;
+    let stdout_task = tokio::spawn(read_bounded_skill_output(stdout_pipe));
+    let stderr_task = tokio::spawn(read_bounded_skill_output(stderr_pipe));
+    let wait_result = timeout(Duration::from_millis(timeout_ms), process.wait()).await;
+    let timed_out = wait_result.is_err();
+    let status = match wait_result {
+        Ok(Ok(status)) => Some(status),
+        Ok(Err(error)) => {
+            let _ = process.terminate_with_grace(Duration::ZERO).await;
+            return Err(command_error(format!(
+                "Failed to wait for skill script: {}",
+                error
+            )));
         }
-        Ok(Err(error)) => Err(command_error(format!(
-            "Failed to run skill script: {}",
-            error
-        ))),
-        Err(_) => Ok(SkillScriptRunResponse {
+        Err(_) => {
+            process
+                .terminate_with_grace(Duration::ZERO)
+                .await
+                .map_err(|error| {
+                    command_error(format!("Failed to stop timed out skill script: {}", error))
+                })?;
+            None
+        }
+    };
+    if status.is_some() {
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .map_err(|error| {
+                command_error(format!(
+                    "Failed to reap skill script descendants: {}",
+                    error
+                ))
+            })?;
+    }
+    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+        finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await?;
+
+    let response = if timed_out {
+        let (stderr, timeout_message_truncated) = append_skill_timeout_message(stderr, timeout_ms);
+        Ok(SkillScriptRunResponse {
             skill_id,
             script_path,
-            stdout: String::new(),
-            stderr: format!("Skill script timed out after {} ms.", timeout_ms),
+            stdout,
+            stderr,
             exit_code: None,
             timed_out: true,
-            truncated: false,
-        }),
+            truncated: stdout_truncated || stderr_truncated || timeout_message_truncated,
+        })
+    } else {
+        let status = status.expect("completed skill script status");
+        Ok(SkillScriptRunResponse {
+            skill_id,
+            script_path,
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            timed_out: false,
+            truncated: stdout_truncated || stderr_truncated,
+        })
     };
-
-    if let Some(path) = temp_run_dir {
-        let _ = fs::remove_dir_all(path);
-    }
 
     response
 }
@@ -2278,6 +2655,58 @@ async fn run_skill_script_with_manifest(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn truncation_marker_is_included_in_output_limit() {
+        let (output, truncated) = truncate_chars(
+            "x".repeat(SCRIPT_OUTPUT_MAX_CHARS + 1),
+            SCRIPT_OUTPUT_MAX_CHARS,
+        );
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn timeout_message_and_marker_are_included_in_output_limit() {
+        let (output, truncated) =
+            append_skill_timeout_message("x".repeat(SCRIPT_OUTPUT_MAX_CHARS), 1_000);
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.contains(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+        assert!(output.ends_with("Skill script timed out after 1000 ms."));
+    }
+
+    #[tokio::test]
+    async fn discarded_multibyte_output_keeps_a_truncation_marker() {
+        let input = "😀".repeat(SCRIPT_OUTPUT_MAX_CHARS + 1).into_bytes();
+        let (output, truncated) = read_bounded_skill_output(input.as_slice())
+            .await
+            .expect("read bounded multibyte output");
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[tokio::test]
+    async fn output_drain_timeout_aborts_inherited_pipe_readers() {
+        let stdout_task =
+            tokio::spawn(async { std::future::pending::<std::io::Result<(String, bool)>>().await });
+        let stderr_task = tokio::spawn(async { Ok(("stderr".to_string(), false)) });
+
+        let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+            finish_skill_output_tasks(stdout_task, stderr_task, Duration::from_millis(10))
+                .await
+                .expect("bounded output drain");
+
+        assert!(stdout_truncated);
+        assert!(stderr_truncated);
+        assert_eq!(stdout, "[truncated]");
+        assert_eq!(stderr, "[truncated]");
+    }
 
     async fn test_skills_list(
         project_roots: Vec<SkillProjectRootDto>,
@@ -2367,6 +2796,19 @@ mod tests {
         .expect("write skill");
     }
 
+    fn local_install_source(destination_base: &Path) -> SkillSourceDto {
+        SkillSourceDto {
+            kind: "global".to_string(),
+            namespace: "agents".to_string(),
+            root_id: "agents".to_string(),
+            priority: 500,
+            project_id: None,
+            project_name: None,
+            root_path: destination_base.to_string_lossy().to_string(),
+            skill_root_path: destination_base.to_string_lossy().to_string(),
+        }
+    }
+
     #[test]
     fn parses_valid_skill_frontmatter() {
         let dir = tempdir().expect("tempdir");
@@ -2403,6 +2845,111 @@ mod tests {
         assert_eq!(parsed.description, "Closed at EOF");
         assert!(parsed.diagnostics.is_empty());
         assert!(parsed.body.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symbolic_skill_file_before_installation() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("linked-skill");
+        fs::create_dir_all(&skill_dir).expect("create skill directory");
+        let target = dir.path().join("real-skill.md");
+        fs::write(
+            &target,
+            "---\nname: linked-skill\ndescription: Linked manifest\n---\n",
+        )
+        .expect("write target manifest");
+        symlink(&target, skill_dir.join(SKILL_FILE)).expect("create skill manifest symlink");
+
+        let error = validate_installable_skill_file(&skill_dir.join(SKILL_FILE))
+            .expect_err("symbolic SKILL.md must be rejected");
+        assert!(error.message.contains("real SKILL.md"));
+    }
+
+    #[test]
+    fn stages_valid_skill_before_publishing_it() {
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("source").join("staged-skill");
+        let destination_base = dir.path().join("destination");
+        write_skill(&source, "staged-skill");
+        fs::create_dir_all(source.join("references")).expect("create references");
+        fs::write(source.join("references/info.md"), "copied").expect("write reference");
+
+        let installed = install_skill_from_local_source(
+            &source,
+            &destination_base,
+            local_install_source(&destination_base),
+        )
+        .expect("install skill");
+
+        assert_eq!(installed.name, "staged-skill");
+        assert!(installed.is_valid);
+        assert_eq!(
+            fs::read_to_string(destination_base.join("staged-skill/references/info.md"))
+                .expect("read installed reference"),
+            "copied"
+        );
+        assert!(fs::read_dir(&destination_base)
+            .expect("read destination")
+            .flatten()
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".macro-skill-install-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_skill_file_replaced_by_symlink_during_staged_install() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("source").join("racing-skill");
+        let destination_base = dir.path().join("destination");
+        write_skill(&source, "racing-skill");
+        let replacement = dir.path().join("replacement-skill.md");
+        fs::copy(source.join(SKILL_FILE), &replacement).expect("copy replacement manifest");
+
+        let reached = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        SKILL_INSTALL_TEST_BARRIERS
+            .lock()
+            .expect("lock skill install test barriers")
+            .insert(
+                source.clone(),
+                SkillInstallTestBarrier {
+                    reached: Arc::clone(&reached),
+                    resume: Arc::clone(&resume),
+                },
+            );
+
+        let source_for_install = source.clone();
+        let destination_for_install = destination_base.clone();
+        let install = std::thread::spawn(move || {
+            install_skill_from_local_source(
+                &source_for_install,
+                &destination_for_install,
+                local_install_source(&destination_for_install),
+            )
+        });
+
+        reached.wait();
+        fs::remove_file(source.join(SKILL_FILE)).expect("remove checked manifest");
+        symlink(&replacement, source.join(SKILL_FILE)).expect("replace manifest with symlink");
+        resume.wait();
+
+        let error = install
+            .join()
+            .expect("join install thread")
+            .expect_err("racing symlink must fail installation");
+        assert!(error.message.contains("SKILL.md"));
+        assert!(!destination_base.join("racing-skill").exists());
+        assert!(fs::read_dir(&destination_base)
+            .expect("read destination")
+            .next()
+            .is_none());
     }
 
     #[test]
@@ -3217,6 +3764,97 @@ mod tests {
         }));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn script_workspace_uses_captured_root_and_rejects_missing_directory() {
+        let project = tempdir().expect("project");
+        let worktree_parent = tempdir().expect("worktree parent");
+        let worktree = worktree_parent.path().join("task");
+        fs::create_dir(&worktree).expect("worktree");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("cwd-runner");
+        write_skill(&skill_dir, "cwd-runner");
+        fs::create_dir(skill_dir.join("scripts")).expect("scripts");
+        fs::write(skill_dir.join("scripts/cwd.sh"), "pwd -P\n").expect("script");
+        let project_root = SkillProjectRootDto {
+            project_id: "project".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        };
+        let skill_id = discover_skills(std::slice::from_ref(&project_root))
+            .into_iter()
+            .find(|skill| skill.name == "cwd-runner")
+            .expect("skill")
+            .id;
+        let roots = vec![
+            project_root,
+            SkillProjectRootDto {
+                project_id: "project".to_string(),
+                project_name: "Project".to_string(),
+                path: worktree.to_string_lossy().to_string(),
+            },
+        ];
+        let run = |allow_workspace, workspace_path| {
+            test_skills_run_script(
+                skill_id.clone(),
+                "scripts/cwd.sh".to_string(),
+                vec![],
+                Some(5_000),
+                allow_workspace,
+                workspace_path,
+                roots.clone(),
+            )
+        };
+        let path = worktree.to_string_lossy().to_string();
+        let result = run(true, Some(path.clone())).await.expect("worktree cwd");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.stdout.trim(),
+            fs::canonicalize(&worktree)
+                .expect("canonical worktree")
+                .to_string_lossy()
+        );
+        let result = run(true, Some(project.path().to_string_lossy().to_string()))
+            .await
+            .expect("direct project cwd");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.stdout.trim(),
+            fs::canonicalize(project.path())
+                .expect("canonical project")
+                .to_string_lossy()
+        );
+        fs::remove_dir(&worktree).expect("remove worktree before launch");
+        assert!(run(true, Some(path.clone())).await.is_err());
+        assert!(run(true, None).await.is_err());
+        let result = run(false, Some(path)).await.expect("temporary cwd");
+        assert_eq!(result.exit_code, Some(0));
+        let temporary_cwd = PathBuf::from(result.stdout.trim());
+        assert!(temporary_cwd
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("macro-skill-run-"));
+        assert!(
+            !temporary_cwd.exists(),
+            "temporary directory should be cleaned up"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn script_workspace_canonicalization_rejects_symlink_escape() {
+        let project = tempdir().expect("project");
+        let outside = tempdir().expect("outside");
+        let link = project.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).expect("symlink");
+        let roots = vec![SkillProjectRootDto {
+            project_id: "project".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }];
+        assert!(resolve_workspace_cwd(Some(link.to_string_lossy().to_string()), &roots).is_err());
+    }
+
     #[tokio::test]
     async fn script_runs_are_timed_out_and_truncated() {
         let project = tempdir().expect("project");
@@ -3227,23 +3865,62 @@ mod tests {
             "---\nname: runner\ndescription: Runs local scripts\n---\n",
         )
         .expect("write skill");
+        // Cargo can expand PATH beyond cmd.exe's limit; use system executables
+        // explicitly so these fixtures exercise timeouts rather than PATH lookup.
         #[cfg(windows)]
         let (slow_script_path, slow_script_content) = (
             "scripts/slow.cmd",
-            "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Seconds 2\"\r\n",
+            "@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"Start-Sleep -Seconds 2\"\r\n",
         );
         #[cfg(not(windows))]
         let (slow_script_path, slow_script_content) = ("scripts/slow.sh", "sleep 2\n");
         #[cfg(windows)]
         let (noisy_script_path, noisy_script_content) = (
             "scripts/noisy.cmd",
-            "@echo off\r\npowershell -NoProfile -Command \"$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(30000, 25); Write-Host -NoNewline ('x' * 21050)\"\r\n",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\n",
         );
         #[cfg(not(windows))]
-        let (noisy_script_path, noisy_script_content) =
-            ("scripts/noisy.sh", "printf 'x%.0s' {1..21050}\n");
+        let (noisy_script_path, noisy_script_content) = (
+            "scripts/noisy.sh",
+            "cat \"$(dirname \"$0\")/noisy-payload.txt\"\n",
+        );
+        #[cfg(windows)]
+        let (noisy_timeout_script_path, noisy_timeout_script_content) = (
+            "scripts/noisy-timeout.cmd",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\n\"%SystemRoot%\\System32\\ping.exe\" -n 6 127.0.0.1 >nul\r\n",
+        );
+        #[cfg(not(windows))]
+        let (noisy_timeout_script_path, noisy_timeout_script_content) = (
+            "scripts/noisy-timeout.sh",
+            "cat \"$(dirname \"$0\")/noisy-payload.txt\"\nsleep 5\n",
+        );
+        #[cfg(windows)]
+        let (descendant_script_path, descendant_script_content) = (
+            "scripts/descendant.cmd",
+            "@echo off\r\nstart \"\" /B \"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '%~1' -Value survived\"\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"Start-Sleep -Seconds 10\"\r\n",
+        );
+        #[cfg(not(windows))]
+        let (descendant_script_path, descendant_script_content) = (
+            "scripts/descendant.sh",
+            "if command -v setsid >/dev/null 2>&1; then\n  setsid sh -c 'sleep 1.5; printf survived > \"$1\"' sh \"$1\" &\nelse\n  (sleep 1.5; printf survived > \"$1\") &\nfi\nsleep 10\n",
+        );
         fs::write(skill_dir.join(slow_script_path), slow_script_content).expect("write slow");
         fs::write(skill_dir.join(noisy_script_path), noisy_script_content).expect("write noisy");
+        fs::write(
+            skill_dir.join(noisy_timeout_script_path),
+            noisy_timeout_script_content,
+        )
+        .expect("write noisy timeout");
+        fs::write(
+            skill_dir.join("scripts/noisy-payload.txt"),
+            "x".repeat(100_000),
+        )
+        .expect("write noisy payload");
+        fs::write(
+            skill_dir.join(descendant_script_path),
+            descendant_script_content,
+        )
+        .expect("write descendant script");
         let project_roots = vec![SkillProjectRootDto {
             project_id: "p1".to_string(),
             project_name: "Project".to_string(),
@@ -3278,6 +3955,44 @@ mod tests {
             timed_out.stdout, timed_out.stderr, timed_out.exit_code
         );
         assert!(timed_out.stderr.contains("timed out"));
+
+        let noisy_timeout = test_skills_run_script(
+            skill_id.clone(),
+            noisy_timeout_script_path.to_string(),
+            vec![],
+            Some(1_000),
+            false,
+            None,
+            project_roots.clone(),
+        )
+        .await
+        .expect("noisy timeout response");
+        assert!(noisy_timeout.timed_out);
+        assert!(noisy_timeout.truncated);
+        assert!(noisy_timeout.stdout.ends_with("[truncated]"));
+        assert!(
+            noisy_timeout.stdout.chars().count() <= SCRIPT_OUTPUT_MAX_CHARS,
+            "timed out stdout exceeded its bounded response"
+        );
+
+        let descendant_marker = project.path().join("descendant-survived.txt");
+        let descendant_timeout = test_skills_run_script(
+            skill_id.clone(),
+            descendant_script_path.to_string(),
+            vec![descendant_marker.to_string_lossy().to_string()],
+            Some(1_000),
+            false,
+            None,
+            project_roots.clone(),
+        )
+        .await
+        .expect("descendant timeout response");
+        assert!(descendant_timeout.timed_out);
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        assert!(
+            !descendant_marker.exists(),
+            "skill script descendant survived timeout"
+        );
 
         let truncated = test_skills_run_script(
             skill_id,

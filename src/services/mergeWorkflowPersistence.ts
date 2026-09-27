@@ -1,3 +1,4 @@
+import type { GitWorkflowSessionDto } from './tauriIpc';
 import type { TaskStatus } from '../types';
 import {
   resolveMergeWorkflowPhaseFromRepositories,
@@ -13,6 +14,7 @@ import {
 } from './mergeWorkflow';
 
 export interface PersistedMergeWorkflowRepositoryState {
+  workflowSession?: GitWorkflowSessionDto;
   id: string;
   projectId: string;
   repoPath: string;
@@ -62,6 +64,7 @@ export interface MergeWorkflowSummary {
 const toPersistedRepositoryState = (
   repository: MergeWorkflowRepositoryResult,
 ): PersistedMergeWorkflowRepositoryState => ({
+  workflowSession: repository.workflowSession,
   id: repository.id,
   projectId: repository.projectId,
   repoPath: repository.repoPath,
@@ -141,6 +144,7 @@ const toRuntimeRepository = (
   const blockingReason = isReadyToComplete ? null : repository.blockingReason;
 
   return {
+    workflowSession: repository.workflowSession,
     id: repository.id,
     projectId: repository.projectId,
     repoPath: repository.repoPath,
@@ -336,6 +340,7 @@ export const overlayPersistedMergeWorkflowSession = (params: {
   );
   const phase = resolvePersistedMergeWorkflowPhase(
     repositories.map((repository) => ({
+      workflowSession: repository.workflowSession,
       id: repository.id,
       projectId: repository.projectId,
       repoPath: repository.repoPath,

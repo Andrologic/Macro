@@ -132,6 +132,10 @@ let gitFastForwardMock: ReturnType<typeof mock>;
 let gitRestorePathsMock: ReturnType<typeof mock>;
 let gitResetMock: ReturnType<typeof mock>;
 let openConflictAssistantMock: ReturnType<typeof mock>;
+let notifyErrorMock: ReturnType<typeof mock>;
+let notifySuccessMock: ReturnType<typeof mock>;
+let notifyInfoMock: ReturnType<typeof mock>;
+let notifyActionRequiredMock: ReturnType<typeof mock>;
 let openFolderMock: ReturnType<typeof mock>;
 let windowConfirmSpy: ReturnType<typeof mock> | null = null;
 let macroBranchEnsureMock: ReturnType<typeof mock>;
@@ -409,10 +413,10 @@ const loadFooter = async () => {
 
   mock.module('../ui/toastService', () => ({
     notify: {
-      error: mock(() => undefined),
-      success: mock(() => undefined),
-      info: mock(() => undefined),
-      actionRequired: mock(() => undefined),
+      error: notifyErrorMock,
+      success: notifySuccessMock,
+      info: notifyInfoMock,
+      actionRequired: notifyActionRequiredMock,
     },
   }));
 
@@ -581,6 +585,10 @@ describe('Footer', () => {
     gitRestorePathsMock = mock(async () => undefined);
     gitResetMock = mock(async () => undefined);
     openConflictAssistantMock = mock(async () => 'conversation-id');
+    notifyErrorMock = mock(() => undefined);
+    notifySuccessMock = mock(() => undefined);
+    notifyInfoMock = mock(() => undefined);
+    notifyActionRequiredMock = mock(() => undefined);
     openFolderMock = mock(async () => null);
     windowConfirmSpy = null;
     macroBranchEnsureMock = mock(async (params?: { workspacePath?: string | null }) =>
@@ -610,6 +618,93 @@ describe('Footer', () => {
     container = null;
     root = null;
     mock.restore();
+  });
+
+  it('clears busy state when the Git target changes during a refresh', async () => {
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByText(container!, 'Resolve')?.click(); });
+    await flushAsyncWork();
+    expect(findButtonByText(container!, 'Push @macro')).not.toBeNull();
+    const replies: Array<(status: GitStatusDto) => void> = [];
+    gitStatusMock.mockImplementation((path: string) => path === '/repo/api'
+      ? new Promise((resolve) => { replies.push(resolve); })
+      : Promise.resolve(cloneGitStatus(gitStatusByPath[path]!)));
+    act(() => { findButtonByText(container!, 'Push @macro')?.click(); });
+    await flushAsyncWork();
+    expect(replies.length).toBeGreaterThan(0);
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
+    appState.selectedProjectId = 'project-b';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    expect(container.textContent).toContain('feature-b');
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(false);
+    await act(async () => {
+      replies.forEach((resolve) => resolve(buildGitStatus('main-a', 0, 0)));
+    });
+    await flushAsyncWork();
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(false);
+  });
+
+  it('keeps the current conflict dialog when an old target retry finishes', async () => {
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    macroStatusByPath = {
+      '/repo/api': {
+        ...buildMacroStatus(5, 4),
+        state: 'conflict',
+        reason: 'merge_conflict',
+        next_action: 'resolve_conflict',
+        conflicted_files: ['plan.json'],
+      },
+      '/repo/web': buildMissingUpstreamMacroStatus(),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByText(container!, 'Resolve')?.click(); });
+    await flushAsyncWork();
+    expect(container.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
+
+    appState.selectedProjectId = 'project-b';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    const panel = container.querySelector<HTMLDivElement>('[data-testid="conflict-panel"]');
+    expect(panel).not.toBeNull();
+    expect(findButtonByText(panel!, 'Push @macro')).not.toBeNull();
+    let releasePush!: (result: MacroBranchSyncDto) => void;
+    macroBranchPushMock.mockImplementationOnce(() => new Promise<MacroBranchSyncDto>((resolve) => {
+      releasePush = resolve;
+    }));
+    act(() => { findButtonByText(panel!, 'Push @macro')?.click(); });
+    await flushAsyncWork();
+    expect(macroBranchPushMock).toHaveBeenCalledWith({ workspacePath: '/repo/web' });
+
+    appState.selectedProjectId = 'project-a';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    expect(findButtonByText(container!, 'Retry sync')).not.toBeNull();
+    const currentPushCount = findButtonByIcon(container!, 'arrow-up')?.textContent;
+    await act(async () => { releasePush(buildMacroStatus(0, 0)); });
+    await flushAsyncWork();
+    expect(container.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
+    expect(findButtonByText(container!, 'Retry sync')).not.toBeNull();
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent).toBe(currentPushCount);
   });
 
   it('exposes the notification center relationship to assistive technology', async () => {
@@ -673,6 +768,30 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     expect(gitFetchMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
+  });
+
+  it('loads the next Git target without waiting for the old target and ignores its late status', async () => {
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    const oldReplies: Array<(value: GitStatusDto) => void> = [];
+    gitStatusMock.mockImplementation((path: string) => path === '/repo/api'
+      ? new Promise((resolve) => { oldReplies.push(resolve); })
+      : Promise.resolve(cloneGitStatus(gitStatusByPath[path]!)));
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    expect(oldReplies.length).toBeGreaterThan(0);
+    appState.selectedProjectId = 'project-b';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    expect(container.textContent).toContain('feature-b');
+    await act(async () => {
+      oldReplies.forEach((resolve) => resolve(buildGitStatus('stale-branch', 90, 90)));
+    });
+    expect(container.textContent).toContain('feature-b');
+    expect(container.textContent).not.toContain('stale-branch');
   });
 
   it('updates the Architect Git context synchronously when the selected project changes', async () => {
@@ -1376,6 +1495,20 @@ describe('Footer', () => {
     expect(options).toBeDefined();
     expect(typeof options?.prompt).toBe('string');
     expect(options.prompt.length).toBeGreaterThan(0);
+    expect(notifyInfoMock).toHaveBeenCalledWith(
+      'AI conflict assistant started',
+      { category: 'git_sync_attention_required' }
+    );
+    expect(
+      notifySuccessMock.mock.calls.some((call) =>
+        call.some((argument) =>
+          typeof argument === 'object' &&
+          argument !== null &&
+          'category' in argument &&
+          argument.category === 'git_sync_completed'
+        )
+      )
+    ).toBe(false);
     expect(container?.textContent ?? '').not.toContain('Conflicts detected');
   });
 

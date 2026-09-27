@@ -1,5 +1,7 @@
 import { create } from 'zustand';
+import { createLifecycleScope, LifecycleStoppedError, type LifecycleContext } from '../services/lifecycleScope';
 import { listen, type UnlistenFn } from '../services/tauriRuntimeBridge';
+import type { TerminalLifecyclePort } from '../services/terminalLifecycle';
 import type { Project, Task, TaskExecutionTarget } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
@@ -91,7 +93,10 @@ interface TerminalStore extends TerminalVisibilityState {
     sessionId: string,
     executionId?: string | null
   ) => Promise<tauriIpc.TerminalSessionDto>;
-  initialize: () => Promise<void>;
+  initialize: (context?: LifecycleContext) => Promise<void>;
+  startRuntime: (context?: LifecycleContext) => Promise<void>;
+  stopRuntime: () => Promise<void>;
+  setLifecyclePort: (port: TerminalLifecyclePort) => void;
   togglePanel: () => Promise<void>;
   setPanelOpen: (open: boolean) => void;
   setPanelHeight: (height: number) => void;
@@ -155,7 +160,6 @@ interface TerminalStore extends TerminalVisibilityState {
   closeTab: (tabId: string) => Promise<void>;
 }
 
-const delay = (ms: number) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 
 const clampPanelHeight = (height: number): number =>
   Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, Math.round(height)));
@@ -214,6 +218,7 @@ export const isVisibleTerminalTab = (
   tab: Pick<TerminalTab, 'purpose' | 'status' | 'lastExitCode'>
 ): boolean =>
   tab.purpose !== 'worktree_setup' ||
+  tab.status === 'closed' ||
   isFailedTerminalStatus(tab.status) ||
   hasFailedTerminalExitCode(tab.lastExitCode);
 
@@ -245,14 +250,6 @@ const buildInitialTabOrder = (
     tabDtos.map((dto) => dto.id),
     tabs
   );
-
-const persistActiveTabId = (tabId: string | null) => {
-  void savePreference(PREF_KEYS.TERMINAL_ACTIVE_TAB_ID, tabId);
-};
-
-const persistPanelHeight = (height: number) => {
-  void savePreference(PREF_KEYS.TERMINAL_PANEL_HEIGHT, height);
-};
 
 const isLiveTaskCommandTabStatus = (status: string): boolean =>
   status === 'running' || status === 'interrupting';
@@ -692,11 +689,41 @@ const computeHiddenCountForScope = (
   }).length;
 };
 
-export const useTerminalStore = create<TerminalStore>((set, get) => {
+export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => create<TerminalStore>((set, get) => {
+  let lifecyclePort = initialPort;
+  let runtimeEpoch = 0;
+  let runtimeActive = true;
+  let acquisitionScope = createLifecycleScope();
+  const persistActiveTabId = (tabId: string | null) => {
+    void acquisitionScope.track(savePreference(PREF_KEYS.TERMINAL_ACTIVE_TAB_ID, tabId)).catch(() => undefined);
+  };
+
+  const persistPanelHeight = (height: number) => {
+    void acquisitionScope.track(savePreference(PREF_KEYS.TERMINAL_PANEL_HEIGHT, height)).catch(() => undefined);
+  };
+
+  let stopPromise: Promise<void> = Promise.resolve();
+  let runtimeContext: LifecycleContext | undefined;
+  let releaseContext: (() => void) | undefined;
+  // IDs are never reused. Keep closure tombstones across frontend restarts.
+  const blockedTabs = new Set<string>();
+  const closedTabs = new Set<string>();
+  const closingTabs = new Map<string, Promise<void>>();
+  const listenerCleanups = new Set<() => void>();
+  const captureRuntime = () => {
+    const epoch = runtimeEpoch;
+    const context = runtimeContext;
+    return () => runtimeActive && epoch === runtimeEpoch && (context?.isActive() ?? true);
+  };
+  const assertCurrent = (current: () => boolean, tabId?: string) => {
+    if (!current() || (tabId && blockedTabs.has(tabId))) {
+      throw new LifecycleStoppedError();
+    }
+  };
   let initializePromise: Promise<void> | null = null;
-  let eventUnlisteners: UnlistenFn[] = [];
   let pendingOutputEvents: Record<string, tauriIpc.TerminalOutputEvent> = {};
   let outputFlushTimer: number | null = null;
+  let manualSelectionRevision = 0;
 
   const computeCurrentHiddenCount = (state: TerminalVisibilityState): number =>
     computeHiddenCountForScope(state, resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId));
@@ -706,8 +733,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
   };
 
   const upsertTab = (nextTab: TerminalTab, options?: { activate?: boolean; openPanel?: boolean }) => {
+    if (!runtimeActive || blockedTabs.has(nextTab.id)) return;
     set((state) => {
       const existing = state.tabs[nextTab.id];
+      if (existing && (nextTab.generation ?? 0) < (existing.generation ?? 0)) {
+        nextTab = existing;
+      }
       const currentScope = resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId);
       const activeVisibleTabId = getVisibleActiveTabIdFromState(state, currentScope);
       const panelOpen = options?.openPanel ?? state.panelOpen;
@@ -759,6 +790,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
   };
 
   const removeTabLocally = (tabId: string) => {
+    if (!get().tabs[tabId]) return;
     let nextActiveTabId: string | null = null;
 
     set((state) => {
@@ -809,32 +841,86 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     persistActiveTabId(nextActiveTabId);
   };
 
-  const loadTabsWithRetry = async (): Promise<tauriIpc.TerminalTabDto[]> => {
+  const finalizeClosedTab = (tabId: string) => {
+    if (closedTabs.has(tabId)) return;
+    closedTabs.add(tabId);
+    blockedTabs.add(tabId);
+    delete pendingOutputEvents[tabId];
+    try { lifecyclePort?.disposeTab(tabId); }
+    catch (error) { console.warn('Terminal rendering cleanup failed:', error); }
+    const tab = get().tabs[tabId];
+    removeTabLocally(tabId);
+    // A native close can arrive before the create response supplies the tab.
+    if (!tab || tab.kind === 'task') {
+      useTaskStore.getState().handleTaskCommandTerminalClosed(tabId);
+    }
+  };
+
+  const loadTabsWithRetry = async (current: () => boolean): Promise<tauriIpc.TerminalTabDto[]> => {
     if (!tauriIpc.isTauriAvailable()) {
       return [];
     }
 
     for (let attempt = 0; attempt < DB_READY_RETRIES; attempt += 1) {
       try {
-        return await tauriIpc.terminalListTabs();
+        assertCurrent(current);
+        return await acquisitionScope.track(tauriIpc.terminalListTabs());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!message.includes('Database not initialized') || attempt === DB_READY_RETRIES - 1) {
           throw error;
         }
-        await delay(DB_READY_DELAY_MS);
+        assertCurrent(current);
+        await new Promise<void>((resolve) => {
+          const timer = globalThis.setTimeout(() => release(), DB_READY_DELAY_MS);
+          const release = acquisitionScope.own(() => { globalThis.clearTimeout(timer); resolve(); });
+        });
       }
     }
 
     return [];
   };
 
-  const registerListeners = async () => {
-    if (!tauriIpc.isTauriAvailable() || eventUnlisteners.length > 0) {
+  const registerListeners = async (current: () => boolean) => {
+    if (!tauriIpc.isTauriAvailable() || listenerCleanups.size > 0) {
       return;
     }
 
+    let active = true;
+    const acquired = new Set<UnlistenFn>();
+    const cleanup = () => {
+      if (!active) return;
+      active = false;
+      if (current()) {
+        if (outputFlushTimer !== null) globalThis.clearTimeout(outputFlushTimer);
+        outputFlushTimer = null;
+        pendingOutputEvents = {};
+      }
+      listenerCleanups.delete(cleanup);
+      for (const unlisten of acquired) {
+        acquired.delete(unlisten);
+        try { unlisten(); } catch (error) { console.warn('Terminal listener cleanup failed:', error); }
+      }
+    };
+    listenerCleanups.add(cleanup);
+    const isCurrent = () => active && current();
+    const registrationsScope = acquisitionScope;
+    const subscribe = <T>(name: string, handler: (event: { payload: T }) => void) =>
+      registrationsScope.track(Promise.resolve().then(() => {
+        if (!isCurrent()) return;
+        return listen<T>(name, (event) => {
+          if (isCurrent()) handler(event);
+        }).then((unlisten) => {
+          if (isCurrent()) acquired.add(unlisten);
+          else unlisten();
+        });
+      }).catch((error) => {
+        cleanup();
+        throw error;
+      }));
+
     const flushPendingOutputEvents = () => {
+      if (!isCurrent()) return;
       outputFlushTimer = null;
       const queuedEvents = Object.values(pendingOutputEvents);
       pendingOutputEvents = {};
@@ -851,7 +937,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
 
         queuedEvents.forEach((payload) => {
           const existing = tabs[payload.tab_id];
-          if (!existing) {
+          if (!existing || blockedTabs.has(payload.tab_id)) {
             return;
           }
           const payloadGeneration = payload.generation ?? (existing.generation ?? 0);
@@ -901,9 +987,18 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     };
 
     const queueOutputEvent = (payload: tauriIpc.TerminalOutputEvent) => {
+      if (blockedTabs.has(payload.tab_id)) return;
       const existing = pendingOutputEvents[payload.tab_id];
-      if (!existing || (payload.sequence ?? 0) >= (existing.sequence ?? 0)) {
-        pendingOutputEvents[payload.tab_id] = payload;
+      const currentGeneration = get().tabs[payload.tab_id]?.generation ?? 0;
+      const generation = payload.generation ?? currentGeneration;
+      const queuedGeneration = existing?.generation ?? currentGeneration;
+      if (
+        !existing ||
+        generation > queuedGeneration ||
+        (generation === queuedGeneration && (payload.sequence ?? 0) >= (existing.sequence ?? 0))
+      ) {
+        // Legacy events inherit the generation at receipt, never at a later flush.
+        pendingOutputEvents[payload.tab_id] = { ...payload, generation };
       }
 
       if (outputFlushTimer !== null) {
@@ -920,11 +1015,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       }, 16);
     };
 
-    eventUnlisteners = await Promise.all([
-      listen<tauriIpc.TerminalOutputEvent>('terminal:output', (event) => {
+    const registrations = await Promise.allSettled([
+      subscribe<tauriIpc.TerminalOutputEvent>('terminal:output', (event) => {
         queueOutputEvent(event.payload);
       }),
-      listen<tauriIpc.TerminalTabDto>('terminal:tab', (event) => {
+      subscribe<tauriIpc.TerminalTabDto>('terminal:tab', (event) => {
+        if (blockedTabs.has(event.payload.id)) return;
         const existing = get().tabs[event.payload.id];
         const nextTab = mapTabDto(event.payload, existing);
         upsertTab(nextTab, {});
@@ -932,11 +1028,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           useTaskStore.getState().handleTaskCommandTerminalClosed(nextTab.id);
         }
       }),
-      listen<{ tab_id: string }>('terminal:closed', (event) => {
-        useTaskStore.getState().handleTaskCommandTerminalClosed(event.payload.tab_id);
-        removeTabLocally(event.payload.tab_id);
+      subscribe<{ tab_id: string }>('terminal:closed', (event) => {
+        finalizeClosedTab(event.payload.tab_id);
       }),
     ]);
+    const failure = registrations.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') {
+      cleanup();
+      throw failure.reason;
+    }
   };
 
   const persistLastManualProjectSelection = (taskId: string, projectId: string) => {
@@ -955,7 +1055,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         lastManualProjectIdByTaskId: nextValue,
       }),
     });
-    void savePreference(PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK, nextValue);
+    void acquisitionScope.track(savePreference(PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK, nextValue)).catch(() => undefined);
   };
 
   return {
@@ -974,6 +1074,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     lastManualProjectIdByTaskId: {},
 
     upsertSession: (session) => {
+      if (!runtimeActive) return session;
       set((state) => {
         const lastSessionIdByProjectId = session.project_id
           ? {
@@ -993,47 +1094,106 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     createSession: async ({ projectId, cwd }) => {
+      const current = captureRuntime();
+      assertCurrent(current);
       if (!projectId) {
-        const session = await tauriIpc.terminalCreateSession({
+        const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({
           projectId: null,
           cwd: cwd ?? null,
-        });
-        return get().upsertSession(session);
+        }));
+        return current() ? get().upsertSession(session) : session;
       }
 
       const resolvedProject = resolveSupportedTerminalProject(projectId);
-      const session = await tauriIpc.terminalCreateSession({
+      const session = await acquisitionScope.track(tauriIpc.terminalCreateSession({
         projectId: resolvedProject.projectId,
         cwd: resolveSessionCreationCwd({
           projectId: resolvedProject.projectId,
           projectPath: resolvedProject.project.path,
           cwd: cwd ?? null,
         }),
-      });
-      return get().upsertSession(session);
+      }));
+      return current() ? get().upsertSession(session) : session;
     },
 
     runCommand: async ({ sessionId, command, timeoutMs, executionId }) => {
-      const session = await tauriIpc.terminalRun({
+      const current = captureRuntime();
+      assertCurrent(current);
+      const session = await acquisitionScope.track(tauriIpc.terminalRun({
         sessionId,
         command,
         timeoutMs: timeoutMs ?? null,
         executionId: executionId ?? null,
-      });
-      return get().upsertSession(session);
+      }));
+      return current() ? get().upsertSession(session) : session;
     },
 
     readSession: async (sessionId) => {
-      const session = await tauriIpc.terminalRead(sessionId);
-      return get().upsertSession(session);
+      const current = captureRuntime();
+      assertCurrent(current);
+      const session = await acquisitionScope.track(tauriIpc.terminalRead(sessionId));
+      return current() ? get().upsertSession(session) : session;
     },
 
     killSession: async (sessionId, executionId) => {
-      const session = await tauriIpc.terminalKill(sessionId, executionId);
-      return get().upsertSession(session);
+      const current = captureRuntime();
+      // Cancellation belongs to the admitted execution, even after its UI retires.
+      const session = await acquisitionScope.track(tauriIpc.terminalKill(sessionId, executionId));
+      return current() ? get().upsertSession(session) : session;
     },
 
-    initialize: async () => {
+    setLifecyclePort: (port) => { lifecyclePort = port; },
+
+    startRuntime: async (context) => {
+      await stopPromise;
+      context?.assertActive();
+      if (!runtimeActive) acquisitionScope = createLifecycleScope();
+      runtimeActive = true;
+      return get().initialize(context);
+    },
+
+    stopRuntime: () => {
+      if (!runtimeActive) return stopPromise;
+      runtimeActive = false;
+      const stoppingScope = acquisitionScope;
+      try { stoppingScope.stop(); }
+      catch (error) { console.warn('Terminal acquisition cleanup failed:', error); }
+      stopPromise = stoppingScope.drain();
+      runtimeEpoch += 1;
+      releaseContext?.();
+      releaseContext = undefined;
+      runtimeContext = undefined;
+      manualSelectionRevision += 1;
+      initializePromise = null;
+      for (const cleanup of listenerCleanups) cleanup();
+      if (outputFlushTimer !== null) globalThis.clearTimeout(outputFlushTimer);
+      outputFlushTimer = null;
+      pendingOutputEvents = {};
+      try { lifecyclePort?.disposeAll(); }
+      catch (error) { console.warn('Terminal rendering cleanup failed:', error); }
+      // Removing client records releases command waiters. Native sessions stay alive.
+      set({ initialized: false, initializing: false, tabs: {}, tabOrder: [],
+        activeTabId: null, activeTabIdByScope: {}, panelOpen: false,
+        hiddenTerminalTabCount: 0, sessions: {}, lastSessionIdByProjectId: {},
+        lastManualContext: null });
+      return stopPromise;
+    },
+
+    initialize: async (context) => {
+      context?.assertActive();
+      if (context && runtimeContext !== context) {
+        if (runtimeContext) await get().stopRuntime();
+        await stopPromise;
+        context.assertActive();
+        if (!runtimeActive) acquisitionScope = createLifecycleScope();
+        runtimeContext = context;
+        runtimeActive = true;
+        const stop = () => { void get().stopRuntime(); };
+        context.signal.addEventListener('abort', stop, { once: true });
+        releaseContext = () => context.signal.removeEventListener('abort', stop);
+      }
+      const current = captureRuntime();
+      assertCurrent(current);
       if (get().initialized) {
         return;
       }
@@ -1041,7 +1201,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         return initializePromise;
       }
 
-      initializePromise = (async () => {
+      initializePromise = acquisitionScope.track((async () => {
         set({ initializing: true });
         try {
           const [savedHeight, savedActiveTabId, savedLastManualProjects] = await Promise.all([
@@ -1051,10 +1211,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
               PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK
             ),
           ]);
+          assertCurrent(current);
           const lastManualProjectIdByTaskId = normalizeLastManualProjectIdByTaskId(
             savedLastManualProjects
           );
-          const tabDtos = await loadTabsWithRetry();
+          const tabDtos = (await loadTabsWithRetry(current)).filter((dto) => !blockedTabs.has(dto.id));
+          assertCurrent(current);
           const tabs = tabDtos.reduce<Record<string, TerminalTab>>((acc, dto) => {
             const mapped = mapTabDto(dto);
             acc[mapped.id] = mapped;
@@ -1081,8 +1243,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           };
 
           set({
-            initialized: true,
-            initializing: false,
+            initialized: false,
             tabs,
             tabOrder,
             activeTabId,
@@ -1091,21 +1252,26 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
             lastManualProjectIdByTaskId,
             hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
           });
-          await registerListeners();
+          await registerListeners(current);
+          assertCurrent(current);
+          set({ initialized: true, initializing: false });
           await get().syncTerminalDisplayMetadata();
+          assertCurrent(current);
         } catch (error) {
-          set({ initializing: false });
+          if (current()) set({ initializing: false });
           throw error;
         }
-      })().finally(() => {
-        initializePromise = null;
+      })()).finally(() => {
+        if (current()) initializePromise = null;
       });
 
       return initializePromise;
     },
 
     togglePanel: async () => {
+      const current = captureRuntime();
       await get().initialize();
+      assertCurrent(current);
       if (get().panelOpen) {
         get().setPanelOpen(false);
         return;
@@ -1254,11 +1420,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     rememberManualProjectForTask: (taskId, projectId) => {
+      manualSelectionRevision += 1;
       persistLastManualProjectSelection(taskId, projectId);
     },
 
     openManualTabForProject: async ({ projectId, groupId }) => {
+      const current = captureRuntime();
+      const selectionRevision = ++manualSelectionRevision;
       await get().initialize();
+      assertCurrent(current);
       if (isManualDraftPendingInitialization(getCurrentSelectedTask())) {
         throw new Error(getManualTerminalUnavailableMessage());
       }
@@ -1285,23 +1455,29 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         instanceIndex,
       });
 
-      const dto = await tauriIpc.terminalCreateTab({
+      const dto = await acquisitionScope.track(tauriIpc.terminalCreateTab({
         kind: 'manual',
         projectId: context.projectId,
         cwd: context.cwd,
         title: displayMetadata.title,
         taskId: context.taskId,
         promptContext: displayMetadata.promptContext,
-      });
-      const tab = mapTabDto(dto);
-      upsertTab(tab, { activate: true, openPanel: true });
-      persistLastManualProjectSelection(context.taskId, context.projectId);
-      set({ lastManualContext: context });
+      }));
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
+      if (!current() || blockedTabs.has(dto.id)) return tab;
+      const isLatestSelection = selectionRevision === manualSelectionRevision;
+      upsertTab(tab, { activate: isLatestSelection, openPanel: isLatestSelection ? true : undefined });
+      if (isLatestSelection) {
+        persistLastManualProjectSelection(context.taskId, context.projectId);
+        set({ lastManualContext: context });
+      }
       return tab;
     },
 
     createManualTab: async (params) => {
+      const current = captureRuntime();
       await get().initialize();
+      assertCurrent(current);
       if (isManualDraftPendingInitialization(getCurrentSelectedTask())) {
         throw new Error(getManualTerminalUnavailableMessage());
       }
@@ -1323,35 +1499,41 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     ensureTaskTab: async ({ taskId, projectId, cwd, title, reveal, promptContext }) => {
+      const current = captureRuntime();
       await get().initialize();
+      assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
       const existing = Object.values(get().tabs).find(
         (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
       );
+      if (existing) assertCurrent(current, existing.id);
       const dto = existing
         ? existing.hasLiveSession
-          ? await tauriIpc.terminalReadTab(existing.id)
-          : await tauriIpc.terminalReconnectTab(existing.id)
-        : await tauriIpc.terminalCreateTab({
+          ? await acquisitionScope.track(tauriIpc.terminalReadTab(existing.id))
+          : await acquisitionScope.track(tauriIpc.terminalReconnectTab(existing.id))
+        : await acquisitionScope.track(tauriIpc.terminalCreateTab({
             kind: 'task',
             projectId: resolvedProjectId,
             cwd,
             title,
             taskId,
             promptContext: promptContext ?? null,
-          });
+          }));
 
-      const tab = mapTabDto(dto, existing);
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
+      if (!current() || blockedTabs.has(dto.id)) return tab;
       upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
       return tab;
     },
 
     startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
+      const current = captureRuntime();
       await get().initialize();
+      assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
-      const dto = await tauriIpc.terminalStartCommandTab({
+      const dto = await acquisitionScope.track(tauriIpc.terminalStartCommandTab({
         kind: 'task',
         projectId: resolvedProjectId,
         cwd,
@@ -1359,17 +1541,20 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         taskId,
         promptContext: promptContext ?? null,
         command,
-      });
-      const tab = mapTabDto(dto);
+      }));
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
+      if (!current() || blockedTabs.has(dto.id)) return tab;
       upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
       return tab;
     },
 
     startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
+      const current = captureRuntime();
       await get().initialize();
+      assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
-      const dto = await tauriIpc.terminalStartCommandTab({
+      const dto = await acquisitionScope.track(tauriIpc.terminalStartCommandTab({
         kind: 'worktree_setup',
         projectId: resolvedProjectId,
         cwd,
@@ -1377,14 +1562,17 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         taskId,
         promptContext: promptContext ?? null,
         command,
-      });
-      const tab = mapTabDto(dto);
+      }));
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
+      if (!current() || blockedTabs.has(dto.id)) return tab;
       upsertTab(tab, {});
       return tab;
     },
 
     syncTerminalDisplayMetadata: async (params) => {
+      const current = captureRuntime();
       await get().initialize();
+      assertCurrent(current);
 
       const appState = useAppStore.getState();
       const taskState = useTaskStore.getState();
@@ -1398,7 +1586,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         if (!tab.taskId) {
           return false;
         }
-        if (tab.purpose === 'worktree_setup') {
+        if (tab.purpose === 'worktree_setup' || tab.status === 'closed') {
           return false;
         }
 
@@ -1406,6 +1594,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       });
 
       for (const tab of tabsToSync) {
+        if (!current()) return;
+        if (blockedTabs.has(tab.id) || !get().tabs[tab.id]) continue;
         const task = taskState.tasks.find((candidate) => candidate.id === tab.taskId) ?? null;
         const project = allProjects.find((candidate) => candidate.id === tab.projectId) ?? null;
         const projectLabel = project
@@ -1440,55 +1630,73 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
               }).title;
         const nextPromptContext = displayMetadata.promptContext;
 
-        const dto = await tauriIpc.terminalUpdateTabMetadata({
+        const dto = await acquisitionScope.track(tauriIpc.terminalUpdateTabMetadata({
           tabId: tab.id,
           title: nextTitle,
           promptContext: nextPromptContext,
-        });
-        syncTabMetadataLocally(mapTabDto(dto, get().tabs[tab.id]));
+        }));
+        const currentTab = get().tabs[tab.id];
+        if (currentTab && current() && !blockedTabs.has(tab.id)) {
+          syncTabMetadataLocally(mapTabDto(dto, currentTab));
+        }
       }
     },
 
     reconnectTab: async (tabId) => {
+      const current = captureRuntime();
+      assertCurrent(current, tabId);
       const existingTab = get().tabs[tabId];
       if (existingTab?.taskId) {
         await get().syncTerminalDisplayMetadata({ taskId: existingTab.taskId });
       }
-      const dto = await tauriIpc.terminalReconnectTab(tabId);
+      assertCurrent(current, tabId);
+      const dto = await acquisitionScope.track(tauriIpc.terminalReconnectTab(tabId));
       const tab = mapTabDto(dto, get().tabs[tabId]);
+      if (!current() || blockedTabs.has(tabId)) return tab;
       upsertTab(tab, {});
       return tab;
     },
 
     executeCommand: async ({ tabId, command, reveal = false }) => {
-      const dto = await tauriIpc.terminalExecuteCommand({ tabId, command });
+      const current = captureRuntime();
+      assertCurrent(current, tabId);
+      const dto = await acquisitionScope.track(tauriIpc.terminalExecuteCommand({ tabId, command }));
       const tab = mapTabDto(dto, get().tabs[tabId]);
+      if (!current() || blockedTabs.has(tabId)) return tab;
       upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
       return tab;
     },
 
     writeInput: async (tabId, input) => {
-      await tauriIpc.terminalWriteInput({ tabId, input });
+      assertCurrent(captureRuntime(), tabId);
+      await acquisitionScope.track(tauriIpc.terminalWriteInput({ tabId, input }));
     },
 
     resizeTab: async (tabId, cols, rows) => {
-      await tauriIpc.terminalResize({
+      assertCurrent(captureRuntime(), tabId);
+      await acquisitionScope.track(tauriIpc.terminalResize({
         tabId,
         cols,
         rows,
-      });
+      }));
     },
 
     interruptTab: async (tabId) => {
-      const dto = await tauriIpc.terminalInterrupt(tabId);
+      const current = captureRuntime();
+      assertCurrent(current, tabId);
+      const dto = await acquisitionScope.track(tauriIpc.terminalInterrupt(tabId));
       const tab = mapTabDto(dto, get().tabs[tabId]);
+      if (!current() || blockedTabs.has(tabId)) return tab;
       upsertTab(tab, {});
       return tab;
     },
 
     clearTab: async (tabId) => {
-      const dto = await tauriIpc.terminalClearTab(tabId);
+      const current = captureRuntime();
+      assertCurrent(current, tabId);
+      const dto = await acquisitionScope.track(tauriIpc.terminalClearTab(tabId));
       const tab = mapTabDto(dto, get().tabs[tabId]);
+      if (!current() || blockedTabs.has(tabId)) return tab;
       upsertTab(
         {
           ...tab,
@@ -1499,13 +1707,24 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
-    closeTab: async (tabId) => {
-      const existingTab = get().tabs[tabId] ?? null;
-      await tauriIpc.terminalCloseTab(tabId);
-      if (existingTab?.kind === 'task') {
-        useTaskStore.getState().handleTaskCommandTerminalClosed(tabId);
-      }
-      removeTabLocally(tabId);
+    closeTab: (tabId) => {
+      const pending = closingTabs.get(tabId);
+      if (pending) return pending;
+      if (closedTabs.has(tabId)) return Promise.resolve();
+      const current = captureRuntime();
+      blockedTabs.add(tabId);
+      delete pendingOutputEvents[tabId];
+      // The IPC cannot be cancelled. A failed close remains blocked until a retry
+      // or native closed event reconciles its potentially partial native effects.
+      const closing = acquisitionScope.track(tauriIpc.terminalCloseTab(tabId)).then(() => {
+        if (current()) finalizeClosedTab(tabId);
+      }).finally(() => {
+        if (closingTabs.get(tabId) === closing) closingTabs.delete(tabId);
+      });
+      closingTabs.set(tabId, closing);
+      return closing;
     },
   };
 });
+
+export const useTerminalStore = createTerminalStore();

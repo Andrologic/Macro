@@ -1,13 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { shortcutDefinitions, ShortcutCategory, ShortcutId } from '../../../shortcuts/catalog';
+import { ShortcutCategory, ShortcutId } from '../../../shortcuts/catalog';
 import {
-  shortcutRuntimeDefinitions,
+  commandRegistry,
   shortcutsCanConflict,
   type ShortcutContextHint,
 } from '../../../shortcuts/runtime';
 import { eventToBinding, formatBindingForDisplay, normalizeBinding } from '../../../shortcuts/utils';
 import { useShortcutsStore } from '../../../stores/useShortcutsStore';
+import { useAppStore } from '../../../stores/useAppStore';
+import { useChatStore } from '../../../stores/useChatStore';
 import { Icon } from '../../ui/Icon';
 import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
@@ -17,75 +19,6 @@ import {
   SettingsSearchEmpty,
   useSettingsSearch,
 } from '../search/SettingsSearch';
-
-const shortcutTranslationKeys: Record<
-  ShortcutId,
-  {
-    label: string;
-    description: string;
-  }
-> = {
-  'app.openSettings': {
-    label: 'shortcuts.items.appOpenSettings.label',
-    description: 'shortcuts.items.appOpenSettings.description',
-  },
-  'app.closeSettings': {
-    label: 'shortcuts.items.appCloseSettings.label',
-    description: 'shortcuts.items.appCloseSettings.description',
-  },
-  'chat.newConversation': {
-    label: 'shortcuts.items.chatNewConversation.label',
-    description: 'shortcuts.items.chatNewConversation.description',
-  },
-  'app.switchMode.architect': {
-    label: 'shortcuts.items.switchArchitect.label',
-    description: 'shortcuts.items.switchArchitect.description',
-  },
-  'app.switchMode.implement': {
-    label: 'shortcuts.items.switchImplement.label',
-    description: 'shortcuts.items.switchImplement.description',
-  },
-  'app.switchMode.chat': {
-    label: 'shortcuts.items.switchChat.label',
-    description: 'shortcuts.items.switchChat.description',
-  },
-  'app.toggleLeftPanel': {
-    label: 'shortcuts.items.toggleLeftPanel.label',
-    description: 'shortcuts.items.toggleLeftPanel.description',
-  },
-  'app.toggleRightPanel': {
-    label: 'shortcuts.items.toggleRightPanel.label',
-    description: 'shortcuts.items.toggleRightPanel.description',
-  },
-  'ai.cycleProvider': {
-    label: 'shortcuts.items.nextProvider.label',
-    description: 'shortcuts.items.nextProvider.description',
-  },
-  'ai.cycleModel': {
-    label: 'shortcuts.items.nextModel.label',
-    description: 'shortcuts.items.nextModel.description',
-  },
-  'chat.stopStreaming': {
-    label: 'shortcuts.items.stopStreaming.label',
-    description: 'shortcuts.items.stopStreaming.description',
-  },
-  'chat.focusInput': {
-    label: 'shortcuts.items.focusInput.label',
-    description: 'shortcuts.items.focusInput.description',
-  },
-  'chat.historyPrevious': {
-    label: 'shortcuts.items.historyPrevious.label',
-    description: 'shortcuts.items.historyPrevious.description',
-  },
-  'chat.historyNext': {
-    label: 'shortcuts.items.historyNext.label',
-    description: 'shortcuts.items.historyNext.description',
-  },
-  'chat.secondarySend': {
-    label: 'shortcuts.items.secondarySend.label',
-    description: 'shortcuts.items.secondarySend.description',
-  },
-};
 
 export const ShortcutsView: React.FC = () => {
   const { t } = useTranslation();
@@ -99,6 +32,15 @@ export const ShortcutsView: React.FC = () => {
     resetBinding,
     resetAll,
   } = useShortcutsStore();
+  useSyncExternalStore(commandRegistry.subscribe, commandRegistry.getRevision, commandRegistry.getRevision);
+  const mode = useAppStore((state) => state.mode);
+  const settingsOpen = useAppStore((state) => state.settingsOpen);
+  const isStreaming = useChatStore((state) => Boolean(state.selectedConversationId && state.getConversationRuntime(state.selectedConversationId).phase === 'streaming'));
+  const commands = commandRegistry.list({
+    mode, settingsOpen, isStreaming, promptHistoryNavigationMode,
+    editable: false, isChatInputFocused: false,
+  });
+  const shortcutDefinitions = useMemo(() => commands.map((command) => ({ ...command.definition, id: command.id })), [commands]);
   const { matches } = useSettingsSearch();
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
   const [pendingBinding, setPendingBinding] = useState<string | null>(null);
@@ -134,13 +76,13 @@ export const ShortcutsView: React.FC = () => {
     () =>
       shortcutDefinitions.map((shortcut) => ({
         ...shortcut,
-        label: t(shortcutTranslationKeys[shortcut.id].label, shortcut.label),
+        label: t(shortcut.labelKey ?? `shortcuts.items.${shortcut.id}.label`, shortcut.label),
         description: t(
-          shortcutTranslationKeys[shortcut.id].description,
+          shortcut.descriptionKey ?? `shortcuts.items.${shortcut.id}.description`,
           shortcut.description
         ),
       })),
-    [t]
+    [t, shortcutDefinitions]
   );
 
   const shortcutLabelsById = useMemo(
@@ -153,7 +95,7 @@ export const ShortcutsView: React.FC = () => {
   );
 
   useEffect(() => {
-    if (!recordingId) return;
+    if (!recordingId || !shortcutDefinitions.some((entry) => entry.id === recordingId)) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
@@ -187,7 +129,7 @@ export const ShortcutsView: React.FC = () => {
 
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [bindings, recordingId, setBinding, shortcutLabelsById, t]);
+  }, [bindings, recordingId, setBinding, shortcutLabelsById, shortcutDefinitions, t]);
 
   const conflictMap = useMemo(() => {
     const map: Record<ShortcutId, ShortcutId[]> = {} as Record<ShortcutId, ShortcutId[]>;
@@ -211,7 +153,7 @@ export const ShortcutsView: React.FC = () => {
     });
 
     return map;
-  }, [bindings]);
+  }, [bindings, shortcutDefinitions]);
 
   const filtered = useMemo(
     () => localizedShortcutDefinitions.filter((shortcut) => matches(
@@ -263,7 +205,7 @@ export const ShortcutsView: React.FC = () => {
         </div>
       </div>
 
-      {recordingId && (
+      {recordingId && shortcutDefinitions.some((entry) => entry.id === recordingId) && (
         <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
           {t('shortcuts.recordingHint', 'Press your shortcut now... (Esc to cancel)')}
         </div>
@@ -310,7 +252,7 @@ export const ShortcutsView: React.FC = () => {
                   const conflicts = conflictMap[shortcut.id] || [];
                   const conflictLabels = conflicts.map((id) => shortcutLabelsById[id]);
                   const hasConflict = conflicts.length > 0;
-                  const contextHints = shortcutRuntimeDefinitions[shortcut.id].contextHints;
+                  const contextHints = commands.find((command) => command.id === shortcut.id)?.contextHints ?? [];
                   const isRecording = recordingId === shortcut.id;
                   const isPromptHistoryShortcut =
                     shortcut.id === 'chat.historyPrevious' || shortcut.id === 'chat.historyNext';

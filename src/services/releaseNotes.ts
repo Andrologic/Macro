@@ -14,6 +14,58 @@ export interface PendingUpdateReleaseNote {
 type ReleaseNoteLocale = 'en' | 'fr';
 
 const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
+  '0.1.6': {
+    en: {
+      version: '0.1.6',
+      eyebrow: 'Reasoning and recovery',
+      title: 'Macro 0.1.6',
+      summary: 'Andrologic thinking levels, conversation recovery, safer Git operations, and offline update installation.',
+      content: `## Reasoning and providers
+
+- Andrologic's reasoning selector offers None, Low, Medium, and X-High and sends the selected level to the model.
+- Provider changes, reconnects, and model-catalog refreshes avoid reusing stale credentials or results.
+
+## Conversations and tasks
+
+- Responses that could not be saved can be recovered. Drafts, attachments, and references stay associated with the correct conversation.
+- Project and conversation changes in Architect preserve the active context while loading.
+- Task creation and archiving can resume after an interruption, with checks on the affected working directories.
+- Terminals handle command cancellation and child-process cleanup more reliably.
+
+## Git, backups, and updates
+
+- Merges, rebases, resets, and plan finalization protect local changes and retain recovery information after failures.
+- The diff editor preserves edits made during saves and conflict resolutions already staged.
+- Backup restoration performs additional content checks and preserves data needed for recovery.
+- An update that has already been downloaded and verified can be installed offline. Interrupted downloads and channel changes are handled more reliably.
+- Closing the app accounts for active work. Several dialog focus and translation issues have been fixed.`,
+    },
+    fr: {
+      version: '0.1.6',
+      eyebrow: 'Raisonnement et récupération',
+      title: 'Macro 0.1.6',
+      summary: 'Niveaux de raisonnement Andrologic, récupération des conversations, opérations Git plus sûres et installation des mises à jour hors ligne.',
+      content: `## Raisonnement et fournisseurs
+
+- Le sélecteur de raisonnement d'Andrologic propose les niveaux None, Low, Medium et X-High et transmet le niveau choisi au modèle.
+- Les changements de fournisseur, les reconnexions et les actualisations du catalogue évitent de réutiliser des identifiants ou des résultats devenus obsolètes.
+
+## Conversations et tâches
+
+- Les réponses dont l'enregistrement échoue peuvent être récupérées. Les brouillons, pièces jointes et références restent associés à la bonne conversation.
+- Les changements de projet et de conversation dans Architect préservent le contexte actif pendant les chargements.
+- La création et l'archivage des tâches peuvent reprendre après une interruption, avec des contrôles sur les dossiers de travail concernés.
+- Les terminaux gèrent mieux l'annulation des commandes et le nettoyage des processus enfants.
+
+## Git, sauvegardes et mises à jour
+
+- Les merges, rebases, resets et finalisations de plans protègent les modifications locales et conservent les informations nécessaires à la récupération après un échec.
+- L'éditeur de différences préserve les modifications faites pendant une sauvegarde et les résolutions de conflits déjà préparées.
+- La restauration des sauvegardes vérifie davantage leur contenu et préserve les données utiles à la récupération.
+- Une mise à jour déjà téléchargée et vérifiée peut être installée hors ligne. Les téléchargements interrompus et les changements de canal sont mieux gérés.
+- La fermeture de l'application tient compte du travail actif. Plusieurs problèmes de focus dans les fenêtres de dialogue et de traduction ont été corrigés.`,
+    },
+  },
   '0.1.5': {
     en: {
       version: '0.1.5',

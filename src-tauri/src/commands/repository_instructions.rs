@@ -23,6 +23,7 @@ const ABSOLUTE_MAX_INPUT_PATH_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct RepositoryInstructionProjectInput {
     #[serde(deserialize_with = "deserialize_project_id")]
     pub project_id: String,
@@ -36,6 +37,7 @@ pub struct RepositoryInstructionProjectInput {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct RepositoryInstructionLoadInput {
     #[serde(deserialize_with = "deserialize_bounded_projects")]
     pub projects: Vec<RepositoryInstructionProjectInput>,
@@ -195,6 +197,7 @@ where
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct RepositoryInstructionSource {
     pub project_id: String,
     pub project_name: String,
@@ -207,6 +210,7 @@ pub struct RepositoryInstructionSource {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct RepositoryInstructionIssue {
     pub project_id: String,
     pub code: String,
@@ -216,6 +220,7 @@ pub struct RepositoryInstructionIssue {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct RepositoryInstructionLoadResult {
     pub sources: Vec<RepositoryInstructionSource>,
     pub issues: Vec<RepositoryInstructionIssue>,

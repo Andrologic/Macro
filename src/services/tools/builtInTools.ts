@@ -405,7 +405,8 @@ export const BUILT_IN_TOOLS: Tool[] = [
     name: 'Git Reset',
     category: 'git',
     status: 'enabled',
-    description: 'Reset repository state',
+    description:
+      'Reset HEAD in soft mode, HEAD and index in mixed mode, or HEAD, index, and tracked files in confirmed hard mode; untracked files are preserved',
     icon: 'undo-2',
     config: {
       enabled: true,

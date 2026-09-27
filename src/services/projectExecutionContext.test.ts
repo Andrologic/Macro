@@ -230,6 +230,7 @@ describe('resolveProjectExecutionContext', () => {
               branchName: 'feature/catalogue',
               worktreeKey: 'branch-project-lplr-app-feature-catalogue',
               repoPath: '/repos/lplr-app',
+              executionKind: 'repository_root',
             },
           ],
         },
@@ -358,6 +359,81 @@ describe('resolveProjectExecutionContext', () => {
       'macro-api': 'C:/worktrees/macro-api-payments',
       'macro-web': 'C:/worktrees/macro-web-payments',
     });
+  });
+
+  it('keeps an unresolved task worktree unavailable instead of using another root', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement', projects, projectGroups,
+      tasks: [{
+        id: 'task-1', project_id: 'macro-api', assigned_branch: 'feature/missing',
+        execution_targets: [{
+          projectId: 'macro-api', executionMode: 'git',
+          branchName: 'feature/missing', worktreeKey: 'task-1-worktree',
+        }],
+      }],
+      selectedTaskId: 'task-1', selectedProjectId: 'macro-web',
+      activeRepositoryPath: '/repos/unrelated',
+    });
+    expect(context.projectId).toBe('macro-api');
+    expect(context.workspacePath).toBeNull();
+    expect(context.workspacePathsByProjectId).toEqual({});
+    expect(context.projectMounts).toEqual([
+      expect.objectContaining({ projectId: 'macro-api', workspacePath: null }),
+    ]);
+  });
+
+  it('does not resolve a deleted task against the selected project or its conversation project', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement', projects, projectGroups, tasks: [],
+      conversationId: 'deleted-task-conversation',
+      conversations: [{
+        id: 'deleted-task-conversation', title: 'Deleted task', description: '',
+        task_id: 'deleted-task', project_id: 'macro-api', group_id: 'macro-suite',
+        last_message: '', message_count: 0, updated_at: '2026-03-05T00:00:00Z', is_unread: false,
+      }],
+      selectedTaskId: 'other-task', selectedProjectId: 'macro-web',
+      activeRepositoryPath: projects[0].path,
+    });
+    expect(context.projectId).toBeNull();
+    expect(context.workspacePath).toBeNull();
+    expect(context.projectMounts).toEqual([]);
+  });
+
+  it('ignores another selected task workspace override for the same project', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement', projects, projectGroups,
+      conversationId: 'task-conversation',
+      conversations: [{
+        id: 'task-conversation', title: 'Task', description: '',
+        task_id: 'task-1', project_id: 'macro-api', group_id: 'macro-suite',
+        last_message: '', message_count: 0, updated_at: '2026-03-05T00:00:00Z', is_unread: false,
+      }],
+      tasks: [{
+        id: 'task-1', project_id: 'macro-api',
+        execution_targets: [{
+          projectId: 'macro-api', executionMode: 'git',
+          branchName: 'feature/one', worktreeKey: 'worktree-one',
+        }],
+      }],
+      selectedTaskId: 'other-task', selectedProjectId: 'macro-api',
+      workspacePathOverridesByProjectId: { 'macro-api': '/worktrees/other-task' },
+      branchWorktrees: { 'worktree-one': '/worktrees/one' },
+    });
+    expect(context.workspacePath).toBe('/worktrees/one');
+  });
+
+  it('keeps direct non-Git launches on the project root', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const directProject = { ...projects[0], gitSetupState: 'not_git' as const, directEdit: true };
+    const input = { mode: 'Architect' as const, projects: [directProject, projects[1]], selectedProjectId: directProject.id };
+    const context = resolveProjectExecutionContext(input);
+    input.selectedProjectId = projects[1].id;
+    expect(context.projectId).toBe(directProject.id);
+    expect(context.workspacePath).toBe(directProject.path);
+    expect(context.actionableProjectIds).toContain(directProject.id);
   });
 
   it('uses explicit workspace overrides ahead of task worktrees during merge workflows', async () => {

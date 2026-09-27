@@ -677,7 +677,7 @@ impl McpSession for ModernHttpSession {
         &'a self,
         tool_name: &'a str,
         arguments: Value,
-        _cancellation: Arc<McpOperationCancellation>,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> McpFuture<'a, McpCallToolResponse> {
         Box::pin(async move {
             if self.tool_disabled(tool_name) {
@@ -687,7 +687,7 @@ impl McpSession for ModernHttpSession {
                 ));
             }
             self.client()?
-                .call_tool_complete(tool_name, arguments)
+                .call_tool_complete(tool_name, arguments, cancellation)
                 .await
                 .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))
         })
@@ -771,7 +771,7 @@ impl McpSession for LegacyHttpSession {
         &'a self,
         tool_name: &'a str,
         arguments: Value,
-        _cancellation: Arc<McpOperationCancellation>,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> McpFuture<'a, McpCallToolResponse> {
         Box::pin(async move {
             if self.disabled_tools.iter().any(|name| name == tool_name) {
@@ -781,7 +781,7 @@ impl McpSession for LegacyHttpSession {
                 ));
             }
             self.client()?
-                .call_tool(tool_name, arguments)
+                .call_tool(tool_name, arguments, cancellation)
                 .await
                 .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))
         })
@@ -1024,7 +1024,7 @@ impl McpSession for ModernRmcpSession {
         &'a self,
         tool_name: &'a str,
         arguments: Value,
-        _cancellation: Arc<McpOperationCancellation>,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> McpFuture<'a, McpCallToolResponse> {
         Box::pin(async move {
             if self.disabled_tools.iter().any(|name| name == tool_name) {
@@ -1035,7 +1035,7 @@ impl McpSession for ModernRmcpSession {
             }
             match self
                 .client()?
-                .call_tool(tool_name, arguments)
+                .call_tool(tool_name, arguments, cancellation)
                 .await
                 .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))?
             {
@@ -1160,7 +1160,7 @@ impl McpSession for LegacyRmcpSession {
         &'a self,
         tool_name: &'a str,
         arguments: Value,
-        _cancellation: Arc<McpOperationCancellation>,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> McpFuture<'a, McpCallToolResponse> {
         Box::pin(async move {
             if self.disabled_tools.iter().any(|name| name == tool_name) {
@@ -1170,7 +1170,7 @@ impl McpSession for LegacyRmcpSession {
                 ));
             }
             self.client()?
-                .call_tool(tool_name, arguments)
+                .call_tool(tool_name, arguments, cancellation)
                 .await
                 .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))
         })

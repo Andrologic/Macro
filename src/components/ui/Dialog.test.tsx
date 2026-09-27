@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { act, useState } from 'react';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { act, useContext, useEffect, useRef, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { Dialog } from './Dialog';
+import { createPortal } from 'react-dom';
+import { Dialog, DialogContext } from './Dialog';
+import { ConfirmPromptModal } from './ConfirmPromptModal';
+import { GroupCombobox } from './GroupCombobox';
 
 describe('Dialog', () => {
   let root: Root | null = null;
@@ -77,13 +80,13 @@ describe('Dialog', () => {
     expect(dialogs[0]?.parentElement?.hasAttribute('inert')).toBe(true);
     expect(dialogs[0]?.parentElement?.getAttribute('aria-hidden')).toBe('true');
     expect(dialogs[1]?.parentElement?.hasAttribute('inert')).toBe(false);
-    expect(document.activeElement).toBe(innerButtons?.[0]);
+    expect(document.activeElement).toBe(innerButtons?.[0] ?? null);
 
     innerButtons?.[1].focus();
     const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
     document.dispatchEvent(tab);
     expect(tab.defaultPrevented).toBe(true);
-    expect(document.activeElement).toBe(innerButtons?.[0]);
+    expect(document.activeElement).toBe(innerButtons?.[0] ?? null);
 
     innerButtons?.[0].focus();
     const shiftTab = new KeyboardEvent('keydown', {
@@ -94,7 +97,7 @@ describe('Dialog', () => {
     });
     document.dispatchEvent(shiftTab);
     expect(shiftTab.defaultPrevented).toBe(true);
-    expect(document.activeElement).toBe(innerButtons?.[1]);
+    expect(document.activeElement).toBe(innerButtons?.[1] ?? null);
 
     const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
     await act(async () => {
@@ -111,5 +114,512 @@ describe('Dialog', () => {
     });
     expect(document.activeElement).toBe(trigger);
     expect(document.body.querySelector('[inert]')).toBeNull();
+  });
+
+  it('closes only a nested confirmation when Escape is pressed', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelConfirmation = mock(() => undefined);
+
+    const NestedConfirmation = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [confirmationOpen, setConfirmationOpen] = useState(false);
+      return outerOpen ? (
+        <Dialog
+          title="Parent modal"
+          backdropClassName="fixed inset-0 z-[95] flex items-center justify-center"
+          onClose={() => {
+            closeOuter();
+            setOuterOpen(false);
+          }}
+        >
+          <button type="button" onClick={() => setConfirmationOpen(true)}>
+            Open confirmation
+          </button>
+          <ConfirmPromptModal
+            isOpen={confirmationOpen}
+            title="Nested confirmation"
+            onCancel={() => {
+              cancelConfirmation();
+              setConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<NestedConfirmation />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Open confirmation')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+    const initialDialogRoots = document.body.querySelectorAll<HTMLElement>(
+      '[data-macro-dialog-root]',
+    );
+    expect(initialDialogRoots[0]?.style.zIndex).toBe('95');
+    expect(initialDialogRoots[1]?.style.zIndex).toBe('96');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelConfirmation).toHaveBeenCalledTimes(1);
+    expect(closeOuter).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  });
+
+  it('closes a portaled group menu before its dialog and keeps focus and inertness correct', async () => {
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Open dialog';
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const background = document.createElement('main');
+    document.body.appendChild(background);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeDialog = mock(() => undefined);
+    const DialogWithGroup = () => {
+      const [open, setOpen] = useState(true);
+      return open ? (
+        <Dialog title="Groups" onClose={() => {
+          closeDialog();
+          setOpen(false);
+        }}>
+          <GroupCombobox
+            projectGroups={[{ id: 'alpha', name: 'Alpha' }]}
+            selectedGroupId={null}
+            onSelect={() => undefined}
+          />
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<DialogWithGroup />);
+      await Promise.resolve();
+    });
+
+    const input = document.body.querySelector<HTMLInputElement>('input');
+    expect(input).toBeDefined();
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      input?.focus();
+      await Promise.resolve();
+    });
+
+    const menu = Array.from(document.body.querySelectorAll<HTMLElement>('div')).find(
+      (element) => element.className.includes('z-[80]')
+    );
+    expect(menu?.parentElement).toBe(document.body);
+    expect(menu?.hasAttribute('inert')).toBe(false);
+    expect(background.hasAttribute('inert')).toBe(true);
+    expect(Number(menu?.style.zIndex)).toBe(51);
+
+    const menuButtons = menu?.querySelectorAll<HTMLButtonElement>('button');
+    expect(menuButtons).toHaveLength(2);
+    menuButtons?.[1]?.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(input);
+
+    input?.focus();
+    const shiftTab = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(menuButtons?.[1] ?? null);
+
+    await act(async () => {
+      menuButtons?.[1]?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-macro-dialog-portal]')).toBeNull();
+    expect(document.activeElement).toBe(input);
+    expect(closeDialog).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(closeDialog).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(background.hasAttribute('inert')).toBe(false);
+  });
+
+  it('keeps a portaled menu with its nested dialog and restores the parent focus after both close', async () => {
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Open parent';
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const background = document.createElement('main');
+    document.body.appendChild(background);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeParent = mock(() => undefined);
+    const closeChild = mock(() => undefined);
+
+    const NestedDialogWithGroup = () => {
+      const [parentOpen, setParentOpen] = useState(true);
+      const [childOpen, setChildOpen] = useState(false);
+      return parentOpen ? (
+        <Dialog
+          title="Parent"
+          backdropClassName="fixed inset-0 z-[95] flex items-center justify-center"
+          onClose={() => {
+            closeParent();
+            setParentOpen(false);
+          }}
+        >
+          <button type="button" onClick={() => setChildOpen(true)}>Open child</button>
+          {childOpen && (
+            <Dialog
+              title="Child"
+              onClose={() => {
+                closeChild();
+                setChildOpen(false);
+              }}
+            >
+              <GroupCombobox
+                projectGroups={[{ id: 'alpha', name: 'Alpha' }]}
+                selectedGroupId={null}
+                onSelect={() => undefined}
+              />
+            </Dialog>
+          )}
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<NestedDialogWithGroup />);
+      await Promise.resolve();
+    });
+
+    const openChild = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Open child');
+    await act(async () => {
+      openChild?.click();
+      await Promise.resolve();
+    });
+
+    const childInput = document.body.querySelector<HTMLInputElement>('input');
+    const childRoot = document.body.querySelectorAll<HTMLElement>('[data-macro-dialog-root]')[1];
+    expect(childRoot?.style.zIndex).toBe('96');
+    expect(background.hasAttribute('inert')).toBe(true);
+
+    await act(async () => {
+      childInput?.focus();
+      await Promise.resolve();
+    });
+    const menu = document.body.querySelector<HTMLElement>('[data-macro-dialog-portal]');
+    expect(menu?.style.zIndex).toBe('97');
+    expect(menu?.hasAttribute('inert')).toBe(false);
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      menu?.querySelector<HTMLButtonElement>('button')?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[data-macro-dialog-portal]')).toBeNull();
+    expect(closeChild).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+    expect(closeChild).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(document.activeElement).toBe(openChild ?? null);
+    expect(background.hasAttribute('inert')).toBe(true);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+    expect(closeParent).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(trigger);
+    expect(background.hasAttribute('inert')).toBe(false);
+  });
+
+  it('restores focus to a registered parent portal after closing a nested dialog opened there', async () => {
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Open parent';
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const background = document.createElement('main');
+    document.body.appendChild(background);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeParent = mock(() => undefined);
+    const closeChild = mock(() => undefined);
+
+    const PortalLauncher = ({ onOpen }: { onOpen: () => void }) => {
+      const dialogContext = useContext(DialogContext);
+      const portalTargetRef = useRef<HTMLDivElement | null>(null);
+      if (!portalTargetRef.current) portalTargetRef.current = document.createElement('div');
+
+      useEffect(() => {
+        const portalTarget = portalTargetRef.current;
+        if (!portalTarget || !dialogContext) return;
+        document.body.appendChild(portalTarget);
+        const unregisterPortal = dialogContext.registerPortal(portalTarget);
+        return () => {
+          unregisterPortal();
+          portalTarget.remove();
+        };
+      }, [dialogContext]);
+
+      return createPortal(
+        <button type="button" onClick={onOpen}>Open child from portal</button>,
+        portalTargetRef.current,
+      );
+    };
+
+    const ParentWithPortaledLauncher = () => {
+      const [parentOpen, setParentOpen] = useState(true);
+      const [childOpen, setChildOpen] = useState(false);
+      return parentOpen ? (
+        <Dialog
+          title="Parent"
+          onClose={() => {
+            closeParent();
+            setParentOpen(false);
+          }}
+        >
+          <PortalLauncher onOpen={() => setChildOpen(true)} />
+          {childOpen && (
+            <Dialog
+              title="Child"
+              onClose={() => {
+                closeChild();
+                setChildOpen(false);
+              }}
+            >
+              <button type="button">Child action</button>
+            </Dialog>
+          )}
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<ParentWithPortaledLauncher />);
+      await Promise.resolve();
+    });
+
+    const launcher = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Open child from portal');
+    expect(launcher).toBeDefined();
+    expect(launcher?.parentElement?.hasAttribute('inert')).toBe(false);
+
+    await act(async () => {
+      launcher?.focus();
+      launcher?.click();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(closeChild).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(launcher ?? null);
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(background.hasAttribute('inert')).toBe(true);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+    expect(closeParent).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(trigger);
+    expect(background.hasAttribute('inert')).toBe(false);
+  });
+
+  it('keeps the parent open when a nested confirmation mounts with it', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelConfirmation = mock(() => undefined);
+
+    const InitiallyNestedConfirmation = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [confirmationOpen, setConfirmationOpen] = useState(true);
+      return outerOpen ? (
+        <Dialog
+          title="Parent modal"
+          onClose={() => {
+            closeOuter();
+            setOuterOpen(false);
+          }}
+        >
+          <ConfirmPromptModal
+            isOpen={confirmationOpen}
+            title="Nested confirmation"
+            onCancel={() => {
+              cancelConfirmation();
+              setConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<InitiallyNestedConfirmation />);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelConfirmation).toHaveBeenCalledTimes(1);
+    expect(closeOuter).not.toHaveBeenCalled();
+    const remainingDialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(remainingDialogs).toHaveLength(1);
+    expect(remainingDialogs[0]?.contains(document.activeElement)).toBe(true);
+  });
+
+  it('closes a newer independent confirmation before an older nested stack', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelNestedConfirmation = mock(() => undefined);
+    const cancelIndependentConfirmation = mock(() => undefined);
+    let openIndependentConfirmation: () => void = () => undefined;
+
+    const IndependentDialogStacks = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [nestedConfirmationOpen, setNestedConfirmationOpen] = useState(true);
+      const [independentConfirmationOpen, setIndependentConfirmationOpen] = useState(false);
+      openIndependentConfirmation = () => setIndependentConfirmationOpen(true);
+      return (
+        <>
+          {outerOpen && (
+            <Dialog
+              title="Parent modal"
+              onClose={() => {
+                closeOuter();
+                setOuterOpen(false);
+              }}
+            >
+              <ConfirmPromptModal
+                isOpen={nestedConfirmationOpen}
+                title="Nested confirmation"
+                onCancel={() => {
+                  cancelNestedConfirmation();
+                  setNestedConfirmationOpen(false);
+                }}
+                onConfirm={() => undefined}
+              />
+            </Dialog>
+          )}
+          <ConfirmPromptModal
+            isOpen={independentConfirmationOpen}
+            title="Independent confirmation"
+            onCancel={() => {
+              cancelIndependentConfirmation();
+              setIndependentConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </>
+      );
+    };
+
+    await act(async () => {
+      root?.render(<IndependentDialogStacks />);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      openIndependentConfirmation();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(3);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelIndependentConfirmation).toHaveBeenCalledTimes(1);
+    expect(cancelNestedConfirmation).not.toHaveBeenCalled();
+    expect(closeOuter).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
   });
 });

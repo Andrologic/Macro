@@ -184,6 +184,7 @@
     "correctIssue": "Preparar corrección en el chat",
     "resourceRequired": "Una invocación necesita al menos un recurso.",
     "duplicateReference": "Cada referencia debe ser única en su lista.",
+    "invalidPropertySelection": "Selección de propiedad no válida.",
     "detail": {
       "prompt": "Prompt",
       "inputs": "Entradas",

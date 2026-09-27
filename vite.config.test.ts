@@ -2,7 +2,20 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { isPathInside, validatePublicSecretFiles } from './vite.config';
+import viteConfig, { isPathInside, validatePublicSecretFiles } from './vite.config';
+
+it('keeps startup CSS and the shared preload helper out of deferred vendor chunks', async () => {
+  if (typeof viteConfig !== 'function') throw new Error('Expected Vite config factory');
+  const config = await viteConfig({ command: 'build', mode: 'production' });
+  const output = config.build?.rollupOptions?.output;
+  if (!output || Array.isArray(output) || typeof output.manualChunks !== 'function') {
+    throw new Error('Expected the production chunk selector');
+  }
+  const graph = { getModuleIds: () => [][Symbol.iterator](), getModuleInfo: () => null };
+  expect(output.manualChunks('/fixture/node_modules/xterm/lib/xterm.js', graph)).toBe('terminal-vendor');
+  expect(output.manualChunks('/fixture/node_modules/xterm/css/xterm.css', graph)).toBeUndefined();
+  expect(output.manualChunks('\0vite/preload-helper.js', graph)).toBe('utils-vendor');
+});
 
 const tempDirs: string[] = [];
 

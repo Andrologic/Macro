@@ -4,7 +4,7 @@ import { $getNodeByKey } from 'lexical';
 import type { ContextRefKind } from '../../../types';
 import { useChatStore } from '../../../stores/useChatStore';
 import { Icon } from '../../ui/Icon';
-import { $isMentionNode, type MentionSurface } from './MentionNode';
+import { MENTION_NODE_TYPE, type MentionSurface } from './mentionContract';
 import { ContextReferenceChip } from '../ContextReferenceChip';
 
 interface MentionChipProps {
@@ -30,7 +30,7 @@ export const MentionChip: React.FC<MentionChipProps> = ({
     e.stopPropagation();
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
-      if ($isMentionNode(node)) {
+      if (node?.getType() === MENTION_NODE_TYPE) {
         node.remove();
       }
     });

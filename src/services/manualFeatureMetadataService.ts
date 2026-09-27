@@ -83,29 +83,19 @@ const resolveMetadataWorkspaceTargets = (
 
 const deleteMetadataRootIfPresent = async (
   metadataRoot: string,
-  target: MetadataWorkspaceTarget
+  target: MetadataWorkspaceTarget,
+  strict = false,
 ): Promise<void> => {
   try {
-    const exists = await tauriIpc.fsExists(metadataRoot, {
+    const options = {
       workspaceScope: target.workspaceScope,
       workspacePath: target.workspacePath,
-    });
-    if (!exists) {
-      return;
-    }
-  } catch {
-    return;
-  }
-
-  try {
-    await tauriIpc.fsDelete({
-      path: metadataRoot,
-      recursive: true,
-      workspaceScope: target.workspaceScope,
-      workspacePath: target.workspacePath,
-    });
-  } catch {
-    // Treat missing or concurrently removed legacy metadata as already cleaned up.
+    };
+    if (!await tauriIpc.fsExists(metadataRoot, options)) return;
+    await tauriIpc.fsDelete({ path: metadataRoot, recursive: true, ...options });
+  } catch (error) {
+    if (strict) throw error;
+    // Legacy cleanup during metadata sync remains best effort.
   }
 };
 
@@ -349,7 +339,9 @@ export const removeManualFeatureMetadata = async (
   task: Pick<
     CatalogedImplementTask,
     'id' | 'base_branch' | 'project_id' | 'project_ids' | 'execution_targets' | 'standalone_kind'
-  >
+  >,
+  strict = false,
+  commit = true,
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || task.standalone_kind !== 'manual_feature') {
     return;
@@ -367,7 +359,7 @@ export const removeManualFeatureMetadata = async (
     workspaceTargets.map(async (target) => {
       await Promise.all(
         metadataRoots.map((metadataRoot) =>
-          deleteMetadataRootIfPresent(metadataRoot, target)
+          deleteMetadataRootIfPresent(metadataRoot, target, strict)
         )
       );
       recordMacroMetadataMutation({
@@ -379,10 +371,12 @@ export const removeManualFeatureMetadata = async (
       });
     })
   );
-  await commitMetadataTargets(
-    workspaceTargets
-      .filter((target) => target.workspaceScope === METADATA_WORKSPACE_SCOPE)
-      .map((target) => target.workspacePath),
-    `chore(@macro): delete manual feature ${task.id}`,
-  );
+  if (commit) {
+    await commitMetadataTargets(
+      workspaceTargets
+        .filter((target) => target.workspaceScope === METADATA_WORKSPACE_SCOPE)
+        .map((target) => target.workspacePath),
+      `chore(@macro): delete manual feature ${task.id}`,
+    );
+  }
 };

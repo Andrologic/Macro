@@ -184,6 +184,7 @@
     "correctIssue": "채팅에서 수정 준비",
     "resourceRequired": "호출에는 하나 이상의 리소스가 필요합니다.",
     "duplicateReference": "목록의 참조는 중복될 수 없습니다.",
+    "invalidPropertySelection": "잘못된 속성 선택입니다.",
     "detail": {
       "prompt": "프롬프트",
       "inputs": "입력",

@@ -1,7 +1,7 @@
 use super::env_secrets::{resolve_env_secrets, sanitized_process_environment};
 use super::ids::{build_mcp_tool_id, is_canonical_mcp_server_id, normalize_identifier};
 use super::protocol::{initialize, read_response, write_message};
-use super::result_format::format_tool_call_result;
+use super::result_format::normalize_tool_call_result;
 use super::types::{McpCallToolResponse, McpServerDto, McpToolDto, McpTransportDto};
 use crate::commands::{command_error, CommandResult};
 use crate::core::process::{background_tokio_command, ContainedBackgroundProcess};
@@ -255,15 +255,7 @@ pub(crate) async fn call_stdio_tool(
         )
         .await?;
         let result = read_response(&mut writer, &mut reader, 2).await?;
-        let content = format_tool_call_result(&result);
-        Ok(McpCallToolResponse {
-            content,
-            is_error: result
-                .get("isError")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            raw_result: result,
-        })
+        Ok(normalize_tool_call_result(result))
     })
     .await
 }

@@ -2,6 +2,19 @@ import { describe, expect, it } from 'bun:test';
 import { getReasoningCapabilityForModel, getValidReasoningEffort } from './reasoningCatalog';
 
 describe('reasoningCatalog', () => {
+  it('exposes thinking levels for cached Macro AI aliases without metadata', () => {
+    for (const modelId of ['macro-ai', 'macro-ai-deep']) {
+      const capability = getReasoningCapabilityForModel({ providerType: 'openai', modelId });
+      expect(capability).toMatchObject({
+        reasoningEfforts: ['none', 'low', 'medium', 'xhigh'],
+        defaultReasoningEffort: 'medium',
+        transportMode: 'openai_effort',
+        configurable: true,
+      });
+      expect(getValidReasoningEffort(capability, 'none')).toBe('none');
+      expect(getValidReasoningEffort(capability, 'high')).toBe('medium');
+    }
+  });
   it('resolves GPT-5.4 pro capabilities conservatively', () => {
     expect(
       getReasoningCapabilityForModel({

@@ -13,10 +13,12 @@ export const persistConversationAttachments = async (
 ): Promise<string[]> => {
   const ids: string[] = [];
   for (const attachment of prepared) {
+    const messageId = `manual-${crypto.randomUUID()}`;
     try {
       ids.push(await persist(toConversationFileCitation(attachment, {
         conversationId,
-        messageId: `manual-${crypto.randomUUID()}`,
+        messageId,
+        path: `attachment://${messageId}/${attachment.fileName}`,
       })));
     } catch (error) {
       throw new AttachmentPersistenceError(
@@ -272,7 +274,7 @@ export const prepareConversationAttachments = async (
 
 export const toConversationFileCitation = (
   attachment: PreparedConversationAttachment,
-  params: { conversationId: string; messageId: string },
+  params: { conversationId: string; messageId: string; path?: string },
 ): Omit<Citation, 'id' | 'timestamp'> => ({
   type: 'file',
   scope: 'context',
@@ -280,7 +282,7 @@ export const toConversationFileCitation = (
   title: attachment.fileName,
   snippet: attachment.content.slice(0, 1000) + (attachment.content.length > 1000 ? '...' : ''),
   content: attachment.content,
-  path: attachment.fileName,
+  path: params.path ?? attachment.fileName,
   sizeBytes: attachment.sizeBytes,
   messageId: params.messageId,
   conversationId: params.conversationId,

@@ -31,6 +31,7 @@ interface StreamMetadataSyncParams {
   mode: AppMode;
   conversationId: string;
   trigger: 'send' | 'edit';
+  architectPlan?: { planId: string; targetBranch: string };
 }
 
 interface FallbackMacroFailure {
@@ -949,34 +950,37 @@ export const createMacroSyncService = (
   const syncMacroMetadataAfterStream = async (
     params: StreamMetadataSyncParams
   ): Promise<MacroSyncResult | null> => {
-    if (params.mode !== 'Architect' || !dependencies.tauriIpc.isTauriAvailable()) {
+    if (params.mode !== 'Architect' || !params.architectPlan || !dependencies.tauriIpc.isTauriAvailable()) {
       return null;
     }
 
+    const capturedPlan = params.architectPlan;
     return runWithMacroSyncLock(async () => {
       const appState = dependencies.getAppState();
-      if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
-        try {
-          await (dependencies.syncArchitectPlanChat ?? syncArchitectPlanChatFromConversation)({
-            branchName: resolveTargetBranch(appState.activePlanContext.targetBranch),
-            planId: appState.activeArchitectPlanId,
+      try {
+        await (dependencies.syncArchitectPlanChat ?? syncArchitectPlanChatFromConversation)({
+          branchName: resolveTargetBranch(capturedPlan.targetBranch),
+          planId: capturedPlan.planId,
+          conversationId: params.conversationId,
+        });
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            scope: 'macro_sync_service',
+            event: 'architect_plan_chat_sync_failed',
+            at: new Date().toISOString(),
+            planId: capturedPlan.planId,
             conversationId: params.conversationId,
-          });
-        } catch (error) {
-          console.warn(
-            JSON.stringify({
-              scope: 'macro_sync_service',
-              event: 'architect_plan_chat_sync_failed',
-              at: new Date().toISOString(),
-              planId: appState.activeArchitectPlanId,
-              conversationId: params.conversationId,
-              trigger: params.trigger,
-              error: dependencies.toServiceError(error).message,
-            })
-          );
-        }
+            trigger: params.trigger,
+            error: dependencies.toServiceError(error).message,
+          })
+        );
+        return null;
       }
 
+      // The transcript belongs to the completed turn; UI status belongs to the current selection.
+      if (dependencies.getAppState().activeArchitectPlanId !== capturedPlan.planId ||
+          dependencies.getAppState().activePlanContext?.targetBranch !== capturedPlan.targetBranch) return null;
       const persistedModes = getPlanExecutionModesByProjectId(
         appState.planNodes,
         appState.activePlanContext?.executionModesByProjectId,
@@ -998,7 +1002,7 @@ export const createMacroSyncService = (
           recordMacroMetadataMutation({
             workspacePath: target.repoPath,
             kind: 'chat_synced',
-            entityId: appState.activeArchitectPlanId,
+            entityId: capturedPlan.planId,
             importance: 'light',
           }, {
             tauri: dependencies.tauriIpc,

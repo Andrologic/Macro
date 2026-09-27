@@ -320,15 +320,19 @@ describe('architectStrategyMutationGuard', () => {
     });
 
     expect(preview.status).toBe('valid');
+    preview.autoProvisionBranches = true;
 
     const getArchitectPlanMock = mock(async () => plan);
-    const provisionPlanBranchesMock = mock(async () => ({
+    const provisionPlanBranchesMock = mock(async (_plan: unknown, _repo: unknown, persist?: () => Promise<void>) => {
+      await persist?.();
+      return ({
       planBranchName: 'plan/checkout-rework',
       repositories: [],
       createdPlanBranch: false,
       createdFeatureBranches: [],
       existingFeatureBranches: [],
-    }));
+    });
+    });
     const updateArchitectPlanMock = mock(async (params: {
       slug?: string;
       status?: string;
@@ -350,9 +354,11 @@ describe('architectStrategyMutationGuard', () => {
       }
     );
 
+    expect(provisionPlanBranchesMock).toHaveBeenCalledTimes(1);
     expect(updateArchitectPlanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: 'checkout-rework',
+        expectedRevision: plan.revision,
       })
     );
     expect(updated.slug).toBe('checkout-rework');
@@ -362,6 +368,35 @@ describe('architectStrategyMutationGuard', () => {
     expect(updated.predictedBranches.map((branch) => branch.parentBranch)).toEqual([
       'plan/checkout-rework',
     ]);
+  });
+
+  it('rejects a preview without an exploitable base revision before mutation', async () => {
+    const plan = createPlan({ revision: undefined });
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: plan.nodes,
+      metadataUpdate: { description: 'Updated strategy' },
+    });
+    const updateArchitectPlanMock = mock(async () => plan);
+
+    await expect(
+      applyStrategyMutationPreview(
+        { preview },
+        {
+          getArchitectPlan: mock(async () => plan) as any,
+          updateArchitectPlan: updateArchitectPlanMock as any,
+          provisionPlanBranches: mock(async () => ({
+            planBranchName: 'plan/plan-1',
+            repositories: [],
+            createdPlanBranch: false,
+            createdFeatureBranches: [],
+            existingFeatureBranches: [],
+          })) as any,
+        },
+      ),
+    ).rejects.toThrow('without a usable base revision');
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
   it('rebuilds previewed predicted branches from the target slug instead of the current slug', () => {

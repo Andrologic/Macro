@@ -1842,13 +1842,13 @@ export const registerCompactionAndDiagnosticsScenarios = (
         conversationId: 'conv-1',
         content: 'Inspecte avec des outils.',
       });
-      await Promise.resolve();
+      await flushAsyncWork();
 
       await useChatStore.getState().sendMessage({
         conversationId: 'conv-1',
         content: 'Continue.',
       });
-      await Promise.resolve();
+      await flushAsyncWork();
 
       const calls = streamChatMockForTest.mock.calls;
       const secondRequest = calls[1]?.[0];

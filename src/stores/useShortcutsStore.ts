@@ -1,7 +1,8 @@
+import { type LifecycleContext } from '../services/lifecycleScope';
 import { create } from 'zustand';
-import { shortcutDefaults, shortcutDefinitions, ShortcutId } from '../shortcuts/catalog';
+import { ShortcutId } from '../shortcuts/catalog';
 import { normalizeBinding } from '../shortcuts/utils';
-import { shortcutsCanConflict } from '../shortcuts/runtime';
+import { commandRegistry, shortcutsCanConflict } from '../shortcuts/runtime';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 
 type ShortcutBindings = Record<ShortcutId, string | null>;
@@ -13,7 +14,7 @@ interface ShortcutsStore {
   promptHistoryNavigationMode: PromptHistoryNavigationMode;
   activeTurnSendBehavior: ActiveTurnSendBehavior;
   isLoaded: boolean;
-  initialize: () => Promise<void>;
+  initialize: (lifecycle?: LifecycleContext) => Promise<void>;
   setBinding: (id: ShortcutId, binding: string | null) => void;
   setPromptHistoryNavigationMode: (mode: PromptHistoryNavigationMode) => void;
   setActiveTurnSendBehavior: (behavior: ActiveTurnSendBehavior) => void;
@@ -23,8 +24,8 @@ interface ShortcutsStore {
 
 const buildNormalizedDefaults = (): ShortcutBindings => {
   const normalized: Partial<ShortcutBindings> = {};
-  shortcutDefinitions.forEach((definition) => {
-    normalized[definition.id] = definition.defaultBinding
+  commandRegistry.all().forEach(({ id, definition }) => {
+    normalized[id] = definition.defaultBinding
       ? normalizeBinding(definition.defaultBinding)
       : null;
   });
@@ -36,7 +37,7 @@ const persistBindings = async (bindings: ShortcutBindings) => {
 };
 
 const hasBindingConflict = (bindings: ShortcutBindings, id: ShortcutId, binding: string | null): boolean =>
-  Boolean(binding) && shortcutDefinitions.some((other) =>
+  Boolean(binding) && commandRegistry.all().some((other) =>
     other.id !== id &&
     bindings[other.id] === binding &&
     shortcutsCanConflict(id, other.id)
@@ -51,7 +52,8 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
     activeTurnSendBehavior: 'steer',
     isLoaded: false,
 
-    initialize: async () => {
+    initialize: async (lifecycle) => {
+      lifecycle?.assertActive();
       const defaults = buildNormalizedDefaults();
       const hydrationVersion = mutationVersion;
       try {
@@ -60,6 +62,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
           loadPreference<string>(PREF_KEYS.PROMPT_HISTORY_NAV_MODE),
           loadPreference<string>(PREF_KEYS.ACTIVE_TURN_SEND_BEHAVIOR),
         ]);
+        lifecycle?.assertActive();
         if (hydrationVersion !== mutationVersion) {
           set({ isLoaded: true });
           return;
@@ -70,8 +73,8 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
         const activeTurnSendBehavior: ActiveTurnSendBehavior =
           rawActiveTurnSendBehavior === 'queue' ? 'queue' : 'steer';
 
-        const merged: ShortcutBindings = { ...defaults };
-        Object.keys(defaults).forEach((id) => {
+        const merged: ShortcutBindings = buildNormalizedDefaults();
+        Object.keys(stored).forEach((id) => {
           const value = stored[id];
           if (value === null) {
             merged[id as ShortcutId] = null;
@@ -82,6 +85,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
 
         set({ bindings: merged, promptHistoryNavigationMode, activeTurnSendBehavior, isLoaded: true });
       } catch {
+        lifecycle?.assertActive();
         if (hydrationVersion === mutationVersion) {
           set({ bindings: defaults, promptHistoryNavigationMode: 'contextual_arrows', isLoaded: true });
         } else {
@@ -91,6 +95,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
     },
 
     setBinding: (id, binding) => {
+      if (!commandRegistry.all().some((entry) => entry.id === id)) return;
       mutationVersion += 1;
       set((state) => {
         const normalized = binding ? normalizeBinding(binding) : null;
@@ -119,11 +124,11 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
     },
 
     resetBinding: (id) => {
+      if (!commandRegistry.all().some((entry) => entry.id === id)) return;
       mutationVersion += 1;
       set((state) => {
-        const nextBinding = shortcutDefaults[id]
-          ? normalizeBinding(shortcutDefaults[id] as string)
-          : null;
+        const defaultBinding = commandRegistry.all().find((entry) => entry.id === id)?.definition.defaultBinding;
+        const nextBinding = defaultBinding ? normalizeBinding(defaultBinding) : null;
         if (hasBindingConflict(state.bindings, id, nextBinding)) {
           return state;
         }
@@ -138,7 +143,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
 
     resetAll: () => {
       mutationVersion += 1;
-      const nextBindings = buildNormalizedDefaults();
+      const nextBindings = { ...useShortcutsStore.getState().bindings, ...buildNormalizedDefaults() };
       void Promise.all([
         persistBindings(nextBindings),
         savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, 'contextual_arrows'),
@@ -147,4 +152,10 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
       set({ bindings: nextBindings, promptHistoryNavigationMode: 'contextual_arrows', activeTurnSendBehavior: 'steer' });
     },
   };
+});
+
+// Keep custom bindings across removal/re-registration, including explicit nulls.
+commandRegistry.subscribe(() => {
+  const { bindings } = useShortcutsStore.getState();
+  useShortcutsStore.setState({ bindings: { ...buildNormalizedDefaults(), ...bindings } });
 });

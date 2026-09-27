@@ -184,6 +184,7 @@
     "correctIssue": "Korrektur im Chat vorbereiten",
     "resourceRequired": "Ein Aufruf benötigt mindestens eine Ressource.",
     "duplicateReference": "Jede Referenz muss in ihrer Liste eindeutig sein.",
+    "invalidPropertySelection": "Ungültige Eigenschaftsauswahl.",
     "detail": {
       "prompt": "Prompt",
       "inputs": "Eingaben",

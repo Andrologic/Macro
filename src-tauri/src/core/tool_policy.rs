@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ToolValidationResult {
     pub allowed: bool,
     pub reason: Option<String>,
     pub enforce_macro_only_writes: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ToolModePolicyResult {
     pub allowed_tool_ids: Vec<String>,
     pub enforce_macro_only_writes: bool,

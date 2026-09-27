@@ -1,6 +1,6 @@
-import { useTerminalStore, type TerminalTab } from '../stores/useTerminalStore';
+import { ProjectCommandRunner, isFailedProjectCommand } from './ProjectCommandRunner';
 
-interface RunWorktreeSetupCommandParams {
+export interface RunWorktreeSetupCommandParams {
   taskId: string;
   taskTitle: string;
   projectId: string;
@@ -16,15 +16,7 @@ export interface WorktreeSetupCommandResult {
   tabId: string;
 }
 
-const inFlightSetupCommands = new Map<string, Promise<WorktreeSetupCommandResult>>();
-
-const finalTerminalStatuses = new Set([
-  'completed',
-  'failed',
-  'error',
-  'cancelled',
-  'restored-disconnected',
-]);
+const inFlightByRunner = new WeakMap<ProjectCommandRunner, Map<string, Promise<WorktreeSetupCommandResult>>>();
 
 const setupCommandKey = (params: RunWorktreeSetupCommandParams): string =>
   [
@@ -34,41 +26,9 @@ const setupCommandKey = (params: RunWorktreeSetupCommandParams): string =>
     params.command.trim(),
   ].join('::');
 
-const isFinalTerminalTab = (tab: TerminalTab): boolean =>
-  finalTerminalStatuses.has(tab.status) || (!tab.hasLiveSession && tab.status !== 'running');
-
-const isFailedTerminalTab = (tab: TerminalTab): boolean =>
-  tab.status === 'failed' ||
-  tab.status === 'error' ||
-  (typeof tab.lastExitCode === 'number' && tab.lastExitCode !== 0);
-
-const waitForSetupTab = (tabId: string): Promise<TerminalTab> =>
-  new Promise((resolve) => {
-    const readCurrent = () => useTerminalStore.getState().tabs[tabId] ?? null;
-    const current = readCurrent();
-    if (current && isFinalTerminalTab(current)) {
-      resolve(current);
-      return;
-    }
-
-    const unsubscribe = useTerminalStore.subscribe((state) => {
-      const tab = state.tabs[tabId];
-      if (!tab || !isFinalTerminalTab(tab)) {
-        return;
-      }
-      unsubscribe();
-      resolve(tab);
-    });
-
-    const nextCurrent = readCurrent();
-    if (nextCurrent && isFinalTerminalTab(nextCurrent)) {
-      unsubscribe();
-      resolve(nextCurrent);
-    }
-  });
-
 export const runWorktreeSetupCommand = async (
-  params: RunWorktreeSetupCommandParams
+  params: RunWorktreeSetupCommandParams,
+  runner: ProjectCommandRunner,
 ): Promise<WorktreeSetupCommandResult> => {
   const trimmedCommand = params.command.trim();
   if (!trimmedCommand) {
@@ -79,6 +39,11 @@ export const runWorktreeSetupCommand = async (
     };
   }
 
+  let inFlightSetupCommands = inFlightByRunner.get(runner);
+  if (!inFlightSetupCommands) {
+    inFlightSetupCommands = new Map();
+    inFlightByRunner.set(runner, inFlightSetupCommands);
+  }
   const key = setupCommandKey({ ...params, command: trimmedCommand });
   const existing = inFlightSetupCommands.get(key);
   if (existing) {
@@ -86,29 +51,31 @@ export const runWorktreeSetupCommand = async (
   }
 
   const runPromise = (async () => {
-    const terminalStore = useTerminalStore.getState();
-    const tab = await terminalStore.startWorktreeSetupCommandTab({
+    const tab = await runner.start({
+      purpose: 'worktree_setup',
       taskId: params.taskId,
+      taskTitle: params.taskTitle,
       projectId: params.projectId,
+      projectName: params.projectName,
       cwd: params.worktreePath,
-      title: `Setup - ${params.projectName}`,
       command: trimmedCommand,
-      promptContext: {
-        projectLabel: params.projectName,
-        taskLabel: params.taskTitle,
-        branchLabel: null,
-      },
+      reveal: false,
     });
 
-    const finalTab = await waitForSetupTab(tab.id);
-    const failed = isFailedTerminalTab(finalTab);
+    const finalTab = await runner.waitForCompletion(tab.id);
+    if (!finalTab) {
+      return {
+        exitCode: null,
+        failed: true,
+        tabId: tab.id,
+      };
+    }
+    const failed = isFailedProjectCommand(finalTab);
 
     if (failed) {
-      const latestStore = useTerminalStore.getState();
-      latestStore.activateTab(finalTab.id);
-      latestStore.setPanelOpen(true);
+      runner.reveal(finalTab.id);
     } else {
-      await useTerminalStore.getState().closeTab(finalTab.id).catch(() => undefined);
+      await runner.close(finalTab.id).catch(() => undefined);
     }
 
     return {

@@ -2,7 +2,7 @@
  * states: default · hover · focus · active · disabled · loading · error · success
  * contrast: existing Macro theme tokens · pre-emit critique: P5 H5 E5 S5 R5 V5
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { isAutomaticUpdaterEnabled } from '../../../services/appUpdater';
@@ -23,11 +23,17 @@ const getProgress = (downloadedBytes: number, totalBytes: number | null): number
     ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
     : null;
 
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 export const UpdateChannelSettings: React.FC = () => {
   const { t } = useTranslation();
   const [channel, setChannel] = useState<UpdateChannel>('stable');
   const [saving, setSaving] = useState(false);
+  const [channelRefreshError, setChannelRefreshError] = useState<string | null>(null);
   const [pendingStableConfirmation, setPendingStableConfirmation] = useState(false);
+  const mountedRef = useRef(true);
+  const retryChannelRefreshRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [
     phase,
     update,
@@ -53,6 +59,52 @@ export const UpdateChannelSettings: React.FC = () => {
   ]));
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const checkForChannel = useCallback(async () => {
+    if (!isAutomaticUpdaterEnabled()) return;
+
+    const outcome = await checkForUpdates({ explicit: true });
+    if (outcome === 'error') {
+      throw new Error(
+        useAppUpdateStore.getState().error
+          ?? t('updates.checkFailed', 'Unable to check for updates'),
+      );
+    }
+  }, [checkForUpdates, t]);
+
+  const refreshForChannel = useCallback(async () => {
+    await reset();
+    await checkForChannel();
+  }, [checkForChannel, reset]);
+
+  const reportChannelRefreshError = useCallback((error: unknown) => {
+    if (!mountedRef.current) return;
+    const message = getErrorMessage(error);
+    setChannelRefreshError(message);
+    notify.actionRequired(
+      t(
+        'settings.updateChannel.refreshFailed',
+        'Update channel saved, but update information could not be refreshed.',
+      ),
+      {
+        description: message,
+        notificationKey: 'update-channel-refresh',
+        tone: 'warning',
+        actions: [{
+          label: t('common.retry', 'Retry'),
+          variant: 'primary',
+          onClick: () => retryChannelRefreshRef.current(),
+        }],
+      },
+    );
+  }, [t]);
+
+  useEffect(() => {
     let cancelled = false;
     void Promise.all([loadUpdateChannel(), initialize()]).then(([value]) => {
       if (!cancelled) setChannel(value);
@@ -64,22 +116,48 @@ export const UpdateChannelSettings: React.FC = () => {
     if (nextChannel === channel || saving) return;
     const previousChannel = channel;
     setChannel(nextChannel);
+    setChannelRefreshError(null);
     setSaving(true);
+    let channelSaved = false;
     try {
-      await saveUpdateChannel(nextChannel);
-      await reset();
-      if (isAutomaticUpdaterEnabled()) {
-        await checkForUpdates({ explicit: true });
-      }
+      await reset(async () => {
+        await saveUpdateChannel(nextChannel);
+        channelSaved = true;
+      });
+      await checkForChannel();
+      if (mountedRef.current) setChannelRefreshError(null);
     } catch (changeError) {
+      if (!mountedRef.current) return;
+      if (channelSaved) {
+        reportChannelRefreshError(changeError);
+        return;
+      }
       setChannel(previousChannel);
+      setChannelRefreshError(null);
       notify.error(t('settings.configuration.saveFailed', 'Could not save configuration'), {
-        description: changeError instanceof Error ? changeError.message : String(changeError),
+        description: getErrorMessage(changeError),
       });
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   };
+
+  const retryChannelRefresh = useCallback(async () => {
+    if (!mountedRef.current || saving || !channelRefreshError) return;
+    setSaving(true);
+    try {
+      await refreshForChannel();
+      if (mountedRef.current) setChannelRefreshError(null);
+    } catch (refreshError) {
+      reportChannelRefreshError(refreshError);
+    } finally {
+      if (mountedRef.current) setSaving(false);
+    }
+  }, [channelRefreshError, refreshForChannel, reportChannelRefreshError, saving]);
+
+  useEffect(() => {
+    retryChannelRefreshRef.current = retryChannelRefresh;
+  }, [retryChannelRefresh]);
 
   const requestChannelChange = (nextChannel: UpdateChannel) => {
     if (nextChannel === 'stable' && channel === 'preview') {
@@ -91,6 +169,7 @@ export const UpdateChannelSettings: React.FC = () => {
 
   const check = async () => {
     const outcome = await checkForUpdates({ explicit: true });
+    if (!mountedRef.current) return;
     if (outcome === 'error') {
       notify.error(t('updates.checkFailed', 'Unable to check for updates'), {
         description: useAppUpdateStore.getState().error ?? undefined,
@@ -186,6 +265,35 @@ export const UpdateChannelSettings: React.FC = () => {
           })}
         </div>
       </fieldset>
+
+      {channelRefreshError ? (
+        <div
+          role="alert"
+          className="flex flex-col gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="min-w-0 space-y-0.5">
+            <p className="font-medium">
+              {t(
+                'settings.updateChannel.refreshFailed',
+                'Update channel saved, but update information could not be refreshed.',
+              )}
+            </p>
+            <p className="break-words text-xs text-muted-foreground">{channelRefreshError}</p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-8 shrink-0 border border-amber-500/30 px-3 hover:bg-amber-500/10"
+            disabled={saving}
+            isLoading={saving}
+            leftIcon={<Icon name="refresh-cw" size={13} />}
+            onClick={() => void retryChannelRefresh()}
+          >
+            {t('common.retry', 'Retry')}
+          </Button>
+        </div>
+      ) : null}
 
       <div className={cn(
         'flex flex-col gap-3 border-t border-border/60 pt-4 lg:flex-row lg:items-center',

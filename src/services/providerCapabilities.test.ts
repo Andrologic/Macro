@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { resolveProviderCapabilities } from './providerCapabilities';
+import cases from '../shared/providerCapabilityCases.json';
 
 describe('resolveProviderCapabilities', () => {
   it('marks OpenCode Go as HTTP-only without local runtime support', () => {
@@ -32,4 +33,12 @@ describe('resolveProviderCapabilities', () => {
       usesLocalRuntime: true,
     });
   });
+});
+
+describe('provider capability dispatch parity', () => {
+  for (const fixture of cases) {
+    it(JSON.stringify(fixture.input), () => {
+      expect(resolveProviderCapabilities(fixture.input)).toEqual(fixture.expected);
+    });
+  }
 });

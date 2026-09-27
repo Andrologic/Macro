@@ -184,6 +184,7 @@
     "correctIssue": "Prepare correction in chat",
     "resourceRequired": "An invocation needs at least one resource.",
     "duplicateReference": "Each reference must be unique in its list.",
+    "invalidPropertySelection": "Invalid property selection.",
     "detail": {
       "prompt": "Prompt",
       "inputs": "Inputs",

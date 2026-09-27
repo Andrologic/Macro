@@ -1,3 +1,4 @@
+import { type LifecycleContext } from '../services/lifecycleScope';
 import { create } from 'zustand';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
@@ -122,8 +123,8 @@ interface SkillsStore {
   isLoading: boolean;
   saving: boolean;
   lastError: string | null;
-  loadSettings: () => Promise<void>;
-  refreshSkills: () => Promise<void>;
+  loadSettings: (lifecycle?: LifecycleContext) => Promise<void>;
+  refreshSkills: (lifecycle?: LifecycleContext) => Promise<void>;
   installSkillFromLocalPath: (sourcePath: string) => Promise<void>;
   createSkillTemplate: (
     data: Omit<SkillTemplateCreateRequest, 'projectRoots'>,
@@ -178,12 +179,14 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   saving: false,
   lastError: null,
 
-  loadSettings: async () => {
+  loadSettings: async (lifecycle) => {
+    lifecycle?.assertActive();
     const hydrationVersion = settingsMutationVersion;
     set({ isLoading: true, lastError: null });
     try {
       const settingsBySkillId = readStoredSkillSettings();
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
+      lifecycle?.assertActive();
       const currentSettings =
         hydrationVersion === settingsMutationVersion
           ? settingsBySkillId
@@ -195,17 +198,21 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         isLoading: false,
       });
     } catch (error) {
+      lifecycle?.assertActive();
       set({ isLoading: false, lastError: toServiceError(error).message });
     }
   },
 
-  refreshSkills: async () => {
+  refreshSkills: async (lifecycle) => {
+    lifecycle?.assertActive();
     set({ isLoading: true, lastError: null });
     try {
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
+      lifecycle?.assertActive();
       const migratedSettings = migrateLegacySkillSettings(get().settingsBySkillId, response.skills);
       set({ skills: response.skills, settingsBySkillId: migratedSettings, isLoading: false });
     } catch (error) {
+      lifecycle?.assertActive();
       set({ isLoading: false, lastError: toServiceError(error).message });
     }
   },
@@ -569,13 +576,26 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     if (skill && !skill.isValid) {
       return `Skill ${request.skillId} is invalid: ${skill.validationErrors.join(' ')}`;
     }
-    const workspacePath = useAppStore.getState().selectedProjectId
-      ? useAppStore.getState().getProjectById(useAppStore.getState().selectedProjectId!)?.path
-      : null;
+    const { executionContext, ...scriptRequest } = request;
+    const projectRoots = getProjectRootsFromAppState();
+    let workspacePath: string | null = null;
+    let workspaceRoot: { projectId: string; path: string } | null = null;
+    if (request.allowWorkspace) {
+      workspacePath = executionContext?.workspacePath ?? null;
+      if (!workspacePath?.trim() || !executionContext?.projectId) {
+        throw new Error('Workspace access was requested but the captured execution workspace is unavailable.');
+      }
+      const projectRoot = projectRoots.find((root) => root.projectId === executionContext.projectId);
+      if (!projectRoot) {
+        throw new Error('The captured execution project is no longer available.');
+      }
+      workspaceRoot = { projectId: executionContext.projectId, path: workspacePath };
+    }
     return services.runSkillScript({
-      ...request,
-      projectRoots: getProjectRootsFromAppState(),
+      ...scriptRequest,
+      projectRoots,
       workspacePath,
+      workspaceRoot,
     });
   },
 

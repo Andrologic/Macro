@@ -193,4 +193,31 @@ describe('modelContextCatalog', () => {
       stale: true,
     });
   });
+  it('keeps reporting the snapshot after a network fallback without cache', async () => {
+    const fetchImpl = mock(async () => new Response('', { status: 503 }));
+
+    const firstStatus = await refreshModelContextCatalog({
+      force: true,
+      fetchImpl: fetchImpl as never,
+    });
+    const secondStatus = await refreshModelContextCatalog({
+      force: true,
+      fetchImpl: fetchImpl as never,
+    });
+
+    expect(firstStatus.source).toBe('snapshot');
+    expect(secondStatus).toMatchObject({
+      lastFetchedAt: null,
+      source: 'snapshot',
+      stale: true,
+      error: 'Models.dev returned 503',
+    });
+    expect(getModelContextCatalogStatus()).toMatchObject({
+      lastFetchedAt: null,
+      source: 'snapshot',
+      stale: true,
+      error: 'Models.dev returned 503',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
