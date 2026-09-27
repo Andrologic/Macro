@@ -101,8 +101,8 @@ describe('loadMacroProjectMetadataForSelection', () => {
   it('keeps standalone project plans visible when their project ids match the current scope', async () => {
     const lplrPlan = buildPlan({
       id: 'refonte-catalogue-produit',
-      projectIds: ['project-lplr-app-1780237886690'],
-      expectedProjectIds: ['project-lplr-app-1780237886690'],
+      projectIds: ['project-sample-app-1780237886690'],
+      expectedProjectIds: ['project-sample-app-1780237886690'],
       targetBranch: 'main',
       updatedAt: '2026-06-01T07:49:45.660Z',
     });
@@ -125,7 +125,7 @@ describe('loadMacroProjectMetadataForSelection', () => {
     });
 
     const result = await loadMacroProjectMetadataForSelection({
-      scopedProjectIds: ['project-lplr-app-1780237886690'],
+      scopedProjectIds: ['project-sample-app-1780237886690'],
       candidateBranches: ['main', 'develop'],
       deps,
     });
