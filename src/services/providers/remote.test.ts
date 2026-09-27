@@ -221,12 +221,12 @@ describe('remote provider', () => {
       branchName: 'main',
       includeDeleted: true,
       includeArchived: true,
-      scopedProjectIdsHint: ['project-octan-sales'],
+      scopedProjectIdsHint: ['project-sample-sales'],
     });
     await workspaceArchitectActivatePlanHead({
       branchName: 'main',
       planId: 'plan-1',
-      scopedProjectIdsHint: ['project-octan-sales'],
+      scopedProjectIdsHint: ['project-sample-sales'],
     });
     await workspaceArchitectActivatePlanChat({
       branchName: 'main',
@@ -242,7 +242,7 @@ describe('remote provider', () => {
       branchName: 'main',
       includeDeleted: true,
       includeArchived: true,
-      scopedProjectIdsHint: ['project-octan-sales'],
+      scopedProjectIdsHint: ['project-sample-sales'],
     });
   });
 

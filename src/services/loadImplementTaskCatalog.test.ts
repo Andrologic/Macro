@@ -495,7 +495,7 @@ describe('createLoadImplementTaskCatalog', () => {
             status: 'pending',
             dependencies: [],
             assignedBranch: 'feature/restored-task',
-            projectId: 'project-octan-sales',
+            projectId: 'project-sample-sales',
           },
         ],
         predictedBranches: [
@@ -504,19 +504,19 @@ describe('createLoadImplementTaskCatalog', () => {
             name: 'feature/restored-task',
             color: '#6366f1',
             parentBranch: 'main',
-            projectId: 'project-octan-sales',
+            projectId: 'project-sample-sales',
             taskIds: ['standalone-task'],
             status: 'pending',
           },
         ],
         selectedGroupId: null,
-        selectedProjectId: 'project-octan-sales',
+        selectedProjectId: 'project-sample-sales',
         standaloneProjects: [
           {
-            id: 'project-octan-sales',
-            name: 'octan_sales',
-            mountName: 'octan-sales',
-            path: '/Users/oscarlahaie/github/octan_sales',
+            id: 'project-sample-sales',
+            name: 'sample_sales',
+            mountName: 'sample-sales',
+            path: '/Users/example/projects/sample_sales',
             created_at: '',
             status: 'active',
             gitFlowSettings: {
@@ -560,15 +560,15 @@ describe('createLoadImplementTaskCatalog', () => {
 
     expect(task?.plan_target_branch).toBe('develop');
     expect(task?.plan_target_branches_by_project_id).toEqual({
-      'project-octan-sales': 'develop',
+      'project-sample-sales': 'develop',
     });
     expect(finalizationTask?.execution_targets).toEqual([
       {
-        projectId: 'project-octan-sales',
+        projectId: 'project-sample-sales',
         branchName: 'develop',
         targetBranchName: 'develop',
         executionKind: 'repository_root',
-        worktreeKey: 'plan-finalization:project-octan-sales:project-octan-sales',
+        worktreeKey: 'plan-finalization:project-sample-sales:project-sample-sales',
       },
     ]);
   });
@@ -579,15 +579,15 @@ describe('createLoadImplementTaskCatalog', () => {
       title: 'Refonte catalogue produit',
       status: 'validated',
       targetBranch: 'develop',
-      projectId: 'project-lplr-app-1780237886690',
-      projectIds: ['project-lplr-app-1780237886690'],
+      projectId: 'project-sample-app-1780237886690',
+      projectIds: ['project-sample-app-1780237886690'],
       availableProjectIds: ['project-lplr-current'],
       replicas: [
         {
-          scopeKey: 'repo:/Users/oscarlahaie/github/lplr-app',
+          scopeKey: 'repo:/Users/example/projects/sample-app',
           projectId: 'project-lplr-current',
-          repoPath: '/Users/oscarlahaie/github/lplr-app',
-          workspacePath: '/Users/oscarlahaie/github/lplr-app',
+          repoPath: '/Users/example/projects/sample-app',
+          workspacePath: '/Users/example/projects/sample-app',
           source: 'project',
           updatedAt: '2026-03-08T00:00:00.000Z',
         },
@@ -600,8 +600,8 @@ describe('createLoadImplementTaskCatalog', () => {
           status: 'pending',
           dependencies: [],
           assignedBranch: 'feature/catalogue',
-          projectId: 'project-lplr-app-1780237886690',
-          projectIds: ['project-lplr-app-1780237886690'],
+          projectId: 'project-sample-app-1780237886690',
+          projectIds: ['project-sample-app-1780237886690'],
         },
       ],
       predictedBranches: [
@@ -610,7 +610,7 @@ describe('createLoadImplementTaskCatalog', () => {
           name: 'feature/catalogue',
           color: '#6366f1',
           parentBranch: 'develop',
-          projectId: 'project-lplr-app-1780237886690',
+          projectId: 'project-sample-app-1780237886690',
           taskIds: ['task-catalogue'],
           status: 'pending',
         },
@@ -630,7 +630,7 @@ describe('createLoadImplementTaskCatalog', () => {
         selectedGroupId: null,
         selectedProjectId: 'project-lplr-current',
         standaloneProjects: [
-          { id: 'project-lplr-current', name: 'lplr-app', mountName: 'lplr-app', path: '/Users/oscarlahaie/github/lplr-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+          { id: 'project-lplr-current', name: 'sample-app', mountName: 'sample-app', path: '/Users/example/projects/sample-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
         ],
         projectGroups: [],
       }),
@@ -662,21 +662,21 @@ describe('createLoadImplementTaskCatalog', () => {
         title: 'Refonte catalogue produit',
         status: 'validated',
         targetBranch: 'develop',
-        projectId: 'project-lplr-app-1780237886690',
-        projectIds: ['project-lplr-app-1780237886690'],
+        projectId: 'project-sample-app-1780237886690',
+        projectIds: ['project-sample-app-1780237886690'],
         nodes: [],
         predictedBranches: [],
       }),
-      expectedProjectIds: ['project-lplr-app-1780237886690', 'project-docs-old'],
+      expectedProjectIds: ['project-sample-app-1780237886690', 'project-docs-old'],
       availableProjectIds: ['project-lplr-current'],
       missingProjectIds: ['project-docs-old'],
       replicationState: 'missing_projects',
       replicas: [
         {
-          scopeKey: 'repo:/Users/oscarlahaie/github/lplr-app',
+          scopeKey: 'repo:/Users/example/projects/sample-app',
           projectId: 'project-lplr-current',
-          repoPath: '/Users/oscarlahaie/github/lplr-app',
-          workspacePath: '/Users/oscarlahaie/github/lplr-app',
+          repoPath: '/Users/example/projects/sample-app',
+          workspacePath: '/Users/example/projects/sample-app',
           source: 'project',
           updatedAt: '2026-03-08T00:00:00.000Z',
         },
@@ -691,7 +691,7 @@ describe('createLoadImplementTaskCatalog', () => {
         selectedGroupId: null,
         selectedProjectId: 'project-lplr-current',
         standaloneProjects: [
-          { id: 'project-lplr-current', name: 'lplr-app', mountName: 'lplr-app', path: '/Users/oscarlahaie/github/lplr-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+          { id: 'project-lplr-current', name: 'sample-app', mountName: 'sample-app', path: '/Users/example/projects/sample-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
         ],
         projectGroups: [],
       }),
@@ -726,7 +726,7 @@ describe('createLoadImplementTaskCatalog', () => {
         selectedGroupId: null,
         selectedProjectId: 'project-lplr-current',
         standaloneProjects: [
-          { id: 'project-lplr-current', name: 'lplr-app', mountName: 'lplr-app', path: '/Users/oscarlahaie/github/lplr-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+          { id: 'project-lplr-current', name: 'sample-app', mountName: 'sample-app', path: '/Users/example/projects/sample-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
         ],
         projectGroups: [],
       }),
@@ -745,17 +745,17 @@ describe('createLoadImplementTaskCatalog', () => {
       makeTask({
         id: 'standalone-stale',
         title: 'Tâche indépendante',
-        project_id: 'project-lplr-app-1780237886690',
-        project_ids: ['project-lplr-app-1780237886690'],
+        project_id: 'project-sample-app-1780237886690',
+        project_ids: ['project-sample-app-1780237886690'],
         status: 'Pending',
       }),
     ]);
     const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-stale');
 
-    expect(task?.project_id).toBe('project-lplr-app-1780237886690');
-    expect(task?.project_ids).toEqual(['project-lplr-app-1780237886690']);
+    expect(task?.project_id).toBe('project-sample-app-1780237886690');
+    expect(task?.project_ids).toEqual(['project-sample-app-1780237886690']);
     expect(task?.execution_targets.map((target) => target.projectId)).toEqual([
-      'project-lplr-app-1780237886690',
+      'project-sample-app-1780237886690',
     ]);
   });
 

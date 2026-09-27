@@ -542,22 +542,22 @@ describe('architectPlanArtifactService reviews and versions', () => {
     useAppStore.setState({
       standaloneProjects: [
         {
-          id: 'project-octan-sales',
-          name: 'octan_sales',
-          mountName: 'octan_sales',
-          path: '/repos/octan_sales',
+          id: 'project-sample-sales',
+          name: 'sample_sales',
+          mountName: 'sample_sales',
+          path: '/repos/sample_sales',
           created_at: '2026-06-05T00:00:00.000Z',
           status: 'active',
           metadata: emptyProjectMetadata,
         },
       ],
       projectGroups: [],
-      selectedProjectId: 'project-octan-sales',
+      selectedProjectId: 'project-sample-sales',
       selectedGroupId: null,
     });
 
     const indexPath = getPlanArtifactIndexPath(branchName, plan.id);
-    files.set(`/repos/octan_sales::${indexPath}`, `${JSON.stringify({
+    files.set(`/repos/sample_sales::${indexPath}`, `${JSON.stringify({
       schemaVersion: 1,
       planId: plan.id,
       updatedAt: '2026-06-05T00:00:00.000Z',
@@ -586,14 +586,14 @@ describe('architectPlanArtifactService reviews and versions', () => {
       reviews: [],
     }, null, 2)}\n`);
 
-    files.set(`/repos/octan_sales::${getPlanArtifactContentPath(branchName, plan.id, 'api', 'migration-map', 'markdown')}`, 'Map\n');
+    files.set(`/repos/sample_sales::${getPlanArtifactContentPath(branchName, plan.id, 'api', 'migration-map', 'markdown')}`, 'Map\n');
     const overview = await listPlanArtifactOverview({
       branchName,
       plan: {
         ...plan,
-        projectId: 'project-lplr-app-old',
-        projectIds: ['project-lplr-app-old'],
-        availableProjectIds: ['project-octan-sales'],
+        projectId: 'project-sample-app-old',
+        projectIds: ['project-sample-app-old'],
+        availableProjectIds: ['project-sample-sales'],
         nodes: [
           {
             id: 'api',
@@ -611,17 +611,17 @@ describe('architectPlanArtifactService reviews and versions', () => {
     useAppStore.setState({
       standaloneProjects: [
         {
-          id: 'project-octan-sales',
-          name: 'octan_sales',
-          mountName: 'octan_sales',
-          path: '/repos/octan_sales',
+          id: 'project-sample-sales',
+          name: 'sample_sales',
+          mountName: 'sample_sales',
+          path: '/repos/sample_sales',
           created_at: '2026-06-05T00:00:00.000Z',
           status: 'active',
           metadata: emptyProjectMetadata,
         },
       ],
       projectGroups: [],
-      selectedProjectId: 'project-octan-sales',
+      selectedProjectId: 'project-sample-sales',
       selectedGroupId: null,
     });
 
@@ -638,11 +638,11 @@ describe('architectPlanArtifactService reviews and versions', () => {
           task_source: 'architect',
           plan_id: plan.id,
           plan_storage_branch: branchName,
-          project_id: 'project-lplr-app-old',
-          project_ids: ['project-lplr-app-old'],
+          project_id: 'project-sample-app-old',
+          project_ids: ['project-sample-app-old'],
           execution_targets: [
             {
-              projectId: 'project-lplr-app-old',
+              projectId: 'project-sample-app-old',
               branchName,
               baseBranchName: 'main',
               targetBranchName: branchName,
@@ -654,13 +654,13 @@ describe('architectPlanArtifactService reviews and versions', () => {
       getArchitectPlan: async () =>
         ({
           ...plan,
-          projectId: 'project-lplr-app-old',
-          projectIds: ['project-lplr-app-old'],
-          availableProjectIds: ['project-octan-sales'],
+          projectId: 'project-sample-app-old',
+          projectIds: ['project-sample-app-old'],
+          availableProjectIds: ['project-sample-sales'],
         }) as ArchitectPlanRecord,
     });
 
-    expect(target.plan.projectId).toBe('project-octan-sales');
-    expect(target.plan.projectIds).toEqual(['project-octan-sales']);
+    expect(target.plan.projectId).toBe('project-sample-sales');
+    expect(target.plan.projectIds).toEqual(['project-sample-sales']);
   });
 });

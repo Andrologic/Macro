@@ -610,6 +610,6 @@ Le chantier est fini lorsque :
 - SDK TypeScript officiel : https://github.com/modelcontextprotocol/typescript-sdk
 - Suite de conformité : https://github.com/modelcontextprotocol/conformance
 - Client MCP Codex :
-  `/Users/oscarlahaie/github/codex/codex-rs/rmcp-client`
+  `codex-rs/rmcp-client` dans le dépôt Codex
 - Runtime MCP Oh My Pi :
-  `/Users/oscarlahaie/github/oh-my-pi/packages/coding-agent/src/mcp`
+  `packages/coding-agent/src/mcp` dans le dépôt Oh My Pi
