@@ -1,11 +1,11 @@
 {
-  "version": "0.1.7-nightly.20260918.29",
-  "notes": "Macro 0.1.7-nightly.20260918.29 is a validated nightly build from develop.\n\nWindows installers are not Authenticode-signed and may display an Unknown publisher warning.\n\n<!-- source-sha:62b6a663b69ec3e96ed4c5597801a4998093e2fb -->\n",
-  "pub_date": "2026-09-18T07:24:28Z",
+  "version": "0.1.8-nightly.20260927.38",
+  "notes": "Macro 0.1.8-nightly.20260927.38 is a validated nightly build from develop.\n\nWindows installers are not Authenticode-signed and may display an Unknown publisher warning.\n\n<!-- source-sha:7bce0949e7595e9f50b1423aff7b32d6a97f390a -->\n",
+  "pub_date": "2026-09-27T08:09:12Z",
   "platforms": {
     "preview-windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScUVqZHp3NWNuc1VIOGZROXE0WDRXZUlyWDVZYVBiZ1lETVhOVlFvZFB2d0ZlZnZ1VElYRFBJY1RZY3RhZXB3TUxLOEdHZmF3MEs3bmR4OW9td3RDUnl0TDVkbnFwT3dRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NzE4MTM0CWZpbGU6TWFjcm9fMC4xLjctbmlnaHRseS4yMDI2MDkxOC4yOV94NjQtc2V0dXAuZXhlClRua1FmNUhDTlZ4d1BwZ0VhbUs5MGduaHllVHhMYzhqYnlnTkNVTDNMRlYxUGVlMnV4dytYNVc0K3d5K0lRYjRXcmRseWhxd2wyTWV1S2duSlIvb0N3PT0K",
-      "url": "https://github.com/Andrologic/Macro/releases/download/preview/Macro_0.1.7-nightly.20260918.29_Windows_x64_setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScUVqZHp3NWNuc1phVi9zQ0c2OUJTd01WSlR5MkNXa0M1djdvdkgvN1d1UEZtckF5NVY2WFI3bWJhcGc3NmU3VXdnYnFIWXE5RSswQm9mMFZ5TTJVUzVIMkliTDJNaFEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDk4MDM2CWZpbGU6TWFjcm9fMC4xLjgtbmlnaHRseS4yMDI2MDkyNy4zOF94NjQtc2V0dXAuZXhlCnQrekV3Sk9vd0RKMEhmTEczbURtY2NIMkwvM01jMk5YQzFKNjNvdGlsNW9iUUw2aDF2bks0MElMWnZYUTNjbHRudXp5ZWx4SXRaM0ZBaTZDSk5ka0R3PT0K",
+      "url": "https://github.com/Andrologic/Macro/releases/download/preview/Macro_0.1.8-nightly.20260927.38_Windows_x64_setup.exe"
     }
   }
 }

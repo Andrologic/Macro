@@ -1,11 +1,11 @@
 {
-  "version": "0.1.7-nightly.20260918.29",
-  "notes": "Macro 0.1.7-nightly.20260918.29 is a validated nightly build from develop.\n\nWindows installers are not Authenticode-signed and may display an Unknown publisher warning.\n\n<!-- source-sha:62b6a663b69ec3e96ed4c5597801a4998093e2fb -->\n",
-  "pub_date": "2026-09-18T07:24:28Z",
+  "version": "0.1.8-nightly.20260927.38",
+  "notes": "Macro 0.1.8-nightly.20260927.38 is a validated nightly build from develop.\n\nWindows installers are not Authenticode-signed and may display an Unknown publisher warning.\n\n<!-- source-sha:7bce0949e7595e9f50b1423aff7b32d6a97f390a -->\n",
+  "pub_date": "2026-09-27T08:09:12Z",
   "platforms": {
     "preview-darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScUVqZHp3NWNuc1RlY01XZ3V0NUlpT1BLdWIwcUlSVHpCRGZRZUxVYWRabXZpM29HQ2hCMzh4SUlQY1haaDhQVzFkdnY1dFpqaGR4UjVpMmFIaS9ldU5TbHZvMWh2Y2c0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NzE4MTAyCWZpbGU6TWFjcm8uYXBwLnRhci5negpIaUNnNGtmbVhWcUlNSmNuRjFiRldxeCt6UVdPdERWaGZuZS9SNGJNWk0yUStCbHMzaUpCZFBxY3NtVVYzL3FWSEkwTklXNXd4ak56VUJma3RqVG9Bdz09Cg==",
-      "url": "https://github.com/Andrologic/Macro/releases/download/preview/Macro_0.1.7-nightly.20260918.29_macOS_universal.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScUVqZHp3NWNuc2NtTnU3L2V4Y3djQ0VXdXp6MkxIWFpwZk5QdTIzSEU4dVBMNzlMQkhlMkRua29Vak1YV1FmV0RvSGNBblNSQzJPY1JYRExScFI2d2VOeU9hVTcvbkFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNDk4MzA2CWZpbGU6TWFjcm8uYXBwLnRhci5negp2YjRRMTgrMWZJZWpKbVlXZ0VKaUdmSGZzY01TVUJHbDdNOERVNHFRVzJsZ0NRS0NDWUExdjhROVAxSHFyV2o2OXBCYlZKWHgyZmJKV3crRVdvRHpEUT09Cg==",
+      "url": "https://github.com/Andrologic/Macro/releases/download/preview/Macro_0.1.8-nightly.20260927.38_macOS_universal.app.tar.gz"
     }
   }
 }
