@@ -110,7 +110,9 @@ pas un historique durable de toutes les versions du système.
 
 La modale d’édition d’un agent permet de choisir un fournisseur et un modèle
 configurés dans Macro lorsqu’une configuration AgSDL unique peut être identifiée.
-Le moteur déclaré est Macro. Les configurations importées étrangères ou ambiguës restent
+Le moteur déclaré est Macro. L’ancien alias de moteur `macro` en version `1`
+est converti en `macro/desktop` lors de la sauvegarde ; les autres données de
+configuration restent en place. Les configurations importées étrangères ou ambiguës restent
 préservées et doivent être préparées par l’agent avant cette édition. Les outils
 et MCP restent des autorisations déclarées, indépendantes du choix du modèle.
 Cette version ne lance pas les systèmes AgSDL et n’ajoute pas de mode orchestrateur.

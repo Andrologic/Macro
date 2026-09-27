@@ -33,6 +33,21 @@ describe("Macro model configuration", () => {
     const failures = reports.flatMap(report => report.results.filter(result => result.verdict !== "pass"));
     expect(failures).toEqual([]);
   });
+  it("repairs only the identity of an earlier Macro binding", async () => {
+    const { doc, source, card } = setup();
+    const binding = doc.runtime.configurations[0].agents[0];
+    binding.engine = { identity: "macro", version: "1" };
+    binding.parameters = { providerId: "provider-a", modelId: "model-a", temperature: 0.2 };
+    const changes = macroConfigurationChanges(source(), card(), "provider-a", "model-a");
+    expect(macroAgentConfiguration(source(), card()).editable).toBe(true);
+    expect(changes).toEqual([{ op: "set", path: "/runtime/configurations/0/agents/0/engine/identity", valueJson: '"macro/desktop"' }]);
+    const repaired = JSON.parse(applyChanges(source(), changes));
+    expect(repaired.runtime.configurations[0].agents[0]).toEqual({
+      ...binding, engine: { ...binding.engine, identity: "macro/desktop" },
+    });
+    const reports = await validateDocument(JSON.stringify(repaired));
+    expect(reports.flatMap(report => report.results.filter(result => result.verdict !== "pass"))).toEqual([]);
+  });
   it("blocks foreign engines and unsupported Macro editions without modifying them", () => {
     const { doc, source, card } = setup();
     for (const engine of [{ identity: "foreign", version: "1" }, { identity: "macro/desktop", version: "2" }]) {

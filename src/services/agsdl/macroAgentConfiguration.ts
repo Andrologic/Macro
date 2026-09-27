@@ -39,7 +39,7 @@ export function macroAgentConfiguration(source: string, card: ViewerCard): Macro
     .filter(({ value }) => valid(value.agent) && keyId(value.agent) === keyId(agent));
   if (bindings.length !== 1) return blocked;
   const binding = bindings[0].value, engine = object(binding.engine), params = object(binding.parameters);
-  const editable = (binding.engine == null || (engine.identity === "macro/desktop" && engine.version === "1")) &&
+  const editable = (binding.engine == null || (["macro", "macro/desktop"].includes(text(engine.identity)) && engine.version === "1")) &&
     (binding.parameters == null || (typeof binding.parameters === "object" && !Array.isArray(binding.parameters))) &&
     [params.providerId, params.modelId].every(value => value === undefined || typeof value === "string");
   return { editable, providerId: text(params.providerId), modelId: text(params.modelId),
@@ -48,15 +48,18 @@ export function macroAgentConfiguration(source: string, card: ViewerCard): Macro
 
 export function macroConfigurationChanges(source: string, card: ViewerCard, providerId: string, modelId: string): AgsdlChange[] {
   const config = macroAgentConfiguration(source, card);
-  if (config.providerId === providerId && config.modelId === modelId) return [];
-  if (!config.editable || !config.bindingPath || !providerId || !modelId) throw new Error("agsdl.macroConfig.unsupported");
+  if (!config.editable || !config.bindingPath) throw new Error("agsdl.macroConfig.unsupported");
   const doc = readDocument(source);
   const parts = config.bindingPath.split("/");
   const binding = object(list(object(list(object(doc.runtime).configurations)[Number(parts[3])]).agents)[Number(parts[5])]);
+  const legacyEngine = object(binding.engine).identity === "macro" && object(binding.engine).version === "1";
+  if (config.providerId === providerId && config.modelId === modelId && !legacyEngine) return [];
+  if (!providerId || !modelId) throw new Error("agsdl.macroConfig.unsupported");
   const changes: AgsdlChange[] = [];
   if (binding.engine == null) changes.push({ op: "set", path: `${config.bindingPath}/engine`, valueJson: JSON.stringify({ identity: "macro/desktop", version: "1" }) });
+  else if (legacyEngine) changes.push({ op: "set", path: `${config.bindingPath}/engine/identity`, valueJson: JSON.stringify("macro/desktop") });
   if (binding.parameters == null) changes.push({ op: "set", path: `${config.bindingPath}/parameters`, valueJson: "{}" });
-  changes.push({ op: "set", path: `${config.bindingPath}/parameters/providerId`, valueJson: JSON.stringify(providerId) },
-    { op: "set", path: `${config.bindingPath}/parameters/modelId`, valueJson: JSON.stringify(modelId) });
+  if (config.providerId !== providerId) changes.push({ op: "set", path: `${config.bindingPath}/parameters/providerId`, valueJson: JSON.stringify(providerId) });
+  if (config.modelId !== modelId) changes.push({ op: "set", path: `${config.bindingPath}/parameters/modelId`, valueJson: JSON.stringify(modelId) });
   return changes;
 }

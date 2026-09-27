@@ -118,7 +118,7 @@ export function AgentDetails({ card, cards, source, onSelect }: {
         : <p className="agsdl-muted">{t("agsdl.viewer.detail.noTools")}</p>}
       {!!card.resources?.length && <div className="agsdl-resource-list"><span className="agsdl-muted">{t("agsdl.viewer.resources")}</span><div className="agsdl-reference-list">{card.resources.map((ref, index) => <span key={index}>{reference(ref)}</span>)}</div></div>}
       {configurations.map((config, index) => {
-        const macro = config.engineIdentity === "macro" && config.engineVersion === "1";
+        const macro = ["macro", "macro/desktop"].includes(config.engineIdentity) && config.engineVersion === "1";
         const providerId = typeof config.parameters.providerId === "string" ? config.parameters.providerId : "";
         const modelId = typeof config.parameters.modelId === "string" ? config.parameters.modelId : "";
         const provider = providers.find(value => value.id === providerId && value.isEnabled !== false);

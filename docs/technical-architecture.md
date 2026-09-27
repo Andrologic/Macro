@@ -1802,7 +1802,9 @@ session du store.
 La convention de configuration Macro utilise `engine.identity = "macro/desktop"`,
 `engine.version = "1"` et `parameters.providerId` / `parameters.modelId`. Ces
 identifiants locaux référencent le catalogue configuré dans Macro, sans copier
-les secrets. Une configuration d’agent doit être résolue sans ambiguïté avant
+les secrets. L’éditeur reconnaît l’ancien alias `macro` en version `1` et ne
+remplace que son identité lors de la prochaine sauvegarde du modèle. Une
+configuration d’agent doit être résolue sans ambiguïté avant
 édition ; les autres paramètres et implémentations d’outils sont conservés.
 Cette convention prépare le futur adaptateur d’exécution, elle ne l’implémente pas.
 
