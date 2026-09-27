@@ -133,7 +133,14 @@ mock.module('../../stores/useAppStore', () => ({
   },
 }));
 
-const { desktopActions } = await import('./desktopActions');
+const { createDesktopActions } = await import('./desktopActions');
+const desktopActions = createDesktopActions({
+  app: () => ({ getProjectById: (projectId: string) => projectId === 'project-1' ? { id: projectId, name: 'Macro' } : undefined }) as never,
+  chat: () => chatState as never,
+  tasks: () => taskState as never,
+  taskLifecycle: (() => ({})) as never,
+  taskCommandTargets: (() => []) as never,
+});
 const { assertPilotConversationActionAllowed } = await import('./actionReservations');
 
 const createGuard = () => ({

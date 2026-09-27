@@ -115,7 +115,7 @@ const httpFetch = mock(async (url: string | URL | Request, init?: RequestInit) =
   return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
 });
 mock.module('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
-const { desktopActions } = await import('./desktopActions');
+const { desktopActions } = await import('../../composition/macroPilotDesktop');
 const { assistantProvenance } = await import('./assistantProvenance');
 const { useAppStore } = await import('../../stores/useAppStore');
 const { useTaskStore } = await import('../../stores/useTaskStore');

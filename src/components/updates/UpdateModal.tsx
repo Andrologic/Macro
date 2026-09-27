@@ -14,6 +14,7 @@ import { beginAppShutdownGate } from '../../services/appShutdownGate';
 import { isProjectGitActionable } from '../../services/globalProjects';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
 import { runWithPotentialShutdown } from '../../services/windowShutdown';
+import { macroPilotRuntime } from '../../composition/macroPilotDesktop';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -111,7 +112,7 @@ export const UpdateModal: React.FC = () => {
           }
         }
         return installAndRestart();
-      }, releaseShutdownGate, getSelectedWorkspacePaths());
+      }, releaseShutdownGate, macroPilotRuntime, getSelectedWorkspacePaths());
       if (installed) return;
     } catch {
       if (!prepared) {

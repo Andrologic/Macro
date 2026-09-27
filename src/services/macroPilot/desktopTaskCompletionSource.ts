@@ -1,7 +1,5 @@
 import { configurationGetLoadedSnapshot } from '../configurationClient';
-import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
-import { getTaskLifecycleCapabilities, getTaskCommandTargets, useTaskStore } from '../../stores/useTaskStore';
+import type { DesktopStorePorts } from './desktopStorePorts';
 import { getServiceRuntimeCapabilities } from '../index';
 import { readArchitectPlanSnapshot, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
 import { listVisibleTaskArtifacts, readVisibleTaskArtifactContent, taskArtifactContentHash } from '../architectPlanArtifactService';
@@ -17,15 +15,15 @@ import { stableJson } from './protocol';
 import { getTaskBusinessId, toTaskRuntimeId } from '../durableIdentity';
 const fail = (code: string): never => { throw new Error(code); };
 
-export function desktopTaskCompletionSource(instanceId: string, workspaceId: string, conversations: ConversationCaptures, signal?: AbortSignal): TaskCompletionSource {
+export function desktopTaskCompletionSource(instanceId: string, workspaceId: string, conversations: ConversationCaptures, ports: DesktopStorePorts, signal?: AbortSignal): TaskCompletionSource {
   const taskFor = (ref: DetailRef) => {
     if (ref.instance_id !== instanceId || !('workspace_id' in ref) || ref.workspace_id !== workspaceId || !('task_id' in ref)) return fail('not_found');
-    const task = findPilotTask(desktopPilotTasks(), ref.task_id);
-    if (!task || !useAppStore.getState().getProjectById(task.project_id)) return fail('not_found');
+    const task = findPilotTask(desktopPilotTasks(ports), ref.task_id);
+    if (!task || !ports.app().getProjectById(task.project_id)) return fail('not_found');
     return task;
   };
   return {
-    cards: async policy => desktopPilotTasks().map(task => ({
+    cards: async policy => desktopPilotTasks(ports).map(task => ({
       ref: { instance_id: instanceId, workspace_id: workspaceId, task_id: pilotTaskId(task.id) },
       title: exportDetailText(task.title, policy), description: exportDetailText(task.description, policy),
       source: task.task_source, status: task.status, draft: task.draft,
@@ -82,12 +80,12 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
           return result.content;
         } };
       }
-      const store = useTaskStore.getState();
+      const store = ports.tasks();
       const capabilities = getServiceRuntimeCapabilities();
-      const lifecycle = getTaskLifecycleCapabilities(task, store.publishedStandaloneTasks[task.id] ?? false);
-      const commandTargets = getTaskCommandTargets(task);
+      const lifecycle = ports.taskLifecycle(task, store.publishedStandaloneTasks[task.id] ?? false);
+      const commandTargets = ports.taskCommandTargets(task);
       const projectIds = commandTargets.map(target => target.projectId);
-      const projects = projectIds.map(id => useAppStore.getState().getProjectById(id));
+      const projects = projectIds.map(id => ports.app().getProjectById(id));
       if (projects.length > 32) return fail('resource_limit');
       const registry = await loadTaskProjectCommandRegistry(projectIds, configurationGetLoadedSnapshot);
       const configured = projects.map(project => project ? { project, settings: getTaskProjectCommand(registry, project.path) } : null);
@@ -101,8 +99,8 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       });
       const commands = [...setupCommands, ...configured.flatMap(entry => entry?.settings?.command ? [{ project_id: entry.project.id, project_name: text(entry.project.name), command: text(entry.settings.command) }] : [])];
       if (commands.length > 32) return fail('resource_limit');
-      const conversation = useChatStore.getState().conversations.find(c => c.task_id === task.id || c.id === task.conversation_id);
-      const runtime = conversation ? useChatStore.getState().getConversationRuntime(conversation.id) : null;
+      const conversation = ports.chat().conversations.find(c => c.task_id === task.id || c.id === task.conversation_id);
+      const runtime = conversation ? ports.chat().getConversationRuntime(conversation.id) : null;
       const busy = runtime && !['idle', 'error'].includes(runtime.phase);
       const actions: TaskAction[] = [];
       if (!busy && capabilities.taskMutation) {
@@ -123,12 +121,12 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       const task = taskFor(ref);
       const reservation = reservePilotAction({ taskId: task.id, conversationId: task.conversation_id ?? undefined });
       try {
-        if (action === 'delete' && task.conversation_id) useChatStore.getState().assertPilotConversationDeletionReady(task.conversation_id, reservation.token);
+        if (action === 'delete' && task.conversation_id) ports.chat().assertPilotConversationDeletionReady(task.conversation_id, reservation.token);
         const projectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])];
-        const projectScope = () => stableJson(projectIds.map(id => { const project = useAppStore.getState().getProjectById(id); return project ? { id, path: project.path, directEdit: project.directEdit, gitSetupState: project.gitSetupState } : { id }; }));
+        const projectScope = () => stableJson(projectIds.map(id => { const project = ports.app().getProjectById(id); return project ? { id, path: project.path, directEdit: project.directEdit, gitSetupState: project.gitSetupState } : { id }; }));
         const expectedProjectScope = projectScope();
         const assertProjectScope = () => { if (projectScope() !== expectedProjectScope) fail('stale_revision'); };
-        const commandProjectIds = getTaskCommandTargets(task).map(target => target.projectId);
+        const commandProjectIds = ports.taskCommandTargets(task).map(target => target.projectId);
         const commandRegistry = action === 'run_commands' ? stableJson(await loadTaskProjectCommandRegistry(commandProjectIds, configurationGetLoadedSnapshot)) : null;
         const options = { signal, pilotActionToken: reservation.token, beforeEffect: async () => {
           if (signal?.aborted) return fail('unavailable');
@@ -136,7 +134,7 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
           if (commandRegistry !== null && stableJson(await loadTaskProjectCommandRegistry(commandProjectIds, configurationGetLoadedSnapshot)) !== commandRegistry) return fail('stale_revision');
           await beforeEffect(); assertPilotReservationCurrent(reservation); assertProjectScope();
         } };
-        const store = useTaskStore.getState();
+        const store = ports.tasks();
         if (action === 'rename') await store.renameTask(task.id, title!, options);
         else if (action === 'archive') await store.archiveTask(task.id, options);
         else if (action === 'delete') await store.deleteTask(task.id, options);
@@ -144,7 +142,7 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
           const result = await store.runTaskCommands(task.id, options);
           if (!result || result.status !== 'completed') return fail('content_unavailable');
         }
-        if (useTaskStore.getState().lastError) return fail('content_unavailable');
+        if (ports.tasks().lastError) return fail('content_unavailable');
       } finally { reservation.release(); }
     },
   };

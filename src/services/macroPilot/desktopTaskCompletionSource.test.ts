@@ -21,10 +21,17 @@ mock.module('../taskProjectCommands', () => ({ loadTaskProjectCommandRegistry: a
 mock.module('../tauriIpc', () => ({ pilotToolTracesList: async () => ({ revision: 1, traces }), pilotToolTraceRead: async () => { detailReads++; return { revision: 1, detail: 'README.md' }; } }));
 const { configurationGetLoadedSnapshot } = await import('../configurationClient');
 const { desktopTaskCompletionSource } = await import('./desktopTaskCompletionSource');
+const desktopStorePorts = {
+  app: () => ({ getProjectById: () => project }) as never,
+  chat: () => ({ conversations: [] }) as never,
+  tasks: () => ({ tasks: [task], publishedStandaloneTasks: {}, renameTask: async (_id: string, _title: string, options: { beforeEffect(): Promise<void> }) => options.beforeEffect() }) as never,
+  taskLifecycle: (() => ({ canRename: true })) as never,
+  taskCommandTargets: (() => [{ projectId: task.project_id }, { projectId: 'project:second' }]) as never,
+};
 const taskRef = { instance_id: 'instance:demo', workspace_id: 'workspace:demo', task_id: pilotTaskId(task.id) };
 const conversationRef = { instance_id: taskRef.instance_id, kind: 'conversation' as const, conversation_id: 'chat:demo' };
 const captures = { refreshCatalogMetadata: async () => ({ refs: visible ? [conversationRef] : [] }) };
-const source = desktopTaskCompletionSource(taskRef.instance_id, taskRef.workspace_id, captures as never);
+const source = desktopTaskCompletionSource(taskRef.instance_id, taskRef.workspace_id, captures as never, desktopStorePorts);
 const policy = { revision: 'visible-1', secrets: ['secret-demo'] };
 beforeEach(() => { traces = []; detailReads = 0; artifactCalls = 0; configCalls = 0; visible = true; configured = undefined; });
 test('card catalog includes descriptions and badges without per-task artifact or configuration reads', async () => {

@@ -1,6 +1,4 @@
-import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
-import { useTaskStore } from '../../stores/useTaskStore';
+import type { DesktopStorePorts } from './desktopStorePorts';
 import { buildImplementKickoffPrompt } from '../implementKickoff';
 import { PilotConversationSendPreflightRejection, PilotError, stableJson } from './protocol';
 import { pilotStartRejection, PilotStartPreflightRejection } from './startEligibility';
@@ -98,8 +96,8 @@ const createEffectGate = (
   };
 };
 
-const requireTaskConversation = (taskId: string, conversationId: string) => {
-  const conversation = useChatStore.getState().conversations.find(
+const requireTaskConversation = (ports: DesktopStorePorts, taskId: string, conversationId: string) => {
+  const conversation = ports.chat().conversations.find(
     (candidate) => candidate.id === conversationId,
   );
   if (!conversation || conversation.task_id !== taskId) return invalidReference();
@@ -112,8 +110,8 @@ const requireConversationProvider = (
   if (!conversation.provider_id || !conversation.model_id) unavailable();
 };
 
-const projectScopeForTask = (task: ReturnType<typeof useTaskStore.getState>['tasks'][number]) => {
-  const app = useAppStore.getState();
+const projectScopeForTask = (ports: DesktopStorePorts, task: ReturnType<DesktopStorePorts['tasks']>['tasks'][number]) => {
+  const app = ports.app();
   const projectIds = Array.from(new Set([
     ...(task.execution_targets?.map((target) => target.projectId) ?? []),
     ...(task.project_ids ?? []),
@@ -124,7 +122,7 @@ const projectScopeForTask = (task: ReturnType<typeof useTaskStore.getState>['tas
     .join(', ');
 };
 
-export const desktopActions: DesktopActions = {
+export const createDesktopActions = (ports: DesktopStorePorts): DesktopActions => ({
   sendConversation: async (conversationId, content, guard) => {
     if (!content.trim()) invalidReference();
     const reservation = reservePilotAction({ conversationId });
@@ -132,7 +130,7 @@ export const desktopActions: DesktopActions = {
     let sendInvoked = false;
     try {
       gate.assertPreparing();
-      const chat = useChatStore.getState();
+      const chat = ports.chat();
       const conversation = chat.conversations.find(candidate => candidate.id === conversationId);
       if (!conversation || conversation.scope_mode !== 'Chat' || conversation.task_id) return invalidReference();
       requireConversationProvider(conversation);
@@ -142,7 +140,7 @@ export const desktopActions: DesktopActions = {
       });
       const expectedConfiguration = configuration(conversation);
       const assertTarget = () => {
-        const current = useChatStore.getState();
+        const current = ports.chat();
         const target = current.conversations.find(candidate => candidate.id === conversationId);
         if (!target || configuration(target) !== expectedConfiguration) throw new PilotError('stale_revision');
         if (current.getActiveQuestionnaire(conversationId) || current.getPendingToolApproval(conversationId)) throw new PilotError('conflict');
@@ -152,10 +150,10 @@ export const desktopActions: DesktopActions = {
       if (phase !== 'idle' && phase !== 'error') throw new PilotError('conflict');
       await gate.beforeEffect();
       assertTarget();
-      const phaseAfterAuthorization = useChatStore.getState().getConversationRuntime(conversationId).phase;
+      const phaseAfterAuthorization = ports.chat().getConversationRuntime(conversationId).phase;
       if (phaseAfterAuthorization !== 'idle' && phaseAfterAuthorization !== 'error') throw new PilotError('conflict');
       sendInvoked = true;
-      const result = await useChatStore.getState().sendMessage({
+      const result = await ports.chat().sendMessage({
         conversationId, content: content.trim(), contextRefs: [],
         pilotTarget: { mode: 'Chat', actionToken: reservation.token, beforeEffect: async () => {
           assertTarget();
@@ -174,38 +172,37 @@ export const desktopActions: DesktopActions = {
     const gate = createEffectGate(guard, reservation);
     try {
       gate.assertPreparing();
-      const task = useTaskStore.getState().getTaskById(taskId);
+      const task = ports.tasks().getTaskById(taskId);
       const rejection = pilotStartRejection(task);
       if (rejection) throw new PilotStartPreflightRejection(rejection);
 
       await gate.beforeEffect();
-      const conversation = await useChatStore
-        .getState()
+      const conversation = await ports.chat()
         .ensurePilotTaskConversation(taskId, reservation.token);
       reservation.reserveConversation(conversation.id);
       assertPilotReservationCurrent(reservation);
       requireConversationProvider(conversation);
 
-      await useTaskStore.getState().startTask(taskId, {
+      await ports.tasks().startTask(taskId, {
         pilotActionToken: reservation.token,
         beforeEffect: gate.beforeEffect,
       });
       assertPilotReservationCurrent(reservation);
-      const readyTask = useTaskStore.getState().getTaskById(taskId);
+      const readyTask = ports.tasks().getTaskById(taskId);
       if (!readyTask || readyTask.status !== 'InProgress' || readyTask.is_blocked) {
         return unavailable();
       }
-      const currentConversation = requireTaskConversation(taskId, conversation.id);
+      const currentConversation = requireTaskConversation(ports, taskId, conversation.id);
       requireConversationProvider(currentConversation);
 
       const startedAt = new Date().toISOString();
-      const result = await useChatStore.getState().sendMessage({
+      const result = await ports.chat().sendMessage({
         conversationId: conversation.id,
         taskId,
         content: buildImplementKickoffPrompt({
           title: readyTask.title,
           description: readyTask.description,
-          projectScope: projectScopeForTask(readyTask),
+          projectScope: projectScopeForTask(ports, readyTask),
           branchName: readyTask.branch_name || readyTask.assigned_branch,
           dependencies: readyTask.dependencies,
           estimatedChanges: readyTask.estimated_changes,
@@ -235,10 +232,10 @@ export const desktopActions: DesktopActions = {
     const gate = createEffectGate(guard, reservation);
     try {
       gate.assertPreparing();
-      const conversation = requireTaskConversation(taskId, conversationId);
+      const conversation = requireTaskConversation(ports, taskId, conversationId);
       requireConversationProvider(conversation);
       await gate.beforeEffect();
-      const result = await useChatStore.getState().sendMessage({
+      const result = await ports.chat().sendMessage({
         conversationId,
         taskId,
         content: normalizedAnswer,
@@ -262,7 +259,7 @@ export const desktopActions: DesktopActions = {
     const gate = createEffectGate(guard, reservation);
     try {
       gate.assertPreparing();
-      const questionnaire = useChatStore.getState().getActiveQuestionnaire(ref.conversation_id);
+      const questionnaire = ports.chat().getActiveQuestionnaire(ref.conversation_id);
       if (!questionnaire || questionnaire.assistantMessageId !== ref.assistant_message_id) {
         return invalidReference();
       }
@@ -276,7 +273,7 @@ export const desktopActions: DesktopActions = {
       }
 
       await gate.beforeEffect();
-      const chat = useChatStore.getState();
+      const chat = ports.chat();
       for (let index = 0; index < questionnaire.questionnaire.questions.length; index += 1) {
         const step = questionnaire.questionnaire.questions[index]!;
         chat.setActiveQuestionnaireStep(ref.conversation_id, index);
@@ -300,7 +297,7 @@ export const desktopActions: DesktopActions = {
     const gate = createEffectGate(guard, reservation);
     try {
       gate.assertPreparing();
-      const approval = useChatStore.getState().getPendingToolApproval(ref.conversation_id);
+      const approval = ports.chat().getPendingToolApproval(ref.conversation_id);
       if (
         !approval ||
         approval.assistantMessageId !== ref.assistant_message_id ||
@@ -315,9 +312,9 @@ export const desktopActions: DesktopActions = {
       }
 
       await gate.beforeEffect();
-      const current = useChatStore.getState().getPendingToolApproval(ref.conversation_id);
+      const current = ports.chat().getPendingToolApproval(ref.conversation_id);
       if (current !== approval) invalidReference();
-      const chat = useChatStore.getState();
+      const chat = ports.chat();
       const resolution = payload.verdict === 'deny'
         ? { kind: 'deny' as const, reason: payload.reason }
         : { kind: payload.grant_scope === 'conversation'
@@ -347,16 +344,16 @@ export const desktopActions: DesktopActions = {
     const gate = createEffectGate(guard, reservation);
     try {
       gate.assertPreparing();
-      const chat = useChatStore.getState();
+      const chat = ports.chat();
       if (!chat.conversations.some((conversation) => conversation.id === conversationId)) {
         invalidReference();
       }
       const runtime = chat.getConversationRuntime(conversationId);
       if (runtime.phase !== 'preparing' && runtime.phase !== 'streaming') unavailable();
       await gate.beforeEffect();
-      useChatStore.getState().stopConversationStream(conversationId, reservation.token);
+      ports.chat().stopConversationStream(conversationId, reservation.token);
     } finally {
       reservation.release();
     }
   },
-};
+});

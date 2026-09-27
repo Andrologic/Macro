@@ -5,7 +5,7 @@ import {
   type ContentSession,
   type ContentPage,
 } from './contentProtocol';
-import { PilotClientError } from './nativeClient';
+import { PilotClientError } from './clientError';
 
 export type PilotAccountIdentity = ContentAccount;
 export type PilotAccountSession = ContentSession;

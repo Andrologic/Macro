@@ -73,7 +73,7 @@ export const PilotView: React.FC = () => {
   const vaultRecoveryLock = useRef(false);
 
   const refreshIndeterminate = useCallback(async () => {
-    const { macroPilotRuntime } = await import('../../../services/macroPilot/runtime');
+    const { macroPilotRuntime } = await import('../../../composition/macroPilotDesktop');
     setRuntimeStatus(macroPilotRuntime.getStatus());
     setIndeterminateCommands(macroPilotRuntime.getIndeterminate());
   }, []);
@@ -85,7 +85,7 @@ export const PilotView: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
-    void import('../../../services/macroPilot/runtime').then(({ macroPilotRuntime }) => {
+    void import('../../../composition/macroPilotDesktop').then(({ macroPilotRuntime }) => {
       if (cancelled) return;
       unsubscribe = macroPilotRuntime.subscribe(() => { void refreshIndeterminate(); });
       void refreshIndeterminate();
@@ -195,7 +195,7 @@ export const PilotView: React.FC = () => {
     if (!reconciliationTarget) return;
     setReconciliationBusy(true);
     try {
-      const { macroPilotRuntime } = await import('../../../services/macroPilot/runtime');
+      const { macroPilotRuntime } = await import('../../../composition/macroPilotDesktop');
       await macroPilotRuntime.reconcileNotExecuted(reconciliationTarget.key);
       await refreshIndeterminate();
       setReconciliationTarget(null);
@@ -424,7 +424,7 @@ export const PilotView: React.FC = () => {
       {store.instance && runtimeStatus === 'unavailable' && (
         <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs space-y-2">
           <p>{t('settings.pilot.runtimeUnavailable', 'Desktop supervision is unavailable. Its journal could not be loaded or the relay could not be reached. Local commands are not replayed.')}</p>
-          <Button size="sm" variant="secondary" onClick={() => void import('../../../services/macroPilot/runtime').then(({ macroPilotRuntime }) => macroPilotRuntime.retry())}>
+          <Button size="sm" variant="secondary" onClick={() => void import('../../../composition/macroPilotDesktop').then(({ macroPilotRuntime }) => macroPilotRuntime.retry())}>
             {t('common.retry', 'Retry')}
           </Button>
         </div>

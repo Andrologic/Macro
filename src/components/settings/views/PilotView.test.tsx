@@ -80,7 +80,7 @@ mock.module('react-i18next', () => ({
 
 mock.module('../../../stores/usePilotStore', () => ({ usePilotStore: usePilotStoreMock }));
 mock.module('../../../services/externalUrlOpener', () => ({ openExternalUrl: async () => undefined }));
-mock.module('../../../services/macroPilot/runtime', () => ({
+mock.module('../../../composition/macroPilotDesktop', () => ({
   macroPilotRuntime: {
     getStatus: () => runtimeStatus,
     subscribe: () => () => undefined,

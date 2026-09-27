@@ -164,11 +164,10 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     // the entire transition has succeeded in the surrounding transaction.
     // Local Pilot builds also stamped version 5, with a different migration.
     // Preserve those databases and complete the published runtime schema first.
-    let version_five_name = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM schema_migrations WHERE version = 5",
-    )
-    .fetch_optional(&mut *connection)
-    .await?;
+    let version_five_name =
+        sqlx::query_scalar::<_, String>("SELECT name FROM schema_migrations WHERE version = 5")
+            .fetch_optional(&mut *connection)
+            .await?;
     let needs_runtime_schema = !applied_migrations.contains(&MIGRATION_005_VERSION)
         || version_five_name.as_deref() == Some("005_pilot_tool_trace_revisions");
     if needs_runtime_schema && !is_legacy_database {
@@ -233,14 +232,13 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         )
         .await?;
         if version_five_name.as_deref() == Some("005_pilot_tool_trace_revisions") {
-            let updated = sqlx::query(
-                "UPDATE schema_migrations SET name = ? WHERE version = ? AND name = ?",
-            )
-            .bind(MIGRATION_005_NAME)
-            .bind(MIGRATION_005_VERSION)
-            .bind("005_pilot_tool_trace_revisions")
-            .execute(&mut *connection)
-            .await?;
+            let updated =
+                sqlx::query("UPDATE schema_migrations SET name = ? WHERE version = ? AND name = ?")
+                    .bind(MIGRATION_005_NAME)
+                    .bind(MIGRATION_005_VERSION)
+                    .bind("005_pilot_tool_trace_revisions")
+                    .execute(&mut *connection)
+                    .await?;
             if updated.rows_affected() != 1 {
                 return Err(DbError::Migration(
                     "Failed to normalize the local Pilot version-5 migration record".to_string(),
@@ -249,13 +247,17 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         }
     }
 
-    if !list_applied_migrations(connection).await?.contains(&MIGRATION_006_VERSION) {
+    if !list_applied_migrations(connection)
+        .await?
+        .contains(&MIGRATION_006_VERSION)
+    {
         apply_migration(
             connection,
             MIGRATION_006_VERSION,
             MIGRATION_006_NAME.to_string(),
             MIGRATION_006_SQL.to_string(),
-        ).await?;
+        )
+        .await?;
     }
 
     // Insert default providers if they don't exist

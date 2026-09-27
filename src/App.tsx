@@ -324,7 +324,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
   useEffect(() => {
     if (!initStatus.ready) return;
     let cancelled = false;
-    void import('./services/macroPilot/runtime').then(({ macroPilotRuntime }) => {
+    void import('./composition/macroPilotDesktop').then(({ macroPilotRuntime }) => {
       if (!cancelled) void macroPilotRuntime.start().catch(() => undefined);
     });
     return () => { cancelled = true; };

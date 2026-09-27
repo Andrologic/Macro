@@ -90,6 +90,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
 afterAll(() => mock.restore());
 mock.module('./desktopTaskCatalog', () => ({ desktopPilotTasks: () => taskRecords }));
 const { PilotRuntime } = await import('./runtime');
+const { desktopStorePorts } = await import('../../composition/macroPilotDesktop');
 const { MacroPilotNativeClient } = await import('./nativeClient');
 const { validateContentMessage } = await import('./contentProtocol');
 const { useChatStore } = await import('../../stores/useChatStore');
@@ -174,7 +175,7 @@ function harness() {
       throw Error(`Unexpected HTTP: ${path}`);
     },
   });
-  const runtime = new PilotRuntime(client);
+  const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   async function deliver(input: ContentRequest, source = 'session:mobile') {
     const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input };
     expect(validateContentMessage(delivery)).toBe(true);

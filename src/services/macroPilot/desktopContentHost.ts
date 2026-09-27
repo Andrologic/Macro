@@ -1,4 +1,4 @@
-import { useAppStore } from '../../stores/useAppStore';
+import type { DesktopStorePorts } from './desktopStorePorts';
 import { desktopTaskCompletionSource } from './desktopTaskCompletionSource';
 import { desktopPilotTasks } from './desktopTaskCatalog';
 import { pilotTaskId, findPilotTask } from './taskIdentity';
@@ -16,7 +16,7 @@ import { object } from './protocol';
 export const LOCAL_REVIEW_IDS = { staged: 'review:staged', unstaged: 'review:unstaged', local_total: 'review:local_total' } as const;
 export interface DesktopContentOptions {
   configurationId: string; accountId: string; instanceId: string;
-  signal: AbortSignal; kernel: PilotKernel; transportSecrets(): Promise<string[]>;
+  signal: AbortSignal; kernel: PilotKernel; ports: DesktopStorePorts; transportSecrets(): Promise<string[]>;
 }
 export function secretForms(values: string[]): string[] {
   const result = new Set<string>();
@@ -52,10 +52,10 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
   const key = `macroPilot:content-host:v2:${JSON.stringify([configurationId, instanceId, accountId])}`;
   const resolveReview = async (ref: ContentReviewRef): Promise<ReviewTarget> => {
     if (ref.instance_id !== instanceId || ref.workspace_id !== workspaceId) throw new Error('not_found');
-    const workspace = useAppStore.getState();
+    const workspace = options.ports.app();
     const projects = [...workspace.standaloneProjects, ...workspace.projectGroups.flatMap(group => group.projects)];
     const project = projects.find(project => project.id === ref.project_id);
-    const task = findPilotTask(desktopPilotTasks(), ref.task_id);
+    const task = findPilotTask(desktopPilotTasks(options.ports), ref.task_id);
     const target = task?.execution_targets?.find(target => target.projectId === ref.project_id);
     if (!project || !task || (task.project_id !== ref.project_id && !target)) throw new Error('not_found');
     const repoPath = target?.repoPath ?? project.path;
@@ -74,17 +74,17 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
       branches.local.find(branch => branch.name === target.branchName)?.commit !== revision.head_sha) throw new Error('stale_revision');
     return { repoPath, source: { kind: 'commits', base_sha: revision.base_sha, head_sha: revision.head_sha }, branches: { base: target.targetBranchName, head: target.branchName! } };
   };
-  const conversations = new ConversationCaptures({ instanceId, workspaceId, source: desktopConversationCaptureSource(),
+  const conversations = new ConversationCaptures({ instanceId, workspaceId, source: desktopConversationCaptureSource(options.ports),
       storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations });
   const taskKey = `${key}:task-completion:1`;
   return new ContentHost({ accountId, instanceId, signal, conversations,
-    taskCompletion: { source: desktopTaskCompletionSource(instanceId, workspaceId, conversations, signal), storage: {
+    taskCompletion: { source: desktopTaskCompletionSource(instanceId, workspaceId, conversations, options.ports, signal), storage: {
       load: async () => (await dbGetAppSetting(taskKey))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: taskKey, expectedValueJson: previous, valueJson: next })).applied,
     } },
     reviews: createReviewCaptureService(), resolveReview,
     reviewRefs: async () => {
-      const tasks = desktopPilotTasks();
+      const tasks = desktopPilotTasks(options.ports);
       const refs: ContentReviewRef[] = [];
       for (const task of tasks) {
         for (const projectId of new Set([task.project_id, ...(task.execution_targets ?? []).map(target => target.projectId)])) {

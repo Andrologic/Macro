@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { PilotRuntime } from './runtime';
+import { desktopStorePorts } from '../../composition/macroPilotDesktop';
 import { PilotKernel } from './kernel';
 import type { MacroPilotNativeClient, PilotPublicState } from './nativeClient';
 import type { Resource } from './protocol';
@@ -54,7 +55,7 @@ describe('Pilot producer delivery loop', () => {
         await guard.authorizeBeforeEffect();
         effects++;
       },
-    }));
+    }), desktopStorePorts);
     try {
       await runtime.start();
       await complete;
@@ -95,7 +96,7 @@ describe('Pilot producer delivery loop', () => {
         stored = next; return true;
       } },
       project: () => ({ snapshots: [taskFixture as Resource], state: null }),
-    }));
+    }), desktopStorePorts);
     try {
       await runtime.start();
       expect(runtime.getStatus()).toBe('unavailable');

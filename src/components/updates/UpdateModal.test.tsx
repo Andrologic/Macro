@@ -66,7 +66,7 @@ mock.module('../../services/restartSafety', () => ({
 }));
 
 const startPilotMock = mock(async () => { expect(shutdownGateActive).toBe(false); });
-mock.module('../../services/macroPilot/runtime', () => ({
+mock.module('../../composition/macroPilotDesktop', () => ({
   macroPilotRuntime: { isStarted: () => true, stop: async () => undefined, start: startPilotMock },
 }));
 mock.module('../../services/macroMetadataCoordinator', () => ({

@@ -559,6 +559,7 @@ export function useWindowRestoration() {
           return;
         }
 
+        const { macroPilotRuntime } = await import('../composition/macroPilotDesktop');
         await runWithPotentialShutdown(async () => {
           if (installerRequestedClose) {
             await appInstallerCloseRespond(true);
@@ -567,7 +568,7 @@ export function useWindowRestoration() {
             await appUpdateExitAfterCleanShutdown();
           }
           commitWindowShutdown('window-close-requested');
-        }, releaseShutdownGate, getSelectedProjectGroupWorkspacePaths());
+        }, releaseShutdownGate, macroPilotRuntime, getSelectedProjectGroupWorkspacePaths());
       } catch (error) {
         console.error('Failed to close window after flushing its state:', error);
         notify.error(i18n.t('shutdown.closeFailed', 'Macro could not close'), {

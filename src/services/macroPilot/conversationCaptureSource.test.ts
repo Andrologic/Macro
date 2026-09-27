@@ -35,12 +35,13 @@ mock.module('../../stores/useAppStore', () => ({ useAppStore: { getState: () => 
 afterAll(() => mock.restore());
 const { useChatStore } = await import('../../stores/useChatStore');
 const { desktopConversationCaptureSource, conversationCaptureStorage } = await import('./conversationCaptureSource');
+const { desktopStorePorts } = await import('../../composition/macroPilotDesktop');
 const { ConversationCaptures } = await import('./conversationCaptures');
 
 it('uses actual IPC wrappers and chat store with an unloaded cache, preserving UI and source data', async () => {
   const state = useChatStore.getState();
   expect(state.getConversationMessages(conversation.id)).toEqual([]);
-  const source = desktopConversationCaptureSource();
+  const source = desktopConversationCaptureSource(desktopStorePorts);
   const captures = new ConversationCaptures({ instanceId: 'instance', workspaceId: 'workspace', source,
     storage: conversationCaptureStorage('config', 'instance'), policy: () => ({ revision: 'visible-1', secrets: [] }) });
   const scope = { accountId: 'account', sessionId: 'session', instanceId: 'instance' };

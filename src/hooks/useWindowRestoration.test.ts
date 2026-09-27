@@ -137,7 +137,7 @@ const registerWindowRestorationMocks = async () => {
     appInstallerCloseRespond: (...args: unknown[]) => appInstallerCloseRespondMock(...args),
     appUpdateExitAfterCleanShutdown: (...args: unknown[]) => appUpdateExitAfterCleanShutdownMock(...args),
   }));
-  mock.module('../services/macroPilot/runtime', () => ({
+  mock.module('../composition/macroPilotDesktop', () => ({
     macroPilotRuntime: { isStarted: () => true, stop: async () => undefined, start: startPilotMock },
   }));
   startPilotMock.mockClear();

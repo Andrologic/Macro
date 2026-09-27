@@ -4,12 +4,10 @@ import { findPilotTask, pilotTaskId, resolvePilotTask, resolvePilotStartTask } f
 import { createDesktopContentHost } from './desktopContentHost';
 import type { ContentHost } from './contentHost';
 import type { ContentDelivery } from './contentProtocol';
-import { useAppStore } from '../../stores/useAppStore';
-import { useChatStore } from '../../stores/useChatStore';
-import { useTaskStore } from '../../stores/useTaskStore';
+import type { DesktopStorePorts } from './desktopStorePorts';
 import { isAppShutdownGateActive } from '../appShutdownGate';
 import { frontendLog, gitBranchList, gitReviewSnapshot } from '../tauriIpc';
-import { desktopActions, type DesktopToolApprovalPayload } from './desktopActions';
+import { createDesktopActions, type DesktopActions, type DesktopToolApprovalPayload } from './desktopActions';
 import { PilotKernel, type KernelDependencies, type KnownRun } from './kernel';
 import { macroPilotNativeClient, type MacroPilotNativeClient } from './nativeClient';
 import { ProjectionError, projectDesktopSnapshots, toolApprovalSourceKey, type LocalResolutionEvidence, type ProjectionState, type ToolApprovalResolutionEvidence } from './projection';
@@ -51,10 +49,14 @@ export class PilotRuntime {
   private approvalEvidence: Record<string, ToolApprovalResolutionEvidence> = {};
   private approvalObservedAt: Record<string, string> = {};
   private activeLoop: Promise<void> | null = null;
+  private readonly actions: DesktopActions;
   constructor(
     private readonly client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> & Partial<Pick<MacroPilotNativeClient, 'requestContent' | 'contentSecretValues'>> = macroPilotNativeClient,
     private readonly createKernel: (dependencies: KernelDependencies) => PilotKernel = dependencies => new PilotKernel(dependencies),
-  ) {}
+    private readonly ports: DesktopStorePorts,
+  ) {
+    this.actions = createDesktopActions(ports);
+  }
   async start(): Promise<void> {
     if (this.stopping) await this.stopping;
     if (this.started) return;
@@ -115,18 +117,18 @@ export class PilotRuntime {
       execute:async(command,guard)=>{
         if (isAppShutdownGateActive()) throw new PilotError('unavailable');
         if(command.kind==='run.start') {
-          const result=await desktopActions.start(resolvePilotStartTask(useTaskStore.getState().tasks, command.target.task_id).id,guard);
+          const result=await this.actions.start(resolvePilotStartTask(this.ports.tasks().tasks, command.target.task_id).id,guard);
           this.localRuns.add(String(command.payload.run_id)); return result;
         }
-        if(command.kind==='conversation.send') return desktopActions.sendConversation(command.target.conversation_id,String(command.payload.content),guard);
-        if(command.kind==='task.reply') return desktopActions.reply(resolvePilotTask(useTaskStore.getState().tasks, command.target.task_id).id,String(command.payload.conversation_id),String(command.payload.answer),guard);
+        if(command.kind==='conversation.send') return this.actions.sendConversation(command.target.conversation_id,String(command.payload.content),guard);
+        if(command.kind==='task.reply') return this.actions.reply(resolvePilotTask(this.ports.tasks().tasks, command.target.task_id).id,String(command.payload.conversation_id),String(command.payload.answer),guard);
         if(command.kind==='decision.resolve') {
-          await desktopActions.answerDecision(this.decisionRef(command),command.payload.answers as Array<{step_id:string;answer:string}>,guard);
+          await this.actions.answerDecision(this.decisionRef(command),command.payload.answers as Array<{step_id:string;answer:string}>,guard);
           this.decisionEvidence[command.target.assistant_message_id]={resolvedAt:new Date().toISOString(),resolvedBy:command.issued_by}; return;
         }
         if(command.kind==='tool_approval.resolve') {
           const ref={conversation_id:command.target.conversation_id,assistant_message_id:command.target.assistant_message_id,tool_call_id:command.target.tool_call_id};
-          await desktopActions.resolveApproval(ref,command.payload as DesktopToolApprovalPayload,guard);
+          await this.actions.resolveApproval(ref,command.payload as DesktopToolApprovalPayload,guard);
           const key=toolApprovalSourceKey({conversationId:ref.conversation_id,assistantMessageId:ref.assistant_message_id,toolCallId:ref.tool_call_id});
           this.approvalEvidence[key]={verdict:command.payload.verdict as 'approve'|'deny',
             ...(command.payload.grant_scope?{grantScope:command.payload.grant_scope as 'once'|'conversation'}:{}),
@@ -135,7 +137,7 @@ export class PilotRuntime {
         if(command.kind==='run.cancel') {
           const bound=kernel.getKnownRuns().find(run=>run.runId===command.target.run_id && run.taskRef.task_id===command.target.task_id && run.taskRef.workspace_id===command.target.workspace_id);
           if(!bound?.conversationId) throw new PilotError('invalid_reference');
-          return desktopActions.cancel(bound.conversationId,guard);
+          return this.actions.cancel(bound.conversationId,guard);
         }
         throw new PilotError('validation_failed');
       },
@@ -171,7 +173,7 @@ export class PilotRuntime {
     const v1 = this.poll(kernel, instanceId, signal);
     const v2 = (async () => {
       if (!accountId || !this.client.requestContent || !this.client.contentSecretValues) return;
-      const host = createDesktopContentHost({ configurationId, instanceId, accountId, signal, kernel,
+      const host = createDesktopContentHost({ configurationId, instanceId, accountId, signal, kernel, ports: this.ports,
         transportSecrets: () => this.client.contentSecretValues!() });
       this.content = host;
       try {
@@ -240,11 +242,11 @@ export class PilotRuntime {
   }
   private decisionRef(command:Command) {
     if(!command.target.conversation_id || !command.target.assistant_message_id) throw new PilotError('invalid_reference');
-    return {conversation_id:command.target.conversation_id,assistant_message_id:command.target.assistant_message_id,task_id:resolvePilotTask(useTaskStore.getState().tasks, command.target.task_id).id};
+    return {conversation_id:command.target.conversation_id,assistant_message_id:command.target.assistant_message_id,task_id:resolvePilotTask(this.ports.tasks().tasks, command.target.task_id).id};
   }
   private project(previous:unknown,now:string,runs:KnownRun[],instanceId:string,configurationId:string) {
     const persisted=previous ? previous as RuntimeProjectionState : emptyProjection();
-    const app=useAppStore.getState(); const chat=useChatStore.getState(); const tasks=useTaskStore.getState().tasks;
+    const app=this.ports.app(); const chat=this.ports.chat(); const tasks=this.ports.tasks().tasks;
     const projects=[...new Map([...app.standaloneProjects,...app.projectGroups.flatMap(group=>group.projects)].map(project=>[project.id,project])).values()];
     const knownRuns=runs.filter((run): run is KnownRun & { startedAt: string } => Boolean(run.startedAt)).map(run=>({taskId:run.taskRef.task_id,runId:run.runId,startedAt:run.startedAt,finishedAt:persisted.runs[run.runId]?.snapshot.finished_at as string | undefined}));
     const decisions={...persisted.decisionEvidence,...this.decisionEvidence}; const approvals={...persisted.approvalEvidence,...this.approvalEvidence};
@@ -322,7 +324,7 @@ export class PilotRuntime {
       if (!old?.startedAt || run.startedAt > old.startedAt) latestRuns.set(run.taskRef.task_id, run);
     }
     for(const run of latestRuns.values()) {
-      const task=findPilotTask(useTaskStore.getState().tasks, run.taskRef.task_id);
+      const task=findPilotTask(this.ports.tasks().tasks, run.taskRef.task_id);
       if(!run.startedAt || task?.status!=='InReview') continue;
       for(const target of task.execution_targets??[]) {
         if(target.executionMode==='direct' || !target.repoPath || !target.targetBranchName) continue;
@@ -331,7 +333,7 @@ export class PilotRuntime {
         const branches=await gitBranchList(target.repoPath);
         const base=branches.local.find(branch=>branch.name===target.targetBranchName)?.commit;
         const head=branches.local.find(branch=>branch.name===target.branchName)?.commit;
-        if(!base || !head || useTaskStore.getState().getTaskById(task.id)?.status!=='InReview') continue;
+        if(!base || !head || this.ports.tasks().getTaskById(task.id)?.status!=='InReview') continue;
         const ref={...run.taskRef,type:'review',run_id:run.runId,project_id:target.projectId,review_id:await this.reviewId([run.runId,target.projectId,base,head])};
         await kernel.recordReview({contract_version:'1.0',type:'review',ref,related_run:{...run.taskRef,type:'run',run_id:run.runId},git_revision:{base_sha:base,head_sha:head},state:'pending',revision:1,updated_at:new Date().toISOString()});
       }
@@ -342,7 +344,7 @@ export class PilotRuntime {
     return `review:${Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('')}`;
   }
   private async validateReview(review: Resource): Promise<void> {
-    const task = findPilotTask(useTaskStore.getState().tasks, review.ref.task_id);
+    const task = findPilotTask(this.ports.tasks().tasks, review.ref.task_id);
     const target = task?.execution_targets?.find(item => item.projectId === review.ref.project_id);
     if (task?.status !== 'InReview' || target?.executionMode === 'direct' || !target?.repoPath || !target.targetBranchName) throw new PilotError('stale_revision');
     const snapshot = await gitReviewSnapshot(target.repoPath);
@@ -351,7 +353,7 @@ export class PilotRuntime {
     if (!snapshot.isClean || snapshot.mergeInProgress ||
         branches.local.find(branch => branch.name === target.branchName)?.commit !== revision.head_sha ||
         branches.local.find(branch => branch.name === target.targetBranchName)?.commit !== revision.base_sha ||
-        useTaskStore.getState().getTaskById(task.id)?.status !== 'InReview') throw new PilotError('stale_revision');
+        this.ports.tasks().getTaskById(task.id)?.status !== 'InReview') throw new PilotError('stale_revision');
   }
   getIndeterminate() { return this.kernel?.indeterminate()??[]; }
   async reconcileNotExecuted(key:string) { if(!this.kernel) throw new PilotError('unavailable');await this.kernel.reconcileNotExecuted(key); }
@@ -389,4 +391,3 @@ export class PilotRuntime {
     return this.stopping;
   }
 }
-export const macroPilotRuntime=new PilotRuntime();

@@ -356,6 +356,8 @@ describe('installed Vite resolution contract', () => {
       { request: 'store.js', targets: ['store.tsx', 'store.js.ts'], expected: 'store.tsx' },
       { request: 'store.jsx', targets: ['store.ts', 'store.tsx'], expected: 'store.tsx' },
       { request: 'store.js', targets: ['store.js.ts'], expected: 'store.js.ts' },
+      { request: 'store.js', targets: ['store.ts', 'store.js'], expected: 'store.js' },
+      { request: 'store.mjs', targets: ['store.ts', 'store.mjs'], expected: 'store.mjs' },
       { request: 'store.mjs', targets: ['store.ts', 'store.mjs.ts'], expected: 'store.mjs.ts' },
       { request: 'store.cjs', targets: ['store.ts', 'store.cjs.ts'], expected: 'store.cjs.ts' },
       { request: 'store', targets: ['store/index.ts', 'store/index.tsx'], expected: 'store/index.ts' },
@@ -375,8 +377,16 @@ describe('installed Vite resolution contract', () => {
     }
   });
 
+  it('treats JSON contract imports outside src as data', () => {
+    const report = analyzeSources({
+      'src/services/entry.ts': 'import schema from "../../../contracts/macro-pilot/v1/schema.json"; export const id = schema.$id;',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+  });
+
   it('blocks unsupported targets that would otherwise shadow an analyzed source file', async () => {
-    for (const [request, target] of [['store', 'store.js'], ['store', 'store.mts'], ['store.js', 'store.js'], ['store.mjs', 'store.mts'], ['store.cjs', 'store.cts']]) {
+    for (const [request, target] of [['store', 'store.mts'], ['store.mjs', 'store.mts'], ['store.cjs', 'store.cts']]) {
       const files = {
         'src/services/entry.ts': `import "../stores/${request}";`,
         'src/stores/store.ts': 'export {};',

@@ -35,6 +35,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
 const network = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async () => { throw Error('Real network forbidden in synthetic flows'); }, { preconnect: () => { throw Error('Network preconnect forbidden'); } }));
 const { MacroPilotNativeClient } = await import('./nativeClient');
 const { PilotRuntime } = await import('./runtime');
+const { desktopStorePorts } = await import('../../composition/macroPilotDesktop');
 const { validateContentMessage } = await import('./contentProtocol');
 const { useTaskStore } = await import('../../stores/useTaskStore');
 const { useAppStore } = await import('../../stores/useAppStore');
@@ -98,7 +99,7 @@ beforeEach(() => {
 it('connects, confirms, reads catalogs through the real runtime, restarts, and durably signs out', async () => {
   const h = syntheticFixture();
   let client = new MacroPilotNativeClient(h.dependencies);
-  let runtime = new PilotRuntime(client);
+  let runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   try {
     await connect(client);
     expect(await client.getAccountCatalog()).toMatchObject({ identity: { login: 'synthetic-only' }, sessions: [{ state: 'active' }] });
@@ -110,7 +111,7 @@ it('connects, confirms, reads catalogs through the real runtime, restarts, and d
     expect(calls).toContain('db_list_messages');
     await runtime.stop();
     client = new MacroPilotNativeClient(h.dependencies);
-    runtime = new PilotRuntime(client);
+    runtime = new PilotRuntime(client, undefined, desktopStorePorts);
     await runtime.start();
     expect(client.getState().status).toBe('connected');
     expect(JSON.stringify(await deliver(h, 'conversation.read', body))).toContain('Synthetic hello');
@@ -123,7 +124,7 @@ it('connects, confirms, reads catalogs through the real runtime, restarts, and d
     expect(h.secrets.size).toBeGreaterThan(0);
     const requestsAfterLogout = h.requests.length;
     client = new MacroPilotNativeClient(h.dependencies);
-    runtime = new PilotRuntime(client);
+    runtime = new PilotRuntime(client, undefined, desktopStorePorts);
     await runtime.start();
     expect(client.getState().deviceSession).toBeNull();
     expect(runtime.getStatus()).toBe('inactive');
@@ -136,7 +137,7 @@ it.each(['cancelled', 'intervention_required', 'suspended'] as const)(
   'fences an authorized delivery on %s, preserves the block, and resumes only explicitly', async status => {
     const h = syntheticFixture();
     const client = new MacroPilotNativeClient(h.dependencies);
-    const runtime = new PilotRuntime(client);
+    const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
     try {
       await connect(client);
       await runtime.start();
@@ -188,7 +189,7 @@ it('rejects real relay destinations and keeps the production HTTPS guard', async
 it('discards a late explicit recovery after logout and cannot restart the producer', async () => {
   const h = syntheticFixture();
   const client = new MacroPilotNativeClient(h.dependencies);
-  let runtime = new PilotRuntime(client);
+  let runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   let release!: () => void;
   let entered = false;
   const resumed = h.dependencies.vaultResume!;
@@ -210,7 +211,7 @@ it('discards a late explicit recovery after logout and cannot restart the produc
     expect(client.getState().deviceSession).toBeNull();
     await runtime.stop();
     const restarted = new MacroPilotNativeClient(h.dependencies);
-    runtime = new PilotRuntime(restarted);
+    runtime = new PilotRuntime(restarted, undefined, desktopStorePorts);
     await runtime.start();
     expect(restarted.getState().deviceSession).toBeNull();
     expect(runtime.getStatus()).toBe('inactive');

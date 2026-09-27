@@ -3196,7 +3196,11 @@ pub async fn git_branch_delete(
         delete_local_branch(
             &repo,
             &branch_name,
-            if pilot_only.unwrap_or(false) { false } else { force.unwrap_or(false) },
+            if pilot_only.unwrap_or(false) {
+                false
+            } else {
+                force.unwrap_or(false)
+            },
             expected_commit.as_deref(),
         )
     })
@@ -9283,10 +9287,17 @@ pub async fn git_worktree_remove(
         })?;
 
         let pilot_branch = if pilot_only.unwrap_or(false) {
-            Some(branch_name.as_deref().map(str::trim).filter(|value| !value.is_empty())
-                .ok_or_else(|| BackendError::Validation(
-                    "Pilot cleanup requires an expected branch.".to_string(),
-                ))?)
+            Some(
+                branch_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        BackendError::Validation(
+                            "Pilot cleanup requires an expected branch.".to_string(),
+                        )
+                    })?,
+            )
         } else {
             None
         };
@@ -9311,7 +9322,10 @@ pub async fn git_worktree_remove(
                 &repo,
                 &task_id,
                 force.unwrap_or(false),
-                branch_name.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+                branch_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
             )?
         };
         Ok(GitWorktreeRemoveDto {
