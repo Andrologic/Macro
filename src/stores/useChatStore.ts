@@ -13851,6 +13851,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     editMessage: async (messageId, newContent, options) => {
+      const editContextRefs = options?.contextRefs ?? get().messages.find(message => message.id === messageId)?.context_refs;
+      if (hasMultipleAgsdlContexts(editContextRefs)) {
+        throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
+      }
       const providerStateAtEdit = useProviderStore.getState();
       const {
         selectedProviderId,
