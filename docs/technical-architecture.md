@@ -329,8 +329,9 @@ le journal de réplication. La ressource `macro-legacy-plan` conserve les donné
 originales ; le visualisateur distingue ces dépendances historiques des routes G.
 Le moteur Implement utilise encore les enregistrements d’exécution historiques.
 
-`src/services/agsdl` sépare la projection du graphe, les modifications atomiques
-par pointeurs JSON, les exemples et l’adaptateur des outils. Le lecteur de
+`src/services/agsdl` contient la projection du graphe, les modifications
+atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
+orchestre les outils de lecture et de modification du document. Le lecteur de
 référence 0.1.0 est fourni sous sa licence dans `src/vendor/agsdl`, avec des
 adaptations Web Crypto/Uint8Array documentées. Le sérialiseur conserve les jetons
 numériques et les valeurs opaques ; les objets de projection JavaScript ne sont

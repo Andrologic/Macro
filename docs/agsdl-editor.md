@@ -116,7 +116,7 @@ L’agent peut ensuite préciser les interfaces et construire le processus AgSDL
 
 La migration est idempotente et utilise la file de mutations et le journal de
 réplication des métadonnées. Elle conserve les statuts, dates de modification,
-transcripts et documents AgSDL déjà présents. Les plans archivés peuvent aussi
+transcriptions et documents AgSDL déjà présents. Les plans archivés peuvent aussi
 être convertis. Une réplication incomplète ou une conversion dépassant 1 Mio
 bloque l’écriture sans supprimer le plan original.
 

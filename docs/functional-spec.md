@@ -110,16 +110,16 @@ Le contrat complet des fichiers, scopes et règles de sécurité est défini dan
 
 ### 5.1 Modèle mental principal
 
-Macro organise le travail de la façon suivante :
+Dans le parcours Architect actuel, l'utilisateur décrit son intention dans une
+conversation. L'IA inspecte le contexte, pose les questions nécessaires et aide
+à construire un système AgSDL. L'utilisateur peut consulter le graphe, modifier
+les propriétés prises en charge et enregistrer un blueprint réutilisable. Cette
+conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 
-1. l'utilisateur formule une intention
-2. l'IA inspecte le contexte utile et pose des questions ciblées si des informations importantes manquent
-3. l'utilisateur demande explicitement la génération de la stratégie
-4. l'IA génère la stratégie depuis la conversation, le périmètre du plan, les projets sélectionnés et le code inspecté
-5. la stratégie est validée
-6. les tâches d'implémentation sont exécutées dans l'ordre voulu avec un maximum de parallélisme possible
-7. l'utilisateur review les résultats
-8. le code est committé et intégré
+Implement continue d'exécuter les tâches autonomes et celles des plans
+historiques. Pour ces tâches, l'utilisateur supervise l'exécution, examine les
+changements, puis valide leur intégration. L'exécution d'un nouveau plan AgSDL
+reste un chantier distinct, décrit comme tel en section 7.1.
 
 ### 5.2 Unités fonctionnelles principales
 
@@ -130,8 +130,8 @@ Macro s'appuie sur les unités suivantes :
 - projet
 - plan
 - conversation
-- nœud de stratégie
-- branche prédictive
+- système AgSDL et ses composants
+- nœud de stratégie et branche prédictive des plans historiques
 - tâche d'implémentation
 - session de review
 
@@ -189,7 +189,11 @@ continuent d’être conservés ; un plan archivé reste consultable.
 
 ### 6.5 Nœud de stratégie
 
-Un nœud de stratégie est une unité de la stratégie d'un plan générée par l'IA.
+Les sections 6.5, 6.6 et 6.8 décrivent les plans historiques encore suivis par
+Implement. Elles ne définissent pas l'exécution d'un document AgSDL.
+
+Un nœud de stratégie est une unité de la stratégie historique d'un plan générée
+par l'IA.
 
 Un nœud peut représenter :
 - une tranche fonctionnelle
@@ -213,13 +217,17 @@ Son but est de :
 
 ### 6.7 Tâche d'implémentation
 
-Une tâche d'implémentation est une unité de travail exécutable dérivée de la stratégie.
+Une tâche d'implémentation est une unité de travail exécutable. Elle peut être
+autonome ou provenir de la stratégie d'un plan historique.
 
 La tâche est l'unité suivie dans le mode Implement.
 
-Une tâche terminée avec succès se conclut toujours par un commit.
+Une tâche Git terminée avec succès se conclut par un commit. Une tâche en
+édition directe se conclut par l'acceptation des changements après review.
 
-La plupart des tâches sont créées à partir d'un plan valide, mais Macro doit aussi supporter des tâches autonomes pour les quick fixes ou les petites features ne justifiant pas un plan complet.
+Les plans AgSDL nouvellement conçus ne produisent pas encore de tâches
+Implement. Les tâches autonomes restent disponibles pour les travaux qui ne
+justifient pas un plan complet.
 
 ### 6.8 Artefact de relais
 
@@ -309,9 +317,12 @@ sont décrits dans [Visualisateur AgSDL](agsdl-editor.md).
 ### 7.2 Mode Implement
 
 Le mode Implement est le mode d'exécution et de review.
+Il exécute les tâches autonomes et celles des plans historiques. Les mentions
+de stratégie, de branches de plan et de finalisation dans cette section ne
+décrivent pas une capacité d'exécution des nouveaux documents AgSDL.
 
 Son objectif est de :
-- exécuter les tâches dérivées d'un ou plusieurs plans
+- exécuter les tâches des plans historiques et les tâches autonomes
 - gérer les questions de l'IA pendant l'exécution
 - présenter les changements générés pour review
 - permettre un ajustement humain si nécessaire
@@ -345,7 +356,7 @@ La sauvegarde des brouillons applique les mêmes limites que leur restauration. 
 
 Un message accepté en file pendant un tour actif est sauvegardé localement avec son mode, sa tâche ou son plan, ses références et son choix de modèle. La navigation suivante ne change pas cette intention. Macro conserve la soumission jusqu'à la sauvegarde du message et de ses images. Après une interruption ou un redémarrage, un panneau de récupération persistant permet de réessayer, même lorsque les notifications sont désactivées ; un message déjà enregistré n'est pas renvoyé. Les droits et les secrets sont relus avant l'exécution. Une conversation archivée garde sa file suspendue ; sa suppression définitive supprime aussi sa file.
 
-Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
+Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans la transcription à laquelle elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
@@ -353,7 +364,14 @@ La progression reste liée à la conversation lorsque l'utilisateur consulte une
 
 Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, la création d'une tâche demande uniquement de sélectionner le projet : Macro choisit automatiquement le type `direct` et ne présente aucun choix de type ou de point de départ Git. Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche `direct` peut être active par projet et les outils Git ne sont pas exposés à l'agent.
 
-Architect peut créer un plan direct, Git ou mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation, l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les cibles directes utilisent leur dossier source et leur point de restauration privé. Le plan et son transcript restent dans les métadonnées locales du projet, même si Git est initialisé ensuite. Les nouvelles tâches peuvent utiliser Git, mais une cible déjà persistée en mode direct conserve ce mode jusqu'à la fin de la tâche.
+Pour les plans historiques, Architect pouvait créer un plan direct, Git ou
+mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation,
+l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les
+cibles directes utilisent leur dossier source et leur point de restauration
+privé. Le plan et sa transcription restent dans les métadonnées locales du
+projet, même si Git est initialisé ensuite. Les nouvelles tâches autonomes
+peuvent utiliser Git, mais une cible déjà persistée en mode direct conserve ce
+mode jusqu'à la fin de la tâche.
 
 ### 7.3 Mode Chat
 
@@ -481,7 +499,7 @@ Le panneau droit doit accueillir les surfaces de lecture, de visualisation ou de
 
 Exemples :
 
-- graphe de stratégie
+- visualisateur AgSDL ou graphe d'un plan historique
 - review des changements
 - contexte, outils ou sources
 
@@ -647,7 +665,12 @@ Ce contrat ne couvre pas `CLAUDE.md`, les règles Cursor ni les imports de type
 
 ---
 
-## 11. Cycle de vie d'un plan
+## 11. Cycle de vie des plans historiques
+
+Cette section conserve le contrat des plans à stratégie encore exécutables par
+Implement. Pour les nouveaux plans AgSDL, la conception et ses limites sont
+décrites en section 7.1. Leur validation ne prépare ni tâches, ni branches, ni
+worktrees d'exécution.
 
 ### 11.1 Création du plan
 
@@ -700,7 +723,10 @@ Ils ne sont plus destinés à être modifiés.
 
 ---
 
-## 12. Règles de génération de stratégie
+## 12. Règles de génération des stratégies historiques
+
+Ces règles documentent les plans à stratégie existants. L'éditeur AgSDL ne
+génère pas ce type de stratégie pour les nouveaux plans.
 
 ### 12.1 L'IA est responsable de la formalisation
 
@@ -731,9 +757,9 @@ Cette structuration existe pour réduire le risque et améliorer la qualité des
 
 ## 13. Modèle de tâche
 
-### 13.1 Tâches planifiées
+### 13.1 Tâches des plans historiques
 
-La plupart des tâches sont dérivées automatiquement d'un plan valide.
+Les tâches déjà planifiées proviennent d'une stratégie historique valide.
 
 Ces tâches héritent :
 - du contexte du plan
@@ -1294,7 +1320,9 @@ Macro doit conserver suffisamment de métadonnées pour auditer :
 
 ### 22.2 Nature historique des artefacts de planification
 
-La conversation, les nœuds de stratégie et les branches prédictives sont durables comme historique, mais pas comme objets pilotés du futur une fois le plan clos.
+La conversation et le document AgSDL sont conservés avec le plan. Pour les
+plans historiques, les nœuds de stratégie et les branches prédictives restent
+durables pour l'audit, sans devenir des objets pilotés après clôture du plan.
 
 Leur utilité principale après exécution est :
 - l'audit
@@ -1328,14 +1356,17 @@ Les règles suivantes sont fondatrices :
 - Le mode Implement est piloté par les tâches et orienté review-first.
 - Le mode Chat est léger et indépendant.
 - Le multi-projet est une capacité de premier plan.
-- Un plan contient sa conversation et sa stratégie.
+- Un nouveau plan Architect contient sa conversation et son document AgSDL.
 - Plusieurs plans peuvent coexister en parallèle.
 - Les plans archivés restent lisibles mais non modifiables.
-- La stratégie est générée par l'IA à partir de la conversation et du contexte du projet, après une demande explicite.
-- La validation d'un plan prépare automatiquement branches et worktrees.
+- L'IA construit le document AgSDL avec l'utilisateur ; sa conception ne lance
+  pas le graphe.
+- La préparation automatique des branches et worktrees concerne les plans
+  historiques exécutables, pas les nouveaux plans AgSDL.
 - Toute tâche Git complétée se termine par un commit. Une tâche en édition directe se termine par l'acceptation de son checkpoint, sans commit dans le projet utilisateur.
 - Une review humaine est obligatoire à la fin de chaque tâche.
-- Une tâche de finalisation synthétique converge depuis les feuilles de la stratégie et pilote l'intégration finale.
+- Pour un plan historique, une tâche de finalisation synthétique converge
+  depuis les feuilles de la stratégie et pilote l'intégration finale.
 - L'édition manuelle du code existe, mais comme mécanisme secondaire d'ajustement en review.
 - Les skills guident l'agent sans contourner la politique d'outils.
 - Le support du kernel distant fait partie de la cible produit.
