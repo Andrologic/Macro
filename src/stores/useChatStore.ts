@@ -5361,7 +5361,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (params.toolName === "agsdl_get" || params.toolName === "agsdl_update") {
           const conversationId = assistantTurnContextByMessageId.get(params.assistantMessageId)?.conversationId;
           if (!conversationId) throw new Error("The calling plan conversation is unavailable.");
-          const { handleAgsdlToolCall } = await import("../services/agsdl/tools");
+          const { handleAgsdlToolCall } = await import("./agsdl/tools");
           return handleAgsdlToolCall({
             toolName: params.toolName,
             args: params.args,
@@ -6697,7 +6697,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const activePlanContext = architectPlanOverride === undefined ? appState.activePlanContext : architectPlanOverride;
       const nodes = architectPlanOverride === undefined ? appState.planNodes : architectPlanOverride?.nodes ?? [];
       const { buildArchitectPlanInstructions } = await import("./chat/chatArchitectPlanPrompt");
-      const { AGSDL_AUTHORING_INSTRUCTION } = await import("../services/agsdl/tools");
+      const { AGSDL_AUTHORING_INSTRUCTION } = await import("./agsdl/tools");
       const planInstructions = buildArchitectPlanInstructions(activePlanContext, nodes, executionContext, {
         getProjectGitFlowSettings: projectId => appState.getProjectById(projectId)?.gitFlowSettings ?? null,
       }, { kind: 'agsdl', instruction: AGSDL_AUTHORING_INSTRUCTION });

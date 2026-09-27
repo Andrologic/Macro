@@ -1171,7 +1171,7 @@ describe('ChatZone', () => {
   });
 
   it('keeps AgSDL context removable, scoped to its plan, and includes it only on explicit send', async () => {
-    const { useAgsdlChatContext } = await import('../../services/agsdl/chatContext');
+    const { useAgsdlChatContext } = await import('../../stores/agsdl/chatContext');
     const { useAgsdlStore, agsdlSessionKey } = await import('../../stores/useAgsdlStore');
     const context = { id: 'selection-1', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'version-1', persistedRevision: 1, path: '/definitions/0', title: 'Selected agent' };
     useAgsdlStore.setState({ sessions: { [agsdlSessionKey(context)]: { source: '{}', annexes: {}, version: 'version-1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });

@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AgsdlEditor } from "./AgsdlEditor";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
-import * as chatContext from "../../services/agsdl/chatContext";
+import * as chatContext from "../../stores/agsdl/chatContext";
 import { createExample } from "../../services/agsdl/examples";
 
 const target = { branchName: "develop", planId: "viewer-test" };

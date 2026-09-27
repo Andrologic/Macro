@@ -3,13 +3,13 @@ mock.module("../../i18n", () => ({ default: { t: (_key: string, options: { defau
 let selected = "conversation-a";
 let release: (() => void) | undefined;
 let wait: Promise<void> | undefined;
-mock.module("../architectPlanService", () => ({
+mock.module("../../services/architectPlanService", () => ({
   migrateArchitectPlanToAgsdl: async () => null,
   updateArchitectPlan: async () => { throw new Error("Unexpected save"); },
   getArchitectPlan: async () => { if (wait) await wait; return { conversationId: "conversation-a", status: "draft" }; },
 }));
-mock.module("../../stores/useChatStore", () => ({ useChatStore: { getState: () => ({ selectedConversationId: selected }) } }));
-const { useAgsdlStore, agsdlSessionKey } = await import("../../stores/useAgsdlStore");
+mock.module("../useChatStore", () => ({ useChatStore: { getState: () => ({ selectedConversationId: selected }) } }));
+const { useAgsdlStore, agsdlSessionKey } = await import("../useAgsdlStore");
 const { prepareAgsdlChatContext, useAgsdlChatContext, serializeAgsdlChatContext, isAgsdlChatContextCurrent } = await import("./chatContext");
 const target = { branchName: "develop", planId: "plan-a" };
 beforeEach(() => {

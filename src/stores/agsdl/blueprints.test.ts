@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { agsdlSessionKey, type AgsdlSession, type useAgsdlStore } from '../../stores/useAgsdlStore';
-import type { ArchitectPlanRecord } from '../architectPlanService';
+import { agsdlSessionKey, type AgsdlSession, type useAgsdlStore } from '../useAgsdlStore';
+import type { ArchitectPlanRecord } from '../../services/architectPlanService';
 import { builtInDesignSources, instantiateDesign, listDesignSources, saveBlueprint, type BlueprintDependencies } from './blueprints';
-import { readDesign } from './design';
+import { readDesign } from '../../services/agsdl/design';
 
 const target = { branchName: 'feature/design', planId: 'source' };
 function harness(source = '') {

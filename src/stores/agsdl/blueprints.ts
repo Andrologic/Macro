@@ -1,8 +1,8 @@
-import { createArchitectPlan, getArchitectPlan, listArchitectPlans, listArchitectPlanTargetBranches, type ArchitectPlanRecord } from '../architectPlanService';
-import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from '../../stores/useAgsdlStore';
-import { AGSDL_EXAMPLES, createExample } from './examples';
-import { applyChanges, object, readDocument, text } from './document';
-import { readDesign, withDesign, type DesignMetadata } from './design';
+import { createArchitectPlan, getArchitectPlan, listArchitectPlans, listArchitectPlanTargetBranches, type ArchitectPlanRecord } from '../../services/architectPlanService';
+import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from '../useAgsdlStore';
+import { AGSDL_EXAMPLES, createExample } from '../../services/agsdl/examples';
+import { applyChanges, object, readDocument, text } from '../../services/agsdl/document';
+import { readDesign, withDesign, type DesignMetadata } from '../../services/agsdl/design';
 
 export interface DesignSource {
   id: string;

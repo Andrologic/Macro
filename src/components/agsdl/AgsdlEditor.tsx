@@ -23,7 +23,7 @@ import {
 import { localizeDiagnostics, type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
-import { prepareAgsdlChatContext } from "../../services/agsdl/chatContext";
+import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{

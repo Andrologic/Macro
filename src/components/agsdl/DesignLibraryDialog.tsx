@@ -4,7 +4,7 @@ import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
 import { createEmptySystem, readDesign } from "../../services/agsdl/design";
-import { builtInDesignSources, instantiateDesign, listDesignSources, saveBlueprint, type DesignSource } from "../../services/agsdl/blueprints";
+import { builtInDesignSources, instantiateDesign, listDesignSources, saveBlueprint, type DesignSource } from "../../stores/agsdl/blueprints";
 import "./design.css";
 
 export function DesignLibraryDialog({ target, mode, onClose }: { target: AgsdlTarget; mode: "start" | "blueprint" | "system" | "save"; onClose: () => void }) {

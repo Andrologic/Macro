@@ -1,9 +1,9 @@
 import i18n from "../../i18n";
 import { create } from "zustand";
-import { getArchitectPlan } from "../architectPlanService";
-import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
-import { list, object, readDocument, sourceAt } from "./document";
-import { useChatStore } from "../../stores/useChatStore";
+import { getArchitectPlan } from "../../services/architectPlanService";
+import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../useAgsdlStore";
+import { list, object, readDocument, sourceAt } from "../../services/agsdl/document";
+import { useChatStore } from "../useChatStore";
 
 export interface AgsdlChatContext extends AgsdlTarget {
   id: string;

@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import type { ArchitectPlanRecord } from "../architectPlanService";
+import type { ArchitectPlanRecord } from "../../services/architectPlanService";
 import type { AgsdlEditorDocument } from "../../types/agsdl";
 import type { AIModel, AIProvider } from "../../types";
-import { createExample } from "./examples";
+import { createExample } from "../../services/agsdl/examples";
 
 let plan: ArchitectPlanRecord;
 let releaseSave: (() => void) | undefined;
 let saveDelay: Promise<void> | undefined;
 let failSave = false;
-mock.module("../architectPlanService", () => ({
+mock.module("../../services/architectPlanService", () => ({
   migrateArchitectPlanToAgsdl: async (_branch: string, id: string) =>
     id === plan.id ? structuredClone(plan) : null,
   getArchitectPlan: async (_branch: string, id: string) =>
@@ -32,10 +32,10 @@ mock.module("../architectPlanService", () => ({
   },
 }));
 const { useAgsdlStore, agsdlSessionKey } = await import(
-  "../../stores/useAgsdlStore"
+  "../useAgsdlStore"
 );
 const { handleAgsdlToolCall } = await import("./tools");
-const { useProviderStore } = await import("../../stores/useProviderStore");
+const { useProviderStore } = await import("../useProviderStore");
 let restoreProviderCatalog: (() => void) | undefined;
 const providers = [
   { id: 'provider-active', name: 'Active', status: 'online' },

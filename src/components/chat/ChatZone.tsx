@@ -1,4 +1,4 @@
-import { useAgsdlChatContext, serializeAgsdlChatContext, isAgsdlChatContextCurrent } from "../../services/agsdl/chatContext";
+import { useAgsdlChatContext, serializeAgsdlChatContext, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { AgsdlChatSelection } from "../agsdl/AgsdlChatSelection";
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';

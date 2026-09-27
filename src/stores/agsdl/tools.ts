@@ -1,10 +1,10 @@
-import { getArchitectPlan } from "../architectPlanService";
-import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
-import { list, object, readDocument, sourceAt, text } from "./document";
-import { AGSDL_EXAMPLES, createExample, type AgsdlExample } from "./examples";
+import { getArchitectPlan } from "../../services/architectPlanService";
+import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
+import { list, object, readDocument, sourceAt, text } from "../../services/agsdl/document";
+import { AGSDL_EXAMPLES, createExample, type AgsdlExample } from "../../services/agsdl/examples";
 import type { AgsdlChange } from "../../types/agsdl";
-import { readDesign } from "./design";
-import { useProviderStore } from "../../stores/useProviderStore";
+import { readDesign } from "../../services/agsdl/design";
+import { useProviderStore } from "../useProviderStore";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
   "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";

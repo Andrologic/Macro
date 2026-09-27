@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import { useAgsdlChatContext, type AgsdlChatContext } from "../../services/agsdl/chatContext";
+import { useAgsdlChatContext, type AgsdlChatContext } from "../../stores/agsdl/chatContext";
 
 export function AgsdlChatSelection({ context }: { context: AgsdlChatContext }) {
   const { t } = useAgsdlTranslation();
