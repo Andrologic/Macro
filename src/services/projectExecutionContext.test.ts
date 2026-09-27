@@ -167,9 +167,9 @@ describe('resolveProjectExecutionContext', () => {
     const standaloneProject = {
       ...projects[0],
       id: 'project-lplr-current',
-      name: 'lplr-app',
-      mountName: 'lplr-app',
-      path: '/repos/lplr-app',
+      name: 'sample-app',
+      mountName: 'sample-app',
+      path: '/repos/sample-app',
     };
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
@@ -178,12 +178,12 @@ describe('resolveProjectExecutionContext', () => {
       tasks: [
         {
           id: 'task-stale',
-          project_id: 'project-lplr-app-1780237886690',
-          project_ids: ['project-lplr-app-1780237886690'],
+          project_id: 'project-sample-app-1780237886690',
+          project_ids: ['project-sample-app-1780237886690'],
           assigned_branch: 'feature/catalogue',
           execution_targets: [
             {
-              projectId: 'project-lplr-app-1780237886690',
+              projectId: 'project-sample-app-1780237886690',
               executionMode: 'git',
               branchName: 'feature/catalogue',
               worktreeKey: 'stale-worktree',
@@ -208,10 +208,10 @@ describe('resolveProjectExecutionContext', () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const standaloneProject = {
       ...projects[0],
-      id: 'project-lplr-app-1780329499166',
-      name: 'octan_sales',
-      mountName: 'octan_sales',
-      path: '/repos/octan_sales',
+      id: 'project-sample-app-1780329499166',
+      name: 'sample_sales',
+      mountName: 'sample_sales',
+      path: '/repos/sample_sales',
     };
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
@@ -220,30 +220,30 @@ describe('resolveProjectExecutionContext', () => {
       tasks: [
         {
           id: 'task-renamed',
-          project_id: 'project-lplr-app-1780329499166',
-          project_ids: ['project-lplr-app-1780329499166'],
+          project_id: 'project-sample-app-1780329499166',
+          project_ids: ['project-sample-app-1780329499166'],
           assigned_branch: 'feature/catalogue',
           execution_targets: [
             {
-              projectId: 'project-lplr-app-1780329499166',
+              projectId: 'project-sample-app-1780329499166',
               executionMode: 'git',
               branchName: 'feature/catalogue',
-              worktreeKey: 'branch-project-lplr-app-feature-catalogue',
-              repoPath: '/repos/lplr-app',
+              worktreeKey: 'branch-project-sample-app-feature-catalogue',
+              repoPath: '/repos/sample-app',
               executionKind: 'repository_root',
             },
           ],
         },
       ],
       selectedGroupId: null,
-      selectedProjectId: 'project-lplr-app-1780329499166',
+      selectedProjectId: 'project-sample-app-1780329499166',
       selectedTaskId: 'task-renamed',
     });
 
-    expect(context.projectId).toBe('project-lplr-app-1780329499166');
-    expect(context.workspacePath).toBe('/repos/octan_sales');
+    expect(context.projectId).toBe('project-sample-app-1780329499166');
+    expect(context.workspacePath).toBe('/repos/sample_sales');
     expect(context.workspacePathsByProjectId).toEqual({
-      'project-lplr-app-1780329499166': '/repos/octan_sales',
+      'project-sample-app-1780329499166': '/repos/sample_sales',
     });
   });
 

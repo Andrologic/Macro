@@ -10860,7 +10860,7 @@ mod tests {
     async fn reconcile_project_registry_from_hints_adds_missing_standalone_project() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
-        let project_path = temp.path().join("octan_sales");
+        let project_path = temp.path().join("sample_sales");
         let _project_repo = init_git_repo(&project_path, "main", &[]);
         let _project_metadata_root = GitState::new()
             .resolve_macro_metadata_root(&project_path)
@@ -10894,9 +10894,9 @@ mod tests {
             &metadata_root,
             WorkspaceReconcileProjectRegistryFromHintsRequestDto {
                 projects: vec![WorkspaceMetadataRecoveryHintDto {
-                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    project_id: "project-sample-sales-1780653766405".to_string(),
                     group_id: None,
-                    name: "octan_sales".to_string(),
+                    name: "sample_sales".to_string(),
                     path: project_path.to_string_lossy().to_string(),
                 }],
             },
@@ -10911,12 +10911,12 @@ mod tests {
         assert_eq!(report.added_projects.len(), 1);
         assert_eq!(
             report.added_projects[0].id,
-            "project-octan-sales-1780653766405"
+            "project-sample-sales-1780653766405"
         );
         assert_eq!(repaired.standalone_projects.len(), 1);
         assert_eq!(
             repaired.standalone_projects[0].id,
-            "project-octan-sales-1780653766405"
+            "project-sample-sales-1780653766405"
         );
         assert_eq!(repaired.project_groups.len(), 1);
         assert_eq!(
@@ -10930,8 +10930,8 @@ mod tests {
     {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
-        let original_path = temp.path().join("lplr-app");
-        let renamed_path = temp.path().join("octan_sales");
+        let original_path = temp.path().join("sample-app");
+        let renamed_path = temp.path().join("sample_sales");
 
         {
             let _project_repo = init_git_repo(&original_path, "main", &[]);
@@ -10952,9 +10952,9 @@ mod tests {
             &metadata_root,
             WorkspaceReconcileProjectRegistryFromHintsRequestDto {
                 projects: vec![WorkspaceMetadataRecoveryHintDto {
-                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    project_id: "project-sample-sales-1780653766405".to_string(),
                     group_id: None,
-                    name: "octan_sales".to_string(),
+                    name: "sample_sales".to_string(),
                     path: renamed_path.to_string_lossy().to_string(),
                 }],
             },
@@ -10985,7 +10985,7 @@ mod tests {
         let metadata_root = temp.path().join(".macro");
         let parent = temp.path().join("github");
         let known_path = parent.join("sysml-drone-demo");
-        let missing_path = parent.join("octan_sales");
+        let missing_path = parent.join("sample_sales");
         let _known_repo = init_git_repo(&known_path, "main", &[]);
         let missing_repo = init_git_repo(&missing_path, "main", &[]);
         let missing_git_config = missing_repo.path().join("config");
@@ -11016,10 +11016,10 @@ mod tests {
                 "schemaVersion": 3,
                 "planId": "1780299051043",
                 "targetBranch": "main",
-                "expectedProjectIds": ["project-lplr-app-1780329499166"],
+                "expectedProjectIds": ["project-sample-app-1780329499166"],
                 "participants": [{
-                    "projectId": "project-lplr-app-1780329499166",
-                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                    "projectId": "project-sample-app-1780329499166",
+                    "repoPathSnapshot": "/Users/example/projects/sample-app"
                 }]
             })
             .to_string(),
@@ -11067,9 +11067,9 @@ mod tests {
         assert!(report.added_projects.is_empty());
         assert_eq!(
             report.discovered_projects[0].id,
-            "project-lplr-app-1780329499166"
+            "project-sample-app-1780329499166"
         );
-        assert_eq!(report.discovered_projects[0].name, "octan_sales");
+        assert_eq!(report.discovered_projects[0].name, "sample_sales");
         assert_eq!(before, after);
         assert!(persisted.standalone_projects.is_empty());
         assert_eq!(persisted.project_groups[0].projects[0].id, "project-sysml");
@@ -11081,7 +11081,7 @@ mod tests {
         let metadata_root = temp.path().join(".macro");
         let parent = temp.path().join("github");
         let kept_path = parent.join("kept");
-        let removed_path = parent.join("octan_sales");
+        let removed_path = parent.join("sample_sales");
         let _kept_repo = init_git_repo(&kept_path, "main", &[]);
         let _removed_repo = init_git_repo(&removed_path, "main", &[]);
         let removed_metadata_root = GitState::new()
@@ -11099,7 +11099,7 @@ mod tests {
                 "schemaVersion": 3,
                 "planId": "1780299051043",
                 "targetBranch": "main",
-                "expectedProjectIds": ["project-octan-sales"]
+                "expectedProjectIds": ["project-sample-sales"]
             })
             .to_string(),
         )
@@ -11117,7 +11117,7 @@ mod tests {
                     projects: vec![
                         make_project("project-kept", kept_path.to_string_lossy().as_ref()),
                         make_project(
-                            "project-octan-sales",
+                            "project-sample-sales",
                             removed_path.to_string_lossy().as_ref(),
                         ),
                     ],
@@ -11127,7 +11127,7 @@ mod tests {
         )
         .expect("persist workspace state");
 
-        close_project(temp.path(), &metadata_root, "project-octan-sales")
+        close_project(temp.path(), &metadata_root, "project-sample-sales")
             .await
             .expect("remove project");
         let loaded = load_state(temp.path(), &metadata_root)
@@ -11153,7 +11153,7 @@ mod tests {
     #[tokio::test]
     async fn removing_last_project_keeps_git_workspace_registry_empty_after_reload() {
         let temp = TempDir::new().expect("temp dir");
-        let workspace_path = temp.path().join("octan_sales");
+        let workspace_path = temp.path().join("sample_sales");
         let _repo = init_git_repo(&workspace_path, "main", &[]);
         let metadata_root = temp.path().join("metadata");
 
@@ -11161,7 +11161,7 @@ mod tests {
             &metadata_root,
             &WorkspaceState {
                 standalone_projects: vec![make_project(
-                    "project-octan-sales",
+                    "project-sample-sales",
                     workspace_path.to_string_lossy().as_ref(),
                 )],
                 ..WorkspaceState::default()
@@ -11169,7 +11169,7 @@ mod tests {
         )
         .expect("persist workspace state");
 
-        close_project(&workspace_path, &metadata_root, "project-octan-sales")
+        close_project(&workspace_path, &metadata_root, "project-sample-sales")
             .await
             .expect("remove last project");
 
@@ -11222,7 +11222,7 @@ mod tests {
     #[test]
     fn legacy_empty_registry_still_recovers_physical_git_workspace() {
         let temp = TempDir::new().expect("temp dir");
-        let workspace_path = temp.path().join("octan_sales");
+        let workspace_path = temp.path().join("sample_sales");
         let _repo = init_git_repo(&workspace_path, "main", &[]);
         let metadata_root = temp.path().join("metadata");
         stdfs::create_dir_all(&metadata_root).expect("create metadata root");
@@ -11305,12 +11305,12 @@ mod tests {
     async fn get_bootstrap_recovers_selected_physical_repo_as_standalone_project_without_workspace_state(
     ) {
         let temp = TempDir::new().expect("temp dir");
-        let project_path = temp.path().join("octan_sales");
+        let project_path = temp.path().join("sample_sales");
         let _repo = init_git_repo(&project_path, "main", &[]);
         let metadata_root = GitState::new()
             .resolve_macro_metadata_root(&project_path)
             .expect("project metadata root");
-        let stale_project_id = "project-lplr-app-1780329499166";
+        let stale_project_id = "project-sample-app-1780329499166";
         let plan_id = "1780299051043";
         let plan_dir = metadata_root
             .join(MACRO_BRANCHES_METADATA_DIR)
@@ -11355,7 +11355,7 @@ mod tests {
                 "expectedProjectIds": [stale_project_id],
                 "participants": [{
                     "projectId": stale_project_id,
-                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                    "repoPathSnapshot": "/Users/example/projects/sample-app"
                 }]
             })
             .to_string(),
@@ -11369,7 +11369,7 @@ mod tests {
         assert_eq!(bootstrap.project_groups.len(), 0);
         assert_eq!(bootstrap.standalone_projects.len(), 1);
         assert_eq!(bootstrap.standalone_projects[0].id, stale_project_id);
-        assert_eq!(bootstrap.standalone_projects[0].name, "octan_sales");
+        assert_eq!(bootstrap.standalone_projects[0].name, "sample_sales");
         assert_eq!(
             bootstrap.standalone_projects[0].path,
             absolutize_path(&project_path).to_string_lossy()
@@ -11382,7 +11382,7 @@ mod tests {
         let metadata_root = temp.path().join(".macro");
         let parent = temp.path().join("github");
         let known_path = parent.join("sysml-drone-demo");
-        let missing_path = parent.join("octan_sales");
+        let missing_path = parent.join("sample_sales");
         let _known_repo = init_git_repo(&known_path, "main", &[]);
         let _missing_repo = init_git_repo(&missing_path, "main", &[]);
         let missing_metadata_root = GitState::new()
@@ -11400,10 +11400,10 @@ mod tests {
                 "schemaVersion": 3,
                 "planId": "1780299051043",
                 "targetBranch": "main",
-                "expectedProjectIds": ["project-lplr-app-1780329499166"],
+                "expectedProjectIds": ["project-sample-app-1780329499166"],
                 "participants": [{
-                    "projectId": "project-lplr-app-1780329499166",
-                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                    "projectId": "project-sample-app-1780329499166",
+                    "repoPathSnapshot": "/Users/example/projects/sample-app"
                 }]
             })
             .to_string(),
@@ -11438,13 +11438,13 @@ mod tests {
         assert!(!bootstrap
             .standalone_projects
             .iter()
-            .any(|project| project.id == "project-lplr-app-1780329499166"
-                && project.name == "octan_sales"));
+            .any(|project| project.id == "project-sample-app-1780329499166"
+                && project.name == "sample_sales"));
         assert!(!persisted
             .standalone_projects
             .iter()
-            .any(|project| project.id == "project-lplr-app-1780329499166"
-                && project.name == "octan_sales"));
+            .any(|project| project.id == "project-sample-app-1780329499166"
+                && project.name == "sample_sales"));
         let persisted_project_ids = persisted
             .standalone_projects
             .iter()
@@ -11463,7 +11463,7 @@ mod tests {
     async fn reconcile_project_registry_from_hints_does_not_duplicate_existing_path() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
-        let project_path = temp.path().join("octan_sales");
+        let project_path = temp.path().join("sample_sales");
         let _project_repo = init_git_repo(&project_path, "main", &[]);
         let _project_metadata_root = GitState::new()
             .resolve_macro_metadata_root(&project_path)
@@ -11483,9 +11483,9 @@ mod tests {
             &metadata_root,
             WorkspaceReconcileProjectRegistryFromHintsRequestDto {
                 projects: vec![WorkspaceMetadataRecoveryHintDto {
-                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    project_id: "project-sample-sales-1780653766405".to_string(),
                     group_id: None,
-                    name: "octan_sales".to_string(),
+                    name: "sample_sales".to_string(),
                     path: project_path.to_string_lossy().to_string(),
                 }],
             },

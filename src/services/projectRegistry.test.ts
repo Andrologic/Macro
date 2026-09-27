@@ -191,10 +191,10 @@ describe('projectRegistry', () => {
       },
       [
         {
-          projectId: 'project-octan-sales-1780653766405',
+          projectId: 'project-sample-sales-1780653766405',
           groupId: null,
-          name: 'octan_sales',
-          path: '/Users/oscarlahaie/github/octan_sales',
+          name: 'sample_sales',
+          path: '/Users/example/projects/sample_sales',
           lastOpenedAt: '2026-06-05T08:00:00.000Z',
         },
       ],
@@ -203,10 +203,10 @@ describe('projectRegistry', () => {
 
     expect(remembered).toEqual([
       {
-        projectId: 'project-octan-sales-1780653766405',
+        projectId: 'project-sample-sales-1780653766405',
         groupId: null,
-        name: 'octan_sales',
-        path: '/Users/oscarlahaie/github/octan_sales',
+        name: 'sample_sales',
+        path: '/Users/example/projects/sample_sales',
         lastOpenedAt: '2026-06-05T08:00:00.000Z',
       },
     ]);

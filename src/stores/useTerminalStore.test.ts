@@ -852,9 +852,9 @@ describe('useTerminalStore', () => {
     appStoreState.standaloneProjects = [
       {
         id: 'project-lplr-current',
-        name: 'lplr-app',
-        mountName: 'lplr-app',
-        path: 'C:/repos/lplr-app',
+        name: 'sample-app',
+        mountName: 'sample-app',
+        path: 'C:/repos/sample-app',
         created_at: '2026-03-26T08:00:00.000Z',
         status: 'active',
         metadata: {
@@ -874,14 +874,14 @@ describe('useTerminalStore', () => {
       {
         id: 'task-stale',
         plan_id: '',
-        project_id: 'project-lplr-app-1780237886690',
-        project_ids: ['project-lplr-app-1780237886690'],
+        project_id: 'project-sample-app-1780237886690',
+        project_ids: ['project-sample-app-1780237886690'],
         execution_targets: [
           {
-            projectId: 'project-lplr-app-1780237886690',
+            projectId: 'project-sample-app-1780237886690',
             branchName: 'feature/catalogue',
             worktreeKey: 'stale-worktree',
-            repoPath: 'C:/repos/lplr-app',
+            repoPath: 'C:/repos/sample-app',
           },
         ],
         title: 'Standalone stale task',
@@ -897,23 +897,23 @@ describe('useTerminalStore', () => {
     resolveProjectExecutionContextMock.mockImplementation(
       (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }): MockExecutionContext => ({
         projectId: params?.selectedProjectId ?? 'project-lplr-current',
-        projectName: 'lplr-app',
+        projectName: 'sample-app',
         taskId: params?.selectedTaskId ?? null,
-        workspacePath: 'C:/repos/lplr-app',
+        workspacePath: 'C:/repos/sample-app',
         workspacePathsByProjectId: {
-          'project-lplr-current': 'C:/repos/lplr-app',
+          'project-lplr-current': 'C:/repos/sample-app',
         },
       })
     );
 
     const { useTerminalStore } = await loadTerminalStore();
     await useTerminalStore.getState().createSession({
-      projectId: 'project-lplr-app-1780237886690',
+      projectId: 'project-sample-app-1780237886690',
     });
 
     expect(terminalCreateSessionMock).toHaveBeenCalledWith({
       projectId: 'project-lplr-current',
-      cwd: 'C:/repos/lplr-app',
+      cwd: 'C:/repos/sample-app',
     });
   });
 
@@ -1243,8 +1243,8 @@ describe('useTerminalStore', () => {
     const standaloneProject = {
       id: 'project-lplr-current',
       name: 'LPLR App',
-      mountName: 'lplr-app',
-      path: 'C:/repos/lplr-app',
+      mountName: 'sample-app',
+      path: 'C:/repos/sample-app',
       created_at: '2026-03-26T08:00:00.000Z',
       status: 'active',
       metadata: {
@@ -1263,14 +1263,14 @@ describe('useTerminalStore', () => {
       {
         ...buildTasks()[0],
         id: 'task-stale',
-        project_id: 'project-lplr-app-1780237886690',
-        project_ids: ['project-lplr-app-1780237886690'],
+        project_id: 'project-sample-app-1780237886690',
+        project_ids: ['project-sample-app-1780237886690'],
         execution_targets: [
           {
-            projectId: 'project-lplr-app-1780237886690',
+            projectId: 'project-sample-app-1780237886690',
             branchName: 'feature/catalogue',
-            worktreeKey: 'project-lplr-app-1780237886690::feature/catalogue',
-            repoPath: 'C:/repos/lplr-app',
+            worktreeKey: 'project-sample-app-1780237886690::feature/catalogue',
+            repoPath: 'C:/repos/sample-app',
           },
         ],
         task_source: 'standalone',
@@ -1282,8 +1282,8 @@ describe('useTerminalStore', () => {
 
     await useTerminalStore.getState().ensureTaskTab({
       taskId: 'task-stale',
-      projectId: 'project-lplr-app-1780237886690',
-      cwd: 'C:/repos/lplr-app/.macro/worktrees/feature-catalogue',
+      projectId: 'project-sample-app-1780237886690',
+      cwd: 'C:/repos/sample-app/.macro/worktrees/feature-catalogue',
       title: 'Catalogue',
       reveal: true,
       promptContext: null,

@@ -2262,10 +2262,10 @@ describe('architectPlanService', () => {
       description: '',
       status: 'draft',
       targetBranch: branchName,
-      projectId: 'project-lplr-app-1780329499166',
-      projectIds: ['project-lplr-app-1780329499166'],
-      expectedProjectIds: ['project-lplr-app-1780329499166'],
-      availableProjectIds: ['project-octan-sales-1780653766405'],
+      projectId: 'project-sample-app-1780329499166',
+      projectIds: ['project-sample-app-1780329499166'],
+      expectedProjectIds: ['project-sample-app-1780329499166'],
+      availableProjectIds: ['project-sample-sales-1780653766405'],
       createdAt: '2026-03-19T00:00:00.000Z',
       updatedAt: '2026-03-19T00:00:00.000Z',
       nodeCount: 11,
@@ -2273,15 +2273,15 @@ describe('architectPlanService', () => {
 
     expect(
       service.isArchitectPlanVisibleForScope(stalePlanFromSelectedRepo, [
-        'project-octan-sales-1780653766405',
+        'project-sample-sales-1780653766405',
       ])
     ).toBe(true);
     expect(
       service.resolvePlanProjectContextId(
         stalePlanFromSelectedRepo,
-        'project-octan-sales-1780653766405'
+        'project-sample-sales-1780653766405'
       )
-    ).toBe('project-octan-sales-1780653766405');
+    ).toBe('project-sample-sales-1780653766405');
   });
 
   it('keeps isolated factories independent of facade spies while sharing the branch queue', async () => {

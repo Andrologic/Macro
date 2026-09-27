@@ -1404,9 +1404,9 @@ describe('useAppStore architect plan resolution', () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [
       {
-        id: 'project-lplr-app-1780329499166',
-        name: 'octan_sales',
-        path: '/Users/oscarlahaie/github/octan_sales',
+        id: 'project-sample-app-1780329499166',
+        name: 'sample_sales',
+        path: '/Users/example/projects/sample_sales',
         gitFlowSettings: { baseBranch: 'main' },
       },
     ];
@@ -1420,7 +1420,7 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(useAppStore.getState().selectedGroupId).toBeNull();
     expect(useAppStore.getState().selectedProjectId).toBe(
-      'project-lplr-app-1780329499166',
+      'project-sample-app-1780329499166',
     );
     expect(useAppStore.getState().standaloneProjects).toHaveLength(1);
   });
@@ -1494,12 +1494,12 @@ describe('useAppStore architect plan resolution', () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
     const currentProject: ProjectRecord = {
-      id: 'project-octan-sales-1780653766405',
-      name: 'octan_sales',
-      path: '/repos/octan_sales',
+      id: 'project-sample-sales-1780653766405',
+      name: 'sample_sales',
+      path: '/repos/sample_sales',
       gitFlowSettings: { baseBranch: 'main' },
     };
-    const staleProjectId = 'project-lplr-app-1780329499166';
+    const staleProjectId = 'project-sample-app-1780329499166';
     const visiblePhysicalPlan = buildPlan({
       id: 'plan-refonte-catalogue',
       title: 'Refonte catalogue produit',
@@ -1650,9 +1650,9 @@ describe('useAppStore architect plan resolution', () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
     const rememberedProject: ProjectRecord = {
-      id: 'project-octan-sales-1780653766405',
-      name: 'octan_sales',
-      path: '/repos/octan_sales',
+      id: 'project-sample-sales-1780653766405',
+      name: 'sample_sales',
+      path: '/repos/sample_sales',
       gitFlowSettings: { baseBranch: 'main' },
     };
     preferenceValues.lastSelectedGroupId = null;
@@ -2142,8 +2142,8 @@ describe('useAppStore architect plan resolution', () => {
   });
 
   it('retargets activated architect strategy nodes after a standalone project rename', async () => {
-    const staleProjectId = 'project-lplr-app-1780329499166';
-    const currentProjectId = 'project-octan-sales-1780653766405';
+    const staleProjectId = 'project-sample-app-1780329499166';
+    const currentProjectId = 'project-sample-sales-1780653766405';
     const renamedPlan = buildPlan({
       id: 'plan-renamed-project',
       projectId: staleProjectId,
@@ -2172,8 +2172,8 @@ describe('useAppStore architect plan resolution', () => {
       standaloneProjects: [
         {
           id: currentProjectId,
-          name: 'octan_sales',
-          path: '/repos/octan_sales',
+          name: 'sample_sales',
+          path: '/repos/sample_sales',
           gitFlowSettings: { baseBranch: 'develop' },
         },
       ],
