@@ -5,6 +5,7 @@ import {
   mergeTaskProjectCommandRegistry,
   normalizeTaskProjectCommandPath,
   resolveTaskProjectCommandRegistry,
+  saveTaskProjectCommandDrafts,
 } from './taskProjectCommands';
 import type { ConfigSnapshot } from '../types/generated/config';
 
@@ -19,6 +20,15 @@ const configSnapshot = (): ConfigSnapshot => ({
           projectPath: 'C:/dev/api',
           command: 'global command',
           openTerminalOnRun: true,
+          updatedAt: '2026-03-24T00:00:00.000Z',
+        },
+        'C:/dev/worker': {
+          projectId: 'worker',
+          projectName: 'Worker',
+          projectPath: 'C:/dev/worker',
+          command: 'bun test:worker',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: false,
           updatedAt: '2026-03-24T00:00:00.000Z',
         },
       },
@@ -156,5 +166,55 @@ describe('taskProjectCommands', () => {
 
     expect(requestedScopes).toEqual([['api']]);
     expect(getTaskProjectCommand(registry, 'C:/dev/api')?.command).toBe('bun test:api');
+  });
+
+  it('preserves another project command saved after the scoped snapshot was loaded', async () => {
+    const patches: Array<{ kind: string; key: string; value: unknown }> = [];
+    const snapshot = configSnapshot();
+    const effectiveTools = snapshot.effective.tools as {
+      projectCommands: Record<string, unknown>;
+    };
+    delete effectiveTools.projectCommands['C:/dev/worker'];
+
+    const saved = await saveTaskProjectCommandDrafts(
+      [
+        {
+          projectId: 'api',
+          projectName: 'API',
+          projectPath: 'C:/dev/api',
+          command: 'bun test:api:updated',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: true,
+        },
+      ],
+      {
+        snapshotLoader: async () => snapshot,
+        updater: async (kind, key, updateValue) => {
+          const value = updateValue({
+            'C:/dev/worker': {
+              projectId: 'worker',
+              projectName: 'Worker',
+              projectPath: 'C:/dev/worker',
+              command: 'bun test:worker',
+              worktreeSetupCommand: '',
+              openTerminalOnRun: false,
+              updatedAt: '2026-03-24T00:00:00.000Z',
+            },
+          });
+          patches.push({ kind, key, value });
+          return {} as never;
+        },
+      },
+    );
+
+    expect(getTaskProjectCommand(saved, 'C:/dev/api')?.command).toBe('bun test:api:updated');
+    expect(getTaskProjectCommand(saved, 'C:/dev/worker')?.command).toBe('bun test:worker');
+    expect(patches).toEqual([
+      {
+        kind: 'tools',
+        key: 'projectCommands',
+        value: saved.commandsByProjectPath,
+      },
+    ]);
   });
 });

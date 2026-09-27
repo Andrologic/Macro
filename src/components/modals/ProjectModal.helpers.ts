@@ -1,3 +1,4 @@
+import { normalizeProjectPathIdentity } from '../../services/projectRegistry';
 import { resolveProjectGitFlowSettings } from '../../services/architectGitNaming';
 import type {
   Project,
@@ -56,8 +57,7 @@ interface BuildPendingProjectCreationOptions {
   derivedSubProjectName: string;
 }
 
-export const normalizeProjectPath = (value: string): string =>
-  value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+export const normalizeProjectPath = normalizeProjectPathIdentity;
 
 export const inferProjectNameFromPath = (value: string): string => {
   const parts = value.trim().replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean);

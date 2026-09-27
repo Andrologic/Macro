@@ -67,6 +67,30 @@ interface StrategyGraphProps {
   className?: string;
 }
 
+const createLatestStrategyPreviewOperationGate = () => {
+  let latestOperationId = 0;
+  return {
+    begin: () => ++latestOperationId,
+    isCurrent: (operationId: number) => latestOperationId === operationId,
+    invalidate: () => {
+      latestOperationId += 1;
+    },
+  };
+};
+
+const matchesPlanLocator = (
+  context: { id: string; targetBranch?: string | null } | null,
+  planId: string,
+  targetBranch: string,
+): boolean => {
+  if (context?.id !== planId) return false;
+  try {
+    return resolveTargetBranch(context.targetBranch) === resolveTargetBranch(targetBranch);
+  } catch {
+    return false;
+  }
+};
+
 /**
  * StrategyGraph - Visualizes project strategy as a graph or branch view
  *
@@ -767,11 +791,21 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     ),
     [mergeWorkflowRuntimeByTaskId, tasks]
   );
+  const [strategyPreviewOperationGate] = useState(createLatestStrategyPreviewOperationGate);
+
+  useEffect(() => () => {
+    strategyPreviewOperationGate.invalidate();
+  }, [strategyPreviewOperationGate]);
+
   const activeStrategyMutationPreview = useMemo(
     () =>
       strategyMutationPreview &&
       activePlanContext &&
-      strategyMutationPreview.planId === activePlanContext.id
+      matchesPlanLocator(
+        activePlanContext,
+        strategyMutationPreview.planId,
+        strategyMutationPreview.targetBranch,
+      )
         ? strategyMutationPreview
         : null,
     [activePlanContext, strategyMutationPreview]
@@ -1010,17 +1044,40 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     }
   }, [hoveredFrozenBadge, viewMode]);
 
-  const handleDiscardStrategyPreview = useCallback(() => {
+  const handleDiscardStrategyPreview = useCallback(async () => {
+    if (!activeStrategyMutationPreview || !activePlanContext?.id) return;
+    const currentStateAtStart = useAppStore.getState();
+    if (
+      currentStateAtStart.strategyMutationPreview !== activeStrategyMutationPreview ||
+      !matchesPlanLocator(
+        currentStateAtStart.activePlanContext,
+        activeStrategyMutationPreview.planId,
+        activeStrategyMutationPreview.targetBranch,
+      )
+    ) {
+      return;
+    }
+    const operationTargetBranch = resolveTargetBranch(
+      activeStrategyMutationPreview.targetBranch,
+    );
+    const operationId = strategyPreviewOperationGate.begin();
+    const discardedPreview = activeStrategyMutationPreview;
+    const previousVisibleState = {
+      activePlanContext,
+      planNodes,
+      predictedBranches,
+    };
     setStrategyMutationPreview(null);
-    if (activePlanContext?.id) {
-      const projectIds = Array.from(
-        new Set([
-          ...planNodes.flatMap((node) => normalizeNodeProjectIds(node)),
-          ...predictedBranches.map((branch) => branch.projectId),
-        ])
-      );
-      void persistArchitectPlanStrategyPreview({
-        branchName: targetBranch,
+
+    const projectIds = Array.from(
+      new Set([
+        ...planNodes.flatMap((node) => normalizeNodeProjectIds(node)),
+        ...predictedBranches.map((branch) => branch.projectId),
+      ])
+    );
+    try {
+      await persistArchitectPlanStrategyPreview({
+        branchName: operationTargetBranch,
         plan: {
           id: activePlanContext.id,
           projectId: projectIds[0],
@@ -1029,26 +1086,86 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         },
         preview: null,
       });
+    } catch (error) {
+      const currentState = useAppStore.getState();
+      if (
+        strategyPreviewOperationGate.isCurrent(operationId) &&
+        matchesPlanLocator(
+          currentState.activePlanContext,
+          activePlanContext.id,
+          operationTargetBranch,
+        ) &&
+        currentState.activePlanContext === previousVisibleState.activePlanContext &&
+        currentState.planNodes === previousVisibleState.planNodes &&
+        currentState.predictedBranches === previousVisibleState.predictedBranches &&
+        currentState.strategyMutationPreview === null
+      ) {
+        setStrategyMutationPreview(discardedPreview);
+      }
+      notify.error(
+        error instanceof Error
+          ? error.message
+          : t('architect.strategyPreviewDiscardError', 'Failed to discard strategy preview.')
+      );
     }
   }, [
     activePlanContext,
+    activeStrategyMutationPreview,
     planNodes,
     predictedBranches,
     setStrategyMutationPreview,
-    targetBranch,
+    strategyPreviewOperationGate,
+    t,
   ]);
 
   const handleApplyStrategyPreview = useCallback(async () => {
     if (!activeStrategyMutationPreview || !activePlanContext || isApplyingStrategyPreview) return;
+    const currentStateAtStart = useAppStore.getState();
+    if (
+      currentStateAtStart.strategyMutationPreview !== activeStrategyMutationPreview ||
+      !matchesPlanLocator(
+        currentStateAtStart.activePlanContext,
+        activeStrategyMutationPreview.planId,
+        activeStrategyMutationPreview.targetBranch,
+      )
+    ) {
+      return;
+    }
+    const operationTargetBranch = resolveTargetBranch(
+      activeStrategyMutationPreview.targetBranch,
+    );
+    const operationId = strategyPreviewOperationGate.begin();
+    const previousVisibleState = {
+      activePlanContext,
+      planNodes,
+      predictedBranches,
+      strategyMutationPreview: activeStrategyMutationPreview,
+    };
+    let appliedVisibleState: Omit<typeof previousVisibleState, 'strategyMutationPreview'> | null = null;
     setIsApplyingStrategyPreview(true);
     try {
       const updatedPlan = await applyStrategyMutationPreview({
         preview: activeStrategyMutationPreview,
         setActive: true,
       });
-      setPlanNodes(updatedPlan.nodes || []);
-      setPredictedBranches(updatedPlan.predictedBranches || []);
-      setActivePlanContext({
+      const currentState = useAppStore.getState();
+      if (
+        !strategyPreviewOperationGate.isCurrent(operationId) ||
+        !matchesPlanLocator(
+          currentState.activePlanContext,
+          previousVisibleState.activePlanContext.id,
+          operationTargetBranch,
+        ) ||
+        currentState.activePlanContext !== previousVisibleState.activePlanContext ||
+        currentState.planNodes !== previousVisibleState.planNodes ||
+        currentState.predictedBranches !== previousVisibleState.predictedBranches ||
+        currentState.strategyMutationPreview !== previousVisibleState.strategyMutationPreview
+      ) {
+        return;
+      }
+      const nextPlanNodes = updatedPlan.nodes || [];
+      const nextPredictedBranches = updatedPlan.predictedBranches || [];
+      const nextActivePlanContext = {
         id: updatedPlan.id,
         slug: updatedPlan.slug,
         title: updatedPlan.title,
@@ -1061,10 +1178,18 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         hasMixedTargetBranches:
           Boolean(updatedPlan.targetBranchesByProjectId) &&
           new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
-      });
+      };
+      setPlanNodes(nextPlanNodes);
+      setPredictedBranches(nextPredictedBranches);
+      setActivePlanContext(nextActivePlanContext);
       setStrategyMutationPreview(null);
+      appliedVisibleState = {
+        activePlanContext: nextActivePlanContext,
+        planNodes: nextPlanNodes,
+        predictedBranches: nextPredictedBranches,
+      };
       await persistArchitectPlanStrategyPreview({
-        branchName: targetBranch,
+        branchName: operationTargetBranch,
         plan: updatedPlan,
         preview: null,
       });
@@ -1075,7 +1200,30 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           : 'Strategy applied successfully.'
       );
     } catch (err) {
-      notify.error(err instanceof Error ? err.message : 'Failed to apply strategy preview.');
+      const currentState = useAppStore.getState();
+      if (
+        appliedVisibleState &&
+        strategyPreviewOperationGate.isCurrent(operationId) &&
+        matchesPlanLocator(
+          currentState.activePlanContext,
+          previousVisibleState.activePlanContext.id,
+          operationTargetBranch,
+        ) &&
+        currentState.activePlanContext === appliedVisibleState.activePlanContext &&
+        currentState.planNodes === appliedVisibleState.planNodes &&
+        currentState.predictedBranches === appliedVisibleState.predictedBranches &&
+        currentState.strategyMutationPreview === null
+      ) {
+        setActivePlanContext(previousVisibleState.activePlanContext);
+        setPlanNodes(previousVisibleState.planNodes);
+        setPredictedBranches(previousVisibleState.predictedBranches);
+        setStrategyMutationPreview(previousVisibleState.strategyMutationPreview);
+      }
+      notify.error(
+        err instanceof Error
+          ? err.message
+          : t('architect.strategyPreviewApplyError', 'Failed to apply strategy preview.')
+      );
     } finally {
       setIsApplyingStrategyPreview(false);
     }
@@ -1086,22 +1234,32 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPlanNodes,
     setPredictedBranches,
     setStrategyMutationPreview,
-    targetBranch,
+    strategyPreviewOperationGate,
     isApplyingStrategyPreview,
+    planNodes,
+    predictedBranches,
+    t,
   ]);
 
   const handleValidatePlan = async () => {
     if (!activePlanContext || isValidating) return;
     setIsValidating(true);
+    const capturedContext = activePlanContext;
+    const isCurrentValidation = () => {
+      const current = useAppStore.getState();
+      return current.mode === 'Architect' && current.activePlanContext === capturedContext;
+    };
     try {
       const { plan, provision } = await validatePlanAndProvisionBranches({
         branchName: targetBranch,
         planId: activePlanContext.id,
       });
+      if (!isCurrentValidation()) return;
       setPlanNodes(plan.nodes || []);
       setPredictedBranches(plan.predictedBranches || []);
-      setActivePlanContext({ ...activePlanContext, status: 'validated' });
       await useTaskStore.getState().refreshFromPlan();
+      if (!isCurrentValidation()) return;
+      setActivePlanContext({ ...capturedContext, status: 'validated' });
 
       const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
       const activationCandidateTask = getPlanActivationCandidateTask(

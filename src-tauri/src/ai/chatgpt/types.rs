@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
 
 pub(super) const CHATGPT_BROWSER_SOURCE: &str = "browser";
@@ -18,188 +19,34 @@ pub(super) const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
 pub(super) const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.112.0";
 pub(super) const TOKEN_REFRESH_LEEWAY_SECONDS: i64 = 300;
 pub(super) const AUTH_TIMEOUT_SECONDS: u64 = 180;
+pub(super) const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 pub(super) const CALLBACK_BIND_RETRY_ATTEMPTS: u32 = 10;
 pub(super) const CALLBACK_BIND_RETRY_DELAY_MS: u64 = 200;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiChatRequest {
-    pub request_id: String,
-    pub provider_id: String,
-    pub model_id: String,
-    pub reasoning_effort: Option<String>,
-    pub conversation_id: Option<String>,
-    pub messages: Vec<AiChatMessage>,
-    #[serde(default)]
-    pub tools: Vec<Value>,
-    pub tool_choice: Option<String>,
-    pub parallel_tool_calls: Option<bool>,
-    pub workspace_path: Option<String>,
-    pub default_workspace_path: Option<String>,
-    #[serde(default)]
-    pub project_mounts: Vec<AiProjectMount>,
-    pub virtual_root_enabled: Option<bool>,
-    pub focused_project_id: Option<String>,
-    #[serde(default)]
-    pub allowed_tool_ids: Vec<String>,
-    #[serde(default)]
-    pub copilot_send_timeout_ms: Option<i64>,
+pub(super) fn build_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("Failed to build ChatGPT HTTP client: {error}"))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiChatMessage {
-    pub role: String,
-    pub content: AiChatMessageContent,
-    #[serde(default)]
-    pub tool_calls: Vec<AiToolCall>,
-    pub tool_call_id: Option<String>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_input_items: Option<Vec<Value>>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_turn_state: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiToolCall {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub function: AiToolCallFunction,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiToolCallFunction {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum AiChatMessageContent {
-    Text(String),
-    Parts(Vec<AiChatMessagePart>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiChatMessagePart {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub text: Option<String>,
-    pub image_url: Option<AiChatImageUrl>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiChatImageUrl {
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiStreamChunkEvent {
-    pub request_id: String,
-    pub delta: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiStreamToolTraceEvent {
-    pub request_id: String,
-    pub tool_trace: AiToolTrace,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiStreamDoneEvent {
-    pub request_id: String,
-    pub output_text: String,
-    pub tool_calls: Vec<AiToolCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_items: Option<Vec<Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_input_items: Option<Vec<Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_turn_state: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_traces: Option<Vec<AiToolTrace>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hidden_context: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completion_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiStreamErrorEvent {
-    pub request_id: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiStreamTimelineEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub provider_type: String,
-    pub phase: String,
-    pub elapsed_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiAuthStartedEvent {
-    pub request_id: String,
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiAuthSuccessEvent {
-    pub request_id: String,
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiAuthCancelledEvent {
-    pub request_id: String,
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiAuthErrorEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiProjectMount {
-    pub project_id: String,
-    pub mount_name: String,
-    pub workspace_path: Option<String>,
-    pub display_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiToolTrace {
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub detail: Option<String>,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub batch_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at_ms: Option<u64>,
-}
+// Compatibility path for existing ChatGPT callers. Shared wire types live in ai::types.
+pub use crate::ai::types::*;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct ModelsCacheFile {
     pub(super) client_version: Option<String>,
-    pub(super) models: Vec<ModelsCacheEntry>,
+}
+
+// Macro owns this provenance record. Codex cache timestamps or private account hashes
+// cannot establish which authenticated session collected our persisted catalog.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct VerifiedModelsCatalog {
+    pub(super) account_id: String,
+    pub(super) base_url: String,
+    pub(super) plan_type: Option<String>,
+    pub(super) collected_at: DateTime<Utc>,
+    pub(super) model_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

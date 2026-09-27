@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { NotificationCenterItem } from './useNotificationCenterStore';
+import { isPreferenceValueValid } from '../services/preferenceValidation';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -161,6 +162,17 @@ describe('useNotificationCenterStore', () => {
     expect(items[2].description).toBe('Helpful context');
   });
 
+  it('persists a notification without a description as a valid preference', () => {
+    const store = notificationStore.useNotificationCenterStore.getState();
+    store.upsertItem(createNotificationItem(1));
+
+    expect(isPreferenceValueValid(
+      'notificationCenterItems',
+      notificationStore.useNotificationCenterStore.getState().items,
+      [],
+    )).toBe(true);
+  });
+
   it('trims history to the configured maximum', () => {
     const store = notificationStore.useNotificationCenterStore.getState();
 
@@ -245,6 +257,47 @@ describe('useNotificationCenterStore', () => {
         (item: { readAt: string | null }) => item.readAt !== null
       )
     ).toBe(true);
+  });
+
+  it('keeps the unread indicator and startup persistence aligned after read and clear actions', () => {
+    const store = notificationStore.useNotificationCenterStore.getState();
+    store.upsertItem(createNotificationItem(1, { title: 'Unread one' }));
+
+    expect(
+      notificationStore.hasUnreadNotifications(
+        notificationStore.useNotificationCenterStore.getState().items
+      )
+    ).toBe(true);
+
+    store.markAllRead();
+
+    const readItems = notificationStore.useNotificationCenterStore.getState().items;
+    expect(notificationStore.hasUnreadNotifications(readItems)).toBe(false);
+    expect(
+      JSON.parse(
+        localStorageMock.getItem(notificationStore.NOTIFICATION_CENTER_STORAGE_KEY)!
+      )[0].readAt
+    ).not.toBeNull();
+
+    store.upsertItem(createNotificationItem(2, { title: 'Unread two' }));
+    expect(
+      notificationStore.hasUnreadNotifications(
+        notificationStore.useNotificationCenterStore.getState().items
+      )
+    ).toBe(true);
+
+    store.clearAll();
+
+    expect(
+      notificationStore.hasUnreadNotifications(
+        notificationStore.useNotificationCenterStore.getState().items
+      )
+    ).toBe(false);
+    expect(
+      JSON.parse(
+        localStorageMock.getItem(notificationStore.NOTIFICATION_CENTER_STORAGE_KEY)!
+      )
+    ).toEqual([]);
   });
 
   it('preserves provided read state when items are upserted', () => {

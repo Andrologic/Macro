@@ -3,7 +3,9 @@ import { assistantProvenance, type AssistantProvenanceStorage } from './assistan
 import { persistAssistantCompletionResult, persistAssistantPartialResult, type ChatPersistenceIpc } from '../chatPersistenceService';
 import { messageText } from './conversationText';
 import type { DbMessage } from '../tauriIpc';
-import { __testables } from '../streamingChat';
+import { buildChatGptVisibleTurnContent } from '../ai/responsesCodec';
+import { buildAssistantChatCompletionProviderItem } from '../ai/chatCompletionsCodec';
+import { createStreamAccumulator } from '../ai/streamAccumulator';
 
 function setup() {
   const records = new Map<string, string>(); const calls: string[] = [];
@@ -27,8 +29,8 @@ const policy = { revision: 'visible-1', secrets: [] };
 const nativeItem = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 
 it('attests provider output ranges through the actual accumulator and shared final persistence, excluding system/tool text', async () => {
-  const nativeReasoning = __testables.buildChatGptVisibleTurnContent('Final native', 'Private reasoning');
-  const generic = __testables.buildAssistantChatCompletionProviderItem({ apiContent: 'Final generic',
+  const nativeReasoning = buildChatGptVisibleTurnContent('Final native', 'Private reasoning');
+  const generic = buildAssistantChatCompletionProviderItem({ apiContent: 'Final generic',
     visibleContent: '<think>Private reasoning</think>Final generic', reasoningContent: 'Private reasoning', reasoningDetails: [], toolCalls: [] });
   for (const [content, expected, providerItems] of [
     ['Plain native final', 'Plain native final', [nativeItem('Plain native final')]],
@@ -36,7 +38,7 @@ it('attests provider output ranges through the actual accumulator and shared fin
     [generic!.visible_content!, 'Final generic', [generic]],
   ] as const) {
     const env = setup();
-    const accumulator = __testables.createStreamAccumulator({ onToken: () => undefined });
+    const accumulator = createStreamAccumulator({ onToken: () => undefined });
     accumulator.appendSystemChunk('\nInternal web query and tool arguments /private/tool\n');
     accumulator.appendProviderDelta(content); accumulator.flushProviderDelta();
     accumulator.appendSystemChunk('\nInternal API error detail\n');

@@ -1,15 +1,23 @@
 #!/usr/bin/env bun
 
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { UPDATER_TARGETS } from './updater-manifest.mjs';
 
 const STABLE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const PREVIEW_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(?:nightly\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)|rc\.(0|[1-9][0-9]*))$/;
+const RELEASE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_TAURI_CONFIG = resolve(RELEASE_DIRECTORY, '../../src-tauri/tauri.conf.json');
+const MINISIGN_VERIFIER_MANIFEST = resolve(RELEASE_DIRECTORY, 'minisign-verifier/Cargo.toml');
 
-function normalizedVersion(version) {
+function normalizedVersion(version, channel) {
   const value = String(version ?? '').replace(/^v/, '');
+  if (channel === 'preview') {
+    return PREVIEW_VERSION.test(value) ? value : null;
+  }
   return STABLE_VERSION.test(value) ? value : null;
 }
 
@@ -26,15 +34,24 @@ function assetNameFromUrl(value) {
   }
 }
 
-export function validateUpdaterManifest(manifest, { repository = 'Andrologic/Macro' } = {}) {
+export function validateUpdaterManifest(
+  manifest,
+  { repository = 'Andrologic/Macro', channel = 'stable' } = {},
+) {
   const errors = [];
   if (!manifest || typeof manifest !== 'object') {
     return ['Manifest must be a JSON object.'];
   }
+  if (channel !== 'stable' && channel !== 'preview') {
+    return [`Unsupported updater channel: ${channel}.`];
+  }
 
-  const version = normalizedVersion(manifest.version);
+  const version = normalizedVersion(manifest.version, channel);
   if (!version) {
-    errors.push(`Manifest version must be a stable x.y.z version; found "${manifest.version}".`);
+    const expected = channel === 'preview'
+      ? 'a nightly or rc semantic version'
+      : 'a stable x.y.z version';
+    errors.push(`Manifest version must be ${expected}; found "${manifest.version}".`);
   }
   if (typeof manifest.notes !== 'string') {
     errors.push('Manifest notes must be a string.');
@@ -76,11 +93,12 @@ export function validateUpdaterManifest(manifest, { repository = 'Andrologic/Mac
       errors.push(`Manifest URL is invalid for ${target}.`);
       continue;
     }
-    const expectedPath = version
-      ? `/${repository}/releases/download/v${version}/`
+    const releaseTag = channel === 'preview' ? 'preview' : version ? `v${version}` : null;
+    const expectedPath = releaseTag
+      ? `/${repository}/releases/download/${releaseTag}/`
       : `/${repository}/releases/download/`;
     if (url.protocol !== 'https:' || url.hostname !== 'github.com' || !url.pathname.startsWith(expectedPath)) {
-      errors.push(`Manifest URL for ${target} must be an HTTPS URL pinned to the v${version || 'x.y.z'} GitHub tag.`);
+      errors.push(`Manifest URL for ${target} must be an HTTPS URL pinned to the ${releaseTag || 'vX.Y.Z'} GitHub tag.`);
     }
     if (!assetNameFromUrl(platform.url)) {
       errors.push(`Manifest URL has no asset name for ${target}.`);
@@ -104,7 +122,47 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
+function configuredUpdaterPublicKey(tauriConfigPath) {
+  const config = JSON.parse(readFileSync(resolve(tauriConfigPath), 'utf8'));
+  const publicKey = config?.plugins?.updater?.pubkey;
+  if (typeof publicKey !== 'string' || publicKey.trim() === '') {
+    throw new Error('Configured updater public key is missing from tauri.conf.json.');
+  }
+  return publicKey.trim();
+}
+
+function verifyMinisignAssets(assetPairs, publicKey) {
+  const args = [
+    'run',
+    '--quiet',
+    '--locked',
+    '--manifest-path',
+    MINISIGN_VERIFIER_MANIFEST,
+    '--',
+    '--public-key-b64',
+    publicKey,
+  ];
+  for (const pair of assetPairs) {
+    args.push('--asset', pair.assetPath, '--signature', pair.signaturePath);
+  }
+
+  const result = spawnSync('cargo', args, { encoding: 'utf8' });
+  if (result.error) {
+    throw new Error(`Unable to run the standalone minisign verifier: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const details = (result.stderr || result.stdout || '').trim();
+    throw new Error(details || `Standalone minisign verifier exited with status ${result.status}.`);
+  }
+  return (result.stdout || '').trim();
+}
+
+export function verifyLocalUpdaterAssets(
+  manifest,
+  assetRoot,
+  checksumsPath,
+  { tauriConfigPath = DEFAULT_TAURI_CONFIG, publicKey } = {},
+) {
   const errors = [];
   const root = resolve(assetRoot);
   if (!existsSync(root) || !statSync(root).isDirectory()) {
@@ -112,6 +170,7 @@ export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
   }
 
   const assets = new Map();
+  const assetPairs = [];
   for (const target of UPDATER_TARGETS) {
     const platform = manifest.platforms?.[target];
     const assetName = platform ? assetNameFromUrl(platform.url) : null;
@@ -130,6 +189,18 @@ export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
       errors.push(`Missing downloaded updater signature for ${target}: ${assetName}.sig`);
     } else if (expectedSignature && readFileSync(signaturePath, 'utf8').trim() !== expectedSignature) {
       errors.push(`Updater signature content does not match latest.json for ${target}: ${assetName}.sig`);
+    }
+    if (existsSync(artifactPath) && statSync(artifactPath).isFile()
+      && existsSync(signaturePath) && statSync(signaturePath).isFile()) {
+      assetPairs.push({ assetPath: artifactPath, signaturePath });
+    }
+  }
+
+  if (assetPairs.length === UPDATER_TARGETS.length) {
+    try {
+      verifyMinisignAssets(assetPairs, publicKey ?? configuredUpdaterPublicKey(tauriConfigPath));
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -178,7 +249,7 @@ function argumentValue(args, name) {
 }
 
 function printUsage() {
-  console.log('Usage: bun dev/release/verify-updater.mjs --manifest <path-or-https-url> [--asset-root <path>] [--checksums <path>]');
+  console.log('Usage: bun dev/release/verify-updater.mjs --manifest <path-or-https-url> [--channel <stable|preview>] [--asset-root <path>] [--checksums <path>] [--tauri-config <path>]');
 }
 
 async function main() {
@@ -190,17 +261,20 @@ async function main() {
   const source = argumentValue(args, '--manifest');
   if (!source) throw new Error('Argument --manifest is required.');
   const manifest = await readManifest(source);
-  const errors = validateUpdaterManifest(manifest);
+  const channel = argumentValue(args, '--channel') ?? 'stable';
+  const errors = validateUpdaterManifest(manifest, { channel });
   const assetRoot = argumentValue(args, '--asset-root');
   if (assetRoot) {
-    errors.push(...verifyLocalUpdaterAssets(manifest, assetRoot, argumentValue(args, '--checksums')));
+    errors.push(...verifyLocalUpdaterAssets(manifest, assetRoot, argumentValue(args, '--checksums'), {
+      tauriConfigPath: argumentValue(args, '--tauri-config') ?? DEFAULT_TAURI_CONFIG,
+    }));
   }
   if (errors.length > 0) {
     console.error('Updater release verification failed:');
     errors.forEach((error) => console.error(`- ${error}`));
     process.exit(1);
   }
-  console.log(`Updater release verification passed for v${normalizedVersion(manifest.version)}.`);
+  console.log(`Updater release verification passed for ${channel} ${normalizedVersion(manifest.version, channel)}.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

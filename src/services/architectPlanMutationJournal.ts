@@ -9,7 +9,7 @@ export interface ArchitectPlanMutationJournalEntry<TPayload = unknown> {
   workspaceKey: string;
   branchName: string;
   planId: string;
-  operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair' | 'bind' | 'activate' | 'chat' | 'auto_heal' | 'orphan_cleanup';
+  operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair' | 'bind' | 'activate' | 'chat' | 'auto_heal' | 'orphan_cleanup' | 'artifacts';
   phase: 'prepared' | 'applying' | 'files_applied' | 'committing';
   payload: TPayload;
   createdAt: string;
@@ -21,7 +21,7 @@ const isEntry = (value: unknown): value is ArchitectPlanMutationJournalEntry => 
   const entry = value as Partial<ArchitectPlanMutationJournalEntry>;
   return !!entry && typeof entry.id === 'string' && typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0 && typeof entry.branchName === 'string' &&
     typeof entry.planId === 'string' &&
-    ['create', 'update', 'archive', 'restore', 'delete', 'repair', 'bind', 'activate', 'chat', 'auto_heal', 'orphan_cleanup'].includes(entry.operation || '') &&
+    ['create', 'update', 'archive', 'restore', 'delete', 'repair', 'bind', 'activate', 'chat', 'auto_heal', 'orphan_cleanup', 'artifacts'].includes(entry.operation || '') &&
     ['prepared', 'applying', 'files_applied', 'committing'].includes(entry.phase || '') &&
     typeof entry.createdAt === 'string' && typeof entry.updatedAt === 'string' &&
     entry.payload !== undefined;
@@ -87,6 +87,19 @@ const loadUnlocked = async (
     const values = parseArray(expectedValueJson);
     const valid = values.filter(isEntry);
     const invalid = values.filter((entry) => !isEntry(entry));
+    if (values.some((value) => {
+      if (value === null || typeof value !== 'object') return false;
+      const entry = value as { operation?: unknown; id?: unknown; payload?: unknown };
+      const artifactIntent = entry.operation === 'artifacts' ||
+        (typeof entry.id === 'string' && /^plan:v1:[^:]+:[^:]+:artifacts:/.test(entry.id)) ||
+        (entry.payload !== null && typeof entry.payload === 'object' &&
+          Object.prototype.hasOwnProperty.call(entry.payload, 'files'));
+      return artifactIntent && (!isEntry(value) || value.operation !== 'artifacts');
+    })) {
+      // Preserve the blocking intent and its before-images even when the envelope
+      // cannot be parsed. Quarantine alone would allow partially applied reviews.
+      throw new Error('Invalid artifact recovery journal envelope.');
+    }
     if (invalid.length === 0) return valid;
 
     if (options?.pilotOnly) {

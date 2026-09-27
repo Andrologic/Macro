@@ -316,6 +316,10 @@ Avant ce premier envoi, l'instruction de démarrage flotte au bas de la conversa
 
 Macro persiste localement le brouillon non envoyé de chaque composer. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
 
+La sauvegarde des brouillons applique les mêmes limites que leur restauration. Un dépassement ou une donnée illisible laisse la copie précédente intacte et affiche une erreur de persistance ; le contenu courant reste dans la session. Un chargement des conversations en échec ne suffit pas à supprimer leurs brouillons.
+
+Un message accepté en file pendant un tour actif est sauvegardé localement avec son mode, sa tâche ou son plan, ses références et son choix de modèle. La navigation suivante ne change pas cette intention. Macro conserve la soumission jusqu'à la sauvegarde du message et de ses images. Après une interruption ou un redémarrage, un panneau de récupération persistant permet de réessayer, même lorsque les notifications sont désactivées ; un message déjà enregistré n'est pas renvoyé. Les droits et les secrets sont relus avant l'exécution. Une conversation archivée garde sa file suspendue ; sa suppression définitive supprime aussi sa file.
+
 Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
@@ -917,6 +921,10 @@ Macro doit supporter une résolution automatique assistée par IA des merge conf
 
 Cette résolution automatique ne concerne que les conflits issus des merges pilotés par le logiciel et non les situations externes arbitraires.
 
+Chaque résolution est liée à sa tâche et à une session de fusion vérifiée. Une fusion externe ou appartenant à une autre tâche reste intacte. Une actualisation du statut conserve le brouillon du fichier ; le rechargement du contenu et le changement de fichier demandent confirmation si des modifications ne sont pas enregistrées. Choisir un côté supprimé conserve une intention de suppression jusqu'à l'enregistrement, distincte d'un fichier vide.
+
+Si le nettoyage échoue après l'intégration, une nouvelle tentative reprend les ressources restantes sans recréer les worktrees déjà supprimés. Un nouveau commit sur la branche source ou une cible ayant divergé du résultat enregistré bloque cette reprise.
+
 ---
 
 ## 16. Règles Git et exécution
@@ -976,6 +984,10 @@ Le mode Chat doit conserver un historique local des conversations.
 Une future synchronisation de cet historique peut exister plus tard, mais ne fait pas partie du comportement local minimal.
 
 ### 17.5 Accès outils
+
+Les résultats MCP conservent des blocs typés dans l’historique. Le
+[contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
+modèle, les replis explicites et le retour à une ancienne version.
 
 Le mode Chat peut accéder :
 

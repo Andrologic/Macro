@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  createArchitectPlanMutationId,
   loadArchitectPlanMutationJournal,
   quarantineArchitectPlanMutationJournal,
   removeArchitectPlanMutationJournal,
@@ -48,6 +49,18 @@ const validEntry = (overrides: Partial<ArchitectPlanMutationJournalEntry> = {}):
 });
 
 describe('architectPlanMutationJournal', () => {
+  it('does not mistake a branch named artifacts for the mutation operation', async () => {
+    const settings = new Map<string, string>();
+    const transport = createTransport(settings);
+    const identity = { branchName: 'artifacts', planId: 'plan-1', operation: 'update' as const };
+    const entry = validEntry({ ...identity, id: createArchitectPlanMutationId(identity) });
+    await upsertArchitectPlanMutationJournal(entry, transport);
+    await upsertArchitectPlanMutationJournal({ ...entry, phase: 'applying' }, transport);
+    expect(await loadArchitectPlanMutationJournal(transport)).toEqual([{ ...entry, phase: 'applying' }]);
+    await removeArchitectPlanMutationJournal(entry.id, transport);
+    expect(await loadArchitectPlanMutationJournal(transport)).toEqual([]);
+  });
+
   it('quarantines malformed entries, removes them from the primary journal, and preserves healthy work', async () => {
     const settings = new Map<string, string>([[
       JOURNAL_KEY,

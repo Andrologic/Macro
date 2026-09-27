@@ -8,6 +8,7 @@ import { getServiceRuntimeCapabilities } from '../serviceRuntime';
 import { useSkillsStore } from '../../stores/useSkillsStore';
 import type { ToolResultResolution } from '../streamingChat';
 import { formatScriptResult } from './activation';
+import type { ProjectExecutionContext } from '../projectExecutionContext';
 
 type SkillToolArgs = Record<string, unknown>;
 
@@ -62,6 +63,7 @@ export const handleSkillToolCall = async (
   conversationId: string,
   permissionSnapshot: SkillPermissionSnapshot | null =
     useSkillsStore.getState().getSkillPermissionSnapshot(conversationId),
+  executionContext?: ProjectExecutionContext,
 ): Promise<ToolResultResolution | string | undefined> => {
   if (normalizedToolName === 'skill_activate') {
     const skillId = readStringArg(args, 'skill_id', 'skillId');
@@ -105,6 +107,13 @@ export const handleSkillToolCall = async (
     const result = await useSkillsStore.getState().runSkillScriptResult({
       skillId,
       scriptPath,
+      executionContext: {
+        projectId: executionContext?.projectId ?? null,
+        workspacePath: executionContext?.projectId &&
+          executionContext.actionableProjectIds.includes(executionContext.projectId)
+          ? executionContext.workspacePathsByProjectId[executionContext.projectId] ?? null
+          : null,
+      },
       args: scriptArgs,
       timeoutMs:
         typeof args.timeout_ms === 'number'

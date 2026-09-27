@@ -1,3 +1,4 @@
+import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
   useCallback,
@@ -79,6 +80,7 @@ import {
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
+import { consumeComposerImagePaste } from './composer/composerPaste';
 import {
   ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
   dispatchArchitectPlanSelectorRequest,
@@ -94,7 +96,8 @@ import {
 } from '../implement/TaskBlockedState';
 import {
   buildChatTranscriptItems,
-  getTranscriptMessageIndexById,
+  buildTranscriptMessageIndex,
+  buildTranscriptBootstrapWindow,
   isChatTranscriptCompactionProgressPhase,
   type ChatTranscriptItem,
   type ChatTranscriptMessageItem,
@@ -358,8 +361,18 @@ const getAssistantCompletionNotice = (
           'The final no-tool pass did not produce a usable answer, so Macro showed a fallback summary.'
         ),
       };
-    default:
+    case undefined:
+    case 'completed':
+    case 'length_recovered':
+    case 'incomplete_recovered':
       return null;
+    default:
+      return {
+        title: t('chat.providerCompletionNoticeTitle', 'Response interrupted'),
+        description: t('chat.providerCompletionNoticeDescription',
+          'The provider ended this response with reason: {{reason}}. You can revise your request and try again.',
+          { reason: completionReason }),
+      };
   }
 };
 
@@ -429,6 +442,8 @@ interface ChatMessageRowProps {
   ) => void;
   onEditCancel: () => void;
   onCopy: (content: string, messageId: string) => Promise<void>;
+  onRetryPersistence: (messageId: string) => Promise<void>;
+  onDeleteUnsavedResponse: (messageId: string) => Promise<void>;
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   skillTurnFeedback?: SkillTurnFeedback | null;
@@ -758,6 +773,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onOpenImagePreview,
   onEditCancel,
   onCopy,
+  onRetryPersistence,
+  onDeleteUnsavedResponse,
   onEditStart,
   onRegenerate,
   skillTurnFeedback,
@@ -782,6 +799,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     message.role === 'assistant' &&
     (message.content.trim().length > 0 ||
       (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
+  const hasAssistantPersistenceFailure =
+    message.role === 'assistant' &&
+    (message.persistence_state === 'failed' || message.persistence_state === 'retrying');
+  const isRetryingAssistantPersistence = message.persistence_state === 'retrying';
 
   return (
     <div
@@ -817,7 +838,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             isEditing
               ? 'p-2'
               : message.role === 'assistant'
-                ? hasAssistantCompletionNotice
+                ? hasAssistantPersistenceFailure
+                  ? 'p-2 pb-2'
+                  : hasAssistantCompletionNotice
                   ? 'p-2 pb-10'
                   : 'p-2 pb-6'
                 : isArchitectActionMessage
@@ -857,6 +880,67 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                     completionReason={message.completion_reason}
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
+                  {hasAssistantPersistenceFailure && (
+                    <div
+                      data-chat-unsaved-assistant-response={message.persistence_state}
+                      role="status"
+                      className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs"
+                    >
+                      <div className="flex items-start gap-2">
+                        <Icon
+                          name={isRetryingAssistantPersistence ? 'loader' : 'triangle-alert'}
+                          size={13}
+                          className={cn(
+                            'mt-0.5 shrink-0 text-amber-600 dark:text-amber-300',
+                            isRetryingAssistantPersistence && 'animate-spin',
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-amber-800 dark:text-amber-200">
+                            {isRetryingAssistantPersistence
+                              ? t('chat.unsavedAssistant.saving', 'Saving response...')
+                              : t('chat.unsavedAssistant.label', 'Not saved')}
+                          </div>
+                          {!isRetryingAssistantPersistence && (
+                            <div className="mt-0.5 break-words text-muted-foreground">
+                              {message.persistence_error || t(
+                                'chat.unsavedAssistant.description',
+                                'Macro could not save this response. Retry or remove it before sending another message.',
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void onRetryPersistence(message.id)}
+                          disabled={isRetryingAssistantPersistence}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50"
+                        >
+                          <Icon name="refresh-cw" size={11} />
+                          {t('common.retry', 'Retry')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onCopy(message.content, message.id)}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground transition-colors hover:bg-accent"
+                        >
+                          <Icon name="copy" size={11} />
+                          {t('common.copy', 'Copy')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteUnsavedResponse(message.id)}
+                          disabled={isRetryingAssistantPersistence}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2 font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-wait disabled:opacity-50"
+                        >
+                          <Icon name="trash" size={11} />
+                          {t('common.delete', 'Delete')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : architectActionMessage ? (
                 <ArchitectActionMessage action={architectActionMessage} />
@@ -936,7 +1020,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           )}
 
-          {message.role === 'assistant' && !isEditing && (
+          {message.role === 'assistant' && !isEditing && !hasAssistantPersistenceFailure && (
             <div className="absolute bottom-1 right-2 flex items-center gap-1">
               <button
                 onClick={() => void onCopy(message.content, message.id)}
@@ -982,6 +1066,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
+    prev.onRetryPersistence === next.onRetryPersistence &&
+    prev.onDeleteUnsavedResponse === next.onDeleteUnsavedResponse &&
     prev.skillTurnFeedback === next.skillTurnFeedback &&
     prev.standaloneLaunchProgress === next.standaloneLaunchProgress
 );
@@ -1051,6 +1137,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
     clearConversationRuntimeError,
+    retryAssistantPersistence,
+    deleteUnsavedAssistantResponse,
     editMessage,
     getAgentCodeReplayPreview,
     restoreAgentCodeForReplay,
@@ -1112,6 +1200,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
     clearConversationRuntimeError: state.clearConversationRuntimeError,
+    retryAssistantPersistence: state.retryAssistantPersistence,
+    deleteUnsavedAssistantResponse: state.deleteUnsavedAssistantResponse,
     editMessage: state.editMessage,
     getAgentCodeReplayPreview: state.getAgentCodeReplayPreview,
     restoreAgentCodeForReplay: state.restoreAgentCodeForReplay,
@@ -1177,9 +1267,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
-  const secondarySendBinding = useShortcutsStore(
-    (state) => state.bindings ? state.bindings['chat.secondarySend'] : 'Mod+Enter',
-  );
+  const secondarySendBinding = useShortcutBinding('chat.secondarySend');
   const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -1217,6 +1305,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   const composerFileInputRef = useRef<HTMLInputElement>(null);
   const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
+  const activeTurnSubmissionInFlightRef = useRef(false);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
@@ -1272,6 +1361,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         )
       : [],
     [citations, selectedConversationId],
+  );
+  const hasUnsavedAssistantResponse = useMemo(
+    () =>
+      currentMessages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          (message.persistence_state === 'failed' ||
+            message.persistence_state === 'retrying'),
+      ),
+    [currentMessages],
   );
   const activeStandaloneLaunchProgress = selectedConversationId
     ? standaloneTaskLaunchByConversationId[selectedConversationId]
@@ -1331,6 +1430,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isContextStreaming || isPreparingSend;
+  const isPersistingAssistantResponse =
+    selectedConversationRuntime.phase === 'persisting';
+  const isConversationMutationPending =
+    isBusySending || isPersistingAssistantResponse;
   const isManualCompacting = manualCompactionPhase !== 'idle';
   const isActiveContextCompacting = isRuntimeCompacting || isManualCompacting;
   const isContextOverflowRecovering =
@@ -1510,11 +1613,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isTranscriptActivityActive =
     isContextStreaming ||
     isPreparingSend ||
+    isPersistingAssistantResponse ||
     isContextOverflowRecovering ||
     Boolean(activeTranscriptProgressPhase);
 
   const handleManualCompaction = useCallback(async () => {
-    if (!selectedConversationId || isManualCompacting || isBusySending) {
+    if (
+      !selectedConversationId ||
+      isManualCompacting ||
+      isConversationMutationPending
+    ) {
       return;
     }
     setManualCompactionPhase('analyzing');
@@ -1549,7 +1657,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     compactConversationNow,
-    isBusySending,
+    isConversationMutationPending,
     isManualCompacting,
     refreshConversationContextDiagnostics,
     selectedConversationId,
@@ -1994,6 +2102,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
+    isPersistingAssistantResponse ||
+    hasUnsavedAssistantResponse ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
   const selectedGlobalProject = useMemo(
@@ -2259,7 +2369,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isModeProjectWorkspaceMissing ||
     !activeArchitectPlanId ||
     isConversationPending ||
-    isBusySending ||
+    isConversationMutationPending ||
     isStrategyMutationLocked;
   const architectButtonActions = useMemo(() => buildArchitectButtonActions(t), [t]);
   const architectStrategyProgressButton = useMemo<ArchitectToolbarButton | null>(() => {
@@ -2300,147 +2410,63 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : undefined,
   });
   const messageIndexById = useMemo(
-    () => {
-      const indexed = new Map<string, number>();
-      for (const message of currentMessages) {
-        const transcriptIndex = getTranscriptMessageIndexById(
-          transcriptItems,
-          message.id,
-        );
-        if (transcriptIndex !== null) {
-          indexed.set(message.id, transcriptIndex);
-        }
-      }
-      return indexed;
-    },
-    [currentMessages, transcriptItems]
+    () => buildTranscriptMessageIndex(transcriptItems),
+    [transcriptItems]
   );
+  const bootstrapWindow = useMemo(
+    () => virtualMessageItems.length > 0 ? null : buildTranscriptBootstrapWindow(
+      transcriptItems,
+      (item) => item.kind === 'message' ? 220 : CHAT_COMPACTION_ROW_ESTIMATED_SIZE,
+      CHAT_TRANSCRIPT_ITEM_GAP,
+    ),
+    [transcriptItems, virtualMessageItems.length]
+  );
+  const transcriptGapAdjustments = useMemo(() => {
+    let total = 0;
+    const beforeRow: number[] = [];
+    const afterRow: number[] = [];
+    for (const [index, item] of transcriptItems.entries()) {
+      const previousItem = transcriptItems[index - 1];
+      const hasNext = index < transcriptItems.length - 1;
+      const isCompactionItem = item.kind !== 'message';
+      const isArchitectActionItem = item.kind === 'message' &&
+        item.message.role === 'user' &&
+        Boolean(resolveArchitectButtonActionFromContent(item.message.content, t));
+      if (isCompactionItem && previousItem?.kind === 'message' &&
+          previousItem.message.role === 'assistant') {
+        total += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+      }
+      if (isArchitectActionItem && previousItem) {
+        total += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
+      }
+      const before = total;
+      if (isCompactionItem && hasNext) total += CHAT_TRANSCRIPT_ITEM_GAP;
+      if (isArchitectActionItem && hasNext) total += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
+      beforeRow.push(before);
+      afterRow.push(total);
+    }
+    return { beforeRow, afterRow, total };
+  }, [t, transcriptItems]);
   const renderedMessageItems = useMemo(
     () => {
-      const sourceItems =
-        virtualMessageItems.length > 0
-          ? virtualMessageItems
-          : (() => {
-              let start = 0;
-              return transcriptItems.map((item, index) => {
-                const size =
-                  item.kind === 'compaction_boundary'
-                    ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
-                    : item.kind === 'compaction_progress'
-                      ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
-                      : 220;
-                const renderedItem = {
-                  index,
-                  key: item.key,
-                  size,
-                  start,
-                  item,
-                };
-                start += size + CHAT_TRANSCRIPT_ITEM_GAP;
-                return renderedItem;
-              });
-            })();
-
-      return sourceItems.reduce<{
-        items: typeof sourceItems;
-        positionAdjustment: number;
-      }>((state, item) => {
-        const previousItem = transcriptItems[item.index - 1];
-        const isArchitectActionItem =
-          item.item.kind === 'message' &&
-          item.item.message.role === 'user' &&
-          Boolean(resolveArchitectButtonActionFromContent(item.item.message.content, t));
-        const isCompactionItem =
-          item.item.kind === 'compaction_boundary' ||
-          item.item.kind === 'compaction_progress';
-        const assistantGapAdjustment =
-          isCompactionItem &&
-          previousItem?.kind === 'message' &&
-          previousItem.message.role === 'assistant'
-            ? CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION
-            : 0;
-        const architectActionTopGapAdjustment =
-          isArchitectActionItem && previousItem
-            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
-            : 0;
-        const adjustmentBeforeRender =
-          state.positionAdjustment +
-          assistantGapAdjustment +
-          architectActionTopGapAdjustment;
-        const nextItem = transcriptItems[item.index + 1];
-        const compactionFollowingGapAdjustment =
-          isCompactionItem && nextItem ? CHAT_TRANSCRIPT_ITEM_GAP : 0;
-        const architectActionFollowingGapAdjustment =
-          isArchitectActionItem && nextItem
-            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
-            : 0;
-        return {
-          items: [
-            ...state.items,
-            {
-              ...item,
-              start: item.start - adjustmentBeforeRender,
-            },
-          ],
-          positionAdjustment:
-            adjustmentBeforeRender +
-            compactionFollowingGapAdjustment +
-            architectActionFollowingGapAdjustment,
-        };
-      }, { items: [], positionAdjustment: 0 }).items;
+      const sourceItems = bootstrapWindow?.rows ?? virtualMessageItems;
+      // Virtualizer offsets already select the visible window. Preserve its local
+      // spacing correction; the bootstrap tail instead starts in the full transcript.
+      const firstIndex = sourceItems[0]?.index ?? 0;
+      const precedingAdjustment = !bootstrapWindow && firstIndex > 0
+        ? transcriptGapAdjustments.afterRow[firstIndex - 1]
+        : 0;
+      return sourceItems.map((item) => ({
+        ...item,
+        start: item.start - transcriptGapAdjustments.beforeRow[item.index] + precedingAdjustment,
+      }));
     },
-    [t, transcriptItems, virtualMessageItems]
+    [virtualMessageItems, bootstrapWindow, transcriptGapAdjustments]
   );
-  const compactionGapAdjustment = useMemo(
-    () =>
-      transcriptItems.reduce((total, item, index) => {
-        let adjustment = total;
-        const isCompactionItem =
-          item.kind === 'compaction_boundary' || item.kind === 'compaction_progress';
-        const isArchitectActionItem =
-          item.kind === 'message' &&
-          item.message.role === 'user' &&
-          Boolean(resolveArchitectButtonActionFromContent(item.message.content, t));
-
-        if (isCompactionItem) {
-          const previousItem = transcriptItems[index - 1];
-          if (
-            previousItem?.kind === 'message' &&
-            previousItem.message.role === 'assistant'
-          ) {
-            adjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
-          }
-          if (index < transcriptItems.length - 1) {
-            adjustment += CHAT_TRANSCRIPT_ITEM_GAP;
-          }
-        }
-
-        if (
-          isArchitectActionItem &&
-          index > 0
-        ) {
-          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
-        }
-        if (
-          isArchitectActionItem &&
-          index < transcriptItems.length - 1
-        ) {
-          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
-        }
-        return adjustment;
-      }, 0),
-    [t, transcriptItems]
+  const renderedMessageTotalSize = Math.max(
+    0,
+    (bootstrapWindow?.totalSize ?? virtualMessageTotalSize) - transcriptGapAdjustments.total,
   );
-  const renderedMessageTotalSize =
-    virtualMessageItems.length > 0
-      ? Math.max(0, virtualMessageTotalSize - compactionGapAdjustment)
-      : Math.max(
-          0,
-          renderedMessageItems.reduce(
-            (total, item) => Math.max(total, item.start + item.size),
-            0,
-          )
-        );
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
@@ -2461,8 +2487,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const jumpToBottom = () => {
       const container = scrollContainerRef.current;
       if (!container) return;
-      if (currentMessages.length > 0) {
-        scrollToMessageIndex(currentMessages.length - 1, { align: 'end' });
+      if (transcriptItems.length > 0) {
+        scrollToMessageIndex(transcriptItems.length - 1, { align: 'end' });
       }
       container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
     };
@@ -2474,7 +2500,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         pendingConversationJumpRef.current = null;
       });
     });
-  }, [currentMessages.length, scrollContainerRef, scrollToMessageIndex, selectedConversationId]);
+  }, [transcriptItems.length, scrollContainerRef, scrollToMessageIndex, selectedConversationId]);
 
   const ensureConversation = useCallback(async (): Promise<string | null> => {
     if (mode === 'Architect' && isWorkspaceMissing) return null;
@@ -2500,7 +2526,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     goalObjective?: string;
   }): Promise<boolean> => {
     if (!runtimeCapabilities.implementExecution) return false;
-    if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
+    if (
+      mode !== 'Implement' ||
+      !selectedTask ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return false;
     if (!selectedTaskRequiresKickoff) return false;
     if (selectedTask.draft) return false;
     if (!selectedProviderId || !selectedModelId) return false;
@@ -2631,7 +2662,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerDraftContextKey,
     getComposerDraftForContext,
     isConversationPending,
-    isBusySending,
+    isConversationMutationPending,
     mode,
     migrateComposerDraftContext,
     selectedModelId,
@@ -2709,43 +2740,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   };
 
-  const readImageFilesFromClipboardApi = async (): Promise<File[]> => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard?.read) return [];
-
-    try {
-      const clipboardItems = await navigator.clipboard.read();
-      const files: File[] = [];
-
-      for (const item of clipboardItems) {
-        const imageType = item.types.find((type) => type.startsWith('image/'));
-        if (!imageType) continue;
-
-        const blob = await item.getType(imageType);
-        const extension = imageType.split('/')[1] || 'png';
-        files.push(new File([blob], `pasted-${Date.now()}.${extension}`, { type: imageType }));
-      }
-
-      return files;
-    } catch (error) {
-      console.error('Clipboard API image read failed:', error);
-      return [];
-    }
-  };
-
   const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
     if (isComposerDisabled || isSpeechEnhancing || attachmentImportInFlightRef.current) return;
-    const originalContextKey = renderedComposerDraftContextKeyRef.current;
-    const directFiles = Array.from(event.clipboardData.items || [])
-      .filter((item) => item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => Boolean(file));
-
+    const files = consumeComposerImagePaste(event);
+    if (files.length === 0) return;
     attachmentImportInFlightRef.current = true;
     setIsAttachingFiles(true);
     try {
-      const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
-      if (files.length === 0 || originalContextKey !== renderedComposerDraftContextKeyRef.current) return;
-      event.preventDefault();
       await appendPastedImages(files);
     } finally {
       attachmentImportInFlightRef.current = false;
@@ -2939,16 +2940,33 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
     if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
+    if (activeTurnSubmissionInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
+      activeTurnSubmissionInFlightRef.current = true;
+      const submittedConversationId = selectedConversationId;
+      const submittedContextKey = composerDraftContextKey;
+      const submittedDraft: SavedComposerDraft = {
+        savedDraftText: textOverride ?? composerEditorRef.current?.getTextContent() ?? inputValue,
+        savedDraftImages: [...composerImages],
+        savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+      };
+      const submittedDraftContextKeys = [
+        ...new Set([
+          submittedContextKey,
+          `conversation:${submittedConversationId}`,
+        ]),
+      ];
       try {
-        const internalAgentProfile = getConflictAssistantInternalAgentProfile(selectedConversationId);
+        const internalAgentProfile = getConflictAssistantInternalAgentProfile(
+          submittedConversationId,
+        );
         await submitDuringActiveTurn(
           {
-            conversationId: selectedConversationId,
+            conversationId: submittedConversationId,
             content: text,
             taskId: implementTaskIdForSend,
             images: [...composerImages],
@@ -2957,19 +2975,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
         if (internalAgentProfile) {
-          clearConflictAssistantInternalAgentProfile(selectedConversationId);
+          clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
-        clearComposerDraftForContext(composerDraftContextKey);
-        clearComposerDraftForContext(`conversation:${selectedConversationId}`);
-        composerEditorRef.current?.clear();
-        clearComposerContextRefs();
-        setComposerImages([]);
-        setInputValue('');
-        resetPromptHistoryNavigation();
+        submittedDraftContextKeys.forEach((contextKey) => {
+          const storedDraft = getComposerDraftForContext(contextKey);
+          if (storedDraft && composerDraftMatchesSavedDraft(storedDraft, submittedDraft)) {
+            clearComposerDraftForContext(contextKey);
+          }
+        });
+        const composerStillContainsSubmittedDraft =
+          activeComposerDraftContextKeyRef.current === submittedContextKey &&
+          composerDraftMatchesSavedDraft(latestComposerDraftRef.current, submittedDraft);
+        if (composerStillContainsSubmittedDraft) {
+          // The saved draft may lag behind the editor's 250 ms persistence timer.
+          // Acceptance consumes this context even when storage still holds an older edit.
+          clearComposerDraftForContext(submittedContextKey);
+          composerEditorRef.current?.clear();
+          clearComposerContextRefs();
+          setComposerImages([]);
+          setInputValue('');
+          latestComposerDraftRef.current = {
+            text: '',
+            images: [],
+            contextRefs: [],
+          };
+          resetPromptHistoryNavigation();
+        }
       } catch (error) {
         notify.error(t('chat.activeTurnSendFailed', 'Message not sent'), {
           description: toServiceError(error).message,
         });
+      } finally {
+        activeTurnSubmissionInFlightRef.current = false;
       }
       return;
     }
@@ -2994,7 +3031,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if (isImplementComposerInKickoffMode) {
-      if (!text || isBusySending) return;
+      if (isBusySending) return;
       try {
         const goalObjective = goalCommand?.kind === 'activate'
           ? goalCommand.objective
@@ -3212,7 +3249,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       composerEditSession ||
       activeQuestionnaire ||
       activePendingToolApproval ||
-      isBusySending
+      isConversationMutationPending
     ) {
       return;
     }
@@ -3248,7 +3285,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerImages,
     goalComposerEditSession,
     inputValue,
-    isBusySending,
+    isConversationMutationPending,
     resetPromptHistoryNavigation,
     saveComposerDraftForContext,
     selectedConversationId,
@@ -3369,7 +3406,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleQuestionnaireAnswer = async (answer: string) => {
-    if (!selectedConversationId || isBusySending || isConversationPending) return;
+    if (
+      !selectedConversationId ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return;
     const recorded = recordActiveQuestionnaireAnswer(
       selectedConversationId,
       answer,
@@ -3389,12 +3430,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleQuestionnaireStepChange = (stepIndex: number) => {
-    if (!activeQuestionnaire || isBusySending || isConversationPending) return;
+    if (
+      !activeQuestionnaire ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return;
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
   const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
-    if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
+    if (
+      mode !== 'Architect' ||
+      !activeArchitectPlanId ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return;
     if (isStrategyMutationLocked) return;
     const conversationId = await ensureConversation();
     if (!conversationId) return;
@@ -3418,7 +3468,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (
       composerEditSession ||
       goalComposerEditSession ||
-      isBusySending ||
+      isConversationMutationPending ||
       activePendingToolApproval
     ) {
       return;
@@ -3508,6 +3558,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setCopiedMessageId(messageId);
     setTimeout(() => setCopiedMessageId(null), 2000);
   };
+
+  const handleRetryAssistantPersistence = useCallback(async (messageId: string) => {
+    try {
+      await retryAssistantPersistence(messageId);
+    } catch {
+      // The message card keeps the updated persistence error visible.
+    }
+  }, [retryAssistantPersistence]);
+
+  const handleDeleteUnsavedAssistantResponse = useCallback(async (messageId: string) => {
+    try {
+      await deleteUnsavedAssistantResponse(messageId);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [deleteUnsavedAssistantResponse]);
 
   const handleRegenerate = async (messageId: string, content: string) => {
     await requestReplay({
@@ -3740,7 +3806,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   compactionStatus={activeCompactionStatus}
                   isCompacting={isActiveContextCompacting}
                   activityLabel={manualCompactionActivityLabel}
-                  canCompactNow={!isBusySending && !isManualCompacting}
+                  canCompactNow={!isConversationMutationPending && !isManualCompacting}
                   manualCompactionDisabledReason={manualCompactionDisabledReason}
                   manualCompactionFeedback={manualCompactionFeedback}
                   onRefresh={() => {
@@ -3897,6 +3963,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onOpenImagePreview={openImagePreview}
                     onEditCancel={handleEditCancel}
                     onCopy={handleCopy}
+                    onRetryPersistence={handleRetryAssistantPersistence}
+                    onDeleteUnsavedResponse={handleDeleteUnsavedAssistantResponse}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
@@ -4199,7 +4267,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     type="button"
                     onClick={() => void sendComposerMessage()}
                     data-tour-id="implement-start-execution"
-                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
+                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isConversationMutationPending}
                     title={
                       !runtimeCapabilities.implementExecution
                         ? t(
@@ -4210,7 +4278,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     }
                     className={cn(
                       'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
-                      canStartImplementExecution && selectedProviderId && selectedModelId && !isBusySending
+                      canStartImplementExecution && selectedProviderId && selectedModelId && !isConversationMutationPending
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'bg-muted text-muted-foreground cursor-not-allowed'
                     )}

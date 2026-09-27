@@ -10,6 +10,7 @@ import {
   createAssistantPlaceholderMessage,
   createUserMessage,
   deleteConversation,
+  deleteConversationTurn,
   deleteConversations,
   deleteMessagesAfter,
   loadChatBootstrapSnapshot,
@@ -100,6 +101,7 @@ const baseIpc = (
   ),
   updateMessage: mock(async () => undefined),
   deleteMessagesAfter: mock(async () => undefined),
+  deleteConversationTurn: mock(async () => undefined),
   renameConversation: mock(async () => undefined),
   deleteConversation: mock(async () => undefined),
   deleteConversations: mock(async () => undefined),
@@ -349,4 +351,29 @@ describe("chatPersistenceService", () => {
       "message-1",
     );
   });
+
+  it("delegates turn deletion only when Tauri is available", async () => {
+    const ipc = baseIpc();
+
+    await deleteConversationTurn({ ...adapters(), ipc }, "conv-1", "turn-1");
+    await deleteConversationTurn(
+      { ...adapters({ available: false }), ipc },
+      "conv-1",
+      "turn-1",
+    );
+
+    expect(ipc.deleteConversationTurn).toHaveBeenCalledTimes(1);
+    expect(ipc.deleteConversationTurn).toHaveBeenCalledWith("conv-1", "turn-1");
+  });
+});
+
+it('preserves typed MCP history on DB reload and propagates durable write failure', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const items = [{ type: 'function_call_output', call_id: 'c', output: 'MCP media retained', macro_tool_result: { version: 1, blocks: fixture.content, isError: true } }];
+  const message = chatMessage({ provider_input_items: items });
+  const failing = adapters({ ipc: { updateMessage: async () => { throw new Error('disk full'); } } });
+  await expect(updateProviderInputItemsForMessage(failing, { message, providerInputItems: items })).rejects.toThrow('disk full');
+  expect(message.provider_input_items).toEqual(items);
+  const result = await loadConversationMessages(adapters({ ipc: { listMessages: async () => [dbMessage({ provider_input_items_json: JSON.stringify(items) })] } }), { conversationId: 'conv-1', conversations: [] });
+  expect(result[0].provider_input_items).toEqual(items);
 });

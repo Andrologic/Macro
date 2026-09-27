@@ -68,6 +68,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
     const fallbackContextRefsRef = useRef<readonly ContextReference[]>(useChatStore.getState().composerContextRefs);
     const shouldSyncOnLoadRef = useRef(initialText.length > 0);
     const lastInitialTextRef = useRef(initialText);
+    const compositionActiveRef = useRef(false);
 
     useEffect(() => {
       let isMounted = true;
@@ -238,10 +239,16 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
             shouldSyncOnLoadRef.current = true;
             onTextChange(event.target.value);
           }}
+          onCompositionStart={() => {
+            compositionActiveRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            compositionActiveRef.current = false;
+          }}
           onKeyDown={(event) => {
             if (
               event.key === 'Enter' &&
-              isPrimaryComposerSubmitKey(event)
+              isPrimaryComposerSubmitKey(event, compositionActiveRef.current)
             ) {
               event.preventDefault();
               onSend();

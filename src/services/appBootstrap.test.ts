@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { createAppBootstrapController } from './appBootstrap';
+import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { createAppBootstrapController, waitForDatabaseInitialization, type AppBootstrapDependencies } from './appBootstrap';
+import { createLifecycleScope, type LifecycleContext } from './lifecycleScope';
+import * as tauriIpc from './tauriIpc';
 
 describe('appBootstrap', () => {
   let callOrder: string[];
@@ -263,7 +265,7 @@ describe('appBootstrap', () => {
     expect(controller.getSnapshot().ready).toBe(true);
   });
 
-  it('ignores stale deferred updates after restart', async () => {
+  it('drains stale deferred operations before restarting', async () => {
     const resumeResolvers: Array<() => void> = [];
     resumeApp = mock(
       () =>
@@ -304,12 +306,12 @@ describe('appBootstrap', () => {
 
     const restartPromise = controller.restart();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(controller.getSnapshot().critical).toBe(true);
-    expect(controller.getSnapshot().high).toBe(false);
-    expect(resumeResolvers).toHaveLength(2);
+    expect(controller.getSnapshot().phase).toBe('idle');
+    expect(resumeResolvers).toHaveLength(1);
 
     resumeResolvers[0]?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(resumeResolvers).toHaveLength(2);
     expect(controller.getSnapshot().high).toBe(false);
 
     resumeResolvers[1]?.();
@@ -319,5 +321,180 @@ describe('appBootstrap', () => {
     await restartPromise;
     await firstStart;
     expect(controller.getSnapshot().ready).toBe(true);
+  });
+});
+
+const deferred = <T = void>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+};
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const bootstrapDependencies = (overrides: Partial<AppBootstrapDependencies> = {}): AppBootstrapDependencies => ({
+  initializeAppCritical: async () => undefined,
+  resumeAppAfterInitialize: async () => undefined,
+  initializeChatCritical: async () => undefined,
+  initializeTasksCritical: async () => undefined,
+  resumeTasksAfterInitialize: async () => undefined,
+  initializeTerminal: async () => undefined,
+  initializeTools: async () => undefined,
+  initializeSkills: async () => undefined,
+  initializeProviders: async () => undefined,
+  restoreChatSelectionAfterProviderInit: async () => undefined,
+  initializeShortcuts: async () => undefined,
+  getCurrentMode: () => 'Chat',
+  preloadModeComponents: async () => undefined,
+  scheduleLowPriority: (run) => { queueMicrotask(run); return () => undefined; },
+  now: () => 0,
+  log: () => undefined,
+  error: () => undefined,
+  isPageShuttingDown: () => false,
+  ...overrides,
+});
+
+describe('appBootstrap ownership', () => {
+  it('cancels idle work, settles start and makes a retained callback inert', async () => {
+    const scheduled = deferred<() => void>();
+    const cancel = mock(() => undefined);
+    const low = mock(async () => undefined);
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      scheduleLowPriority: (run) => { scheduled.resolve(run); return cancel; },
+      initializeTools: low,
+    }));
+    const started = controller.ensureStarted();
+    const staleCallback = await scheduled.promise;
+    const stopped = controller.stop();
+    expect(controller.stop()).toBe(stopped);
+    await stopped;
+    await started;
+    staleCallback();
+    await tick();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(low).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().phase).toBe('idle');
+  });
+
+  it('revokes a blocked init before cleanup and drains admitted writes before the next read', async () => {
+    const admittedWrite = deferred();
+    const entered = deferred();
+    const operations: string[] = [];
+    let first = true;
+    let activeContext: LifecycleContext | undefined;
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      initializeAppCritical: async (context) => {
+        activeContext = context;
+        operations.push('read');
+        if (!first) return;
+        first = false;
+        operations.push('write-admitted');
+        entered.resolve();
+        await admittedWrite.promise;
+        operations.push('write-finished');
+        context?.assertActive();
+        operations.push('obsolete-next-operation');
+      },
+    }));
+    const started = controller.ensureStarted();
+    await entered.promise;
+    const restarted = controller.restart();
+    expect(activeContext?.signal.aborted).toBe(true);
+    await tick();
+    expect(operations).toEqual(['read', 'write-admitted']);
+    admittedWrite.resolve();
+    await Promise.all([started, restarted]);
+    expect(operations).toEqual(['read', 'write-admitted', 'write-finished', 'read']);
+    await controller.stop();
+  });
+
+  it('drains subscription work even if cleanup throws and still allows a new start', async () => {
+    const pending = deferred();
+    const installed = deferred();
+    let context: LifecycleContext | undefined;
+    const cleanup = mock(() => {
+      expect(context?.isActive()).toBe(false);
+      throw new Error('dispose failed');
+    });
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      startSubscriptions: (owner) => { context = owner; installed.resolve(); return cleanup; },
+      drainSubscriptions: () => pending.promise,
+    }));
+    const started = controller.ensureStarted();
+    await installed.promise;
+    let settled = false;
+    const stopped = controller.stop().then(() => 'ok', () => { settled = true; return 'failed'; });
+    await tick();
+    expect(settled).toBe(false);
+    pending.resolve();
+    expect(await stopped).toBe('failed');
+    await started;
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await controller.ensureStarted();
+    expect(controller.getSnapshot().ready).toBe(true);
+    await controller.stop().catch(() => undefined);
+  });
+
+  it('revokes queued starts without hydrating their cancelled generation', async () => {
+    const pending = deferred();
+    const entered = deferred();
+    const initialize = mock(async () => { entered.resolve(); await pending.promise; });
+    const controller = createAppBootstrapController(() => bootstrapDependencies({ initializeAppCritical: initialize }));
+    const first = controller.ensureStarted();
+    await entered.promise;
+    const second = controller.restart();
+    const third = controller.restart();
+    pending.resolve();
+    await Promise.all([first, second, third]);
+    expect(initialize).toHaveBeenCalledTimes(2);
+    await controller.stop();
+  });
+
+  it('passes the bootstrap owner to panel preload and stops before resuming', async () => {
+    const entered = deferred<LifecycleContext>();
+    const resume = mock(async () => undefined);
+    let initializationContext: LifecycleContext | undefined;
+    const controller = createAppBootstrapController(() => bootstrapDependencies({
+      initializeAppCritical: async (context) => { initializationContext = context; },
+      preloadModeComponents: async (mode, context) => {
+        expect(mode).toBe('Chat');
+        if (!context) throw new Error('Missing preload lifetime');
+        entered.resolve(context);
+        await new Promise<void>((resolve) => {
+          context.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        context.assertActive();
+      },
+      resumeAppAfterInitialize: resume,
+    }));
+    const starting = controller.ensureStarted();
+    const preloadContext = await entered.promise;
+    expect(initializationContext).toBe(preloadContext);
+    await controller.stop();
+    await starting;
+    expect(preloadContext.signal.aborted).toBe(true);
+    expect(resume).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().phase).toBe('idle');
+  });
+
+  it('clears the database polling timer immediately on revocation', async () => {
+    const scope = createLifecycleScope();
+    const available = spyOn(tauriIpc, 'isTauriAvailable').mockReturnValue(true);
+    const status = spyOn(tauriIpc, 'getDatabaseInitializationStatus').mockResolvedValue({ status: 'initializing', message: null });
+    const scheduled = deferred();
+    const originalTimeout = globalThis.setTimeout;
+    const timeout = spyOn(globalThis, 'setTimeout').mockImplementation(((run: () => void, delay?: number) => {
+      if (delay === 50) { scheduled.resolve(); return originalTimeout(run, 10_000); }
+      return originalTimeout(run, delay);
+    }) as typeof setTimeout);
+    const cleared = spyOn(globalThis, 'clearTimeout');
+    try {
+      const waiting = waitForDatabaseInitialization(scope).catch((error) => error);
+      await scheduled.promise;
+      scope.stop();
+      expect(cleared).toHaveBeenCalledTimes(1);
+      expect((await waiting).name).toBe('LifecycleStoppedError');
+      expect(status).toHaveBeenCalledTimes(1);
+    } finally {
+      available.mockRestore(); status.mockRestore(); timeout.mockRestore(); cleared.mockRestore();
+    }
   });
 });

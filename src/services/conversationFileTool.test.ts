@@ -1,7 +1,45 @@
 import { describe, expect, it } from "bun:test";
-import { formatConversationFilePage } from "./conversationFileTool";
+import {
+  formatConversationFilePage,
+  readConversationFileBody,
+} from "./conversationFileTool";
 
 describe("conversationFileTool", () => {
+  it("preserves the exact conversation file body when selecting full content", () => {
+    const body = "\n  first line  \nsecond line\n\n";
+
+    expect(readConversationFileBody({ content: body, snippet: "fallback" })).toBe(body);
+    expect(readConversationFileBody({ content: null, snippet: body })).toBe(body);
+    expect(readConversationFileBody({ content: " \n\t  \n ", snippet: "fallback" })).toBe(" \n\t  \n ");
+    expect(readConversationFileBody({ content: "", snippet: "fallback" })).toBe("");
+  });
+
+  it("passes selected bodies unchanged through raw UTF-8 pagination", () => {
+    const cases = [
+      { content: " \n\t  \n ", snippet: "fallback" },
+      { content: "", snippet: "fallback" },
+    ];
+
+    for (const input of cases) {
+      const body = readConversationFileBody(input);
+      const page = formatConversationFilePage({
+        label: "notes.md",
+        source: "CONTEXT_SNIPPET",
+        content: body,
+        args: { raw: true, max_bytes: 256_000 },
+      });
+      const beginMarker = "---BEGIN RAW CONTENT---\n";
+      const endMarker = "\n---END RAW CONTENT---";
+      const beginIndex = page.indexOf(beginMarker);
+      const endIndex = page.indexOf(endMarker, beginIndex + beginMarker.length);
+
+      expect(page).toContain(`TOTAL_BYTES: ${new TextEncoder().encode(body).byteLength}`);
+      expect(beginIndex).toBeGreaterThanOrEqual(0);
+      expect(endIndex).toBeGreaterThan(beginIndex);
+      expect(page.slice(beginIndex + beginMarker.length, endIndex)).toBe(body);
+    }
+  });
+
   it("returns bounded resumable pages for conversation files", () => {
     const content = Array.from({ length: 620 }, (_, index) => `line ${index + 1}`).join("\n");
     const first = formatConversationFilePage({

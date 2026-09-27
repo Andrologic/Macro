@@ -137,11 +137,11 @@ describe('PilotView', () => {
 
     await act(async () => reconcileButton!.click());
     expect(reconcileNotExecutedMock).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
       'Confirm that the effect did not occur',
     );
 
-    const confirmButton = [...container.querySelectorAll('button')]
+    const confirmButton = [...document.body.querySelectorAll('button')]
       .find((button) => button.textContent === 'I confirm it was not executed');
     indeterminate = [];
     await act(async () => {
@@ -173,7 +173,7 @@ describe('PilotView', () => {
         client_kind: 'desktop', state: 'active', created_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-01T00:00:00Z' }] };
     await act(async () => root.render(<PilotView />));
   };
-  const button = (label: string) => [...container.querySelectorAll('button')].find(item => item.textContent === label)!;
+  const button = (label: string) => [...document.body.querySelectorAll('button')].find(item => item.textContent === label)!;
 
   const showVaultStatus = async (status: Exclude<PilotVaultStatus, 'ready'>) => {
     pilotState.status = 'vault_unavailable';
@@ -255,15 +255,17 @@ describe('PilotView', () => {
   it('locks out double clicks while keeping sign out available during recovery', async () => {
     await showAccount();
     await showVaultStatus('intervention_required');
+    let finishRecovery!: () => void;
+    const recoveryPending = new Promise<void>(resolve => { finishRecovery = resolve; });
     resumeVaultAccessMock.mockImplementation(async () => {
       pilotState.busy = true;
       pilotState.reading = true;
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await recoveryPending;
     });
     await act(async () => {
       button('Resume vault access').click();
       button('Resume vault access').click();
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await Promise.resolve();
     });
     await act(async () => root.render(<PilotView />));
     expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
@@ -279,7 +281,7 @@ describe('PilotView', () => {
       await Promise.resolve();
     });
     expect(pilotState.logout).toHaveBeenCalledTimes(1);
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+    await act(async () => { finishRecovery(); await recoveryPending; });
   });
 
   it('shows identity and sessions without an instance and requires explicit deletion confirmation', async () => {
@@ -292,7 +294,7 @@ describe('PilotView', () => {
       expect(button('Revoke all sessions')).toBeDefined();
       await act(async () => button('Delete relay account').click());
       expect(pilotState.deleteAccount).not.toHaveBeenCalled();
-      const dialog = container.querySelector('[role="dialog"]');
+      const dialog = document.body.querySelector('[role="dialog"]');
       expect(dialog?.textContent).toContain('GitHub @example');
       expect(dialog?.textContent).toContain('GitHub ID: 1234');
       expect(dialog?.textContent).toContain('Local projects and conversations are preserved.');
@@ -306,7 +308,7 @@ describe('PilotView', () => {
     await act(async () => button('Delete relay account').click());
     pilotState.accountCatalog = { ...pilotState.accountCatalog!, identity: { ...pilotState.accountCatalog!.identity, login: 'renamed' } };
     await act(async () => root.render(<PilotView />));
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('The connected account changed.');
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('The connected account changed.');
     expect(button('Delete this account permanently')).toBeUndefined();
     expect(pilotState.deleteAccount).not.toHaveBeenCalled();
   });

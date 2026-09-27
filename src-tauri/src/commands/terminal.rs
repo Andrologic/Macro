@@ -10,10 +10,11 @@ use crate::WorkspaceMetadataRoot;
 use chrono::Utc;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 #[cfg(unix)]
@@ -23,13 +24,17 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+#[cfg(all(windows, test))]
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
 
 const DEFAULT_TERMINAL_COLS: u16 = 120;
 const DEFAULT_TERMINAL_ROWS: u16 = 32;
@@ -46,6 +51,7 @@ const LEGACY_COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
 const INCOMPLETE_DRAIN_MARKER: &str =
     "\n[terminal output drain timed out; remaining output was discarded]\n";
 const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
+#[cfg(not(windows))]
 const LIVE_TERMINAL_CLOSE_GRACE_MS: u64 = 200;
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
@@ -57,16 +63,37 @@ const DEFAULT_UNIX_SHELL_FALLBACKS: [&str; 3] = ["/bin/zsh", "/bin/bash", "/bin/
 pub struct TerminalSessionStore {
     legacy_sessions: Arc<Mutex<HashMap<String, LegacyTerminalSessionRecord>>>,
     live_tabs: Arc<Mutex<HashMap<String, LiveTerminalSession>>>,
+    tab_lifecycles: Arc<StdMutex<HashMap<String, Arc<TerminalTabLifecycle>>>>,
+}
+
+#[derive(Default)]
+struct TerminalTabLifecycle {
+    operation: Mutex<()>,
+    persistence: Mutex<()>,
+    closed: AtomicBool,
+    close_pending: AtomicBool,
 }
 
 impl TerminalSessionStore {
+    fn tab_lifecycle(&self, tab_id: &str) -> Arc<TerminalTabLifecycle> {
+        let mut entries = self
+            .tab_lifecycles
+            .lock()
+            .expect("terminal lifecycle registry");
+        // Keep only admitted work/live runtimes and failed closes awaiting retry.
+        entries.retain(|_, entry| {
+            Arc::strong_count(entry) > 1 || entry.close_pending.load(Ordering::Acquire)
+        });
+        entries.entry(tab_id.to_owned()).or_default().clone()
+    }
+
     pub(crate) async fn live_tab_ids(&self) -> Vec<String> {
         let live_tabs = self.live_tabs.lock().await;
         live_tabs.keys().cloned().collect()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct TerminalTabDto {
     pub id: String,
     pub kind: String,
@@ -89,8 +116,8 @@ pub struct TerminalTabDto {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct TerminalOutputEvent {
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct TerminalOutputEvent {
     tab_id: String,
     data: String,
     snapshot: String,
@@ -104,7 +131,7 @@ struct TerminalClosedEvent {
     tab_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct TerminalSessionDto {
     pub id: String,
     pub project_id: Option<String>,
@@ -126,11 +153,39 @@ struct LiveTerminalSession {
     writer: Arc<StdMutex<Box<dyn Write + Send>>>,
     master: Arc<StdMutex<Box<dyn MasterPty + Send>>>,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
+    #[cfg(unix)]
+    process_tree: StdMutex<crate::core::process::TerminalProcessTree>,
+    #[cfg(windows)]
+    windows_job: Arc<WindowsJob>,
+}
+
+impl Drop for LiveTerminalSession {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(mut tree) = self.process_tree.lock() {
+            tree.terminate();
+        }
+        #[cfg(windows)]
+        let _ = self.windows_job.terminate();
+        let child = self.child.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = child.lock() {
+                if !matches!(guard.try_wait(), Ok(Some(_))) {
+                    let _ = guard.kill();
+                }
+            }
+            // A failed termination must not retain one reaper thread per closed tab forever.
+            if poll_child_exit_code(&child, Duration::from_secs(5)).is_none() {
+                tracing::warn!(action = "terminal_child_reap_timed_out");
+            }
+        });
+    }
 }
 
 struct LiveTerminalRuntime {
     record: TerminalTabRecord,
-    persistence_lock: Arc<Mutex<()>>,
+    lifecycle: Arc<TerminalTabLifecycle>,
+    persistence_active: bool,
     scan_buffer: String,
     pending_command: Option<PendingCommand>,
     pending_output: String,
@@ -211,7 +266,7 @@ struct LegacyTerminalSessionRecord {
     run_in_progress: bool,
     kill_requested: bool,
     active_execution_id: Option<String>,
-    pending_kill_execution_id: Option<String>,
+    pending_kill_execution_ids: HashSet<String>,
     execution_generation: u64,
     #[cfg(windows)]
     windows_job: Option<Arc<WindowsJob>>,
@@ -220,6 +275,101 @@ struct LegacyTerminalSessionRecord {
 #[cfg(windows)]
 struct WindowsJob {
     handle: HANDLE,
+}
+
+#[cfg(windows)]
+struct WindowsLaunchGate {
+    start_handle: HANDLE,
+    ready_handle: HANDLE,
+    start_name: String,
+    ready_name: String,
+}
+
+#[cfg(windows)]
+unsafe impl Send for WindowsLaunchGate {}
+
+#[cfg(windows)]
+impl WindowsLaunchGate {
+    fn new() -> CommandResult<Self> {
+        let id = Uuid::new_v4();
+        let start_name = format!("Local\\MacroTerminalStart-{id}");
+        let ready_name = format!("Local\\MacroTerminalReady-{id}");
+        let wide_start_name = start_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let start_handle =
+            unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_start_name.as_ptr()) };
+        if start_handle.is_null() {
+            return Err(command_error(format!(
+                "Failed to create terminal launch gate: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let wide_ready_name = ready_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let ready_handle =
+            unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_ready_name.as_ptr()) };
+        if ready_handle.is_null() {
+            unsafe { CloseHandle(start_handle) };
+            return Err(command_error(format!(
+                "Failed to create terminal launch acknowledgement: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(Self {
+            start_handle,
+            ready_handle,
+            start_name,
+            ready_name,
+        })
+    }
+
+    fn apply(&self, command: &mut CommandBuilder) {
+        command.env("MACRO_TERMINAL_START_GATE", &self.start_name);
+        command.env("MACRO_TERMINAL_READY_GATE", &self.ready_name);
+    }
+
+    fn apply_tokio(&self, command: &mut tokio::process::Command) {
+        command.env("MACRO_TERMINAL_START_GATE", &self.start_name);
+        command.env("MACRO_TERMINAL_READY_GATE", &self.ready_name);
+    }
+
+    fn release(&self) -> CommandResult<()> {
+        match unsafe { WaitForSingleObject(self.ready_handle, 5_000) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => {
+                return Err(command_error(
+                    "Terminal process did not acknowledge its launch gate",
+                ));
+            }
+            _ => {
+                return Err(command_error(format!(
+                    "Failed to wait for terminal launch acknowledgement: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+        }
+        if unsafe { SetEvent(self.start_handle) } == 0 {
+            return Err(command_error(format!(
+                "Failed to release terminal launch gate: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsLaunchGate {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.start_handle);
+            CloseHandle(self.ready_handle);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -234,6 +384,18 @@ impl WindowsJob {
             .raw_handle()
             .ok_or_else(|| command_error("Windows child process handle is unavailable"))?
             as HANDLE;
+        Self::assign_handle(process_handle)
+    }
+
+    fn assign_portable(child: &dyn portable_pty::Child) -> CommandResult<Arc<Self>> {
+        let process_handle = child
+            .as_raw_handle()
+            .ok_or_else(|| command_error("Windows terminal process handle is unavailable"))?
+            as HANDLE;
+        Self::assign_handle(process_handle)
+    }
+
+    fn assign_handle(process_handle: HANDLE) -> CommandResult<Arc<Self>> {
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
             return Err(command_error(format!(
@@ -298,9 +460,14 @@ struct ProjectTerminalTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct TerminalPromptContext {
+    #[serde(alias = "project_label")]
     pub project_label: Option<String>,
+    #[serde(alias = "task_label")]
     pub task_label: Option<String>,
+    #[serde(alias = "branch_label")]
     pub branch_label: Option<String>,
 }
 
@@ -396,6 +563,53 @@ fn stored_tab_to_dto(record: &TerminalTabRecord, has_live_session: bool) -> Term
     terminal_tab_to_dto(record, has_live_session, 0)
 }
 
+fn runtime_tab_snapshot(runtime: &LiveTerminalRuntime) -> CommandResult<TerminalTabDto> {
+    if runtime.lifecycle.closed.load(Ordering::Acquire) || runtime.record.status == "closed" {
+        // Keep the retained native owner reachable through Close after a UI reload.
+        let mut snapshot = terminal_tab_to_dto(&runtime.record, false, runtime.output_sequence);
+        snapshot.status = "closed".to_string();
+        snapshot.is_restored = false;
+        return Ok(snapshot);
+    }
+    Ok(terminal_tab_to_dto(
+        &runtime.record,
+        runtime.persistence_active,
+        runtime.output_sequence,
+    ))
+}
+
+fn current_runtime_tab(runtime: &LiveTerminalRuntime) -> CommandResult<TerminalTabDto> {
+    if !runtime.persistence_active || runtime.lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(
+            "Terminal session was retired; the admitted operation was not rolled back",
+        ));
+    }
+    Ok(terminal_tab_to_dto(
+        &runtime.record,
+        true,
+        runtime.output_sequence,
+    ))
+}
+
+// Called while holding the runtime mutex, which also serializes EOF retirement.
+fn publish_current_runtime_tab(
+    runtime: &LiveTerminalRuntime,
+    emit: impl FnOnce(&TerminalTabDto),
+) -> CommandResult<TerminalTabDto> {
+    let dto = current_runtime_tab(runtime)?;
+    emit(&dto);
+    Ok(dto)
+}
+
+fn emit_current_runtime_tab(
+    app: &AppHandle,
+    runtime: &LiveTerminalRuntime,
+) -> CommandResult<TerminalTabDto> {
+    publish_current_runtime_tab(runtime, |dto| {
+        let _ = app.emit("terminal:tab", dto);
+    })
+}
+
 async fn load_db_pool(pool: &State<'_, DbPool>) -> CommandResult<sqlx::SqlitePool> {
     crate::commands::get_pool(pool).await
 }
@@ -411,6 +625,9 @@ async fn resolve_metadata_root(
     }
 
     let workspace_path_for_fallback = workspace_path.clone();
+    let _repo_guard = crate::workspace::lock_git_repository(&workspace_path)
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
     let resolved =
         tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
             .await
@@ -1081,14 +1298,18 @@ fn build_unix_shell_launch_config(shell: &UnixShellSpec, prompt: &str) -> UnixSh
         UnixShellKind::Bash => UnixShellLaunchConfig {
             args: shell_args(&["--noprofile", "--norc", "-i"]),
             env: shell_env(&[
-                ("PS1", prompt),
+                ("PS1", "${MACRO_TERMINAL_PROMPT}"),
+                ("MACRO_TERMINAL_PROMPT", prompt),
                 ("PROMPT_COMMAND", ""),
                 ("BASH_SILENCE_DEPRECATION_WARNING", "1"),
             ]),
         },
         UnixShellKind::Zsh => UnixShellLaunchConfig {
-            args: shell_args(&["-f", "-i"]),
-            env: shell_env(&[("PS1", prompt), ("PROMPT", prompt)]),
+            args: shell_args(&["-f", "-i", "-o", "NO_PROMPT_SUBST"]),
+            env: shell_env(&[
+                ("PS1", &prompt.replace('%', "%%")),
+                ("PROMPT", &prompt.replace('%', "%%")),
+            ]),
         },
         UnixShellKind::Fish => UnixShellLaunchConfig {
             args: vec![
@@ -1103,7 +1324,10 @@ fn build_unix_shell_launch_config(shell: &UnixShellSpec, prompt: &str) -> UnixSh
         },
         UnixShellKind::Posix | UnixShellKind::Other => UnixShellLaunchConfig {
             args: shell_args(&["-i"]),
-            env: shell_env(&[("PS1", prompt)]),
+            env: shell_env(&[
+                ("PS1", "${MACRO_TERMINAL_PROMPT}"),
+                ("MACRO_TERMINAL_PROMPT", prompt),
+            ]),
         },
     }
 }
@@ -1124,22 +1348,45 @@ fn apply_unix_shell_args_and_prompt(
 }
 
 #[cfg(windows)]
-fn build_shell_command(record: &TerminalTabRecord) -> (CommandBuilder, ManagedShellKind) {
+fn gated_powershell_script(command: &str) -> String {
+    format!(
+        "$__macroStart = [System.Threading.EventWaitHandle]::OpenExisting($env:MACRO_TERMINAL_START_GATE); $__macroReady = [System.Threading.EventWaitHandle]::OpenExisting($env:MACRO_TERMINAL_READY_GATE); try {{ [void]$__macroReady.Set(); [void]$__macroStart.WaitOne() }} finally {{ $__macroReady.Dispose(); $__macroStart.Dispose() }}; {command}"
+    )
+}
+
+#[cfg(any(windows, test))]
+fn wsl_interactive_shell_script(prompt: &str) -> String {
+    format!(
+        "export MACRO_TERMINAL_PROMPT={}; export PS1='${{MACRO_TERMINAL_PROMPT}}'; if [ -x /bin/bash ]; then exec /bin/bash --noprofile --norc -i; else exec /bin/sh -i; fi",
+        shell_single_quote(prompt)
+    )
+}
+
+#[cfg(windows)]
+fn build_shell_command(
+    record: &TerminalTabRecord,
+) -> CommandResult<(CommandBuilder, ManagedShellKind, WindowsLaunchGate)> {
+    let gate = WindowsLaunchGate::new()?;
     if let Some(wsl_path) = parse_wsl_unc_path(&record.cwd) {
-        let mut command = CommandBuilder::new("wsl.exe");
-        command.arg("-d");
-        command.arg(wsl_path.distro);
-        command.arg("--cd");
-        command.arg(wsl_path.linux_path);
-        command.arg("--");
-        command.arg("/bin/sh");
-        command.arg("-lc");
-        command.arg("if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi");
+        let mut command = CommandBuilder::new("powershell");
+        command.arg("-NoLogo");
+        command.arg("-NoProfile");
+        command.arg("-Command");
+        command.arg(gated_powershell_script(
+            "& wsl.exe -d $env:MACRO_WSL_DISTRO --cd $env:MACRO_WSL_CWD -- /bin/sh -lc $env:MACRO_WSL_COMMAND; exit $LASTEXITCODE",
+        ));
         command.env("TERM", DEFAULT_TERM);
         command.env("COLORTERM", DEFAULT_COLORTERM);
         command.env("TERM_PROGRAM", TERM_PROGRAM_NAME);
         command.env("MACRO_TERMINAL_CWD", &record.cwd);
-        return (command, ManagedShellKind::Posix);
+        command.env("MACRO_WSL_DISTRO", wsl_path.distro);
+        command.env("MACRO_WSL_CWD", wsl_path.linux_path);
+        command.env(
+            "MACRO_WSL_COMMAND",
+            wsl_interactive_shell_script(&render_terminal_prompt(record)),
+        );
+        gate.apply(&mut command);
+        return Ok((command, ManagedShellKind::Posix, gate));
     }
 
     let mut command = CommandBuilder::new("powershell");
@@ -1147,14 +1394,15 @@ fn build_shell_command(record: &TerminalTabRecord) -> (CommandBuilder, ManagedSh
     command.arg("-NoProfile");
     command.arg("-NoExit");
     command.arg("-Command");
-    command.arg(
+    command.arg(gated_powershell_script(
         "function global:prompt { $env:MACRO_TERMINAL_PROMPT }; Set-Location -LiteralPath $env:MACRO_TERMINAL_CWD",
-    );
+    ));
     command.cwd(Path::new(&record.cwd));
     apply_terminal_environment(&mut command, &record.cwd, None);
     command.env("MACRO_TERMINAL_CWD", &record.cwd);
     command.env("MACRO_TERMINAL_PROMPT", render_terminal_prompt(record));
-    (command, ManagedShellKind::PowerShell)
+    gate.apply(&mut command);
+    Ok((command, ManagedShellKind::PowerShell, gate))
 }
 
 #[cfg(not(windows))]
@@ -1226,31 +1474,38 @@ fn build_managed_command(
 }
 
 #[cfg(windows)]
-fn build_command_process(record: &TerminalTabRecord, command_text: &str) -> CommandBuilder {
+fn build_command_process(
+    record: &TerminalTabRecord,
+    command_text: &str,
+) -> CommandResult<(CommandBuilder, WindowsLaunchGate)> {
+    let gate = WindowsLaunchGate::new()?;
     if let Some(wsl_path) = parse_wsl_unc_path(&record.cwd) {
-        let mut command = CommandBuilder::new("wsl.exe");
-        command.arg("-d");
-        command.arg(wsl_path.distro);
-        command.arg("--cd");
-        command.arg(wsl_path.linux_path);
-        command.arg("--");
-        command.arg("/bin/sh");
-        command.arg("-lc");
-        command.arg(command_text);
+        let mut command = CommandBuilder::new("powershell");
+        command.arg("-NoLogo");
+        command.arg("-NoProfile");
+        command.arg("-Command");
+        command.arg(gated_powershell_script(
+            "& wsl.exe -d $env:MACRO_WSL_DISTRO --cd $env:MACRO_WSL_CWD -- /bin/sh -lc $env:MACRO_WSL_COMMAND; exit $LASTEXITCODE",
+        ));
         command.env("TERM", DEFAULT_TERM);
         command.env("COLORTERM", DEFAULT_COLORTERM);
         command.env("TERM_PROGRAM", TERM_PROGRAM_NAME);
-        return command;
+        command.env("MACRO_WSL_DISTRO", wsl_path.distro);
+        command.env("MACRO_WSL_CWD", wsl_path.linux_path);
+        command.env("MACRO_WSL_COMMAND", command_text);
+        gate.apply(&mut command);
+        return Ok((command, gate));
     }
 
     let mut command = CommandBuilder::new("powershell");
     command.arg("-NoLogo");
     command.arg("-NoProfile");
     command.arg("-Command");
-    command.arg(command_text);
+    command.arg(gated_powershell_script(command_text));
     command.cwd(Path::new(&record.cwd));
     apply_terminal_environment(&mut command, &record.cwd, None);
-    command
+    gate.apply(&mut command);
+    Ok((command, gate))
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -1333,7 +1588,12 @@ fn terminal_prompt_context_from_record(
 ) -> Option<TerminalPromptContext> {
     if let Some(serialized) = record.prompt_context_json.as_deref() {
         if let Ok(context) = serde_json::from_str::<TerminalPromptContext>(serialized) {
-            return Some(context);
+            if [&context.project_label, &context.task_label]
+                .into_iter()
+                .any(|label| label.as_deref().and_then(trim_prompt_label).is_some())
+            {
+                return Some(context);
+            }
         }
     }
 
@@ -1423,10 +1683,36 @@ async fn persist_live_tab_record(
     db_pool: DbPool,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) -> CommandResult<()> {
-    let persistence_lock = { runtime.lock().await.persistence_lock.clone() };
-    let _persistence_guard = persistence_lock.lock().await;
-    let record = { runtime.lock().await.record.clone() };
+    let lifecycle = { runtime.lock().await.lifecycle.clone() };
+    let _persistence_guard = lifecycle.persistence.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let record = {
+        let runtime = runtime.lock().await;
+        if !runtime.persistence_active {
+            return Ok(());
+        }
+        runtime.record.clone()
+    };
     if record.status == "closed" {
+        return Ok(());
+    }
+    persist_terminal_tab_record(db_pool, record).await
+}
+
+// EOF retires this runtime's persistence, independently from the next PTY for the same ID.
+async fn retire_live_tab_record(
+    db_pool: DbPool,
+    runtime: Arc<Mutex<LiveTerminalRuntime>>,
+) -> CommandResult<()> {
+    let (lifecycle, record) = {
+        let mut runtime = runtime.lock().await;
+        runtime.persistence_active = false;
+        (runtime.lifecycle.clone(), runtime.record.clone())
+    };
+    let _persistence = lifecycle.persistence.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) || record.status == "closed" {
         return Ok(());
     }
     persist_terminal_tab_record(db_pool, record).await
@@ -1481,6 +1767,10 @@ fn take_pending_output_batch(
     runtime: &mut LiveTerminalRuntime,
 ) -> Option<(String, TerminalTabRecord, u64)> {
     runtime.output_flush_scheduled = false;
+    if !runtime.persistence_active || runtime.lifecycle.closed.load(Ordering::Acquire) {
+        runtime.pending_output.clear();
+        return None;
+    }
     if runtime.pending_output.is_empty() {
         return None;
     }
@@ -1497,13 +1787,15 @@ async fn flush_live_output(
     db_pool: DbPool,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) {
-    let maybe_batch = {
+    let emitted_record = {
         let mut runtime_guard = runtime.lock().await;
-        take_pending_output_batch(&mut runtime_guard)
+        take_pending_output_batch(&mut runtime_guard).map(|(data, record, sequence)| {
+            emit_output(&app_handle, &record, data, sequence);
+            record
+        })
     };
 
-    if let Some((data, record, sequence)) = maybe_batch {
-        emit_output(&app_handle, &record, data, sequence);
+    if let Some(record) = emitted_record {
         if let Err(error) = persist_live_tab_record(db_pool, runtime).await {
             tracing::error!(action = "terminal_output_persistence_failed", tab_id = %record.id, error = ?error);
         }
@@ -1524,18 +1816,75 @@ fn schedule_live_output_flush(
     });
 }
 
-fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
-    let Ok(mut guard) = child.lock() else {
-        return 1;
-    };
+fn poll_child_exit_code(
+    child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>,
+    timeout: Duration,
+) -> Option<i32> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        {
+            let Ok(mut guard) = child.lock() else {
+                return Some(1);
+            };
+            match guard.try_wait() {
+                Ok(Some(status)) => return Some(status.exit_code() as i32),
+                Err(_) => return Some(1),
+                Ok(None) => {}
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
-    match guard.try_wait() {
-        Ok(Some(status)) => status.exit_code() as i32,
-        Ok(None) => guard
-            .wait()
-            .map(|status| status.exit_code() as i32)
-            .unwrap_or(1),
-        Err(_) => 1,
+fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
+    if let Some(code) = poll_child_exit_code(child, Duration::from_secs(2)) {
+        return code;
+    }
+    if let Ok(mut guard) = child.lock() {
+        let _ = guard.kill();
+    }
+    poll_child_exit_code(child, Duration::from_secs(5)).unwrap_or(1)
+}
+
+#[derive(Default)]
+struct TerminalUtf8Decoder {
+    pending: Vec<u8>,
+}
+
+impl TerminalUtf8Decoder {
+    fn decode(&mut self, bytes: &[u8], finish: bool) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut output = String::new();
+        let mut consumed = 0;
+        while consumed < self.pending.len() {
+            match std::str::from_utf8(&self.pending[consumed..]) {
+                Ok(valid) => {
+                    output.push_str(valid);
+                    consumed = self.pending.len();
+                }
+                Err(error) => {
+                    let end = consumed + error.valid_up_to();
+                    output.push_str(std::str::from_utf8(&self.pending[consumed..end]).unwrap());
+                    consumed = end;
+                    match error.error_len() {
+                        Some(length) => {
+                            output.push('�');
+                            consumed += length;
+                        }
+                        None if finish => {
+                            output.push('�');
+                            consumed = self.pending.len();
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        self.pending.drain(..consumed);
+        output
     }
 }
 
@@ -1549,10 +1898,20 @@ fn spawn_reader_task(
 ) {
     std::thread::spawn(move || {
         let mut buffer = [0u8; 8192];
+        let mut decoder = TerminalUtf8Decoder::default();
 
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => {
+                    let tail = decoder.decode(&[], true);
+                    if !tail.is_empty() {
+                        handle_live_output(
+                            app_handle.clone(),
+                            db_pool.clone(),
+                            runtime.clone(),
+                            tail,
+                        );
+                    }
                     handle_live_disconnect(
                         app_handle.clone(),
                         db_pool.clone(),
@@ -1563,14 +1922,24 @@ fn spawn_reader_task(
                     break;
                 }
                 Ok(read) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+                    let chunk = decoder.decode(&buffer[..read], false);
                     if chunk.is_empty() {
                         continue;
                     }
 
                     handle_live_output(app_handle.clone(), db_pool.clone(), runtime.clone(), chunk);
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
+                    let tail = decoder.decode(&[], true);
+                    if !tail.is_empty() {
+                        handle_live_output(
+                            app_handle.clone(),
+                            db_pool.clone(),
+                            runtime.clone(),
+                            tail,
+                        );
+                    }
                     handle_live_disconnect(
                         app_handle.clone(),
                         db_pool.clone(),
@@ -1594,8 +1963,11 @@ fn handle_live_output(
     let mut visible_output = String::new();
     let mut completed_exit_code: Option<i32> = None;
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
-    let (record, output_sequence, should_schedule_output_flush, should_force_output_flush) = {
+    let (should_schedule_output_flush, should_force_output_flush) = {
         let mut runtime_guard = runtime.blocking_lock();
+        if runtime_guard.lifecycle.closed.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(mut pending) = runtime_guard.pending_command.take() {
             let extraction =
                 extract_pending_visible_output(&runtime_guard.scan_buffer, &chunk, &mut pending);
@@ -1634,12 +2006,7 @@ fn handle_live_output(
             runtime_guard.output_flush_scheduled = true;
         }
 
-        (
-            runtime_guard.record.clone(),
-            runtime_guard.output_sequence,
-            should_schedule_output_flush,
-            should_force_output_flush,
-        )
+        (should_schedule_output_flush, should_force_output_flush)
     };
 
     if should_schedule_output_flush {
@@ -1654,7 +2021,8 @@ fn handle_live_output(
     }
 
     if completed_exit_code.is_some() {
-        emit_tab_update_with_sequence(&app_handle, &record, true, output_sequence);
+        let guard = runtime.blocking_lock();
+        let _ = emit_current_runtime_tab(&app_handle, &guard);
     }
 
     if completed_exit_code.is_some() && visible_output.is_empty() {
@@ -1673,6 +2041,11 @@ fn handle_live_disconnect(
     tab_id: String,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) {
+    let lifecycle = terminal_store.tab_lifecycle(&tab_id);
+    let _operation = lifecycle.operation.blocking_lock();
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return;
+    }
     let live_session = {
         let mut live_tabs = terminal_store.live_tabs.blocking_lock();
         let is_current_session = live_tabs
@@ -1694,18 +2067,113 @@ fn handle_live_disconnect(
         runtime_guard.mode == LiveTerminalMode::CommandProcess
     };
 
-    let command_exit_code = if is_command_process {
-        live_session
-            .as_ref()
-            .map(|session| wait_for_child_exit_code(&session.child))
-    } else {
-        None
-    };
+    let session = live_session.as_ref().unwrap();
+    // EOF ends ownership of this PTY, including jobs left behind by its shell.
+    let exit_code = wait_for_child_exit_code(&session.child);
+    #[cfg(unix)]
+    {
+        let termination = session
+            .process_tree
+            .lock()
+            .map_err(|_| command_error("Failed to lock terminal process tree after disconnect"))
+            .and_then(|mut tree| {
+                tree.try_terminate()
+                    .map_err(|error| command_error(error.to_string()))
+            });
+        if let Err(error) = termination {
+            let result = tauri::async_runtime::block_on(retain_failed_disconnect(
+                db_pool,
+                &terminal_store,
+                &tab_id,
+                live_session.unwrap(),
+                is_command_process.then_some(exit_code),
+                |snapshot| {
+                    let _ = app_handle.emit("terminal:tab", snapshot);
+                },
+            ));
+            tracing::error!(action = "terminal_disconnect_termination_incomplete", tab_id = %tab_id, error = ?error, persistence = ?result);
+            return;
+        }
+    }
+    let command_exit_code = is_command_process.then_some(exit_code);
 
+    let result = tauri::async_runtime::block_on(complete_live_disconnect(
+        db_pool,
+        runtime,
+        command_exit_code,
+        |pending_output, record, sequence| {
+            if let Some((data, record, sequence)) = pending_output {
+                emit_output(&app_handle, &record, data, sequence);
+            }
+            if let Some(record) = record {
+                emit_tab_update_with_sequence(&app_handle, &record, false, sequence);
+            }
+        },
+    ));
+    if let Err(error) = result {
+        tracing::error!(action = "terminal_tab_persistence_failed", error = ?error);
+    }
+}
+
+// Preserve the native owner even if persisting the cleanup intent fails.
+#[cfg(unix)]
+async fn retain_failed_disconnect(
+    db_pool: DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+    session: LiveTerminalSession,
+    command_exit_code: Option<i32>,
+    emit: impl FnOnce(TerminalTabDto),
+) -> CommandResult<()> {
+    let (lifecycle, record, snapshot) = {
+        let mut runtime = session.runtime.lock().await;
+        runtime.lifecycle.closed.store(true, Ordering::Release);
+        runtime
+            .lifecycle
+            .close_pending
+            .store(true, Ordering::Release);
+        runtime.persistence_active = false;
+        runtime.record.status = "closed".into();
+        if let Some(exit_code) = command_exit_code {
+            runtime.record.last_exit_code = Some(exit_code);
+        }
+        if let Some(pending) = runtime.pending_command.as_mut() {
+            if let Some(completion) = pending.completion_tx.take() {
+                let _ = completion.send(130);
+            }
+        }
+        runtime.pending_command = None;
+        touch_terminal_tab_record(&mut runtime.record);
+        (
+            runtime.lifecycle.clone(),
+            runtime.record.clone(),
+            runtime_tab_snapshot(&runtime)?,
+        )
+    };
+    terminal_store
+        .live_tabs
+        .lock()
+        .await
+        .insert(tab_id.to_owned(), session);
+    emit(snapshot);
+    // Drain writes admitted before the fence, as explicit close does. A late
+    // writer cannot complete after the final cleanup intent is persisted.
+    let _persistence = lifecycle.persistence.lock().await;
+    persist_terminal_tab_record(db_pool, record).await
+}
+
+async fn complete_live_disconnect(
+    db_pool: DbPool,
+    runtime: Arc<Mutex<LiveTerminalRuntime>>,
+    command_exit_code: Option<i32>,
+    emit: impl FnOnce(Option<(String, TerminalTabRecord, u64)>, Option<TerminalTabRecord>, u64),
+) -> CommandResult<()> {
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
     let (pending_output_batch, maybe_record, output_sequence) = {
-        let mut runtime_guard = runtime.blocking_lock();
+        let mut runtime_guard = runtime.lock().await;
         let pending_output_batch = take_pending_output_batch(&mut runtime_guard);
+        // Revoke active returns before the disconnected event or any persistence wait.
+        runtime_guard.persistence_active = false;
         if runtime_guard.record.status == "closed" {
             (pending_output_batch, None, runtime_guard.output_sequence)
         } else if runtime_guard.mode == LiveTerminalMode::CommandProcess {
@@ -1738,22 +2206,17 @@ fn handle_live_disconnect(
         }
     };
 
-    if let Some((data, record, sequence)) = pending_output_batch {
-        emit_output(&app_handle, &record, data, sequence);
-    }
-
-    if let Some(record) = maybe_record {
-        emit_tab_update_with_sequence(&app_handle, &record, false, output_sequence);
-        persist_live_tab_record_in_background(db_pool, runtime);
-    }
-
+    emit(pending_output_batch, maybe_record, output_sequence);
+    // Preserve the admitted final write while active publication is already revoked.
+    let result = retire_live_tab_record(db_pool, runtime).await;
     if let Some(tx) = completion_tx {
         let _ = tx.send(130);
     }
+    result
 }
 
 async fn get_live_record(
-    terminal_store: &State<'_, TerminalSessionStore>,
+    terminal_store: &TerminalSessionStore,
     tab_id: &str,
 ) -> Option<TerminalTabRecord> {
     let runtime = {
@@ -1788,14 +2251,37 @@ async fn spawn_live_tab(
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
     #[cfg(windows)]
-    let (shell_command, shell_kind) = build_shell_command(&record);
+    let (shell_command, shell_kind, launch_gate) = build_shell_command(&record)?;
     #[cfg(not(windows))]
-    let (shell_command, shell_kind) = build_shell_command(&record);
+    let (mut shell_command, shell_kind) = build_shell_command(&record);
+    #[cfg(unix)]
+    let mut process_tree = crate::core::process::TerminalProcessTree::new().map_err(|error| {
+        command_error(format!(
+            "Failed to create terminal ownership marker: {error}"
+        ))
+    })?;
+    #[cfg(unix)]
+    process_tree.prepare_command(&mut shell_command);
     let mut child = pair
         .slave
         .spawn_command(shell_command)
         .map_err(|error| command_error(format!("Failed to launch terminal shell: {}", error)))?;
+    #[cfg(unix)]
+    {
+        process_tree.process_group_id = child.process_id();
+    }
     drop(pair.slave);
+    #[cfg(windows)]
+    let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
+        let _ = child.kill();
+        error
+    })?;
+    #[cfg(windows)]
+    launch_gate.release().map_err(|error| {
+        let _ = windows_job.terminate();
+        let _ = child.kill();
+        error
+    })?;
 
     let writer = match pair.master.take_writer() {
         Ok(writer) => writer,
@@ -1823,7 +2309,8 @@ async fn spawn_live_tab(
 
     let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
         record: record.clone(),
-        persistence_lock: Arc::new(Mutex::new(())),
+        lifecycle: terminal_store.tab_lifecycle(&record.id),
+        persistence_active: true,
         scan_buffer: String::new(),
         pending_command: None,
         pending_output: String::new(),
@@ -1839,6 +2326,10 @@ async fn spawn_live_tab(
         writer: Arc::new(StdMutex::new(writer)),
         master: Arc::new(StdMutex::new(pair.master)),
         runtime: runtime.clone(),
+        #[cfg(unix)]
+        process_tree: StdMutex::new(process_tree),
+        #[cfg(windows)]
+        windows_job,
     };
 
     let replaced_by_existing = {
@@ -1917,12 +2408,38 @@ async fn spawn_command_tab(
         .openpty(pty_size(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS))
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
-    let process_command = build_command_process(&record, &command_text);
+    #[cfg(windows)]
+    let (process_command, launch_gate) = build_command_process(&record, &command_text)?;
+    #[cfg(not(windows))]
+    let mut process_command = build_command_process(&record, &command_text);
+    #[cfg(unix)]
+    let mut process_tree = crate::core::process::TerminalProcessTree::new().map_err(|error| {
+        command_error(format!(
+            "Failed to create terminal ownership marker: {error}"
+        ))
+    })?;
+    #[cfg(unix)]
+    process_tree.prepare_command(&mut process_command);
     let mut child = pair
         .slave
         .spawn_command(process_command)
         .map_err(|error| command_error(format!("Failed to launch terminal command: {}", error)))?;
+    #[cfg(unix)]
+    {
+        process_tree.process_group_id = child.process_id();
+    }
     drop(pair.slave);
+    #[cfg(windows)]
+    let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
+        let _ = child.kill();
+        error
+    })?;
+    #[cfg(windows)]
+    launch_gate.release().map_err(|error| {
+        let _ = windows_job.terminate();
+        let _ = child.kill();
+        error
+    })?;
 
     let writer = match pair.master.take_writer() {
         Ok(writer) => writer,
@@ -1951,7 +2468,8 @@ async fn spawn_command_tab(
 
     let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
         record: record.clone(),
-        persistence_lock: Arc::new(Mutex::new(())),
+        lifecycle: terminal_store.tab_lifecycle(&record.id),
+        persistence_active: true,
         scan_buffer: String::new(),
         pending_command: None,
         pending_output: String::new(),
@@ -1966,6 +2484,10 @@ async fn spawn_command_tab(
         writer: Arc::new(StdMutex::new(writer)),
         master: Arc::new(StdMutex::new(pair.master)),
         runtime: runtime.clone(),
+        #[cfg(unix)]
+        process_tree: StdMutex::new(process_tree),
+        #[cfg(windows)]
+        windows_job,
     };
 
     {
@@ -2001,43 +2523,47 @@ async fn spawn_command_tab(
     Ok(terminal_tab_to_dto(&record, true, output_sequence))
 }
 
-async fn get_persisted_tab_record(
-    pool: &State<'_, DbPool>,
-    tab_id: &str,
-) -> CommandResult<TerminalTabRecord> {
-    let db_pool = load_db_pool(pool).await?;
+async fn get_persisted_tab_record(pool: &DbPool, tab_id: &str) -> CommandResult<TerminalTabRecord> {
+    let db_pool = pool.wait_until_ready().await?;
     repository::get_terminal_tab(&db_pool, tab_id)
         .await
         .map_err(|error| command_error(error.to_string()))?
         .ok_or_else(|| command_error(format!("Unknown terminal tab id: {}", tab_id)))
 }
 
-fn build_shell_command_compat(command: &str, cwd: &Path) -> tokio::process::Command {
-    #[cfg(windows)]
-    let mut process = {
-        let mut process = background_tokio_command("powershell");
-        process.args(["-NoLogo", "-NoProfile", "-Command", command]);
-        process
-    };
-
-    #[cfg(not(windows))]
-    let mut process = {
-        let mut process = background_tokio_command("bash");
-        process.args(["-lc", command]);
-        process
-    };
-
+#[cfg(windows)]
+fn build_shell_command_compat(
+    command: &str,
+    cwd: &Path,
+) -> CommandResult<(tokio::process::Command, WindowsLaunchGate)> {
+    let gate = WindowsLaunchGate::new()?;
+    let mut process = background_tokio_command("powershell");
+    process.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        &gated_powershell_script(command),
+    ]);
     process
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    gate.apply_tokio(&mut process);
+    Ok((process, gate))
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        process.as_std_mut().process_group(0);
-    }
+#[cfg(not(windows))]
+fn build_shell_command_compat(command: &str, cwd: &Path) -> tokio::process::Command {
+    let mut process = background_tokio_command("bash");
+    process.args(["-lc", command]);
+    process
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    use std::os::unix::process::CommandExt;
+    process.as_std_mut().process_group(0);
     process
 }
 
@@ -2046,7 +2572,14 @@ pub async fn terminal_list_tabs(
     pool: State<'_, DbPool>,
     terminal_store: State<'_, TerminalSessionStore>,
 ) -> CommandResult<Vec<TerminalTabDto>> {
-    let db_pool = load_db_pool(&pool).await?;
+    list_terminal_tabs(&pool, &terminal_store).await
+}
+
+async fn list_terminal_tabs(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+) -> CommandResult<Vec<TerminalTabDto>> {
+    let db_pool = pool.wait_until_ready().await?;
     let stored_tabs = repository::list_terminal_tabs(&db_pool)
         .await
         .map_err(|error| command_error(error.to_string()))?;
@@ -2062,16 +2595,18 @@ pub async fn terminal_list_tabs(
     let mut live_records = HashMap::new();
     for (tab_id, runtime) in live_runtimes {
         let guard = runtime.lock().await;
-        live_records.insert(tab_id, guard.record.clone());
+        live_records.insert(tab_id, runtime_tab_snapshot(&guard).ok());
     }
 
     Ok(stored_tabs
         .into_iter()
-        .map(|record| {
-            if let Some(live_record) = live_records.get(&record.id) {
-                stored_tab_to_dto(live_record, true)
+        .filter_map(|record| {
+            if let Some(snapshot) = live_records.get(&record.id) {
+                snapshot.clone()
+            } else if record.status == "closed" {
+                None
             } else {
-                stored_tab_to_dto(&record, false)
+                Some(stored_tab_to_dto(&record, false))
             }
         })
         .collect())
@@ -2109,6 +2644,8 @@ pub async fn terminal_create_tab(
         session_cwd,
     );
 
+    let lifecycle = terminal_store.tab_lifecycle(&record.id);
+    let _operation = lifecycle.operation.lock().await;
     spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record).await
 }
 
@@ -2167,6 +2704,8 @@ pub async fn terminal_start_command_tab(
     record.snapshot = format!("{}\r\n", trimmed_command);
     touch_terminal_tab_record(&mut record);
 
+    let lifecycle = terminal_store.tab_lifecycle(&record.id);
+    let _operation = lifecycle.operation.lock().await;
     spawn_command_tab(
         app_handle,
         pool.inner().clone(),
@@ -2184,14 +2723,40 @@ pub async fn terminal_reconnect_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<TerminalTabDto> {
-    if let Some(record) = get_live_record(&terminal_store, &tab_id).await {
+    reconnect_terminal_tab(&pool, &terminal_store, &tab_id, |record| {
+        spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record)
+    })
+    .await
+}
+
+async fn reconnect_terminal_tab<F, Fut>(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+    spawn: F,
+) -> CommandResult<TerminalTabDto>
+where
+    F: FnOnce(TerminalTabRecord) -> Fut,
+    Fut: std::future::Future<Output = CommandResult<TerminalTabDto>>,
+{
+    let lifecycle = terminal_store.tab_lifecycle(tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(format!(
+            "Terminal tab is closing: {}",
+            tab_id
+        )));
+    }
+    if let Some(record) = get_live_record(terminal_store, tab_id).await {
         return Ok(stored_tab_to_dto(&record, true));
     }
-
-    let mut record = get_persisted_tab_record(&pool, &tab_id).await?;
+    let mut record = get_persisted_tab_record(pool, tab_id).await?;
+    if record.status == "closed" {
+        return Err(command_error(format!("Terminal tab is closed: {}", tab_id)));
+    }
     record.status = "idle".to_string();
     touch_terminal_tab_record(&mut record);
-    spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record).await
+    spawn(record).await
 }
 
 #[tauri::command]
@@ -2200,11 +2765,27 @@ pub async fn terminal_read_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<TerminalTabDto> {
-    if let Some(record) = get_live_record(&terminal_store, &tab_id).await {
-        return Ok(stored_tab_to_dto(&record, true));
-    }
+    read_terminal_tab(&pool, &terminal_store, &tab_id).await
+}
 
-    let record = get_persisted_tab_record(&pool, &tab_id).await?;
+async fn read_terminal_tab(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+) -> CommandResult<TerminalTabDto> {
+    let runtime = {
+        let live_tabs = terminal_store.live_tabs.lock().await;
+        live_tabs.get(tab_id).map(|session| session.runtime.clone())
+    };
+    if let Some(runtime) = runtime {
+        return runtime_tab_snapshot(&*runtime.lock().await);
+    }
+    let record = get_persisted_tab_record(pool, tab_id).await?;
+    if record.status == "closed" {
+        return Err(command_error(
+            "Terminal tab is closed or awaiting close cleanup",
+        ));
+    }
     Ok(stored_tab_to_dto(&record, false))
 }
 
@@ -2217,6 +2798,15 @@ pub async fn terminal_update_tab_metadata(
     title: String,
     prompt_context: Option<TerminalPromptContext>,
 ) -> CommandResult<TerminalTabDto> {
+    let lifecycle = terminal_store.tab_lifecycle(&tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(format!(
+            "Terminal tab is closing: {}",
+            tab_id
+        )));
+    }
+
     let normalized_title = title.trim().to_string();
     if normalized_title.is_empty() {
         return Err(command_error("Terminal title cannot be empty"));
@@ -2344,6 +2934,7 @@ pub async fn terminal_execute_command(
     let db_pool_state = pool.inner().clone();
     let (completion_rx, should_flush_visible_command, rollback) = {
         let mut runtime_guard = runtime.lock().await;
+        current_runtime_tab(&runtime_guard)?;
         if runtime_guard.pending_command.is_some() {
             return Err(command_error(
                 "A managed command is already running in this terminal tab",
@@ -2381,6 +2972,9 @@ pub async fn terminal_execute_command(
 
     if let Err(error) = persist_live_tab_record(db_pool_state.clone(), runtime.clone()).await {
         let mut runtime_guard = runtime.lock().await;
+        if current_runtime_tab(&runtime_guard).is_err() {
+            return Err(error);
+        }
         runtime_guard.record = rollback.record;
         runtime_guard.pending_output = rollback.pending_output;
         runtime_guard.output_flush_scheduled = rollback.output_flush_scheduled;
@@ -2390,7 +2984,7 @@ pub async fn terminal_execute_command(
     }
     {
         let runtime_guard = runtime.lock().await;
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
+        emit_current_runtime_tab(&app_handle, &runtime_guard)?;
     }
 
     if should_flush_visible_command {
@@ -2423,13 +3017,16 @@ pub async fn terminal_execute_command(
 
     if let Err(error) = write_result {
         let mut runtime_guard = runtime.lock().await;
+        if current_runtime_tab(&runtime_guard).is_err() {
+            return Err(error);
+        }
         runtime_guard.pending_command = None;
         runtime_guard.record.status = "idle".to_string();
         touch_terminal_tab_record(&mut runtime_guard.record);
         drop(runtime_guard);
         persist_live_tab_record(db_pool_state.clone(), runtime.clone()).await?;
         let runtime_guard = runtime.lock().await;
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
+        let _ = emit_current_runtime_tab(&app_handle, &runtime_guard);
         return Err(error);
     }
 
@@ -2438,7 +3035,7 @@ pub async fn terminal_execute_command(
         .map_err(|_| command_error("Terminal command did not complete"))?;
 
     let runtime_guard = runtime.lock().await;
-    Ok(stored_tab_to_dto(&runtime_guard.record, true))
+    current_runtime_tab(&runtime_guard)
 }
 
 #[tauri::command]
@@ -2473,21 +3070,14 @@ pub async fn terminal_interrupt(
     let db_pool_state = pool.inner().clone();
     let maybe_completion = {
         let mut runtime_guard = runtime.lock().await;
+        current_runtime_tab(&runtime_guard)?;
         if runtime_guard.mode == LiveTerminalMode::CommandProcess {
             runtime_guard.record.status = "interrupting".to_string();
             touch_terminal_tab_record(&mut runtime_guard.record);
-            let dto =
-                terminal_tab_to_dto(&runtime_guard.record, true, runtime_guard.output_sequence);
             drop(runtime_guard);
             persist_live_tab_record(db_pool_state.clone(), runtime.clone()).await?;
             let runtime_guard = runtime.lock().await;
-            emit_tab_update_with_sequence(
-                &app_handle,
-                &runtime_guard.record,
-                true,
-                runtime_guard.output_sequence,
-            );
-            return Ok(dto);
+            return emit_current_runtime_tab(&app_handle, &runtime_guard);
         }
 
         let completion = runtime_guard
@@ -2498,21 +3088,15 @@ pub async fn terminal_interrupt(
         runtime_guard.record.status = "idle".to_string();
         runtime_guard.record.last_exit_code = Some(130);
         touch_terminal_tab_record(&mut runtime_guard.record);
-        let dto = stored_tab_to_dto(&runtime_guard.record, true);
-        (completion, dto)
+        completion
     };
 
     persist_live_tab_record(db_pool_state, runtime.clone()).await?;
-    {
-        let runtime_guard = runtime.lock().await;
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
-    }
-
-    if let Some(completion) = maybe_completion.0 {
+    if let Some(completion) = maybe_completion {
         let _ = completion.send(130);
     }
-
-    Ok(maybe_completion.1)
+    let runtime_guard = runtime.lock().await;
+    emit_current_runtime_tab(&app_handle, &runtime_guard)
 }
 
 #[tauri::command]
@@ -2522,6 +3106,15 @@ pub async fn terminal_clear_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<TerminalTabDto> {
+    let lifecycle = terminal_store.tab_lifecycle(&tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(format!(
+            "Terminal tab is closing: {}",
+            tab_id
+        )));
+    }
+
     if let Some(runtime) = {
         let live_tabs = terminal_store.live_tabs.lock().await;
         live_tabs
@@ -2559,56 +3152,18 @@ pub async fn terminal_clear_tab(
     Ok(stored_tab_to_dto(&record, false))
 }
 
-#[tauri::command]
-pub async fn terminal_close_tab(
-    app_handle: AppHandle,
-    pool: State<'_, DbPool>,
-    terminal_store: State<'_, TerminalSessionStore>,
-    tab_id: String,
+#[cfg_attr(windows, allow(unused_variables))]
+async fn terminate_live_terminal_process(
+    session: &LiveTerminalSession,
+    tab_id: &str,
 ) -> CommandResult<()> {
-    let live_session = {
-        let mut live_tabs = terminal_store.live_tabs.lock().await;
-        live_tabs.remove(&tab_id)
-    };
+    #[cfg(windows)]
+    let job_result = session.windows_job.terminate();
 
-    if let Some(session) = live_session {
-        let (is_command_process, task_id, project_id) = {
-            let runtime_guard = session.runtime.lock().await;
-            (
-                runtime_guard.mode == LiveTerminalMode::CommandProcess,
-                runtime_guard.record.task_id.clone(),
-                runtime_guard.record.project_id.clone(),
-            )
-        };
-
-        let (closed_record, persistence_lock) = {
-            let mut runtime_guard = session.runtime.lock().await;
-            runtime_guard.record.status = "closed".to_string();
-            touch_terminal_tab_record(&mut runtime_guard.record);
-            if let Some(pending) = runtime_guard.pending_command.as_mut() {
-                if let Some(completion) = pending.completion_tx.take() {
-                    let _ = completion.send(130);
-                }
-            }
-            runtime_guard.pending_command = None;
-            (
-                runtime_guard.record.clone(),
-                runtime_guard.persistence_lock.clone(),
-            )
-        };
-
-        if is_command_process {
-            tracing::debug!(
-                action = "terminal_command_process_closed_by_user",
-                tab_id = %tab_id,
-                task_id = task_id.as_deref().unwrap_or(""),
-                project_id = %project_id,
-                status = "closed_by_user"
-            );
-        }
-
+    #[cfg(not(windows))]
+    {
         let writer = session.writer.clone();
-        let interrupt_result = tokio::task::spawn_blocking(move || {
+        let interrupt_task = tokio::task::spawn_blocking(move || {
             if let Ok(mut guard) = writer.lock() {
                 guard
                     .write_all(&[3])
@@ -2621,48 +3176,176 @@ pub async fn terminal_close_tab(
             } else {
                 Err(command_error("Failed to lock terminal writer during close"))
             }
-        })
-        .await
-        .map_err(|error| command_error(format!("Terminal close interrupt task failed: {error}")))?;
-        if let Err(error) = interrupt_result {
-            tracing::warn!(action = "terminal_close_interrupt_failed", tab_id = %tab_id, error = ?error);
+        });
+        match tokio::time::timeout(Duration::from_millis(100), interrupt_task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                tracing::warn!(action = "terminal_close_interrupt_failed", tab_id = %tab_id, error = ?error);
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(action = "terminal_close_interrupt_task_failed", tab_id = %tab_id, error = ?error);
+            }
+            Err(_) => {
+                tracing::warn!(action = "terminal_close_interrupt_timed_out", tab_id = %tab_id);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(LIVE_TERMINAL_CLOSE_GRACE_MS)).await;
+    }
+
+    #[cfg(unix)]
+    let tree_result = session
+        .process_tree
+        .lock()
+        .map_err(|_| command_error("Failed to lock terminal process tree during close"))
+        .and_then(|mut tree| {
+            tree.try_terminate().map_err(|error| {
+                command_error(format!(
+                    "Terminal process tree termination is incomplete: {error}"
+                ))
+            })
+        });
+
+    let child = session.child.clone();
+    let child_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            {
+                let mut guard = child
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock terminal child during close"))?;
+                if guard
+                    .try_wait()
+                    .map_err(|error| command_error(error.to_string()))?
+                    .is_none()
+                {
+                    guard.kill().map_err(|error| {
+                        command_error(format!("Failed to terminate terminal process: {error}"))
+                    })?;
+                }
+            }
+            poll_child_exit_code(&child, Duration::from_secs(4))
+                .map(|_| ())
+                .ok_or_else(|| command_error("Terminal child did not exit after termination"))
+        }),
+    )
+    .await
+    .map_err(|_| command_error("Terminal close termination timed out"))?
+    .map_err(|error| command_error(format!("Terminal close termination task failed: {error}")))?;
+
+    #[cfg(windows)]
+    {
+        child_result?;
+        job_result?;
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        // Always reap the direct child, but keep the native session available
+        // for retry when discovery of detached descendants was incomplete.
+        tree_result.and(child_result)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    child_result
+}
+
+#[tauri::command]
+pub async fn terminal_close_tab(
+    app_handle: AppHandle,
+    pool: State<'_, DbPool>,
+    terminal_store: State<'_, TerminalSessionStore>,
+    tab_id: String,
+) -> CommandResult<()> {
+    close_terminal_tab(&pool, &terminal_store, &tab_id).await?;
+    let _ = app_handle.emit("terminal:closed", TerminalClosedEvent { tab_id });
+    Ok(())
+}
+
+async fn close_terminal_tab(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+) -> CommandResult<()> {
+    let lifecycle = terminal_store.tab_lifecycle(tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    lifecycle.close_pending.store(true, Ordering::Release);
+    lifecycle.closed.store(true, Ordering::Release);
+    // Drain writes admitted before the fence; later runtime writes observe closed.
+    let _persistence = lifecycle.persistence.lock().await;
+
+    let live_session = {
+        let mut live_tabs = terminal_store.live_tabs.lock().await;
+        live_tabs.remove(tab_id)
+    };
+
+    if let Some(session) = live_session {
+        let (is_command_process, task_id, project_id) = {
+            let runtime_guard = session.runtime.lock().await;
+            (
+                runtime_guard.mode == LiveTerminalMode::CommandProcess,
+                runtime_guard.record.task_id.clone(),
+                runtime_guard.record.project_id.clone(),
+            )
+        };
+
+        let closed_record = {
+            let mut runtime_guard = session.runtime.lock().await;
+            runtime_guard.record.status = "closed".to_string();
+            touch_terminal_tab_record(&mut runtime_guard.record);
+            if let Some(pending) = runtime_guard.pending_command.as_mut() {
+                if let Some(completion) = pending.completion_tx.take() {
+                    let _ = completion.send(130);
+                }
+            }
+            runtime_guard.pending_command = None;
+            runtime_guard.record.clone()
+        };
+
+        if is_command_process {
+            tracing::debug!(
+                action = "terminal_command_process_closed_by_user",
+                tab_id = %tab_id,
+                task_id = task_id.as_deref().unwrap_or(""),
+                project_id = %project_id,
+                status = "closed_by_user"
+            );
         }
 
-        tokio::time::sleep(Duration::from_millis(LIVE_TERMINAL_CLOSE_GRACE_MS)).await;
-        let child = session.child.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = child
+        // Persist the close intent before termination so a restart cannot reconnect it.
+        // Always attempt termination even if persistence fails. Drop remains the fallback.
+        let persistence_result = persist_terminal_tab_record(pool.clone(), closed_record).await;
+        let termination_result = terminate_live_terminal_process(&session, tab_id).await;
+        if let Err(error) = persistence_result.and(termination_result) {
+            // Keep the native owner available for a real termination retry.
+            // The lifecycle fence prevents reconnecting or persisting this session.
+            terminal_store
+                .live_tabs
                 .lock()
-                .map_err(|_| command_error("Failed to lock terminal child during close"))?;
-            match guard.try_wait() {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) => guard.kill().map_err(|error| {
-                    command_error(format!("Failed to terminate terminal process: {error}"))
-                }),
-                Err(error) => Err(command_error(format!(
-                    "Failed to inspect terminal process: {error}"
-                ))),
-            }
-        })
-        .await
-        .map_err(|error| {
-            command_error(format!("Terminal close termination task failed: {error}"))
-        })??;
-
-        let db_pool = load_db_pool(&pool).await?;
-        let _persistence_guard = persistence_lock.lock().await;
-        persist_terminal_tab_record(pool.inner().clone(), closed_record).await?;
-        repository::delete_terminal_tab(&db_pool, &tab_id)
+                .await
+                .insert(tab_id.to_owned(), session);
+            return Err(error);
+        }
+        let db_pool = pool.wait_until_ready().await?;
+        repository::delete_terminal_tab(&db_pool, tab_id)
             .await
             .map_err(|error| command_error(error.to_string()))?;
     } else {
-        let db_pool = load_db_pool(&pool).await?;
-        repository::delete_terminal_tab(&db_pool, &tab_id)
+        let db_pool = pool.wait_until_ready().await?;
+        if let Some(mut record) = repository::get_terminal_tab(&db_pool, tab_id)
+            .await
+            .map_err(|error| command_error(error.to_string()))?
+        {
+            record.status = "closed".to_string();
+            touch_terminal_tab_record(&mut record);
+            persist_terminal_tab_record(pool.clone(), record).await?;
+        }
+        repository::delete_terminal_tab(&db_pool, tab_id)
             .await
             .map_err(|error| command_error(error.to_string()))?;
     }
 
-    let _ = app_handle.emit("terminal:closed", TerminalClosedEvent { tab_id });
+    lifecycle.close_pending.store(false, Ordering::Release);
     Ok(())
 }
 
@@ -2931,6 +3614,22 @@ impl Drop for LegacySessionRunGuard {
     }
 }
 
+async fn mark_legacy_session_start_failed(terminal_store: &TerminalSessionStore, session_id: &str) {
+    let mut sessions = terminal_store.legacy_sessions.lock().await;
+    if let Some(session) = sessions.get_mut(session_id) {
+        session.status = "failed".to_string();
+        session.pid = None;
+        session.run_in_progress = false;
+        session.kill_requested = false;
+        session.active_execution_id = None;
+        #[cfg(windows)]
+        {
+            session.windows_job = None;
+        }
+        session.updated_at = current_timestamp();
+    }
+}
+
 #[cfg(windows)]
 struct LegacyProcessGroupGuard {
     job: Option<Arc<WindowsJob>>,
@@ -3060,7 +3759,7 @@ pub async fn create_legacy_session_internal(
         run_in_progress: false,
         kill_requested: false,
         active_execution_id: None,
-        pending_kill_execution_id: None,
+        pending_kill_execution_ids: HashSet::new(),
         execution_generation: 0,
         #[cfg(windows)]
         windows_job: None,
@@ -3093,10 +3792,15 @@ pub async fn run_legacy_session_internal(
             .get_mut(&session_id)
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
-        if execution_id.is_some()
-            && session.pending_kill_execution_id.as_ref() == execution_id.as_ref()
+        if session.run_in_progress || session.kill_requested {
+            return Err(command_error(
+                "A command is already running in this session",
+            ));
+        }
+        if execution_id
+            .as_ref()
+            .is_some_and(|id| session.pending_kill_execution_ids.remove(id))
         {
-            session.pending_kill_execution_id = None;
             session.status = "killed".to_string();
             session.last_command = Some(trimmed_command.to_string());
             session.output = "[terminal command cancelled before start]\n".to_string();
@@ -3105,13 +3809,6 @@ pub async fn run_legacy_session_internal(
             session.output_truncated = false;
             session.updated_at = current_timestamp();
             return Ok(session.to_dto());
-        }
-        session.pending_kill_execution_id = None;
-
-        if session.run_in_progress || session.kill_requested {
-            return Err(command_error(
-                "A command is already running in this session",
-            ));
         }
 
         session.status = "running".to_string();
@@ -3130,16 +3827,22 @@ pub async fn run_legacy_session_internal(
     let mut session_run_guard =
         LegacySessionRunGuard::new(terminal_store.clone(), session_id.clone());
 
-    let mut child = match build_shell_command_compat(trimmed_command, &cwd).spawn() {
+    #[cfg(windows)]
+    let (mut process, launch_gate) = match build_shell_command_compat(trimmed_command, &cwd) {
+        Ok(command) => command,
+        Err(error) => {
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
+            session_run_guard.disarm();
+            return Err(error);
+        }
+    };
+    #[cfg(not(windows))]
+    let mut process = build_shell_command_compat(trimmed_command, &cwd);
+
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let mut sessions = terminal_store.legacy_sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.status = "failed".to_string();
-                session.run_in_progress = false;
-                session.active_execution_id = None;
-                session.updated_at = current_timestamp();
-            }
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
             session_run_guard.disarm();
             return Err(command_error(format!(
                 "Failed to start terminal command: {}",
@@ -3154,13 +3857,7 @@ pub async fn run_legacy_session_internal(
         Err(error) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            let mut sessions = terminal_store.legacy_sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.status = "failed".to_string();
-                session.run_in_progress = false;
-                session.active_execution_id = None;
-                session.updated_at = current_timestamp();
-            }
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
             session_run_guard.disarm();
             return Err(error);
         }
@@ -3194,6 +3891,17 @@ pub async fn run_legacy_session_internal(
 
     let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
     let mut timed_out = false;
+    #[cfg(windows)]
+    if !kill_requested_before_registration {
+        if let Err(error) = launch_gate.release() {
+            let _ = stop_legacy_child_tree(&mut child, windows_job.clone()).await;
+            let _ = finish_child_output(stdout_task, stderr_task, output).await;
+            process_guard.disarm();
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
+            session_run_guard.disarm();
+            return Err(error);
+        }
+    }
     let exit_status = if kill_requested_before_registration {
         #[cfg(not(windows))]
         let stopped = stop_legacy_child_tree(&mut child, pid).await?;
@@ -3287,8 +3995,20 @@ pub async fn kill_legacy_session_internal(
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
         if let Some(execution_id) = execution_id.as_ref() {
-            if !session.run_in_progress {
-                session.pending_kill_execution_id = Some(execution_id.clone());
+            if !session.run_in_progress
+                || session.active_execution_id.as_ref() != Some(execution_id)
+            {
+                if session.pending_kill_execution_ids.len() >= 4096
+                    && !session.pending_kill_execution_ids.contains(execution_id)
+                {
+                    return Err(command_error("Too many pending terminal cancellations"));
+                }
+                session
+                    .pending_kill_execution_ids
+                    .insert(execution_id.clone());
+                if session.run_in_progress {
+                    return Ok(session.to_dto());
+                }
                 session.status = "killed".to_string();
                 session.updated_at = current_timestamp();
                 return Ok(session.to_dto());
@@ -3406,11 +4126,709 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    async fn terminal_lifecycle_fixture() -> (TempDir, DbPool, TerminalTabRecord) {
+        let temp = TempDir::new().unwrap();
+        let sql = crate::db::create_pool(&temp.path().join("terminal.db"))
+            .await
+            .unwrap();
+        let pool = DbPool::default();
+        pool.set_ready(sql);
+        let record = build_terminal_record(
+            "manual",
+            "project".into(),
+            None,
+            "Terminal".into(),
+            None,
+            ProjectTerminalTarget {
+                project_name: "Project".into(),
+                mount_name: "project".into(),
+                workspace_path: temp.path().to_owned(),
+            },
+            temp.path().to_owned(),
+        );
+        persist_terminal_tab_record(pool.clone(), record.clone())
+            .await
+            .unwrap();
+        (temp, pool, record)
+    }
+
+    #[tokio::test]
+    async fn lifecycle_close_waits_for_reconnect_admitted_before_its_persisted_read() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let reconnect = tokio::spawn({
+            let pool = pool.clone();
+            let store = store.clone();
+            let id = record.id.clone();
+            async move {
+                let persistence_pool = pool.clone();
+                reconnect_terminal_tab(&pool, &store, &id, |record| async move {
+                    entered_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    persist_terminal_tab_record(persistence_pool, record.clone()).await?;
+                    Ok(stored_tab_to_dto(&record, true))
+                })
+                .await
+            }
+        });
+        entered_rx.await.unwrap();
+        let mut close = Box::pin(close_terminal_tab(&pool, &store, &record.id));
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut close)
+            .await
+            .is_err());
+        release_tx.send(()).unwrap();
+        reconnect.await.unwrap().unwrap();
+        close.await.unwrap();
+        assert!(
+            repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let spawn_called = AtomicBool::new(false);
+        assert!(
+            reconnect_terminal_tab(&pool, &store, &record.id, |_| async {
+                spawn_called.store(true, Ordering::Release);
+                Err(command_error("unexpected spawn"))
+            })
+            .await
+            .is_err()
+        );
+        assert!(!spawn_called.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_close_drains_admitted_write_and_rejects_late_runtime_persistence() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let lifecycle = store.tab_lifecycle(&record.id);
+        let persistence = lifecycle.persistence.lock().await;
+        let close = tokio::spawn({
+            let pool = pool.clone();
+            let store = store.clone();
+            let id = record.id.clone();
+            async move { close_terminal_tab(&pool, &store, &id).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !lifecycle.closed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!close.is_finished());
+        let mut admitted = record.clone();
+        admitted.snapshot = "admitted output".into();
+        touch_terminal_tab_record(&mut admitted);
+        persist_terminal_tab_record(pool.clone(), admitted)
+            .await
+            .unwrap();
+        drop(persistence);
+        close.await.unwrap().unwrap();
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record: record.clone(),
+            lifecycle,
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: "late".into(),
+            output_flush_scheduled: true,
+            shell_kind: ManagedShellKind::Posix,
+            mode: LiveTerminalMode::InteractiveShell,
+            output_sequence: 0,
+        }));
+        persist_live_tab_record(pool.clone(), runtime.clone())
+            .await
+            .unwrap();
+        assert!(take_pending_output_batch(&mut *runtime.lock().await).is_none());
+        assert!(
+            repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_eof_revokes_active_returns_before_its_event_and_persistence_wait() {
+        let (_temp, pool, mut record) = terminal_lifecycle_fixture().await;
+        record.last_exit_code = Some(0);
+        let lifecycle = Arc::new(TerminalTabLifecycle::default());
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record: record.clone(),
+            lifecycle: lifecycle.clone(),
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: "completed output".into(),
+            output_flush_scheduled: true,
+            shell_kind: ManagedShellKind::Posix,
+            mode: LiveTerminalMode::InteractiveShell,
+            output_sequence: 1,
+        }));
+        let persistence = lifecycle.persistence.lock().await;
+        let (emitted_tx, emitted_rx) = oneshot::channel();
+        let eof = tokio::spawn({
+            let pool = pool.clone();
+            let runtime = runtime.clone();
+            async move {
+                complete_live_disconnect(pool, runtime, None, |batch, record, _| {
+                    assert!(batch.is_some(), "admitted output is delivered");
+                    assert_eq!(record.unwrap().status, "disconnected");
+                    emitted_tx.send(()).unwrap();
+                })
+                .await
+            }
+        });
+        emitted_rx.await.unwrap();
+        assert!(!eof.is_finished(), "EOF still drains admitted persistence");
+        {
+            let guard = runtime.lock().await;
+            assert!(
+                current_runtime_tab(&guard).is_err(),
+                "a resumed command cannot return an active DTO"
+            );
+            let published = AtomicBool::new(false);
+            assert!(publish_current_runtime_tab(&guard, |_| published
+                .store(true, Ordering::Release))
+            .is_err());
+            assert!(!published.load(Ordering::Acquire));
+            assert!(
+                !runtime_tab_snapshot(&guard).unwrap().has_live_session,
+                "a reader retaining this owner sees it retired"
+            );
+        }
+        drop(persistence);
+        eof.await.unwrap().unwrap();
+        let persisted = repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, "disconnected");
+        assert_eq!(
+            persisted.last_exit_code,
+            Some(0),
+            "completed command was not rolled back"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_old_runtime_cannot_persist_after_reconnection() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record: record.clone(),
+            lifecycle: store.tab_lifecycle(&record.id),
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: String::new(),
+            output_flush_scheduled: false,
+            shell_kind: ManagedShellKind::Posix,
+            mode: LiveTerminalMode::InteractiveShell,
+            output_sequence: 0,
+        }));
+        let (release_tx, release_rx) = oneshot::channel();
+        let emitted = Arc::new(StdMutex::new(Vec::new()));
+        let late_write = tokio::spawn({
+            let pool = pool.clone();
+            let runtime = runtime.clone();
+            let emitted = emitted.clone();
+            async move {
+                release_rx.await.unwrap();
+                persist_live_tab_record(pool, runtime.clone())
+                    .await
+                    .unwrap();
+                let mut runtime = runtime.lock().await;
+                runtime.pending_output = "late output".into();
+                assert!(take_pending_output_batch(&mut runtime).is_none());
+                publish_current_runtime_tab(&runtime, |dto| {
+                    emitted.lock().unwrap().push(dto.id.clone())
+                })
+            }
+        });
+        {
+            let mut previous = runtime.lock().await;
+            previous.record.status = "disconnected".into();
+            touch_terminal_tab_record(&mut previous.record);
+        }
+        retire_live_tab_record(pool.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let persistence_pool = pool.clone();
+        reconnect_terminal_tab(&pool, &store, &record.id, |mut next| async move {
+            next.snapshot = "new PTY".into();
+            persist_terminal_tab_record(persistence_pool, next.clone()).await?;
+            Ok(stored_tab_to_dto(&next, true))
+        })
+        .await
+        .unwrap();
+        // Simulate a command completion retaining the retired runtime. Its newer
+        // record counter alone would otherwise pass the SQL generation guard.
+        {
+            let mut previous = runtime.lock().await;
+            touch_terminal_tab_record(&mut previous.record);
+            touch_terminal_tab_record(&mut previous.record);
+        }
+        release_tx.send(()).unwrap();
+        assert!(late_write.await.unwrap().is_err());
+        assert!(
+            emitted.lock().unwrap().is_empty(),
+            "retired runtime cannot emit a tab or return a live DTO"
+        );
+        let current = repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.status, "idle");
+        assert_eq!(current.snapshot, "new PTY");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_failed_close_keeps_fence_until_retry_and_persists_intent_for_restart() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let sql = pool.ready_pool().unwrap();
+        sqlx::query("CREATE TRIGGER fail_terminal_delete BEFORE DELETE ON terminal_tabs BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END")
+            .execute(&sql).await.unwrap();
+        assert!(close_terminal_tab(&pool, &store, &record.id).await.is_err());
+        store.tab_lifecycle("unrelated");
+        assert!(store
+            .tab_lifecycle(&record.id)
+            .close_pending
+            .load(Ordering::Acquire));
+        assert_eq!(
+            repository::get_terminal_tab(&sql, &record.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "closed"
+        );
+        assert!(read_terminal_tab(&pool, &store, &record.id).await.is_err());
+        assert!(list_terminal_tabs(&pool, &store).await.unwrap().is_empty());
+        let restarted = TerminalSessionStore::default();
+        assert!(read_terminal_tab(&pool, &restarted, &record.id)
+            .await
+            .is_err());
+        assert!(list_terminal_tabs(&pool, &restarted)
+            .await
+            .unwrap()
+            .is_empty());
+        for instance in [&store, &TerminalSessionStore::default()] {
+            let spawned = AtomicBool::new(false);
+            assert!(
+                reconnect_terminal_tab(&pool, instance, &record.id, |_| async {
+                    spawned.store(true, Ordering::Release);
+                    Err(command_error("unexpected spawn"))
+                })
+                .await
+                .is_err()
+            );
+            assert!(!spawned.load(Ordering::Acquire));
+        }
+        sqlx::query("DROP TRIGGER fail_terminal_delete")
+            .execute(&sql)
+            .await
+            .unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        store.tab_lifecycle("next");
+        assert_eq!(store.tab_lifecycles.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lifecycle_failed_close_preserves_native_owner_for_retry() {
+        let (temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let session = synthetic_live_session("sleep 30", temp.path());
+        {
+            let mut runtime = session.runtime.lock().await;
+            runtime.record = record.clone();
+            runtime.lifecycle = store.tab_lifecycle(&record.id);
+        }
+        store
+            .live_tabs
+            .lock()
+            .await
+            .insert(record.id.clone(), session);
+        let sql = pool.ready_pool().unwrap();
+        sqlx::query("CREATE TRIGGER fail_terminal_close BEFORE UPDATE ON terminal_tabs BEGIN SELECT RAISE(ABORT, 'injected close persistence failure'); END")
+            .execute(&sql).await.unwrap();
+        assert!(close_terminal_tab(&pool, &store, &record.id).await.is_err());
+        assert!(store.live_tabs.lock().await.contains_key(&record.id));
+        let snapshot = read_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        assert_eq!(snapshot.status, "closed");
+        assert!(!snapshot.has_live_session);
+        assert!(!snapshot.is_restored);
+        let listed = list_terminal_tabs(&pool, &store).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, record.id);
+        assert_eq!(listed[0].status, "closed");
+        assert!(!listed[0].has_live_session);
+        assert!(
+            reconnect_terminal_tab(&pool, &store, &record.id, |_| async {
+                panic!("failed close must not reconnect")
+            })
+            .await
+            .is_err()
+        );
+        sqlx::query("DROP TRIGGER fail_terminal_close")
+            .execute(&sql)
+            .await
+            .unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        assert!(store.live_tabs.lock().await.is_empty());
+        assert!(repository::get_terminal_tab(&sql, &record.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lifecycle_failed_inspection_eof_drains_admitted_persistence() {
+        let (temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let lifecycle = store.tab_lifecycle(&record.id);
+        let session = synthetic_live_session("sleep 30", temp.path());
+        let runtime = session.runtime.clone();
+        {
+            let mut state = runtime.lock().await;
+            state.record = record.clone();
+            state.lifecycle = lifecycle.clone();
+        }
+        // A writer has already passed admission and captured the active record.
+        let persistence = lifecycle.persistence.lock().await;
+        let mut admitted = record.clone();
+        admitted.status = "running".into();
+        let mut eof = tokio::spawn({
+            let pool = pool.clone();
+            let store = store.clone();
+            let id = record.id.clone();
+            async move {
+                retain_failed_disconnect(pool, &store, &id, session, Some(17), |snapshot| {
+                    assert_eq!(snapshot.status, "closed");
+                    assert!(!snapshot.is_restored);
+                    assert!(!snapshot.has_live_session);
+                    assert_eq!(snapshot.last_exit_code, Some(17));
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !lifecycle.closed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let premature = tokio::time::timeout(Duration::from_millis(150), &mut eof).await;
+        assert!(
+            premature.is_err(),
+            "cleanup must drain an already admitted writer"
+        );
+        persist_terminal_tab_record(pool.clone(), admitted)
+            .await
+            .unwrap();
+        drop(persistence);
+        match premature {
+            Ok(result) => {
+                result.unwrap().unwrap();
+            }
+            Err(_) => {
+                eof.await.unwrap().unwrap();
+            }
+        }
+        let persisted = repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted.status, "closed",
+            "admitted write must precede the final cleanup intent"
+        );
+        assert_eq!(persisted.last_exit_code, Some(17));
+        assert!(store.live_tabs.lock().await.contains_key(&record.id));
+        persist_live_tab_record(pool.clone(), runtime)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "closed"
+        );
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lifecycle_inspection_failure_preserves_native_owner_for_retry() {
+        let (temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let session = synthetic_live_session("trap '' INT HUP; sleep 30", temp.path());
+        {
+            let mut runtime = session.runtime.lock().await;
+            runtime.record = record.clone();
+            runtime.lifecycle = store.tab_lifecycle(&record.id);
+        }
+        let marker = session
+            .process_tree
+            .lock()
+            .unwrap()
+            .marker_path_for_test()
+            .to_path_buf();
+        let saved_marker = temp.path().join("saved-marker");
+        fs::rename(&marker, &saved_marker).unwrap();
+        store
+            .live_tabs
+            .lock()
+            .await
+            .insert(record.id.clone(), session);
+        let error = close_terminal_tab(&pool, &store, &record.id)
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("termination is incomplete"),
+            "{error:?}"
+        );
+        {
+            let tabs = store.live_tabs.lock().await;
+            let retained = tabs
+                .get(&record.id)
+                .expect("retain native owner after inspection failure");
+            assert!(retained.child.lock().unwrap().try_wait().unwrap().is_some());
+            assert!(retained
+                .process_tree
+                .lock()
+                .unwrap()
+                .process_group_id
+                .is_some());
+        }
+        let sql = pool.ready_pool().unwrap();
+        assert!(repository::get_terminal_tab(&sql, &record.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .tab_lifecycle(&record.id)
+            .close_pending
+            .load(Ordering::Acquire));
+        fs::rename(&saved_marker, &marker).unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        assert!(!store.live_tabs.lock().await.contains_key(&record.id));
+        assert!(repository::get_terminal_tab(&sql, &record.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
     fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
         entries
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    #[cfg(unix)]
+    fn synthetic_live_session(command_text: &str, cwd: &Path) -> LiveTerminalSession {
+        let record = build_terminal_record(
+            "task",
+            "fixture".into(),
+            None,
+            "fixture".into(),
+            None,
+            ProjectTerminalTarget {
+                project_name: "Fixture".into(),
+                mount_name: "fixture".into(),
+                workspace_path: cwd.to_path_buf(),
+            },
+            cwd.to_path_buf(),
+        );
+        let pair = NativePtySystem::default()
+            .openpty(pty_size(80, 24))
+            .unwrap();
+        let mut tree = crate::core::process::TerminalProcessTree::new().unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", command_text]);
+        command.cwd(cwd);
+        tree.prepare_command(&mut command);
+        let child = pair.slave.spawn_command(command).unwrap();
+        tree.process_group_id = child.process_id();
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        });
+        LiveTerminalSession {
+            child: Arc::new(StdMutex::new(child)),
+            writer: Arc::new(StdMutex::new(pair.master.take_writer().unwrap())),
+            master: Arc::new(StdMutex::new(pair.master)),
+            process_tree: StdMutex::new(tree),
+            runtime: Arc::new(Mutex::new(LiveTerminalRuntime {
+                record,
+                lifecycle: Arc::new(TerminalTabLifecycle::default()),
+                persistence_active: true,
+                scan_buffer: String::new(),
+                pending_command: None,
+                pending_output: String::new(),
+                output_flush_scheduled: false,
+                shell_kind: ManagedShellKind::Posix,
+                mode: LiveTerminalMode::InteractiveShell,
+                output_sequence: 0,
+            })),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn live_terminal_close_reaps_its_child_and_stops_background_work() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session(
+            "trap '' INT HUP; sleep 60 & echo $! > child.pid; wait",
+            temp.path(),
+        );
+        let mut descendant = None;
+        for _ in 0..100 {
+            descendant = fs::read_to_string(temp.path().join("child.pid"))
+                .ok()
+                .and_then(|value| value.trim().parse::<i32>().ok());
+            if descendant.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let descendant = descendant.expect("fixture published its background PID");
+        terminate_live_terminal_process(&session, "fixture")
+            .await
+            .unwrap();
+        assert!(session.child.lock().unwrap().try_wait().unwrap().is_some());
+        for _ in 0..100 {
+            if unsafe { libc::kill(descendant, 0) } == -1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("owned background process survived terminal close");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_terminal_marker_survives_a_clean_environment() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session("env -i /bin/sh -c 'test -r /dev/fd/9'", temp.path());
+        assert_eq!(wait_for_child_exit_code(&session.child), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_terminal_wait_reaps_a_naturally_exited_shell() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session("exit 0", temp.path());
+        let pid = session.child.lock().unwrap().process_id().unwrap() as libc::pid_t;
+        assert_eq!(wait_for_child_exit_code(&session.child), 0);
+        assert_eq!(
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn terminal_utf8_decoder_preserves_every_split_and_replaces_invalid_bytes() {
+        let text = "déjà 界 😀";
+        for split in 0..=text.len() {
+            let mut decoder = TerminalUtf8Decoder::default();
+            let mut output = decoder.decode(&text.as_bytes()[..split], false);
+            output.push_str(&decoder.decode(&text.as_bytes()[split..], true));
+            assert_eq!(output, text);
+        }
+        let mut decoder = TerminalUtf8Decoder::default();
+        assert_eq!(decoder.decode(&[0xff, b'a', 0xc3], false), "�a");
+        assert_eq!(decoder.decode(&[], true), "�");
+    }
+
+    #[test]
+    fn wsl_prompt_script_keeps_labels_in_a_literal_variable() {
+        let script = wsl_interactive_shell_script("L'été | Tâche > ");
+        assert!(script.starts_with("export MACRO_TERMINAL_PROMPT='L'\\''été | Tâche > ';"));
+        assert!(script.contains("export PS1='${MACRO_TERMINAL_PROMPT}'"));
+        assert!(script.contains("/bin/bash --noprofile --norc -i"));
+    }
+
+    #[test]
+    fn terminal_prompt_accepts_frontend_and_legacy_labels_and_empty_fallback() {
+        for json in [
+            r#"{"projectLabel":"Projet été","taskLabel":"Tâche","branchLabel":"feature/test"}"#,
+            r#"{"project_label":"Projet été","task_label":"Tâche","branch_label":"feature/test"}"#,
+        ] {
+            let context: TerminalPromptContext = serde_json::from_str(json).unwrap();
+            assert_eq!(context.branch_label.as_deref(), Some("feature/test"));
+            let mut record = build_terminal_record(
+                "manual",
+                "p".into(),
+                None,
+                "t".into(),
+                Some(context),
+                ProjectTerminalTarget {
+                    project_name: "Fallback".into(),
+                    mount_name: "fallback".into(),
+                    workspace_path: PathBuf::from("/synthetic"),
+                },
+                PathBuf::from("/synthetic"),
+            );
+            assert_eq!(render_terminal_prompt(&record), "Projet été | Tâche > ");
+            record.prompt_context_json = Some("{}".into());
+            assert_eq!(render_terminal_prompt(&record), "fallback > ");
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_cancellations_survive_unrelated_runs_and_other_cancellations() {
+        let temp = TempDir::new().unwrap();
+        let store = TerminalSessionStore::default();
+        store
+            .legacy_sessions
+            .lock()
+            .await
+            .insert("terminal-test".into(), legacy_test_session(temp.path()));
+        for id in ["A", "C"] {
+            kill_legacy_session_internal(store.clone(), "terminal-test".into(), Some(id.into()))
+                .await
+                .unwrap();
+        }
+        let result = run_legacy_session_internal(
+            store.clone(),
+            "terminal-test".into(),
+            "echo B".into(),
+            Some(5000),
+            Some("B".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status, "completed");
+        for id in ["A", "C"] {
+            let result = run_legacy_session_internal(
+                store.clone(),
+                "terminal-test".into(),
+                "echo should-not-run".into(),
+                Some(5000),
+                Some(id.into()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.status, "killed");
+            assert!(!result.output.contains("should-not-run"));
+        }
     }
 
     #[test]
@@ -3487,7 +4905,7 @@ mod tests {
             run_in_progress: false,
             kill_requested: false,
             active_execution_id: None,
-            pending_kill_execution_id: None,
+            pending_kill_execution_ids: HashSet::new(),
             execution_generation: 0,
             #[cfg(windows)]
             windows_job: None,
@@ -3687,17 +5105,23 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn terminating_a_windows_job_removes_descendants() {
+    async fn legacy_terminal_launch_is_gated_and_job_removes_descendants() {
         let temp = TempDir::new().expect("temp dir");
         let child_pid_path = temp.path().join("child.pid");
         let script = format!(
             "$child = Start-Process powershell -PassThru -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30'; Set-Content -NoNewline -Path '{}' -Value $child.Id; Wait-Process -Id $child.Id",
             child_pid_path.display()
         );
-        let mut command = background_tokio_command("powershell");
-        command.args(["-NoProfile", "-Command", &script]);
+        let (mut command, launch_gate) =
+            build_shell_command_compat(&script, temp.path()).expect("gated legacy command");
         let mut child = command.spawn().expect("spawn job root");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !child_pid_path.exists(),
+            "legacy terminal command ran before Job Object assignment"
+        );
         let job = WindowsJob::assign(&child).expect("assign Windows Job Object");
+        launch_gate.release().expect("release legacy launch gate");
 
         let mut descendant_pid = None;
         for _ in 0..100 {
@@ -3710,22 +5134,123 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         let descendant_pid = descendant_pid.expect("readable descendant pid file");
+        let descendant_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, descendant_pid) };
+        assert!(
+            !descendant_handle.is_null(),
+            "open descendant process {descendant_pid}: {}",
+            std::io::Error::last_os_error()
+        );
 
         job.terminate().expect("terminate Windows Job Object");
         tokio::time::timeout(Duration::from_secs(5), child.wait())
             .await
             .expect("job root should exit")
             .expect("wait for job root");
-        let output = background_tokio_command("tasklist")
-            .args(["/FI", &format!("PID eq {descendant_pid}"), "/NH"])
-            .output()
-            .await
-            .expect("query descendant process");
-        let listing = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            !listing.contains(&descendant_pid.to_string()),
-            "descendant process {descendant_pid} survived: {listing}"
+        let wait_result = unsafe { WaitForSingleObject(descendant_handle, 5_000) };
+        unsafe { CloseHandle(descendant_handle) };
+        assert_eq!(
+            wait_result, WAIT_OBJECT_0,
+            "descendant process {descendant_pid} did not exit before the timeout"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn live_terminal_close_path_gates_launch_and_removes_descendants() {
+        let temp = TempDir::new().expect("temp dir");
+        let marker = temp.path().join("terminal-descendant-survived.txt");
+        let started = temp.path().join("terminal-descendant-started.txt");
+        let child_script = format!(
+            "Start-Sleep -Milliseconds 1200; Set-Content -LiteralPath '{}' -Value survived",
+            marker.to_string_lossy().replace('\'', "''")
+        );
+        let parent_script = format!(
+            "$child = Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList @('-NoProfile','-Command','{}') -PassThru; Set-Content -LiteralPath '{}' -Value $child.Id; Start-Sleep -Seconds 30",
+            child_script.replace('\'', "''"),
+            started.to_string_lossy().replace('\'', "''")
+        );
+        let record = build_terminal_record(
+            "setup",
+            "project".to_string(),
+            None,
+            "race test".to_string(),
+            None,
+            ProjectTerminalTarget {
+                project_name: "Project".to_string(),
+                mount_name: "project".to_string(),
+                workspace_path: temp.path().to_path_buf(),
+            },
+            temp.path().to_path_buf(),
+        );
+        let pty = NativePtySystem::default()
+            .openpty(pty_size(80, 24))
+            .expect("open terminal PTY");
+        let (command, launch_gate) =
+            build_command_process(&record, &parent_script).expect("gated command");
+        let child = pty
+            .slave
+            .spawn_command(command)
+            .expect("spawn portable terminal");
+        drop(pty.slave);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !started.exists(),
+            "terminal command ran before Job Object assignment"
+        );
+        let job = WindowsJob::assign_portable(child.as_ref()).expect("assign terminal job");
+        launch_gate.release().expect("release launch gate");
+        for _ in 0..100 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            started.exists(),
+            "terminal command did not launch descendant"
+        );
+
+        let writer = pty.master.take_writer().expect("terminal writer");
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record,
+            lifecycle: Arc::new(TerminalTabLifecycle::default()),
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: String::new(),
+            output_flush_scheduled: false,
+            shell_kind: ManagedShellKind::PowerShell,
+            mode: LiveTerminalMode::CommandProcess,
+            output_sequence: 0,
+        }));
+        let session = LiveTerminalSession {
+            child: Arc::new(StdMutex::new(child)),
+            writer: Arc::new(StdMutex::new(writer)),
+            master: Arc::new(StdMutex::new(pty.master)),
+            runtime,
+            windows_job: job,
+        };
+        let writer = session.writer.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let writer_lock_thread = std::thread::spawn(move || {
+            let _guard = writer.lock().expect("lock terminal writer");
+            locked_tx.send(()).expect("signal writer lock");
+            release_rx.recv().expect("release writer lock");
+        });
+        locked_rx.recv().expect("writer lock acquired");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            terminate_live_terminal_process(&session, "race-test"),
+        )
+        .await
+        .expect("close must not wait for a blocked writer")
+        .expect("close live terminal process");
+        release_tx.send(()).expect("release writer");
+        writer_lock_thread.join().expect("join writer lock thread");
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+        assert!(!marker.exists(), "terminal descendant survived close");
     }
 
     fn terminal_test_project(id: &str, path: &str) -> ProjectDto {
@@ -4137,7 +5662,14 @@ mod tests {
 
         assert_eq!(config.args, ["--noprofile", "--norc", "-i"]);
         let env = config.env.into_iter().collect::<HashMap<_, _>>();
-        assert_eq!(env.get("PS1").map(String::as_str), Some("api > "));
+        assert_eq!(
+            env.get("PS1").map(String::as_str),
+            Some("${MACRO_TERMINAL_PROMPT}")
+        );
+        assert_eq!(
+            env.get("MACRO_TERMINAL_PROMPT").map(String::as_str),
+            Some("api > ")
+        );
         assert_eq!(env.get("PROMPT_COMMAND").map(String::as_str), Some(""));
         assert_eq!(
             env.get("BASH_SILENCE_DEPRECATION_WARNING")
@@ -4157,7 +5689,7 @@ mod tests {
             "api > ",
         );
 
-        assert_eq!(config.args, ["-f", "-i"]);
+        assert_eq!(config.args, ["-f", "-i", "-o", "NO_PROMPT_SUBST"]);
         let env = config.env.into_iter().collect::<HashMap<_, _>>();
         assert_eq!(env.get("PS1").map(String::as_str), Some("api > "));
         assert_eq!(env.get("PROMPT").map(String::as_str), Some("api > "));

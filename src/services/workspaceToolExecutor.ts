@@ -1,3 +1,4 @@
+import { canonicalizeWorkspacePath, relativePathWithinRoot } from "./workspacePathIdentity";
 import * as tauriIpc from "./tauriIpc";
 import type { AppMode } from "../types";
 import type {
@@ -55,6 +56,9 @@ const interruptibleWorkspaceToolIds = new Set([
   "glob",
   "grep",
   "ast_grep",
+  "write",
+  "edit",
+  "apply_patch",
 ]);
 let workspaceToolExecutionCounter = 0;
 
@@ -219,71 +223,6 @@ type PatchWriteRollbackSnapshot = {
   content: string | null;
   unixMode?: number | null;
   postMutationExpectedRevision?: string;
-};
-
-type CanonicalWorkspacePath = {
-  normalized: string;
-  comparisonKey: string;
-  prefixKey: string;
-  segments: string[];
-  escapedAboveRoot: boolean;
-};
-
-const canonicalizeWorkspacePath = (value: string): CanonicalWorkspacePath => {
-  let input = value.trim().replace(/\\/g, "/");
-  if (/^\/\/\?\/UNC\//i.test(input)) {
-    input = `//${input.slice(8)}`;
-  } else if (/^\/\/\?\/[a-z]:\//i.test(input)) {
-    input = input.slice(4);
-  }
-
-  const isUnc = input.startsWith("//");
-  const driveMatch = input.match(/^([a-z]:)(?:\/|$)/i);
-  const isAbsolutePosix = !isUnc && !driveMatch && input.startsWith("/");
-  const rawSegments = input.split("/").filter(Boolean);
-  let prefix = "";
-  let pathSegments = rawSegments;
-
-  if (isUnc) {
-    const server = rawSegments[0] ?? "";
-    const share = rawSegments[1] ?? "";
-    prefix = `//${server}/${share}`;
-    pathSegments = rawSegments.slice(2);
-  } else if (driveMatch) {
-    prefix = driveMatch[1];
-    pathSegments = rawSegments.slice(1);
-  } else if (isAbsolutePosix) {
-    prefix = "/";
-  }
-
-  const segments: string[] = [];
-  let escapedAboveRoot = false;
-  for (const segment of pathSegments) {
-    if (segment === ".") {
-      continue;
-    }
-    if (segment === "..") {
-      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
-        segments.pop();
-      } else if (prefix) {
-        escapedAboveRoot = true;
-      } else {
-        segments.push(segment);
-      }
-      continue;
-    }
-    segments.push(segment);
-  }
-
-  const normalized = prefix === "/"
-    ? `/${segments.join("/")}`
-    : prefix
-      ? `${prefix}${segments.length > 0 ? `/${segments.join("/")}` : ""}`
-      : segments.join("/") || ".";
-  const caseInsensitive = Boolean(driveMatch || isUnc);
-  const comparisonKey = caseInsensitive ? normalized.toLowerCase() : normalized;
-  const prefixKey = caseInsensitive ? prefix.toLowerCase() : prefix;
-  return { normalized, comparisonKey, prefixKey, segments, escapedAboveRoot };
 };
 
 const assertDistinctPatchTargets = (
@@ -1037,8 +976,9 @@ const buildApplyPatchDiff = (
 const countLogicalLines = (content: string): number =>
   splitTextLines(content).lines.length;
 
-const buildStructuredWriteResponse = (
+const formatStructuredWriteResponse = (
   input: StructuredWriteResultInput,
+  diagnostics: unknown[],
 ): string =>
   JSON.stringify(
     {
@@ -1077,7 +1017,7 @@ const buildStructuredWriteResponse = (
           deletions: input.deletions,
         },
       ]),
-      diagnostics: [],
+      diagnostics,
       validation: {
         all_files_readable:
           input.validation.readable || !input.validation.exists,
@@ -1147,32 +1087,6 @@ const normalizeWorkspacePath = (value?: string | null): string | null => {
     return null;
   }
   return trimmed;
-};
-
-const relativePathWithinRoot = (path: string, root: string): string | null => {
-  const normalizedPath = canonicalizeWorkspacePath(path);
-  const normalizedRoot = canonicalizeWorkspacePath(root);
-  if (
-    normalizedPath.escapedAboveRoot ||
-    normalizedRoot.escapedAboveRoot ||
-    normalizedPath.prefixKey !== normalizedRoot.prefixKey
-  ) {
-    return null;
-  }
-  const caseInsensitive = Boolean(normalizedRoot.prefixKey.match(/^(?:[a-z]:|\/\/)/i));
-  const pathSegments = caseInsensitive
-    ? normalizedPath.segments.map((segment) => segment.toLowerCase())
-    : normalizedPath.segments;
-  const rootSegments = caseInsensitive
-    ? normalizedRoot.segments.map((segment) => segment.toLowerCase())
-    : normalizedRoot.segments;
-  if (
-    rootSegments.length > pathSegments.length ||
-    rootSegments.some((segment, index) => pathSegments[index] !== segment)
-  ) {
-    return null;
-  }
-  return normalizedPath.segments.slice(rootSegments.length).join("/") || ".";
 };
 
 interface ProjectWorkspaceCandidate {
@@ -1831,14 +1745,95 @@ const resolveDirectPath = (
   return resolvePathForMode(inputPath, mode);
 };
 
+// Match glob::Pattern::matches defaults: case-sensitive, with separators accepted by wildcards.
 export const globToRegex = (pattern: string): RegExp => {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "__DOUBLE_STAR__")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, ".")
-    .replace(/__DOUBLE_STAR__/g, ".*");
-  return new RegExp(`^${escaped}$`, "i");
+  const chars = Array.from(pattern);
+  let source = "^";
+
+  const escapeLiteral = (value: string): string =>
+    value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const escapeClassCharacter = (value: string): string =>
+    value.replace(/[\\\-\]^]/g, "\\$&");
+
+  for (let index = 0; index < chars.length; index += 1) {
+    const character = chars[index];
+
+    if (character === "*") {
+      const start = index;
+      while (index < chars.length && chars[index] === "*") index += 1;
+      const count = index - start;
+
+      if (count > 2) {
+        throw new Error("wildcards are either regular `*` or recursive `**`");
+      }
+      if (count === 1) {
+        source += "[\\s\\S]*";
+        index -= 1;
+        continue;
+      }
+
+      const isPathComponentStart =
+        start === 0 || chars[start - 1] === "/";
+      if (!isPathComponentStart) {
+        throw new Error("recursive wildcards must form a single path component");
+      }
+
+      const followedBySeparator = chars[index] === "/";
+      if (followedBySeparator) index += 1;
+      else if (index !== chars.length) {
+        throw new Error("recursive wildcards must form a single path component");
+      }
+
+      if (followedBySeparator && index < chars.length) {
+        source += "(?:[\\s\\S]*\\/)?";
+      } else {
+        source += "[\\s\\S]*";
+      }
+      index -= 1;
+      continue;
+    }
+
+    if (character === "?") {
+      source += "[\\s\\S]";
+      continue;
+    }
+
+    if (character === "[") {
+      const isNegated = chars[index + 1] === "!";
+      const contentStart = index + (isNegated ? 2 : 1);
+      const closingBracket =
+        chars[contentStart] === "]"
+          ? chars.indexOf("]", contentStart + 1)
+          : chars.indexOf("]", contentStart);
+      if (closingBracket < 0 || closingBracket <= contentStart) {
+        throw new Error("invalid range pattern");
+      }
+
+      const content = chars.slice(contentStart, closingBracket);
+      let classSource = "";
+      for (let classIndex = 0; classIndex < content.length; classIndex += 1) {
+        const classCharacter = content[classIndex];
+        if (
+          classIndex + 2 < content.length &&
+          content[classIndex + 1] === "-"
+        ) {
+          classSource += `${escapeClassCharacter(classCharacter)}-${escapeClassCharacter(
+            content[classIndex + 2],
+          )}`;
+          classIndex += 2;
+        } else {
+          classSource += escapeClassCharacter(classCharacter);
+        }
+      }
+      source += `[${isNegated ? "^" : ""}${classSource}]`;
+      index = closingBracket;
+      continue;
+    }
+
+    source += escapeLiteral(character);
+  }
+
+  return new RegExp(`${source}(?![\\s\\S])`, "u");
 };
 
 export const pathMatchesGlob = (path: string, pattern: string): boolean => {
@@ -2138,9 +2133,78 @@ export const executeWorkspaceTool = async (
       toolName === "apply_patch");
   const virtualRootEnabled = virtualRootCandidate && !useMetadataWorkspace;
 
+  let nativeDiagnostics: unknown[] = [];
+  const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
+    const isReady = (item: unknown): item is Record<string, unknown> =>
+      item !== null && typeof item === "object" &&
+      (item as { status?: unknown }).status === "ready";
+    if (!nativeDiagnostics.some(isReady)) {
+      return nativeDiagnostics;
+    }
+    let stopChecking = false;
+    let stop!: () => void;
+    const interrupted = new Promise<boolean>((resolve) => {
+      stop = () => { stopChecking = true; resolve(true); };
+    });
+    // Checkpoint persistence can outlive the native observation. Revalidate with
+    // one small budget for the whole checkpoint; filesystem IPC itself has no abort.
+    const deadline = setTimeout(stop, 250);
+    options.signal?.addEventListener("abort", stop, { once: true });
+    if (options.signal?.aborted) stop();
+    const verified = new Set<unknown>();
+    const verify = async (): Promise<boolean> => {
+      for (const item of nativeDiagnostics) {
+        if (stopChecking) return true;
+        if (!isReady(item)) continue;
+        // Use the native observation's target, never the current UI selection or
+        // an unqualified checkpoint path shared by several mounts.
+        if (typeof item.root_identity !== "string" || !item.root_identity ||
+            typeof item.workspace_path !== "string" || !item.workspace_path ||
+            typeof item.document_path !== "string" || !item.document_path ||
+            typeof item.revision !== "string" || !item.revision) continue;
+        try {
+          const current = await tauriIpc.fsReadFileWithOptions({
+            path: item.document_path,
+            workspacePath: item.workspace_path,
+            allowOutsideWorkspace: false,
+          });
+          if (!stopChecking && current.workspace_identity === item.root_identity &&
+              current.revision === item.revision) verified.add(item);
+        } catch {
+          // Unknown identity, missing file and failed read invalidate only this observation.
+        }
+      }
+      return false;
+    };
+    try {
+      await Promise.race([verify(), interrupted]);
+    } finally {
+      stopChecking = true;
+      clearTimeout(deadline);
+      options.signal?.removeEventListener("abort", stop);
+    }
+    return nativeDiagnostics.map((item) => {
+      if (!isReady(item)) return item;
+      if (verified.has(item) && !options.signal?.aborted) return item;
+      return {
+        ...item,
+        status: options.signal?.aborted ? "cancelled" : "stale",
+        items: [],
+        truncated: false,
+      };
+    });
+  };
+  const buildStructuredWriteResponse = async (input: StructuredWriteResultInput): Promise<string> => {
+    return formatStructuredWriteResponse(input, await diagnosticsAfterCheckpoint());
+  };
+
   const executeBackendTool = async (
     backendToolName: string,
     backendArgs: ToolArgs,
+    localTarget?: {
+      workspacePath?: string | null;
+      workspaceScope?: tauriIpc.WorkspaceScope;
+    },
   ): Promise<string> => {
     if (useTauri) {
       const executionId = interruptibleWorkspaceToolIds.has(backendToolName)
@@ -2156,12 +2220,12 @@ export const executeWorkspaceTool = async (
         mode,
         toolId: backendToolName,
         args: backendArgs,
-        workspacePath: effectiveWorkspacePath,
-        workspaceScope: useMetadataWorkspace
-          ? ("metadata" as const)
-          : undefined,
-        projectMounts: options.projectMounts,
-        virtualRootEnabled,
+        workspacePath: localTarget ? localTarget.workspacePath : effectiveWorkspacePath,
+        workspaceScope: localTarget
+          ? localTarget.workspaceScope
+          : useMetadataWorkspace ? ("metadata" as const) : undefined,
+        projectMounts: localTarget ? undefined : options.projectMounts,
+        virtualRootEnabled: localTarget ? false : virtualRootEnabled,
         focusedProjectId: backendFocusedProjectId,
         executionId,
       });
@@ -2172,7 +2236,16 @@ export const executeWorkspaceTool = async (
         if (options.signal?.aborted) abortListener();
       }
       try {
-        return await executionPromise;
+        const response = await executionPromise;
+        if (isWriteTool(backendToolName)) {
+          try {
+            const parsed = JSON.parse(response);
+            nativeDiagnostics = Array.isArray(parsed.diagnostics) ? parsed.diagnostics : [];
+          } catch {
+            // Refusals may be plain text and carry no observations.
+          }
+        }
+        return response;
       } finally {
         if (abortListener) {
           options.signal?.removeEventListener("abort", abortListener);
@@ -2333,6 +2406,46 @@ export const executeWorkspaceTool = async (
     }
   };
 
+  // Keep frontend checkpoint snapshots and CAS compensation, but commit through
+  // the native transaction so the written revision is the one observed by LSP.
+  const writeCheckpointedText = async (
+    request: Parameters<typeof tauriIpc.fsWriteFile>[0],
+  ): Promise<Awaited<ReturnType<typeof tauriIpc.fsWriteFile>>> => {
+    assertToolExecutionActive();
+    const response = await executeBackendTool("write", {
+      path: request.path,
+      content: request.content,
+      create_dirs: request.createDirs,
+      expected_revision: request.expectedRevision,
+      unix_mode: request.unixMode,
+    }, { workspacePath: request.workspacePath, workspaceScope: request.workspaceScope });
+    if (response === "UNSUPPORTED_WORKSPACE_TOOL") {
+      // Compatibility with older desktop runtimes, explicitly without LSP proof.
+      return tauriIpc.fsWriteFile(request);
+    }
+    let result;
+    try {
+      result = JSON.parse(response);
+    } catch {
+      throw new Error(response);
+    }
+    if (result.ok !== true) throw new Error(response);
+    const revision = result.files?.[0]?.validation?.revision;
+    if (typeof revision !== "string") {
+      throw new Error("The native write returned no applied revision; a checkpoint cannot be recorded safely.");
+    }
+    return {
+      path: typeof result.path === "string" ? result.path : request.path,
+      bytes_written: typeof result.bytes_written === "number"
+        ? result.bytes_written
+        : new TextEncoder().encode(request.content).byteLength,
+      created: result.created === true,
+      skipped: result.skipped === true,
+      revision,
+      unix_mode: result.files?.[0]?.validation?.unix_mode ?? request.unixMode ?? null,
+    };
+  };
+
   const validateBackendTool = async (
     backendToolName: string,
     path?: string,
@@ -2373,7 +2486,7 @@ export const executeWorkspaceTool = async (
       try {
         const backendResult = await executeBackendTool(toolName, args);
 
-        if (options.signal?.aborted) {
+        if (options.signal?.aborted && !isWriteTool(toolName)) {
           return "Tool execution aborted";
         }
 
@@ -2712,7 +2825,7 @@ export const executeWorkspaceTool = async (
                 result.readback.revision,
               ),
             mutation: async () => {
-              const result = await tauriIpc.fsWriteFile({
+              const result = await writeCheckpointedText({
                 path: realPath,
                 content,
                 createDirs: rawArgs.create_dirs !== false,
@@ -2859,7 +2972,7 @@ export const executeWorkspaceTool = async (
               reread.revision,
             ),
           mutation: async () => {
-            const result = await tauriIpc.fsWriteFile({
+            const result = await writeCheckpointedText({
               path: realPath,
               content: updated,
               createDirs: true,
@@ -3380,7 +3493,7 @@ export const executeWorkspaceTool = async (
             ok: errors.length === 0,
             files,
             diff: buildApplyPatchDiff(files),
-            diagnostics: [],
+            diagnostics: await diagnosticsAfterCheckpoint(),
             validation: {
               all_files_readable: errors.length === 0,
               files: validationFiles,
@@ -3602,7 +3715,7 @@ export const executeWorkspaceTool = async (
             query,
             total: results.length,
             count: results.length,
-            total_count: page.offset + results.length,
+            total_count: seenMatches,
             total_is_exact: true,
             results,
             limit: page.limit,
@@ -3894,7 +4007,7 @@ export const executeWorkspaceTool = async (
             result.readback.revision,
           ),
         mutation: async () => {
-          const result = await tauriIpc.fsWriteFile({
+          const result = await writeCheckpointedText({
             path,
             content,
             createDirs,
@@ -4019,7 +4132,7 @@ export const executeWorkspaceTool = async (
             result.readback.revision,
           ),
         mutation: async () => {
-          const result = await tauriIpc.fsWriteFile({
+          const result = await writeCheckpointedText({
             path,
             content: updated,
             createDirs: true,
@@ -4493,7 +4606,7 @@ export const executeWorkspaceTool = async (
           ok: errors.length === 0,
           files,
           diff: buildApplyPatchDiff(files),
-          diagnostics: [],
+          diagnostics: await diagnosticsAfterCheckpoint(),
           validation: {
             all_files_readable: errors.length === 0,
             files: validationFiles,
@@ -4676,7 +4789,7 @@ export const executeWorkspaceTool = async (
           query,
           total: results.length,
           count: results.length,
-          total_count: page.offset + results.length,
+          total_count: seenMatches,
           total_is_exact: true,
           results,
           limit: page.limit,

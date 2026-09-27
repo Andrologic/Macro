@@ -3,6 +3,7 @@ import type { DesktopPlatform } from '../utils/desktopPlatform';
 export const WINDOW_STATE_SCHEMA_VERSION = 3;
 export type WindowChromeMode = 'frameless' | 'decorated' | 'overlay';
 
+// Dimensions are logical pixels; desktop positions and monitor rectangles are physical pixels.
 export interface WindowBounds {
   width: number;
   height: number;
@@ -11,6 +12,7 @@ export interface WindowBounds {
 }
 
 export interface MonitorBounds {
+  scaleFactor?: number;
   position: { x: number; y: number };
   size: { width: number; height: number };
   workArea: {
@@ -27,6 +29,7 @@ export interface StoredWindowState extends Partial<WindowBounds> {
 }
 
 interface WindowArea {
+  scaleFactor?: number;
   x: number;
   y: number;
   width: number;
@@ -55,12 +58,14 @@ const getAllowedMonitorArea = (
 ): WindowArea =>
   platform === 'macos' && chromeMode === 'frameless'
     ? {
+        scaleFactor: monitor.scaleFactor,
         x: monitor.position.x,
         y: monitor.position.y,
         width: monitor.size.width,
         height: monitor.size.height,
       }
     : {
+        scaleFactor: monitor.scaleFactor,
         x: monitor.workArea.position.x,
         y: monitor.workArea.position.y,
         width: monitor.workArea.size.width,
@@ -130,8 +135,9 @@ export function sanitizeWindowBounds({
     chromeMode
   );
 
-  const maxWidth = Math.max(targetArea.width, MIN_WINDOW_WIDTH);
-  const maxHeight = Math.max(targetArea.height, MIN_WINDOW_HEIGHT);
+  const scale = targetArea.scaleFactor && targetArea.scaleFactor > 0 ? targetArea.scaleFactor : 1;
+  const maxWidth = targetArea.width / scale;
+  const maxHeight = targetArea.height / scale;
   const preferredWidth =
     requestedBounds && isFiniteNumber(requestedBounds.width)
       ? requestedBounds.width
@@ -143,17 +149,17 @@ export function sanitizeWindowBounds({
 
   const width = clamp(preferredWidth, Math.min(MIN_WINDOW_WIDTH, maxWidth), maxWidth);
   const height = clamp(preferredHeight, Math.min(MIN_WINDOW_HEIGHT, maxHeight), maxHeight);
-  const maxX = targetArea.x + Math.max(targetArea.width - width, 0);
-  const maxY = targetArea.y + Math.max(targetArea.height - height, 0);
+  const maxX = targetArea.x + Math.max(targetArea.width - width * scale, 0);
+  const maxY = targetArea.y + Math.max(targetArea.height - height * scale, 0);
 
   const requestedX =
     requestedBounds && isFiniteNumber(requestedBounds.x)
       ? requestedBounds.x
-      : Math.round(targetArea.x + (targetArea.width - width) / 2);
+      : Math.round(targetArea.x + (targetArea.width - width * scale) / 2);
   const requestedY =
     requestedBounds && isFiniteNumber(requestedBounds.y)
       ? requestedBounds.y
-      : Math.round(targetArea.y + (targetArea.height - height) / 2);
+      : Math.round(targetArea.y + (targetArea.height - height * scale) / 2);
 
   return {
     width,

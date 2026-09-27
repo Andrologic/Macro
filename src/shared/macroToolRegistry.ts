@@ -42,13 +42,6 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "read_sources",
   "edit_source_passage",
   "question",
-  "config_list",
-  "config_get",
-  "config_validate",
-  "config_patch",
-  "skill_activate",
-  "skill_read_resource",
-  "skill_run_script",
   "read_file",
   "web_fetch",
   "list",
@@ -78,11 +71,6 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "strategy_generate",
   "strategy_get",
   "strategy_update",
-  "task_todo_get",
-  "task_todo_update",
-  "task_artifact_list",
-  "task_artifact_get",
-  "task_artifact_put",
   "plan_create",
   "plan_list",
   "plan_get",
@@ -1003,15 +991,27 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "git_reset",
-    "Reset repository to commit/HEAD in soft/mixed/hard mode.",
+    "Move HEAD to a commit, or keep the current HEAD when commit is omitted. soft moves HEAD only and preserves the index and working files. mixed moves HEAD and resets the index while preserving working files. hard moves HEAD and resets the index and tracked working files, discarding tracked changes. hard requires confirm=true and never deletes untracked files.",
     {
       type: "object",
       properties: {
         repo_path: { type: "string" },
         project_id: { type: "string" },
-        mode: { type: "string", enum: ["soft", "mixed", "hard"] },
-        commit: { type: "string" },
-        confirm: { type: "boolean" },
+        mode: {
+          type: "string",
+          enum: ["soft", "mixed", "hard"],
+          description:
+            "soft changes only HEAD; mixed also resets the index; hard also resets tracked working files.",
+        },
+        commit: {
+          type: "string",
+          description: "Target commit or ref. Omit it to reset against the current HEAD.",
+        },
+        confirm: {
+          type: "boolean",
+          description:
+            "Required and true for hard mode after destructive approval. Ignored for soft and mixed.",
+        },
       },
       required: ["mode"],
     },

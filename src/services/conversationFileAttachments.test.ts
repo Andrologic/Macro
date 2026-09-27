@@ -106,6 +106,26 @@ describe('conversationFileAttachments', () => {
     expect(attempted).toEqual(['one.txt', 'two.txt']);
   });
 
+  it('keeps homonymous files on distinct persisted paths', async () => {
+    const prepared = await prepareConversationAttachments([
+      new File(['first body'], 'duplicate.txt'),
+      new File(['second body'], 'duplicate.txt'),
+    ]);
+    const persisted: Array<{ title?: string; path?: string }> = [];
+
+    const ids = await persistConversationAttachments(prepared, 'conversation', async (citation) => {
+      persisted.push(citation);
+      return `citation-${persisted.length}`;
+    });
+
+    expect(ids).toEqual(['citation-1', 'citation-2']);
+    expect(persisted.map((citation) => citation.title)).toEqual([
+      'duplicate.txt',
+      'duplicate.txt',
+    ]);
+    expect(new Set(persisted.map((citation) => citation.path)).size).toBe(2);
+  });
+
   it('rejects image type spoofing and quotas before full image reads', async () => {
     await expect(validateImageAttachments([new File(['not a png'], 'test.png', { type: 'image/png' })], 0, 0))
       .rejects.toBeInstanceOf(ConversationAttachmentError);

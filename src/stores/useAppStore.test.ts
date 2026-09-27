@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   computePlanSelectorRefreshState,
@@ -9,6 +10,11 @@ import type {
   ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import type { PlanNode } from '../types';
+import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+
+// Capture once before mock.module rewrites the shared IPC re-export binding.
+// A query-suffixed facade still re-exports the same underlying runtime module.
+const { isTauriAvailable: actualIsTauriAvailable } = await import('../services/tauriIpc');
 
 type ProjectRecord = {
   id: string;
@@ -263,7 +269,8 @@ const taskStoreState = {
     project_id?: string | null;
     project_ids?: string[];
   }>,
-  getTaskById: (_taskId: string) => undefined,
+  getTaskById: (taskId: string): { id: string; status: string; project_id?: string | null; project_ids?: string[] } | undefined =>
+    taskStoreState.tasks.find((task) => task.id === taskId),
   activateTask: mock(async () => undefined),
   refreshFromPlan: mock(async () => undefined),
 };
@@ -417,6 +424,15 @@ const removeProjectMock = mock(async (data: { projectId: string }) => {
     }))
     .filter((group) => group.projects.length > 0);
 });
+const renameProjectMock = mock(async (data: { projectId: string; name: string }) => {
+  bootstrapStandaloneProjects = bootstrapStandaloneProjects.map((project) =>
+    project.id === data.projectId ? { ...project, name: data.name } : project);
+});
+const removeProjectGroupMock = mock(async (data: { groupId: string }) => {
+  const group = bootstrapProjectGroups.find((candidate) => candidate.id === data.groupId);
+  bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, ...(group?.projects ?? [])];
+  bootstrapProjectGroups = bootstrapProjectGroups.filter((candidate) => candidate.id !== data.groupId);
+});
 const workspaceRecoverMissingMetadataMock = mock(async () => ({
   status: 'none',
   restoredCommit: null,
@@ -543,6 +559,8 @@ const registerUseAppStoreMocks = async () => {
       cancelProjectOperation: cancelProjectOperationMock,
       debugResetProject: debugResetProjectMock,
       removeProject: removeProjectMock,
+      renameProject: renameProjectMock,
+      removeProjectGroup: removeProjectGroupMock,
     },
   }));
   mock.module('../services/index.ts', () => ({
@@ -556,6 +574,8 @@ const registerUseAppStoreMocks = async () => {
       cancelProjectOperation: cancelProjectOperationMock,
       debugResetProject: debugResetProjectMock,
       removeProject: removeProjectMock,
+      renameProject: renameProjectMock,
+      removeProjectGroup: removeProjectGroupMock,
     },
   }));
 
@@ -623,7 +643,7 @@ const registerUseAppStoreMocks = async () => {
 
   registerMockModulePair('../services/tauriIpc', () => ({
     ...actualTauriIpc,
-    isTauriAvailable: () => tauriAvailable || actualTauriIpc.isTauriAvailable(),
+    isTauriAvailable: () => tauriAvailable || actualIsTauriAvailable(),
     workspaceArchitectInvalidate: async () => undefined,
     workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
     workspaceReconcileProjectRegistryFromHints:
@@ -639,9 +659,17 @@ const registerUseAppStoreMocks = async () => {
   }));
 };
 
+let releasePlanRuntimePorts: (() => void) | undefined;
+
 const loadIsolatedUseAppStore = async () => {
   importCounter += 1;
-  return import(`./useAppStore.ts?architect-plan-resolution-test=${importCounter}`);
+  const module = await import(`./useAppStore.ts?architect-plan-resolution-test=${importCounter}`);
+  // main.tsx installs these ports before bootstrap; isolated stores bypass that entrypoint.
+  releasePlanRuntimePorts?.();
+  releasePlanRuntimePorts = installArchitectPlanRuntimePorts({
+    getProjectById: (id) => module.useAppStore.getState().getProjectById(id),
+  });
+  return module;
 };
 
 describe('useAppStore architect plan resolution', () => {
@@ -702,6 +730,8 @@ describe('useAppStore architect plan resolution', () => {
     }));
     debugResetProjectMock.mockClear();
     removeProjectMock.mockClear();
+    renameProjectMock.mockClear();
+    removeProjectGroupMock.mockClear();
     debugResetProjectMock.mockImplementation(async (data: { projectId: string }) => {
       bootstrapProjectGroups = bootstrapProjectGroups
         .map((group) => ({
@@ -748,6 +778,8 @@ describe('useAppStore architect plan resolution', () => {
   });
 
   afterEach(() => {
+    releasePlanRuntimePorts?.();
+    releasePlanRuntimePorts = undefined;
     mock.restore();
   });
 
@@ -792,6 +824,198 @@ describe('useAppStore architect plan resolution', () => {
       });
     }
   }
+
+  it('stops bootstrap after its pending read without replacing the visible selection', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      entered();
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { plan: null, standaloneProjects: [], projectGroups: [], planNodes: [], predictedBranches: [] };
+    });
+    useAppStore.setState({ mode: 'Chat', selectedProjectId: 'visible-project' });
+    const initializing = useAppStore.getState().initializeCritical(scope).catch((error: unknown) => error);
+    await reading;
+    scope.stop();
+    release();
+    expect((await initializing).name).toBe('LifecycleStoppedError');
+    expect(useAppStore.getState().selectedProjectId).toBe('visible-project');
+    expect(useAppStore.getState().mode).toBe('Chat');
+  });
+
+  it('does not reconcile or restore after an admitted session write finishes after stop', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    upsertLocalSessionContextStateMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return null as never;
+    });
+    const resuming = useAppStore.getState().resumeAfterInitialize(scope).catch((error: unknown) => error);
+    scope.stop();
+    release();
+    expect((await resuming).name).toBe('LifecycleStoppedError');
+    expect(reconcileLocalProjectRegistryStateMock).not.toHaveBeenCalled();
+    expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the current project and mode when a rename finishes after navigation', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const projects = ['a', 'b'].map((id) => ({ id, name: id, path: `/synthetic/${id}` }));
+    bootstrapStandaloneProjects = projects;
+    bootstrapProjectGroups = [];
+    useAppStore.setState({ standaloneProjects: projects as never, projectGroups: [], selectedGroupId: null, selectedProjectId: 'a', mode: 'Implement' });
+    let release!: () => void;
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { plan: null, standaloneProjects: projects, projectGroups: [], planNodes: [], predictedBranches: [] };
+    });
+    const pending = useAppStore.getState().renameProject('a', 'Renamed');
+    useAppStore.setState({ selectedProjectId: 'b', mode: 'Chat' });
+    release();
+    await pending;
+    expect(useAppStore.getState().getProjectById('a')?.name).toBe('Renamed');
+    expect(useAppStore.getState().selectedProjectId).toBe('b');
+    expect(sessionContext?.selectedProjectId).toBe('b');
+    expect(sessionContext?.mode).toBe('Chat');
+  });
+
+  it('discards a registry read overtaken by a project removal', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const projects = ['a', 'b'].map((id) => ({ id, name: id, path: `/synthetic/${id}` }));
+    bootstrapStandaloneProjects = projects;
+    bootstrapProjectGroups = [];
+    useAppStore.setState({ standaloneProjects: projects as never, projectGroups: [], selectedGroupId: null, selectedProjectId: 'b' });
+    let release!: () => void;
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { plan: null, standaloneProjects: projects, projectGroups: [], planNodes: [], predictedBranches: [] };
+    });
+    const pending = useAppStore.getState().refreshProjectRegistry();
+    await useAppStore.getState().removeProject('a');
+    const reconcileCount = reconcileLocalProjectRegistryStateMock.mock.calls.length;
+    release();
+    await pending;
+    expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toEqual(['b']);
+    expect(reconcileLocalProjectRegistryStateMock.mock.calls.length).toBe(reconcileCount);
+  });
+
+  it('invalidates a pending registry read as soon as a durable mutation starts', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const project = { id: 'a', name: 'A', path: '/synthetic/a' };
+    bootstrapStandaloneProjects = [project];
+    bootstrapProjectGroups = [];
+    useAppStore.setState({ standaloneProjects: [project] as never, projectGroups: [], selectedGroupId: null, selectedProjectId: 'a' });
+    let releaseRead!: () => void;
+    let releaseMutation!: () => void;
+    let mutationStarted!: () => void;
+    const started = new Promise<void>((resolve) => { mutationStarted = resolve; });
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseRead = resolve; });
+      return { plan: null, standaloneProjects: [project], projectGroups: [], planNodes: [], predictedBranches: [] };
+    });
+    renameProjectMock.mockImplementationOnce(async () => {
+      mutationStarted();
+      await new Promise<void>((resolve) => { releaseMutation = resolve; });
+      bootstrapStandaloneProjects = [{ ...project, name: 'Renamed' }];
+    });
+    const refresh = useAppStore.getState().refreshProjectRegistry();
+    const rename = useAppStore.getState().renameProject('a', 'Renamed');
+    await started;
+    const count = reconcileLocalProjectRegistryStateMock.mock.calls.length;
+    releaseRead();
+    await refresh;
+    expect(reconcileLocalProjectRegistryStateMock.mock.calls.length).toBe(count);
+    releaseMutation();
+    await rename;
+    expect(useAppStore.getState().getProjectById('a')?.name).toBe('Renamed');
+  });
+
+  it('preserves remembered projects and timestamps after dissolving their group', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const group = buildProjectGroup();
+    const remembered = group.projects.map((project) => ({ projectId: project.id, groupId: group.id, name: project.name, path: project.path, lastOpenedAt: '2026-01-01T00:00:00Z' }));
+    useAppStore.setState({ standaloneProjects: [], projectGroups: [group] as never, selectedGroupId: group.id, recentProjects: remembered, macroEnabledProjects: remembered });
+    await useAppStore.getState().removeProjectGroup(group.id);
+    expect(useAppStore.getState().recentProjects).toEqual(remembered.map((entry) => ({ ...entry, groupId: null })));
+    expect(useAppStore.getState().macroEnabledProjects).toEqual(useAppStore.getState().recentProjects);
+    await useAppStore.getState().removeProject(group.projects[0].id);
+    expect(useAppStore.getState().recentProjects.map((entry: { projectId: string }) => entry.projectId)).toEqual([group.projects[1].id]);
+  });
+
+  it('does not mutate a replacement project with the same name', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const old = { id: 'old', name: 'App', path: '/synthetic/old' };
+    bootstrapStandaloneProjects = [{ id: 'replacement', name: 'App', path: '/synthetic/new' }];
+    bootstrapProjectGroups = [];
+    useAppStore.setState({ standaloneProjects: [old] as never, projectGroups: [], selectedGroupId: null, selectedProjectId: old.id });
+    await useAppStore.getState().removeProject(old.id);
+    expect(removeProjectMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toEqual(['replacement']);
+  });
+
+  it('propagates a rejected rename without publishing a changed catalog', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const project = { id: 'a', name: 'Original', path: '/synthetic/a' };
+    bootstrapStandaloneProjects = [project];
+    bootstrapProjectGroups = [];
+    useAppStore.setState({ standaloneProjects: [project] as never, projectGroups: [], selectedGroupId: null, selectedProjectId: project.id });
+    renameProjectMock.mockImplementationOnce(async () => { throw new Error('Synthetic persistence failure'); });
+    await expect(useAppStore.getState().renameProject(project.id, 'Changed')).rejects.toMatchObject({ message: 'Synthetic persistence failure' });
+    expect(useAppStore.getState().getProjectById(project.id)?.name).toBe('Original');
+    expect(useAppStore.getState().isLoading).toBe(false);
+    expect(useAppStore.getState().lastError).toBe('Synthetic persistence failure');
+  });
+
+  it('reports an outgoing context persistence failure and stops restoration', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({ projectGroups: bootstrapProjectGroups as never, selectedGroupId: 'group-1' });
+    upsertLocalProjectContextStateMock.mockImplementationOnce(async () => { throw new Error('Synthetic context failure'); });
+    getLocalProjectContextStateMock.mockClear();
+    useAppStore.getState().setSelectedGroup(null, { ensureAutoPlan: false });
+    await flushAsyncWork();
+    expect(useAppStore.getState().lastError).toBe('Synthetic context failure');
+    expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('saves the outgoing plan before clearing the group selection', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const plan = buildPlan({ id: 'outgoing-plan' });
+    planById.set(plan.id, plan);
+    taskStoreState.tasks = [
+      { id: 'fallback-task', status: 'InProgress', project_id: 'project-1' },
+      { id: 'selected-task', status: 'Pending', project_id: 'project-1' },
+    ];
+    useAppStore.setState({ projectGroups: bootstrapProjectGroups as never, selectedGroupId: 'group-1', selectedProjectId: 'project-1', selectedTaskId: 'selected-task', activeArchitectPlanId: plan.id });
+    useAppStore.getState().setSelectedGroup(null, { ensureAutoPlan: false });
+    await flushAsyncWork();
+    expect(projectContexts.get('group-1')?.lastPlanId).toBe(plan.id);
+    expect(projectContexts.get('group-1')?.lastTaskId).toBe('selected-task');
+    expect(projectContexts.get('group-1')?.focusProjectId).toBe('project-1');
+  });
+
+  it('ignores an old group restoration after selecting another group', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const second = buildProjectGroup({ id: 'second', projects: [{ id: 'c', name: 'C', path: '/synthetic/c' }, { id: 'd', name: 'D', path: '/synthetic/d' }] });
+    useAppStore.setState({ projectGroups: [...bootstrapProjectGroups, second] as never, selectedGroupId: null, selectedProjectId: null, projectSwitchPolicy: 'resume_per_project' });
+    let release!: () => void;
+    getLocalProjectContextStateMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return buildProjectContext({ projectId: 'group-1', groupId: 'group-1', focusProjectId: 'project-1' });
+    });
+    useAppStore.getState().setSelectedGroup('group-1', { ensureAutoPlan: false });
+    await flushAsyncWork();
+    useAppStore.getState().setSelectedGroup(second.id, { ensureAutoPlan: false });
+    await flushAsyncWork();
+    release();
+    await flushAsyncWork();
+    expect(useAppStore.getState().selectedGroupId).toBe(second.id);
+    expect(useAppStore.getState().selectedProjectId).toBeNull();
+    expect(sessionContext?.selectedGroupId).toBe(second.id);
+  });
 
   it('preserves navigation while the registry snapshot is pending', async () => {
     const { useAppStore } = await loadIsolatedUseAppStore();
@@ -1008,6 +1232,7 @@ describe('useAppStore architect plan resolution', () => {
 
       releaseFirstReconciliation();
       await recoveryApplied;
+      await new Promise((resolve) => originalSetTimeout(resolve, 0));
 
       expect(useAppStore.getState().selectedProjectId).toBe('project-second');
       expect(useAppStore.getState().architectPlanCatalogStatus).toBe('ready');

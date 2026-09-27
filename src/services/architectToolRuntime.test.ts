@@ -1,10 +1,17 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import {
   ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
   type ArchitectPlanRecord,
 } from './architectPlanService';
 import type { PlanNode, Project, ProjectGroup } from '../types';
 import { handleArchitectToolCall } from './architectToolRuntime';
+import { installArchitectPlanRuntimePorts } from './architectPlanRuntimeService';
+
+let releasePlanRuntimePorts: (() => void) | undefined;
+afterEach(() => {
+  releasePlanRuntimePorts?.();
+  releasePlanRuntimePorts = undefined;
+});
 
 type ArchitectToolRuntimeParams = Parameters<typeof handleArchitectToolCall>[0];
 
@@ -95,6 +102,8 @@ const createRuntime = (
   }));
   const getProjectById = (projectId: string) =>
     runtimeProjectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId);
+  releasePlanRuntimePorts?.();
+  releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById });
   const args: Record<string, unknown> = {
     plan_id: plan.id,
     nodes: [

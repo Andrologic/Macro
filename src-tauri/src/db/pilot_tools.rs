@@ -459,7 +459,7 @@ mod tests {
         .await
         .expect("messages");
         sqlx::raw_sql(include_str!(
-            "migrations/005_pilot_tool_trace_revisions.sql"
+            "migrations/006_pilot_tool_trace_revisions.sql"
         ))
         .execute(&pool)
         .await

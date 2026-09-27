@@ -85,27 +85,19 @@ const resolveMetadataWorkspaceTargets = (
 const deleteMetadataRootIfPresent = async (
   metadataRoot: string,
   target: MetadataWorkspaceTarget,
+  strict = false,
   beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
-  const workspaceScope = beforeEffect && target.workspaceScope === 'metadata' ? 'metadata_existing' : target.workspaceScope;
+  const workspaceScope = beforeEffect && target.workspaceScope === 'metadata'
+    ? 'metadata_existing' : target.workspaceScope;
   try {
-    if (!await tauriIpc.fsExists(metadataRoot, { workspaceScope, workspacePath: target.workspacePath })) return;
+    const options = { workspaceScope, workspacePath: target.workspacePath };
+    if (!await tauriIpc.fsExists(metadataRoot, options)) return;
+    await beforeEffect?.();
+    await tauriIpc.fsDelete({ path: metadataRoot, recursive: true, ...options });
   } catch (error) {
-    if (beforeEffect && toServiceError(error).code === 'FilesystemNotFound') return;
-    throw error;
-  }
-
-  await beforeEffect?.();
-  try {
-    await tauriIpc.fsDelete({
-      path: metadataRoot,
-      recursive: true,
-      workspaceScope,
-      workspacePath: target.workspacePath,
-    });
-  } catch (error) {
-    // Only a concurrently removed root counts as successful cleanup.
-    if (toServiceError(error).code !== 'FilesystemNotFound') throw error;
+    if (toServiceError(error).code === 'FilesystemNotFound') return;
+    if (strict || beforeEffect) throw error;
   }
 };
 
@@ -228,23 +220,16 @@ const buildMetadataMarkdown = (
 };
 
 const commitMetadataTargets = async (
-  workspacePaths: string[],
-  message: string,
-  beforeEffect?: () => Promise<void>,
-  metadataPaths?: string[],
+  workspacePaths: string[], message: string,
+  beforeEffect?: () => Promise<void>, metadataPaths?: string[],
 ): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable() || workspacePaths.length === 0) {
-    return;
-  }
-
+  if (!tauriIpc.isTauriAvailable() || workspacePaths.length === 0) return;
   await beforeEffect?.();
-  await flushMacroMetadata({
-    trigger: 'explicit_checkpoint',
-    workspacePaths,
-    message,
-  }, beforeEffect ? { tauri: { ...tauriIpc, macroBranchCommitIfDirty: async args => {
-    await beforeEffect(); return tauriIpc.macroBranchCommitIfDirty({ ...args, pilotOnly: true, metadataPaths });
-  } } } : undefined);
+  await flushMacroMetadata({ trigger: 'explicit_checkpoint', workspacePaths, message },
+    beforeEffect ? { tauri: { ...tauriIpc, macroBranchCommitIfDirty: async args => {
+      await beforeEffect();
+      return tauriIpc.macroBranchCommitIfDirty({ ...args, pilotOnly: true, metadataPaths });
+    } } } : undefined);
 };
 
 export const commitManualFeatureMetadata = async (
@@ -340,7 +325,7 @@ export const syncManualFeatureMetadataFromTask = async (
       });
 
       if (legacyMetadataRoot !== metadataRoot) {
-        await deleteMetadataRootIfPresent(legacyMetadataRoot, target, beforeEffect);
+        await deleteMetadataRootIfPresent(legacyMetadataRoot, target, Boolean(beforeEffect), beforeEffect);
       }
 
       recordMacroMetadataMutation({
@@ -367,8 +352,12 @@ export const removeManualFeatureMetadata = async (
     CatalogedImplementTask,
     'id' | 'base_branch' | 'project_id' | 'project_ids' | 'execution_targets' | 'standalone_kind'
   >,
-  beforeEffect?: () => Promise<void>,
+  strictOrBeforeEffect: boolean | (() => Promise<void>) = false,
+  commit = true,
+  explicitBeforeEffect?: () => Promise<void>,
 ): Promise<void> => {
+  const beforeEffect = typeof strictOrBeforeEffect === 'function' ? strictOrBeforeEffect : explicitBeforeEffect;
+  const strict = typeof strictOrBeforeEffect === 'boolean' ? strictOrBeforeEffect : true;
   if (!tauriIpc.isTauriAvailable() || task.standalone_kind !== 'manual_feature') {
     return;
   }
@@ -385,7 +374,7 @@ export const removeManualFeatureMetadata = async (
     workspaceTargets.map(async (target) => {
       await Promise.all(
         metadataRoots.map((metadataRoot) =>
-          deleteMetadataRootIfPresent(metadataRoot, target, beforeEffect)
+          deleteMetadataRootIfPresent(metadataRoot, target, strict, beforeEffect)
         )
       );
       recordMacroMetadataMutation({
@@ -397,12 +386,14 @@ export const removeManualFeatureMetadata = async (
       });
     })
   );
-  await commitMetadataTargets(
-    workspaceTargets
-      .filter((target) => target.workspaceScope === METADATA_WORKSPACE_SCOPE)
-      .map((target) => target.workspacePath),
-    `chore(@macro): delete manual feature ${task.id}`,
-    beforeEffect,
-    [toCanonicalMetadataRoot(task), toLegacyMetadataRoot(task)],
-  );
+  if (commit) {
+    await commitMetadataTargets(
+      workspaceTargets
+        .filter((target) => target.workspaceScope === METADATA_WORKSPACE_SCOPE)
+        .map((target) => target.workspacePath),
+      `chore(@macro): delete manual feature ${task.id}`,
+      beforeEffect,
+      metadataRoots,
+    );
+  }
 };

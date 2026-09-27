@@ -29,13 +29,24 @@ describe('toServiceError', () => {
   });
 
   it('extracts stable backend validation errors', () => {
-    const result = toServiceError({
+    const error = {
       code: 'Validation',
       message: 'Staged files outside this task were found: src/extra.ts.',
-    });
+    };
+    const result = toServiceError(error);
 
+    expect(result).toBe(error);
     expect(result.code).toBe('Validation');
     expect(result.message).toBe('Staged files outside this task were found: src/extra.ts.');
+  });
+
+  it('adds a service code to native payloads that only contain a message', () => {
+    const error = { message: 'Workspace is unavailable' };
+    const result = toServiceError(error);
+
+    expect(result.code).toBe('UNEXPECTED_ERROR');
+    expect(result.message).toBe(error.message);
+    expect(result.details).toBe(error);
   });
 
   it('extracts nested invoke error payloads', () => {

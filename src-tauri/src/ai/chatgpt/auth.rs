@@ -1,7 +1,7 @@
 use super::session::{build_token_claims, persist_chatgpt_session, resolve_token_expiry_rfc3339};
 use super::types::{
     auth_flow_error_from_persist, build_auth_cancelled_html, build_auth_failure_html,
-    build_auth_success_html, extract_response_error, resolve_browser_language,
+    build_auth_success_html, build_http_client, extract_response_error, resolve_browser_language,
     AiAuthCancelledEvent, AiAuthErrorEvent, AiAuthStartedEvent, AiAuthSuccessEvent, AuthFlowError,
     BrowserAuthCallbackQuery, BrowserAuthServerState, PkceCodes, TokenResponse,
     AUTH_TIMEOUT_SECONDS, CALLBACK_BIND_RETRY_ATTEMPTS, CALLBACK_BIND_RETRY_DELAY_MS,
@@ -538,7 +538,7 @@ async fn exchange_authorization_code(
     code: &str,
 ) -> Result<TokenResponse, String> {
     debug!(redirect_uri = %redirect_uri, "exchanging ChatGPT authorization code");
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     let response = client
         .post(CHATGPT_TOKEN_URL)
         .header(CONTENT_TYPE, "application/x-www-form-urlencoded")

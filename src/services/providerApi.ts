@@ -371,11 +371,37 @@ const parseProbeFailure = (params: {
   });
 };
 
-const readResponseErrorText = async (response: Response): Promise<string> => {
+// Body readers from native HTTP adapters do not all reject when fetch is aborted.
+const readProbeBody = async <T>(
+  response: Response,
+  signal: AbortSignal,
+  read: () => Promise<T>,
+): Promise<T> => {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
   try {
-    const text = await response.text();
+    return await Promise.race([
+      read(),
+      new Promise<never>((_, reject) => {
+        onAbort = () => {
+          reject(new DOMException('Request cancelled', 'AbortError'));
+          void response.body?.cancel().catch(() => undefined);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+};
+
+const readResponseErrorText = async (response: Response, signal: AbortSignal): Promise<string> => {
+  try {
+    const text = await readProbeBody(response, signal, () => response.text());
     return text || response.statusText || 'Unknown error';
-  } catch {
+  } catch (error) {
+    if (signal.aborted) throw error;
     return response.statusText || 'Unknown error';
   }
 };
@@ -401,13 +427,13 @@ const requestModelsJson = async (params: {
   if (!response.ok) {
     return {
       response,
-      errorText: await readResponseErrorText(response),
+      errorText: await readResponseErrorText(response, params.signal),
     };
   }
 
   return {
     response,
-    data: await response.json(),
+    data: await readProbeBody(response, params.signal, () => response.json()),
   };
 };
 
@@ -588,7 +614,7 @@ const probeLmStudioNativeModels = async (params: {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('aborted') || message.includes('Request cancelled')) {
+      if (params.signal.aborted || message.includes('aborted') || message.includes('Request cancelled')) {
         throw error;
       }
       continue;
@@ -660,11 +686,8 @@ export async function probeModelsEndpoint(
         signal,
       });
 
-      clearTimeout(timeoutId);
-      timeoutId = null;
-
       if (!response.ok) {
-        const errorText = await readResponseErrorText(response);
+        const errorText = await readResponseErrorText(response, signal);
         if (response.status === 401 || response.status === 403) {
           return buildFailureResult({
             status: 'unreachable',
@@ -696,9 +719,10 @@ export async function probeModelsEndpoint(
 
       let models: ProviderModel[];
       try {
-        const data: ModelsListResponse = await response.json();
+        const data: ModelsListResponse = await readProbeBody(response, signal, () => response.json());
         models = normalizeProviderModels(data);
       } catch (error) {
+        if (signal.aborted) throw error;
         const parseMessage =
           error instanceof Error ? error.message : 'Failed to parse models response.';
         return buildFailureResult({
@@ -718,6 +742,7 @@ export async function probeModelsEndpoint(
         models,
       };
     } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       dispose();
     }
   } catch (error) {
@@ -782,11 +807,8 @@ export async function probeChatCompletionsEndpoint(
         signal,
       });
 
-      clearTimeout(timeoutId);
-      timeoutId = null;
-
       if (!response.ok) {
-        const errorText = await readResponseErrorText(response);
+        const errorText = await readResponseErrorText(response, signal);
         if (response.status === 401 || response.status === 403) {
           return buildFailureResult({
             status: 'unreachable',
@@ -809,8 +831,9 @@ export async function probeChatCompletionsEndpoint(
       }
 
       try {
-        await response.json();
+        await readProbeBody(response, signal, () => response.json());
       } catch (error) {
+        if (signal.aborted) throw error;
         const parseMessage =
           error instanceof Error ? error.message : 'Failed to parse chat completions response.';
         return buildFailureResult({
@@ -833,6 +856,7 @@ export async function probeChatCompletionsEndpoint(
         modelIdUsed: modelId,
       };
     } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       dispose();
     }
   } catch (error) {

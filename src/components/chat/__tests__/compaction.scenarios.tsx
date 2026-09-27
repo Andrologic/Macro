@@ -978,7 +978,6 @@ export const registerCompactionScenarios = (context: CompactionScenarioContext) 
     expect(manualButton?.getAttribute('title')).toContain("plus d'historique");
     expect(requireContainer().textContent).not.toContain('Action manuelle');
     expect(requireContainer().textContent).not.toContain("plus d'historique");
-    context.chatState.refreshConversationContextDiagnostics.mockClear();
 
     await act(async () => {
       manualButton?.click();
@@ -987,7 +986,6 @@ export const registerCompactionScenarios = (context: CompactionScenarioContext) 
 
     expect(context.chatState.compactConversationNow).not.toHaveBeenCalled();
     expect(context.notifyInfoMock).not.toHaveBeenCalled();
-    expect(context.chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
     expect(
       requireContainer().querySelector('[data-chat-compaction-progress="true"]'),
     ).toBeNull();

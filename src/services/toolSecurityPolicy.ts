@@ -1,3 +1,4 @@
+import { canonicalizeWorkspacePath, relativePathWithinRoot } from "./workspacePathIdentity";
 import type {
   AppMode,
   ConversationApprovalGrant,
@@ -426,31 +427,10 @@ const cleanString = (value: unknown): string | null => {
 
 const isAbsolutePath = (value: string): boolean =>
   /^[a-zA-Z]:[\\/]/.test(value) ||
-  value.startsWith("/") ||
+  value.replace(/\\/g, "/").startsWith("/") ||
   /^\\\\wsl(?:\.localhost|\$)\\/i.test(value);
 
-const normalizePathForComparison = (value: string): string => {
-  const normalized = value.replace(/\\/g, "/").trim();
-  const driveMatch = normalized.match(/^([a-zA-Z]):/);
-  const prefix = driveMatch ? `${driveMatch[1].toLowerCase()}:` : normalized.startsWith("/") ? "/" : "";
-  const body = normalized.replace(/^([a-zA-Z]:)?\/?/, "");
-  const segments: string[] = [];
-
-  body.split("/").forEach((segment) => {
-    if (!segment || segment === ".") {
-      return;
-    }
-    if (segment === "..") {
-      if (segments.length > 0) {
-        segments.pop();
-      }
-      return;
-    }
-    segments.push(segment);
-  });
-
-  return prefix + segments.join("/");
-};
+const normalizePathForComparison = (value: string): string => canonicalizeWorkspacePath(value).comparisonKey;
 
 const isRelativePathOutsideWorkspace = (value: string): boolean => {
   const normalized = value.replace(/\\/g, "/").trim();
@@ -474,15 +454,8 @@ const isRelativePathOutsideWorkspace = (value: string): boolean => {
   return false;
 };
 
-const isPathWithinRoot = (targetPath: string, workspaceRoot: string): boolean => {
-  const normalizedTarget = normalizePathForComparison(targetPath);
-  const normalizedRoot = normalizePathForComparison(workspaceRoot);
-
-  return (
-    normalizedTarget === normalizedRoot ||
-    normalizedTarget.startsWith(`${normalizedRoot}/`)
-  );
-};
+const isPathWithinRoot = (targetPath: string, workspaceRoot: string): boolean =>
+  relativePathWithinRoot(targetPath, workspaceRoot) !== null;
 
 const getWorkspaceRoots = (
   options: EvaluateToolSecurityOptions,

@@ -31,6 +31,17 @@ pub fn get_chatgpt_secret(provider_id: &str) -> Result<Option<ChatGptSecret>, Se
     Ok(secret)
 }
 
+pub(crate) fn reload_chatgpt_secret(
+    provider_id: &str,
+) -> Result<Option<ChatGptSecret>, SecretError> {
+    let secret = read_chatgpt_secret(provider_id)?;
+    CHATGPT_SECRET_CACHE
+        .lock()
+        .expect("chatgpt secret cache lock")
+        .insert(provider_id.to_string(), secret.clone());
+    Ok(secret)
+}
+
 pub fn set_chatgpt_secret(provider_id: &str, secret: &ChatGptSecret) -> Result<(), SecretError> {
     write_chatgpt_secret(provider_id, secret)?;
     CHATGPT_SECRET_CACHE

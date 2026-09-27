@@ -6,7 +6,15 @@ import { createRoot, type Root } from 'react-dom/client';
 const updateProviderConfigMock = mock(
   async (_providerId: string, _updates: Record<string, unknown>) => undefined
 );
-const updateProviderSettingsMock = mock(async () => undefined);
+const updateProviderSettingsMock = mock(async (
+  _providerId: string,
+  _updates: { copilotSendTimeoutMs?: number | null },
+) => undefined);
+const updateCopilotProviderMock = mock(async (
+  _providerId: string,
+  _updates: Record<string, unknown>,
+  _copilotSendTimeoutMs: number,
+) => undefined);
 const createProviderConfigMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
@@ -117,6 +125,7 @@ const loadProvidersSettings = async () => {
       },
       updateProviderConfig: updateProviderConfigMock,
       updateProviderSettings: updateProviderSettingsMock,
+      updateCopilotProvider: updateCopilotProviderMock,
       createProviderConfig: createProviderConfigMock,
       deleteProviderConfig: mock(async () => undefined),
       startChatGptAuth: mock(async () => undefined),
@@ -222,7 +231,11 @@ describe('ProvidersSettings Copilot timeout', () => {
 
   beforeEach(() => {
     updateProviderConfigMock.mockClear();
+    updateProviderConfigMock.mockImplementation(async () => undefined);
     updateProviderSettingsMock.mockClear();
+    updateProviderSettingsMock.mockImplementation(async () => undefined);
+    updateCopilotProviderMock.mockClear();
+    updateCopilotProviderMock.mockImplementation(async () => undefined);
     createProviderConfigMock.mockClear();
     testConnectionMock.mockClear();
     providerType = 'copilot';
@@ -273,13 +286,43 @@ describe('ProvidersSettings Copilot timeout', () => {
       );
     });
 
-    expect(updateProviderSettingsMock).toHaveBeenCalledWith('copilot', {
-      copilotSendTimeoutMs: 120_000,
-    });
-    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+    expect(updateCopilotProviderMock).toHaveBeenCalledWith(
       'copilot',
-      expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' })
+      expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' }),
+      120_000,
     );
+    expect(updateProviderSettingsMock).not.toHaveBeenCalled();
+    expect(updateProviderConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Copilot editor open when the atomic save fails', async () => {
+    updateCopilotProviderMock.mockImplementationOnce(async () => {
+      throw new Error('provider write failed');
+    });
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Edit'
+      )!);
+    });
+    const timeoutInput = container!.querySelector('input[type="number"]') as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(timeoutInput, '2');
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Save Provider'
+      )!);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(updateCopilotProviderMock).toHaveBeenCalledTimes(1);
+    expect(container!.textContent).toContain('Save Provider');
   });
 
   it('does not show the timeout field for OpenAI-compatible providers', async () => {

@@ -1,5 +1,6 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { CopilotStatusDto } from '../services/tauriIpc';
+import type { CopilotStatusDto, DbAiModel, DbProviderModelInput } from '../services/tauriIpc';
 import { __testables as catalogTestables } from '../services/modelContextCatalog';
 
 let importCounter = 0;
@@ -49,7 +50,15 @@ const listProviderConfigsMock = mock(async () => [
 ]);
 
 const revealProviderApiKeyMock = mock(async () => 'test-api-key');
-const updateProviderConfigMock = mock(async () => undefined);
+const updateProviderConfigMock = mock(async (_params: {
+  id: string;
+  name?: string;
+  providerType?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  isLocal?: boolean;
+  isEnabled?: boolean;
+}): Promise<void> => undefined);
 const createProviderConfigMock = mock(async () => ({
   id: 'provider-created',
   name: 'Created Provider',
@@ -73,9 +82,23 @@ const getProviderSettingsMock = mock(async () => ({
   filter_free_models: false,
   copilot_send_timeout_ms: 1_800_000,
 }));
-const updateProviderSettingsMock = mock(async () => undefined);
-const listProviderModelsMock = mock(async () => []);
-const upsertProviderModelsMock = mock(async () => []);
+const updateProviderSettingsMock = mock(async (_params: {
+  providerId: string;
+  filterFreeModels?: boolean;
+  copilotSendTimeoutMs?: number | null;
+}): Promise<void> => undefined);
+const listProviderModelsMock = mock(async (): Promise<DbAiModel[]> => []);
+const upsertProviderModelsMock = mock(async (_params: {
+  providerId: string; models: DbProviderModelInput[]; replaceDiscovered?: boolean;
+}): Promise<DbAiModel[]> => []);
+const setProviderModelEnabledMock = mock(async (_params: { providerId: string; modelId: string; enabled: boolean }): Promise<void> => undefined);
+const setAllProviderModelsEnabledMock = mock(async (_params: { providerId: string; enabled: boolean }): Promise<void> => undefined);
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
 const aiDownloadCopilotRuntimeMock = mock(
   async (_params: { requestId: string; providerId?: string }) => undefined
 );
@@ -94,6 +117,13 @@ const aiGetCopilotStatusMock = mock(async (): Promise<CopilotStatusDto> => ({
   error_message: 'GitHub Copilot runtime is not installed.',
 }));
 const aiSyncProviderModelsMock = mock(async () => []);
+const aiDisconnectProviderAuthMock = mock(async (providerId: string) => ({
+  id: providerId, name: 'ChatGPT', provider_type: 'chatgpt', base_url: 'https://chat.invalid',
+  api_key: null, has_stored_api_key: false, is_enabled: true, is_local: false,
+  auth_status: 'unauthenticated', auth_source: null, plan_type: null, account_label: null,
+  token_expires_at: null, created_at: '', updated_at: '',
+}));
+const aiStartChatGptAuthMock = mock(async () => undefined);
 const aiProvisionMacroAiMock = mock(async () => ({
   providerId: 'macro-ai',
   modelId: 'macro-ai',
@@ -243,10 +273,17 @@ const loadProviderStore = async () => {
     updateProviderSettings: updateProviderSettingsMock,
     listProviderModels: listProviderModelsMock,
     upsertProviderModels: upsertProviderModelsMock,
+    setProviderModelEnabled: setProviderModelEnabledMock,
+    setAllProviderModelsEnabled: setAllProviderModelsEnabledMock,
     aiDownloadCopilotRuntime: aiDownloadCopilotRuntimeMock,
     aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
     aiGetCopilotStatus: aiGetCopilotStatusMock,
     aiSyncProviderModels: aiSyncProviderModelsMock,
+    aiStartChatGptAuth: aiStartChatGptAuthMock,
+    aiCancelChatGptAuth: mock(async () => undefined),
+    aiStartCopilotAuth: mock(async () => undefined),
+    aiCancelCopilotAuth: mock(async () => undefined),
+    aiDisconnectProviderAuth: aiDisconnectProviderAuthMock,
     aiProvisionMacroAi: aiProvisionMacroAiMock,
     getChatSnapshot: mock(async () => ({ conversations: [], messages: [] })),
     listConversations: mock(async () => []),
@@ -281,6 +318,235 @@ mock.module('../services/aiConfig', () => ({
 };
 
 describe('useProviderStore secret resolution', () => {
+  for (const initialResponse of ['fresh', 'fallback']) {
+    for (const selected of ['verified-model', 'manual-model']) {
+      it(`keeps ${selected} through ${initialResponse} discovery, enrichment and the next fallback`, async () => {
+        const { useProviderStore: store } = await loadProviderStore();
+        const verified = dbModel('chatgpt', 'verified-model');
+        const disabled = dbModel('chatgpt', 'disabled-model', { is_enabled: false });
+        const manual = dbModel('chatgpt', 'manual-model', { id: 'config:manual', is_manual: true });
+        const rows = new Map<string, DbAiModel>([[verified.model_id, verified], [disabled.model_id, disabled]]);
+        const verifiedIds = new Set(rows.keys());
+        const projectAvailable = () => {
+          const valid = rows.size === verifiedIds.size && [...rows.keys()].every((id) => verifiedIds.has(id));
+          return [...(valid ? rows.values() : []), manual];
+        };
+        catalogTestables.writeCachedCatalog({ fetchedAt: new Date().toISOString(), providers: {
+          openai: { id: 'openai', models: {
+            'verified-model': { id: 'verified-model', limit: { context: 128_000 } },
+            'manual-model': { id: 'manual-model', limit: { context: 64_000 } },
+          } },
+        } });
+        store.setState({
+          providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+          modelsByProvider: {}, selectedProviderId: 'chatgpt', selectedModelId: selected,
+          loadProviderConfigs: async () => undefined,
+        });
+        const sync = async () => {
+          if ([...rows.keys()].some((id) => !verifiedIds.has(id))) throw { message: 'No verified catalog. Retry model sync.' };
+          return [...rows.values()] as never[];
+        };
+        aiSyncProviderModelsMock.mockImplementationOnce(async () => {
+          if (initialResponse === 'fresh') rows.set(verified.model_id, { ...verified });
+          return sync();
+        });
+        // The mock deliberately retains the old permissive upsert semantics: an
+        // accidental manual input would create a discovered row and break fallback.
+        const upsert = async (params: { models: DbProviderModelInput[] }) => {
+          for (const model of params.models) {
+            const existing = rows.get(model.model_id) ?? dbModel('chatgpt', model.model_id);
+            rows.set(model.model_id, { ...existing, ...model });
+          }
+          return projectAvailable();
+        };
+        upsertProviderModelsMock.mockImplementation(upsert);
+        listProviderModelsMock.mockImplementationOnce(async () => projectAvailable());
+        const result = await store.getState().scanModelsForProvider('chatgpt');
+        expect(result.map((model: { id: string }) => model.id).sort()).toEqual(['disabled-model', 'manual-model', 'verified-model']);
+        expect(result.find((model: { id: string }) => model.id === 'manual-model')).toMatchObject({ isManual: true, contextWindowTokens: 64_000 });
+        expect(result.find((model: { id: string }) => model.id === 'disabled-model')).toMatchObject({ isEnabled: false });
+        expect(store.getState().selectedModelId).toBe(selected);
+        expect(upsertProviderModelsMock).toHaveBeenCalled();
+        for (const [payload] of upsertProviderModelsMock.mock.calls) {
+          expect(payload.models.map((model) => model.model_id)).toEqual(['verified-model']);
+        }
+        expect([...rows.keys()].sort()).toEqual(['disabled-model', 'verified-model']);
+        expect(rows.get('verified-model')?.context_window_tokens).toBe(128_000);
+        aiSyncProviderModelsMock.mockImplementationOnce(sync);
+        listProviderModelsMock.mockImplementationOnce(async () => projectAvailable());
+        const next = await store.getState().scanModelsForProvider('chatgpt');
+        expect(next.map((model: { id: string }) => model.id).sort()).toEqual(result.map((model: { id: string }) => model.id).sort());
+        expect(next.find((model: { id: string }) => model.id === 'manual-model')).toMatchObject({ isManual: true, contextWindowTokens: 64_000 });
+        expect(next.find((model: { id: string }) => model.id === 'disabled-model')).toMatchObject({ isEnabled: false });
+        expect(store.getState().selectedModelId).toBe(selected);
+        expect(store.getState().lastError).toBeNull();
+        expect(store.getState().providerReachabilityById.chatgpt?.status).toBe('reachable');
+      });
+    }
+  }
+
+  it('enriches loaded manual models without persisting them as discoveries', async () => {
+    const { useProviderStore: store } = await loadProviderStore();
+    catalogTestables.writeCachedCatalog({ fetchedAt: new Date().toISOString(), providers: { openai: {
+      id: 'openai', models: {
+        'verified-model': { id: 'verified-model', limit: { context: 128_000 } },
+        'manual-model': { id: 'manual-model', limit: { context: 64_000 } },
+      },
+    } } });
+    store.setState({
+      providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+      selectedProviderId: 'chatgpt', selectedModelId: 'manual-model',
+      modelsByProvider: { chatgpt: [
+        { id: 'verified-model', name: 'Verified', provider_id: 'chatgpt', isEnabled: false },
+        { id: 'manual-model', name: 'Manual', provider_id: 'chatgpt', isEnabled: true, isManual: true },
+      ] },
+    });
+    await store.getState().refreshLoadedModelContextCatalog('chatgpt');
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderModelsMock.mock.calls[0][0].models.map((model) => model.model_id)).toEqual(['verified-model']);
+    expect(store.getState().modelsByProvider.chatgpt.find((model: { id: string }) => model.id === 'manual-model')).toMatchObject({ isManual: true, contextWindowTokens: 64_000 });
+    expect(store.getState().selectedModelId).toBe('manual-model');
+  });
+
+  for (const failure of ['expired', 'missing', 'other-account', 'read-failure']) {
+    it(`removes unavailable ChatGPT discovery after ${failure} rejection and preserves manual selection`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      const manual = dbModel('chatgpt', 'manual-model', { is_manual: true });
+      const message = `No verified ChatGPT model catalog: ${failure}. Retry model sync.`;
+      useProviderStore.setState({
+        providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+        modelsByProvider: { chatgpt: [
+          { id: 'old-model', name: 'Old', provider_id: 'chatgpt', isEnabled: true },
+          { id: 'manual-model', name: 'Manual', provider_id: 'chatgpt', isEnabled: true, isManual: true },
+        ] },
+        selectedProviderId: 'chatgpt', selectedModelId: 'old-model',
+        loadProviderConfigs: async () => undefined,
+        refreshLoadedModelContextCatalog: async () => undefined,
+      });
+      if (failure === 'read-failure') {
+        listProviderModelsMock.mockImplementationOnce(async () => { throw { message: 'Read unavailable' }; });
+      } else {
+        listProviderModelsMock.mockImplementationOnce(async () => [manual]);
+      }
+      aiSyncProviderModelsMock.mockImplementationOnce(async () => { throw { message }; });
+      await expect(useProviderStore.getState().scanModelsForProvider('chatgpt')).rejects.toThrow(message);
+      expect(useProviderStore.getState().modelsByProvider.chatgpt.map((model: { id: string }) => model.id)).toEqual(['manual-model']);
+      expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
+      expect(useProviderStore.getState().lastError).toBe(message);
+      expect(useProviderStore.getState().providerReachabilityById.chatgpt?.status).toBe('unreachable');
+      expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('loads the available ChatGPT projection and preserves a manual choice through a valid fallback', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({
+      providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+      selectedProviderId: 'chatgpt', selectedModelId: 'unverified-model',
+      refreshLoadedModelContextCatalog: async () => undefined,
+    });
+    const manual = dbModel('chatgpt', 'manual-model', { is_manual: true });
+    listProviderModelsMock.mockImplementationOnce(async () => [manual]);
+    await useProviderStore.getState().loadProviderModels('chatgpt');
+    expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
+    expect(useProviderStore.getState().modelsByProvider.chatgpt.map((model: { id: string }) => model.id)).toEqual(['manual-model']);
+    aiSyncProviderModelsMock.mockImplementationOnce(async () => [dbModel('chatgpt', 'verified-model')] as never[]);
+    listProviderModelsMock.mockImplementationOnce(async () => [manual, dbModel('chatgpt', 'verified-model')]);
+    const result = await useProviderStore.getState().scanModelsForProvider('chatgpt');
+    expect(result.map((model: { id: string }) => model.id)).toContain('verified-model');
+    expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
+  });
+
+  it('preserves new transport model selection after an old catalog wait', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const catalog = mock(async (): Promise<void> => undefined);
+    catalog.mockImplementationOnce(() => pending);
+    useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'old-model',
+      refreshLoadedModelContextCatalog: catalog,
+    });
+    listProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'old-model'),
+    ]);
+    const old = useProviderStore.getState().loadProviderModels('provider-openai');
+    await flushAsyncWork();
+    expect(catalog).toHaveBeenCalledTimes(1);
+    await useProviderStore.getState().updateProviderConfig('provider-openai', {
+      baseUrl: 'https://replacement.invalid/v1',
+    });
+    listProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'new-model'),
+    ]);
+    await useProviderStore.getState().loadProviderModels('provider-openai');
+    useProviderStore.getState().selectModel('new-model');
+    expect(useProviderStore.getState().selectedModelId).toBe('new-model');
+    release();
+    await old;
+    expect(useProviderStore.getState().modelsByProvider['provider-openai']
+      .map((model: { id: string }) => model.id)).toEqual(['new-model']);
+    expect(useProviderStore.getState().selectedModelId).toBe('new-model');
+  });
+
+  it('does not load configs after a provision already admitted at stop', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    aiProvisionMacroAiMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { providerId: 'macro-ai', modelId: 'macro-ai', contextWindowTokens: 200_000, activatedNow: true };
+    });
+    const initializing = useProviderStore.getState().initialize(scope).catch((error: unknown) => error);
+    scope.stop();
+    release();
+    expect((await initializing).name).toBe('LifecycleStoppedError');
+    expect(listProviderConfigsMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).not.toHaveBeenCalled();
+  });
+
+  it('settles cancellation during listener acquisition and never launches late auth', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', authStatus: 'unauthenticated' }] });
+    const unlisten = mock(() => undefined);
+    let completeAcquisition!: (release: () => void) => void;
+    listenMock.mockImplementationOnce(() => new Promise((resolve) => { completeAcquisition = resolve; }));
+    const auth = useProviderStore.getState().startChatGptAuth('chatgpt');
+    await useProviderStore.getState().cancelChatGptAuth('chatgpt');
+    await auth;
+    completeAcquisition(unlisten);
+    await flushAsyncWork();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+    expect(aiStartChatGptAuthMock).not.toHaveBeenCalled();
+    expect(useProviderStore.getState().authRequestIdsByProvider.chatgpt).toBeUndefined();
+    expect([...tauriEventHandlers.values()].flat()).toHaveLength(0);
+  });
+
+  for (const method of ['startChatGptAuth', 'startCopilotAuth', 'startCopilotRuntimeDownload'] as const) {
+    it(`releases partial and late listeners after acquisition failure: ${method}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      const isChatGpt = method === 'startChatGptAuth';
+      const providerId = isChatGpt ? 'chatgpt' : 'copilot';
+      useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: providerId, providerType: providerId }] });
+      const earlyRelease = mock(() => undefined);
+      const lateRelease = mock(() => undefined);
+      let completeAcquisition!: (release: () => void) => void;
+      listenMock.mockImplementationOnce(async () => earlyRelease);
+      listenMock.mockImplementationOnce(() => new Promise((resolve) => { completeAcquisition = resolve; }));
+      listenMock.mockImplementationOnce(async () => { throw new Error('listener acquisition failed'); });
+      const operation = useProviderStore.getState()[method](providerId).catch((error: unknown) => error);
+      await flushAsyncWork();
+      expect((await operation).message).toContain('listener acquisition failed');
+      expect(earlyRelease).toHaveBeenCalledTimes(1);
+      completeAcquisition(lateRelease);
+      await flushAsyncWork();
+      expect(lateRelease).toHaveBeenCalledTimes(1);
+      expect(earlyRelease).toHaveBeenCalledTimes(1);
+    });
+  }
+
   beforeEach(() => {
     tauriAvailable = true;
     useAppStoreMock.setState({ mode: 'Chat' });
@@ -295,12 +561,18 @@ describe('useProviderStore secret resolution', () => {
     updateProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
     upsertProviderModelsMock.mockClear();
+    setProviderModelEnabledMock.mockReset();
+    setAllProviderModelsEnabledMock.mockReset();
+    setProviderModelEnabledMock.mockImplementation(async () => undefined);
+    setAllProviderModelsEnabledMock.mockImplementation(async () => undefined);
     listenMock.mockClear();
     aiDownloadCopilotRuntimeMock.mockClear();
     aiCancelCopilotRuntimeDownloadMock.mockClear();
     aiGetCopilotStatusMock.mockClear();
     aiSyncProviderModelsMock.mockClear();
+    aiDisconnectProviderAuthMock.mockClear();
     aiProvisionMacroAiMock.mockClear();
+    aiStartChatGptAuthMock.mockClear();
     aiDownloadCopilotRuntimeMock.mockImplementation(
       async (_params: { requestId: string; providerId?: string }) => undefined
     );
@@ -318,6 +590,320 @@ describe('useProviderStore secret resolution', () => {
   afterEach(() => {
     useAppStoreMock.setState({ mode: 'Chat' });
     mock.restore();
+  });
+
+  const setupModelPreferences = async () => {
+    const { useProviderStore: store } = await loadProviderStore();
+    await store.getState().loadProviderConfigs();
+    store.setState({
+      modelsByProvider: {
+        'provider-openai': [
+          { id: 'model-a', name: 'A', provider_id: 'provider-openai', isEnabled: true,
+            reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' },
+          { id: 'model-b', name: 'B', provider_id: 'provider-openai', isEnabled: true,
+            reasoningEfforts: ['low'], defaultReasoningEffort: 'low' },
+        ],
+      },
+      selectedProviderId: 'provider-openai', selectedModelId: 'model-a',
+      selectedReasoningEffort: 'high',
+      refreshLoadedModelContextCatalog: async () => undefined,
+    });
+    return store;
+  };
+
+  for (const all of [false, true]) {
+    for (const during of [false, true]) {
+      it(`keeps ${all ? 'bulk' : 'single'} preferences after a read started ${during ? 'during' : 'before'} persistence`, async () => {
+        const store = await setupModelPreferences();
+        const read = deferred<ReturnType<typeof dbModel>[]>();
+        const write = deferred<void>();
+        listProviderModelsMock.mockImplementationOnce(() => read.promise);
+        (all ? setAllProviderModelsEnabledMock : setProviderModelEnabledMock)
+          .mockImplementationOnce(() => write.promise);
+        const mutate = () => all
+          ? store.getState().setAllProviderModelsEnabled('provider-openai', false)
+          : store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+        const mutation = during ? mutate() : null;
+        await flushAsyncWork();
+        const loading = store.getState().loadProviderModels('provider-openai');
+        const pending = mutation ?? mutate();
+        await flushAsyncWork();
+        expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(true);
+        write.resolve();
+        await pending;
+        read.resolve([dbModel('provider-openai', 'model-a'), dbModel('provider-openai', 'model-b')]);
+        await loading;
+        expect(store.getState().modelsByProvider['provider-openai'].map((m: { isEnabled: boolean }) => m.isEnabled))
+          .toEqual(all ? [false, false] : [false, true]);
+        expect(store.getState().selectedModelId).toBe(all ? null : 'model-b');
+        expect(store.getState().selectedReasoningEffort).toBe(all ? null : 'low');
+        expect(store.getState().isLoadingModels).toBe(false);
+      });
+    }
+
+    it(`publishes ${all ? 'bulk' : 'single'} preferences and selection atomically`, async () => {
+      const store = await setupModelPreferences();
+      const invalid: string[] = [];
+      const unsubscribe = store.subscribe((state: ReturnType<typeof store.getState>) => {
+        if (state.selectedModelId && !state.modelsByProvider['provider-openai']
+          .some((m: { id: string; isEnabled: boolean }) => m.id === state.selectedModelId && m.isEnabled)) {
+          invalid.push(state.selectedModelId);
+        }
+      });
+      if (all) await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+      else await store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+      unsubscribe();
+      expect(invalid).toEqual([]);
+    });
+  }
+
+  it('discards a scan response started before a preference commit', async () => {
+    const store = await setupModelPreferences();
+    const probe = deferred<Awaited<ReturnType<typeof probeModelsEndpointMock>>>();
+    probeModelsEndpointMock.mockImplementationOnce(() => probe.promise);
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    await store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    probe.resolve({ success: true, status: 'reachable', source: 'models_endpoint', message: '', models: [] });
+    await scan;
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    expect(store.getState().providerReachabilityById['provider-openai']?.status).not.toBe('checking');
+    expect(store.getState().connectionStatus['provider-openai']).not.toBe('checking');
+    expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(false);
+    expect(store.getState().selectedModelId).toBe('model-b');
+    expect(store.getState().selectedReasoningEffort).toBe('low');
+  });
+
+  for (const failure of [false, true]) {
+    for (const newerCheck of [false, true]) {
+      it(`finishes only an invalidated scan's checking state, failure=${failure}, newerCheck=${newerCheck}`, async () => {
+        const store = await setupModelPreferences();
+        store.getState().markProviderReachable('provider-openai');
+        const previous = store.getState().providerReachabilityById['provider-openai'];
+        const probe = deferred<Awaited<ReturnType<typeof probeModelsEndpointMock>>>();
+        probeModelsEndpointMock.mockImplementationOnce(() => probe.promise);
+        const scan = store.getState().scanModelsForProvider('provider-openai');
+        await flushAsyncWork();
+        const connectionProbe = deferred<Awaited<ReturnType<typeof probeProviderReachabilityMock>>>();
+        if (newerCheck) probeProviderReachabilityMock.mockImplementationOnce(() => connectionProbe.promise);
+        const connection = newerCheck ? store.getState().testConnection('provider-openai') : null;
+        await flushAsyncWork();
+        await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+        if (failure) probe.reject(new Error('Obsolete scan failure'));
+        else probe.resolve({ success: true, status: 'reachable', source: 'models_endpoint', message: '', models: [] });
+        await scan;
+        if (newerCheck) {
+          expect(store.getState().connectionStatus['provider-openai']).toBe('checking');
+          connectionProbe.resolve({ success: true, message: 'Connected', status: 'reachable', source: 'models_endpoint', models: [] });
+          await connection;
+        } else {
+          expect(store.getState().providerReachabilityById['provider-openai']).toEqual(previous);
+        }
+        expect(store.getState().connectionStatus['provider-openai']).toBe('online');
+        expect(store.getState().providers.find((p: { id: string }) => p.id === 'provider-openai').status).toBe('online');
+        expect(store.getState().lastError).not.toBe('Obsolete scan failure');
+      });
+    }
+  }
+
+  it('keeps the loading ownership of a fresh read when an invalidated read finishes', async () => {
+    const store = await setupModelPreferences();
+    const oldRead = deferred<ReturnType<typeof dbModel>[]>();
+    const freshRead = deferred<ReturnType<typeof dbModel>[]>();
+    listProviderModelsMock.mockImplementationOnce(() => oldRead.promise);
+    const oldLoad = store.getState().loadProviderModels('provider-openai');
+    await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    expect(store.getState().isLoadingModels).toBe(false);
+    listProviderModelsMock.mockImplementationOnce(() => freshRead.promise);
+    const freshLoad = store.getState().loadProviderModels('provider-openai');
+    oldRead.resolve([dbModel('provider-openai', 'model-a')]);
+    await oldLoad;
+    expect(store.getState().isLoadingModels).toBe(true);
+    freshRead.resolve([dbModel('provider-openai', 'model-a', { is_enabled: false })]);
+    await freshLoad;
+    expect(store.getState().isLoadingModels).toBe(false);
+    expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(false);
+  });
+
+  it('finishes a linked scan invalidated while queued behind a preference write', async () => {
+    const store = await setupModelPreferences();
+    store.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'provider-openai',
+      providerType: 'chatgpt', authStatus: 'authenticated' }] });
+    const write = deferred<void>();
+    setAllProviderModelsEnabledMock.mockImplementationOnce(() => write.promise);
+    const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    await flushAsyncWork();
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(aiSyncProviderModelsMock).not.toHaveBeenCalled();
+    write.resolve();
+    await Promise.all([mutation, scan]);
+    expect(aiSyncProviderModelsMock).not.toHaveBeenCalled();
+    expect(store.getState().connectionStatus['provider-openai']).not.toBe('checking');
+    expect(store.getState().isLoadingModels).toBe(false);
+    expect(store.getState().modelsByProvider['provider-openai'].every((m: { isEnabled: boolean }) => !m.isEnabled)).toBe(true);
+  });
+
+  it('keeps a preference selection when an older load resumes after catalog enrichment', async () => {
+    const store = await setupModelPreferences();
+    const catalog = deferred<void>();
+    store.setState({ refreshLoadedModelContextCatalog: () => catalog.promise });
+    listProviderModelsMock.mockImplementationOnce(async () => [dbModel('provider-openai', 'model-a')]);
+    const load = store.getState().loadProviderModels('provider-openai');
+    await flushAsyncWork();
+    await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    catalog.resolve();
+    await load;
+    expect(store.getState().selectedModelId).toBeNull();
+    expect(store.getState().selectedReasoningEffort).toBeNull();
+  });
+
+  it('serializes preferences behind scan persistence and preserves the last accepted mutation', async () => {
+    const store = await setupModelPreferences();
+    const persisted = deferred<never[]>();
+    upsertProviderModelsMock.mockImplementationOnce(() => persisted.promise);
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    const first = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    const second = store.getState().setProviderModelEnabled('provider-openai', 'model-a', true);
+    await flushAsyncWork();
+    expect(setAllProviderModelsEnabledMock).not.toHaveBeenCalled();
+    expect(setProviderModelEnabledMock).not.toHaveBeenCalled();
+    // The scan returns the existing catalog after its durable write.
+    persisted.resolve([dbModel('provider-openai', 'model-a'), dbModel('provider-openai', 'model-b')] as never[]);
+    await Promise.all([scan, first, second]);
+    expect(store.getState().modelsByProvider['provider-openai'].map((m: { isEnabled: boolean }) => m.isEnabled))
+      .toEqual([true, false]);
+    expect(store.getState().selectedModelId).toBe('model-a');
+  });
+
+  it('propagates a failed preference write and lets a later mutation proceed', async () => {
+    const store = await setupModelPreferences();
+    const firstWrite = deferred<void>();
+    setAllProviderModelsEnabledMock.mockImplementationOnce(() => firstWrite.promise);
+    const failure = store.getState().setAllProviderModelsEnabled('provider-openai', false)
+      .then(() => null, (error: unknown) => error);
+    const next = store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    await flushAsyncWork();
+    expect(setProviderModelEnabledMock).not.toHaveBeenCalled();
+    expect(store.getState().selectedModelId).toBe('model-a');
+    const error = new Error('Preference persistence failed');
+    firstWrite.reject(error);
+    expect(await failure).toBe(error);
+    await next;
+    expect(store.getState().modelsByProvider['provider-openai'].map((m: { isEnabled: boolean }) => m.isEnabled))
+      .toEqual([false, true]);
+    expect(store.getState().selectedModelId).toBe('model-b');
+    expect(store.getState().selectedReasoningEffort).toBe('low');
+  });
+
+  for (const action of ['scanModelsForProvider', 'testConnection'] as const) {
+    it(`stops ${action} before probing when lifecycle ends during lazy loading`, async () => {
+      const store = await setupModelPreferences();
+      store.setState({ providerConfigs: [{ ...store.getState().providerConfigs[0], isLocal: true }] });
+      const scope = createLifecycleScope();
+      const pending = store.getState()[action]('provider-openai', scope);
+      const failure = pending.then(() => null, (error: unknown) => error);
+      scope.stop();
+      expect(await failure).toBeInstanceOf(Error);
+      expect(probeModelsEndpointMock).not.toHaveBeenCalled();
+      expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+      expect(store.getState().isLoadingModels).toBe(false);
+    });
+  }
+
+  it('keeps an in-flight connection check valid after a model preference changes', async () => {
+    const store = await setupModelPreferences();
+    const probe = deferred<Awaited<ReturnType<typeof probeProviderReachabilityMock>>>();
+    probeProviderReachabilityMock.mockImplementationOnce(() => probe.promise);
+    const connection = store.getState().testConnection('provider-openai');
+    await flushAsyncWork();
+    expect(probeProviderReachabilityMock).toHaveBeenCalledTimes(1);
+    await store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    probe.resolve({ success: true, message: 'Connected', status: 'reachable', source: 'models_endpoint', models: [] });
+    expect((await connection).success).toBe(true);
+    expect(store.getState().providerReachabilityById['provider-openai'].status).toBe('reachable');
+  });
+
+  it('preserves an accepted bulk preference when a later single write fails', async () => {
+    const store = await setupModelPreferences();
+    await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    setProviderModelEnabledMock.mockImplementationOnce(async () => {
+      throw new Error('Single preference rejected');
+    });
+    await expect(store.getState().setProviderModelEnabled('provider-openai', 'model-a', true))
+      .rejects.toThrow('Single preference rejected');
+    expect(store.getState().modelsByProvider['provider-openai'].every((m: { isEnabled: boolean }) => !m.isEnabled)).toBe(true);
+    expect(store.getState().selectedModelId).toBeNull();
+    expect(store.getState().selectedReasoningEffort).toBeNull();
+  });
+
+  it('discards a scan queued during a preference write', async () => {
+    const store = await setupModelPreferences();
+    const write = deferred<void>();
+    setAllProviderModelsEnabledMock.mockImplementationOnce(() => write.promise);
+    const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    await flushAsyncWork();
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    write.resolve();
+    await Promise.all([mutation, scan]);
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    expect(store.getState().modelsByProvider['provider-openai'].every((m: { isEnabled: boolean }) => !m.isEnabled)).toBe(true);
+    expect(store.getState().isLoadingModels).toBe(false);
+  });
+
+  it('orders a preference after linked model sync and protects selection from its delayed enrichment', async () => {
+    const store = await setupModelPreferences();
+    store.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'provider-openai',
+      providerType: 'chatgpt', authStatus: 'authenticated' }] });
+    const sync = deferred<never[]>();
+    const catalog = deferred<void>();
+    store.setState({ refreshLoadedModelContextCatalog: () => catalog.promise });
+    aiSyncProviderModelsMock.mockImplementationOnce(() => sync.promise);
+    listProviderModelsMock.mockImplementationOnce(async () => [dbModel('provider-openai', 'model-a')]);
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    await flushAsyncWork();
+    expect(setAllProviderModelsEnabledMock).not.toHaveBeenCalled();
+    sync.resolve([dbModel('provider-openai', 'model-a')] as never[]);
+    await mutation;
+    catalog.resolve();
+    await scan;
+    expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(false);
+    expect(store.getState().selectedModelId).toBeNull();
+    expect(store.getState().selectedReasoningEffort).toBeNull();
+  });
+
+  it('does not block a second provider behind a pending preference write', async () => {
+    const store = await setupModelPreferences();
+    const write = deferred<void>();
+    setProviderModelEnabledMock.mockImplementationOnce(() => write.promise);
+    store.setState({
+      providerConfigs: [...store.getState().providerConfigs,
+        { ...store.getState().providerConfigs[0], id: 'provider-other' }],
+      modelsByProvider: { ...store.getState().modelsByProvider,
+        'provider-other': [{ id: 'other-model', name: 'Other', provider_id: 'provider-other', isEnabled: true }] },
+    });
+    const first = store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    await flushAsyncWork();
+    await store.getState().setAllProviderModelsEnabled('provider-other', false);
+    expect(setAllProviderModelsEnabledMock).toHaveBeenCalledWith({ providerId: 'provider-other', enabled: false });
+    expect(store.getState().selectedModelId).toBe('model-a');
+    expect(store.getState().selectedReasoningEffort).toBe('high');
+    const read = deferred<ReturnType<typeof dbModel>[]>();
+    listProviderModelsMock.mockImplementationOnce(() => read.promise);
+    const loading = store.getState().loadProviderModels('provider-other');
+    write.resolve();
+    await first;
+    expect(store.getState().isLoadingModels).toBe(true);
+    read.resolve([dbModel('provider-other', 'other-model', { name: 'Fresh metadata', is_enabled: false })]);
+    await loading;
+    expect(store.getState().modelsByProvider['provider-other'][0]).toMatchObject({ name: 'Fresh metadata', isEnabled: false });
   });
 
   it('loads provider configs without revealing stored secrets', async () => {
@@ -403,6 +989,353 @@ describe('useProviderStore secret resolution', () => {
       apiKey: 'test-api-key',
       apiKeyLoaded: true,
     });
+  });
+
+  for (const replacement of ['synthetic-new-key', '']) {
+    it(`rejects an obsolete key reveal after replacement with ${replacement || 'no key'}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      await useProviderStore.getState().loadProviderConfigs();
+      let release!: (key: string) => void;
+      revealProviderApiKeyMock.mockImplementationOnce(() => new Promise<string>((resolve) => {
+        release = resolve;
+      }));
+      const pending = useProviderStore.getState().resolveProviderApiKey('provider-openai');
+      const rejected = pending.catch((error: unknown) => error);
+      await useProviderStore.getState().updateProviderConfig('provider-openai', { apiKey: replacement });
+      release('synthetic-old-key');
+      expect(await rejected).toBeInstanceOf(Error);
+      expect(String(await rejected)).toContain('configuration changed');
+      expect(useProviderStore.getState().providerConfigs[0].apiKey).toBe(replacement || undefined);
+      expect(await useProviderStore.getState().resolveProviderApiKey('provider-openai')).toBe(replacement || undefined);
+    });
+  }
+
+  for (const updates of [{ baseUrl: 'https://new.invalid/v1' }, { providerType: 'custom' }]) {
+    it(`discards a pending scan when transport changes: ${JSON.stringify(updates)}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      await useProviderStore.getState().loadProviderConfigs();
+      let release!: (value: never) => void;
+      probeModelsEndpointMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const scan = useProviderStore.getState().scanModelsForProvider('provider-openai');
+      await flushAsyncWork();
+      let finishUpdate!: () => void;
+      updateProviderConfigMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finishUpdate = resolve; }));
+      const update = useProviderStore.getState().updateProviderConfig('provider-openai', updates);
+      await flushAsyncWork();
+      release({ success: true, status: 'reachable', source: 'models_endpoint', message: 'ok', models: [{ id: 'old-model' }] } as never);
+      await scan;
+      expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+      finishUpdate();
+      await update;
+      expect(useProviderStore.getState().modelsByProvider['provider-openai'] ?? []).toEqual([]);
+      expect(useProviderStore.getState().providerReachabilityById['provider-openai']?.status).not.toBe('reachable');
+    });
+  }
+
+  it('orders an endpoint update after an in-flight catalog write and clears the old catalog', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let releaseWrite!: (models: never[]) => void;
+    upsertProviderModelsMock.mockImplementationOnce(() => new Promise<never[]>((resolve) => { releaseWrite = resolve; }));
+    const scan = useProviderStore.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    const update = useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://replacement.invalid/v1' });
+    await flushAsyncWork();
+    expect(updateProviderConfigMock).not.toHaveBeenCalled();
+    releaseWrite([dbModel('provider-openai', 'obsolete-model')] as never[]);
+    await Promise.all([scan, update]);
+    expect(upsertProviderModelsMock).toHaveBeenLastCalledWith({ providerId: 'provider-openai', models: [], replaceDiscovered: true });
+    expect(useProviderStore.getState().modelsByProvider['provider-openai']).toEqual([]);
+    expect(useProviderStore.getState().providerConfigs[0].baseUrl).toBe('https://replacement.invalid/v1');
+  });
+
+  it('does not publish an old endpoint connection check after an URL update', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let release!: (value: never) => void;
+    probeProviderReachabilityMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const pending = useProviderStore.getState().testConnection('provider-openai');
+    await flushAsyncWork();
+    await useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://replacement.invalid/v1' });
+    release({ success: true, status: 'reachable', source: 'models_endpoint', message: 'ok', models: [] } as never);
+    expect((await pending).success).toBe(false);
+    expect(useProviderStore.getState().providerReachabilityById['provider-openai']?.status).not.toBe('reachable');
+  });
+
+  it('keeps the catalog intact when saving the new endpoint fails', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const oldModels = [{ id: 'retained-model', name: 'Retained', providerId: 'provider-openai', isEnabled: true }];
+    useProviderStore.setState({ modelsByProvider: { 'provider-openai': oldModels } });
+    updateProviderConfigMock.mockImplementationOnce(async () => { throw new Error('configuration write failed'); });
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://new.invalid/v1' })).rejects.toThrow('configuration write failed');
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    expect(useProviderStore.getState().modelsByProvider['provider-openai']).toEqual(oldModels);
+  });
+
+  it('restores the old endpoint if clearing its catalog fails', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const original = useProviderStore.getState().providerConfigs[0];
+    upsertProviderModelsMock.mockImplementationOnce(async () => { throw new Error('catalog write failed'); });
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://new.invalid/v1' })).rejects.toThrow('catalog write failed');
+    expect(updateProviderConfigMock).toHaveBeenCalledTimes(2);
+    expect(updateProviderConfigMock).toHaveBeenLastCalledWith(expect.objectContaining({ baseUrl: original.baseUrl, providerType: original.providerType }));
+    expect(useProviderStore.getState().providerConfigs[0]).toEqual(original);
+  });
+
+  it('reloads provider configuration and clears selection when catalog compensation fails', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const reload = mock(async () => undefined);
+    useProviderStore.setState({ loadProviderConfigs: reload, selectedProviderId: 'provider-openai', selectedModelId: 'old-model' });
+    updateProviderConfigMock.mockImplementationOnce(async () => undefined);
+    updateProviderConfigMock.mockImplementationOnce(async () => { throw new Error('rollback failed'); });
+    upsertProviderModelsMock.mockImplementationOnce(async () => { throw new Error('catalog failed'); });
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://new.invalid/v1' })).rejects.toThrow('rollback failed');
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(useProviderStore.getState().selectedModelId).toBeNull();
+    expect(useProviderStore.getState().modelsByProvider['provider-openai']).toEqual([]);
+    expect(useProviderStore.getState().lastError).toContain('catalog failed');
+  });
+
+  for (const failure of [false, true]) {
+    it(`ignores a stale Copilot connection result, failure=${failure}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+      let release!: () => void;
+      aiGetCopilotStatusMock.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        release = () => failure ? reject(new Error('old status error')) : resolve(makeCopilotStatus({ ok: true, auth_status: 'connected' }));
+      }));
+      const check = useProviderStore.getState().testConnection('copilot');
+      await flushAsyncWork();
+      await useProviderStore.getState().updateProviderConfig('copilot', { providerType: 'custom', baseUrl: 'https://new.invalid/v1' });
+      release();
+      expect((await check).success).toBe(false);
+      expect(useProviderStore.getState().copilotStatusByProvider.copilot).toBeUndefined();
+      expect(useProviderStore.getState().providerReachabilityById.copilot?.status).not.toBe('reachable');
+      expect(useProviderStore.getState().authErrorsByProvider.copilot).toBeUndefined();
+    });
+  }
+
+  it('discards a linked scan error if configuration changes during metadata hydration', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    let release!: () => void;
+    useProviderStore.setState({
+      providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+      loadProviderConfigs: () => new Promise<void>((resolve) => { release = resolve; }),
+    });
+    aiSyncProviderModelsMock.mockImplementationOnce(async () => { throw new Error('obsolete sync error'); });
+    const scan = useProviderStore.getState().scanModelsForProvider('chatgpt');
+    await flushAsyncWork();
+    await useProviderStore.getState().updateProviderConfig('chatgpt', { providerType: 'custom', baseUrl: 'https://new.invalid/v1' });
+    release();
+    await scan;
+    expect(useProviderStore.getState().providerReachabilityById.chatgpt?.status).not.toBe('unreachable');
+    expect(useProviderStore.getState().lastError).not.toBe('obsolete sync error');
+  });
+
+  it('invalidates an in-flight linked scan before disconnect and drains its persistence', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({
+      providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+      loadProviderConfigs: async () => undefined,
+    });
+    let release!: (models: never[]) => void;
+    aiSyncProviderModelsMock.mockImplementationOnce(() => new Promise<never[]>((resolve) => { release = resolve; }));
+    const scan = useProviderStore.getState().scanModelsForProvider('chatgpt');
+    await flushAsyncWork();
+    const disconnect = useProviderStore.getState().disconnectProviderAuth('chatgpt');
+    await flushAsyncWork();
+    expect(aiDisconnectProviderAuthMock).not.toHaveBeenCalled();
+    release([dbModel('chatgpt', 'obsolete-model')] as never[]);
+    await Promise.all([scan, disconnect]);
+    expect(aiDisconnectProviderAuthMock).toHaveBeenCalledTimes(1);
+    expect(useProviderStore.getState().modelsByProvider.chatgpt).toEqual([]);
+    expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('unauthenticated');
+    expect(useProviderStore.getState().providerReachabilityById.chatgpt?.status).not.toBe('reachable');
+  });
+
+  for (const updates of [{ baseUrl: 'https://hydrated.invalid/v1' }, { providerType: 'custom' }, { apiKey: 'synthetic-new-key' }]) {
+    for (const failure of [false, true]) {
+      it(`discards stale model hydration after ${JSON.stringify(updates)}, failure=${failure}`, async () => {
+        const { useProviderStore } = await loadProviderStore();
+        await useProviderStore.getState().loadProviderConfigs();
+        let release!: () => void;
+        listProviderModelsMock.mockImplementationOnce(() => new Promise<never[]>((resolve, reject) => {
+          release = () => failure ? reject(new Error('old hydration error')) : resolve([dbModel('provider-openai', 'old-model')] as never[]);
+        }));
+        const pending = useProviderStore.getState().loadProviderModels('provider-openai');
+        await flushAsyncWork();
+        await useProviderStore.getState().updateProviderConfig('provider-openai', updates);
+        const writes = upsertProviderModelsMock.mock.calls.length;
+        const currentModels = useProviderStore.getState().modelsByProvider['provider-openai'];
+        release();
+        await pending;
+        await flushAsyncWork();
+        expect(useProviderStore.getState().modelsByProvider['provider-openai']).toEqual(currentModels);
+        expect(upsertProviderModelsMock).toHaveBeenCalledTimes(writes);
+        expect(useProviderStore.getState().lastError).not.toBe('old hydration error');
+      });
+    }
+  }
+
+  it('blocks uncertain provider operations until authoritative reload succeeds', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const nativeConfig = (await listProviderConfigsMock())[0];
+    updateProviderConfigMock.mockImplementationOnce(async () => undefined);
+    updateProviderConfigMock.mockImplementationOnce(async () => { throw new Error('rollback failed'); });
+    upsertProviderModelsMock.mockImplementationOnce(async () => { throw new Error('catalog failed'); });
+    listProviderConfigsMock.mockImplementationOnce(async () => { throw new Error('reload failed'); });
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://actual.invalid/v1' })).rejects.toThrow('reload failed');
+    expect(await useProviderStore.getState().scanModelsForProvider('provider-openai')).toEqual([]);
+    expect((await useProviderStore.getState().testConnection('provider-openai')).success).toBe(false);
+    await expect(useProviderStore.getState().resolveProviderApiKey('provider-openai')).rejects.toThrow('configuration');
+    expect(probeModelsEndpointMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { name: 'Retry' })).rejects.toThrow('Reload');
+    listProviderConfigsMock.mockImplementationOnce(async () => [{ ...nativeConfig, base_url: 'https://actual.invalid/v1' }]);
+    upsertProviderModelsMock.mockImplementationOnce(async () => { throw new Error('recovery catalog failed'); });
+    await expect(useProviderStore.getState().loadProviderConfigs({ throwOnError: true })).rejects.toThrow('recovery catalog failed');
+    expect((await useProviderStore.getState().testConnection('provider-openai')).success).toBe(false);
+    listProviderConfigsMock.mockImplementationOnce(async () => [{ ...nativeConfig, base_url: 'https://actual.invalid/v1' }]);
+    await useProviderStore.getState().loadProviderConfigs({ throwOnError: true });
+    expect(upsertProviderModelsMock).toHaveBeenLastCalledWith({ providerId: 'provider-openai', models: [], replaceDiscovered: true });
+    await useProviderStore.getState().testConnection('provider-openai');
+    expect(probeProviderReachabilityMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://actual.invalid/v1' }));
+  });
+
+  it('keeps successful ChatGPT authentication when an older hydration returns', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const base = (await listProviderConfigsMock())[0];
+    const linked = { ...base, id: 'chatgpt', provider_type: 'chatgpt', auth_status: 'authenticated' };
+    useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', authStatus: 'unauthenticated' }] });
+    let release!: () => void;
+    listProviderConfigsMock.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve([{ ...linked, auth_status: 'unauthenticated' }] as never[]);
+    }));
+    const oldLoad = useProviderStore.getState().loadProviderConfigs();
+    const auth = useProviderStore.getState().startChatGptAuth('chatgpt');
+    await flushAsyncWork();
+    listProviderConfigsMock.mockImplementationOnce(async () => [linked] as never[]);
+    emitTauriEvent('ai:auth-success', { request_id: useProviderStore.getState().authRequestIdsByProvider.chatgpt });
+    await auth;
+    release();
+    await oldLoad;
+    expect(useProviderStore.getState().providerConfigs.find((p: { id: string }) => p.id === 'chatgpt')?.authStatus).toBe('authenticated');
+    expect(useProviderStore.getState().authErrorsByProvider.chatgpt).toBeUndefined();
+  });
+
+  for (const failure of [false, true]) {
+    it(`ignores old Copilot status after authentication, failure=${failure}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+      let release!: () => void;
+      aiGetCopilotStatusMock.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        release = () => failure ? reject(new Error('old auth error')) : resolve(makeCopilotStatus({ auth_status: 'login_required' }));
+      }));
+      const oldCheck = useProviderStore.getState().testConnection('copilot');
+      const auth = useProviderStore.getState().startCopilotAuth('copilot');
+      await flushAsyncWork();
+      aiGetCopilotStatusMock.mockImplementationOnce(async () => makeCopilotStatus({ ok: true, runtime_status: 'ready', auth_status: 'connected', error_code: null, error_message: null }));
+      emitTauriEvent('ai:copilot-auth-complete', { request_id: useProviderStore.getState().copilotAuthStateByProvider.copilot?.requestId });
+      await auth;
+      release();
+      await oldCheck;
+      expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('connected');
+      expect(useProviderStore.getState().providerReachabilityById.copilot.status).toBe('reachable');
+      expect(useProviderStore.getState().authErrorsByProvider.copilot).toBeUndefined();
+    });
+  }
+
+  it('does not publish a late ChatGPT auth completion after cancellation', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', authStatus: 'unauthenticated' }] });
+    const auth = useProviderStore.getState().startChatGptAuth('chatgpt');
+    await flushAsyncWork();
+    const requestId = useProviderStore.getState().authRequestIdsByProvider.chatgpt;
+    await useProviderStore.getState().cancelChatGptAuth('chatgpt');
+    emitTauriEvent('ai:auth-success', { request_id: requestId });
+    await auth;
+    expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('unauthenticated');
+    expect(listProviderConfigsMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores a runtime download status captured before Copilot authentication', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+    const download = useProviderStore.getState().startCopilotRuntimeDownload('copilot');
+    await flushAsyncWork();
+    const downloadId = useProviderStore.getState().copilotDownloadStateByProvider.copilot?.requestId;
+    const auth = useProviderStore.getState().startCopilotAuth('copilot');
+    await flushAsyncWork();
+    aiGetCopilotStatusMock.mockImplementationOnce(async () => makeCopilotStatus({ ok: true, runtime_status: 'ready', auth_status: 'connected', error_code: null, error_message: null }));
+    emitTauriEvent('ai:copilot-auth-complete', { request_id: useProviderStore.getState().copilotAuthStateByProvider.copilot?.requestId });
+    await auth;
+    emitTauriEvent('ai:copilot-download-complete', { request_id: downloadId, status: makeCopilotStatus({ auth_status: 'login_required' }) });
+    await download;
+    expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('connected');
+    expect(useProviderStore.getState().providerReachabilityById.copilot.status).toBe('reachable');
+  });
+
+  it('keeps the latest configuration hydration and connection check', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const base = (await listProviderConfigsMock())[0];
+    let releaseLoad!: () => void;
+    listProviderConfigsMock.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseLoad = () => resolve([{ ...base, name: 'Old' }]);
+    }));
+    const oldLoad = useProviderStore.getState().loadProviderConfigs();
+    listProviderConfigsMock.mockImplementationOnce(async () => [{ ...base, name: 'Current' }]);
+    await useProviderStore.getState().loadProviderConfigs();
+    releaseLoad();
+    await oldLoad;
+    expect(useProviderStore.getState().providerConfigs[0].name).toBe('Current');
+    useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+    let releaseCheck!: () => void;
+    aiGetCopilotStatusMock.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCheck = () => resolve(makeCopilotStatus());
+    }));
+    const oldCheck = useProviderStore.getState().testConnection('copilot');
+    aiGetCopilotStatusMock.mockImplementationOnce(async () => makeCopilotStatus({ ok: true, runtime_status: 'ready', auth_status: 'connected', error_code: null, error_message: null }));
+    await useProviderStore.getState().testConnection('copilot');
+    releaseCheck();
+    await oldCheck;
+    expect(useProviderStore.getState().providerReachabilityById.copilot.status).toBe('reachable');
+  });
+
+  it('starts automatic refresh for a new transport and retains its in-flight ownership', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const releases: (() => void)[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      probeModelsEndpointMock.mockImplementationOnce(() => new Promise((resolve) => {
+        releases.push(() => resolve({ success: true, status: 'reachable', source: 'models_endpoint', message: 'Synthetic', models: [] }));
+      }));
+    }
+    const oldRefresh = useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'provider_selection');
+    await flushAsyncWork();
+    let finishSave!: () => void;
+    updateProviderConfigMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
+    const update = useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://new.invalid/v1' });
+    await flushAsyncWork();
+    await useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'pre_send');
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+    finishSave();
+    await update;
+    const currentRefresh = useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'provider_selection');
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(2);
+    expect(probeModelsEndpointMock).toHaveBeenLastCalledWith(expect.objectContaining({ baseUrl: 'https://new.invalid/v1' }));
+    releases[0]();
+    await oldRefresh;
+    const sharedRefresh = useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'manual');
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(2);
+    releases[1]();
+    await Promise.all([currentRefresh, sharedRefresh]);
   });
 
   it('uses a stored API key to scan models after a restart', async () => {
@@ -794,6 +1727,283 @@ describe('useProviderStore secret resolution', () => {
         filterFreeModels: false,
         copilotSendTimeoutMs: 2_400_000,
       });
+  });
+
+  it('keeps rapid provider setting saves in request order through the backend', async () => {
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    updateProviderSettingsMock.mockImplementationOnce(async () => firstWrite);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+
+    const first = providerStore.useProviderStore.getState().updateProviderSettings(
+      'provider-openai',
+      { copilotSendTimeoutMs: 120_000 },
+    );
+    const second = providerStore.useProviderStore.getState().updateProviderSettings(
+      'provider-openai',
+      { copilotSendTimeoutMs: 240_000 },
+    );
+    await flushAsyncWork();
+
+    expect(updateProviderSettingsMock).toHaveBeenCalledTimes(1);
+    releaseFirstWrite?.();
+    await Promise.all([first, second]);
+
+    expect(updateProviderSettingsMock.mock.calls).toEqual([
+      [{ providerId: 'provider-openai', copilotSendTimeoutMs: 120_000 }],
+      [{ providerId: 'provider-openai', copilotSendTimeoutMs: 240_000 }],
+    ]);
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({ copilotSendTimeoutMs: 240_000 });
+  });
+
+  it('does not let an older provider configuration save finish after a newer one', async () => {
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    updateProviderConfigMock.mockImplementationOnce(async () => firstWrite);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+
+    const first = providerStore.useProviderStore.getState().updateProviderConfig(
+      'provider-openai',
+      { name: 'First name' },
+    );
+    const second = providerStore.useProviderStore.getState().updateProviderConfig(
+      'provider-openai',
+      { name: 'Second name' },
+    );
+    await flushAsyncWork();
+
+    expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    releaseFirstWrite?.();
+    await Promise.all([first, second]);
+
+    expect(updateProviderConfigMock.mock.calls.map((call) => call[0].name)).toEqual([
+      'First name',
+      'Second name',
+    ]);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name)
+      .toBe('Second name');
+  });
+
+  it('keeps each Copilot configuration and timeout save in one provider queue entry', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+    providerStore.useProviderStore.setState((
+      state: ReturnType<typeof providerStore.useProviderStore.getState>,
+    ) => ({
+      providerSettingsById: {
+        ...state.providerSettingsById,
+        'provider-openai': {
+          providerId: 'provider-openai',
+          filterFreeModels: false,
+          copilotSendTimeoutMs: 1_800_000,
+        },
+      },
+    }));
+    updateProviderSettingsMock.mockClear();
+    updateProviderConfigMock.mockClear();
+    const calls: string[] = [];
+    let releaseFirstTimeout: (() => void) | undefined;
+    const firstTimeout = new Promise<void>((resolve) => {
+      releaseFirstTimeout = resolve;
+    });
+    let timeoutWrite = 0;
+    updateProviderSettingsMock.mockImplementation(async (params) => {
+      calls.push(`timeout:${params.copilotSendTimeoutMs}`);
+      timeoutWrite += 1;
+      if (timeoutWrite === 1) await firstTimeout;
+    });
+    updateProviderConfigMock.mockImplementation(async (params) => {
+      calls.push(`config:${params.name}`);
+    });
+
+    const first = providerStore.useProviderStore.getState().updateCopilotProvider(
+      'provider-openai',
+      { name: 'First Copilot', providerType: 'copilot', isLocal: false },
+      120_000,
+    );
+    const second = providerStore.useProviderStore.getState().updateCopilotProvider(
+      'provider-openai',
+      { name: 'Second Copilot', providerType: 'copilot', isLocal: false },
+      240_000,
+    );
+    await flushAsyncWork();
+
+    expect(calls).toEqual(['timeout:120000']);
+    releaseFirstTimeout?.();
+    await Promise.all([first, second]);
+
+    expect(calls).toEqual([
+      'timeout:120000',
+      'config:First Copilot',
+      'timeout:240000',
+      'config:Second Copilot',
+    ]);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name)
+      .toBe('Second Copilot');
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({ copilotSendTimeoutMs: 240_000 });
+  });
+
+  it('restores the persisted Copilot timeout when the configuration write fails', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+    providerStore.useProviderStore.setState((
+      state: ReturnType<typeof providerStore.useProviderStore.getState>,
+    ) => ({
+      providerSettingsById: {
+        ...state.providerSettingsById,
+        'provider-openai': {
+          providerId: 'provider-openai',
+          filterFreeModels: false,
+          copilotSendTimeoutMs: null,
+        },
+      },
+    }));
+    updateProviderSettingsMock.mockClear();
+    updateProviderConfigMock.mockClear();
+    updateProviderConfigMock.mockImplementationOnce(async () => {
+      throw new Error('config failed');
+    });
+
+    await expect(providerStore.useProviderStore.getState().updateCopilotProvider(
+      'provider-openai',
+      { name: 'Unsaved Copilot', providerType: 'copilot', isLocal: false },
+      120_000,
+    )).rejects.toThrow('config failed');
+
+    expect(updateProviderSettingsMock.mock.calls.map((call) => call[0])).toEqual([
+      { providerId: 'provider-openai', copilotSendTimeoutMs: 120_000 },
+      { providerId: 'provider-openai', copilotSendTimeoutMs: 1_800_000 },
+    ]);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name).toBe('OpenAI');
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({ copilotSendTimeoutMs: 1_800_000 });
+  });
+
+  it('queues a settings reload behind a failed Copilot save and its compensation', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+
+    let backendTimeoutMs = 1_800_000;
+    let settingsReadCount = 0;
+    let releaseReload!: () => void;
+    const reloadGate = new Promise<void>((resolve) => {
+      releaseReload = resolve;
+    });
+    getProviderSettingsMock.mockClear();
+    getProviderSettingsMock.mockImplementation(async () => {
+      settingsReadCount += 1;
+      if (settingsReadCount === 2) {
+        await reloadGate;
+      }
+      return {
+        provider_id: 'provider-openai',
+        filter_free_models: false,
+        copilot_send_timeout_ms: backendTimeoutMs,
+      };
+    });
+    updateProviderSettingsMock.mockClear();
+    updateProviderSettingsMock.mockImplementation(async (params) => {
+      backendTimeoutMs = params.copilotSendTimeoutMs ?? 0;
+    });
+    updateProviderConfigMock.mockClear();
+    let rejectConfig!: (error: Error) => void;
+    const blockedConfigWrite = new Promise<void>((_resolve, reject) => {
+      rejectConfig = reject;
+    });
+    let markConfigStarted!: () => void;
+    const configStarted = new Promise<void>((resolve) => {
+      markConfigStarted = resolve;
+    });
+    updateProviderConfigMock.mockImplementationOnce(async () => {
+      markConfigStarted();
+      return blockedConfigWrite;
+    });
+
+    const save = providerStore.useProviderStore.getState().updateCopilotProvider(
+      'provider-openai',
+      { name: 'Unsaved Copilot', providerType: 'copilot', isLocal: false },
+      120_000,
+    );
+    const saveResult = save.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await configStarted;
+
+    const timeoutDuringConfigWrite = backendTimeoutMs;
+    const reload = providerStore.useProviderStore.getState().loadProviderSettings(
+      'provider-openai',
+    );
+    await flushAsyncWork();
+    const readsBeforeRollback = getProviderSettingsMock.mock.calls.length;
+
+    rejectConfig(new Error('config failed'));
+    const saveError = await saveResult;
+    await flushAsyncWork();
+
+    const timeoutAfterRollback = backendTimeoutMs;
+    const readsAfterRollback = getProviderSettingsMock.mock.calls.length;
+    releaseReload();
+    await reload;
+
+    expect(saveError).toBeInstanceOf(Error);
+    expect((saveError as Error).message).toBe('config failed');
+    expect(timeoutDuringConfigWrite).toBe(120_000);
+    expect(readsBeforeRollback).toBe(1);
+    expect(timeoutAfterRollback).toBe(1_800_000);
+    expect(readsAfterRollback).toBe(2);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name).toBe('OpenAI');
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({ copilotSendTimeoutMs: 1_800_000 });
+  });
+
+  it('reports both the Copilot save failure and a failed timeout compensation', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+    providerStore.useProviderStore.setState((
+      state: ReturnType<typeof providerStore.useProviderStore.getState>,
+    ) => ({
+      providerSettingsById: {
+        ...state.providerSettingsById,
+        'provider-openai': {
+          providerId: 'provider-openai',
+          filterFreeModels: false,
+          copilotSendTimeoutMs: 1_800_000,
+        },
+      },
+    }));
+    updateProviderSettingsMock.mockClear();
+    updateProviderConfigMock.mockClear();
+    updateProviderSettingsMock
+      .mockImplementationOnce(async () => undefined)
+      .mockImplementationOnce(async () => {
+        throw new Error('rollback failed');
+      });
+    updateProviderConfigMock.mockImplementationOnce(async () => {
+      throw new Error('config failed');
+    });
+
+    await expect(providerStore.useProviderStore.getState().updateCopilotProvider(
+      'provider-openai',
+      { name: 'Unsaved Copilot', providerType: 'copilot', isLocal: false },
+      120_000,
+    )).rejects.toThrow(
+      'config failed. Failed to restore the Copilot timeout: rollback failed',
+    );
   });
 
   it('persists providerType and isLocal when updating an existing provider', async () => {

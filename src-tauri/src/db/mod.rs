@@ -43,9 +43,14 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6];
 const MIGRATION_005_VERSION: i64 = 5;
-const MIGRATION_005_NAME: &str = "005_pilot_tool_trace_revisions";
-const MIGRATION_005_SQL: &str = include_str!("migrations/005_pilot_tool_trace_revisions.sql");
+const MIGRATION_005_NAME: &str = "005_runtime_schema";
+const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
+const MIGRATION_006_VERSION: i64 = 6;
+const MIGRATION_006_NAME: &str = "006_pilot_tool_trace_revisions";
+// This DDL is idempotent for local Pilot databases that previously stamped version 5.
+const MIGRATION_006_SQL: &str = include_str!("migrations/006_pilot_tool_trace_revisions.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -125,10 +130,13 @@ async fn run_migrations_local(pool: SqlitePool) -> DbResult<()> {
 }
 
 async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbResult<()> {
-    ensure_schema_migrations_table(connection).await?;
+    if !table_exists(connection, "schema_migrations".to_string()).await? {
+        ensure_schema_migrations_table(connection).await?;
+    }
 
     let user_tables = list_user_tables(connection).await?;
     let applied_migrations = list_applied_migrations(connection).await?;
+    validate_migration_history(&applied_migrations)?;
     let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
 
     if user_tables.is_empty() {
@@ -151,11 +159,20 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
-    // Baseline migration stamping is not enough for additive, idempotent schema updates.
-    // Re-run the legacy ensure helpers on every startup so older runtime databases pick up
-    // newly added columns and indexes even when schema_migrations is already populated.
-    if !is_legacy_database {
-        upgrade_legacy_schema_to_baseline(connection).await?;
+    // Older stamped databases can still lack runtime columns. Reconcile them once,
+    // before migrations 3/4 which depend on those tables, then stamp 5 only after
+    // the entire transition has succeeded in the surrounding transaction.
+    // Local Pilot builds also stamped version 5, with a different migration.
+    // Preserve those databases and complete the published runtime schema first.
+    let version_five_name = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM schema_migrations WHERE version = 5",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    let needs_runtime_schema = !applied_migrations.contains(&MIGRATION_005_VERSION)
+        || version_five_name.as_deref() == Some("005_pilot_tool_trace_revisions");
+    if needs_runtime_schema && !is_legacy_database {
+        reconcile_runtime_schema_v5(connection).await?;
     }
 
     if !list_applied_migrations(connection)
@@ -184,23 +201,84 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
-    if !list_applied_migrations(connection)
-        .await?
-        .contains(&MIGRATION_005_VERSION)
-    {
-        apply_migration(
+    if needs_runtime_schema {
+        sqlx::raw_sql(MIGRATION_005_CHECK_SQL)
+            .execute(&mut *connection)
+            .await?;
+        if sqlx::query("PRAGMA foreign_key_check")
+            .fetch_optional(&mut *connection)
+            .await?
+            .is_some()
+        {
+            return Err(DbError::Migration(
+                "Foreign key violations prevent runtime schema migration".to_string(),
+            ));
+        }
+        let search_triggers = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM sqlite_master
+               WHERE type = 'trigger' AND tbl_name = 'messages'
+                 AND name IN ('messages_search_insert', 'messages_search_delete', 'messages_search_update')"#,
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        if search_triggers != 3 {
+            return Err(DbError::Migration(
+                "Incomplete message search migration".to_string(),
+            ));
+        }
+        stamp_migration(
             connection,
             MIGRATION_005_VERSION,
             MIGRATION_005_NAME.to_string(),
-            MIGRATION_005_SQL.to_string(),
         )
         .await?;
+        if version_five_name.as_deref() == Some("005_pilot_tool_trace_revisions") {
+            let updated = sqlx::query(
+                "UPDATE schema_migrations SET name = ? WHERE version = ? AND name = ?",
+            )
+            .bind(MIGRATION_005_NAME)
+            .bind(MIGRATION_005_VERSION)
+            .bind("005_pilot_tool_trace_revisions")
+            .execute(&mut *connection)
+            .await?;
+            if updated.rows_affected() != 1 {
+                return Err(DbError::Migration(
+                    "Failed to normalize the local Pilot version-5 migration record".to_string(),
+                ));
+            }
+        }
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&MIGRATION_006_VERSION) {
+        apply_migration(
+            connection,
+            MIGRATION_006_VERSION,
+            MIGRATION_006_NAME.to_string(),
+            MIGRATION_006_SQL.to_string(),
+        ).await?;
     }
 
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
     insert_default_speech_provider(connection).await?;
 
+    Ok(())
+}
+
+// Version 2 is optional: it was a shipped data migration, not a schema dependency.
+fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
+    if applied
+        .iter()
+        .any(|version| !SUPPORTED_MIGRATION_VERSIONS.contains(version))
+        || (!applied.is_empty() && !applied.contains(&1))
+        || (applied.contains(&4) && !applied.contains(&3))
+        || (applied.contains(&5) && !applied.contains(&4))
+        || (applied.contains(&6) && !applied.contains(&5))
+    {
+        return Err(DbError::Migration(
+            "Unsupported or inconsistent migration history; database left unchanged".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -317,6 +395,12 @@ async fn table_exists(connection: &mut SqliteConnection, table: String) -> DbRes
 }
 
 async fn upgrade_legacy_schema_to_baseline(connection: &mut SqliteConnection) -> DbResult<()> {
+    reconcile_runtime_schema_v5(connection).await
+}
+
+// Frozen compatibility transition for version 5 and unversioned legacy adoption.
+// Keep these helpers stable. Future schema changes belong to a new migration.
+async fn reconcile_runtime_schema_v5(connection: &mut SqliteConnection) -> DbResult<()> {
     ensure_legacy_conversations(&mut *connection).await?;
     ensure_legacy_messages(&mut *connection).await?;
     ensure_conversation_compactions(&mut *connection).await?;
@@ -1588,6 +1672,9 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
 }
 
 #[cfg(test)]
+mod migration_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         app_db_path, apply_migration, create_pool, ensure_schema_migrations_table, stamp_migration,
@@ -1845,6 +1932,7 @@ mod tests {
                 "app_settings".to_string(),
                 "architect_plan_conversation_sync".to_string(),
                 "conversation_citations".to_string(),
+                "conversation_tool_trace_revisions".to_string(),
                 "conversation_toolbox_state".to_string(),
                 "conversations".to_string(),
                 "git_repositories".to_string(),
@@ -1864,6 +1952,56 @@ mod tests {
         assert_migration_001_applied(&pool).await;
         assert_agent_runs_migration_applied(&pool).await;
         assert_message_search_migration_applied(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_upgrades_local_pilot_version_five_without_losing_its_trace_schema() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("initial pool");
+        sqlx::query(
+            "UPDATE schema_migrations SET name = '005_pilot_tool_trace_revisions' WHERE version = 5",
+        )
+        .execute(&pool)
+        .await
+        .expect("emulate local Pilot version five");
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 6")
+            .execute(&pool)
+            .await
+            .expect("remove version six stamp");
+        sqlx::query("DROP INDEX idx_messages_created_at_id")
+            .execute(&pool)
+            .await
+            .expect("emulate missing runtime index");
+        pool.close().await;
+
+        let upgraded = create_pool(&db_path).await.expect("upgrade Pilot database");
+        let runtime_name: String =
+            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 5")
+                .fetch_one(&upgraded)
+                .await
+                .expect("normalized runtime migration stamp");
+        assert_eq!(runtime_name, "005_runtime_schema");
+        let pilot_name: String =
+            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 6")
+                .fetch_one(&upgraded)
+                .await
+                .expect("Pilot migration stamp");
+        assert_eq!(pilot_name, "006_pilot_tool_trace_revisions");
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_created_at_id'",
+        )
+        .fetch_one(&upgraded)
+        .await
+        .expect("runtime index");
+        assert_eq!(index_count, 1);
+        let trace_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversation_tool_trace_revisions'",
+        )
+        .fetch_one(&upgraded)
+        .await
+        .expect("Pilot trace table");
+        assert_eq!(trace_count, 1);
     }
 
     #[tokio::test]

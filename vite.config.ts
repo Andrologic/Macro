@@ -197,6 +197,10 @@ const sanitizeChunkName = (name: string): string =>
 const manualVendorChunk = (id: string): string | undefined => {
   const moduleId = id.replace(/\\/g, "/");
 
+  // Vite shares this helper across dynamic imports. Keeping it with Mermaid
+  // makes every dynamic caller statically load the diagram runtime.
+  if (moduleId === "\0vite/preload-helper.js") return "utils-vendor";
+
   if (!moduleId.includes("/node_modules/")) {
     return undefined;
   }
@@ -372,7 +376,9 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "diagram-vendor";
   }
 
-  if (hasNodePackage(moduleId, "xterm") || hasNodePackage(moduleId, "xterm-addon-fit")) {
+  // The entry imports terminal styles; assigning CSS to this JS chunk makes
+  // Rollup load the terminal runtime eagerly with those styles.
+  if (!moduleId.endsWith(".css") && (hasNodePackage(moduleId, "xterm") || hasNodePackage(moduleId, "xterm-addon-fit"))) {
     return "terminal-vendor";
   }
 
@@ -462,6 +468,9 @@ export default defineConfig(({ command }) => {
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     },
+    // Local JSON is consumed through default exports; emit object literals so
+    // large locale objects do not gain an escaped JSON.parse string wrapper.
+    json: { namedExports: false, stringify: false },
     plugins: [
       createMacroPilotValidatorsPlugin(),
       createMermaidParserSourcePlugin(),

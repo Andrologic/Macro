@@ -1,13 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../../ui/Icon';
-import { loadPreference, PREF_KEYS, savePreference } from '../../../services/preferences';
+import { loadPreference, PREF_KEYS, saveConfigPreferencesAtomically } from '../../../services/preferences';
 import {
   type ArchitectGitNamingSettings,
   renderGitFlowBranchName,
   renderStandaloneFeatureBranchName,
   validateArchitectGitNamingSettings,
 } from '../../../services/architectGitNaming';
+import { toServiceError } from '../../../services/contracts/errors';
+import { notify } from '../../ui/toastService';
 import { cn } from '../../../utils/cn';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 
@@ -78,12 +80,14 @@ export const ArchitectGitFlowView: React.FC = () => {
     };
 
     let cancelled = false;
-    void loadSettings();
+    void loadSettings().catch((error: unknown) => {
+      if (!cancelled) notify.error(t('common.error'), { description: toServiceError(error).message });
+    });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   const updateSettings = (updater: React.SetStateAction<ArchitectGitNamingSettings>) => {
     settingsTouchedRef.current = true;
@@ -135,39 +139,26 @@ export const ArchitectGitFlowView: React.FC = () => {
     settingsTouchedRef.current = true;
     setIsSaving(true);
     setSaveSuccess(false);
-    await Promise.all([
-      savePreference(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH, settings.mainBranch.trim() || defaultSettings.mainBranch),
-      savePreference(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH, settings.baseBranch.trim() || defaultSettings.baseBranch),
-      savePreference(PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY, settings.completionMergePolicy),
-      savePreference(
-        PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE,
-        settings.planBranchTemplate.trim() || defaultSettings.planBranchTemplate
-      ),
-      savePreference(
-        PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE,
-        settings.featureBranchTemplate.trim() || defaultSettings.featureBranchTemplate
-      ),
-      savePreference(
-        PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE,
-        settings.standaloneFeatureBranchTemplate.trim() || defaultSettings.standaloneFeatureBranchTemplate
-      ),
-      savePreference(
-        PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE,
-        settings.releaseBranchTemplate.trim() || defaultSettings.releaseBranchTemplate
-      ),
-      savePreference(
-        PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE,
-        settings.hotfixBranchTemplate.trim() || defaultSettings.hotfixBranchTemplate
-      ),
-      savePreference(
-        PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE,
-        settings.bugfixBranchTemplate.trim() || defaultSettings.bugfixBranchTemplate
-      ),
-      savePreference(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH, settings.syncTargetBeforeFinish),
-    ]);
-    setIsSaving(false);
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 2500);
+    try {
+      await saveConfigPreferencesAtomically({
+        [PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: settings.mainBranch.trim() || defaultSettings.mainBranch,
+        [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: settings.baseBranch.trim() || defaultSettings.baseBranch,
+        [PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY]: settings.completionMergePolicy,
+        [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: settings.planBranchTemplate.trim() || defaultSettings.planBranchTemplate,
+        [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: settings.featureBranchTemplate.trim() || defaultSettings.featureBranchTemplate,
+        [PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE]: settings.standaloneFeatureBranchTemplate.trim() || defaultSettings.standaloneFeatureBranchTemplate,
+        [PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE]: settings.releaseBranchTemplate.trim() || defaultSettings.releaseBranchTemplate,
+        [PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE]: settings.hotfixBranchTemplate.trim() || defaultSettings.hotfixBranchTemplate,
+        [PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE]: settings.bugfixBranchTemplate.trim() || defaultSettings.bugfixBranchTemplate,
+        [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: settings.syncTargetBeforeFinish,
+      });
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (error) {
+      notify.error(t('common.error'), { description: toServiceError(error).message });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleReset = () => {

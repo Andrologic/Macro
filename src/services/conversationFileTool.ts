@@ -14,6 +14,10 @@ export interface ConversationFilePageInput {
   notice?: string | null;
 }
 
+export const readConversationFileBody = (
+  input: { content?: string | null; snippet?: string | null },
+): string => input.content ?? input.snippet ?? "";
+
 const contentFingerprint = (content: string): string =>
   createToolCursor(content, 0).split(":")[1] ?? "unavailable";
 

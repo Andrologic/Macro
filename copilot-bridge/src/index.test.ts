@@ -2,6 +2,14 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import type { ModelInfo, ToolInvocation, ToolResultObject } from '@github/copilot-sdk';
+import nativeToolResults from '../../src-tauri/src/ai/copilot/fixtures/tool-results.json';
+import { BridgeControlChannel } from './controlChannel';
+import type { RelayToolResult } from './protocol';
+import { requireMacroToolRegistryEntry, toFunctionToolShape } from '../../src/shared/macroToolRegistry';
+
+const suppliedTools = (ids: string[]) => ids.map(id => toFunctionToolShape(requireMacroToolRegistryEntry(id)));
 
 process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT = '1';
 
@@ -28,7 +36,95 @@ afterEach(() => {
   delete process.env.MACRO_TOOL_HOST_BEARER_TOKEN;
 });
 
+describe('Copilot model catalogue', () => {
+  it('maps models with missing capabilities or supports without claiming unsupported features', async () => {
+    const { __testables } = await loadBridge();
+    const missingCapabilities = { id: 'plain', name: 'Plain' } as ModelInfo;
+    const missingSupports = { id: 'partial', name: '', capabilities: {} } as ModelInfo;
+
+    expect(__testables.modelDescription(missingCapabilities)).toBeNull();
+    expect(__testables.mapModel(missingCapabilities)).toEqual({
+      model_id: 'plain', name: 'Plain', description: null,
+      owned_by: 'github-copilot', supported_reasoning_efforts: undefined,
+    });
+    expect(__testables.modelDescription(missingSupports)).toBeNull();
+    expect(__testables.mapModel(missingSupports)).toEqual({
+      model_id: 'partial', name: 'partial', description: null,
+      owned_by: 'github-copilot', supported_reasoning_efforts: undefined,
+    });
+  });
+
+  it('preserves declared vision and reasoning support for complete models', async () => {
+    const { __testables } = await loadBridge();
+    const model: ModelInfo = {
+      id: 'complete', name: 'Complete',
+      capabilities: {
+        supports: { vision: true, reasoningEffort: true },
+        limits: { max_context_window_tokens: 128_000 },
+      },
+      supportedReasoningEfforts: ['low', 'high'],
+    };
+
+    expect(__testables.modelDescription(model)).toBe('Copilot model (vision, reasoning:low/high)');
+    expect(__testables.mapModel(model)).toEqual({
+      model_id: 'complete', name: 'Complete',
+      description: 'Copilot model (vision, reasoning:low/high)',
+      owned_by: 'github-copilot', supported_reasoning_efforts: ['low', 'high'],
+    });
+  });
+});
+
 describe('copilot bridge tool registration', () => {
+  it('carries Rust error metadata through the concrete channel to the SDK handler', async () => {
+    const { __testables } = await loadBridge();
+    const input = new PassThrough();
+    const channel = new BridgeControlChannel(input, () => {});
+    const recorded = mock((_result: RelayToolResult) => {});
+    input.write('{}\n');
+    const tools = __testables.buildMacroTools({
+      request_id: ' request:opaque ', model_id: 'synthetic', messages: [],
+      tools: suppliedTools(['read_file']),
+      allowed_tool_ids: ['read_file'],
+    }, { controlChannel: channel, recordRelayResult: recorded }) as Array<{
+      name: string;
+      options: { handler: (args: Record<string, unknown>, invocation: ToolInvocation) => Promise<string | ToolResultObject> };
+    }>;
+    const handler = tools.find((tool) => tool.name === 'read_file')!.options.handler;
+    const invocation = {
+      sessionId: 'session', toolCallId: ' call/opaque ', toolName: 'read_file', arguments: {},
+    };
+    try {
+      for (const { payload, sdk_result_type: resultType } of nativeToolResults) {
+        if (resultType !== 'success' && resultType !== 'denied' && resultType !== 'failure') {
+          throw new Error(`Invalid fixture SDK result type: ${resultType}`);
+        }
+        const result = handler({ path: 'example.txt' }, invocation);
+        input.write(`${JSON.stringify(payload)}\n`);
+        await expect(result).resolves.toEqual({
+          textResultForLlm: payload.result, resultType,
+          ...(payload.is_error ? { error: payload.result } : {}),
+          toolTelemetry: { is_error: payload.is_error, error_kind: payload.error_kind },
+        });
+        expect(recorded).toHaveBeenLastCalledWith({
+          result: payload.result,
+          isError: payload.is_error,
+          errorKind: payload.error_kind,
+          interrupt: payload.interrupt,
+          hiddenContext: payload.hidden_context ?? undefined,
+          visibleContent: payload.visible_content ?? undefined,
+        });
+      }
+
+      // A closed control channel must reach the SDK's exception path, not success text.
+      channel.close();
+      recorded.mockClear();
+      await expect(handler({}, invocation)).rejects.toMatchObject({ code: 'tool_result_channel_closed' });
+      expect(recorded).not.toHaveBeenCalled();
+    } finally {
+      channel.close();
+    }
+  });
+
   it('normalizes the Copilot send timeout with room for tool and completion margins', async () => {
     const { __testables } = await loadBridge();
 
@@ -98,6 +194,7 @@ describe('copilot bridge tool registration', () => {
       request_id: 'req-1',
       model_id: 'gpt-5',
       messages: [],
+      tools: suppliedTools(['web_fetch', 'git_status']),
       allowed_tool_ids: ['web_fetch', 'git_status'],
     }) as Array<{ name: string; options: { overridesBuiltInTool?: true } }>;
 
@@ -120,6 +217,7 @@ describe('copilot bridge tool registration', () => {
         request_id: 'req-web-fetch',
         model_id: 'gpt-5',
         messages: [],
+        tools: suppliedTools(['web_fetch']),
         allowed_tool_ids: ['web_fetch'],
       }) as Array<{
         name: string;
@@ -174,6 +272,7 @@ describe('copilot bridge tool registration', () => {
           request_id: 'req-terminal',
           model_id: 'gpt-5',
           messages: [],
+          tools: suppliedTools([toolId]),
           allowed_tool_ids: [toolId],
         },
         { controlChannel: { requestTool } } as never,
@@ -216,6 +315,7 @@ describe('copilot bridge tool registration', () => {
         request_id: 'req-read-file',
         model_id: 'gpt-5',
         messages: [],
+        tools: suppliedTools(['read_file']),
         allowed_tool_ids: ['read_file'],
       },
       { controlChannel: { requestTool } } as never,
@@ -289,6 +389,7 @@ describe('copilot bridge tool registration', () => {
             is_read_only: false,
           },
         ],
+        tools: suppliedTools(relayedToolIds),
         allowed_tool_ids: relayedToolIds,
       },
       { controlChannel: { requestTool } } as never,
@@ -345,6 +446,7 @@ describe('copilot bridge tool registration', () => {
         model_id: 'gpt-5',
         messages: [],
         default_workspace_path: '/tmp/macro-source',
+        tools: suppliedTools(['git_status']),
         allowed_tool_ids: ['git_status'],
       }) as Array<{
         name: string;
@@ -462,4 +564,31 @@ describe('copilot bridge reasoning events', () => {
       'Readable Copilot thinking.'
     );
   });
+});
+
+it('registers only allowed MCP schemas and relays mixed media through the channel to the SDK', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const { __testables } = await loadBridge();
+  const input = new PassThrough();
+  let dispatched: unknown;
+  const channel = new BridgeControlChannel(input, payload => {
+    dispatched = payload;
+    input.write(`${JSON.stringify({ type: 'tool_result', request_id: payload.request_id, tool_call_id: payload.tool_call_id, result: 'partial result', is_error: true, blocks: fixture.content })}\n`);
+  });
+  input.write('{}\n');
+  const schema = { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] };
+  const tools = __testables.buildMacroTools({ request_id: 'mcp-native', model_id: 'fixture', messages: [],
+    allowed_tool_ids: ['mcp__fixture__read', 'mcp__fixture__missing'], tools: [
+      { type: 'function', function: { name: 'mcp__fixture__read', description: 'Fixture', parameters: schema } },
+      { type: 'function', function: { name: 'mcp__fixture__denied', parameters: schema } },
+    ],
+  }, { controlChannel: channel }) as Array<{ name: string; options: { parameters: unknown; handler: (args: unknown, invocation: ToolInvocation) => Promise<ToolResultObject> } }>;
+  try {
+    expect(tools.map(tool => tool.name)).toEqual(['mcp__fixture__read']);
+    expect(tools[0].options.parameters).toEqual(schema);
+    const result = await tools[0].options.handler({ query: 'synthetic' }, { sessionId: 'session', toolCallId: 'call', toolName: tools[0].name, arguments: {} });
+    expect(dispatched).toMatchObject({ request_id: 'mcp-native', tool_call_id: 'call', tool_name: 'mcp__fixture__read', args: { query: 'synthetic' } });
+    expect(JSON.stringify(result.binaryResultsForLlm)).toBe(JSON.stringify(fixture.content.slice(1)));
+    expect(result.resultType).toBe('failure');
+  } finally { channel.close(); }
 });

@@ -27,7 +27,12 @@ import {
 } from '../../services/architectPlanPresentation';
 import { isProjectPlanActionable } from '../../services/globalProjects';
 import { loadMacroProjectMetadataForSelection } from '../../services/macroProjectMetadataLoader';
-import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
+import {
+  loadPersistedPreference,
+  loadPreference,
+  PREF_KEYS,
+  savePreference,
+} from '../../services/preferences';
 import { getPlanKindIconName } from '../../services/planKindPresentation';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -95,10 +100,20 @@ const scopeIsSelected = (
 
 interface ArchitectProjectNavigatorProps {
   catalogLoader?: typeof loadMacroProjectMetadataForSelection;
+  preferenceLoader?: {
+    loadPinnedPlanIds: () => Promise<unknown>;
+    loadExpandedScopeIds: () => Promise<unknown>;
+  };
 }
+
+const defaultPreferenceLoader: NonNullable<ArchitectProjectNavigatorProps['preferenceLoader']> = {
+  loadPinnedPlanIds: () => loadPreference<unknown>(PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS),
+  loadExpandedScopeIds: () => loadPersistedPreference<unknown>(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS),
+};
 
 export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps> = ({
   catalogLoader = loadMacroProjectMetadataForSelection,
+  preferenceLoader = defaultPreferenceLoader,
 }) => {
   const { t } = useTranslation();
   const standaloneProjects = useAppStore((state) => state.standaloneProjects);
@@ -146,6 +161,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [mutatingPlanId, setMutatingPlanId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const expandedScopesInteractionRef = useRef(false);
   const pendingPrimaryRequestRef = useRef<ArchitectPlanSelectorRequestDetail | null>(null);
   const scopeCreateButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -283,30 +299,47 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([
-      loadPreference<unknown>(PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS),
-      loadPreference<unknown>(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS),
-    ]).then(([storedPins, storedScopes]) => {
+    void Promise.allSettled([
+      preferenceLoader.loadPinnedPlanIds(),
+      preferenceLoader.loadExpandedScopeIds(),
+    ]).then(([pinnedResult, expandedResult]) => {
       if (cancelled) return;
       const validScopeIds = new Set(scopes.map((scope) => scope.id));
-      const sanitizedScopes = sanitizeArchitectNavigatorIds(storedScopes, validScopeIds);
-      setPinnedPlanIds(sanitizeArchitectNavigatorIds(storedPins));
-      setExpandedScopeIds(
-        sanitizedScopes.length > 0
-          ? sanitizedScopes
-          : scopes.length <= 3
-            ? scopes.map((scope) => scope.id)
-            : selectedScope
-              ? [selectedScope.id]
-              : scopes[0]
-                ? [scopes[0].id]
-                : [],
-      );
+      let didFail = false;
+      if (pinnedResult.status === 'fulfilled') {
+        setPinnedPlanIds(sanitizeArchitectNavigatorIds(pinnedResult.value));
+      } else {
+        didFail = true;
+      }
+
+      if (expandedResult.status === 'fulfilled') {
+        if (!expandedScopesInteractionRef.current) {
+          const persistedScopes = expandedResult.value;
+          const sanitizedScopes = sanitizeArchitectNavigatorIds(persistedScopes, validScopeIds);
+          setExpandedScopeIds(
+            persistedScopes !== undefined
+              ? sanitizedScopes
+              : scopes.length <= 3
+                ? scopes.map((scope) => scope.id)
+                : selectedScope
+                  ? [selectedScope.id]
+                  : scopes[0]
+                    ? [scopes[0].id]
+                    : [],
+          );
+        }
+      } else {
+        didFail = true;
+      }
+
+      if (didFail) {
+        setError(t('architect.projectNavigator.preferenceLoadError', 'Impossible de charger les préférences du navigateur.'));
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [scopes, selectedScope]);
+  }, [preferenceLoader, scopes, selectedScope, t]);
 
   useEffect(() => {
     void refreshPlans();
@@ -327,6 +360,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [catalogEntriesByScope, error, isLoading, selectedScope]);
 
   const persistExpandedScopes = useCallback((next: string[]) => {
+    expandedScopesInteractionRef.current = true;
     setExpandedScopeIds(next);
     void savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS, next);
   }, []);

@@ -267,6 +267,30 @@ impl Drop for PendingGuard {
     }
 }
 
+struct ServerRequestGuard {
+    inner: Arc<Inner>,
+    id: JsonRpcId,
+    armed: bool,
+}
+
+impl ServerRequestGuard {
+    fn finish(&mut self) {
+        if !self.armed {
+            return;
+        }
+        lock(&self.inner.server_requests).remove(&self.id);
+        self.armed = false;
+    }
+}
+
+impl Drop for ServerRequestGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            lock(&self.inner.server_requests).remove(&self.id);
+        }
+    }
+}
+
 struct BoundedStderr {
     bytes: Vec<u8>,
     capacity: usize,
@@ -1282,7 +1306,13 @@ fn start_server_request(inner: Arc<Inner>, id: JsonRpcId, method: String, params
         active.insert(id.clone(), cancellation.clone());
     }
 
+    let request_guard = ServerRequestGuard {
+        inner: inner.clone(),
+        id: id.clone(),
+        armed: true,
+    };
     tokio::spawn(async move {
+        let mut request_guard = request_guard;
         let request = ServerRequest {
             id: id.clone(),
             method: method.clone(),
@@ -1290,27 +1320,36 @@ fn start_server_request(inner: Arc<Inner>, id: JsonRpcId, method: String, params
             cancellation: cancellation.clone(),
         };
         let outcome = if let Some(handler) = inner.server_request_handler.clone() {
-            let future = std::panic::AssertUnwindSafe(handler.handle(request)).catch_unwind();
-            tokio::select! {
-                _ = cancellation.cancelled() => ServerRequestResult::Error(JsonRpcErrorObject {
-                    code: -32800,
-                    message: "Request cancelled".to_string(),
-                    data: None,
-                }),
-                result = timeout(inner.config.request_timeout, future) => match result {
-                    Ok(Ok(outcome)) => outcome,
-                    Ok(Err(_)) => ServerRequestResult::Error(JsonRpcErrorObject::internal_error(
-                        "Server request handler panicked",
-                    )),
-                    Err(_) => ServerRequestResult::Error(JsonRpcErrorObject::internal_error(
-                        "Server request handler timed out",
-                    )),
+            let future =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler.handle(request)));
+            match future {
+                Err(_) => ServerRequestResult::Error(JsonRpcErrorObject::internal_error(
+                    "Server request handler panicked",
+                )),
+                Ok(future) => {
+                    let future = std::panic::AssertUnwindSafe(future).catch_unwind();
+                    tokio::select! {
+                        _ = cancellation.cancelled() => ServerRequestResult::Error(JsonRpcErrorObject {
+                            code: -32800,
+                            message: "Request cancelled".to_string(),
+                            data: None,
+                        }),
+                        result = timeout(inner.config.request_timeout, future) => match result {
+                            Ok(Ok(outcome)) => outcome,
+                            Ok(Err(_)) => ServerRequestResult::Error(JsonRpcErrorObject::internal_error(
+                                "Server request handler panicked",
+                            )),
+                            Err(_) => ServerRequestResult::Error(JsonRpcErrorObject::internal_error(
+                                "Server request handler timed out",
+                            )),
+                        }
+                    }
                 }
             }
         } else {
             ServerRequestResult::Unhandled
         };
-        lock(&inner.server_requests).remove(&id);
+        request_guard.finish();
 
         let response = match outcome {
             ServerRequestResult::Result(result) => {
@@ -1412,5 +1451,103 @@ fn timeout_error(method: String, duration: Duration) -> LspError {
     LspError::RequestTimeout {
         method,
         timeout_ms: duration.as_millis().min(u128::from(u64::MAX)) as u64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::protocol::ServerRequestFuture;
+    use super::*;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    struct PanicHandler {
+        panic_while_building_future: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ServerRequestHandler for PanicHandler {
+        fn handle(&self, _request: ServerRequest) -> ServerRequestFuture {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 && self.panic_while_building_future {
+                panic!("panic while building server request future");
+            }
+            if self.calls.load(Ordering::Relaxed) == 1 {
+                return Box::pin(async {
+                    panic!("panic while polling server request future");
+                });
+            }
+            Box::pin(async { ServerRequestResult::Result(json!({"ok": true})) })
+        }
+    }
+
+    fn test_config() -> LspServerConfig {
+        LspServerConfig::new("test-lsp", ".", json!({}))
+    }
+
+    async fn receive_response(receiver: &mut mpsc::Receiver<Outbound>) -> Value {
+        let outbound = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("server request response timed out")
+            .expect("server request response channel closed");
+        let mut framer = LspFramer::new(DEFAULT_MAX_MESSAGE_BYTES, DEFAULT_MAX_HEADER_BYTES)
+            .expect("create response framer");
+        let messages = framer
+            .push(&outbound.bytes)
+            .expect("decode server response");
+        outbound
+            .acknowledgement
+            .send(Ok(()))
+            .expect("acknowledge server response");
+        messages
+            .into_iter()
+            .next()
+            .expect("server response message")
+    }
+
+    #[tokio::test]
+    async fn server_request_handler_panics_before_or_during_future_and_cleans_up() {
+        for panic_while_building_future in [true, false] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let client = LspClient::new(
+                test_config(),
+                Some(Arc::new(PanicHandler {
+                    panic_while_building_future,
+                    calls,
+                })),
+            )
+            .expect("create client");
+            let (writer, mut responses) = mpsc::channel(2);
+            *lock(&client.inner.writer) = Some(writer);
+
+            let id = JsonRpcId::Number(1);
+            start_server_request(
+                client.inner.clone(),
+                id.clone(),
+                "server/panic".to_string(),
+                Value::Null,
+            );
+
+            let response = receive_response(&mut responses).await;
+            assert_eq!(response["jsonrpc"], "2.0");
+            assert_eq!(response["id"], 1);
+            assert_eq!(response["error"]["code"], -32603);
+            assert_eq!(
+                response["error"]["message"],
+                "Server request handler panicked"
+            );
+            assert!(lock(&client.inner.server_requests).is_empty());
+
+            start_server_request(
+                client.inner.clone(),
+                id,
+                "server/retry".to_string(),
+                Value::Null,
+            );
+            let response = receive_response(&mut responses).await;
+            assert_eq!(response["jsonrpc"], "2.0");
+            assert_eq!(response["id"], 1);
+            assert_eq!(response["result"]["ok"], true);
+            assert!(lock(&client.inner.server_requests).is_empty());
+        }
     }
 }

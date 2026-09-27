@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 
 let importCounter = 0;
 
@@ -150,6 +150,35 @@ describe('providerApi fetchModelsFromProvider', () => {
     expect(result.models).toEqual([]);
     expect(result.error).toContain('Connection timeout');
   });
+
+  for (const probe of ['models', 'chat', 'lmstudio'] as const) {
+    for (const status of [200, 500]) {
+      it(`keeps the ${probe} deadline through a stalled HTTP ${status} body`, async () => {
+        let requestSignal: AbortSignal | null | undefined;
+        tauriFetchMock.mockImplementation(async (_input, init) => {
+          requestSignal = init?.signal;
+          // A native body adapter may remain pending even after its fetch signal aborts.
+          const response = new Response(null, { status });
+          response.json = () => new Promise(() => undefined);
+          response.text = () => new Promise(() => undefined);
+          return response;
+        });
+        const realSetTimeout = globalThis.setTimeout;
+        const timer = spyOn(globalThis, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) =>
+          realSetTimeout(handler, Math.min(delay ?? 0, 10), ...args)) as typeof setTimeout);
+        const api = await loadProviderApi();
+        const options = { baseUrl: 'https://provider.invalid/v1', providerId: probe === 'lmstudio' ? 'lmstudio' : 'custom', timeout: 1 };
+        const result = await (probe === 'chat'
+          ? api.probeChatCompletionsEndpoint({ ...options, modelId: 'synthetic-model' })
+          : api.probeModelsEndpoint(options));
+        timer.mockRestore();
+        expect(result.success).toBe(false);
+        expect(result.errorKind).toBe('timeout');
+        expect(requestSignal?.aborted).toBe(true);
+        expect(tauriFetchMock).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
 
   it('returns request cancelled when the page lifecycle aborts the request', async () => {
     tauriFetchMock.mockImplementation(

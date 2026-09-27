@@ -1,8 +1,8 @@
 // Core types for the Macro application
 
 import type { SupportedLanguage } from '../i18n/languages';
-import type { IconName } from '../components/ui/Icon';
-import type { Citation } from '../stores/useCitationsStore';
+import type { IconName } from './icon';
+import type { Citation } from './citation';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type ProjectPathKind = 'windows' | 'wsl';
@@ -137,6 +137,7 @@ export interface PlanNode {
   projectIds?: string[];
   /** Mode snapshot used when this plan target was accepted. */
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  directCheckpointIdsByProjectId?: Record<string, string>;
   estimatedTime?: string;
   archivedAt?: string | null;
   archiveReason?: string | null;
@@ -549,7 +550,14 @@ export interface SkillTurnFeedback {
   warnings: SkillTurnFeedbackItem[];
 }
 
+export interface SkillScriptExecutionContext {
+  projectId: string | null;
+  workspacePath: string | null;
+}
+
 export interface SkillScriptRunRequest {
+  /** Captured by the caller, never inferred from the current UI selection. */
+  executionContext?: SkillScriptExecutionContext;
   skillId: string;
   scriptPath: string;
   args?: string[];
@@ -756,6 +764,7 @@ export interface ToolTrace {
 export interface PendingToolApproval {
   /** Absent for a live resolver; interrupted requests require a new turn. */
   recoveryState?: 'interrupted';
+  mcpIdentity?: { serverId: string; toolName: string };
   conversationId: string;
   assistantMessageId: string;
   toolCallId: string;
@@ -1089,6 +1098,7 @@ export type ConversationExecutionPhase =
   | 'preparing'
   | 'overflow_recovery'
   | 'streaming'
+  | 'persisting'
   | 'error';
 
 export interface ConversationRuntimeState {
@@ -1251,6 +1261,8 @@ export interface ChatMessage {
   provider_turn_state?: ProviderTurnState;
   context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
+  persistence_state?: 'failed' | 'retrying';
+  persistence_error?: string;
 }
 
 export interface ProviderReplayEnvelope {

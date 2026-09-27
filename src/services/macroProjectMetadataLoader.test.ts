@@ -175,6 +175,34 @@ describe('loadMacroProjectMetadataForSelection', () => {
     ]);
   });
 
+  it('keeps the branch of the selected plan when plan ids collide across branches', async () => {
+    const olderDevelopPlan = buildPlan({
+      id: 'shared-plan-id',
+      targetBranch: 'develop',
+      projectIds: ['project-1'],
+      updatedAt: '2026-04-17T10:00:00.000Z',
+    });
+    const newerReleasePlan = buildPlan({
+      id: 'shared-plan-id',
+      targetBranch: 'release/2.0.0',
+      projectIds: ['project-1'],
+      updatedAt: '2026-04-17T12:00:00.000Z',
+    });
+    const deps = createDeps({
+      develop: { activePlanId: null, plans: [olderDevelopPlan] },
+      'release/2.0.0': { activePlanId: null, plans: [newerReleasePlan] },
+    });
+
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'],
+      deps,
+    });
+
+    expect(result.selectedPlan).toBe(newerReleasePlan);
+    expect(result.selectedBranchName).toBe('release/2.0.0');
+    expect(result.selectionReason).toBe('recently_updated');
+  });
+
   it('scans discovered branches and candidate branches without failing the whole catalog on one bad branch', async () => {
     const developPlan = buildPlan({
       id: 'develop-plan',

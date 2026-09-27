@@ -123,6 +123,7 @@ const SNAPSHOT_PROVIDERS: Record<string, ModelsDevProvider> = {
 };
 
 let loadedCatalog: CachedCatalog | null = null;
+let loadedCatalogSource: ModelContextCatalogStatus['source'] | null = null;
 let lastStatus: ModelContextCatalogStatus = {
   lastFetchedAt: null,
   source: 'snapshot',
@@ -185,14 +186,19 @@ const safeParseCatalog = (raw: string | null): CachedCatalog | null => {
 };
 
 const readCachedCatalog = (): CachedCatalog | null => {
-  if (loadedCatalog) return loadedCatalog;
+  if (loadedCatalog && loadedCatalogSource !== 'snapshot') return loadedCatalog;
   if (typeof window === 'undefined' || !window.localStorage) return null;
   loadedCatalog = safeParseCatalog(window.localStorage.getItem(STORAGE_KEY));
+  loadedCatalogSource = loadedCatalog ? 'cache' : null;
   return loadedCatalog;
 };
 
-const writeCachedCatalog = (catalog: CachedCatalog) => {
+const writeCachedCatalog = (
+  catalog: CachedCatalog,
+  source: Extract<ModelContextCatalogStatus['source'], 'cache' | 'network'> = 'cache',
+) => {
   loadedCatalog = catalog;
+  loadedCatalogSource = source;
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(catalog));
@@ -240,14 +246,19 @@ const getProviderAliases = (params: {
 const getModelCandidates = (modelId?: string | null): string[] => {
   const normalized = normalize(modelId);
   if (!normalized) return [];
-  const candidates = new Set([normalized]);
-  const slashIndex = normalized.lastIndexOf('/');
-  if (slashIndex >= 0 && slashIndex < normalized.length - 1) {
-    candidates.add(normalized.slice(slashIndex + 1));
-  }
+  const qualifiedCandidates = [normalized];
   const colonIndex = normalized.lastIndexOf(':');
   if (colonIndex >= 0 && colonIndex < normalized.length - 1) {
-    candidates.add(normalized.slice(0, colonIndex));
+    qualifiedCandidates.push(normalized.slice(0, colonIndex));
+  }
+
+  const candidates = new Set<string>();
+  for (const candidate of qualifiedCandidates) {
+    candidates.add(candidate);
+    const slashIndex = candidate.lastIndexOf('/');
+    if (slashIndex >= 0 && slashIndex < candidate.length - 1) {
+      candidates.add(candidate.slice(slashIndex + 1));
+    }
   }
   return Array.from(candidates);
 };
@@ -369,10 +380,10 @@ export const lookupModelReasoningCatalogCapability = (params: {
 
 export const getModelContextCatalogStatus = (): ModelContextCatalogStatus => {
   const cache = readCachedCatalog();
-  if (!cache) return lastStatus;
+  if (!cache || !loadedCatalogSource || loadedCatalogSource === 'snapshot') return lastStatus;
   return {
     lastFetchedAt: cache.fetchedAt,
-    source: lastStatus.source === 'network' ? 'network' : 'cache',
+    source: loadedCatalogSource,
     stale: !isFresh(cache),
     error: lastStatus.error,
   };
@@ -391,6 +402,7 @@ export const refreshModelContextCatalog = async (params: {
 } = {}): Promise<ModelContextCatalogStatus> => {
   const cached = readCachedCatalog();
   if (!params.force && cached && isFresh(cached)) {
+    loadedCatalogSource = 'cache';
     return setLastStatus({
       lastFetchedAt: cached.fetchedAt,
       source: 'cache',
@@ -413,7 +425,7 @@ export const refreshModelContextCatalog = async (params: {
       const providers = (await response.json()) as Record<string, ModelsDevProvider>;
       const fetchedAt = new Date().toISOString();
       const catalog: CachedCatalog = { fetchedAt, providers };
-      writeCachedCatalog(catalog);
+      writeCachedCatalog(catalog, 'network');
       return setLastStatus({
         lastFetchedAt: fetchedAt,
         source: 'network',
@@ -423,6 +435,7 @@ export const refreshModelContextCatalog = async (params: {
     } catch (error) {
       const fallback = cached ?? getSnapshotCatalog();
       loadedCatalog = fallback;
+      loadedCatalogSource = cached ? 'cache' : 'snapshot';
       return setLastStatus({
         lastFetchedAt: cached?.fetchedAt ?? null,
         source: cached ? 'cache' : 'snapshot',
@@ -445,6 +458,7 @@ export const __testables = {
   writeCachedCatalog,
   reset: () => {
     loadedCatalog = null;
+    loadedCatalogSource = null;
     refreshPromise = null;
     statusListeners.clear();
     lastStatus = {

@@ -3,6 +3,10 @@ import type {
   DbConversationCitation,
   DbUpsertConversationCitationInput,
 } from '../services/tauriIpc';
+import {
+  persistConversationAttachments,
+  prepareConversationAttachments,
+} from '../services/conversationFileAttachments';
 import type { useCitationsStore as useCitationsStoreValue } from './useCitationsStore';
 
 const listConversationCitationsMock = mock(
@@ -98,6 +102,334 @@ describe('useCitationsStore', () => {
     ]);
   });
 
+  it('preserves a citation added while persisted citations are loading', async () => {
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    const addedId = useCitationsStore.getState().addCitation({
+      type: 'file',
+      scope: 'context',
+      source: 'README.md',
+      title: 'README.md',
+      path: 'README.md',
+      messageId: 'message-new',
+      conversationId: 'chat-conv',
+    });
+
+    finishHydration?.([
+      {
+        id: 'cite-db',
+        conversation_id: 'chat-conv',
+        message_id: 'message-old',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'notes.md',
+        title: 'Persisted source',
+        snippet: 'Persisted passage',
+        content: null,
+        url: null,
+        favicon: null,
+        path: null,
+        language: null,
+        size_bytes: null,
+        kind: 'used',
+        reason: null,
+        created_at: '2026-07-04T12:00:00Z',
+        updated_at: '2026-07-04T12:01:00Z',
+      },
+    ]);
+    await hydration;
+
+    expect(useCitationsStore.getState().citations.map((citation) => citation.id)).toEqual([
+      'cite-db',
+      addedId,
+    ]);
+  });
+
+  it('does not restore a citation removed while persisted citations are loading', async () => {
+    const existing = {
+      id: 'cite-db',
+      type: 'source_passage' as const,
+      scope: 'source' as const,
+      source: 'notes.md',
+      title: 'Persisted source',
+      snippet: 'Persisted passage',
+      messageId: 'message-old',
+      conversationId: 'chat-conv',
+      timestamp: '2026-07-04T12:01:00Z',
+      kind: 'used' as const,
+    };
+    useCitationsStore.setState({ citations: [existing] });
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    useCitationsStore.getState().removeCitation(existing.id);
+    finishHydration?.([
+      {
+        id: existing.id,
+        conversation_id: existing.conversationId,
+        message_id: existing.messageId,
+        type: existing.type,
+        scope: existing.scope,
+        source: existing.source,
+        title: existing.title,
+        snippet: existing.snippet,
+        content: null,
+        url: null,
+        favicon: null,
+        path: null,
+        language: null,
+        size_bytes: null,
+        kind: existing.kind,
+        reason: null,
+        created_at: existing.timestamp,
+        updated_at: existing.timestamp,
+      },
+    ]);
+    await hydration;
+
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
+  it('does not restore stale citations when an empty conversation is cleared during hydration', async () => {
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    useCitationsStore.getState().clearConversationCitations('chat-conv');
+    finishHydration?.([
+      {
+        id: 'cite-stale',
+        conversation_id: 'chat-conv',
+        message_id: 'message-old',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'notes.md',
+        title: 'Stale persisted source',
+        snippet: 'This citation was deleted while hydration was pending.',
+        content: null,
+        url: null,
+        favicon: null,
+        path: null,
+        language: null,
+        size_bytes: null,
+        kind: 'used',
+        reason: null,
+        created_at: '2026-07-04T12:00:00Z',
+        updated_at: '2026-07-04T12:01:00Z',
+      },
+    ]);
+    await hydration;
+
+    expect(deleteConversationCitationsMock).toHaveBeenCalledWith('chat-conv');
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
+  it('does not restore a citation added and removed during the same hydration', async () => {
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    const citationId = useCitationsStore.getState().addCitation({
+      type: 'file',
+      scope: 'context',
+      source: 'temporary.md',
+      title: 'temporary.md',
+      path: 'temporary.md',
+      messageId: 'message-temporary',
+      conversationId: 'chat-conv',
+    });
+    useCitationsStore.getState().removeCitation(citationId);
+    finishHydration?.([
+      {
+        id: citationId,
+        conversation_id: 'chat-conv',
+        message_id: 'message-temporary',
+        type: 'file',
+        scope: 'context',
+        source: 'temporary.md',
+        title: 'temporary.md',
+        snippet: null,
+        content: null,
+        url: null,
+        favicon: null,
+        path: 'temporary.md',
+        language: null,
+        size_bytes: null,
+        kind: null,
+        reason: null,
+        created_at: '2026-07-04T12:00:00Z',
+        updated_at: '2026-07-04T12:01:00Z',
+      },
+    ]);
+    await hydration;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(deleteConversationCitationMock).toHaveBeenCalledWith(citationId);
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
+  it('preserves a source edit when the persisted citation catalogue finishes loading', async () => {
+    const existing = {
+      id: 'cite-edit-during-hydration',
+      type: 'source_passage' as const,
+      scope: 'source' as const,
+      source: 'notes.md',
+      title: 'Persisted source',
+      snippet: 'Original passage',
+      messageId: 'message-old',
+      conversationId: 'chat-conv',
+      timestamp: '2026-07-04T12:01:00Z',
+      kind: 'used' as const,
+    };
+    useCitationsStore.setState({ citations: [existing] });
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    expect(useCitationsStore.getState().updateSourcePassage({
+      conversationId: 'chat-conv',
+      citationId: existing.id,
+      passage: 'Edited passage',
+    })).toBe(true);
+    finishHydration?.([{
+      id: existing.id,
+      conversation_id: existing.conversationId,
+      message_id: existing.messageId,
+      type: existing.type,
+      scope: existing.scope,
+      source: existing.source,
+      title: existing.title,
+      snippet: existing.snippet,
+      content: null,
+      url: null,
+      favicon: null,
+      path: null,
+      language: null,
+      size_bytes: null,
+      kind: existing.kind,
+      reason: null,
+      created_at: existing.timestamp,
+      updated_at: existing.timestamp,
+    }]);
+    await hydration;
+
+    expect(useCitationsStore.getState().citations[0]).toMatchObject({
+      id: existing.id,
+      snippet: 'Edited passage',
+      content: 'Edited passage',
+    });
+  });
+
+  it('keeps a source edit when deferred citation content finishes loading', async () => {
+    const existing = {
+      id: 'cite-edit-during-content-load',
+      type: 'source_passage' as const,
+      scope: 'source' as const,
+      source: 'notes.md',
+      title: 'Persisted source',
+      snippet: 'Original passage',
+      messageId: 'message-old',
+      conversationId: 'chat-conv',
+      timestamp: '2026-07-04T12:01:00Z',
+      kind: 'used' as const,
+    };
+    useCitationsStore.setState({ citations: [existing] });
+    let finishContent: ((content: string | null) => void) | undefined;
+    getConversationCitationContentMock.mockImplementationOnce(
+      () => new Promise<string | null>((resolve) => {
+        finishContent = resolve;
+      }),
+    );
+
+    const loading = useCitationsStore
+      .getState()
+      .ensureCitationContentLoaded(existing.id);
+    await Promise.resolve();
+    expect(useCitationsStore.getState().updateSourcePassage({
+      conversationId: 'chat-conv',
+      citationId: existing.id,
+      passage: 'Edited passage',
+    })).toBe(true);
+    finishContent?.('Stale persisted passage');
+    const loaded = await loading;
+
+    expect(loaded?.content).toBe('Edited passage');
+    expect(useCitationsStore.getState().citations[0]).toMatchObject({
+      id: existing.id,
+      snippet: 'Edited passage',
+      content: 'Edited passage',
+    });
+  });
+
+  it('does not restore a removed citation when deferred content finishes loading', async () => {
+    const existing = {
+      id: 'cite-delete-during-content-load',
+      type: 'web' as const,
+      scope: 'context' as const,
+      source: 'https://example.com/article',
+      title: 'Example',
+      snippet: 'Short preview',
+      messageId: 'message-old',
+      conversationId: 'chat-conv',
+      timestamp: '2026-07-04T12:01:00Z',
+    };
+    useCitationsStore.setState({ citations: [existing] });
+    let finishContent: ((content: string | null) => void) | undefined;
+    getConversationCitationContentMock.mockImplementationOnce(
+      () => new Promise<string | null>((resolve) => {
+        finishContent = resolve;
+      }),
+    );
+
+    const loading = useCitationsStore
+      .getState()
+      .ensureCitationContentLoaded(existing.id);
+    await Promise.resolve();
+    useCitationsStore.getState().removeCitation(existing.id);
+    finishContent?.('Stale persisted page body');
+
+    expect(await loading).toBeNull();
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
   it('loads full citation content lazily when requested', async () => {
     listConversationCitationsMock.mockImplementationOnce(async () => [
       {
@@ -185,6 +517,37 @@ describe('useCitationsStore', () => {
     );
   });
 
+  it('deletes a citation only after its older upsert finishes', async () => {
+    let finishUpsert: (() => void) | undefined;
+    upsertConversationCitationMock.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => {
+        finishUpsert = resolve;
+      });
+      return input;
+    });
+
+    const id = useCitationsStore.getState().addCitation({
+      type: 'file',
+      scope: 'context',
+      source: 'README.md',
+      title: 'README.md',
+      path: 'README.md',
+      messageId: 'message-1',
+      conversationId: 'chat-conv',
+    });
+    await Promise.resolve();
+    useCitationsStore.getState().removeCitation(id);
+    await Promise.resolve();
+
+    expect(deleteConversationCitationMock).not.toHaveBeenCalled();
+
+    finishUpsert?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(deleteConversationCitationMock).toHaveBeenCalledWith(id);
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
   it('awaits durable citation persistence before resolving', async () => {
     let finishPersistence: (() => void) | undefined;
     upsertConversationCitationMock.mockImplementationOnce(
@@ -237,6 +600,71 @@ describe('useCitationsStore', () => {
       }),
     ).rejects.toThrow('injected citation persistence failure');
     expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
+  it('does not restore a citation removed while durable persistence is pending', async () => {
+    let rejectPersistence: ((error: Error) => void) | undefined;
+    upsertConversationCitationMock.mockImplementationOnce(
+      async () => new Promise<DbUpsertConversationCitationInput>((_resolve, reject) => {
+        rejectPersistence = (error) => reject(error);
+      }),
+    );
+
+    const persistence = useCitationsStore.getState().addCitationAndPersist({
+      type: 'file',
+      scope: 'context',
+      source: 'tool-output://chat/tool.txt',
+      title: 'Tool output',
+      content: 'complete output',
+      path: 'tool-output://chat/tool.txt',
+      messageId: 'message-1',
+      conversationId: 'chat-conv',
+    });
+    await Promise.resolve();
+    const added = useCitationsStore.getState().citations[0];
+    expect(added).toBeDefined();
+    useCitationsStore.getState().removeCitation(added!.id);
+    rejectPersistence?.(new Error('injected citation persistence failure after removal'));
+
+    await expect(persistence).rejects.toThrow('injected citation persistence failure after removal');
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
+  it('does not roll back a newer citation edit when durable persistence rejects', async () => {
+    let rejectPersistence: ((error: Error) => void) | undefined;
+    upsertConversationCitationMock.mockImplementationOnce(
+      async () => new Promise<DbUpsertConversationCitationInput>((_resolve, reject) => {
+        rejectPersistence = (error) => reject(error);
+      }),
+    );
+
+    const persistence = useCitationsStore.getState().addCitationAndPersist({
+      type: 'source_passage',
+      scope: 'source',
+      source: 'notes.md',
+      title: 'Original passage',
+      snippet: 'Original passage',
+      content: 'Original passage',
+      messageId: 'message-1',
+      conversationId: 'chat-conv',
+      kind: 'used',
+    });
+    await Promise.resolve();
+    const added = useCitationsStore.getState().citations[0];
+    expect(added).toBeDefined();
+    expect(useCitationsStore.getState().updateSourcePassage({
+      conversationId: 'chat-conv',
+      citationId: added!.id,
+      passage: 'Edited passage',
+    })).toBe(true);
+    rejectPersistence?.(new Error('injected citation persistence failure after edit'));
+
+    await expect(persistence).rejects.toThrow('injected citation persistence failure after edit');
+    expect(useCitationsStore.getState().citations[0]).toMatchObject({
+      id: added!.id,
+      snippet: 'Edited passage',
+      content: 'Edited passage',
+    });
   });
 
   it('rehydrates and reads an artifact immediately after durable persistence resolves', async () => {
@@ -335,6 +763,32 @@ describe('useCitationsStore', () => {
       sizeBytes: 20,
       messageId: 'manual-2',
     });
+  });
+
+  it('keeps homonymous imported files distinct in memory and persistence', async () => {
+    const prepared = await prepareConversationAttachments([
+      new File(['first body'], 'duplicate.txt'),
+      new File(['second body'], 'duplicate.txt'),
+    ]);
+
+    const ids = await persistConversationAttachments(
+      prepared,
+      'chat-conv',
+      (citation) => useCitationsStore.getState().addCitationAndPersist(citation),
+    );
+
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(useCitationsStore.getState().citations).toHaveLength(2);
+    expect(useCitationsStore.getState().citations.map((citation) => citation.title)).toEqual([
+      'duplicate.txt',
+      'duplicate.txt',
+    ]);
+    expect(upsertConversationCitationMock.mock.calls.map(([input]) => input.path)).toEqual([
+      expect.stringContaining('/duplicate.txt'),
+      expect.stringContaining('/duplicate.txt'),
+    ]);
+    expect(new Set(upsertConversationCitationMock.mock.calls.map(([input]) => input.path)).size).toBe(2);
   });
 
   it('returns a usable id and refreshes duplicate context URL citations', () => {

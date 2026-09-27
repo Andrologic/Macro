@@ -190,6 +190,53 @@ describe('deriveImplementTasksFromStrategy', () => {
     });
   });
 
+  it('does not sequence equal branch slugs owned by different projects', () => {
+    const result = deriveImplementTasksFromStrategy({
+      planId: 'plan-colliding-projects',
+      planSlug: 'checkout',
+      targetBranchesByProjectId: { web: 'develop', api: 'develop' },
+      nodes: [
+        makeNode({
+          id: 'task-web',
+          title: 'Build web checkout',
+          projectId: 'web',
+          projectIds: ['web'],
+          branchSlug: 'shared-work',
+        }),
+        makeNode({
+          id: 'task-api',
+          title: 'Build API checkout',
+          projectId: 'api',
+          projectIds: ['api'],
+          branchSlug: 'shared-work',
+        }),
+      ],
+      predictedBranches: [
+        makeBranch({
+          id: 'branch-web-shared',
+          name: 'feature/checkout/shared-work',
+          projectId: 'web',
+          taskIds: ['task-web'],
+          branchSlug: 'shared-work',
+        }),
+        makeBranch({
+          id: 'branch-api-shared',
+          name: 'feature/checkout/shared-work',
+          projectId: 'api',
+          taskIds: ['task-api'],
+          branchSlug: 'shared-work',
+        }),
+      ],
+    });
+
+    expect(result.nodes.find((node) => node.id === 'task-web')?.dependencies).toEqual([]);
+    expect(result.nodes.find((node) => node.id === 'task-api')?.dependencies).toEqual([]);
+    expect(result.tasks.find((task) => task.node_id === 'task-api')).toMatchObject({
+      is_blocked: false,
+      blocked_by_task_ids: [],
+    });
+  });
+
   it('does not keep stale per-task branches after slug collision repair', () => {
     const result = deriveImplementTasksFromStrategy({
       planId: 'plan-1',

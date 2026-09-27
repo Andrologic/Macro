@@ -1,5 +1,17 @@
+import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
+import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
+import { createChatToolExecution } from "../services/chatToolExecution";
+import { prepareAssistantStreamLaunch as prepareChatRequest } from "../services/chatRequestPreparation";
+import { retryAssistantPersistence } from "../services/chatAssistantPersistenceRuntime";
+import { sendMessage as sendChatMessage } from "../services/chatSend/sendMessage";
+import type { ChatSendSnapshot } from "../services/chatSend/contracts";
+import { composeChatStreamCompaction } from "../composition/chatStreamComposition";
+import { cloneProviderInputItems, cloneStreamMessage, normalizeMessagesForProviderContext, shouldCountProviderInputItemsForContext } from "../services/chatStreamCompactionMessages";
+import { createChatTurnRuntime, ChatTurnSupersededError } from "../services/chatTurnRuntime";
+import { createAssistantStreamRuntime } from "../services/chatAssistantStreamRuntime";
+import type { PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
 import { create } from "zustand";
-import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers, sameApprovalExecutionScope } from "../services/toolApprovalRecovery";
+import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers } from "../services/toolApprovalRecovery";
 import {
   AppMode,
   AgentType,
@@ -23,7 +35,6 @@ import {
   CompactionPass,
   CompactionSummarySource,
   MCPTool,
-  MCPServer,
   PendingToolApproval,
   PersistedContextReference,
   PlanNode,
@@ -47,7 +58,6 @@ import {
 } from '../services/macroPilot/actionReservations';
 import i18n from "../i18n";
 import {
-  extractContextLimitTokensFromErrorLike,
   isContextOverflowErrorLike,
 } from "../services/contextOverflow";
 import { providerHasCredentials, useProviderStore } from "./useProviderStore";
@@ -56,16 +66,15 @@ import type { Citation, SourcePassageKind } from "./useCitationsStore";
 import { useConversationArchiveStore } from "./useConversationArchiveStore";
 import {
   cancelStream,
+  streamChat,
   sendChatNonStreaming,
   estimateCopilotSerializedPayloadTokens,
   estimateChatCompletionSerializedPayloadTokens,
   type LiveStreamContextSnapshot,
   type StreamCompletionResult,
   type StreamMessage,
-  type StreamTimelinePhase,
   type ToolCallResolution,
 } from "../services/streamingChat";
-import { normalizeLegacyToolExecutionResult } from "../services/toolResultNormalization";
 import {
   buildExplicitSkillsInstruction,
   buildSkillCatalogInstruction,
@@ -74,24 +83,16 @@ import {
   getSkillToolIdsForRequest,
   handleSkillToolCall,
 } from "../services/skills/chatIntegration";
-import {
-  runAssistantStream,
-  type ChatStreamTokenControls,
-} from "../services/chatStreamOrchestrator";
-import { createChatStreamLifecycleRuntime } from "../services/chatStreamLifecycleRuntime";
-import { formatConversationFilePage } from "../services/conversationFileTool";
+import { formatConversationFilePage, readConversationFileBody } from "../services/conversationFileTool";
 import {
   buildSpilledToolResultPreview,
+  preserveToolResultContent,
   shouldSpillToolResult,
 } from "../services/toolResultArtifacts";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
-import { handleConfigToolCall } from "../services/configToolIntegration";
+
 import { handleConfigVirtualScopeToolCall } from "../services/configVirtualScope";
-import {
-  fetchWebPage,
-  formatSearchResultsAsContext,
-  webSearch,
-} from "../services/webSearch";
+
 import { useToolsStore } from "./useToolsStore";
 import { useSkillsStore, type SkillTurnPreparation } from "./useSkillsStore";
 import { useAppStore } from "./useAppStore";
@@ -110,10 +111,7 @@ import {
   savePreference,
 } from "../services/preferences";
 import { loadMetadataModelConfig } from "../services/metadataModelPreference";
-import {
-  type ChatMaxTurnsPreference,
-  normalizeChatMaxTurns,
-} from "../services/chatTurnLimits";
+import { type ChatMaxTurnsPreference } from "../services/chatTurnLimits";
 import { useTerminalStore } from "./useTerminalStore";
 import { devLogger } from "../utils/devLogger";
 import {
@@ -125,7 +123,6 @@ import {
   applyScopedToolRestrictions,
   loadScopedTurnConfiguration,
   resolveScopedModelSelection,
-  type ScopedTurnConfiguration,
 } from "../services/configurationClient";
 import {
   type ArchitectPlanActivationPayload,
@@ -135,7 +132,6 @@ import {
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanChatTranscript,
-  getArchitectPlanTargetDisplay,
   getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
   hasPersistedArchitectStrategy,
@@ -155,9 +151,8 @@ import {
   isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from "../services/architectPlanPresentation";
-import { buildArchitectPlanToolFollowUpInstruction } from "../services/architectChat";
-import { normalizeArchitectToolId } from "../services/architectToolNames";
-import { selectInjectableMCPToolIds } from "../services/mcp";
+
+import { selectInjectableMCPToolIds, selectCopilotToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
 import { notify } from "../components/ui/toastService";
 import {
@@ -167,7 +162,7 @@ import {
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
-import { handleArchitectToolCall } from "../services/architectToolRuntime";
+import { handleDeferredArchitectToolCall } from "../services/deferredArchitectTool";
 import {
   canPlanFinalizationTaskReceiveMessages,
   isPlanFinalizationTaskSource,
@@ -188,16 +183,12 @@ import {
   putTaskArtifact,
   resolveTaskArtifactTarget,
 } from "../services/architectPlanArtifactService";
-import {
-  buildToolRiskLevelSystemInstruction,
-  DEFAULT_TOOL_RISK_LEVEL,
-  evaluateToolSecurity,
-  filterDeniedToolIdsForRiskLevel,
-} from "../services/toolSecurityPolicy";
+import { buildToolRiskLevelSystemInstruction, DEFAULT_TOOL_RISK_LEVEL, filterDeniedToolIdsForRiskLevel } from "../services/toolSecurityPolicy";
 import {
   createAssistantPlaceholderMessage,
   createUserMessage,
   deleteConversation as deletePersistedConversation,
+  deleteConversationTurn as deletePersistedConversationTurn,
   deleteConversations as deletePersistedConversations,
   deleteMessagesAfter as deletePersistedMessagesAfter,
   loadChatBootstrapSnapshot,
@@ -241,6 +232,7 @@ import {
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from "../services/macroSyncService";
 import {
   resolveProjectExecutionContext,
+  completePreparedTaskExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
 import {
@@ -251,41 +243,16 @@ import {
   getPlanExecutionModesByProjectId,
   resolvePlanProjectExecutionMode,
 } from "../services/planExecutionModes";
-import {
-  buildQuestionnaireResponseArtifacts,
-  buildQuestionnaireResponseProviderInputItems,
-  buildQuestionnaireHiddenContextBlock,
-  DEFAULT_QUESTIONNAIRE_INTRO,
-  findFirstUnansweredQuestionStepIndex,
-  resolveActiveConversationQuestionnaire,
-  validateQuestionToolArgs,
-} from "../services/chatQuestionnaires";
-import {
-  buildContextTooLargeErrorMessage,
-  buildManualCompactionRequiredErrorMessage,
-  buildCompactedMessagesForRequest,
-  COMPACTED_CONVERSATION_STATE_MARKER,
-  estimateBlockableTokensForStreamMessages,
-  estimateConversationFootprint,
-  isBlockableContextOverUsableBudget,
-  isContextFootprintOverUsableBudget,
-  type ContextBudgetPolicy,
-  type ContextCompactionDecision,
-  type ManualCompactionSkipReason,
-  type MaybeCompactConversationResult,
-  type SummaryGenerationInput,
-} from "../services/contextCompaction";
+import { buildQuestionnaireResponseArtifacts, buildQuestionnaireResponseProviderInputItems, findFirstUnansweredQuestionStepIndex, resolveActiveConversationQuestionnaire } from "../services/chatQuestionnaires";
+import { buildCompactedMessagesForRequest, COMPACTED_CONVERSATION_STATE_MARKER, estimateConversationFootprint, isBlockableContextOverUsableBudget, type ContextBudgetPolicy, type ManualCompactionSkipReason, type MaybeCompactConversationResult, type SummaryGenerationInput } from "../services/contextCompaction";
 import { fingerprintImageSource } from "../services/contextTokenEstimation";
 import {
   buildAppliedCompactionAuditDetails,
   buildCompactionDecisionAuditMetadata,
-  consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
-  isSyntheticCompactionBoundaryState,
   runContextCompactionOrchestration,
-  type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
-import { shouldProactivelyCompactContext } from "../services/contextCompactionPlanner";
+
 import {
   buildCompactionActivityStatus,
   getCompactionEventTrigger,
@@ -322,9 +289,12 @@ import {
 } from "../services/agentCodeCheckpoints";
 import {
   LinkedConversationDeletionSagaCorruptionError,
+  getLinkedDeletionSagaGeneration,
   loadLinkedConversationDeletionSagas,
   removeLinkedConversationDeletionSaga,
+  startLinkedConversationDeletionSaga,
   upsertLinkedConversationDeletionSaga,
+  type LinkedConversationDeletionSaga,
 } from "../services/linkedTaskDeletionSaga";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
@@ -334,7 +304,6 @@ import {
   type InternalAgentProfile,
 } from "../services/internalAgentProfile";
 import {
-  filterCopilotSupportedToolIds,
   MACRO_TOOL_REGISTRY,
   type MacroToolRegistryEntry,
 } from "../shared/macroToolRegistry";
@@ -350,7 +319,6 @@ import {
   type RepositoryInstructionDiagnosticSource,
 } from "./chat/chatContextDiagnostics";
 import {
-  assistantTurnRequiresUserReply,
   buildAssistantMessagePresentation,
   buildUserMessagePresentation,
   mapDbConversationToConversation,
@@ -376,18 +344,24 @@ import {
 } from "./chat/chatMessageState";
 import {
   EMPTY_MESSAGE_IMAGES,
+  clearUnsavedAssistantResponsesForConversations,
   clearQuestionnaireDraftsForConversations,
   loadComposerDraftsFromStorage,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  loadUnsavedAssistantResponsesFromStorage,
+  removeUnsavedAssistantResponseFromStorage,
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
+  saveUnsavedAssistantResponseToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
   type MessageImageAttachment,
   type PersistedComposerDraft,
 } from "./chat/chatLocalSessionState";
+import type { QueuedSubmission } from "./chat/chatQueuedSubmissions";
+import type { QueuedSubmissionRuntime } from "./chat/chatQueuedSubmissionRuntime";
 import {
   buildConversationRuntimePatch,
   buildLegacyStreamingFlags,
@@ -439,12 +413,6 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
-const AGENT_TERMINAL_TOOL_IDS = new Set([
-  "terminal_create_session",
-  "terminal_run",
-  "terminal_read",
-  "terminal_kill",
-]);
 const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
   "strategy_generate",
   "strategy_update",
@@ -454,31 +422,6 @@ const assistantTurnContextByMessageId = new Map<
   string,
   { conversationId: string; mode: AppMode; agentType: AgentType | null }
 >();
-
-const shouldCountProviderInputItemsForContext = (
-  providerType?: string | null,
-): boolean => providerType !== "copilot";
-
-const normalizeMessagesForProviderContext = (
-  providerType: string | null | undefined,
-  messages: StreamMessage[],
-): StreamMessage[] => {
-  if (providerType !== "copilot") {
-    return messages;
-  }
-
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-    ...(Array.isArray(message.content) &&
-    message.content.some((part) => part.type === "image_url") &&
-    message.image_metadata
-      ? { image_metadata: message.image_metadata.map((metadata) => ({ ...metadata })) }
-      : {}),
-    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
-    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
-  }));
-};
 
 const estimateSerializedPayloadTokensForProvider = (params: {
   messages: StreamMessage[];
@@ -518,37 +461,6 @@ const chatPersistenceAdapters: ChatPersistenceAdapters = {
   randomIdSuffix: () => Math.random().toString(36).slice(2, 8),
 };
 const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
-const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
-const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
-  "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
-const TOOL_EXECUTION_ABORTED_RESULT: ToolCallResolution = {
-  kind: "result",
-  result: "Tool execution aborted",
-  isError: true,
-  errorKind: "aborted",
-  toString: () => "Tool execution aborted",
-};
-
-const toolFailure = (
-  result: string,
-  errorKind: "execution" | "permission" | "validation" = "execution",
-): ToolCallResolution => ({
-  kind: "result",
-  result,
-  isError: true,
-  errorKind,
-  toString: () => result,
-});
-let terminalToolExecutionCounter = 0;
-const createTerminalToolExecutionId = (): string => {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  terminalToolExecutionCounter += 1;
-  return `terminal-tool-${Date.now()}-${terminalToolExecutionCounter}`;
-};
-const IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE =
-  "Plan mode is read-only. This assistant turn cannot edit files, update todos, run terminal commands, stage, commit, checkout, merge, reset, or stash. Inspect the repo and produce a concrete implementation plan instead.";
 const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
   "Plan mode is read-only. Do not edit files, update todos, run mutating terminal commands, stage, commit, checkout, merge, reset, stash, or claim changes were made. Use tools to inspect the repo, ask blocking questions when needed, then end with a concrete implementation plan. If the user asks you to implement while still in Plan, produce an implementation plan instead of applying it.";
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
@@ -654,37 +566,6 @@ interface LiveContextDiagnosticsRefreshState {
   lastStartedAt: number;
 }
 
-interface StreamContextDiagnosticsBaseline {
-  sessionId: string;
-  conversationId: string;
-  assistantMessageId: string;
-  modeAtSend: AppMode;
-  providerId: string;
-  providerType: string;
-  baseUrl: string;
-  modelId: string;
-  modelContextWindowTokens: number;
-  inputLimitTokens?: number;
-  outputLimitTokens?: number;
-  contextLimitSource?: ContextFootprint["contextLimitSource"];
-  isContextLimitAuthoritative?: boolean;
-  contextLimitConfidence?: ContextFootprint["contextLimitConfidence"];
-  contextLimitWarning?: string;
-  allowedToolIds: string[];
-  toolDefinitions: MacroToolRegistryEntry[];
-  messagesForRequest: StreamMessage[];
-  orderedMessages: ChatMessage[];
-  citations: Citation[];
-  repositoryInstructionSources: RepositoryInstructionDiagnosticSource[];
-  repositoryInstructionIssues: tauriIpc.RepositoryInstructionIssueDto[];
-  compactionDecision?: ContextCompactionDecision;
-}
-
-type StreamContextDiagnosticsBaselineSeed = Omit<
-  StreamContextDiagnosticsBaseline,
-  "sessionId" | "assistantMessageId" | "orderedMessages"
->;
-
 interface LiveStreamDiagnosticsPayload {
   systemMessage: string;
   preparedMessages: StreamMessage[];
@@ -697,69 +578,6 @@ const isProviderContextOverflowError = (error: unknown): boolean => {
   return isContextOverflowErrorLike(error);
 };
 
-const OVERFLOW_RECOVERY_FAILURE_MESSAGE =
-  "The selected model still rejected this conversation after an aggressive compaction pass. Macro kept your message; continue with a larger-context model or compact manually before retrying.";
-
-const streamContentToPlainText = (content: StreamMessage["content"]): string => {
-  if (typeof content === "string") return content;
-  return content
-    .map((part) =>
-      part.type === "text"
-        ? part.text
-        : part.type === "image_url"
-          ? "[image attachment]"
-          : "",
-    )
-    .filter(Boolean)
-    .join("\n");
-};
-
-const splitSystemAndPreparedStreamMessages = (
-  messages: StreamMessage[],
-): { systemMessage: string; preparedMessages: StreamMessage[] } => {
-  const first = messages[0];
-  if (first?.role === "system" && typeof first.content === "string") {
-    return {
-      systemMessage: first.content,
-      preparedMessages: messages.slice(1),
-    };
-  }
-  return {
-    systemMessage: "",
-    preparedMessages: messages,
-  };
-};
-
-const buildSyntheticOrderedMessagesForStreamRequest = (params: {
-  conversationId: string;
-  taskId: string;
-  messages: StreamMessage[];
-}): ChatMessage[] => {
-  const timestampBase = Date.now();
-  return params.messages.map((message, index) => {
-    const role: ChatMessage["role"] =
-      message.role === "assistant" || message.role === "tool" || message.role === "system"
-        ? "assistant"
-        : "user";
-    const label =
-      message.role === "tool"
-        ? "Tool result"
-        : message.role === "system"
-          ? "System instruction"
-          : "";
-    const content = streamContentToPlainText(message.content);
-    return {
-      id: `stream-boundary-${index}`,
-      task_id: params.taskId,
-      conversation_id: params.conversationId,
-      role,
-      content: label ? `[${label}]\n${content}` : content,
-      timestamp: new Date(timestampBase + index).toISOString(),
-      provider_input_items: message.provider_input_items,
-      provider_turn_state: message.provider_turn_state,
-    };
-  });
-};
 
 const getConversationFallbackTitle = (content: string): string => {
   const cleaned = content.replace(/\s+/g, " ").trim();
@@ -942,26 +760,6 @@ interface ChatSendCancelledResult {
   assistantMessageId: null;
 }
 
-/**
- * Values captured for one assistant generation.  Tool calls must not infer
- * their target from whichever conversation, task, or project happens to be
- * selected when the provider responds.
- */
-interface FrozenToolCallContext {
-  conversationId: string;
-  sessionId: string;
-  turnId: string;
-  assistantMessageId: string;
-  mode: AppMode;
-  agentType: AgentType | null;
-  taskId: string;
-  executionContext: ProjectExecutionContext;
-  scopedTurnConfiguration: ScopedTurnConfiguration | null;
-  allowedToolIds: readonly string[];
-  mcpServers: readonly MCPServer[];
-  riskLevel: ToolRiskLevel;
-  signal: AbortSignal;
-}
 
 const scopedModelPreferenceKeys = (
   mode: AppMode,
@@ -1006,12 +804,6 @@ interface ArchitectPlanNamingRecoveryState {
   isSubmitting: boolean;
   error: string | null;
 }
-
-type PendingToolApprovalResolution =
-  | { kind: "allow_once" }
-  | { kind: "allow_conversation" }
-  | { kind: "expired" }
-  | { kind: "deny"; reason?: string };
 
 type ConversationMessageLoadStatus = "idle" | "loading" | "ready" | "error";
 
@@ -1124,6 +916,8 @@ interface ChatStore {
         | "provider_turn_state"
         | "context_refs"
         | "completion_reason"
+        | "persistence_state"
+        | "persistence_error"
       >
     >,
   ) => void;
@@ -1141,6 +935,7 @@ interface ChatStore {
   ) => Promise<Conversation>;
   ensurePilotTaskConversation: (taskId: string, pilotActionToken: symbol) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
+  invalidateConversationResolution: () => void;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
     targetBranch: string;
@@ -1152,8 +947,8 @@ interface ChatStore {
     restoredTranscript: boolean;
     createdConversation: boolean;
   }>;
-  ensureConversationForCurrentMode: () => Promise<string | null>;
-  reapplySelectionForCurrentContext: () => Promise<void>;
+  ensureConversationForCurrentMode: (lifecycle?: LifecycleContext) => Promise<string | null>;
+  reapplySelectionForCurrentContext: (lifecycle?: LifecycleContext) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
@@ -1238,13 +1033,17 @@ interface ChatStore {
       actionToken: symbol;
       beforeEffect?: () => Promise<void>;
     };
-  }) => Promise<ChatSendResult | ChatSendCancelledResult>;
+  }, queuedSubmission?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
     behavior: ActiveTurnSubmissionBehavior,
   ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string, pilotActionToken?: symbol) => void;
+  retryQueuedSubmissions: (conversationId: string) => Promise<void>;
+  queuedSubmissionRecoveryByConversationId: Record<string, { count: number; error?: string }>;
   clearConversationRuntimeError: (conversationId: string) => void;
+  retryAssistantPersistence: (messageId: string) => Promise<void>;
+  deleteUnsavedAssistantResponse: (messageId: string) => Promise<void>;
   stopStreaming: () => void;
   getAgentCodeReplayPreview: (
     messageId: string,
@@ -1292,9 +1091,12 @@ interface ChatStore {
     validGroupIds: string[],
     validProjectIds: string[],
   ) => void;
-  initialize: () => Promise<void>;
-  initializeCritical: () => Promise<void>;
-  resumeAfterInitialize: () => Promise<void>;
+  startSubscriptions: (lifecycle?: LifecycleContext) => () => void;
+  stopSubscriptions: () => void;
+  drainSubscriptions: () => Promise<void>;
+  initialize: (lifecycle?: LifecycleContext) => Promise<void>;
+  initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
+  resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
 }
 
 interface TranscriptComparableMessage {
@@ -1371,6 +1173,60 @@ const toComparableChatMessage = (
   createdAt: message.timestamp,
 });
 
+const serializeAssistantPersistenceValue = (value: unknown): string => {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return "__unserializable__";
+  }
+};
+
+const assistantPersistencePayloadMatches = (
+  persisted: ChatMessage,
+  recovered: ChatMessage,
+): boolean =>
+  persisted.content === recovered.content &&
+  persisted.hidden_context === recovered.hidden_context &&
+  serializeAssistantPersistenceValue(persisted.tool_traces) ===
+    serializeAssistantPersistenceValue(recovered.tool_traces) &&
+  serializeAssistantPersistenceValue(persisted.provider_input_items) ===
+    serializeAssistantPersistenceValue(recovered.provider_input_items) &&
+  serializeAssistantPersistenceValue(persisted.provider_turn_state) ===
+    serializeAssistantPersistenceValue(recovered.provider_turn_state) &&
+  persisted.completion_reason === recovered.completion_reason;
+
+const mergeRecoveredAssistantResponses = (
+  persistedMessages: ChatMessage[],
+  recoveredMessages: ChatMessage[],
+): { messages: ChatMessage[]; reconciledMessageIds: string[] } => {
+  if (recoveredMessages.length === 0) {
+    return { messages: persistedMessages, reconciledMessageIds: [] };
+  }
+
+  const recoveredById = new Map(
+    recoveredMessages.map((message) => [message.id, message]),
+  );
+  const reconciledMessageIds: string[] = [];
+  const merged = persistedMessages.map((message) => {
+    const recovered = recoveredById.get(message.id);
+    if (!recovered) return message;
+    recoveredById.delete(message.id);
+    if (assistantPersistencePayloadMatches(message, recovered)) {
+      reconciledMessageIds.push(message.id);
+      return message;
+    }
+    return recovered;
+  });
+
+  return {
+    messages: sortMessagesChronologically([
+      ...merged,
+      ...recoveredById.values(),
+    ]),
+    reconciledMessageIds,
+  };
+};
+
 const resolveConversationQuestionnaireFromState = (
   state: Pick<
     ChatStore,
@@ -1391,7 +1247,7 @@ const getStrictTranscriptFingerprint = (
 ): string => {
   const trimmedId = message.id.trim();
   if (trimmedId.length > 0) {
-    return `id:${trimmedId}`;
+    return `id:${trimmedId}:${message.role}:${message.content}:${message.createdAt}`;
   }
   return `f:${message.role}:${message.content}:${message.createdAt}`;
 };
@@ -1491,23 +1347,55 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
   let aiSelectionsLoaded = false;
   let composerContextRefsRevision = 0;
+  let subscriptionScope: ReturnType<typeof createLifecycleScope> | null = null;
+  let subscriptionRetirement: Promise<void> = Promise.resolve();
+  const subscriptionCleanupFailures: unknown[] = [];
+  const selectionPersistence = createLifecycleScope();
+  let archiveUnsubscribe: (() => void) | null = null;
   let providerSelectionUnsubscribe: (() => void) | null = null;
   let contextSelectionUnsubscribe: (() => void) | null = null;
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
+  let conversationResolutionGeneration = 0;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
-  const latestConversationSessionIdByConversationId = new Map<string, string>();
-  const pendingSteersByConversationId = new Map<string, StreamMessage[]>();
-  const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
-  const drainingQueuedConversationIds = new Set<string>();
-  const completionPersistenceOwnersByConversationId = new Map<
-    string,
-    { sessionId: string; turnId: string | null; assistantMessageId: string }
-  >();
+  const turnRuntime = createChatTurnRuntime({
+    state: {
+      read: (id) => getConversationRuntimeSnapshot(get().conversationRuntimeById, id),
+      project: (id, runtime, options) => set(state => ({
+        ...buildConversationRuntimePatch(state, id, runtime),
+        ...(options && "globalLastError" in options ? { lastError: options.globalLastError ?? null } : {}),
+      })),
+      isDeleted: (id) => deletedConversationIds.has(id),
+    },
+    cancelTransport: cancelStream,
+    settled: (id) => { void drainQueuedSubmissions(id); },
+  });
+  let queueRuntime: QueuedSubmissionRuntime | undefined;
+  let queueRuntimeLoading: Promise<QueuedSubmissionRuntime> | undefined;
+  const getQueueRuntime = (): Promise<QueuedSubmissionRuntime> => queueRuntimeLoading ??= import("./chat/chatQueuedSubmissionRuntime").then(({ createQueuedSubmissionRuntime }) => {
+    queueRuntime = createQueuedSubmissionRuntime({
+      blocked: id => isAppShutdownGateActive() || hasUnsavedAssistantResponse(id) ||
+        useConversationArchiveStore.getState().archivedConversationIds.has(id) ||
+        isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, id)),
+      cancelled: id => deletedConversationIds.has(id) || isAppShutdownGateActive(),
+      read: id => loadConversationMessages(chatPersistenceAdapters, { conversationId: id, conversations: get().conversations }),
+      send: entry => get().sendMessage(entry.input, entry),
+      publish: message => get().addMessage(message),
+      saveImages: (id, images) => {
+        const next = { ...get().messageImagesByMessageId, [id]: images };
+        if (!saveMessageImagesToStorage(next)) return false;
+        set({ messageImagesByMessageId: next });
+        return true;
+      },
+      recovery: value => set({ queuedSubmissionRecoveryByConversationId: value }),
+    });
+    return queueRuntime;
+  });
+  const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
   const contextDiagnosticsRequestIds = new Map<string, number>();
   const liveContextDiagnosticsRefreshByConversationId = new Map<
     string,
@@ -1553,10 +1441,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   >();
   const launchedAgentCodeReplayConversationIds = new Set<string>();
-  const activeAssistantStreamPromisesByConversationId = new Map<
-    string,
-    Promise<void>
-  >();
   let toolResultArtifactSequence = 0;
 
   const clearPendingAgentCodeReplay = (conversationId: string): void => {
@@ -1579,19 +1463,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
   ): Promise<void> => {
     stopConversationRuntimeLocally(conversationId);
-    const activeStream = activeAssistantStreamPromisesByConversationId.get(
-      conversationId,
-    );
-    if (activeStream) {
-      try {
-        await activeStream;
-      } catch (error) {
-        console.warn(
-          "Assistant stream failed while preparing conversation deletion:",
-          error,
-        );
-      }
-    }
+    try { await turnRuntime.drain(conversationId); }
+    catch (error) { console.warn("Assistant stream failed while preparing conversation deletion:", error); }
     await forceRollbackPendingAgentCodeReplay(conversationId);
     clearPendingAgentCodeReplay(conversationId);
   };
@@ -1861,10 +1734,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const filterToolIdsForArchitectPlan = (
     toolIds: string[],
     executionContext: ProjectExecutionContext,
+    capturedPlan?: ArchitectPlanRecord | null,
   ): string[] => {
     const appState = useAppStore.getState();
+    const nodes = capturedPlan === undefined ? appState.planNodes : capturedPlan?.nodes ?? [];
+    const executionModes = capturedPlan === undefined
+      ? appState.activePlanContext?.executionModesByProjectId : capturedPlan?.executionModesByProjectId;
     const planProjectIds = new Set<string>();
-    for (const node of appState.planNodes ?? []) {
+    for (const node of nodes ?? []) {
       for (const projectId of node.projectIds ?? []) {
         if (projectId) planProjectIds.add(projectId);
       }
@@ -1874,7 +1751,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
     for (const projectId of Object.keys(
-      appState.activePlanContext?.executionModesByProjectId ?? {},
+      executionModes ?? {},
     )) {
       planProjectIds.add(projectId);
     }
@@ -1885,8 +1762,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const gitToolsUnavailable = projectIds.length > 0 && projectIds.every((projectId) =>
       resolvePlanProjectExecutionMode({
         projectId,
-        nodes: appState.planNodes,
-        executionModesByProjectId: appState.activePlanContext?.executionModesByProjectId,
+        nodes,
+        executionModesByProjectId: executionModes,
         project: appState.getProjectById(projectId),
       }) !== 'git'
     );
@@ -2200,7 +2077,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const persistAiSelections = () => {
     if (!aiSelectionsLoaded) return;
-    void savePreference(PREF_KEYS.AI_CONTEXT_SELECTIONS, aiSelections);
+    void selectionPersistence.track(savePreference(PREF_KEYS.AI_CONTEXT_SELECTIONS, aiSelections));
   };
 
   const withSuppressedSelectionPersistence = async <T>(
@@ -2294,12 +2171,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    void tauriIpc.updateConversationAISelection({
+    void selectionPersistence.track(tauriIpc.updateConversationAISelection({
       id: conversationId,
       providerId: selection.providerId,
       modelId: selection.modelId,
       reasoningEffort: nextReasoningEffort,
-    }).catch((error) => {
+    })).catch((error) => {
       console.warn(
         "Failed to persist conversation AI choice:",
         toServiceError(error).message,
@@ -2437,6 +2314,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const runAiSelectionRestore = async (params: {
+    lifecycle?: LifecycleContext;
     mode: AppMode;
     conversationId: string | null;
     preferredProviderId?: string | null;
@@ -2445,7 +2323,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     shouldShowResolving?: boolean;
     clearPendingArchitectPlanSwitchRequestId?: boolean;
   }): Promise<boolean> => {
+    const lifecycle = params.lifecycle;
+    lifecycle?.assertActive();
     const stateAtStart = get();
+    if (stateAtStart.selectedConversationId !== params.conversationId ||
+        useAppStore.getState().mode !== params.mode ||
+        (params.requestId !== undefined && stateAtStart.selectionRequestId !== params.requestId)) {
+      return false;
+    }
     const requestId = params.requestId ?? stateAtStart.selectionRequestId + 1;
 
     set({
@@ -2464,7 +2349,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const isCurrentRequest = () => {
       const state = get();
-      if (state.selectionRequestId !== requestId) {
+      if (state.selectionRequestId !== requestId ||
+          state.selectedConversationId !== params.conversationId ||
+          useAppStore.getState().mode !== params.mode) {
         return false;
       }
       if (
@@ -2500,6 +2387,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       await withSuppressedSelectionPersistence(async () => {
+        lifecycle?.assertActive();
         for (const step of resolutionPlan) {
           if (!isCurrentRequest()) {
             return;
@@ -2514,8 +2402,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   modelId: step.selection.modelId!,
                   reasoningEffort: step.selection.reasoningEffort ?? null,
                 },
-                { isActive: isCurrentRequest },
+                { isActive: isCurrentRequest, lifecycle },
               );
+            lifecycle?.assertActive();
 
             if (!isCurrentRequest()) {
               return;
@@ -2552,8 +2441,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   modelId: null,
                   reasoningEffort: null,
                 },
-                { isActive: isCurrentRequest },
+                { isActive: isCurrentRequest, lifecycle },
               );
+            lifecycle?.assertActive();
 
             if (!isCurrentRequest()) {
               return;
@@ -2602,8 +2492,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   modelId: null,
                   reasoningEffort: null,
                 },
-                { isActive: isCurrentRequest },
+                { isActive: isCurrentRequest, lifecycle },
               );
+            lifecycle?.assertActive();
 
             if (!isCurrentRequest()) {
               return;
@@ -2642,6 +2533,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         restoreMessage =
           "No available provider or model could be restored for this conversation.";
       });
+      lifecycle?.assertActive();
 
       if (!isCurrentRequest()) {
         return false;
@@ -2663,6 +2555,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       return appliedSelection !== null;
     } catch (error) {
+      lifecycle?.assertActive();
       const normalized = toServiceError(error);
       if (isCurrentRequest()) {
         set({
@@ -2713,12 +2606,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     messages: ChatMessage[],
   ) => {
+    const recoveredMessages = get()
+      .getConversationMessages(conversationId)
+      .filter((message) => message.persistence_state !== undefined);
+    const mergedConversation = mergeRecoveredAssistantResponses(
+      messages,
+      recoveredMessages,
+    );
+    mergedConversation.reconciledMessageIds.forEach((messageId) => {
+      removeUnsavedAssistantResponseFromStorage(messageId);
+    });
     set((state) => {
       const nextMessages = [
         ...state.messages.filter(
           (message) => message.conversation_id !== conversationId,
         ),
-        ...messages,
+        ...mergedConversation.messages,
       ];
       return {
         ...buildMessageState(nextMessages),
@@ -2732,12 +2635,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const ensureMessagesLoadedForConversation = async (
     conversationId: string,
+    lifecycle?: LifecycleContext,
   ): Promise<void> => {
+    lifecycle?.assertActive();
     if (!conversationId || deletedConversationIds.has(conversationId)) {
       return;
     }
     if (get().hydrationStatus === "hydrating") {
       await waitForHydration();
+      lifecycle?.assertActive();
     }
     const currentStatus =
       get().messageLoadStatusByConversationId[conversationId] ?? "idle";
@@ -2748,6 +2654,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       messageLoadPromisesByConversationId.get(conversationId);
     if (existingPromise) {
       await existingPromise;
+      lifecycle?.assertActive();
       return;
     }
     const stateBeforeLoad = get();
@@ -2790,6 +2697,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversations: get().conversations,
           },
         );
+        lifecycle?.assertActive();
         if (deletedConversationIds.has(conversationId)) {
           return;
         }
@@ -2798,6 +2706,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           loadedMessages,
         );
       } catch (error) {
+      lifecycle?.assertActive();
         set((state) => ({
           messageLoadStatusByConversationId: {
             ...state.messageLoadStatusByConversationId,
@@ -2812,6 +2721,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageLoadPromisesByConversationId.set(conversationId, loadPromise);
     try {
       await loadPromise;
+      lifecycle?.assertActive();
     } finally {
       messageLoadPromisesByConversationId.delete(conversationId);
     }
@@ -2849,65 +2759,82 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const buildSendError = (message: string): Error => new Error(message);
 
-  const assertConversationRuntimeAvailableForSend = (conversationId: string) => {
-    if (
-      deletedConversationIds.has(conversationId) ||
-      !get().conversations.some((conversation) => conversation.id === conversationId)
-    ) {
-      throw buildSendError("This conversation is no longer available.");
-    }
+  const hasUnsavedAssistantResponse = (conversationId: string): boolean =>
+    get()
+      .getConversationMessages(conversationId)
+      .some(
+        (message) =>
+          message.role === "assistant" &&
+          (message.persistence_state === "failed" ||
+            message.persistence_state === "retrying"),
+      );
+
+  const assertConversationRuntimeAvailableForSend = (conversationId: string) =>
+    turnRuntime.assertCanSend(conversationId, {
+      available: get().conversations.some(conversation => conversation.id === conversationId),
+      hasUnsavedResponse: hasUnsavedAssistantResponse(conversationId),
+    });
+
+  const setConversationRuntime = turnRuntime.set;
+
+  const markAssistantPersistenceFailure = (params: {
+    assistantMessage: ChatMessage;
+    message: string;
+    sessionId?: string | null;
+    turnId?: string | null;
+  }): string => {
+    const failedAssistant: ChatMessage = {
+      ...params.assistantMessage,
+      persistence_state: "failed",
+      persistence_error: params.message,
+    };
+    const recoverySaved = saveUnsavedAssistantResponseToStorage(failedAssistant);
+    const displayedMessage = recoverySaved
+      ? params.message
+      : `${params.message} Macro could not create a local recovery copy. Copy the response before closing the app.`;
+
+    get().updateMessageFields(params.assistantMessage.id, {
+      persistence_state: "failed",
+      persistence_error: displayedMessage,
+    });
+    setConversationRuntime(
+      params.assistantMessage.conversation_id,
+      {
+        phase: "error",
+        sessionId: params.sessionId ?? null,
+        turnId: params.turnId ?? params.assistantMessage.turn_id ?? null,
+        assistantMessageId: params.assistantMessage.id,
+        abortController: null,
+        lastError: displayedMessage,
+        lastErrorOrigin: "macro",
+        lastErrorDisplayTarget: "composer",
+      },
+      { globalLastError: displayedMessage },
+    );
+    return displayedMessage;
+  };
+
+  const clearAssistantPersistenceError = (
+    conversationId: string,
+    messageId: string,
+  ): void => {
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
       conversationId,
     );
-    if (isConversationRuntimeActive(runtime)) {
-      throw buildSendError(
-        "This conversation is already running. Wait for it to finish before sending again.",
+    if (
+      runtime.phase === "error" &&
+      runtime.assistantMessageId === messageId &&
+      runtime.lastErrorOrigin === "macro"
+    ) {
+      setConversationRuntime(
+        conversationId,
+        null,
+        get().lastError === runtime.lastError
+          ? { globalLastError: null }
+          : undefined,
       );
     }
-  };
-
-  const transferConversationSessionOwnership = (
-    previousConversationId: string,
-    materializedConversationId: string,
-    sessionId: string,
-  ): boolean => {
-    if (deletedConversationIds.has(materializedConversationId)) {
-      return false;
-    }
-    if (
-      latestConversationSessionIdByConversationId.get(previousConversationId) !==
-      sessionId
-    ) {
-      return false;
-    }
-    const materializedOwner = latestConversationSessionIdByConversationId.get(
-      materializedConversationId,
-    );
-    if (materializedOwner && materializedOwner !== sessionId) {
-      return false;
-    }
-    latestConversationSessionIdByConversationId.set(
-      materializedConversationId,
-      sessionId,
-    );
-    latestConversationSessionIdByConversationId.delete(previousConversationId);
-    return true;
-  };
-
-  const setConversationRuntime = (
-    conversationId: string,
-    runtime: ConversationRuntimeState | null,
-    options?: {
-      globalLastError?: string | null;
-    },
-  ) => {
-    set((state) => ({
-      ...buildConversationRuntimePatch(state, conversationId, runtime),
-      ...(options && "globalLastError" in options
-        ? { lastError: options.globalLastError ?? null }
-        : {}),
-    }));
   };
 
   const standaloneTaskLaunchSteps: StandaloneTaskLaunchStep[] = [
@@ -3010,57 +2937,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const updateConversationRuntimeIfSessionMatches = (
-    conversationId: string,
-    sessionId: string,
-    updater: (
-      currentRuntime: ConversationRuntimeState,
-    ) => ConversationRuntimeState | null,
-  ): boolean => {
-    let didMatch = false;
-    set((state) => {
-      const currentRuntime = state.conversationRuntimeById[conversationId];
-      if (!currentRuntime || currentRuntime.sessionId !== sessionId) {
-        return state;
-      }
-      didMatch = true;
-      return buildConversationRuntimePatch(
-        state,
-        conversationId,
-        updater(currentRuntime),
-      );
-    });
-    return didMatch;
-  };
-
-  const abortAndClearPreparingRuntimeIfSessionMatches = (
-    conversationId: string,
-    sessionId: string,
-    turnId: string,
-    abortController: AbortController,
-  ): void => {
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    if (
-      runtime.phase !== "preparing" ||
-      runtime.sessionId !== sessionId ||
-      runtime.turnId !== turnId ||
-      runtime.abortController !== abortController
-    ) {
-      return;
-    }
-    abortController.abort();
-    if (latestConversationSessionIdByConversationId.get(conversationId) === sessionId) {
-      latestConversationSessionIdByConversationId.delete(conversationId);
-    }
-    updateConversationRuntimeIfSessionMatches(
-      conversationId,
-      sessionId,
-      () => null,
-    );
-  };
+  const updateConversationRuntimeIfSessionMatches = turnRuntime.update;
 
   const getLiveContextDiagnosticsRefreshState = (
     conversationId: string,
@@ -3116,33 +2993,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const stopConversationRuntimeLocally = (conversationId: string) => {
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
     clearConversationSecurityState(conversationId);
     clearLiveStreamContextEstimate(conversationId);
-    if (!isConversationRuntimeActive(runtime)) {
-      return;
-    }
-
-    if (runtime.abortController) {
-      runtime.abortController.abort();
-    }
-    if (runtime.sessionId) {
-      cancelStream(runtime.sessionId);
-    }
-
-    setConversationRuntime(
-      conversationId,
-      {
-        ...runtime,
-        phase: "idle",
-        abortController: null,
-        lastError: null,
-      },
-      { globalLastError: null },
-    );
+    turnRuntime.stop(conversationId);
   };
 
   const stopActiveStreamsForCompletedTasks = (
@@ -3177,7 +3030,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const reconcileImplementAwaitingResponseTasks = async () => {
+  const reconcileImplementAwaitingResponseTasks = async (lifecycle?: LifecycleContext) => {
+    lifecycle?.assertActive();
     const state = get();
     const taskStore = useTaskStore.getState();
     const taskIdsToMark = new Set<string>();
@@ -3233,6 +3087,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (currentTask.status === "Pending") {
           await taskStore.startTask(taskId);
+          lifecycle?.assertActive();
         }
 
         const refreshedTask = taskStore.getTaskById(taskId);
@@ -3241,6 +3096,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         await taskStore.markTaskAwaitingResponse(taskId);
+        lifecycle?.assertActive();
       } finally {
         awaitingResponseReconciliationTaskIds.delete(taskId);
       }
@@ -3248,24 +3104,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const scheduleImplementAwaitingResponseReconciliation = () => {
+    const scope = subscriptionScope;
+    if (!scope?.isActive()) return;
     if (awaitingResponseReconciliationScheduled) {
       return;
     }
 
     awaitingResponseReconciliationScheduled = true;
     queueMicrotask(() => {
+      if (!scope.isActive()) return;
       awaitingResponseReconciliationScheduled = false;
-      void reconcileImplementAwaitingResponseTasks();
+      void scope.track(reconcileImplementAwaitingResponseTasks(scope)).catch(() => undefined);
     });
   };
 
-  const ensureTaskAwaitingResponseSync = () => {
+  const ensureTaskAwaitingResponseSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (taskAwaitingResponseSyncUnsubscribe) {
       return;
     }
 
     taskAwaitingResponseSyncUnsubscribe = useTaskStore.subscribe(
       (nextState, previousState) => {
+        if (!scope.isActive()) return;
         if (nextState.tasks === previousState.tasks) {
           return;
         }
@@ -3369,11 +3229,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return refreshedTask;
   };
 
-  const ensureProviderSelectionSync = () => {
+  const ensureProviderSelectionSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (providerSelectionUnsubscribe) return;
 
     providerSelectionUnsubscribe = useProviderStore.subscribe(
       (nextState, previousState) => {
+        if (!scope.isActive()) return;
         if (!aiSelectionsLoaded) return;
 
         const providerChanged =
@@ -3395,13 +3256,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           nextState.selectedProviderId &&
           !nextState.selectedModelId
         ) {
-          void runAiSelectionRestore({
+          void scope.track(runAiSelectionRestore({
+            lifecycle: scope,
             mode: appState.mode,
             conversationId: selectedConversationId,
             preferredProviderId: nextState.selectedProviderId,
             activeContextKey: get().activeContextKey,
             shouldShowResolving: true,
-          });
+          })).catch(() => undefined);
           return;
         }
 
@@ -3415,23 +3277,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         persistSelectionForContext(appState.mode, selectedConversationId);
         if ((providerChanged || modelChanged) && selectedConversationId) {
-          void maybeCompactConversationAfterModelSwitch({
+          void scope.track(maybeCompactConversationAfterModelSwitch({
             conversationId: selectedConversationId,
             previousProviderId: previousState.selectedProviderId,
             previousModelId: previousState.selectedModelId,
             nextProviderId: nextState.selectedProviderId,
             nextModelId: nextState.selectedModelId,
-          });
+          })).catch(() => undefined);
         }
       },
     );
   };
 
-  const ensureContextSelectionSync = () => {
+  const ensureContextSelectionSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (contextSelectionUnsubscribe) return;
 
     contextSelectionUnsubscribe = useAppStore.subscribe(
       (nextState, previousState) => {
+        if (!scope.isActive()) return;
         const nextContextKey = buildChatContextKey(nextState);
         const previousContextKey = buildChatContextKey(previousState);
         if (nextContextKey === previousContextKey) {
@@ -3471,19 +3334,64 @@ export const useChatStore = create<ChatStore>((set, get) => {
           });
         }
 
-        void get().ensureConversationForCurrentMode();
+        void scope.track(get().ensureConversationForCurrentMode(scope)).catch(() => undefined);
       },
     );
   };
 
-  queueMicrotask(() => {
-    useConversationArchiveStore.subscribe((next, previous) => {
-      for (const conversationId of next.archivedConversationIds) {
-        if (!previous.archivedConversationIds.has(conversationId)) get().stopConversationStream(conversationId);
+  const stopSubscriptions = () => {
+    const retired = subscriptionScope;
+    if (!retired) return;
+    subscriptionScope = null;
+    providerSelectionUnsubscribe = null;
+    contextSelectionUnsubscribe = null;
+    taskAwaitingResponseSyncUnsubscribe = null;
+    archiveUnsubscribe = null;
+    awaitingResponseReconciliationScheduled = false;
+    // Invalidate request guards before any disposer can trigger a callback.
+    conversationResolutionGeneration += 1;
+    if (retired) {
+      try { retired.stop(); } catch (error) { subscriptionCleanupFailures.push(error); }
+      finally { subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain()]).then(() => undefined); }
+    }
+  };
+
+  const startSubscriptions = (lifecycle?: LifecycleContext): (() => void) => {
+    lifecycle?.assertActive();
+    if (subscriptionScope?.isActive()) {
+      const existing = subscriptionScope;
+      return () => { if (subscriptionScope === existing) stopSubscriptions(); };
+    }
+    const scope = createLifecycleScope();
+    subscriptionScope = scope;
+    const stop = () => { if (subscriptionScope === scope) stopSubscriptions(); };
+    lifecycle?.signal.addEventListener("abort", stop, { once: true });
+    scope.own(() => lifecycle?.signal.removeEventListener("abort", stop));
+    try {
+      ensureProviderSelectionSync(scope);
+      if (providerSelectionUnsubscribe) scope.own(providerSelectionUnsubscribe);
+      ensureContextSelectionSync(scope);
+      if (contextSelectionUnsubscribe) scope.own(contextSelectionUnsubscribe);
+      ensureTaskAwaitingResponseSync(scope);
+      if (taskAwaitingResponseSyncUnsubscribe) scope.own(taskAwaitingResponseSyncUnsubscribe);
+      archiveUnsubscribe = useConversationArchiveStore.subscribe((next, previous) => {
+        if (!scope.isActive()) return;
+        for (const conversationId of next.archivedConversationIds) {
+          if (!previous.archivedConversationIds.has(conversationId)) {
+            get().stopConversationStream(conversationId);
+            queueRuntime?.pause(conversationId);
+          }
+        }
+      });
+      scope.own(archiveUnsubscribe);
+      return stop;
+    } catch (error) {
+      try { stop(); } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Failed to start Chat subscriptions.");
       }
-    });
-    ensureTaskAwaitingResponseSync();
-  });
+      throw error;
+    }
+  };
 
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
@@ -3752,7 +3660,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getConversationCompactionState = async (
     conversationId: string,
+    lifecycle?: LifecycleContext,
   ): Promise<ConversationCompactionState | null> => {
+    lifecycle?.assertActive();
     if (conversationCompactionStateCache.has(conversationId)) {
       const cachedState =
         conversationCompactionStateCache.get(conversationId) ?? null;
@@ -3772,11 +3682,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     try {
       const record =
         await tauriIpc.dbGetConversationCompactionState(conversationId);
+      lifecycle?.assertActive();
       const state = record ? mapDbCompactionStateToState(record) : null;
       conversationCompactionStateCache.set(conversationId, state);
       publishPersistedCompactionStatusIfIdle(conversationId, state);
       return state;
     } catch (error) {
+      lifecycle?.assertActive();
       console.error("Failed to load conversation compaction state:", error);
       conversationCompactionStateCache.set(conversationId, null);
       return null;
@@ -4140,13 +4052,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     forceCompaction?: boolean;
     forcePrune?: boolean;
     displayAfterMessageId?: string | null;
+    isCurrent?: () => boolean;
   }) => {
+    const assertCurrent = () => {
+      if (params.isCurrent && !params.isCurrent()) throw new ChatTurnSupersededError();
+    };
+    const waitForCurrentCompaction = async <T>(pending: Promise<T>): Promise<T> => {
+      try { return await pending; } finally { assertCurrent(); }
+    };
+    assertCurrent();
     const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[params.conversationId] ?? null;
-    const currentCompactionState = await getConversationCompactionState(
+    const currentCompactionState = await waitForCurrentCompaction(getConversationCompactionState(
       params.conversationId,
-    );
+    ));
     const completionReason = [...params.orderedMessages]
       .reverse()
       .find((message) => message.role === "assistant")
@@ -4173,7 +4093,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.modelId,
       params.providerConfig.providerType,
     );
-    const budgetPolicy = await loadContextBudgetPolicy();
+    const budgetPolicy = await waitForCurrentCompaction(loadContextBudgetPolicy());
     const conversation = get().conversations.find(
       (candidate) => candidate.id === params.conversationId,
     );
@@ -4203,7 +4123,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ReturnType<typeof runContextCompactionOrchestration>
     >;
     try {
-      orchestration = await runContextCompactionOrchestration({
+      orchestration = await waitForCurrentCompaction(runContextCompactionOrchestration({
         boundary: getCompactionBoundaryForMode(params.mode),
         mode: params.mode,
         systemMessage: params.systemMessage,
@@ -4227,6 +4147,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         estimateSerializedPayloadTokens,
         countProviderInputItems,
         onCompactionStarted: () => {
+          assertCurrent();
           markConversationCompactionStarted(
             params.conversationId,
             params.mode,
@@ -4242,11 +4163,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             params.reasoningEffort,
             input,
           ),
-      });
+      }));
     } catch (error) {
+      assertCurrent();
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4269,7 +4191,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: "compaction_error",
           completionReason,
         }),
-      });
+      }));
       throw error;
     }
 
@@ -4282,7 +4204,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         kind: params.mode,
         footprintAfter: orchestration.preflightFootprint,
       });
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4306,7 +4228,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: "latest_boundary_payload_too_large",
           completionReason,
         }),
-      });
+      }));
       throw buildSendError(orchestration.errorMessage);
     }
     if (orchestration.outcome === "manual_required") {
@@ -4322,7 +4244,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           reason: "manual_compaction_required",
         },
       });
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4349,7 +4271,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: "auto_compaction_disabled",
           completionReason,
         }),
-      });
+      }));
       throw buildSendError(orchestration.errorMessage);
     }
 
@@ -4361,7 +4283,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (result.manualSkip) {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4386,7 +4308,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           completionReason,
           ...appliedAuditDetails,
         }),
-      });
+      }));
       return result;
     }
     if (orchestration.shouldPersistCompaction) {
@@ -4397,8 +4319,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.mode,
         );
       }
-      await persistConversationCompactionState(result.compactionState);
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(persistConversationCompactionState(result.compactionState));
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger:
           result.compactionState?.lastTrigger ??
@@ -4429,7 +4351,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           completionReason,
           ...appliedAuditDetails,
         }),
-      });
+      }));
     } else if (orchestration.hasCompaction) {
       completeLatestSessionCompactionEvent(
         params.conversationId,
@@ -4442,7 +4364,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     } else if (orchestration.hadCompaction && params.mode !== "blocking") {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
-      await deleteConversationCompactionState(params.conversationId);
+      await waitForCurrentCompaction(deleteConversationCompactionState(params.conversationId));
     } else {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
@@ -5005,7 +4927,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? await useCitationsStore.getState().ensureCitationContentLoaded(match.id)
       : null;
     const matchForRead = hydratedMatch ?? match;
-    const matchedCitationHasContent = Boolean(matchForRead?.content);
+    const matchedCitationHasContent = typeof matchForRead?.content === "string";
     if (matchedFileRef && !matchedCitationHasContent) {
       return readWorkspaceFileRef(conversationId, matchedFileRef, args);
     }
@@ -5017,13 +4939,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const label = matchForRead.path || matchForRead.title || matchForRead.source;
-    const content = getCitationBody(matchForRead);
+    const content = readConversationFileBody(matchForRead);
     const extractNotice =
       extractText && /\.docx$/i.test(label || "")
         ? "Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text."
         : "";
 
-    if (!content) {
+    if (!content && !matchedCitationHasContent) {
       return `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ""}`;
     }
     return formatConversationFilePage({
@@ -5383,26 +5305,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const shouldChallengeGitStageCommitToolCall = (
-    conversationId: string,
-    assistantTurnId: string | null,
-    assistantMessageId: string,
-    toolName: string,
-  ): boolean => {
-    if (!GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS.has(toolName)) {
-      return false;
-    }
-
-    const turnKey = assistantTurnId || assistantMessageId;
-    const challengeKey = `${conversationId}::${turnKey}::${toolName}`;
-    if (gitStageCommitChallengesByAssistantTurn.has(challengeKey)) {
-      return false;
-    }
-
-    gitStageCommitChallengesByAssistantTurn.add(challengeKey);
-    return true;
-  };
-
   const rememberAssistantTurnContext = (
     assistantMessageId: string,
     conversationId: string,
@@ -5416,794 +5318,102 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const handleToolCall = async (
-    operation: FrozenToolCallContext,
-    toolName: string,
-    args: Record<string, unknown>,
-    toolCallId?: string,
-  ): Promise<ToolCallResolution | string | void> => {
-    const {
-      conversationId,
-      assistantMessageId,
-      mode: modeAtSend,
-      agentType: agentTypeAtSend,
-      taskId: taskIdAtSend,
-      signal,
-    } = operation;
-    const isCurrentOperation = () => {
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        conversationId,
-      );
-      return !signal.aborted &&
-        runtime.sessionId === operation.sessionId &&
-        runtime.turnId === operation.turnId &&
-        runtime.assistantMessageId === assistantMessageId &&
-        runtime.phase === "streaming";
-    };
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    const normalizedToolName = normalizeArchitectToolId(toolName);
-    const assistantTurnId = operation.turnId;
-
-    if (!operation.allowedToolIds.includes(normalizedToolName)) {
-      return toolFailure(
-        `Tool ${normalizedToolName} is not available for this turn.`,
-        "permission",
-      );
-    }
-
-    if (
-      applyScopedToolRestrictions(
-        [normalizedToolName],
-        operation.scopedTurnConfiguration,
-      ).length === 0
-    ) {
-      return toolFailure(
-        `Tool ${normalizedToolName} is disabled for this turn's project scope.`,
-        "permission",
-      );
-    }
-
-    if (
-      modeAtSend === "Implement" &&
-      agentTypeAtSend === "plan" &&
-      !isToolAllowedForImplementAgent("plan", normalizedToolName)
-    ) {
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          toolCallId,
-          "denied",
-        );
-      }
-      return toolFailure(IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE, "permission");
-    }
-
-    if (
-      !isMCPToolId(normalizedToolName) &&
-      !(await isSourceToolEnabled(
-        normalizedToolName,
-        modeAtSend,
-        agentTypeAtSend,
-      ))
-    ) {
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      return toolFailure(
-        `Tool ${normalizedToolName} is disabled for the current mode.`,
-        "permission",
-      );
-    }
-
-    let executionContext = operation.executionContext;
-    let executionMcpServers = operation.mcpServers;
-    let executionMcpProjectIds = operation.scopedTurnConfiguration?.projectIds ?? executionContext.projectIds;
-    const riskLevel = operation.riskLevel;
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    let approvalScope: string | null = null;
-    if (
-      normalizedToolName === "write" ||
-      normalizedToolName === "edit" ||
-      normalizedToolName === "delete" ||
-      normalizedToolName === "apply_patch" ||
-      normalizedToolName === "git_add" ||
-      normalizedToolName === "git_commit" ||
-      normalizedToolName === "git_checkout" ||
-      normalizedToolName === "git_merge" ||
-      normalizedToolName === "git_reset" ||
-      normalizedToolName === "git_stash"
-    ) {
-      const workspaceToolExecutor = await import(
-        "../services/workspaceToolExecutor"
-      );
-      approvalScope = workspaceToolExecutor.resolveMutatingToolApprovalScope(
-        normalizedToolName,
-        args,
-        {
-          workspacePath: executionContext.workspacePath,
-          defaultWorkspacePath: executionContext.defaultWorkspacePath,
-          projectId: executionContext.projectId,
-          focusedProjectId: executionContext.focusedProjectId,
-          groupId: executionContext.groupId,
-          projectMounts: executionContext.projectMounts,
-          virtualRootEnabled: executionContext.virtualRootEnabled,
-          workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+  const handleToolCall = createChatToolExecution({
+    runtime: {
+      read: (id) => getConversationRuntimeSnapshot(get().conversationRuntimeById, id),
+      messages: (id) => get().getConversationMessages(id),
+      updateTrace: updateAssistantToolTraceStatus,
+      persistPartial: (message) => persistAssistantPartialStreamResult(message),
+    },
+    approvals: {
+      get epoch() { return toolApprovalRuntimeEpoch; },
+      resolvers: pendingToolApprovalResolvers,
+      settlements: pendingToolApprovalSettlements,
+      beforeEffects: pendingToolApprovalBeforeEffects,
+      mutationVersions: approvalMutationVersions,
+      challenges: gitStageCommitChallengesByAssistantTurn,
+      serialize: serializeToolApproval,
+      pending: (id) => get().pendingToolApprovalByConversationId[id],
+      publish: (id, value, expected) => set((state) => {
+        if (expected && state.pendingToolApprovalByConversationId[id] !== expected) return state;
+        const next = { ...state.pendingToolApprovalByConversationId };
+        if (value) next[id] = value;
+        else delete next[id];
+        return { pendingToolApprovalByConversationId: next };
+      }),
+      grants: (id) => get().conversationApprovalGrantsByConversationId[id] ?? [],
+      writeGrants: (id, grants) => set((state) => ({
+        conversationApprovalGrantsByConversationId: {
+          ...state.conversationApprovalGrantsByConversationId,
+          [id]: grants,
         },
-      );
-    }
-    const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
-      mode: modeAtSend,
-      riskLevel,
-      workspacePath: executionContext.workspacePath,
-      defaultWorkspacePath: executionContext.defaultWorkspacePath,
-      projectMounts: executionContext.projectMounts,
-      approvalScope,
-      grants:
-        get().conversationApprovalGrantsByConversationId[conversationId] ?? [],
-    });
-
-    if (securityEvaluation.decision === "deny") {
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          toolCallId,
-          "denied",
-        );
-      }
-      return toolFailure(
-        securityEvaluation.denialReason ?? `Tool ${normalizedToolName} was denied by policy.`,
-        "permission",
-      );
-    }
-
-    if (
-      shouldChallengeGitStageCommitToolCall(
-        conversationId,
-        assistantTurnId,
-        assistantMessageId,
-        normalizedToolName,
-      )
-    ) {
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          toolCallId,
-          "denied",
-        );
-      }
-      return toolFailure(GIT_STAGE_COMMIT_CHALLENGE_MESSAGE, "permission");
-    }
-
-    if (securityEvaluation.decision === "ask") {
-      const approvalEpoch = toolApprovalRuntimeEpoch;
-      const resolvedToolCallId =
-        toolCallId ??
-        `${normalizedToolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const pendingApproval: PendingToolApproval = {
-        conversationId,
-        assistantMessageId,
-        toolCallId: resolvedToolCallId,
-        toolId: normalizedToolName,
-        actionGroup: securityEvaluation.normalizedCall.actionGroup,
-        riskLevel,
-        isDestructive: securityEvaluation.normalizedCall.isDestructive,
-        summary: securityEvaluation.normalizedCall.summary,
-        detail: securityEvaluation.normalizedCall.detail,
-        args,
-        rememberKey: securityEvaluation.normalizedCall.rememberKey,
-        canApproveForConversation:
-          securityEvaluation.normalizedCall.canApproveForConversation,
-      };
-
-      const resolution = await serializeToolApproval(
-        conversationId,
-        async () => {
-          if (!isCurrentOperation()) {
-            return Promise.resolve<PendingToolApprovalResolution>({ kind: "expired" });
-          }
-          if (get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") {
-            return { kind: "deny", reason: "Resolve the interrupted tool request before continuing." } as PendingToolApprovalResolution;
-          }
-          // Persist the transcript first. The recovery marker contains identifiers only.
-          updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "pending_approval", { tool_name: normalizedToolName, detail: pendingApproval.detail });
-          const assistantMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
-          try {
-            if (assistantMessage) await persistAssistantPartialStreamResult(assistantMessage);
-            await persistToolApprovalRecovery(conversationId, pendingApproval);
-          } catch (error) {
-            if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-            updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
-            const closedMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
-            try {
-              if (closedMessage) await persistAssistantPartialStreamResult(closedMessage);
-            } catch {
-              // Persistence is unavailable; retain an explicit recovery action in this session.
-              set((state) => ({ pendingToolApprovalByConversationId: {
-                ...state.pendingToolApprovalByConversationId,
-                [conversationId]: { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false },
-              } }));
-            }
-            throw error;
-          }
-          if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-          if (!isCurrentOperation()) {
-            await persistToolApprovalRecovery(conversationId, null);
-            return { kind: "deny" } as PendingToolApprovalResolution;
-          }
-          approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
-          const resolverKey = getPendingToolApprovalResolverKey(
-            conversationId,
-            resolvedToolCallId,
-          );
-          const settlement = new Promise<PendingToolApprovalResolution>((resolve) => {
-            pendingToolApprovalResolvers.set(
-              resolverKey,
-              resolve,
-            );
-            set((state) => ({
-              pendingToolApprovalByConversationId: {
-                ...state.pendingToolApprovalByConversationId,
-                [conversationId]: pendingApproval,
-              },
-            }));
-          }).then(async (result) => {
-            try {
-              if (result.kind === "expired" || approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              if (result.kind !== "deny" && isCurrentOperation()) {
-                const revalidate = async (): Promise<PendingToolApprovalResolution> => {
-                  const currentExecutionContext = resolveConversationExecutionContext(conversationId);
-                  const currentConfiguration = await loadScopedTurnConfiguration({
-                    projectIds: currentExecutionContext.projectIds,
-                    focusProjectId: currentExecutionContext.focusedProjectId,
-                    mode: modeAtSend,
-                  });
-                  if (operation.scopedTurnConfiguration && !currentConfiguration) {
-                    throw new Error("The current project tool policy could not be verified.");
-                  }
-                  const currentRiskLevel = currentConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
-                  let currentToolEnabled = applyScopedToolRestrictions([normalizedToolName], currentConfiguration).length > 0;
-                  if (isMCPToolId(normalizedToolName)) {
-                    const toolsState = useToolsStore.getState();
-                    const currentMcpRuntime = currentConfiguration
-                      ? await resolveScopedMcpRuntime(currentConfiguration.mcpServers, toolsState.mcpServers ?? [], { projectIds: currentConfiguration.projectIds })
-                      : { servers: toolsState.mcpServers ?? [], tools: toolsState.getEnabledMCPTools() };
-                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) => tool.id === normalizedToolName);
-                    executionMcpServers = currentMcpRuntime.servers;
-                    executionMcpProjectIds = currentConfiguration?.projectIds ?? currentExecutionContext.projectIds;
-                  } else {
-                    currentToolEnabled = currentToolEnabled && await isSourceToolEnabled(normalizedToolName, modeAtSend, agentTypeAtSend);
-                  }
-                  if (!isCurrentOperation()) return { kind: "deny" } as PendingToolApprovalResolution;
-                  if (currentRiskLevel !== riskLevel || !currentToolEnabled ||
-                      !sameApprovalExecutionScope(currentExecutionContext, executionContext)) {
-                    return { kind: "deny", reason: "The tool policy or workspace changed while approval was pending. Inspect the current context and request approval again." } as PendingToolApprovalResolution;
-                  }
-
-                  return result;
-                };
-                result = await revalidate();
-              }
-              await pendingToolApprovalBeforeEffects.get(resolverKey)?.();
-              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              // Close the durable trace before dropping its only recovery action.
-              updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
-              const closedMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
-              if (closedMessage) await persistAssistantPartialStreamResult(closedMessage);
-              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              await persistToolApprovalRecovery(conversationId, null);
-              set((state) => {
-                if (state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval) return state;
-                const next = { ...state.pendingToolApprovalByConversationId };
-                delete next[conversationId];
-                return { pendingToolApprovalByConversationId: next };
-              });
-              return result;
-            } catch (error) {
-              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              set((state) => state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval ? state : ({ pendingToolApprovalByConversationId: {
-                ...state.pendingToolApprovalByConversationId,
-                [conversationId]: { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false },
-              } }));
-              throw error;
-            } finally {
-              if (approvalEpoch === toolApprovalRuntimeEpoch) pendingToolApprovalResolvers.delete(resolverKey);
-              pendingToolApprovalBeforeEffects.delete(resolverKey);
-            }
-          });
-          pendingToolApprovalSettlements.set(resolverKey, settlement);
-          return settlement.finally(() => {
-            if (pendingToolApprovalSettlements.get(resolverKey) === settlement) {
-              pendingToolApprovalSettlements.delete(resolverKey);
-            }
-          });
-        },
-      );
-
-      if (resolution.kind === "expired") return TOOL_EXECUTION_ABORTED_RESULT;
-      if (resolution.kind === "deny") {
-        if (toolCallId) {
-          updateAssistantToolTraceStatus(
-            assistantMessageId,
-            resolvedToolCallId,
-            "denied",
-          );
-        }
-        const denialPrefix = `Tool ${normalizedToolName} was denied by the user.`;
-        return toolFailure(
-          resolution.reason?.trim()
-            ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
-            : denialPrefix,
-          "permission",
-        );
-      }
-
-      if (!isCurrentOperation()) {
-        if (toolCallId) {
-          updateAssistantToolTraceStatus(
-            assistantMessageId,
-            resolvedToolCallId,
-            "denied",
-          );
-        }
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-
-
-      if (
-        resolution.kind === "allow_conversation" &&
-        pendingApproval.canApproveForConversation !== false
-      ) {
-        set((state) => {
-          const currentGrants =
-            state.conversationApprovalGrantsByConversationId[conversationId] ??
-            [];
-          if (
-            currentGrants.some(
-              (grant) =>
-                grant.toolId === pendingApproval.toolId &&
-                grant.rememberKey === pendingApproval.rememberKey,
-            )
-          ) {
-            return state;
-          }
-          return {
-            conversationApprovalGrantsByConversationId: {
-              ...state.conversationApprovalGrantsByConversationId,
-              [conversationId]: [
-                ...currentGrants,
-                {
-                  toolId: pendingApproval.toolId,
-                  rememberKey: pendingApproval.rememberKey,
-                  createdAt: new Date().toISOString(),
-                },
-              ],
-            },
-          };
-        });
-      }
-
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          resolvedToolCallId,
-          "running",
-        );
-      }
-    }
-
-    if (normalizedToolName === "question") {
-      const questionnaire = validateQuestionToolArgs(args);
-      return {
-        kind: "interrupt",
-        result: `Questionnaire queued for the user with ${questionnaire.questions.length} question(s).`,
-        visibleContent: questionnaire.intro || DEFAULT_QUESTIONNAIRE_INTRO,
-        hiddenContext: buildQuestionnaireHiddenContextBlock(questionnaire),
-      };
-    }
-
-    if (normalizedToolName === "web_search") {
-      const query = typeof args.query === "string" ? args.query.trim() : "";
-      if (!query) return "Missing query for web_search.";
-      const { enableWebSearch, webSearchOptions } = getStreamingWebSearchConfig();
-      if (
-        !enableWebSearch ||
-        (!webSearchOptions?.configured &&
-          !webSearchOptions?.tavilyApiKey &&
-          !webSearchOptions?.braveApiKey)
-      ) {
-        return "Web search is not configured for this provider.";
-      }
-      const results = await webSearch(query, webSearchOptions);
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      if (results.length > 0) {
-        useCitationsStore
-          .getState()
-          .addWebCitations(results, assistantMessageId, conversationId);
-      }
-      return formatSearchResultsAsContext(results);
-    }
-
-    if (normalizedToolName === "web_fetch") {
-      const url = typeof args.url === "string" ? args.url.trim() : "";
-      if (!url) return "Missing URL for web_fetch.";
-      const { enableWebFetch } = getStreamingWebSearchConfig();
-      if (!enableWebFetch) {
-        return "Web fetch is disabled for this provider.";
-      }
-      const fetched = await fetchWebPage(url);
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      useCitationsStore.getState().addCitation({
-        type: "web",
-        scope: "context",
-        source: fetched.url,
-        title: fetched.title,
-        snippet: fetched.snippet,
-        content: fetched.content,
-        url: fetched.url,
-        favicon: fetched.favicon,
-        messageId: assistantMessageId,
-        conversationId,
-      });
-      return `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
-    }
-
-    if (normalizedToolName === "read_file") {
-      return readConversationFileContext(conversationId, args);
-    }
-
-    const configToolResult = await handleConfigToolCall(normalizedToolName, args);
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    if (configToolResult !== undefined) {
-      return configToolResult;
-    }
-
-    const configVirtualScopeResult = await handleConfigVirtualScopeToolCall(
-      normalizedToolName,
-      args,
-    );
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    if (configVirtualScopeResult !== undefined) {
-      return configVirtualScopeResult;
-    }
-
-    const skillToolResult = await handleSkillToolCall(
-      normalizedToolName,
-      args,
-      conversationId,
-    );
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    if (skillToolResult !== undefined) {
-      return skillToolResult;
-    }
-
-    if (isMCPToolId(normalizedToolName)) {
-      const result = await callScopedMcpTool(
-        normalizedToolName,
-        args,
-        executionMcpServers,
-        {
-          projectIds: executionMcpProjectIds,
-          signal,
-        },
-      );
-      return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
-    }
-
-    if (normalizedToolName === "mark_source_passage") {
-      const title = typeof args.title === "string" ? args.title.trim() : "";
-      const passage = typeof args.passage === "string" ? args.passage.trim() : "";
-      if (!title || !passage) {
-        return "Missing title or passage for mark_source_passage.";
-      }
-      if (!(await isSourcePassagePresentInConversationContext(conversationId, passage))) {
-        return "Error executing tool mark_source_passage: passage is not present in any read source content.";
-      }
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      const kind = normalizeSourcePassageKind(args.kind) || "used";
-      const citationId = useCitationsStore.getState().addSourcePassage({
-        conversationId,
-        messageId: assistantMessageId,
-        title,
-        passage,
-        source: typeof args.source === "string" ? args.source : undefined,
-        url: typeof args.url === "string" ? args.url : undefined,
-        kind,
-        reason: typeof args.reason === "string" ? args.reason : undefined,
-      });
-      return `Source passage marked successfully (citation_id=${citationId}, kind=${kind}).`;
-    }
-
-    if (normalizedToolName === "read_sources") {
-      return await readConversationSources(conversationId, args);
-    }
-
-    if (normalizedToolName === "edit_source_passage") {
-      return editConversationSource(conversationId, args);
-    }
-
-    const taskTodoToolResult = await handleTaskTodoToolCall(
-      conversationId,
-      normalizedToolName,
-      args,
-    );
-    if (taskTodoToolResult !== undefined) {
-      return taskTodoToolResult;
-    }
-
-    const taskArtifactToolResult = await handleTaskArtifactToolCall(
-      conversationId,
-      normalizedToolName,
-      args,
-    );
-    if (taskArtifactToolResult !== undefined) {
-      return taskArtifactToolResult;
-    }
-
-    const architectToolResult = await handleArchitectToolCall({
-      assistantMessageId,
-      toolName: normalizedToolName,
-      args,
-      planService: {
-        createArchitectPlan,
-        getArchitectPlan,
-        getGitFlowBaseBranch,
-        isArchitectPlanSlugAvailable,
-        isArchitectPlanSlugMutable,
-        listArchitectPlans,
-        resolvePlanProjectContextId,
-        resolveTargetBranch,
-        updateArchitectPlan,
+      })),
+    },
+    policy: {
+      isPlanReplicaDivergence: isArchitectPlanReplicaDivergenceError,
+      resolveMcpRuntime: resolveScopedMcpRuntime,
+      webConfig: getStreamingWebSearchConfig,
+      isSourceToolEnabled,
+      executionContext: resolveConversationExecutionContext,
+      loadRiskLevel: loadToolRiskLevelPreference,
+      mcpRuntime: () => {
+        const tools = useToolsStore.getState();
+        return { servers: tools.mcpServers ?? [], tools: tools.getEnabledMCPTools() };
       },
-      strategyService: {
-        prepareStrategyMutationPreview,
-        applyStrategyMutationPreview,
-        guardDeps: {
+    },
+    sources: {
+      readFile: readConversationFileContext,
+      readSources: readConversationSources,
+      editSource: editConversationSource,
+      containsPassage: isSourcePassagePresentInConversationContext,
+      addWebCitations: (...args) => useCitationsStore.getState().addWebCitations(...args),
+      addCitation: (citation) => useCitationsStore.getState().addCitation(citation),
+      addSourcePassage: (passage) => useCitationsStore.getState().addSourcePassage(passage),
+    },
+    handlers: {
+      configVirtualScope: handleConfigVirtualScopeToolCall,
+      // Resolve on invocation: Skills can import this store during module initialization.
+      skill: (...args) => handleSkillToolCall(...args),
+      mcp: callScopedMcpTool,
+      taskTodo: handleTaskTodoToolCall,
+      taskArtifact: handleTaskArtifactToolCall,
+      architect: (params) => handleDeferredArchitectToolCall({
+        ...params,
+        planService: {
+          createArchitectPlan,
           getArchitectPlan,
+          getGitFlowBaseBranch,
+          isArchitectPlanSlugAvailable,
+          isArchitectPlanSlugMutable,
+          listArchitectPlans,
+          resolvePlanProjectContextId,
+          resolveTargetBranch,
           updateArchitectPlan,
-          provisionPlanBranches,
         },
-      },
-      getAppState: () => useAppStore.getState(),
-      getTaskState: () => useTaskStore.getState(),
-      ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
-    }).catch((error) => {
-      if (!isArchitectPlanReplicaDivergenceError(error)) {
-        throw error;
-      }
-
-      return [
-        `Plan metadata replica issue for plan ${error.divergence.planId}: ${error.message}`,
-        '',
-        'Structured context:',
-        JSON.stringify(
-          {
-            error: 'architect_plan_replica_divergence',
-            plan_id: error.divergence.planId,
-            branch_name: error.divergence.branchName,
-            reason: error.divergence.reason,
-            repair_action: 'repair_metadata',
-            replicas: error.divergence.replicas,
-          },
-          null,
-          2
-        ),
-      ].join('\n');
-    });
-
-    if (architectToolResult !== undefined) {
-      return architectToolResult;
-    }
-
-    if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
-      const serializeAgentTerminalSession = <T extends object>(session: T) => {
-        const agentSession = { ...session } as Record<string, unknown>;
-        delete agentSession.project_id;
-        delete agentSession.project_name;
-        delete agentSession.mount_name;
-        delete agentSession.workspace_path;
-        return JSON.stringify(agentSession, null, 2);
-      };
-      const readAgentTerminalSession = async (sessionId: string) => {
-        const terminalStore = useTerminalStore.getState();
-        const session =
-          terminalStore.sessions[sessionId] ??
-          (await terminalStore.readSession(sessionId));
-        if (session.project_id) {
-          return {
-            session,
-            error: "This session belongs to the manual project terminal and is unavailable to the agent terminal tool.",
-          };
-        }
-        return { session, error: null };
-      };
-
-      if (normalizedToolName === "terminal_create_session") {
-        const session = await useTerminalStore.getState().createSession({
-          projectId: null,
-          cwd: typeof args.cwd === "string" ? args.cwd : null,
-        });
-        return serializeAgentTerminalSession(session);
-      }
-
-      const sessionId =
-        typeof args.session_id === "string" ? args.session_id.trim() : "";
-      if (!sessionId) {
-        return `Missing session_id argument for ${normalizedToolName}.`;
-      }
-
-      const agentSession = await readAgentTerminalSession(sessionId);
-      if (agentSession.error) {
-        return `Error executing ${normalizedToolName}: ${agentSession.error}`;
-      }
-
-      if (normalizedToolName === "terminal_run") {
-        const command = typeof args.command === "string" ? args.command : "";
-        if (!command.trim()) {
-          return "Missing command argument for terminal_run.";
-        }
-        const executionId = createTerminalToolExecutionId();
-        const runPromise = useTerminalStore.getState().runCommand({
-          sessionId,
-          command,
-          executionId,
-          timeoutMs:
-            typeof args.timeout_ms === "number"
-              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
-              : null,
-        });
-        const abortListener = () => {
-          void useTerminalStore
-            .getState()
-            .killSession(sessionId, executionId)
-            .catch(() => undefined);
-        };
-        signal.addEventListener("abort", abortListener, { once: true });
-        if (signal.aborted) abortListener();
-        try {
-          const session = await runPromise;
-          return serializeAgentTerminalSession(session);
-        } finally {
-          signal.removeEventListener("abort", abortListener);
-        }
-      }
-
-      if (normalizedToolName === "terminal_read") {
-        return serializeAgentTerminalSession(agentSession.session);
-      }
-
-      const session = await useTerminalStore.getState().killSession(sessionId);
-      return serializeAgentTerminalSession(session);
-    }
-
-    if (
-      normalizedToolName === "list" ||
-      normalizedToolName === "read" ||
-      normalizedToolName === "write" ||
-      normalizedToolName === "edit" ||
-      normalizedToolName === "delete" ||
-      normalizedToolName === "apply_patch" ||
-      normalizedToolName === "glob" ||
-      normalizedToolName === "grep" ||
-      normalizedToolName === "ast_grep" ||
-      normalizedToolName.startsWith("git_")
-    ) {
-      const workspaceToolExecutor = await import(
-        "../services/workspaceToolExecutor"
-      );
-      const mode = modeAtSend;
-      let promotedProjectIdsForTool: string[] = [];
-
-      if (mode === "Implement") {
-        const promotionRequest = resolveContextPromotionRequest({
-          conversationId,
-          executionContext,
-          selectedTaskId: taskIdAtSend,
-          toolName: normalizedToolName,
-          args,
-          resolveExplicitMutatingToolProjectTargets:
-            workspaceToolExecutor.resolveExplicitMutatingToolProjectTargets,
-        });
-
-        if (promotionRequest.unavailableResult) {
-          return promotionRequest.unavailableResult;
-        }
-
-        if (promotionRequest.task && promotionRequest.projectIds.length > 0) {
-          const promotion = await useTaskStore
-            .getState()
-            .promoteTaskContextProjects(promotionRequest.task.id, promotionRequest.projectIds, {
-              triggerTool: normalizedToolName,
-            });
-          promotedProjectIdsForTool = promotion?.promotedProjectIds || [];
-          // The promotion result is the only permitted scope change during an
-          // operation. Derive it from the frozen snapshot, never from the
-          // current project selection.
-          executionContext = {
-            ...operation.executionContext,
-            actionableProjectIds: Array.from(
-              new Set([
-                ...operation.executionContext.actionableProjectIds,
-                ...promotedProjectIdsForTool,
-              ]),
-            ),
-            contextProjectIds: operation.executionContext.contextProjectIds.filter(
-              (projectId) => !promotedProjectIdsForTool.includes(projectId),
-            ),
-            projectMounts: operation.executionContext.projectMounts.map(
-              (mount) =>
-                promotedProjectIdsForTool.includes(mount.projectId)
-                  ? { ...mount, isReadOnly: false }
-                  : mount,
-            ),
-          };
-          if (!isCurrentOperation()) {
-            return TOOL_EXECUTION_ABORTED_RESULT;
-          }
-        }
-      }
-
-      const withPromotionNotice = (result: string): string => {
-        if (promotedProjectIdsForTool.length === 0) {
-          return result;
-        }
-        return `[macro_scope_promotion] ${JSON.stringify({
-          promoted_project_ids: promotedProjectIdsForTool,
-          retried_tool: normalizedToolName,
-        })}\n${result}`;
-      };
-
-      const result = await workspaceToolExecutor.executeWorkspaceTool(
-        normalizedToolName,
-        args,
-        mode,
-        {
-          signal,
-          workspacePath: executionContext.workspacePath,
-          defaultWorkspacePath: executionContext.defaultWorkspacePath,
-          projectId: executionContext.projectId,
-          focusedProjectId: executionContext.focusedProjectId,
-          groupId: executionContext.groupId,
-          projectMounts: executionContext.projectMounts,
-          virtualRootEnabled: executionContext.virtualRootEnabled,
-          workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
-          invocationId: toolCallId
-            ? `${conversationId}:${assistantTurnId}:${toolCallId}`
-            : undefined,
-          onCodeCheckpoint: async (checkpoint) => {
-            await recordAgentCodeCheckpoint({
-              conversationId,
-              turnId: assistantTurnId,
-              assistantMessageId,
-              toolCallId,
-              toolName: checkpoint.toolName,
-              files: checkpoint.files,
-            });
-          },
+        strategyService: {
+          prepareStrategyMutationPreview,
+          applyStrategyMutationPreview,
+          guardDeps: { getArchitectPlan, updateArchitectPlan, provisionPlanBranches },
         },
-      );
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      return result === undefined ? result : withPromotionNotice(result);
-    }
-  };
+        getAppState: () => useAppStore.getState(),
+        getTaskState: () => useTaskStore.getState(),
+        ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
+      }),
+    },
+    terminal: {
+      cachedSession: (id) => useTerminalStore.getState().sessions[id],
+      createSession: (params) => useTerminalStore.getState().createSession(params),
+      readSession: (id) => useTerminalStore.getState().readSession(id),
+      runCommand: (params) => useTerminalStore.getState().runCommand(params),
+      killSession: (id, executionId) => useTerminalStore.getState().killSession(id, executionId),
+    },
+    workspace: {
+      executor: () => import("../services/workspaceToolExecutor"),
+      resolvePromotion: resolveContextPromotionRequest,
+      promote: (id, projects, options) => useTaskStore.getState().promoteTaskContextProjects(id, projects, options),
+      recordCheckpoint: recordAgentCodeCheckpoint,
+    },
+  });
 
   const spillToolResultWithArtifact = async (
     operation: Pick<FrozenToolCallContext, "conversationId" | "assistantMessageId">,
@@ -6257,17 +5467,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     toolCallId: string | undefined,
     resolution: ToolCallResolution | string | void,
   ): Promise<ToolCallResolution | string | void> => {
-    if (
-      typeof resolution !== "string" ||
-      !shouldSpillToolResult(toolName, resolution)
-    ) {
-      return resolution;
-    }
-    return spillToolResultWithArtifact(
-      operation,
-      toolName,
-      toolCallId,
-      resolution,
+    return preserveToolResultContent(toolName, resolution, (text) =>
+      spillToolResultWithArtifact(operation, toolName, toolCallId, text),
     );
   };
 
@@ -6315,36 +5516,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const state = get();
     return getConversationMessagesFromState(state, conversationId);
   };
-
-  const cloneProviderInputItems = (
-    items?: unknown[] | null,
-  ): unknown[] | undefined => {
-    if (!Array.isArray(items) || items.length === 0) {
-      return undefined;
-    }
-
-    return items.map((item) =>
-      item && typeof item === "object"
-        ? JSON.parse(JSON.stringify(item))
-        : item,
-    );
-  };
-
-  const cloneStreamMessage = (message: StreamMessage): StreamMessage => ({
-    ...message,
-    content: Array.isArray(message.content)
-      ? message.content.map((part) =>
-          part.type === "image_url"
-            ? {
-                type: "image_url" as const,
-                image_url: { ...part.image_url },
-              }
-            : { ...part },
-        )
-      : message.content,
-    provider_input_items: cloneProviderInputItems(message.provider_input_items),
-    image_metadata: message.image_metadata?.map((metadata) => ({ ...metadata })),
-  });
 
   const getImageContextMetadata = (images: MessageImageAttachment[]) =>
     images.map((image) => ({
@@ -6650,6 +5821,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const restorePersistedComposerDrafts = (
     visibleConversations: Conversation[],
     archivedConversationIds: ReadonlySet<string>,
+    pruneMissingConversations = true,
   ): Record<string, ComposerDraft> => {
     const visibleConversationIds = new Set(
       visibleConversations.map((conversation) => conversation.id),
@@ -6660,7 +5832,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           if (contextKey.startsWith("conversation:")) {
             const conversationId = contextKey.slice("conversation:".length);
             if (
-              !visibleConversationIds.has(conversationId) ||
+              (pruneMissingConversations && !visibleConversationIds.has(conversationId)) ||
               archivedConversationIds.has(conversationId)
             ) {
               return [];
@@ -6718,6 +5890,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
+  const enqueueToolboxPersistence = (
+    conversationId: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    const previous = toolboxPersistenceTailsByConversationId.get(conversationId);
+    const persistence = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(operation);
+    toolboxPersistenceTailsByConversationId.set(conversationId, persistence);
+    void persistence.then(
+      () => {
+        if (toolboxPersistenceTailsByConversationId.get(conversationId) === persistence) {
+          toolboxPersistenceTailsByConversationId.delete(conversationId);
+        }
+      },
+      () => {
+        if (toolboxPersistenceTailsByConversationId.get(conversationId) === persistence) {
+          toolboxPersistenceTailsByConversationId.delete(conversationId);
+        }
+      },
+    );
+    return persistence;
+  };
+
+  const waitForToolboxPersistence = async (conversationId: string): Promise<void> => {
+    while (true) {
+      const pending = toolboxPersistenceTailsByConversationId.get(conversationId);
+      if (!pending) return;
+      await pending.catch(() => undefined);
+    }
+  };
+
   const persistComposerContextRefsForConversation = (
     conversationId: string | null | undefined,
     refs: ContextReference[],
@@ -6725,7 +5928,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!conversationId || !tauriIpc.isTauriAvailable()) return;
 
     const persistedRefs = persistableContextRefs(refs) ?? [];
-    const persist = async () => {
+    const persistence = enqueueToolboxPersistence(conversationId, async () => {
       if (persistedRefs.length === 0) {
         if (typeof tauriIpc.deleteConversationToolboxState === "function") {
           await tauriIpc.deleteConversationToolboxState(conversationId);
@@ -6739,9 +5942,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           timestamp: new Date().toISOString(),
         });
       }
-    };
+    });
 
-    void persist().catch((error) => {
+    void persistence.catch((error) => {
       console.warn("[chat] Failed to persist toolbox state:", error);
     });
   };
@@ -6768,31 +5971,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<void> => {
     if (!tauriIpc.isTauriAvailable()) return;
     if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
-    await tauriIpc.deleteConversationToolboxState(conversationId);
+    await enqueueToolboxPersistence(conversationId, () =>
+      tauriIpc.deleteConversationToolboxState(conversationId),
+    );
   };
 
   const beginStandaloneConversationDeletionSaga = async (
     conversationId: string,
-  ): Promise<void> => {
-    await upsertLinkedConversationDeletionSaga({
+  ): Promise<string> => {
+    const now = new Date().toISOString();
+    const saga: LinkedConversationDeletionSaga = {
       ownerType: "conversation",
       ownerId: conversationId,
       conversationId,
       phase: "task_deleted",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+      createdAt: now,
+      updatedAt: now,
+    };
+    await startLinkedConversationDeletionSaga(saga);
+    return getLinkedDeletionSagaGeneration(saga);
   };
 
   const completeStandaloneConversationDeletionSaga = async (
     conversationId: string,
+    generation: string,
   ): Promise<void> => {
-    await removeLinkedConversationDeletionSaga("conversation", conversationId);
+    await removeLinkedConversationDeletionSaga(
+      "conversation",
+      conversationId,
+      undefined,
+      generation,
+    );
   };
 
   const hydrateConversationToolboxStateIfAvailable = async (
     conversationId: string,
+    lifecycle?: LifecycleContext,
   ): Promise<void> => {
+    lifecycle?.assertActive();
     if (!tauriIpc.isTauriAvailable()) {
       return;
     }
@@ -6800,8 +6016,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
     try {
+      await waitForToolboxPersistence(conversationId);
+      lifecycle?.assertActive();
+      const revisionBeforeRead = composerContextRefsRevision;
       const record = await tauriIpc.getConversationToolboxState(conversationId);
-      if (get().selectedConversationId !== conversationId) {
+      lifecycle?.assertActive();
+      if (
+        get().selectedConversationId !== conversationId ||
+        composerContextRefsRevision !== revisionBeforeRead
+      ) {
         return;
       }
       const persistedRefs = parsePersistedContextRefsJson(
@@ -6814,6 +6037,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       composerContextRefsRevision += 1;
       set({ composerContextRefs });
     } catch (error) {
+      lifecycle?.assertActive();
       console.warn("[chat] Failed to hydrate toolbox state:", error);
     }
   };
@@ -6949,6 +6173,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     skillPermissionSnapshot?: SkillPermissionSnapshot | null,
     executionContextOverride?: ProjectExecutionContext,
     riskLevelOverride?: ToolRiskLevel,
+    architectPlanOverride?: ArchitectPlanRecord | null,
   ) => {
     const appState = useAppStore.getState();
     const executionContext =
@@ -6977,8 +6202,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .map((m) => m.role)
       .lastIndexOf("user");
     const lastUserMessage = lastUserIndex >= 0 ? orderedMessages[lastUserIndex] : null;
-    const fileRefsForTurn = (lastUserMessage?.context_refs ?? get().composerContextRefs)
-      .filter(isFileContextRef);
+    // A persisted message owns its references, including an empty list. The
+    // current composer may belong to a different conversation by this point.
+    const turnContextRefs = lastUserMessage
+      ? lastUserMessage.context_refs ?? []
+      : get().composerContextRefs;
+    const fileRefsForTurn = turnContextRefs.filter(isFileContextRef);
     const availableFiles = [
       ...fileCitations
         .map((c) => c.path || c.title || c.source)
@@ -6990,7 +6219,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? await useSkillsStore.getState().prepareSkillsForTurn({
             conversationId,
             content: lastUserMessage.content,
-            contextRefs: lastUserMessage.context_refs ?? get().composerContextRefs,
+            contextRefs: turnContextRefs,
             toolsAvailable: allowedToolIds.includes("skill_activate"),
             permissionSnapshot: skillPermissionSnapshot ?? null,
           })
@@ -7055,7 +6284,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         const skillActivationAvailable = allowedToolIds.includes("skill_activate");
-        const contextRefs = (message.context_refs ?? get().composerContextRefs).filter(
+        const contextRefs: (ContextReference | PersistedContextReference)[] = (message.context_refs ?? []).filter(
           (ref) => ref.kind !== "skill" || explicitSkillIdSet.has(ref.id) || skillActivationAvailable,
         );
         if (contextRefs.length > 0) {
@@ -7467,75 +6696,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (appMode === "Architect") {
-      systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
-      systemInstructions.push(
-        "In Architect mode, discuss the plan directly with the user. Inspect the selected project code when it provides useful context, and use the `question` tool for focused clarifications when important information is missing. Generate or regenerate strategy only after an explicit user request, using the plan conversation, expressed intent, plan scope, selected projects, inspected code context, and clarification answers.",
-      );
-      systemInstructions.push(
-        "In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).",
-      );
-      systemInstructions.push(
-        "In Architect mode, the plan lifecycle remains UI-only for this iteration. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active`; ask the user to use the plan selector instead.",
-      );
-      systemInstructions.push(
-        "In Architect mode, `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. Never use it to change plan status or activate a plan.",
-      );
-      systemInstructions.push(
-        "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
-      );
-      const persistedArchitectExecutionModes = Object.values(
-        getPlanExecutionModesByProjectId(
-          useAppStore.getState().planNodes,
-          useAppStore.getState().activePlanContext?.executionModesByProjectId,
-        ),
-      );
-      const architectExecutionModes = persistedArchitectExecutionModes.length > 0
-        ? persistedArchitectExecutionModes
-        : executionContext.projectMounts
-          .filter((mount) => executionContext.projectIds.includes(mount.projectId))
-          .flatMap((mount) =>
-            mount.executionMode === 'git' || mount.executionMode === 'direct'
-              ? [mount.executionMode]
-              : []
-          );
-      const hasDirectArchitectTarget = architectExecutionModes.includes('direct');
-      const hasGitArchitectTarget = architectExecutionModes.includes('git');
-      if (hasDirectArchitectTarget && hasGitArchitectTarget) {
-        systemInstructions.push(
-          "This plan mixes Git and direct targets. Propose branch slugs only for Git targets. Direct targets run in their project directory without branches, worktrees, commits, or merges. Preserve each project's execution mode when defining nodes and dependencies.",
-        );
-      } else if (hasDirectArchitectTarget) {
-        systemInstructions.push(
-          "This is a direct-only plan. Do not propose branches, worktrees, commits, merges, or other Git operations. Each node runs in its project directory and Macro finalizes the work by accepting its direct checkpoint.",
-        );
-      } else {
-        systemInstructions.push(
-          "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
-        );
-      }
-      systemInstructions.push(
-        "Express sequential work with `dependencies`. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself. Macro adds a synthetic finalization task after the terminal strategy nodes and finalizes each target according to its persisted execution mode.",
-      );
-      const activePlanContext = useAppStore.getState().activePlanContext;
-      if (activePlanContext) {
-        const appState = useAppStore.getState();
-        const planKind = activePlanContext.planKind || "feature";
-        const targetDisplay = getArchitectPlanTargetDisplay(activePlanContext, null, {
-          getProjectGitFlowSettings: (projectId) =>
-            appState.getProjectById(projectId)?.gitFlowSettings ?? null,
-        });
-        const typedPlanInstruction =
-          planKind === "release"
-            ? "This is a Release plan. First inspect likely version files and relevant repositories. If important version or repository scope information remains missing, use the question tool for focused clarification; do not force confirmation when the conversation and inspected code already establish it. Do not create tags or GitHub releases."
-            : planKind === "hotfix"
-              ? "This is a Hotfix plan. Ask the user to describe the production bug if they have not already done so. Then inspect from the main-branch mindset, infer affected repositories, and propose a concise hotfix slug and patch versions per repository. Use the question tool only when important scope, version, or slug information remains missing; do not impose a confirmation step before strategy generation."
-              : planKind === "bugfix"
-                ? "This is a Bugfix plan. Ask the user to describe the bug if they have not already done so. Then inspect from the development-branch mindset, infer affected repositories, and propose a concise bugfix slug. Use the question tool only when important scope or slug information remains missing; do not impose a confirmation step before strategy generation."
-                : "This is a Feature plan. Keep the existing lightweight planning flow; do not force an initial questionnaire unless a clarification is blocking.";
-        systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", storageTargetBranch="${activePlanContext.targetBranch}", effectiveTargetBranch="${targetDisplay.effectiveTargetBranch || targetDisplay.targetBranch}", targetBranchesByProjectId=${JSON.stringify(targetDisplay.targetBranchesByProjectId)}. ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
-        );
-      }
+      const activePlanContext = architectPlanOverride === undefined ? appState.activePlanContext : architectPlanOverride;
+      const nodes = architectPlanOverride === undefined ? appState.planNodes : architectPlanOverride?.nodes ?? [];
+      const { buildArchitectPlanInstructions } = await import("./chat/chatArchitectPlanPrompt");
+      systemInstructions.push(...buildArchitectPlanInstructions(activePlanContext, nodes, executionContext, {
+        getProjectGitFlowSettings: projectId => appState.getProjectById(projectId)?.gitFlowSettings ?? null,
+      }));
     }
 
     const systemMessage =
@@ -8158,7 +7324,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationIds.length === 0) {
       return;
     }
+    queueRuntime?.remove(conversationIds);
     discardComposerDraftsForConversationIds(conversationIds);
+    clearUnsavedAssistantResponsesForConversations(conversationIds);
     clearPendingArchitectConversationsForConversationIds(conversationIds);
     clearGitStageCommitChallengesForConversations(conversationIds);
     clearAssistantTurnContextsForConversations(conversationIds);
@@ -8228,7 +7396,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     const filterForSelectedProvider = (toolIds: string[]): string[] =>
       selectedProvider?.providerType === "copilot"
-        ? filterCopilotSupportedToolIds(
+        ? selectCopilotToolIds(
             strategyFilterForSelectedProvider(toolIds),
           )
         : strategyFilterForSelectedProvider(toolIds);
@@ -9193,33 +8361,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
-    if (drainingQueuedConversationIds.has(conversationId)) return;
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    if (isConversationRuntimeActive(runtime)) return;
-    const queue = queuedSubmissionsByConversationId.get(conversationId);
-    const next = queue?.shift();
-    if (!next) {
-      queuedSubmissionsByConversationId.delete(conversationId);
-      return;
-    }
-    if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
-    drainingQueuedConversationIds.add(conversationId);
-    let shouldContinue = true;
-    try {
-      await get().sendMessage(next);
-    } catch {
-      shouldContinue = false;
-    } finally {
-      drainingQueuedConversationIds.delete(conversationId);
-      if (shouldContinue) {
-        queueMicrotask(() => void drainQueuedSubmissions(conversationId));
-      }
-    }
+  const captureSendSnapshot = (conversationId: string): ChatSendSnapshot => {
+    // Capture UI selections synchronously before the use case can suspend.
+    const app = useAppStore.getState();
+    const provider = useProviderStore.getState();
+    const chat = get();
+    const mode = app.mode;
+    return {
+      mode,
+      agentType: mode === "Implement" ? app.agentType : null,
+      architectPlan: mode === "Architect" && app.activeArchitectPlanId
+        ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
+        : undefined,
+      conversationTaskId: chat.conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null,
+      selectedTaskId: mode === "Implement" ? (app.selectedTaskId ?? "") : "",
+      executionContext: resolveConversationExecutionContext(conversationId),
+      composerContextRefs: persistableContextRefs(chat.composerContextRefs),
+      composerRevision: composerContextRefsRevision,
+      provider: {
+        selectedProviderId: provider.selectedProviderId,
+        selectedModelId: provider.selectedModelId,
+        selectedReasoningEffort: provider.selectedReasoningEffort,
+        isLoading: provider.isLoading,
+        providerConfigs: provider.providerConfigs.map((config) => ({ ...config })),
+      },
+    };
   };
+
+  const revalidateQueuedExecutionContext = async (entry: QueuedSubmission) => {
+    const { revalidateQueuedExecutionContext: revalidate } = await import("./chat/chatQueuedSubmissionContext");
+    return revalidate(entry, {
+      app: () => useAppStore.getState(), tasks: () => useTaskStore.getState(),
+      conversations: () => get().conversations, getPlan: getArchitectPlan,
+    });
+  };
+
+  const drainQueuedSubmissions = (conversationId: string): Promise<void> => queueRuntime
+    ? queueRuntime.drain(conversationId)
+    : getQueueRuntime().then(queue => queue.drain(conversationId));
 
   const buildUserMessageForSend = async (params: {
     conversationId: string;
@@ -9258,471 +8437,95 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const prepareAssistantStreamLaunch = async (params: {
-    conversationId: string;
-    replyToMessageId: string;
-    userContent: string;
-    resolvedTaskId: string;
-    modeAtSend: AppMode;
-    agentTypeAtSend?: AgentType | null;
-    providerId: string;
-    modelId: string;
-    reasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<
-      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
-    >;
-    internalAgentProfile?: InternalAgentProfile | null;
-    executionContext?: ProjectExecutionContext;
-    scopedTurnConfigurationOverride?: ScopedTurnConfiguration | null;
-    providerSupportsNativeToolCalling?: boolean;
-    compactionMode?: ContextCompactionKind;
-    forceCompaction?: boolean;
-    forcePrune?: boolean;
-    compactionDisplayAfterMessageId?: string | null;
-  }) => {
-    try {
-      await ensureToolsLoaded();
-      const toolsState = useToolsStore.getState();
-      const toolLoadError =
-        typeof toolsState.lastError === "string" ? toolsState.lastError : null;
-      if (
-        toolLoadError &&
-        Object.keys(toolsState.internalTools).length === 0
-      ) {
-        throw buildSendError(`Failed to load tool settings: ${toolLoadError}`);
-      }
-    } catch (error) {
-      const normalized = toServiceError(error);
-      throw buildSendError(normalized.message);
-    }
-
-    const taskStatus = params.resolvedTaskId
-      ? useTaskStore.getState().getTaskById(params.resolvedTaskId)?.status ??
-        null
-      : null;
-    const internalAgentProfile = resolveInternalAgentProfile({
-      mode: params.modeAtSend,
-      taskStatus,
-      overrideProfile: params.internalAgentProfile,
-    });
-    const taskForToolScope = params.resolvedTaskId
-      ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
-      : undefined;
-    const executionContext =
-      params.executionContext ?? resolveConversationExecutionContext(params.conversationId);
-    const scopedTurnConfiguration = params.scopedTurnConfigurationOverride !== undefined
-      ? params.scopedTurnConfigurationOverride
-      : await loadScopedTurnConfiguration({
-          projectIds: executionContext.projectIds,
-          focusProjectId: executionContext.focusedProjectId,
-          mode: params.modeAtSend,
-        });
-    const riskLevel =
-      scopedTurnConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
-    const baseAllowedToolIds = await getAllowedToolIdsForCurrentMode(
-      internalAgentProfile,
-      params.modeAtSend,
-      params.agentTypeAtSend,
-      {
-        supportsNativeToolCalling:
-          params.providerSupportsNativeToolCalling ??
-          useProviderStore.getState().selectedSupportsNativeToolCalling(),
-        providerConfig: params.providerConfig,
-        modelId: params.modelId,
+  const prepareAssistantStreamLaunch = async (params: PrepareAssistantStreamParams) => {
+    const capturedRuntime = turnRuntime.read(params.conversationId);
+    const isCurrent = () => (capturedRuntime.phase === "preparing" || capturedRuntime.phase === "overflow_recovery") &&
+      turnRuntime.read(params.conversationId) === capturedRuntime &&
+      !capturedRuntime.abortController?.signal.aborted && !deletedConversationIds.has(params.conversationId);
+    const capturedPlan = params.turnCapabilities?.architectPlanContext ?? (params.architectPlanAtSend
+      ? await getArchitectPlan(params.architectPlanAtSend.targetBranch, params.architectPlanAtSend.planId)
+      : undefined);
+    if (params.architectPlanAtSend && !capturedPlan) throw buildSendError(i18n.t(
+      'chat.queuePlanUnavailable', 'The original plan is unavailable for this queued message.',
+    ));
+    const launch = await prepareChatRequest(params, {
+      isCurrent,
+      tasks: { find: (id) => useTaskStore.getState().getTaskById(id) },
+      policy: {
+        resolveInternalAgentProfile,
+        filterForInternalAgentProfile: filterToolIdsForInternalAgentProfile,
       },
-      riskLevel,
-      executionContext.focusedProjectId,
-    );
-    let taskAllowedToolIds = baseAllowedToolIds;
-    if (params.modeAtSend === "Implement") {
-      taskAllowedToolIds = filterToolIdsForImplementTask(
-        baseAllowedToolIds,
-        taskForToolScope,
-      );
-    } else if (params.modeAtSend === "Architect") {
-      taskAllowedToolIds = filterToolIdsForArchitectPlan(
-        baseAllowedToolIds,
-        executionContext,
-      );
-    }
-    const toolsState = useToolsStore.getState();
-    const providerSupportsNativeToolCalling =
-      params.providerSupportsNativeToolCalling ??
-      useProviderStore.getState().selectedSupportsNativeToolCalling();
-    const scopedMcpRuntime = scopedTurnConfiguration
-      ? await resolveScopedMcpRuntime(
-          scopedTurnConfiguration.mcpServers,
-          toolsState.mcpServers ?? [],
-          { projectIds: scopedTurnConfiguration.projectIds },
-        )
-      : {
-          // Compatibility path for runtimes without the scoped configuration
-          // API. Tool execution still acquires an authoritative backend key.
-          servers: toolsState.mcpServers ?? [],
-          tools: toolsState.getEnabledMCPTools(),
-          failures: [],
-        };
-    if (scopedMcpRuntime.failures.length > 0) {
-      const unavailableServers = scopedMcpRuntime.failures
-        .map((failure) => `${failure.serverId} (${failure.code})`)
-        .join(", ");
-      devLogger.warn("Scoped MCP servers are unavailable", {
-        failures: scopedMcpRuntime.failures,
-      });
-      notify.warning("Some MCP servers are unavailable", {
-        description: unavailableServers,
-      });
-    }
-    const scopedMcpTools = scopedMcpRuntime.tools;
-    const injectableMcpToolIds = selectInjectableMCPToolIds({
-      enabledToolIds: scopedMcpTools.map((tool) => tool.id),
-      supportsNativeToolCalling: providerSupportsNativeToolCalling,
-      providerType: params.providerConfig.providerType,
-      mode: params.modeAtSend,
-      agentType: params.agentTypeAtSend ?? null,
-    });
-    const policyAllowedMcpToolIds = applyScopedToolRestrictions(
-      filterDeniedToolIdsForRiskLevel(
-        filterToolIdsForInternalAgentProfile(
-          injectableMcpToolIds,
-          internalAgentProfile,
-        ),
-        riskLevel,
-        params.modeAtSend,
-      ),
-      scopedTurnConfiguration,
-    );
-    const injectableMcpToolIdsSet = new Set(policyAllowedMcpToolIds);
-    const allowedToolIds = Array.from(new Set(applyScopedToolRestrictions(
-      [
-        ...taskAllowedToolIds.filter((toolId) => !isMCPToolId(toolId)),
-        ...policyAllowedMcpToolIds,
-      ],
-      scopedTurnConfiguration,
-    )));
-    const mcpTools = scopedMcpTools.filter((tool) =>
-      injectableMcpToolIdsSet.has(tool.id),
-    );
-    const showToolTraces = false;
-    const skillPermissionSnapshot = useSkillsStore
-      .getState()
-      .createSkillPermissionSnapshot(params.conversationId, params.replyToMessageId);
-    const preparedRequest = await prepareMessagesForRequest(
-      params.conversationId,
-      allowedToolIds,
-      internalAgentProfile,
-      params.modeAtSend,
-      params.agentTypeAtSend,
-      params.replyToMessageId,
-      skillPermissionSnapshot,
-      executionContext,
-      riskLevel,
-    );
-    set((state) => {
-      const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
-      if (preparedRequest.skillTurnFeedback) {
-        nextFeedback[preparedRequest.skillTurnFeedback.messageId] =
-          preparedRequest.skillTurnFeedback;
-      } else {
-        delete nextFeedback[params.replyToMessageId];
-      }
-      return { skillTurnFeedbackByMessageId: nextFeedback };
-    });
-    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds, mcpTools);
-    await useProviderStore
-      .getState()
-      .ensureSelectedModelContextMetadata(
-        params.providerId,
-        params.modelId,
-        "pre_send",
-      );
-    const { footprintFields } = getSelectedModelContext(
-      params.providerId,
-      params.modelId,
-      params.providerConfig.providerType,
-    );
-    const budgetPolicy = await loadContextBudgetPolicy();
-    const preparedMessagesForContext = normalizeMessagesForProviderContext(
-      params.providerConfig.providerType,
-      preparedRequest.preparedMessages,
-    );
-    const countProviderInputItems = shouldCountProviderInputItemsForContext(
-      params.providerConfig.providerType,
-    );
-    const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-      estimateSerializedPayloadTokensForProvider({
-        messages,
-        providerType: params.providerConfig.providerType,
-        providerId: params.providerId,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.modelId,
-      });
-    const initialFootprint = estimateConversationFootprint({
-      systemMessage: preparedRequest.systemMessage,
-      preparedMessages: preparedMessagesForContext,
-      orderedMessages: preparedRequest.orderedMessages,
-      citations: preparedRequest.citations,
-      toolDefinitions,
-      ...footprintFields,
-      providerType: params.providerConfig.providerType,
-      providerId: params.providerId,
-      baseUrl: params.providerConfig.baseUrl,
-      modelId: params.modelId,
-      estimateSerializedPayloadTokens,
-      countProviderInputItems,
-      mode: params.compactionMode ?? "blocking",
-      budgetPolicy,
-    });
-    const markSafetyPrestreamCompacting = (footprintAfter: ContextFootprint) => {
-      const previousStatus =
-        get().conversationCompactionStatusById[params.conversationId] ?? null;
-      setConversationCompactionStatus(params.conversationId, {
-        ...previousStatus,
-        phase: "safety_compacting",
-        updatedAt: new Date().toISOString(),
-        kind: "safety_prestream",
-        footprintAfter,
-      });
-    };
-    const compactPreparedRequest = (
-      overrides: Partial<{
-        mode: ContextCompactionKind;
-        forceCompaction: boolean;
-        forcePrune: boolean;
-      }> = {},
-    ) =>
-      compactConversationMessages({
-        conversationId: params.conversationId,
-        providerId: params.providerId,
-        modelId: params.modelId,
-        reasoningEffort: params.reasoningEffort,
-        providerConfig: params.providerConfig,
-        allowedToolIds,
-        systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedRequest.preparedMessages,
-        orderedMessages: preparedRequest.orderedMessages,
-        citations: preparedRequest.citations,
-        mode: overrides.mode ?? params.compactionMode ?? "blocking",
-        forceCompaction: overrides.forceCompaction ?? params.forceCompaction,
-        forcePrune: overrides.forcePrune ?? params.forcePrune,
-        displayAfterMessageId:
-          params.compactionDisplayAfterMessageId ?? params.replyToMessageId,
-      });
-    const autoCompactionEnabled = budgetPolicy.auto !== false;
-    let needsSafetyPrestream =
-      autoCompactionEnabled &&
-      !params.compactionMode &&
-      shouldProactivelyCompactContext({
-        boundary: "pre_send",
-        footprint: initialFootprint,
-      });
-    let compactedRequest: MaybeCompactConversationResult;
-    if (needsSafetyPrestream) {
-      markSafetyPrestreamCompacting(initialFootprint);
-      compactedRequest = await compactPreparedRequest({
-        mode: "safety_prestream",
-        forcePrune: true,
-      });
-    } else {
-      compactedRequest = await compactPreparedRequest();
-      needsSafetyPrestream =
-        autoCompactionEnabled &&
-        !params.compactionMode &&
-        shouldProactivelyCompactContext({
-          boundary: "pre_send",
-          footprint: compactedRequest.footprintAfter,
-        });
-      if (needsSafetyPrestream) {
-        markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
-        compactedRequest = await compactPreparedRequest({
-          mode: "safety_prestream",
-          forcePrune: true,
-        });
-      }
-    }
-    if (
-      compactedRequest.decision === "hard_stop" ||
-      isBlockableContextOverUsableBudget(compactedRequest.footprintAfter)
-    ) {
-      const latestUserContextTokens =
-        compactedRequest.footprintAfter.latestUserBlockableTokens ??
-        compactedRequest.footprintAfter.latestUserContextTokens ??
-        0;
-      const latestRequestTooLarge =
-        latestUserContextTokens > 0 &&
-        latestUserContextTokens >= compactedRequest.footprintAfter.usableContextTokens;
-      const autoCompactionBlocked =
-        !autoCompactionEnabled &&
-        !params.compactionMode &&
-        isContextFootprintOverUsableBudget(compactedRequest.footprintAfter) &&
-        !latestRequestTooLarge;
-      const blockedFootprint: ContextFootprint = autoCompactionBlocked
-        ? {
-            ...compactedRequest.footprintAfter,
-            reason: "manual_compaction_required",
+      tools: {
+        ensureLoaded: ensureToolsLoaded,
+        loadStatus: () => {
+          const tools = useToolsStore.getState();
+          return {
+            lastError: typeof tools.lastError === "string" ? tools.lastError : null,
+            hasInternalTools: Object.keys(tools.internalTools).length > 0,
+          };
+        },
+        mcpSnapshot: () => {
+          const tools = useToolsStore.getState();
+          return { servers: tools.mcpServers ?? [], enabledTools: () => tools.getEnabledMCPTools() };
+        },
+        allowedForMode: getAllowedToolIdsForCurrentMode,
+        filterForImplementTask: filterToolIdsForImplementTask,
+        filterForArchitectPlan: (ids, context) => filterToolIdsForArchitectPlan(ids, context, capturedPlan),
+        resolveScopedMcp: resolveScopedMcpRuntime,
+        reportUnavailableMcpServers: (failures, description) => {
+          devLogger.warn("Scoped MCP servers are unavailable", { failures });
+          notify.warning(i18n.t(
+            "notifications.mcpServersUnavailable",
+            "Some MCP servers are unavailable",
+          ), { description });
+        },
+        definitions: getToolDefinitionsForIds,
+        guidedRetry: buildGuidedToolRetryPolicy,
+      },
+      configuration: {
+        loadScoped: loadScopedTurnConfiguration,
+        restrictTools: applyScopedToolRestrictions,
+        loadRiskLevel: loadToolRiskLevelPreference,
+        loadMaxTurns: () => loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
+        webSearch: getStreamingWebSearchConfig,
+      },
+      skills: {
+        createPermissionSnapshot: (conversationId, turnId) =>
+          useSkillsStore.getState().createSkillPermissionSnapshot(conversationId, turnId),
+        publishFeedback: (replyToMessageId, feedback) => set((state) => {
+          const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
+          if (feedback) {
+            nextFeedback[feedback.messageId] = feedback;
+          } else {
+            delete nextFeedback[replyToMessageId];
           }
-        : compactedRequest.footprintAfter;
-      setConversationCompactionStatus(params.conversationId, {
-        phase:
-          (needsSafetyPrestream || autoCompactionBlocked) && !latestRequestTooLarge
-            ? "needs_manual_compaction"
-            : "too_large",
-        updatedAt: new Date().toISOString(),
-        reason: blockedFootprint.reason,
-        kind: needsSafetyPrestream || autoCompactionBlocked
-          ? "safety_prestream"
-          : params.compactionMode ?? "blocking",
-        footprintAfter: blockedFootprint,
-      });
-      await recordConversationCompactionEvent({
-        conversationId: params.conversationId,
-        trigger: needsSafetyPrestream || autoCompactionBlocked
-          ? "safety_prestream"
-          : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
-        providerId: params.providerId,
-        modelId: params.modelId,
-        modelContextWindowTokens: blockedFootprint.modelContextWindowTokens,
-        tokensBefore: compactedRequest.footprintBefore.totalEstimatedTokens,
-        tokensAfter: blockedFootprint.totalEstimatedTokens,
-        status: autoCompactionBlocked ? "skipped" : "blocked",
-        reason: blockedFootprint.reason,
-        metadata: buildCompactionDecisionAuditMetadata({
-          providerId: params.providerId,
-          providerType: params.providerConfig.providerType,
-          modelId: params.modelId,
-          trigger: needsSafetyPrestream || autoCompactionBlocked
-            ? "safety_prestream"
-            : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
-          status: autoCompactionBlocked ? "skipped" : "blocked",
-          footprintBefore: compactedRequest.footprintBefore,
-          footprintAfter: blockedFootprint,
-          footprintFields,
-          budgetPolicy,
-          reason: blockedFootprint.reason,
-          result: autoCompactionBlocked
-            ? "auto_compaction_disabled"
-            : "context_too_large",
-          completionReason:
-            [...preparedRequest.orderedMessages]
-              .reverse()
-              .find((message) => message.role === "assistant")
-              ?.completion_reason ?? null,
-          ...buildAppliedCompactionAuditDetails({
-            result: compactedRequest,
-          }),
+          return { skillTurnFeedbackByMessageId: nextFeedback };
         }),
-      });
-      throw buildSendError(
-        autoCompactionBlocked
-          ? buildManualCompactionRequiredErrorMessage(blockedFootprint)
-          : buildContextTooLargeErrorMessage(blockedFootprint),
-      );
-    }
-    const fileRefToolContext = preparedRequest.orderedMessages
-      .flatMap((message) => message.context_refs ?? [])
-      .filter(isFileContextRef)
-      .map((ref) => {
-        const path = getFileRefPath(ref);
-        return {
-          title: ref.title,
-          source: path,
-          path,
-          snippet: undefined,
-          content: undefined,
-        };
-      });
-    const fileToolContextByPath = new Map<string, {
-      title: string;
-      source: string;
-      path?: string;
-      snippet?: string;
-      content?: string;
-    }>();
-    useCitationsStore
-      .getState()
-      .getConversationContextCitations(params.conversationId)
-      .filter((c) => c.type === "file" || c.type === "document")
-      .forEach((c) => {
-        const item = {
-        title: c.title,
-        source: c.source,
-        path: c.path,
-        snippet: c.snippet,
-        content: c.content,
-        };
-        fileToolContextByPath.set(c.path || c.source || c.title, item);
-      });
-    fileRefToolContext.forEach((item) => {
-      if (!fileToolContextByPath.has(item.path)) {
-        fileToolContextByPath.set(item.path, item);
-      }
+        toolIdsForRequest: getSkillToolIdsForRequest,
+      },
+      context: {
+        executionContext: resolveConversationExecutionContext,
+        prepareMessages: (...args) => prepareMessagesForRequest(...args, capturedPlan),
+        citations: (id) => useCitationsStore.getState().getConversationContextCitations(id),
+        fileRefPath: getFileRefPath,
+      },
+      provider: {
+        supportsNativeToolCalling: () => useProviderStore.getState().selectedSupportsNativeToolCalling(),
+        ensureContextMetadata: (providerId, modelId, reason) =>
+          useProviderStore.getState().ensureSelectedModelContextMetadata(providerId, modelId, reason),
+        modelContext: getSelectedModelContext,
+        estimateSerializedPayloadTokens: estimateSerializedPayloadTokensForProvider,
+      },
+      compaction: {
+        loadBudgetPolicy: loadContextBudgetPolicy,
+        status: (id) => get().conversationCompactionStatusById[id],
+        setStatus: setConversationCompactionStatus,
+        compact: params => compactConversationMessages({ ...params, isCurrent }),
+        recordEvent: recordConversationCompactionEvent,
+      },
+      persistence: { providerInputItems: persistProviderInputItemsForMessage },
     });
-    const fileToolContext = Array.from(fileToolContextByPath.values());
-    const { enableWebSearch, enableWebFetch, webSearchOptions } =
-      getStreamingWebSearchConfig();
-    const guidedToolRetry = buildGuidedToolRetryPolicy({
-      userContent: params.userContent,
-      allowedToolIds,
-      supportsNativeToolCalling: params.providerSupportsNativeToolCalling,
-      fileToolContext,
-    });
-    const maxTurns = scopedTurnConfiguration?.maxTurns !== null
-      && scopedTurnConfiguration?.maxTurns !== undefined
-      ? normalizeChatMaxTurns(scopedTurnConfiguration.maxTurns)
-      : normalizeChatMaxTurns(
-          await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
-        );
-    const { skillToolIds, runnableSkillToolIds } =
-      getSkillToolIdsForRequest(
-        allowedToolIds,
-        preparedRequest.skillPermissionSnapshot,
-      );
-
-    await persistProviderInputItemsForMessage(
-      params.replyToMessageId,
-      preparedRequest.persistableProviderInputItemsByMessageId[params.replyToMessageId],
-    );
-
-    return {
-      allowedToolIds,
-      riskLevel,
-      scopedTurnConfiguration,
-      showToolTraces,
-      messagesForRequest: compactedRequest.messages,
-      contextDiagnosticsBaselineSeed: {
-        conversationId: params.conversationId,
-        modeAtSend: params.modeAtSend,
-        providerId: params.providerId,
-        providerType: params.providerConfig.providerType,
-        baseUrl: params.providerConfig.baseUrl ?? "",
-        modelId: params.modelId,
-        ...footprintFields,
-        allowedToolIds,
-        toolDefinitions: getToolDefinitionsForIds(allowedToolIds, mcpTools),
-        messagesForRequest: compactedRequest.messages.map(cloneStreamMessage),
-        citations: preparedRequest.citations.map(cloneCitationForDiagnostics),
-        repositoryInstructionSources:
-          preparedRequest.repositoryInstructionContext.sources.map(
-            toRepositoryInstructionDiagnosticSource,
-          ),
-        repositoryInstructionIssues:
-          preparedRequest.repositoryInstructionContext.issues.map((issue) => ({ ...issue })),
-        compactionDecision: compactedRequest.decision,
-      } satisfies StreamContextDiagnosticsBaselineSeed,
-      executionContext: preparedRequest.executionContext,
-      fileToolContext,
-      internalAgentProfile,
-      enableWebSearch,
-      enableWebFetch,
-      webSearchOptions,
-      mcpTools,
-      mcpServers: scopedMcpRuntime.servers,
-      skillToolIds,
-      runnableSkillToolIds,
-      guidedToolRetry,
-      maxTurns,
-      compactionDecision: compactedRequest.decision,
-    };
+    return { ...launch, architectPlanContext: capturedPlan };
   };
 
   const removeEmptyAssistantPlaceholderFromState = (
@@ -9784,35 +8587,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     options?: { setSendState?: boolean },
   ) => {
     const normalized = toServiceError(error);
-    let applied = false;
-    set((state) => {
-      const currentRuntime = state.conversationRuntimeById[conversationId];
-      if (
-        !currentRuntime ||
-        currentRuntime.sessionId !== sessionId ||
-        !isConversationRuntimeActive(currentRuntime)
-      ) {
-        return state;
-      }
-      applied = true;
-      return {
-        ...(assistantMessageId
-          ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId)
-          : {}),
-        ...buildConversationRuntimePatch(state, conversationId, {
-          phase: "error",
-          sessionId,
-          turnId: currentRuntime.turnId ?? null,
-          assistantMessageId: null,
-          abortController: null,
-          lastError: normalized.message,
-          lastErrorOrigin: "macro",
-          lastErrorDisplayTarget: "composer",
-        }),
-        lastError: normalized.message,
+    const applied = turnRuntime.failLaunch(conversationId, sessionId, normalized.message);
+    if (applied) {
+      set(state => ({
+        ...(assistantMessageId ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId) : {}),
         ...(options?.setSendState ? { sendState: "error" as const } : {}),
-      };
-    });
+      }));
+    }
     return { error: normalized, applied };
   };
 
@@ -10088,6 +8869,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const restartAssistantFromEditedMessage = async (params: {
+    architectPlanAtSend?: { planId: string; targetBranch: string };
     sessionId: string;
     turnId: string;
     messageId: string;
@@ -10122,7 +8904,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         removeEmptyAssistantPlaceholderFromState(state, placeholderMessageId),
       );
       if (
-        latestConversationSessionIdByConversationId.get(
+        turnRuntime.latestSession(
           params.conversationId,
         ) !== params.sessionId
       ) {
@@ -10224,6 +9006,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         replyToMessageId: params.messageId,
         userContent: params.userContent,
         modeAtSend: params.modeAtSend,
+        architectPlanAtSend: params.architectPlanAtSend,
         agentTypeAtSend,
         resolvedTaskId: params.taskId ?? "",
         selectedProviderId: params.providerId,
@@ -10263,6 +9046,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       return true;
     } catch (error) {
+      if (error instanceof ChatTurnSupersededError && !isCurrentPreparation()) return false;
       if (params.manualFeatureDraftRecovery) {
         await rollbackManualFeatureDraftAfterFailedLaunch(
           params.manualFeatureDraftRecovery,
@@ -10787,1232 +9571,85 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const startAssistantStream = (params: {
-    sessionId: string;
-    assistantMessage: ChatMessage;
-    conversationId: string;
-    replyToMessageId: string;
-    userContent: string;
-    modeAtSend: AppMode;
-    agentTypeAtSend?: AgentType | null;
-    resolvedTaskId: string;
-    pilotActionToken?: symbol;
-    selectedProviderId: string;
-    selectedModelId: string;
-    selectedReasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<
-      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
-    >;
-    internalAgentProfile?: InternalAgentProfile | null;
-    messagesForRequest: StreamMessage[];
-    contextDiagnosticsBaselineSeed: StreamContextDiagnosticsBaselineSeed;
-    executionContext: ProjectExecutionContext;
-    providerSupportsNativeToolCalling?: boolean;
-    fileToolContext: Array<{
-      title: string;
-      source: string;
-      path?: string;
-      snippet?: string;
-      content?: string;
-    }>;
-    allowedToolIds: string[];
-    riskLevel: ToolRiskLevel;
-    scopedTurnConfiguration: ScopedTurnConfiguration | null;
-    guidedToolRetry?: {
-      requiredToolNames: string[];
-      retrySystemPrompt: string;
-      maxRetries?: number;
-    };
-    showToolTraces: boolean;
-    enableWebSearch: boolean;
-    enableWebFetch: boolean;
-    webSearchOptions: ReturnType<
-      typeof getStreamingWebSearchConfig
-    >["webSearchOptions"];
-    mcpTools: MCPTool[];
-    mcpServers: MCPServer[];
-    skillToolIds: string[];
-    runnableSkillToolIds: string[];
-    maxTurns: ChatMaxTurnsPreference;
-    abortController?: AbortController;
-    compactionDecision?: ContextCompactionDecision;
-    overflowRecoveryAttempted?: boolean;
-    replayRecovery?: {
-      replayId: string;
-      onProgress: () => Promise<void>;
-      onFailedBeforeProgress: () => Promise<void>;
-    };
-  }) => {
-    const streamTurnId = getMessageTurnId(params.assistantMessage);
-    const abortController = params.abortController ?? new AbortController();
-    if (abortController.signal.aborted) {
-      return;
-    }
-    const preparationRuntime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      params.conversationId,
-    );
-    if (
-      preparationRuntime.phase !== "preparing" ||
-      preparationRuntime.sessionId !== params.sessionId ||
-      preparationRuntime.turnId !== streamTurnId ||
-      preparationRuntime.assistantMessageId !== params.assistantMessage.id ||
-      preparationRuntime.abortController !== abortController
-    ) {
-      return;
-    }
-    const shouldAcceptStreamUpdate = (): boolean => {
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        params.conversationId,
-      );
-      return (
-        runtime.phase === "streaming" &&
-        runtime.sessionId === params.sessionId &&
-        runtime.assistantMessageId === params.assistantMessage.id &&
-        runtime.turnId === streamTurnId
-      );
-    };
-    setConversationRuntime(
-      params.conversationId,
-      {
-        phase: "streaming",
-        sessionId: params.sessionId,
-        turnId: streamTurnId,
-        assistantMessageId: params.assistantMessage.id,
-        abortController,
-        lastError: null,
+  const createStreamCompaction = composeChatStreamCompaction({
+    policy: {
+      loadBudget: loadContextBudgetPolicy,
+      summarize: (turn, input) => generateCompactionSummary(turn.providerConfig, turn.selectedProviderId,
+        turn.selectedModelId, turn.selectedReasoningEffort, input),
+      estimate: (turn, messages) => estimateSerializedPayloadTokensForProvider({
+        messages, providerType: turn.providerConfig.providerType, providerId: turn.selectedProviderId,
+        baseUrl: turn.providerConfig.baseUrl, modelId: turn.selectedModelId,
+      }),
+      footprint: turn => getSelectedModelContext(turn.selectedProviderId, turn.selectedModelId, turn.providerConfig.providerType).footprintFields,
+      tools: turn => getToolDefinitionsForIds(turn.allowedToolIds, turn.mcpTools),
+    },
+    read: {
+      status: id => get().conversationCompactionStatusById[id] ?? null,
+      request: turn => prepareMessagesForRequest(turn.conversationId, turn.allowedToolIds,
+        turn.internalAgentProfile, turn.modeAtSend, turn.agentTypeAtSend, undefined, undefined,
+        turn.executionContext, turn.riskLevel, turn.architectPlanContext),
+    },
+    projection: {
+      markConversationCompactionStarted, clearLatestRunningSessionCompactionEvent,
+      setConversationCompactionStatus, completeLatestSessionCompactionEvent,
+      info: message => devLogger.info(message),
+    },
+    persistence: { persistConversationCompactionState, recordConversationCompactionEvent },
+  });
+
+  const { start: startAssistantStream } = createAssistantStreamRuntime({
+    owner: turnRuntime,
+    transport: streamChat,
+    isDeleted: (id) => deletedConversationIds.has(id),
+    messages: {
+      get: id => findChatMessageInState(get(), id) ?? undefined,
+      ordered: getOrderedConversationMessages,
+      append: (id, chunk) => get().appendToMessage(id, chunk),
+      fields: (id, fields) => get().updateMessageFields(id, fields),
+      content: (id, content) => get().updateMessageContent(id, content),
+      completed: (id, content) => set(state => ({
+        conversations: state.conversations.map(conversation => conversation.id === id ? {
+          ...conversation, last_message: content.slice(0, 100) + (content.length > 100 ? "..." : ""),
+          updated_at: new Date().toISOString(),
+        } : conversation),
+      })),
+      removeEmpty: id => set(state => removeEmptyAssistantPlaceholderFromState(state, id)),
+    },
+    persistence: {
+      adapters: chatPersistenceAdapters,
+      complete: (...args) => persistAssistantStreamResult(...args),
+      partial: message => persistAssistantPartialStreamResult(message),
+      failed: markAssistantPersistenceFailure,
+      sync: async (mode, conversationId, architectPlan) => {
+        await syncMacroMetadataAfterStreamService({ mode, conversationId, architectPlan, trigger: "send" });
       },
-      { globalLastError: null },
-    );
-    const deleteEmptyAssistantMessageFromDb = async () => {
-      if (
-        latestConversationSessionIdByConversationId.get(
-          params.conversationId,
-        ) !== params.sessionId
-      ) {
-        return;
-      }
-      try {
-        await deletePersistedMessagesAfter(
-          chatPersistenceAdapters,
-          params.conversationId,
-          params.replyToMessageId,
-        );
-      } catch (error) {
-        console.warn("Failed to delete empty assistant message after stream error:", error);
-      }
-    };
-    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = {
-      ...params.contextDiagnosticsBaselineSeed,
-      sessionId: params.sessionId,
-      assistantMessageId: params.assistantMessage.id,
-      orderedMessages: getOrderedConversationMessages(
-        params.conversationId,
-      ).map(cloneChatMessageForDiagnostics),
-    };
-    recordLiveStreamContextEstimate({
-      conversationId: params.conversationId,
-      sessionId: params.sessionId,
-      assistantMessageId: params.assistantMessage.id,
-      leading: true,
-      baseline: contextDiagnosticsBaseline,
-      snapshot: {
-        version: 0,
-        visibleContent: params.assistantMessage.content,
-        visibleContentLength: params.assistantMessage.content.length,
-        toolTraces: params.assistantMessage.tool_traces ?? [],
-        hiddenContext: params.assistantMessage.hidden_context,
-        providerInputItems: params.assistantMessage.provider_input_items,
-        providerTurnState: params.assistantMessage.provider_turn_state,
-      },
-    });
-    let pendingToolBoundaryCompaction: PendingToolBoundaryCompaction | null = null;
-    let replayRecoveryFinalized = false;
-    const finalizeReplayRecoveryAfterProgress = () => {
-      if (!params.replayRecovery || replayRecoveryFinalized) return;
-      replayRecoveryFinalized = true;
-      void (async () => {
-        await params.replayRecovery!.onProgress();
-        await tauriIpc.dbFinalizeConversationReplay({
-          conversationId: params.conversationId,
-          replayId: params.replayRecovery!.replayId,
-        });
-      })().catch((error) => {
-        console.error("Replay recovery finalization remains pending", error);
-      });
-    };
-
-    const maybeMarkImplementTaskFailedAfterStreamError = async () => {
-      if (
-        abortController.signal.aborted ||
-        params.modeAtSend !== "Implement" ||
-        !params.resolvedTaskId
-      ) {
-        return;
-      }
-
-      const task = useTaskStore.getState().getTaskById(params.resolvedTaskId);
-      if (!task || task.status === "Completed") {
-        return;
-      }
-
-      try {
-        if (params.pilotActionToken) {
-          await useTaskStore.getState().markTaskFailed(params.resolvedTaskId, {
-            pilotActionToken: params.pilotActionToken,
-          });
-        } else {
-          await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
-        }
-      } catch (error) {
-        console.warn("Failed to mark task as failed after stream error:", error);
-      }
-    };
-
-    let providerOverflowLimitRecorded = false;
-    const recordProviderContextOverflowLimit = async (error: Error) => {
-      if (providerOverflowLimitRecorded || !isProviderContextOverflowError(error)) {
-        return;
-      }
-      const learnedContextLimit =
-        extractContextLimitTokensFromErrorLike(error);
-      if (!learnedContextLimit) {
-        return;
-      }
-      providerOverflowLimitRecorded = true;
-      try {
-        await useProviderStore
-          .getState()
-          .recordProviderModelContextOverflowLimit(
-            params.selectedProviderId,
-            params.selectedModelId,
-            learnedContextLimit,
-          );
-      } catch (persistError) {
-        console.warn(
-          "Failed to persist provider context overflow limit:",
-          persistError,
-        );
-      }
-    };
-
-    const tryRecoverFromOverflow = async (
-      error: Error,
-      tokenControls: ChatStreamTokenControls,
-    ): Promise<boolean> => {
-      if (
-        params.overflowRecoveryAttempted ||
-        abortController.signal.aborted ||
-        !shouldAcceptStreamUpdate() ||
-        !isProviderContextOverflowError(error)
-      ) {
-        return false;
-      }
-
-      await recordProviderContextOverflowLimit(error);
-      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-        return true;
-      }
-      tokenControls.flushNow();
-      const assistantMessage = get().messages.find(
-        (message) => message.id === params.assistantMessage.id,
-      );
-      const hasPartialAssistantProgress = Boolean(
-        assistantMessage &&
-          (assistantMessage.content.trim().length > 0 ||
-            (assistantMessage.tool_traces?.length ?? 0) > 0),
-      );
-      if (hasPartialAssistantProgress) {
-        return false;
-      }
-
-      tokenControls.dispose();
-      clearLiveStreamContextEstimate(params.conversationId);
-      setConversationCompactionStatus(params.conversationId, {
-        phase: "recovering_overflow",
-        updatedAt: new Date().toISOString(),
-        kind: "stream_overflow",
-        recoveredFromOverflow: true,
-      });
-      updateConversationRuntimeIfSessionMatches(
-        params.conversationId,
-        params.sessionId,
-        () => ({
-          phase: "overflow_recovery",
-          sessionId: params.sessionId,
-          turnId: streamTurnId,
-          assistantMessageId: params.assistantMessage.id,
-          abortController,
-          lastError: null,
-        }),
-      );
-
-      try {
-        const streamLaunch = await prepareAssistantStreamLaunch({
-          conversationId: params.conversationId,
-          replyToMessageId: params.replyToMessageId,
-          userContent: params.userContent,
-          resolvedTaskId: params.resolvedTaskId,
-          modeAtSend: params.modeAtSend,
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          reasoningEffort: params.selectedReasoningEffort,
-          providerConfig: params.providerConfig,
-          internalAgentProfile: params.internalAgentProfile,
-          executionContext: params.executionContext,
-          scopedTurnConfigurationOverride: params.scopedTurnConfiguration,
-          providerSupportsNativeToolCalling:
-            params.providerSupportsNativeToolCalling,
-          compactionMode: "stream_overflow",
-          forceCompaction: true,
-          forcePrune: true,
-          compactionDisplayAfterMessageId: params.assistantMessage.id,
-        });
-
-        const runtimeAfterCompaction = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          params.conversationId,
-        );
-        if (
-          runtimeAfterCompaction.phase !== "overflow_recovery" ||
-          runtimeAfterCompaction.sessionId !== params.sessionId ||
-          runtimeAfterCompaction.turnId !== streamTurnId ||
-          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id ||
-          runtimeAfterCompaction.abortController !== abortController ||
-          abortController.signal.aborted
-        ) {
-          return true;
-        }
-
-        const currentStatus =
-          get().conversationCompactionStatusById[params.conversationId];
-        setConversationCompactionStatus(params.conversationId, {
-          ...currentStatus,
-          phase: "compacted",
-          updatedAt: new Date().toISOString(),
-          kind: "stream_overflow",
-          recoveredFromOverflow: true,
-        });
-
-        updateConversationRuntimeIfSessionMatches(
-          params.conversationId,
-          params.sessionId,
-          (runtime) =>
-            runtime.phase === "overflow_recovery" &&
-            runtime.turnId === streamTurnId &&
-            runtime.assistantMessageId === params.assistantMessage.id
-              ? {
-                  phase: "preparing",
-                  sessionId: params.sessionId,
-                  turnId: streamTurnId,
-                  assistantMessageId: params.assistantMessage.id,
-                  abortController,
-                  lastError: null,
-                }
-              : runtime,
-        );
-        startAssistantStream({
-          ...params,
-          messagesForRequest: streamLaunch.messagesForRequest,
-          contextDiagnosticsBaselineSeed:
-            streamLaunch.contextDiagnosticsBaselineSeed,
-          executionContext: streamLaunch.executionContext,
-          providerSupportsNativeToolCalling:
-            params.providerSupportsNativeToolCalling,
-          fileToolContext: streamLaunch.fileToolContext,
-          allowedToolIds: streamLaunch.allowedToolIds,
-          riskLevel: streamLaunch.riskLevel,
-          scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
-          skillToolIds: streamLaunch.skillToolIds,
-          runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
-          guidedToolRetry: streamLaunch.guidedToolRetry,
-          showToolTraces: streamLaunch.showToolTraces,
-          enableWebSearch: streamLaunch.enableWebSearch,
-          enableWebFetch: streamLaunch.enableWebFetch,
-          webSearchOptions: streamLaunch.webSearchOptions,
-          mcpTools: streamLaunch.mcpTools,
-          mcpServers: streamLaunch.mcpServers,
-          internalAgentProfile: streamLaunch.internalAgentProfile,
-          maxTurns: streamLaunch.maxTurns,
-          compactionDecision: streamLaunch.compactionDecision,
-          overflowRecoveryAttempted: true,
-        });
-        return true;
-      } catch (recoveryError) {
-        const normalized = toServiceError(recoveryError);
-        const message =
-          normalized.message || OVERFLOW_RECOVERY_FAILURE_MESSAGE;
-        setConversationCompactionStatus(params.conversationId, {
-          phase: "too_large",
-          updatedAt: new Date().toISOString(),
-          reason: "hard_stop_ratio",
-          kind: "stream_overflow",
-          recoveredFromOverflow: true,
-        });
-        await maybeMarkImplementTaskFailedAfterStreamError();
-        set((state) => {
-          const currentRuntime =
-            state.conversationRuntimeById[params.conversationId];
-          if (!currentRuntime || currentRuntime.sessionId !== params.sessionId) {
-            return state;
-          }
-          return {
-            ...removeEmptyAssistantPlaceholderFromState(
-              state,
-              params.assistantMessage.id,
-            ),
-            ...buildConversationRuntimePatch(state, params.conversationId, {
-              phase: "error",
-              sessionId: params.sessionId,
-              turnId: streamTurnId,
-              assistantMessageId: null,
-              abortController: null,
-              lastError: message,
-              lastErrorOrigin: "macro",
-              lastErrorDisplayTarget: "composer",
-            }),
-            lastError: message,
-            sendState: "error",
-          };
-        });
-        await deleteEmptyAssistantMessageFromDb();
-        return true;
-      }
-    };
-
-    const compactFollowUpMessagesBeforeProviderRequest = async (request: {
-      messages: StreamMessage[];
-      turnCount: number;
-      toolResultCount: number;
-    }): Promise<{ messages: StreamMessage[]; compacted?: boolean } | void> => {
-      if (
-        abortController.signal.aborted ||
-        !shouldAcceptStreamUpdate() ||
-        request.toolResultCount <= 0
-      ) {
-        return;
-      }
-
-      const { systemMessage, preparedMessages } =
-        splitSystemAndPreparedStreamMessages(request.messages);
-      if (preparedMessages.length < 3) {
-        return;
-      }
-
-      const orderedMessages = buildSyntheticOrderedMessagesForStreamRequest({
-        conversationId: params.conversationId,
-        taskId: params.resolvedTaskId,
-        messages: preparedMessages,
-      });
-      const { footprintFields } = getSelectedModelContext(
-        params.selectedProviderId,
-        params.selectedModelId,
-        params.providerConfig.providerType,
-      );
-      const budgetPolicy = await loadContextBudgetPolicy();
-      const toolDefinitions = getToolDefinitionsForIds(
-        params.allowedToolIds,
-        params.mcpTools,
-      );
-      const preparedMessagesForContext = normalizeMessagesForProviderContext(
-        params.providerConfig.providerType,
-        preparedMessages,
-      );
-      const countProviderInputItems = shouldCountProviderInputItemsForContext(
-        params.providerConfig.providerType,
-      );
-      const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateSerializedPayloadTokensForProvider({
-          messages,
-          providerType: params.providerConfig.providerType,
-          providerId: params.selectedProviderId,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-        });
-      const footprint = estimateConversationFootprint({
-        systemMessage,
-        preparedMessages: preparedMessagesForContext,
-        orderedMessages,
-        citations: contextDiagnosticsBaseline.citations,
-        toolDefinitions,
-        ...footprintFields,
-        providerType: params.providerConfig.providerType,
-        providerId: params.selectedProviderId,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.selectedModelId,
-        estimateSerializedPayloadTokens,
-        countProviderInputItems,
-        mode: "safety_prestream",
-        budgetPolicy,
-      });
-      const latestToolBatchMessages =
-        request.toolResultCount > 0
-          ? preparedMessagesForContext.slice(-request.toolResultCount)
-          : [];
-      const latestToolBatchTokens = estimateBlockableTokensForStreamMessages(
-        latestToolBatchMessages,
-        {
-          countProviderInputItems,
-          context: {
-            providerType: params.providerConfig.providerType,
-            providerId: params.selectedProviderId,
-            baseUrl: params.providerConfig.baseUrl,
-            modelId: params.selectedModelId,
-          },
-        },
-      );
-      const previousStatus =
-        get().conversationCompactionStatusById[params.conversationId] ?? null;
-
-      let result: MaybeCompactConversationResult;
-      let orchestration: Awaited<
-        ReturnType<typeof runContextCompactionOrchestration>
-      >;
-      try {
-        orchestration = await runContextCompactionOrchestration({
-          boundary: "post_tool_batch",
-          mode: "safety_prestream",
-          systemMessage,
-          preparedMessages: preparedMessagesForContext,
-          orderedMessages,
-          citations: contextDiagnosticsBaseline.citations,
-          toolDefinitions,
-          footprintFields,
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-          projectIdentity: params.executionContext.focusedProjectId
-            ? `project:${params.executionContext.focusedProjectId}`
-            : params.executionContext.groupId
-              ? `group:${params.executionContext.groupId}`
-              : `conversation:${params.conversationId}`,
-          estimateSerializedPayloadTokens,
-          countProviderInputItems,
-          budgetPolicy,
-          latestBoundaryPayloadTokens: latestToolBatchTokens,
-          buildForceCompaction: true,
-          forcePrune: true,
-          syntheticBoundary: true,
-          onCompactionStarted: () => {
-            markConversationCompactionStarted(
-              params.conversationId,
-              "safety_prestream",
-              previousStatus,
-              params.assistantMessage.id,
-            );
-          },
-          generateSummary: (input) =>
-            generateCompactionSummary(
-              params.providerConfig,
-              params.selectedProviderId,
-              params.selectedModelId,
-              params.selectedReasoningEffort,
-              input,
-            ),
-        });
-      } catch (error) {
-        if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-          return;
-        }
-        clearLatestRunningSessionCompactionEvent(
-          params.conversationId,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(params.conversationId, previousStatus);
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger: "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens: footprint.modelContextWindowTokens,
-          tokensBefore: footprint.totalEstimatedTokens,
-          tokensAfter: footprint.totalEstimatedTokens,
-          status: "failed",
-          errorCode: isProviderContextOverflowError(error)
-            ? "context_overflow"
-            : "tool_boundary_compaction_error",
-          reason: toServiceError(error).message,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger: "safety_prestream",
-            status: "failed",
-            footprint,
-            footprintFields,
-            budgetPolicy,
-            reason: toServiceError(error).message,
-            result: "tool_boundary_compaction_error",
-          }),
-        });
-        throw error;
-      }
-      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-        return;
-      }
-      if (orchestration.outcome === "blocked") {
-        throw buildSendError(orchestration.errorMessage);
-      }
-      if (orchestration.outcome === "manual_required") {
-        throw buildSendError(orchestration.errorMessage);
-      }
-      if (orchestration.evaluation.decision !== "compact") {
-        return;
-      }
-      result = orchestration.result;
-
-      if (
-        result.decision === "hard_stop" ||
-        isBlockableContextOverUsableBudget(result.footprintAfter)
-      ) {
-        clearLatestRunningSessionCompactionEvent(
-          params.conversationId,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(params.conversationId, {
-          phase: "too_large",
-          updatedAt: new Date().toISOString(),
-          reason: result.footprintAfter.reason,
-          kind: "safety_prestream",
-          footprintAfter: result.footprintAfter,
-        });
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger: "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens: result.footprintAfter.modelContextWindowTokens,
-          tokensBefore: result.footprintBefore.totalEstimatedTokens,
-          tokensAfter: result.footprintAfter.totalEstimatedTokens,
-          status: "blocked",
-          reason: result.footprintAfter.reason,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger: "safety_prestream",
-            status: "blocked",
-            footprintBefore: result.footprintBefore,
-            footprintAfter: result.footprintAfter,
-            footprintFields,
-            budgetPolicy,
-            reason: result.footprintAfter.reason,
-            result: "tool_boundary_context_too_large",
-            ...buildAppliedCompactionAuditDetails({
-              result,
-              syntheticBoundary: true,
-            }),
-          }),
-        });
-        throw buildSendError(buildContextTooLargeErrorMessage(result.footprintAfter));
-      }
-
-      if (result.compactionState) {
-        if (isSyntheticCompactionBoundaryState(result.compactionState)) {
-          pendingToolBoundaryCompaction = {
-            conversationId: params.conversationId,
-            assistantMessageId: params.assistantMessage.id,
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            createdAt: new Date().toISOString(),
-            compactionState: result.compactionState,
-            footprintBefore: result.footprintBefore,
-            footprintAfter: result.footprintAfter,
-            messages: result.messages.map(cloneStreamMessage),
-            pruning: result.pruning,
-          };
-        }
-        completeLatestSessionCompactionEvent(
-          params.conversationId,
-          result.compactionState,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(
-          params.conversationId,
-          resolveCompactionStatusFromState(result.compactionState),
-        );
-      } else {
-        clearLatestRunningSessionCompactionEvent(
-          params.conversationId,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(params.conversationId, previousStatus);
-      }
-
-      await recordConversationCompactionEvent({
-        conversationId: params.conversationId,
-        trigger: "safety_prestream",
-        providerId: params.selectedProviderId,
-        modelId: params.selectedModelId,
-        modelContextWindowTokens: result.footprintAfter.modelContextWindowTokens,
-        tokensBefore: result.footprintBefore.totalEstimatedTokens,
-        tokensAfter: result.footprintAfter.totalEstimatedTokens,
-        status: result.degraded ? "degraded" : "success",
-        reason: result.footprintAfter.reason,
-        metadata: buildCompactionDecisionAuditMetadata({
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          modelId: params.selectedModelId,
-          trigger: "safety_prestream",
-          status: result.degraded ? "degraded" : "success",
-          footprintBefore: result.footprintBefore,
-          footprintAfter: result.footprintAfter,
-          footprintFields,
-          budgetPolicy,
-          reason: result.footprintAfter.reason,
-          result: "tool_boundary_compaction",
-          ...buildAppliedCompactionAuditDetails({
-            result,
-            syntheticBoundary: true,
-          }),
-        }),
-      });
-
-      return {
-        messages: result.messages,
-        compacted: Boolean(result.compactionState),
-      };
-    };
-
-    const consolidatePendingToolBoundaryCompactionAfterPersistence = async () => {
-      const pending = pendingToolBoundaryCompaction;
-      pendingToolBoundaryCompaction = null;
-      if (!pending) {
-        return;
-      }
-      const stillOwnsCompletionConsolidation = (): boolean => {
-        const owner = completionPersistenceOwnersByConversationId.get(
-          params.conversationId,
-        );
-        return (
-          !deletedConversationIds.has(params.conversationId) &&
-          latestConversationSessionIdByConversationId.get(
-            params.conversationId,
-          ) === params.sessionId &&
-          owner?.sessionId === params.sessionId &&
-          owner.turnId === streamTurnId &&
-          owner.assistantMessageId === params.assistantMessage.id
-        );
-      };
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-
-      const { footprintFields } = getSelectedModelContext(
-        params.selectedProviderId,
-        params.selectedModelId,
-        params.providerConfig.providerType,
-      );
-      const budgetPolicy = await loadContextBudgetPolicy();
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-      const preparedRequest = await prepareMessagesForRequest(
-        params.conversationId,
-        params.allowedToolIds,
-        params.internalAgentProfile,
-        params.modeAtSend,
-        params.agentTypeAtSend,
-        undefined,
-        undefined,
-        params.executionContext,
-        params.riskLevel,
-      );
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-      const toolDefinitions = getToolDefinitionsForIds(
-        params.allowedToolIds,
-        params.mcpTools,
-      );
-      const preparedMessagesForContext = normalizeMessagesForProviderContext(
-        params.providerConfig.providerType,
-        preparedRequest.preparedMessages,
-      );
-      const countProviderInputItems = shouldCountProviderInputItemsForContext(
-        params.providerConfig.providerType,
-      );
-      const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateSerializedPayloadTokensForProvider({
-          messages,
-          providerType: params.providerConfig.providerType,
-          providerId: params.selectedProviderId,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-        });
-      const consolidation = await consolidateCompletedAssistantTurnCompaction({
-        pending,
-        systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedMessagesForContext,
-        orderedMessages: preparedRequest.orderedMessages,
-        citations: preparedRequest.citations,
-        toolDefinitions,
-        footprintFields,
-        providerId: params.selectedProviderId,
-        providerType: params.providerConfig.providerType,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.selectedModelId,
-        projectIdentity: params.executionContext.focusedProjectId
-          ? `project:${params.executionContext.focusedProjectId}`
-          : params.executionContext.groupId
-            ? `group:${params.executionContext.groupId}`
-            : `conversation:${params.conversationId}`,
-        budgetPolicy,
-        estimateSerializedPayloadTokens,
-        countProviderInputItems,
-        generateSummary: (input) =>
-          generateCompactionSummary(
-            params.providerConfig,
-            params.selectedProviderId,
-            params.selectedModelId,
-            params.selectedReasoningEffort,
-            input,
-          ),
-      });
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-
-      if (consolidation.outcome === "consolidated") {
-        if (
-          consolidation.shouldPersistCompaction &&
-          consolidation.result.compactionState
-        ) {
-          await persistConversationCompactionState(
-            consolidation.result.compactionState,
-          );
-        }
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger:
-            consolidation.result.compactionState?.lastTrigger ??
-            "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens:
-            consolidation.result.footprintAfter.modelContextWindowTokens,
-          tokensBefore: consolidation.result.footprintBefore.totalEstimatedTokens,
-          tokensAfter: consolidation.result.footprintAfter.totalEstimatedTokens,
-          status: consolidation.result.degraded ? "degraded" : "success",
-          reason: consolidation.result.footprintAfter.reason,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger:
-              consolidation.result.compactionState?.lastTrigger ??
-              "safety_prestream",
-            status: consolidation.result.degraded ? "degraded" : "success",
-            footprintBefore: consolidation.result.footprintBefore,
-            footprintAfter: consolidation.result.footprintAfter,
-            footprintFields,
-            budgetPolicy,
-            reason: consolidation.result.footprintAfter.reason,
-            result: "tool_boundary_consolidation",
-            completionReason:
-              [...preparedRequest.orderedMessages]
-                .reverse()
-                .find((message) => message.role === "assistant")
-                ?.completion_reason ?? null,
-            ...buildAppliedCompactionAuditDetails({
-              result: {
-                ...consolidation.result,
-                pruning:
-                  consolidation.result.pruning.elements.length > 0
-                    ? consolidation.result.pruning
-                    : pending.pruning,
-              },
-              previousCheckpoint: pending.compactionState,
-            }),
-          }),
-        });
-        return;
-      }
-
-      if (consolidation.outcome === "failed") {
-        const footprint =
-          consolidation.preflightFootprint ?? pending.footprintAfter;
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger: "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens: footprint.modelContextWindowTokens,
-          tokensBefore: pending.footprintBefore.totalEstimatedTokens,
-          tokensAfter: footprint.totalEstimatedTokens,
-          status: "failed",
-          errorCode: "tool_boundary_consolidation_failed",
-          reason: consolidation.reason,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger: "safety_prestream",
-            status: "failed",
-            footprintBefore: pending.footprintBefore,
-            footprintAfter: footprint,
-            footprintFields,
-            budgetPolicy,
-            reason: consolidation.reason,
-            result: "tool_boundary_consolidation_failed",
-          }),
-        });
-      }
-
-      devLogger.info(
-        `Tool-boundary compaction consolidation ${consolidation.outcome} conversation=${params.conversationId} reason=${consolidation.reason}`,
-      );
-    };
-
-    const streamLifecycle = createChatStreamLifecycleRuntime({
-      stream: {
-        conversationId: params.conversationId,
-        sessionId: params.sessionId,
-        turnId: streamTurnId,
-        assistantMessageId: params.assistantMessage.id,
-        modeAtSend: params.modeAtSend,
-        resolvedTaskId: params.resolvedTaskId,
-        providerContext: {
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          baseUrl: params.providerConfig.baseUrl ?? "",
-          modelId: params.selectedModelId,
-        },
-      },
-      adapters: {
-        shouldAcceptStreamUpdate,
-        isAbortSignalAborted: () => abortController.signal.aborted,
-        appendTokenChunk: (messageId, tokenChunk) => {
-          if (tokenChunk.length > 0) finalizeReplayRecoveryAfterProgress();
-          get().appendToMessage(messageId, tokenChunk);
-        },
-        getAssistantMessage: (messageId) =>
-          get().messages.find((message) => message.id === messageId),
-        updateMessageFields: (messageId, fields) => {
-          get().updateMessageFields(messageId, fields);
-        },
-        updateMessageContent: (messageId, content) => {
-          get().updateMessageContent(messageId, content);
-        },
-        markProviderReachable: (providerId, modelId) => {
-          useProviderStore
-            .getState()
-            .markProviderReachable(providerId, { modelId });
-        },
-        getTaskStatus: (taskId) =>
-          useTaskStore.getState().getTaskById(taskId)?.status ?? null,
-        markTaskAwaitingResponse: (taskId) => params.pilotActionToken
-          ? useTaskStore.getState().markTaskAwaitingResponse(taskId, {
-              pilotActionToken: params.pilotActionToken,
-            })
-          : useTaskStore.getState().markTaskAwaitingResponse(taskId),
-        assistantTurnRequiresUserReply,
-        updateConversationAfterCompletion: (conversationId, visibleContent) => {
-          completionPersistenceOwnersByConversationId.set(conversationId, {
-            sessionId: params.sessionId,
-            turnId: streamTurnId,
-            assistantMessageId: params.assistantMessage.id,
-          });
-          set((state) => ({
-            conversations: state.conversations.map((conv) =>
-              conv.id === conversationId
-                ? {
-                    ...conv,
-                    last_message:
-                      visibleContent.slice(0, 100) +
-                      (visibleContent.length > 100 ? "..." : ""),
-                    updated_at: new Date().toISOString(),
-                  }
-                : conv,
-            ),
-          }));
-          updateConversationRuntimeIfSessionMatches(
-            conversationId,
-            params.sessionId,
-            () => null,
-          );
-        },
-        clearLiveStreamContextEstimate,
-        refreshConversationContextDiagnostics: (
-          conversationId,
-          providerContext,
-        ) =>
-          refreshConversationContextDiagnostics(conversationId, {
-            mode: "full",
-            providerContext: {
-              providerId: providerContext.providerId,
-              providerType: providerContext.providerType,
-              baseUrl: providerContext.baseUrl ?? "",
-              modelId: providerContext.modelId,
-            },
-          }),
-        persistAssistantStreamResult,
-        persistAssistantPartialStreamResult,
-        consolidatePendingToolBoundaryCompactionAfterPersistence,
-        syncMacroMetadataAfterStream: async (mode, conversationId) => {
-          await syncMacroMetadataAfterStreamService({
-            mode,
-            conversationId,
-            trigger: "send",
-          });
-        },
-        setCompletionPersistenceError: ({
-          conversationId,
-          sessionId,
-          turnId,
-          assistantMessageId,
-          message,
-        }) => {
-          const currentRuntime = getConversationRuntimeSnapshot(
-            get().conversationRuntimeById,
-            conversationId,
-          );
-          const completionOwner =
-            completionPersistenceOwnersByConversationId.get(conversationId);
-          if (
-            completionOwner?.sessionId !== sessionId ||
-            completionOwner.turnId !== turnId ||
-            completionOwner.assistantMessageId !== assistantMessageId ||
-            currentRuntime.phase !== "idle"
-          ) {
-            return;
-          }
-          completionPersistenceOwnersByConversationId.delete(conversationId);
-          setConversationRuntime(
-            conversationId,
-            {
-              phase: "error",
-              sessionId,
-              turnId,
-              assistantMessageId,
-              abortController: null,
-              lastError: message,
-              lastErrorOrigin: "macro",
-              lastErrorDisplayTarget: "composer",
-            },
-            { globalLastError: message },
-          );
-          set({ sendState: "error" });
-        },
-        clearCompletionPersistenceOwnership: ({
-          conversationId,
-          sessionId,
-          turnId,
-          assistantMessageId,
-        }) => {
-          const completionOwner =
-            completionPersistenceOwnersByConversationId.get(conversationId);
-          if (
-            completionOwner?.sessionId === sessionId &&
-            completionOwner.turnId === turnId &&
-            completionOwner.assistantMessageId === assistantMessageId
-          ) {
-            completionPersistenceOwnersByConversationId.delete(conversationId);
-          }
-        },
-        maybeMarkImplementTaskFailedAfterStreamError,
-        tryRecoverFromOverflow,
-        removeEmptyAssistantPlaceholder: (assistantMessageId) => {
-          set((state) =>
-            removeEmptyAssistantPlaceholderFromState(
-              state,
-              assistantMessageId,
-            ),
-          );
-        },
-        deleteEmptyAssistantMessageFromDb,
-        recoverReplayBeforeProgress: params.replayRecovery
-          ? params.replayRecovery.onFailedBeforeProgress
-          : undefined,
-        setStreamErrorState: ({
-          presentation,
-          assistantMessageId,
-        }) => {
-          if (
-            deletedConversationIds.has(params.conversationId) ||
-            latestConversationSessionIdByConversationId.get(
-              params.conversationId,
-            ) !== params.sessionId
-          ) {
-            return;
-          }
-          setConversationRuntime(params.conversationId, {
-            phase: "error",
-            sessionId: params.sessionId,
-            turnId: streamTurnId,
-            assistantMessageId,
-            abortController: null,
-            lastError: presentation.message,
-            lastErrorOrigin: presentation.origin,
-            lastErrorDisplayTarget: presentation.displayTarget,
-          });
-          set(
-            presentation.displayTarget === "composer"
-              ? { lastError: presentation.message, sendState: "error" }
-              : { sendState: "error" },
-          );
-        },
-        warn: (message, error) => {
-          console.warn(message, error);
-        },
-        info: (message) => {
-          devLogger.info(message);
-        },
-      },
-    });
-
-    const streamPromise = runAssistantStream({
-      conversationId: params.conversationId,
-      mode: params.modeAtSend,
-      internalAgentProfile: params.internalAgentProfile,
-      providerId: params.selectedProviderId,
-      providerType: params.providerConfig.providerType,
-      baseUrl: params.providerConfig.baseUrl,
-      apiKey: params.providerConfig.apiKey,
-      modelId: params.selectedModelId,
-      reasoningEffort: params.selectedReasoningEffort,
-      messages: params.messagesForRequest,
-      fileToolContext: params.fileToolContext,
-      allowedToolIds: params.allowedToolIds,
-      copilotSendTimeoutMs:
-        params.providerConfig.providerType === "copilot"
-          ? (useProviderStore.getState().providerSettingsById?.[params.selectedProviderId]
-              ?.copilotSendTimeoutMs ?? null)
-          : null,
-      workspacePath: params.executionContext.workspacePath,
-      defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
-      projectMounts: params.executionContext.projectMounts,
-      virtualRootEnabled: params.executionContext.virtualRootEnabled,
-      focusedProjectId: params.executionContext.focusedProjectId,
-      guidedToolRetry: params.guidedToolRetry,
-      showToolTraces: params.showToolTraces,
-      enableWebSearch: params.enableWebSearch,
-      enableWebFetch: params.enableWebFetch,
-      webSearchOptions: params.webSearchOptions,
-      mcpTools: params.mcpTools,
-      skillToolIds: params.skillToolIds,
-      runnableSkillToolIds: params.runnableSkillToolIds,
-      maxTurns: params.maxTurns,
-      sessionId: params.sessionId,
-      signal: abortController.signal,
-      lifecycle: streamLifecycle,
-      onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-        if (!shouldAcceptStreamUpdate()) {
-          return;
-        }
-        if (toolTraces.length > 0) {
-          finalizeReplayRecoveryAfterProgress();
-        }
-        get().updateMessageFields(params.assistantMessage.id, {
-          tool_traces: toolTraces,
-        });
-      },
-      onBeforeFollowUpRequest: async (request) => {
-        const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);
-        const compactedMessages = Array.isArray(compacted)
-          ? compacted
-          : compacted?.messages ?? request.messages;
-        const pendingSteers = pendingSteersByConversationId.get(params.conversationId) ?? [];
-        if (pendingSteers.length === 0) {
-          return compactedMessages;
-        }
-        pendingSteersByConversationId.delete(params.conversationId);
-        return [...compactedMessages, ...pendingSteers];
-      },
-      consumePendingSteers: () => {
-        const pending = pendingSteersByConversationId.get(params.conversationId) ?? [];
-        pendingSteersByConversationId.delete(params.conversationId);
-        return pending;
-      },
-      onLiveContextUpdate: (snapshot) => {
-        if (!shouldAcceptStreamUpdate()) {
-          return;
-        }
-        recordLiveStreamContextEstimate({
-          conversationId: params.conversationId,
-          sessionId: params.sessionId,
-          assistantMessageId: params.assistantMessage.id,
-          snapshot,
-        });
-      },
-      onTimeline: (event) => {
-        devLogger.info("Provider stream timeline", {
-          requestId: event.request_id,
-          providerId: event.provider_id,
-          providerType: event.provider_type,
-          phase: event.phase,
-          elapsedMs: event.elapsed_ms,
-        });
-      },
-      onToolCall: async (toolName, args, toolCallId) => {
-        finalizeReplayRecoveryAfterProgress();
-        const operation: FrozenToolCallContext = {
-          conversationId: params.conversationId,
-          sessionId: params.sessionId,
-          turnId: streamTurnId,
-          assistantMessageId: params.assistantMessage.id,
-          mode: params.modeAtSend,
-          agentType: params.agentTypeAtSend ?? null,
-          taskId: params.resolvedTaskId,
-          executionContext: params.executionContext,
-          scopedTurnConfiguration: params.scopedTurnConfiguration,
-          allowedToolIds: params.allowedToolIds,
-          mcpServers: params.mcpServers,
-          riskLevel: params.riskLevel,
-          signal: abortController.signal,
-        };
-        let resolution: ToolCallResolution | string | void;
-        try {
-          resolution = await handleToolCall(
-            operation,
-            toolName,
-            args,
-            toolCallId,
-          );
-        } catch (error) {
-          throw await buildBoundedToolCallError(
-            operation,
-            normalizeArchitectToolId(toolName),
-            toolCallId,
-            error,
-          );
-        }
-        const preservedResolution = await preserveLargeToolResult(
-          operation,
-          normalizeArchitectToolId(toolName),
-          toolCallId,
-          resolution,
-        );
-        return normalizeLegacyToolExecutionResult(
-          normalizeArchitectToolId(toolName),
-          preservedResolution,
-        );
-      },
-    });
-    activeAssistantStreamPromisesByConversationId.set(
-      params.conversationId,
-      streamPromise,
-    );
-    const releaseStreamPromise = () => {
-      pendingSteersByConversationId.delete(params.conversationId);
-      if (
-        activeAssistantStreamPromisesByConversationId.get(
-          params.conversationId,
-        ) === streamPromise
-      ) {
-        activeAssistantStreamPromisesByConversationId.delete(
-          params.conversationId,
-        );
-      }
-      queueMicrotask(() => {
-        void drainQueuedSubmissions(params.conversationId);
-      });
-    };
-    void streamPromise.then(releaseStreamPromise, releaseStreamPromise);
-  };
+    },
+    tasks: {
+      status: id => useTaskStore.getState().getTaskById(id)?.status,
+      failed: id => useTaskStore.getState().markTaskFailed(id),
+      awaitingResponse: id => useTaskStore.getState().markTaskAwaitingResponse(id),
+    },
+    provider: {
+      reachable: (id, modelId) => useProviderStore.getState().markProviderReachable(id, { modelId }),
+      recordOverflowLimit: (id, modelId, limit) => useProviderStore.getState().recordProviderModelContextOverflowLimit(id, modelId, limit),
+      copilotTimeout: id => useProviderStore.getState().providerSettingsById?.[id]?.copilotSendTimeoutMs ?? null,
+    },
+    diagnostics: {
+      record: recordLiveStreamContextEstimate,
+      clear: clearLiveStreamContextEstimate,
+      refresh: (id, providerContext) => refreshConversationContextDiagnostics(id, {
+        mode: "full", providerContext: { ...providerContext, baseUrl: providerContext.baseUrl ?? "" },
+      }),
+    },
+    prepare: prepareAssistantStreamLaunch,
+    compaction: {
+      status: id => get().conversationCompactionStatusById[id],
+      setStatus: setConversationCompactionStatus,
+      create: createStreamCompaction,
+    },
+    tools: { execute: handleToolCall, preserve: preserveLargeToolResult, boundError: buildBoundedToolCallError },
+    replay: { finalize: params => tauriIpc.dbFinalizeConversationReplay(params) },
+  });
 
   const persistAssistantPartialStreamResult = async (
     assistantMessage: ChatMessage,
@@ -12148,10 +9785,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const repairArchitectPlanConversationScope = async (params: {
+    lifecycle?: LifecycleContext;
     conversationId: string;
     fallbackProjectId?: string | null;
     fallbackGroupId?: string | null;
   }): Promise<Conversation | null> => {
+    const lifecycle = params.lifecycle;
+    lifecycle?.assertActive();
     const appState = useAppStore.getState();
     const currentConversation =
       get().conversations.find(
@@ -12211,7 +9851,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           groupId: repairedGroupId,
           projectId: repairedProjectId,
         });
+        lifecycle?.assertActive();
       } catch (error) {
+      lifecycle?.assertActive();
         logArchitectTranscriptEvent(
           "warn",
           "architect_conversation_scope_repair_failed",
@@ -12271,6 +9913,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }) === "blank");
 
   const createConversationRecord = async (params: {
+    lifecycle?: LifecycleContext;
     title: string;
     taskId: string | null;
     projectId: string | null;
@@ -12279,6 +9922,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     modeOverride?: AppMode;
     pilotActionToken?: symbol;
   }): Promise<Conversation> => {
+    const lifecycle = params.lifecycle;
+    lifecycle?.assertActive();
     const {
       title,
       taskId,
@@ -12335,11 +9980,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             existingConversation.id,
           );
           await runAiSelectionRestore({
+            lifecycle,
             mode,
             conversationId: existingConversation.id,
             activeContextKey: get().activeContextKey,
             shouldShowResolving: true,
           });
+          lifecycle?.assertActive();
         }
         return existingConversation;
       }
@@ -12359,8 +10006,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           modelId: initialAISelection?.modelId ?? null,
           reasoningEffort: initialAISelection?.reasoningEffort ?? null,
         });
+        lifecycle?.assertActive();
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
+      lifecycle?.assertActive();
         const normalized = toServiceError(error);
         set({ lastError: normalized.message });
         throw new Error(
@@ -12410,11 +10059,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       persistSelectionForContext(mode, newConversation.id);
       await runAiSelectionRestore({
+            lifecycle,
         mode,
         conversationId: newConversation.id,
         activeContextKey: get().activeContextKey,
         shouldShowResolving: true,
       });
+      lifecycle?.assertActive();
     }
 
     return newConversation;
@@ -12604,7 +10255,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const importTranscriptSuffix = async (
     conversationId: string,
     transcript: TranscriptComparableMessage[],
+    lifecycle?: LifecycleContext,
   ): Promise<number> => {
+    lifecycle?.assertActive();
     if (transcript.length === 0) {
       return 0;
     }
@@ -12620,8 +10273,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             created_at: message.createdAt,
           })),
         );
+        lifecycle?.assertActive();
         return appendImportedMessagesToState(conversationId, imported);
       } catch (error) {
+      lifecycle?.assertActive();
         console.error("Failed to import architect transcript into DB:", error);
         throw error;
       }
@@ -12656,6 +10311,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           error: toServiceError(error).message,
         },
       );
+      throw error;
     }
   };
 
@@ -12683,6 +10339,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const reconcileArchitectPlanConversation = async (params: {
+    lifecycle?: LifecycleContext;
     plan: ArchitectPlanRecord;
     targetBranch: string;
     fallbackProjectId?: string;
@@ -12693,11 +10350,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     chatMessagesLoaded?: boolean;
     chatTranscriptRevision?: string | null;
     chatMessageCount?: number;
+    replicaScopeKey?: string | null;
+    replicaProjectId?: string | null;
   }): Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
     createdConversation: boolean;
   }> => {
+    params.lifecycle?.assertActive();
+    // Drain this durable reconciliation as a whole, including its journal and
+    // compensation on domain failure. Frontend revocation is not a domain failure.
     const {
       plan,
       targetBranch,
@@ -12709,7 +10371,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       chatMessagesLoaded = chatMessagesHint !== undefined,
       chatTranscriptRevision = null,
       chatMessageCount,
+      replicaScopeKey = null,
+      replicaProjectId = null,
     } = params;
+    const hasExactReplicaIdentity = Boolean(replicaScopeKey || replicaProjectId);
     const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
     const existingConversation = resolvedConversationId
       ? (get().conversations.find(
@@ -12720,6 +10385,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
     let createdConversationId: string | null = null;
+    let createdConversationCleanupSaga: LinkedConversationDeletionSaga | null = null;
     let restoredTranscript = false;
 
     try {
@@ -12733,15 +10399,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       createdConversation = true;
       createdConversationId = conversation.id;
-      await upsertLinkedConversationDeletionSaga({
+      const now = new Date().toISOString();
+      createdConversationCleanupSaga = {
         ownerType: "plan",
         ownerId: plan.id,
         conversationId: conversation.id,
         phase: "plan_conversation_created",
         targetBranch,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+        createdAt: now,
+        updatedAt: now,
+      };
+      await startLinkedConversationDeletionSaga(createdConversationCleanupSaga);
     }
 
     const repairedConversation = await repairArchitectPlanConversationScope({
@@ -12758,37 +10426,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? Math.max(0, Math.floor(chatMessageCount))
         : (chatMessagesHint?.length ?? 0);
 
-    if (
-      chatMessagesLoaded === false &&
-      !sharedConversation &&
-      !createdConversation &&
-      tauriIpc.isTauriAvailable()
-    ) {
-      const sync = await tauriIpc
-        .dbGetArchitectPlanConversationSync(conversation.id)
-        .catch(() => null);
-      const conversationCount = conversation.message_count;
-      const syncMatches =
-        sync?.plan_id === plan.id &&
-        sync.target_branch === targetBranch &&
-        (sync.transcript_revision ?? null) === (chatTranscriptRevision ?? null) &&
-        sync.message_count === expectedTranscriptCount &&
-        conversationCount === expectedTranscriptCount;
-      if (syncMatches) {
-        return {
-          conversationId: conversation.id,
-          restoredTranscript: false,
-          createdConversation: false,
-        };
-      }
-    }
-
     const transcriptResult =
       chatMessagesLoaded === false
-        ? await getArchitectPlanChatTranscript(targetBranch, plan.id).catch(
-            () => null,
-          )
+        ? await getArchitectPlanChatTranscript(targetBranch, plan.id, {
+            replicaScopeKey,
+            replicaProjectId,
+            expectedTranscriptRevision: chatTranscriptRevision,
+            expectedMessageCount: expectedTranscriptCount,
+          })
         : null;
+    if (chatMessagesLoaded === false && !transcriptResult) {
+      throw new Error(
+        "Le transcript Architect correspondant à la tête du plan n’est plus disponible.",
+      );
+    }
     const transcript = transcriptResult?.messages ?? chatMessagesHint ?? [];
     const resolvedTranscriptRevision =
       transcriptResult?.transcriptRevision ?? chatTranscriptRevision ?? null;
@@ -12798,7 +10449,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       toComparableChatMessage,
     );
     const transcriptMessages = transcript.map((message) => ({
-      id: message.id,
+      id: createdConversation ? crypto.randomUUID() : message.id,
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
@@ -12813,6 +10464,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversation.id,
         transcriptMessages.slice(localMessages.length),
       );
+      const copiedMessages = getOrderedConversationMessages(conversation.id).map(toComparableChatMessage);
+      if (compareTranscriptSequence(copiedMessages, transcriptMessages, getSemanticTranscriptFingerprint).relation !== "equal") {
+        throw new Error("La copie du transcript Architect est incomplète. L’association au plan est annulée.");
+      }
       restoredTranscript = importedCount > 0;
       if (importedCount > 0) {
         await upsertArchitectConversationSync({
@@ -12835,19 +10490,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
     } else if (transcriptState.relation === "metadata_prefix") {
-      await syncArchitectMetadataFromDb({
-        branchName: targetBranch,
-        planId: plan.id,
-        conversationId: conversation.id,
-        reason: transcriptState.relation,
-      });
-      await upsertArchitectConversationSync({
-        conversationId: conversation.id,
-        planId: plan.id,
-        targetBranch,
-        transcriptRevision: null,
-        messageCount: localMessages.length,
-      });
+      if (!hasExactReplicaIdentity) {
+        await syncArchitectMetadataFromDb({
+          branchName: targetBranch,
+          planId: plan.id,
+          conversationId: conversation.id,
+          reason: transcriptState.relation,
+        });
+        await upsertArchitectConversationSync({
+          conversationId: conversation.id,
+          planId: plan.id,
+          targetBranch,
+          transcriptRevision: null,
+          messageCount: localMessages.length,
+        });
+      } else {
+        logArchitectTranscriptEvent("warn", "architect_local_transcript_ahead", {
+          planId: plan.id,
+          conversationId: conversation.id,
+          dbCount: transcriptState.dbCount,
+          metadataCount: transcriptState.metadataCount,
+        });
+        throw new Error(
+          "Le transcript local est plus récent que la réplique Architect active. La conversation reste désélectionnée et les métadonnées ne sont pas modifiées.",
+        );
+      }
     } else if (transcriptState.relation === "diverged") {
       logArchitectTranscriptEvent("warn", "architect_transcript_diverged", {
         planId: plan.id,
@@ -12855,6 +10522,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         dbCount: transcriptState.dbCount,
         metadataCount: transcriptState.metadataCount,
       });
+      if (hasExactReplicaIdentity) {
+        throw new Error(
+          "Le transcript local diverge de la réplique Architect active. La conversation reste désélectionnée pour éviter d’afficher un contenu incohérent.",
+        );
+      }
       await syncArchitectMetadataFromDb({
         branchName: targetBranch,
         planId: plan.id,
@@ -12895,7 +10567,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (createdConversation) {
       try {
-        await removeLinkedConversationDeletionSaga("plan", plan.id);
+        if (!createdConversationCleanupSaga) {
+          throw new Error('Génération de création de conversation introuvable.');
+        }
+        await removeLinkedConversationDeletionSaga(
+          "plan",
+          plan.id,
+          targetBranch,
+          getLinkedDeletionSagaGeneration(createdConversationCleanupSaga),
+        );
       } catch (error) {
         // The persisted guard is safe to leave behind: bootstrap verifies the
         // plan binding before deciding whether it is a cleanup candidate.
@@ -12911,16 +10591,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       deletedConversationIds.add(conversationId);
       const lastError = toServiceError(error).message;
       try {
-        await upsertLinkedConversationDeletionSaga({
-          ownerType: "plan",
-          ownerId: plan.id,
-          conversationId,
+        createdConversationCleanupSaga = {
+          ...(createdConversationCleanupSaga ?? {
+            ownerType: "plan",
+            ownerId: plan.id,
+            conversationId,
+            targetBranch,
+            createdAt: new Date().toISOString(),
+          }),
           phase: "task_deleted",
-          targetBranch,
-          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           lastError,
-        });
+        };
+        await upsertLinkedConversationDeletionSaga(createdConversationCleanupSaga);
       } catch (sagaError) {
         console.error(
           "Plan conversation cleanup guard could not be updated",
@@ -12932,23 +10615,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await deleteConversationToolboxStateIfAvailable(conversationId);
         applyLocalConversationRemoval([conversationId]);
         try {
-          await removeLinkedConversationDeletionSaga("plan", plan.id);
+          if (!createdConversationCleanupSaga) {
+            throw new Error('Génération de création de conversation introuvable.');
+          }
+          await removeLinkedConversationDeletionSaga(
+            "plan",
+            plan.id,
+            targetBranch,
+            getLinkedDeletionSagaGeneration(createdConversationCleanupSaga),
+          );
         } catch (sagaError) {
           console.error("Plan conversation cleanup guard remains pending", sagaError);
         }
       } catch (cleanupError) {
         const cleanupMessage = toServiceError(cleanupError).message;
         try {
-          await upsertLinkedConversationDeletionSaga({
-            ownerType: "plan",
-            ownerId: plan.id,
-            conversationId,
+          createdConversationCleanupSaga = {
+            ...(createdConversationCleanupSaga ?? {
+              ownerType: "plan",
+              ownerId: plan.id,
+              conversationId,
+              targetBranch,
+              createdAt: new Date().toISOString(),
+            }),
             phase: "task_deleted",
-            targetBranch,
-            createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             lastError: cleanupMessage,
-          });
+          };
+          await upsertLinkedConversationDeletionSaga(createdConversationCleanupSaga);
         } catch (sagaError) {
           throw new Error(
             `Impossible d’annuler la conversation créée pour le plan : ${cleanupMessage}; le journal de reprise a aussi échoué : ${toServiceError(sagaError).message}`,
@@ -12968,7 +10662,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const hydrateChatSnapshot = async (): Promise<void> => {
+  const hydrateChatSnapshot = async (lifecycle?: LifecycleContext): Promise<void> => {
+    lifecycle?.assertActive();
     const approvalVersionsAtHydration = new Map(approvalMutationVersions);
     conversationCompactionStateCache.clear();
     agentCodeCheckpointLoadPromisesByConversationId.clear();
@@ -12979,13 +10674,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       loadedConversationIds,
       bootstrapError,
     } = await loadChatBootstrapSnapshot(chatPersistenceAdapters);
+    lifecycle?.assertActive();
     let replayRecoveryError: string | null = null;
 
     if (tauriIpc.isTauriAvailable()) {
       let restoredAnyReplay = false;
       for (const conversation of conversations) {
+        lifecycle?.assertActive();
+        // An admitted replay recovery retains its markers until the whole unit settles.
         const codeRecoveryKey = getAgentCodeReplayRecoveryKey(conversation.id);
         const codeRecoveryMarker = await tauriIpc.dbGetAppSetting(codeRecoveryKey);
+        lifecycle?.assertActive();
+
         let codeRecovery:
           | {
               phase: "pending" | "launched";
@@ -13015,11 +10715,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             };
             if (codeRecovery.phase === "pending") {
               await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+
               await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
               codeRecovery = null;
               replayRecoveryBlockedConversationIds.delete(conversation.id);
             }
           } catch (error) {
+
             replayRecoveryBlockedConversationIds.add(conversation.id);
             replayRecoveryError =
               "Replay recovery is pending for a conversation. Its code and transcript are preserved fail-closed; reload Macro to retry.";
@@ -13031,16 +10734,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             continue;
           }
         }
+        lifecycle?.assertActive();
         const marker = await tauriIpc.dbGetAppSetting(
           `conversationReplayRecovery:${conversation.id}`,
         );
+
+        lifecycle?.assertActive();
         if (!marker) {
           if (codeRecovery?.phase === "launched") {
             try {
               await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+
               await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
               replayRecoveryBlockedConversationIds.delete(conversation.id);
             } catch (error) {
+
               replayRecoveryBlockedConversationIds.add(conversation.id);
               replayRecoveryError =
                 "Replay recovery is pending for a conversation. Its code is preserved fail-closed; reload Macro to retry.";
@@ -13079,6 +10788,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sessionId,
             turnId,
           });
+
           if (!restored) {
             // A launched replay that has already persisted output (or lost the
             // race to a later turn) must win over the old snapshot. Finalizing
@@ -13087,15 +10797,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (recovery.phase === "launched") {
               if (codeRecovery?.phase === "launched") {
                 await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
                 codeRecovery = null;
               }
               await tauriIpc.dbFinalizeConversationReplay({
                 conversationId: conversation.id,
                 replayId,
               });
+
               const remaining = await tauriIpc.dbGetAppSetting(
                 `conversationReplayRecovery:${conversation.id}`,
               );
+
               if (!remaining) {
                 replayRecoveryBlockedConversationIds.delete(conversation.id);
                 continue;
@@ -13105,21 +10818,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
           if (codeRecovery?.phase === "launched") {
             await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+
             await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
             codeRecovery = null;
           }
           replayRecoveryBlockedConversationIds.delete(conversation.id);
           restoredAnyReplay = true;
         } catch (error) {
+
           replayRecoveryBlockedConversationIds.add(conversation.id);
           replayRecoveryError =
             "Replay recovery is pending for a conversation. Its transcript is preserved and editing is locked; reload Macro to retry.";
           console.error("Replay recovery is pending for conversation", conversation.id, error);
         }
       }
+      lifecycle?.assertActive();
       if (restoredAnyReplay) {
         ({ conversations, messages, loadedConversationIds, bootstrapError } =
           await loadChatBootstrapSnapshot(chatPersistenceAdapters));
+        lifecycle?.assertActive();
       }
     }
 
@@ -13133,7 +10851,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let pendingLinkedTaskDeletions;
     try {
       pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+      lifecycle?.assertActive();
     } catch (error) {
+      lifecycle?.assertActive();
       if (error instanceof LinkedConversationDeletionSagaCorruptionError) {
         error.recoverableConversationIds.forEach((conversationId) => {
           deletedConversationIds.add(conversationId);
@@ -13143,7 +10863,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     const completedPendingConversationDeletionIds = new Set<string>();
     for (const saga of pendingLinkedTaskDeletions) {
-      if (saga.requiresPilotAuthorization) continue;
+      lifecycle?.assertActive();
+      // Deletion plus toolbox cleanup and journal removal are one durable unit.
       if (
         saga.ownerType === "plan" &&
         saga.phase === "plan_conversation_created"
@@ -13157,15 +10878,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         try {
           const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (lifecycle?.isActive() === false) break;
+
           if (plan?.conversationId === saga.conversationId) {
-            await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+            await removeLinkedConversationDeletionSaga(
+              saga.ownerType,
+              saga.ownerId,
+              saga.targetBranch,
+              getLinkedDeletionSagaGeneration(saga),
+            );
+
             continue;
           }
           await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+
           await deleteConversationToolboxStateIfAvailable(saga.conversationId);
-          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+
+          await removeLinkedConversationDeletionSaga(
+            saga.ownerType,
+            saga.ownerId,
+            saga.targetBranch,
+            getLinkedDeletionSagaGeneration(saga),
+          );
+
           completedPendingConversationDeletionIds.add(saga.conversationId);
         } catch (error) {
+
           console.error(
             "Plan conversation creation cleanup remains pending",
             saga.conversationId,
@@ -13184,14 +10922,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         try {
           const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (lifecycle?.isActive() === false) break;
+
           if (plan && plan.status !== "deleted") {
             continue;
           }
           await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+
           await deleteConversationToolboxStateIfAvailable(saga.conversationId);
-          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+
+          await removeLinkedConversationDeletionSaga(
+            saga.ownerType,
+            saga.ownerId,
+            saga.targetBranch,
+            getLinkedDeletionSagaGeneration(saga),
+          );
+
           completedPendingConversationDeletionIds.add(saga.conversationId);
         } catch (error) {
+
           console.error("Plan conversation deletion remains pending", saga.conversationId, error);
         }
         continue;
@@ -13204,14 +10953,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       try {
         await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+
         await deleteConversationToolboxStateIfAvailable(saga.conversationId);
-        await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+
+        await removeLinkedConversationDeletionSaga(
+          saga.ownerType,
+          saga.ownerId,
+          saga.targetBranch,
+          getLinkedDeletionSagaGeneration(saga),
+        );
+
         completedPendingConversationDeletionIds.add(saga.conversationId);
       } catch (error) {
+
         console.error("Plan conversation deletion remains pending", saga.conversationId, error);
       }
     }
+    lifecycle?.assertActive();
     pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    lifecycle?.assertActive();
     const pendingConversationIds = new Set(
       pendingLinkedTaskDeletions
         .filter((saga) =>
@@ -13232,18 +10992,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
         !pendingConversationIds.has(conversation.id) &&
         !replayRecoveryBlockedConversationIds.has(conversation.id),
     );
-    const visibleMessages = messages.filter(
+    const visibleConversationIds = new Set(
+      visibleConversations.map((conversation) => conversation.id),
+    );
+    const persistedVisibleMessages = messages.filter(
       (message) =>
         !pendingConversationIds.has(message.conversation_id) &&
         !replayRecoveryBlockedConversationIds.has(message.conversation_id),
     );
+    const recoveredAssistantResponses =
+      loadUnsavedAssistantResponsesFromStorage().filter((message) =>
+        visibleConversationIds.has(message.conversation_id),
+      );
+    const recoveredMerge = mergeRecoveredAssistantResponses(
+      persistedVisibleMessages,
+      recoveredAssistantResponses,
+    );
+    recoveredMerge.reconciledMessageIds.forEach((messageId) => {
+      removeUnsavedAssistantResponseFromStorage(messageId);
+    });
+    const visibleMessages = recoveredMerge.messages;
+    const hydratedVisibleConversations = visibleConversations.map(
+      (conversation) => {
+        const conversationMessages = visibleMessages.filter(
+          (message) => message.conversation_id === conversation.id,
+        );
+        const latestMessage = conversationMessages.at(-1);
+        if (!latestMessage?.persistence_state) return conversation;
+        return {
+          ...conversation,
+          message_count: Math.max(
+            conversation.message_count,
+            conversationMessages.length,
+          ),
+          last_message: latestMessage.content,
+          updated_at: latestMessage.timestamp,
+        };
+      },
+    );
 
-    pruneConversationSelections(visibleConversations);
+    pruneConversationSelections(hydratedVisibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
     const archivedConversationPreference = await loadPreference<unknown>(
       PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
     );
+    lifecycle?.assertActive();
     const archivedConversationIds = Array.isArray(archivedConversationPreference)
       ? new Set(
           archivedConversationPreference.filter(
@@ -13252,7 +11046,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         )
       : EMPTY_STRING_SET;
     const composerDraftsByContextKey = restorePersistedComposerDrafts(
-      visibleConversations,
+      hydratedVisibleConversations,
       archivedConversationIds,
     );
 
@@ -13261,9 +11055,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let toolApprovalRecoveryError: string | null = null;
     try {
       const recovery = await loadToolApprovalRecoveryMarkers();
+      lifecycle?.assertActive();
       markers = recovery.markers;
       toolApprovalRecoveryError = recovery.warning;
     } catch (error) {
+      lifecycle?.assertActive();
       // Preserve unknown/corrupt recovery data, while keeping chat accessible.
       toolApprovalRecoveryError = toServiceError(error).message;
     }
@@ -13273,6 +11069,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const task = conversation?.task_id ? useTaskStore.getState().getTaskById(conversation.task_id) : null;
         const eligible = conversation && !archivedConversationIds.has(conversationId) && task?.status !== "Completed";
         const transcript = eligible ? await loadConversationMessages(chatPersistenceAdapters, { conversationId, conversations }) : [];
+        lifecycle?.assertActive();
         if ((approvalMutationVersions.get(conversationId) ?? 0) !== (approvalVersionsAtHydration.get(conversationId) ?? 0)) continue;
         const restored = eligible ? restoreToolApprovalRecovery(marker, conversationId, transcript) : null;
         if (restored) {
@@ -13280,8 +11077,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const existingIds = new Set(visibleMessages.map((message) => message.id));
           visibleMessages.push(...transcript.filter((message) => !existingIds.has(message.id)));
           loadedConversationIds.add(conversationId);
-        } else await persistToolApprovalRecovery(conversationId, null);
+        } else { await persistToolApprovalRecovery(conversationId, null); lifecycle?.assertActive(); }
       } catch (error) {
+        lifecycle?.assertActive();
         toolApprovalRecoveryError = toServiceError(error).message;
       }
     }
@@ -13297,7 +11095,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingToolApprovalByConversationId: restoredApprovals,
       toolApprovalRecoveryError,
       conversationApprovalGrantsByConversationId: {},
-      conversations: visibleConversations,
+      conversations: hydratedVisibleConversations,
       ...buildMessageState(visibleMessages),
       messageLoadStatusByConversationId: Object.fromEntries(
         Array.from(loadedConversationIds)
@@ -13329,13 +11127,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       lastError: replayRecoveryError ?? null,
       abortController: null,
     });
+    const restoredQueue = await getQueueRuntime();
+    lifecycle?.assertActive();
+    restoredQueue.restore(conversations.map(conversation => conversation.id));
     scheduleImplementAwaitingResponseReconciliation();
   };
 
   const resolveConversationForCurrentContext = async (
     requestId: number,
     contextKey: ChatContextKey,
+    lifecycle?: LifecycleContext,
   ): Promise<ResolvedConversationForContext> => {
+    lifecycle?.assertActive();
     const modeFallback = (
       conversationId: string | null,
     ): ResolvedConversationForContext => ({
@@ -13437,16 +11240,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
               scopedProjectIdsHint: activationScopedProjectIdsHint,
             },
           ));
+        lifecycle?.assertActive();
         const activationPayloadSource = sharedActivationPayload
           ? "app_store"
           : "service";
         if (!isCurrentRequest()) return modeFallback(null);
-        const activePlan =
-          activationPayload?.plan ??
-          (await getArchitectPlan(
-            targetBranch,
-            appState.activeArchitectPlanId,
-          ));
+        if (!activationPayload) {
+          throw new Error(
+            "Le runtime Architect n’a trouvé aucune tête de plan cohérente pour l’activation demandée.",
+          );
+        }
+        const activePlan = activationPayload.plan;
         if (!isCurrentRequest()) return modeFallback(null);
         if (activePlan && activePlan.status !== "deleted") {
           const fallbackProjectId =
@@ -13472,10 +11276,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
             if (pendingConversationId) {
               await repairArchitectPlanConversationScope({
+            lifecycle,
                 conversationId: pendingConversationId,
                 fallbackProjectId,
                 fallbackGroupId,
               });
+              lifecycle?.assertActive();
               return activePlanResolution({
                 conversationId: pendingConversationId,
                 planId: activePlan.id,
@@ -13535,6 +11341,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 scopedProjectIdsHint: currentScopedProjectIds,
               },
             );
+            lifecycle?.assertActive();
             if (!isCurrentRequest()) return modeFallback(null);
             hasSharedConversation = plansSnapshot.plans.some(
               (candidate) =>
@@ -13543,6 +11350,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             );
           }
           const ensuredConversation = await reconcileArchitectPlanConversation({
+            lifecycle,
             plan: activePlan,
             targetBranch,
             fallbackProjectId: fallbackProjectId ?? undefined,
@@ -13553,7 +11361,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             chatMessagesLoaded: activationPayload?.chatMessagesLoaded,
             chatTranscriptRevision: activationPayload?.chatTranscriptRevision,
             chatMessageCount: activationPayload?.chatMessageCount,
+            replicaScopeKey: activationPayload?.replicaScopeKey,
+            replicaProjectId: activationPayload?.replicaProjectId,
           });
+          lifecycle?.assertActive();
           if (!isCurrentRequest()) return modeFallback(null);
           if (ensuredConversation.conversationId) {
             logArchitectTranscriptEvent(
@@ -13580,6 +11391,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
         }
       } catch (error) {
+        lifecycle?.assertActive();
         logArchitectTranscriptEvent(
           "warn",
           "architect_conversation_resolution_failed",
@@ -13588,12 +11400,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             error: toServiceError(error).message,
           },
         );
+        if (mode === "Architect" && appState.activeArchitectPlanId) {
+          throw error;
+        }
       }
     }
 
     const localProjectContext = selectedGroupId
       ? await getLocalProjectContextState(selectedGroupId)
       : null;
+    lifecycle?.assertActive();
     if (!isCurrentRequest()) return modeFallback(null);
     state = get();
 
@@ -13633,6 +11449,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
           )
         : null;
+    lifecycle?.assertActive();
     const archivedChatConversationIds = Array.isArray(
       archivedChatConversationPreference,
     )
@@ -13693,12 +11510,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? `Architect - ${globalProject.name}`
         : "Architect Session";
       const created = await createConversationRecord({
+            lifecycle,
         title,
         taskId: null,
         projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
+      lifecycle?.assertActive();
       if (!isCurrentRequest()) return modeFallback(null);
       return modeFallback(created.id);
     }
@@ -13716,12 +11535,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         )?.id ??
         selectedProjectId;
       const created = await createConversationRecord({
+            lifecycle,
         title: task ? `Task - ${task.title}` : "Task Session",
         taskId: selectedTaskId,
         projectId: projectId ?? null,
         groupId: selectedGroupId,
         selectConversation: false,
       });
+      lifecycle?.assertActive();
       if (!isCurrentRequest()) return modeFallback(null);
       return modeFallback(created.id);
     }
@@ -13740,12 +11561,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? `Repository review`
         : "Implement Session";
       const created = await createConversationRecord({
+            lifecycle,
         title: fallbackTitle,
         taskId: null,
         projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
+      lifecycle?.assertActive();
       if (!isCurrentRequest()) return modeFallback(null);
       return modeFallback(created.id);
     }
@@ -14106,8 +11929,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.keys(get().conversationRuntimeById).forEach((conversationId) => {
         stopConversationRuntimeLocally(conversationId);
       });
-      latestConversationSessionIdByConversationId.clear();
-      completionPersistenceOwnersByConversationId.clear();
+      turnRuntime.reset();
       set({
         ...buildMessageState([]),
         messageLoadStatusByConversationId: {},
@@ -14400,15 +12222,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         previousConversationId,
         conversationId,
       );
-      set({ restoreStatus: "resolving", lastError: null });
+      const requestId = get().selectionRequestId + 1;
+      const activeContextKey = get().activeContextKey;
+      set({ selectionRequestId: requestId, restoreStatus: "resolving", lastError: null });
+      const isCurrent = () => get().selectionRequestId === requestId &&
+        get().selectedConversationId === conversationId && useAppStore.getState().mode === mode;
       await ensureMessagesLoadedForConversation(conversationId);
+      if (!isCurrent()) return false;
       await hydrateConversationCitationsIfAvailable(conversationId);
       await hydrateConversationToolboxStateIfAvailable(conversationId);
       await getConversationCompactionState(conversationId);
+      if (!isCurrent()) return false;
       await runAiSelectionRestore({
         mode,
         conversationId,
-        activeContextKey: get().activeContextKey,
+        activeContextKey,
+        requestId,
         shouldShowResolving: true,
       });
       return true;
@@ -14459,6 +12288,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       beginArchitectPlanSwitchSelection(params);
     },
 
+    invalidateConversationResolution: () => {
+      conversationResolutionGeneration += 1;
+      set((state) => ({
+        selectionRequestId: state.selectionRequestId + 1,
+        pendingArchitectPlanSwitchRequestId: null,
+      }));
+    },
+
     ensureArchitectConversationForPlan: async ({
       plan,
       targetBranch,
@@ -14466,6 +12303,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       fallbackGroupId,
       sharedConversation = false,
     }) => {
+      const selectionAtStart = get();
+      const appAtStart = useAppStore.getState();
       const ensuredConversation = await reconcileArchitectPlanConversation({
         plan,
         targetBranch,
@@ -14474,6 +12313,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sharedConversation,
       });
 
+      if (get().selectionRequestId !== selectionAtStart.selectionRequestId ||
+          get().selectedConversationId !== selectionAtStart.selectedConversationId ||
+          useAppStore.getState().mode !== appAtStart.mode ||
+          useAppStore.getState().activePlanContext !== appAtStart.activePlanContext) {
+        return ensuredConversation;
+      }
       if (ensuredConversation.conversationId) {
         const mode = useAppStore.getState().mode;
         const previousConversationId = get().selectedConversationId;
@@ -14506,14 +12351,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return ensuredConversation;
     },
 
-    ensureConversationForCurrentMode: async () => {
+    ensureConversationForCurrentMode: async (lifecycle) => {
+      lifecycle?.assertActive();
+      const resolutionGeneration = conversationResolutionGeneration;
       await waitForHydration();
+      lifecycle?.assertActive();
+      if (resolutionGeneration !== conversationResolutionGeneration) {
+        return get().selectedConversationId;
+      }
 
       let appState = useAppStore.getState();
       if (appState.mode === "Implement") {
+        const contextBeforeRead = {
+          mode: appState.mode,
+          selectedGroupId: appState.selectedGroupId,
+          selectedProjectId: appState.selectedProjectId,
+          selectedTaskId: appState.selectedTaskId,
+        };
         const localContext = appState.selectedGroupId
           ? await getLocalProjectContextState(appState.selectedGroupId)
           : null;
+        lifecycle?.assertActive();
+        const currentAppState = useAppStore.getState();
+        if (resolutionGeneration !== conversationResolutionGeneration ||
+          currentAppState.mode !== contextBeforeRead.mode ||
+          currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
+          currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||
+          currentAppState.selectedTaskId !== contextBeforeRead.selectedTaskId) {
+          return get().selectedConversationId;
+        }
         const resolvedTask = resolveImplementTaskForContext({
           selectedTaskId: appState.selectedTaskId,
           tasks: useTaskStore.getState().tasks,
@@ -14530,6 +12396,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appState.setSelectedTask(null);
           appState = useAppStore.getState();
         }
+      }
+      if (resolutionGeneration !== conversationResolutionGeneration) {
+        return get().selectedConversationId;
       }
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);
@@ -14573,7 +12442,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const resolution = await resolveConversationForCurrentContext(
           requestId,
           contextKey,
+          lifecycle,
         );
+        lifecycle?.assertActive();
         if (!isCurrentRequest()) {
           return get().selectedConversationId;
         }
@@ -14599,10 +12470,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ) {
             const repairedConversation =
               await repairArchitectPlanConversationScope({
+            lifecycle,
                 conversationId,
                 fallbackProjectId: resolution.fallbackProjectId ?? null,
                 fallbackGroupId: resolution.fallbackGroupId ?? null,
               });
+            lifecycle?.assertActive();
             if (!isCurrentRequest()) {
               return get().selectedConversationId;
             }
@@ -14636,17 +12509,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             latestState.selectedConversationId,
             conversationId,
           );
-          await ensureMessagesLoadedForConversation(conversationId);
+          await ensureMessagesLoadedForConversation(conversationId, lifecycle);
+          lifecycle?.assertActive();
           await hydrateConversationCitationsIfAvailable(conversationId);
+          lifecycle?.assertActive();
           if (!isCurrentRequest()) {
             return get().selectedConversationId;
           }
-          await hydrateConversationToolboxStateIfAvailable(conversationId);
+          await hydrateConversationToolboxStateIfAvailable(conversationId, lifecycle);
+          lifecycle?.assertActive();
           if (!isCurrentRequest()) {
             return get().selectedConversationId;
           }
-          await getConversationCompactionState(conversationId);
+          await getConversationCompactionState(conversationId, lifecycle);
+          lifecycle?.assertActive();
           await runAiSelectionRestore({
+            lifecycle,
             mode,
             conversationId,
             requestId,
@@ -14654,6 +12532,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             shouldShowResolving,
             clearPendingArchitectPlanSwitchRequestId: true,
           });
+          lifecycle?.assertActive();
           return conversationId;
         }
 
@@ -14666,6 +12545,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           clearConversationSelection(mode);
         }
         await runAiSelectionRestore({
+            lifecycle,
           mode,
           conversationId: null,
           requestId,
@@ -14673,10 +12553,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           shouldShowResolving,
           clearPendingArchitectPlanSwitchRequestId: true,
         });
+        lifecycle?.assertActive();
         return null;
       } catch (error) {
+        lifecycle?.assertActive();
         const normalized = toServiceError(error);
         if (isCurrentRequest()) {
+          if (mode === "Architect" && useAppStore.getState().activeArchitectPlanId) {
+            clearConversationSelection(mode);
+          }
           set({
             restoreStatus: "error",
             pendingArchitectPlanSwitchRequestId: null,
@@ -14687,9 +12572,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    reapplySelectionForCurrentContext: async () => {
+    reapplySelectionForCurrentContext: async (lifecycle) => {
+      lifecycle?.assertActive();
       await waitForHydration();
-      await get().ensureConversationForCurrentMode();
+      lifecycle?.assertActive();
+      await get().ensureConversationForCurrentMode(lifecycle);
+      lifecycle?.assertActive();
     },
 
     renameConversation: async (conversationId, title) => {
@@ -14810,11 +12698,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       deletedConversationIds.add(conversationId);
       pendingConversationDeletionIds.add(conversationId);
-      latestConversationSessionIdByConversationId.delete(conversationId);
-      completionPersistenceOwnersByConversationId.delete(conversationId);
+      turnRuntime.forget(conversationId);
+      let deletionSagaGeneration: string;
+      stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
-        await beginStandaloneConversationDeletionSaga(conversationId);
+        deletionSagaGeneration = await beginStandaloneConversationDeletionSaga(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
         pendingConversationDeletionIds.delete(conversationId);
@@ -14824,7 +12713,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await deletePersistedConversation(chatPersistenceAdapters, conversationId);
       } catch (error) {
         try {
-          await completeStandaloneConversationDeletionSaga(conversationId);
+          await completeStandaloneConversationDeletionSaga(conversationId, deletionSagaGeneration);
           deletedConversationIds.delete(conversationId);
         } catch (sagaError) {
           set({
@@ -14843,13 +12732,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           cleanupFailures.push(`${label}: ${toServiceError(error).message}`);
         }
       };
-      stopConversationRuntimeLocally(conversationId);
       await runCleanup("toolbox", () =>
         deleteConversationToolboxStateIfAvailable(conversationId),
       );
       if (!cleanupFailures.some((failure) => failure.startsWith("toolbox"))) {
         await runCleanup("journal de nettoyage", () =>
-          completeStandaloneConversationDeletionSaga(conversationId),
+          completeStandaloneConversationDeletionSaga(conversationId, deletionSagaGeneration),
         );
       }
       conversationCompactionStateCache.delete(conversationId);
@@ -14895,13 +12783,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       uniqueIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
         pendingConversationDeletionIds.add(conversationId);
-        latestConversationSessionIdByConversationId.delete(conversationId);
-        completionPersistenceOwnersByConversationId.delete(conversationId);
+        turnRuntime.forget(conversationId);
+        stopConversationRuntimeLocally(conversationId);
       });
+      const deletionSagaGenerations = new Map<string, string>();
       try {
         for (const conversationId of uniqueIds) {
           await prepareConversationReplayForDeletion(conversationId);
-          await beginStandaloneConversationDeletionSaga(conversationId);
+          deletionSagaGenerations.set(
+            conversationId,
+            await beginStandaloneConversationDeletionSaga(conversationId),
+          );
         }
       } catch (error) {
         uniqueIds.forEach((conversationId) => {
@@ -14915,9 +12807,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
         persistedDeletionCommitted = true;
-        uniqueIds.forEach((conversationId) => {
-          stopConversationRuntimeLocally(conversationId);
-        });
         const cleanupFailures: string[] = [];
         await Promise.all(
           uniqueIds.map(async (conversationId) => {
@@ -14940,7 +12829,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             )
             .map(async (conversationId) => {
               try {
-                await completeStandaloneConversationDeletionSaga(conversationId);
+                const generation = deletionSagaGenerations.get(conversationId);
+                if (!generation) throw new Error('Génération de suppression liée introuvable.');
+                await completeStandaloneConversationDeletionSaga(conversationId, generation);
               } catch (error) {
                 cleanupFailures.push(
                   `journal de nettoyage ${conversationId}: ${toServiceError(error).message}`,
@@ -14970,7 +12861,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           await Promise.all(
             uniqueIds.map(async (conversationId) => {
               try {
-                await completeStandaloneConversationDeletionSaga(conversationId);
+                const generation = deletionSagaGenerations.get(conversationId);
+                if (!generation) throw new Error('Génération de suppression liée introuvable.');
+                await completeStandaloneConversationDeletionSaga(conversationId, generation);
                 deletedConversationIds.delete(conversationId);
               } catch (sagaError) {
                 set({
@@ -14990,7 +12883,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     assertPilotConversationDeletionReady: (conversationId, token) => {
       assertPilotConversationActionAllowed(conversationId, token);
-      if (activeAssistantStreamPromisesByConversationId.has(conversationId) ||
+      if (isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, conversationId)) ||
           pendingAgentCodeReplayRollbacksByConversationId.has(conversationId) ||
           pendingAgentCodeReplayMarkersByConversationId.has(conversationId) ||
           replayRecoveryBlockedConversationIds.has(conversationId)) throw new Error('content_unavailable');
@@ -15005,8 +12898,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await authorize();
       if (options?.pilotActionToken) get().assertPilotConversationDeletionReady(conversationId, options.pilotActionToken);
       deletedConversationIds.add(conversationId);
-      latestConversationSessionIdByConversationId.delete(conversationId);
-      completionPersistenceOwnersByConversationId.delete(conversationId);
+      turnRuntime.forget(conversationId);
+      stopConversationRuntimeLocally(conversationId);
       try {
         if (!options?.pilotActionToken) await prepareConversationReplayForDeletion(conversationId);
       } catch (error) {
@@ -15610,13 +13503,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw buildSendError("The conversation is no longer running.");
       }
       if (behavior === "queue") {
-        const queue = queuedSubmissionsByConversationId.get(payload.conversationId) ?? [];
-        queue.push({
-          ...payload,
-          images: payload.images ? [...payload.images] : undefined,
-          contextRefs: persistableContextRefs(get().composerContextRefs),
+        if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
+        const capturedInput = structuredClone(payload);
+        const capturedSnapshot = structuredClone(captureSendSnapshot(payload.conversationId));
+        const queue = await getQueueRuntime();
+        const entry = queue.capture(createConversationTurnId(), capturedInput, capturedSnapshot);
+        if (entry.intent.mode === 'Architect' && !entry.intent.architectPlan) {
+          throw buildSendError('Select a plan before sending an Architect message.');
+        }
+        const config = await loadScopedTurnConfiguration({
+          projectIds: entry.intent.executionContext.projectIds,
+          focusProjectId: entry.intent.executionContext.focusedProjectId,
+          mode: entry.intent.mode,
         });
-        queuedSubmissionsByConversationId.set(payload.conversationId, queue);
+        const scoped = resolveScopedModelSelection(config,
+          scopedModelPreferenceKeys(entry.intent.mode, entry.intent.agentType, entry.input.internalAgentProfile));
+        if (scoped) entry.intent.provider = {
+          selectedProviderId: scoped.providerId, selectedModelId: scoped.modelId,
+          selectedReasoningEffort: scoped.reasoningEffort ?? null,
+        };
+        if (isAppShutdownGateActive() || deletedConversationIds.has(payload.conversationId) ||
+          useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
+          throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+        }
+        queue.accept(entry);
         return "queued";
       }
 
@@ -15642,9 +13552,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? { image_metadata: getImageContextMetadata(payload.images) }
           : {}),
       };
-      const pending = pendingSteersByConversationId.get(payload.conversationId) ?? [];
-      pending.push(steerMessage);
-      pendingSteersByConversationId.set(payload.conversationId, pending);
+      turnRuntime.enqueueSteer(payload.conversationId, steerMessage);
       let userMessage: ChatMessage;
       try {
         userMessage = await buildUserMessageForSend({
@@ -15655,10 +13563,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           contextRefs,
         });
       } catch (error) {
-        const remaining = (pendingSteersByConversationId.get(payload.conversationId) ?? [])
-          .filter((message) => message !== steerMessage);
-        if (remaining.length > 0) pendingSteersByConversationId.set(payload.conversationId, remaining);
-        else pendingSteersByConversationId.delete(payload.conversationId);
+        turnRuntime.removeSteer(payload.conversationId, steerMessage);
         throw error;
       }
       get().addMessage(userMessage);
@@ -15667,629 +13572,168 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return "steered";
     },
 
-    sendMessage: async (payload) => {
+    sendMessage: async (payload, queuedSubmission) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
-      let {
-        conversationId,
-        content,
-        taskId,
-        images,
-        internalAgentProfile,
-        hiddenContext,
-        providerInputItems,
-        contextRefs: contextRefsOverride,
-        pilotTarget,
-      } = payload;
-      assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
-      const contextRefsForMessage = contextRefsOverride ?? persistableContextRefs(get().composerContextRefs);
-      const shouldClearComposerContextRefs = contextRefsOverride === undefined;
-      const composerContextRefsRevisionAtSend = composerContextRefsRevision;
-      let activeSessionId: string | null = null;
-      let activeTurnId: string | null = null;
-      let assistantMessageId: string | null = null;
-      let launchError: unknown = null;
-      // Capture every mutable selection before the first await.  This is the
-      // operation boundary; later continuations are fenced by its session and
-      // controller instead of consulting the current UI selection.
-      const appStateAtSend = useAppStore.getState();
-      const providerState = useProviderStore.getState();
-      const conversationAtSend = get().conversations.find(
-        (conversation) => conversation.id === conversationId,
-      );
-      const reservedTaskId = pilotTarget?.taskId ?? conversationAtSend?.task_id;
-      if (reservedTaskId) {
-        assertPilotTaskActionAllowed(reservedTaskId, pilotTarget?.actionToken);
+      const pilotTarget = payload.pilotTarget;
+      if (pilotTarget && queuedSubmission) throw buildSendError('Pilot cannot send a queued submission.');
+      assertPilotConversationActionAllowed(payload.conversationId, pilotTarget?.actionToken);
+      const pilotConversation = pilotTarget
+        ? get().conversations.find(conversation => conversation.id === payload.conversationId)
+        : undefined;
+      const pilotTaskId = pilotTarget?.taskId ?? pilotConversation?.task_id ?? null;
+      if (pilotTaskId) assertPilotTaskActionAllowed(pilotTaskId, pilotTarget?.actionToken);
+      const queuedExecutionContext = queuedSubmission
+        ? await revalidateQueuedExecutionContext(queuedSubmission) : undefined;
+      const provider = useProviderStore.getState();
+      const snapshot: ChatSendSnapshot = queuedSubmission
+        ? { ...queuedSubmission.intent, composerRevision: -1,
+            executionContext: queuedExecutionContext!,
+            modelSelectionCaptured: true,
+            provider: { ...queuedSubmission.intent.provider,
+              isLoading: provider.isLoading,
+              providerConfigs: provider.providerConfigs.map(config => ({ ...config })) } }
+        : captureSendSnapshot(payload.conversationId);
+      if (pilotTarget) {
+        const mode = pilotTarget.mode ?? 'Implement';
+        snapshot.mode = mode;
+        snapshot.agentType = mode === 'Implement' ? 'build' : null;
+        snapshot.selectedTaskId = mode === 'Implement' ? (pilotTarget.taskId ?? '') : '';
+        snapshot.executionContext = resolveConversationExecutionContext(payload.conversationId, pilotTarget.mode);
+        snapshot.composerRevision = -1;
+        snapshot.modelSelectionCaptured = true;
+        snapshot.provider.selectedProviderId = pilotConversation?.provider_id ?? null;
+        snapshot.provider.selectedModelId = pilotConversation?.model_id ?? null;
+        snapshot.provider.selectedReasoningEffort = pilotConversation?.reasoning_effort ?? null;
       }
-      const modeAtSend = pilotTarget ? pilotTarget.mode ?? "Implement" : appStateAtSend.mode;
-      const agentTypeAtSend =
-        modeAtSend === "Implement" ? (pilotTarget ? "build" : appStateAtSend.agentType) : null;
-      const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
-      const architectPlanAtSend =
-        modeAtSend === "Architect" && activeArchitectPlanIdAtSend
-          ? {
-              planId: activeArchitectPlanIdAtSend,
-              targetBranch: resolveTargetBranch(
-                appStateAtSend.activePlanContext?.targetBranch,
-              ),
-            }
-          : undefined;
-      const providerSelectionAtSend = {
-        selectedProviderId: pilotTarget
-          ? conversationAtSend?.provider_id ?? null
-          : providerState.selectedProviderId,
-        selectedModelId: pilotTarget
-          ? conversationAtSend?.model_id ?? null
-          : providerState.selectedModelId,
-        selectedReasoningEffort: pilotTarget
-          ? conversationAtSend?.reasoning_effort ?? null
-          : providerState.selectedReasoningEffort,
-        isLoading: providerState.isLoading,
-        providerConfigs: providerState.providerConfigs.map((provider) => ({
-          ...provider,
-        })),
-        resolveProviderApiKey: providerState.resolveProviderApiKey,
-        supportsNativeToolCalling: (providerId: string, modelId: string) =>
-          typeof providerState.supportsNativeToolCalling === "function"
-            ? providerState.supportsNativeToolCalling(providerId, modelId)
-            : providerState.selectedSupportsNativeToolCalling(),
-      };
-      const conversationTaskIdAtSend = conversationAtSend?.task_id ?? null;
-      const selectedTaskIdAtSend =
-        modeAtSend === "Implement"
-          ? (pilotTarget?.taskId ?? appStateAtSend.selectedTaskId ?? "")
-          : "";
-      const resolvedTaskIdAtSend =
-        modeAtSend === "Chat"
-          ? ""
-          : (taskId ?? conversationTaskIdAtSend ?? selectedTaskIdAtSend);
-      const executionContextAtSend = resolveConversationExecutionContext(conversationId, pilotTarget?.mode);
-      const preparationAbortController = new AbortController();
-      const cancelledResult = (): ChatSendCancelledResult => ({
-        status: "cancelled",
-        conversationId,
-        turnId: activeTurnId ?? "",
-        userMessageId: null,
-        assistantMessageId: null,
-      });
-      const isCurrentPreparation = () => {
-        const runtime = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          conversationId,
-        );
-        return !deletedConversationIds.has(conversationId) &&
-          !preparationAbortController.signal.aborted &&
-          runtime.sessionId === activeSessionId &&
-          runtime.turnId === activeTurnId &&
-          runtime.phase === "preparing";
-      };
-      const sendTimelineStartedAt = Date.now();
-      const emitSendTimeline = (phase: StreamTimelinePhase | string, context?: Record<string, unknown>) => {
-        devLogger.info("Provider stream timeline", {
-          requestId: activeSessionId,
-          phase,
-          elapsedMs: Date.now() - sendTimelineStartedAt,
-          ...context,
-        });
-      };
-
-      try {
-        assertConversationRuntimeAvailableForSend(conversationId);
-        activeSessionId = createConversationSessionId();
-        activeTurnId = createConversationTurnId();
-        latestConversationSessionIdByConversationId.set(
-          conversationId,
-          activeSessionId,
-        );
-        emitSendTimeline("send_requested", { conversationId });
-        setConversationRuntime(
-          conversationId,
-          {
-            phase: "preparing",
-            sessionId: activeSessionId,
-            turnId: activeTurnId,
-            assistantMessageId: null,
-            abortController: preparationAbortController,
-            lastError: null,
+      if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
+      return sendChatMessage({ ...payload, submissionTurnId: queuedSubmission?.id }, snapshot, {
+        owner: turnRuntime,
+        messages: {
+          persistence: chatPersistenceAdapters,
+          onUserPersisted: queuedSubmission ? message => queueRuntime!.acknowledge(queuedSubmission, message) : undefined,
+          ensureLoaded: ensureMessagesLoadedForConversation,
+          list: getOrderedConversationMessages,
+          hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
+          clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
+        },
+        preparation: {
+          authorizePilotEffect: async (conversationId, taskId) => {
+            assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
+            if (taskId) assertPilotTaskActionAllowed(taskId, pilotTarget?.actionToken);
+            await pilotTarget?.beforeEffect?.();
+            assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
+            if (taskId) assertPilotTaskActionAllowed(taskId, pilotTarget?.actionToken);
           },
-          { globalLastError: null },
-        );
-        await ensureMessagesLoadedForConversation(conversationId);
-        const currentPreparingRuntime = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          conversationId,
-        );
-        if (
-          preparationAbortController.signal.aborted ||
-          deletedConversationIds.has(conversationId) ||
-          currentPreparingRuntime.sessionId !== activeSessionId ||
-          currentPreparingRuntime.turnId !== activeTurnId
-        ) {
-          return cancelledResult();
-        }
-        emitSendTimeline("messages_ready", { conversationId });
-        if (modeAtSend === "Architect" && !architectPlanAtSend) {
-          throw buildSendError("Select a plan before sending an Architect message.");
-        }
-
-        const previousConversationId = conversationId;
-        const hasPendingArchitectConversation =
-          pendingArchitectConversationDetailsById.has(conversationId);
-        if (hasPendingArchitectConversation) {
-          conversationId =
-            await materializePendingArchitectConversationIfNeeded(conversationId);
-        }
-        if (
-          preparationAbortController.signal.aborted ||
-          deletedConversationIds.has(previousConversationId)
-        ) {
-          return cancelledResult();
-        }
-        if (hasPendingArchitectConversation && conversationId !== previousConversationId) {
-          if (
-            !transferConversationSessionOwnership(
-              previousConversationId,
-              conversationId,
-              activeSessionId,
-            )
-          ) {
-            abortAndClearPreparingRuntimeIfSessionMatches(
-              previousConversationId,
-              activeSessionId,
-              activeTurnId,
-              preparationAbortController,
-            );
-            return cancelledResult();
-          }
-          setConversationRuntime(previousConversationId, null);
-          setConversationRuntime(
-            conversationId,
-            {
-              phase: "preparing",
-              sessionId: activeSessionId,
-              turnId: activeTurnId,
-              assistantMessageId: null,
-              abortController: preparationAbortController,
-              lastError: null,
-            },
-            { globalLastError: null },
-          );
-        }
-        const scopedTurnConfigurationAtSend = await loadScopedTurnConfiguration({
-          projectIds: executionContextAtSend.projectIds,
-          focusProjectId: executionContextAtSend.focusedProjectId,
-          mode: modeAtSend,
-        });
-        if (!isCurrentPreparation()) {
-          return cancelledResult();
-        }
-        const scopedModelSelection = pilotTarget ? null : resolveScopedModelSelection(
-          scopedTurnConfigurationAtSend,
-          scopedModelPreferenceKeys(modeAtSend, agentTypeAtSend, internalAgentProfile),
-        );
-        const selectedProviderId = scopedModelSelection?.providerId
-          ?? providerSelectionAtSend.selectedProviderId;
-        const selectedModelId = scopedModelSelection?.modelId
-          ?? providerSelectionAtSend.selectedModelId;
-        const selectedReasoningEffort = scopedModelSelection
-          ? scopedModelSelection.reasoningEffort
-          : providerSelectionAtSend.selectedReasoningEffort;
-        const { providerConfigs } = providerSelectionAtSend;
-        // Pilot uses the target conversation selection, not the active composer.
-        if (!pilotTarget) persistSelectionForContext(modeAtSend, conversationId);
-
-        if (providerSelectionAtSend.isLoading) {
-          throw buildSendError("Provider settings are still loading.");
-        }
-
-        if (!selectedProviderId || !selectedModelId) {
-          throw buildSendError(
-            "Select a provider and model before sending a message.",
-          );
-        }
-
-        const providerConfig = providerConfigs.find(
-          (p) => p.id === selectedProviderId,
-        );
-        if (!providerConfig || !providerConfig.isEnabled) {
-          throw buildSendError(
-            scopedModelSelection
-              ? "The model configured for this project uses an unavailable provider."
-              : "Provider configuration not found.",
-          );
-        }
-        const resolvedApiKey =
-          providerConfig.isLocal || providerHasAuthSession(providerConfig)
-            ? providerConfig.apiKey
-            : await providerSelectionAtSend.resolveProviderApiKey(selectedProviderId);
-        if (!isCurrentPreparation()) {
-          return cancelledResult();
-        }
-        const providerConfigForUse = {
-          ...providerConfig,
-          apiKey: resolvedApiKey,
-          apiKeyLoaded:
-            providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
-        };
-
-        const resolvedTaskId = resolvedTaskIdAtSend;
-        let taskForSend = resolvedTaskIdAtSend
-          ? useTaskStore.getState().getTaskById(resolvedTaskId)
-          : undefined;
-        let finalizedManualFeatureDraft = false;
-        let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
-        let userMessage: ChatMessage | null = null;
-        let userMessageCountBeforeSend = getOrderedConversationMessages(
-          conversationId,
-        ).filter((message) => message.role === "user").length;
-        const publishUserMessage = (message: ChatMessage) => {
-          get().addMessage(message);
-          if (images && images.length > 0) {
-            get().setMessageImages(message.id, images);
-          }
-          for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
-            const path = getFileRefPath(ref);
-            useCitationsStore.getState().addCitation({
-              type: "file",
-              scope: "context",
-              source: path,
-              title: ref.title,
-              path,
-              messageId: message.id,
-              conversationId,
-            });
-          }
-          if (shouldClearComposerContextRefs) {
-            clearComposerContextRefsIfRevisionMatches(
-              conversationId,
-              composerContextRefsRevisionAtSend,
-            );
-          }
-        };
-
-        const isFirstManualFeatureMessage =
-          modeAtSend === "Implement" &&
-          Boolean(resolvedTaskId) &&
-          taskForSend?.task_source === "standalone" &&
-          taskForSend.standalone_kind === "manual_feature" &&
-          taskForSend.draft === true &&
-          userMessageCountBeforeSend === 0;
-
-        if (isFirstManualFeatureMessage) {
-          await pilotTarget?.beforeEffect?.();
-          if (!isCurrentPreparation()) {
-            return cancelledResult();
-          }
-          userMessage = await buildUserMessageForSend({
-            conversationId,
-            turnId: activeTurnId,
-            taskId: resolvedTaskId,
-            content,
-            hiddenContext,
-            providerInputItems,
-            contextRefs: contextRefsForMessage,
-          });
-          publishUserMessage(userMessage);
-          beginStandaloneTaskLaunch({
-            conversationId,
-            taskId: resolvedTaskId,
-            userMessageId: userMessage.id,
-            sessionId: activeSessionId,
-          });
-        }
-
-        if (modeAtSend === "Implement" && resolvedTaskId) {
-          if (
-            taskForSend?.task_source === "standalone" &&
-            taskForSend.standalone_kind === "manual_feature" &&
-            taskForSend.draft === true
-          ) {
-            manualFeatureDraftRecovery =
-              await maybeFinalizeManualFeatureDraftForAssistantRequest({
-                conversationId,
-                taskId: resolvedTaskId,
-                userContent: content,
-                providerId: selectedProviderId,
-                providerType: providerConfigForUse.providerType,
-                baseUrl: providerConfigForUse.baseUrl,
-                apiKey: providerConfigForUse.apiKey,
-                modelId: selectedModelId,
-                reasoningEffort: selectedReasoningEffort,
-                onStep: (step) => {
-                  if (activeSessionId) {
-                    setStandaloneTaskLaunchStep(
-                      conversationId,
-                      activeSessionId,
-                      step,
-                    );
-                  }
-                },
-              });
-            if (!isCurrentPreparation()) {
-              return cancelledResult();
+          assertCanSend: (id) => {
+            if (queuedSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
+              throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
             }
-            finalizedManualFeatureDraft = manualFeatureDraftRecovery !== null;
-          }
-
-          taskForSend =
-            (await assertImplementTaskReadyForSend(
-              resolvedTaskId,
-              pilotTarget?.actionToken,
-              pilotTarget?.beforeEffect,
-            )) ??
-            taskForSend;
-          if (!isCurrentPreparation()) {
-            return cancelledResult();
-          }
-          assertStandaloneTaskExecutionContextReady(taskForSend);
-          if (isFirstManualFeatureMessage && activeSessionId) {
-            setStandaloneTaskLaunchStep(
-              conversationId,
-              activeSessionId,
-              "starting_agent",
-            );
-          }
-        }
-
-        if (!userMessage) {
-          userMessageCountBeforeSend = getOrderedConversationMessages(
-            conversationId,
-          ).filter((message) => message.role === "user").length;
-          await pilotTarget?.beforeEffect?.();
-          if (!isCurrentPreparation()) {
-            return cancelledResult();
-          }
-          userMessage = await buildUserMessageForSend({
-            conversationId,
-            turnId: activeTurnId,
-            taskId: resolvedTaskId,
-            content,
-            hiddenContext,
-            providerInputItems,
-            contextRefs: contextRefsForMessage,
-          });
-        }
-        const persistedUserMessage = userMessage;
-        if (get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") {
-          await persistToolApprovalRecovery(conversationId, null).catch((error) => set({ toolApprovalRecoveryError: toServiceError(error).message }));
-          clearConversationSecurityState(conversationId);
-        }
-        const sentWithoutAssistantResult = () => ({
-          status: "sent" as const,
-          conversationId,
-          turnId: activeTurnId ?? "",
-          userMessageId: persistedUserMessage.id,
-          assistantMessageId: null,
-        });
-        if (!isCurrentPreparation()) {
-          if (!isFirstManualFeatureMessage) {
-            publishUserMessage(persistedUserMessage);
-          }
-          return sentWithoutAssistantResult();
-        }
-
-        if (!isFirstManualFeatureMessage) {
-          publishUserMessage(persistedUserMessage);
-        }
-
-        if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
-          let skipMetadataGeneration = false;
-          const architectPlan = architectPlanAtSend;
-          if (architectPlan) {
-            const bindingSucceeded =
-              await bindPendingArchitectConversationIfNeeded({
-                architectPlan,
-                conversationId,
-              });
-            if (!bindingSucceeded) {
-              skipMetadataGeneration = true;
-            } else {
-              await syncArchitectMetadataFromDb({
-                branchName: architectPlan.targetBranch,
-                planId: architectPlan.planId,
-                conversationId,
-                reason: "metadata_prefix",
-              });
-            }
-          }
-
-          if (!skipMetadataGeneration) {
-            void maybeGenerateConversationMetadata({
-              conversationId,
-              firstUserContent: content,
-              providerId: selectedProviderId,
-              providerType: providerConfigForUse.providerType,
-              baseUrl: providerConfigForUse.baseUrl,
-              apiKey: providerConfigForUse.apiKey,
-              modelId: selectedModelId,
-              reasoningEffort: selectedReasoningEffort,
-              architectPlan,
-            });
-          }
-        }
-
-        try {
-          const streamLaunch = await prepareAssistantStreamLaunch({
-            conversationId,
-            replyToMessageId: persistedUserMessage.id,
-            userContent: content,
-            resolvedTaskId,
-            modeAtSend,
-            agentTypeAtSend,
-            providerId: selectedProviderId,
-            modelId: selectedModelId,
-            reasoningEffort: selectedReasoningEffort,
-            providerConfig: providerConfigForUse,
-            internalAgentProfile,
-            executionContext: executionContextAtSend,
-            scopedTurnConfigurationOverride: scopedTurnConfigurationAtSend,
-            providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling(
-                selectedProviderId,
-                selectedModelId,
+            assertConversationRuntimeAvailableForSend(id);
+          },
+          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(queuedSubmission &&
+            useConversationArchiveStore.getState().archivedConversationIds.has(id)),
+          createSessionId: createConversationSessionId,
+          createTurnId: createConversationTurnId,
+          hasPendingArchitectConversation: (id) => pendingArchitectConversationDetailsById.has(id),
+          materializeArchitectConversation: materializePendingArchitectConversationIfNeeded,
+          bindArchitectConversation: bindPendingArchitectConversationIfNeeded,
+          syncArchitectMetadata: syncArchitectMetadataFromDb,
+          generateMetadata: maybeGenerateConversationMetadata,
+        },
+        configuration: {
+          load: loadScopedTurnConfiguration,
+          selectScoped: (config, captured, profile) => resolveScopedModelSelection(
+            config, scopedModelPreferenceKeys(captured.mode, captured.agentType, profile),
+          ),
+          hasAuthSession: providerHasAuthSession,
+          resolveApiKey: provider.resolveProviderApiKey,
+          supportsNativeToolCalling: (providerId, modelId) =>
+            typeof provider.supportsNativeToolCalling === "function"
+              ? provider.supportsNativeToolCalling(providerId, modelId)
+              : provider.selectedSupportsNativeToolCalling(),
+        },
+        tasks: {
+          read: (id) => useTaskStore.getState().getTaskById(id),
+          finalizeDraft: maybeFinalizeManualFeatureDraftForAssistantRequest,
+          assertReady: id => assertImplementTaskReadyForSend(
+            id, pilotTarget?.actionToken, pilotTarget?.beforeEffect,
+          ),
+          completeExecutionContext: (taskId, captured) => {
+            const app = useAppStore.getState();
+            const tasks = useTaskStore.getState();
+            const merge = tasks.getMergeWorkflowRuntime?.(taskId);
+            return completePreparedTaskExecutionContext(captured, {
+              taskId,
+              projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+              projectGroups: app.projectGroups,
+              tasks: tasks.tasks,
+              branchWorktrees: tasks.branchWorktrees,
+              workspacePathOverridesByProjectId: Object.fromEntries(
+                (merge?.repositories ?? []).map(repository => [repository.projectId, repository.repoPath]),
               ),
-          });
-          if (!isCurrentPreparation()) {
-            return sentWithoutAssistantResult();
-          }
-          emitSendTimeline("compaction_done", {
-            conversationId,
-            providerId: selectedProviderId,
-            providerType: providerConfigForUse.providerType,
-          });
-
-          const assistantMessage = await buildAssistantMessageForSend({
-            conversationId,
-            turnId: activeTurnId,
-            taskId: resolvedTaskId,
-          });
-          if (!isCurrentPreparation()) {
-            if (
-              latestConversationSessionIdByConversationId.get(
-                conversationId,
-              ) === activeSessionId
-            ) {
-              await deletePersistedMessagesAfter(
-                chatPersistenceAdapters,
-                conversationId,
-                persistedUserMessage.id,
-              ).catch(() => undefined);
-            }
-            return sentWithoutAssistantResult();
-          }
-          rememberAssistantTurnContext(
-            assistantMessage.id,
-            conversationId,
-            modeAtSend,
-            agentTypeAtSend,
-          );
-          assistantMessageId = assistantMessage.id;
-          get().addMessage(assistantMessage);
-          setConversationRuntime(
-            conversationId,
-            {
-              phase: "preparing",
-              sessionId: activeSessionId,
-              turnId: activeTurnId,
-              assistantMessageId: assistantMessage.id,
-              abortController: preparationAbortController,
-              lastError: null,
-            },
-            { globalLastError: null },
-          );
-
-          emitSendTimeline("provider_stream_start_requested", {
-            conversationId,
-            providerId: selectedProviderId,
-            providerType: providerConfigForUse.providerType,
-          });
-          await pilotTarget?.beforeEffect?.();
-          if (!isCurrentPreparation()) {
-            return sentWithoutAssistantResult();
-          }
-          startAssistantStream({
-            sessionId: activeSessionId,
-            assistantMessage,
-            conversationId,
-            replyToMessageId: persistedUserMessage.id,
-            userContent: content,
-            modeAtSend,
-            agentTypeAtSend,
-            resolvedTaskId,
-            pilotActionToken: pilotTarget?.actionToken,
-            selectedProviderId,
-            selectedModelId,
-            selectedReasoningEffort,
-            providerConfig: providerConfigForUse,
-            internalAgentProfile: streamLaunch.internalAgentProfile,
-            messagesForRequest: streamLaunch.messagesForRequest,
-            contextDiagnosticsBaselineSeed:
-              streamLaunch.contextDiagnosticsBaselineSeed,
-            executionContext: executionContextAtSend,
-            providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling(
-                selectedProviderId,
-                selectedModelId,
-              ),
-            fileToolContext: streamLaunch.fileToolContext,
-            allowedToolIds: streamLaunch.allowedToolIds,
-            riskLevel: streamLaunch.riskLevel,
-            scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
-            skillToolIds: streamLaunch.skillToolIds,
-            runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
-            guidedToolRetry: streamLaunch.guidedToolRetry,
-            showToolTraces: streamLaunch.showToolTraces,
-            enableWebSearch: streamLaunch.enableWebSearch,
-            enableWebFetch: streamLaunch.enableWebFetch,
-            webSearchOptions: streamLaunch.webSearchOptions,
-            mcpTools: streamLaunch.mcpTools,
-            mcpServers: streamLaunch.mcpServers,
-            maxTurns: streamLaunch.maxTurns,
-            compactionDecision: streamLaunch.compactionDecision,
-            abortController: preparationAbortController,
-          });
-          if (isFirstManualFeatureMessage && activeSessionId) {
-            completeStandaloneTaskLaunch(conversationId, activeSessionId);
-          }
-        } catch (error) {
-          launchError = error;
-          if (manualFeatureDraftRecovery) {
-            await rollbackManualFeatureDraftAfterFailedLaunch(
-              manualFeatureDraftRecovery,
-            );
-          }
-          throw error;
-        }
-
-        if (!activeTurnId) {
-          throw buildSendError("Conversation turn was not created before sending.");
-        }
-
-        return {
-          status: "sent",
-          conversationId,
-          turnId: activeTurnId,
-          userMessageId: persistedUserMessage.id,
-          assistantMessageId,
-        };
-      } catch (error) {
-        const normalized = toServiceError(error);
-        if (activeSessionId) {
-          const launch =
-            get().standaloneTaskLaunchByConversationId[conversationId];
-          if (launch?.sessionId === activeSessionId) {
-            const retryTask = useTaskStore.getState().getTaskById(launch.taskId);
-            failStandaloneTaskLaunch({
-              conversationId,
-              sessionId: activeSessionId,
-              error: normalized.message,
-              canRetry: retryTask?.draft === true,
             });
-          }
-        }
-        if (preparationAbortController.signal.aborted) {
-          return cancelledResult();
-        }
-        if (activeSessionId) {
-          const result = applyAssistantLaunchError(
-            conversationId,
-            activeSessionId,
-            assistantMessageId,
-            normalized,
-            { setSendState: true },
-          );
-          if (!result.applied) {
-            if (launchError) {
-              throw normalized;
+          },
+          assertExecutionContextReady: assertStandaloneTaskExecutionContextReady,
+          rollbackDraft: rollbackManualFeatureDraftAfterFailedLaunch,
+          beginLaunch: beginStandaloneTaskLaunch,
+          setLaunchStep: setStandaloneTaskLaunchStep,
+          completeLaunch: completeStandaloneTaskLaunch,
+          readLaunch: (id) => get().standaloneTaskLaunchByConversationId[id],
+          failLaunch: failStandaloneTaskLaunch,
+        },
+        projection: {
+          persistSelection: (mode, id) => {
+            if (!queuedSubmission && !pilotTarget) persistSelectionForContext(mode, id);
+          },
+          publishUser: (message, context) => {
+            get().addMessage(message);
+            if (context.images?.length) get().setMessageImages(message.id, context.images);
+            for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
+              const path = getFileRefPath(ref);
+              useCitationsStore.getState().addCitation({
+                type: "file", scope: "context", source: path, title: ref.title, path,
+                messageId: message.id, conversationId: message.conversation_id,
+              });
             }
-            return cancelledResult();
-          }
-        } else {
-          set({ sendState: "error", lastError: normalized.message });
-        }
-        throw normalized;
-      }
+            if (context.clearComposerRevision !== undefined) {
+              clearComposerContextRefsIfRevisionMatches(message.conversation_id, context.clearComposerRevision);
+            }
+          },
+          publishAssistant: (message, capturedMode, capturedAgent) => {
+            rememberAssistantTurnContext(message.id, message.conversation_id, capturedMode, capturedAgent);
+            get().addMessage(message);
+          },
+          clearSecurity: clearConversationSecurityState,
+          approvalRecoveryError: (message) => set({ toolApprovalRecoveryError: message }),
+          launchError: (id, session, assistantId, error) =>
+            applyAssistantLaunchError(id, session, assistantId, error, { setSendState: true }),
+          sendError: (message) => set({ sendState: "error", lastError: message }),
+          timeline: (phase, context) => devLogger.info("Provider stream timeline", { phase, ...context }),
+        },
+        stream: {
+          prepare: prepareAssistantStreamLaunch,
+          start: (request, launch) => startAssistantStream({
+            ...launch,
+            ...request,
+            // Preparation completes workspaces for the task identity captured at send.
+            internalAgentProfile: launch.internalAgentProfile,
+            executionContext: request.executionContext ?? launch.executionContext,
+            selectedProviderId: request.providerId,
+            selectedModelId: request.modelId,
+            selectedReasoningEffort: request.reasoningEffort,
+            pilotActionToken: request.pilotActionToken,
+          }),
+        },
+      });
+    },
+
+    queuedSubmissionRecoveryByConversationId: {},
+
+    retryQueuedSubmissions: async (conversationId) => {
+      const queue = await getQueueRuntime();
+      await queue.retry(conversationId);
     },
 
     stopConversationStream: (conversationId, pilotActionToken) => {
@@ -16307,6 +13751,142 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       setConversationRuntime(conversationId, null);
+    },
+
+    retryAssistantPersistence: (messageId) => retryAssistantPersistence(messageId, {
+      persistence: chatPersistenceAdapters,
+      messages: {
+        read: id => findChatMessageInState(get(), id),
+        patch: (id, fields) => get().updateMessageFields(id, fields),
+        failed: markAssistantPersistenceFailure,
+      },
+      recovery: {
+        removeSavedCopy: removeUnsavedAssistantResponseFromStorage,
+        clearError: clearAssistantPersistenceError,
+        resumeQueue: id => { void drainQueuedSubmissions(id); },
+      },
+    }),
+
+    deleteUnsavedAssistantResponse: async (messageId) => {
+      const assistantMessage = findChatMessageInState(get(), messageId);
+      if (
+        !assistantMessage ||
+        assistantMessage.role !== "assistant" ||
+        assistantMessage.persistence_state !== "failed"
+      ) {
+        throw buildSendError("This assistant response cannot be deleted here.");
+      }
+
+      const orderedMessages = sortMessagesChronologically(
+        get().getConversationMessages(assistantMessage.conversation_id),
+      );
+      const targetIndex = orderedMessages.findIndex(
+        (message) => message.id === messageId,
+      );
+      const targetTurnId = getMessageTurnId(assistantMessage);
+      const turnStartIndex = targetTurnId
+        ? orderedMessages.findIndex(
+            (message) => getMessageTurnId(message) === targetTurnId,
+          )
+        : -1;
+      const hasLaterUnrelatedTurn = orderedMessages
+        .slice(turnStartIndex)
+        .some((message) => getMessageTurnId(message) !== targetTurnId);
+      if (
+        targetIndex < 0 ||
+        !targetTurnId ||
+        turnStartIndex < 0 ||
+        turnStartIndex > targetIndex ||
+        hasLaterUnrelatedTurn
+      ) {
+        throw buildSendError(
+          "Only the latest unsaved assistant turn can be deleted.",
+        );
+      }
+      try {
+        await deletePersistedConversationTurn(
+          chatPersistenceAdapters,
+          assistantMessage.conversation_id,
+          targetTurnId,
+        );
+      } catch (error) {
+        throw buildSendError(
+          `Failed to delete the unsaved assistant response: ${toServiceError(error).message}`,
+        );
+      }
+
+      set((state) => {
+        const currentConversationMessages = sortMessagesChronologically(
+          getConversationMessagesFromState(
+            state,
+            assistantMessage.conversation_id,
+          ),
+        );
+        const retainedConversationMessages = currentConversationMessages.filter(
+          (message) => getMessageTurnId(message) !== targetTurnId,
+        );
+        const removedMessageIds = new Set(
+          currentConversationMessages
+            .filter((message) => getMessageTurnId(message) === targetTurnId)
+            .map((message) => message.id),
+        );
+        const nextMessages = state.messages.filter(
+          (message) => !removedMessageIds.has(message.id),
+        );
+        const rebuilt = buildMessageState(nextMessages);
+        const nextMessageImages = Object.fromEntries(
+          Object.entries(state.messageImagesByMessageId).filter(
+            ([candidateMessageId]) => !removedMessageIds.has(candidateMessageId),
+          ),
+        );
+        saveMessageImagesToStorage(nextMessageImages);
+        const nextQuestionnaireDrafts = clearQuestionnaireDraftsForConversations(
+          state.questionnaireDraftsByConversationId,
+          [assistantMessage.conversation_id],
+        );
+        saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
+        const lastMessage = retainedConversationMessages.at(-1);
+        return {
+          messages: rebuilt.messages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            ...rebuilt.messagesByConversationId,
+            [assistantMessage.conversation_id]: retainedConversationMessages,
+          },
+          messageIndexById: rebuilt.messageIndexById,
+          messageImagesByMessageId: nextMessageImages,
+          questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+          skillTurnFeedbackByMessageId: Object.fromEntries(
+            Object.entries(state.skillTurnFeedbackByMessageId).filter(
+              ([candidateMessageId]) => !removedMessageIds.has(candidateMessageId),
+            ),
+          ),
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === assistantMessage.conversation_id
+              ? {
+                  ...conversation,
+                  message_count: retainedConversationMessages.length,
+                  last_message: lastMessage?.content ?? "",
+                  updated_at: new Date().toISOString(),
+                }
+              : conversation,
+          ),
+        };
+      });
+      removeUnsavedAssistantResponseFromStorage(messageId);
+      clearAssistantPersistenceError(
+        assistantMessage.conversation_id,
+        messageId,
+      );
+      useCitationsStore.getState().pruneConversationCitations(
+        assistantMessage.conversation_id,
+        get()
+          .getConversationMessages(assistantMessage.conversation_id)
+          .map((message) => message.id),
+      );
+      queueMicrotask(() => {
+        void drainQueuedSubmissions(assistantMessage.conversation_id);
+      });
     },
 
     stopStreaming: () => {
@@ -16506,7 +14086,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskAtEdit.standalone_kind === "manual_feature" &&
         taskAtEdit.draft === true;
       assertConversationRuntimeAvailableForSend(conversationId);
-      latestConversationSessionIdByConversationId.set(conversationId, sessionId);
+      turnRuntime.rememberSession(conversationId, sessionId);
       setConversationRuntime(
         conversationId,
         {
@@ -16548,7 +14128,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId,
         );
         const ownsReplayFence =
-          latestConversationSessionIdByConversationId.get(conversationId) === sessionId &&
+          turnRuntime.latestSession(conversationId) === sessionId &&
           runtime.sessionId === sessionId &&
           runtime.turnId === turnId;
         if (!ownsReplayFence) return;
@@ -16567,7 +14147,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
           );
           if (
-            latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
+            turnRuntime.latestSession(conversationId) !== sessionId ||
             latestRuntime.sessionId !== sessionId ||
             latestRuntime.turnId !== turnId
           ) {
@@ -16783,6 +14363,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           taskId: target.task_id ?? "",
           userContent: newContent,
           modeAtSend: modeAtEdit,
+          architectPlanAtSend: appStateAtEdit.activeArchitectPlanId ? {
+            planId: appStateAtEdit.activeArchitectPlanId,
+            targetBranch: resolveTargetBranch(appStateAtEdit.activePlanContext?.targetBranch),
+          } : undefined,
           providerId: selectedProviderId,
           modelId: selectedModelId,
           reasoningEffort: selectedReasoningEffort,
@@ -16856,18 +14440,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    initializeCritical: async () => {
+    startSubscriptions,
+    stopSubscriptions,
+    drainSubscriptions: async () => {
+      await subscriptionRetirement;
+      await selectionPersistence.drain();
+      if (subscriptionCleanupFailures.length) {
+        throw new AggregateError(subscriptionCleanupFailures.splice(0), "Failed to stop Chat subscriptions.");
+      }
+    },
+
+    initializeCritical: async (lifecycle) => {
+      lifecycle?.assertActive();
       // Retire waiters, then drain in-flight writes before reading recovery data.
+      const retiredConversationIds = Object.keys(get().conversationRuntimeById);
       const retiredApprovalQueues = [...pendingToolApprovalQueues.values()];
       toolApprovalRuntimeEpoch += 1;
       for (const resolve of pendingToolApprovalResolvers.values()) resolve({ kind: "expired" });
       pendingToolApprovalResolvers.clear();
+      pendingToolApprovalSettlements.clear();
+      pendingToolApprovalBeforeEffects.clear();
       pendingToolApprovalQueues.clear();
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
-      latestConversationSessionIdByConversationId.clear();
-      completionPersistenceOwnersByConversationId.clear();
+      turnRuntime.reset();
       deletedConversationIds.clear();
       pendingConversationDeletionIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
@@ -16904,20 +14501,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageLoadStatusByConversationId: {},
       });
       try {
-        await Promise.allSettled(retiredApprovalQueues);
-        aiSelections = normalizeAIContextSelections(
-          await loadPreference<PersistedAIContextSelections>(
-            PREF_KEYS.AI_CONTEXT_SELECTIONS,
-          ),
+        await Promise.allSettled([
+          ...retiredApprovalQueues,
+          ...retiredConversationIds.map((id) => turnRuntime.drain(id)),
+        ]);
+        lifecycle?.assertActive();
+        await get().drainSubscriptions();
+        lifecycle?.assertActive();
+        const storedSelections = await loadPreference<PersistedAIContextSelections>(
+          PREF_KEYS.AI_CONTEXT_SELECTIONS,
         );
+        lifecycle?.assertActive();
+        aiSelections = normalizeAIContextSelections(storedSelections);
         aiSelectionsLoaded = true;
-        ensureProviderSelectionSync();
-        ensureContextSelectionSync();
+        if (!subscriptionScope) startSubscriptions(lifecycle);
 
-        hydrationPromise = hydrateChatSnapshot();
+        hydrationPromise = hydrateChatSnapshot(lifecycle);
         await hydrationPromise;
+        lifecycle?.assertActive();
         hydrationPromise = null;
       } catch (error) {
+        lifecycle?.assertActive();
         hydrationPromise = null;
         const normalized = toServiceError(error);
         console.error("Failed to initialize chat store:", normalized.message);
@@ -16925,6 +14529,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const composerDraftsByContextKey = restorePersistedComposerDrafts(
           [],
           EMPTY_STRING_SET,
+          false,
         );
         set({
           conversations: [],
@@ -16954,15 +14559,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
 
         aiSelectionsLoaded = true;
-        ensureProviderSelectionSync();
-        ensureContextSelectionSync();
+        if (!subscriptionScope) startSubscriptions(lifecycle);
       }
     },
 
-    resumeAfterInitialize: async () => {
+    resumeAfterInitialize: async (lifecycle) => {
+      lifecycle?.assertActive();
       try {
-        await get().ensureConversationForCurrentMode();
+        await get().ensureConversationForCurrentMode(lifecycle);
+        lifecycle?.assertActive();
       } catch (error) {
+        lifecycle?.assertActive();
         const normalized = toServiceError(error);
         console.error("Failed to resume chat context:", normalized.message);
         set({
@@ -16972,9 +14579,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    initialize: async () => {
-      await get().initializeCritical();
-      await get().resumeAfterInitialize();
+    initialize: async (lifecycle) => {
+      lifecycle?.assertActive();
+      await get().initializeCritical(lifecycle);
+      lifecycle?.assertActive();
+      await get().resumeAfterInitialize(lifecycle);
+      lifecycle?.assertActive();
     },
   };
 });

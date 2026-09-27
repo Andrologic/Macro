@@ -376,7 +376,10 @@ export class PilotRuntime {
     this.identity=null;this.kernel=null;this.publish('inactive');
     this.stopping = (async () => {
       await disposing?.catch(() => undefined);
-      await this.activeLoop?.catch(() => undefined);
+      // A transport that ignores cancellation must not block app shutdown forever.
+      // start() will fence a later producer until this loop has actually stopped.
+      const producerStopped = await this.waitForProducer();
+      if (!producerStopped) return;
       // All old producers have stopped before presence is disconnected.
       if(instance && identity) {
         const timeout=AbortSignal.timeout(3000);

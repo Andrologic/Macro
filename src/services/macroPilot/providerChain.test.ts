@@ -35,6 +35,12 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     case 'ai_submit_tool_result': toolResults.push(args!.request as Record<string, unknown>); return;
     case 'workspace_get_active_root': return project.path;
     case 'workspace_list_tasks': return { tasks: [persistedTask] };
+    case 'workspace_acquire_task_lifecycle_lock': return 'synthetic-task-lease';
+    case 'workspace_renew_task_lifecycle_lock':
+    case 'workspace_release_task_lifecycle_lock': return;
+    case 'ai_sync_provider_models':
+    case 'db_list_provider_configs':
+    case 'db_list_provider_models': return [];
     case 'workspace_update_standalone_task_status': persistedTask = { ...persistedTask, status: args!.status as CatalogedImplementTask['status'] }; return;
     case 'direct_checkpoint_ensure':
     case 'workspace_set_active_root': return;
@@ -99,6 +105,9 @@ mock.module('../tauriRuntimeBridge', () => ({
   },
 }));
 const httpFetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+  if (String(url) === 'https://models.dev/api.json') {
+    return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+  }
   lastHttp = { url: String(url), init: init ?? {} };
   const body = new ReadableStream<Uint8Array>({ start(controller) { httpController = controller;
     init?.signal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
@@ -262,7 +271,7 @@ describe('Pilot provider chain', () => {
       ...useProviderStore.getState().modelsByProvider[provider.id]![0]!, id: 'project-model',
     }] } });
     await desktopActions.reply(task.id, conversation.id, 'Approved direction', guard);
-    await eventually(() => lastHttp !== null);
+    await eventually(() => lastHttp?.url === 'https://project.invalid/v1/chat/completions');
     expect(requests).toHaveLength(0);
     expect(lastHttp!.url).toBe('https://project.invalid/v1/chat/completions');
     expect(JSON.parse(String(lastHttp!.init.body)).model).toBe('project-model');
@@ -294,7 +303,7 @@ describe('Pilot provider chain', () => {
       args: { questions: [{ id: 'scope', prompt: 'Which scope?', choices: ['Small', 'Medium', 'Large'] }] } });
     await eventually(() => toolResults.length === 1);
     expect(toolResults[0]).toMatchObject({ tool_call_id: 'question-call', interrupt: true, is_error: false });
-    emit('ai:done', { request_id: requests[0]!.request_id, output_text: toolResults[0]!.visible_content, hidden_context: toolResults[0]!.hidden_context, tool_calls: [], completion_reason: 'stop' });
+    emit('ai:done', { request_id: requests[0]!.request_id, output_text: toolResults[0]!.visible_content, hidden_context: toolResults[0]!.hidden_context, tool_calls: [], completion_reason: 'completed' });
     await eventually(() => !useChatStore.getState().conversationRuntimeById[conversation.id]);
     const questionnaire = useChatStore.getState().getActiveQuestionnaire(conversation.id);
     expect(questionnaire?.taskId).toBe(task.id);

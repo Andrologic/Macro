@@ -1,8 +1,20 @@
-use crate::ai::chatgpt::types::{
-    AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
-    AiStreamToolTraceEvent, AiToolTrace,
+pub mod protocol;
+
+use protocol::{
+    BridgeHealthResult, BridgeModelRecord, BridgeModelsResponse, BridgeSendEvent,
+    BridgeToolResultMessage,
 };
+pub use protocol::{
+    CopilotAuthCancelledEvent, CopilotAuthCompleteEvent, CopilotAuthErrorEvent,
+    CopilotAuthProgressEvent, CopilotDownloadCompleteEvent, CopilotDownloadErrorEvent,
+    CopilotDownloadProgressEvent, CopilotStatus, CopilotToolRequestEvent, CopilotToolResultRequest,
+};
+
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
+use crate::ai::types::{
+    AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
+    AiStreamToolTraceEvent,
+};
 use crate::ai::{
     emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
 };
@@ -14,7 +26,7 @@ use flate2::read::GzDecoder;
 use futures::StreamExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -67,75 +79,6 @@ pub(crate) fn validate_request_id(request_id: &str) -> Result<(), String> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct BridgeHealthResult {
-    ok: bool,
-    #[serde(rename = "cli_installed")]
-    _cli_installed: bool,
-    cli_version: Option<String>,
-    min_cli_version: String,
-    #[serde(rename = "version_ok")]
-    _version_ok: bool,
-    auth_status: String,
-    auth_source: Option<String>,
-    account_label: Option<String>,
-    status_message: Option<String>,
-    error_code: Option<String>,
-    error_message: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct BridgeModelRecord {
-    model_id: String,
-    name: String,
-    description: Option<String>,
-    owned_by: Option<String>,
-    supported_reasoning_efforts: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct BridgeModelsResponse {
-    models: Vec<BridgeModelRecord>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum BridgeSendEvent {
-    Delta {
-        delta: String,
-    },
-    ToolTrace {
-        #[serde(flatten)]
-        tool_trace: AiToolTrace,
-    },
-    ToolRequest {
-        request_id: String,
-        tool_call_id: String,
-        tool_name: String,
-        #[serde(default)]
-        args: Value,
-    },
-    Done {
-        content: String,
-        reasoning_summary: Option<String>,
-        hidden_context: Option<String>,
-        tool_traces: Option<Vec<AiToolTrace>>,
-        completion_reason: Option<String>,
-    },
-    Error {
-        code: Option<String>,
-        message: String,
-    },
-    Progress {
-        #[serde(flatten)]
-        _extra: HashMap<String, Value>,
-    },
-    LoginComplete {
-        #[serde(flatten)]
-        _extra: HashMap<String, Value>,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize)]
 struct CopilotRuntimeManifest {
     #[serde(rename = "version")]
     _version: String,
@@ -165,98 +108,6 @@ struct ManagedRuntimeMetadata {
     binary_path: String,
     installed_at: String,
     binary_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotStatus {
-    pub ok: bool,
-    pub runtime_source: String,
-    pub runtime_status: String,
-    pub runtime_version: Option<String>,
-    pub min_cli_version: String,
-    pub auth_status: String,
-    pub auth_source: Option<String>,
-    pub account_label: Option<String>,
-    pub status_message: Option<String>,
-    pub error_code: Option<String>,
-    pub error_message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotDownloadProgressEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub phase: String,
-    pub message: String,
-    pub downloaded_bytes: u64,
-    pub total_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotDownloadCompleteEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub runtime_version: String,
-    pub runtime_source: String,
-    pub status: CopilotStatus,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotDownloadErrorEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotAuthProgressEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub phase: String,
-    pub message: String,
-    pub verification_url: Option<String>,
-    pub user_code: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotAuthCompleteEvent {
-    pub request_id: String,
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotAuthCancelledEvent {
-    pub request_id: String,
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotAuthErrorEvent {
-    pub request_id: String,
-    pub provider_id: String,
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CopilotToolRequestEvent {
-    pub request_id: String,
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub args: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CopilotToolResultRequest {
-    pub request_id: String,
-    pub tool_call_id: String,
-    pub result: String,
-    pub hidden_context: Option<String>,
-    pub visible_content: Option<String>,
-    pub interrupt: Option<bool>,
-    pub is_error: Option<bool>,
-    pub error_kind: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2218,17 +2069,7 @@ pub async fn submit_tool_result(
         )
     })?;
 
-    let payload = json!({
-        "type": "tool_result",
-        "request_id": request.request_id,
-        "tool_call_id": request.tool_call_id,
-        "result": request.result,
-        "hidden_context": request.hidden_context,
-        "visible_content": request.visible_content,
-        "interrupt": request.interrupt.unwrap_or(false),
-        "is_error": request.is_error.unwrap_or(false),
-        "error_kind": request.error_kind,
-    });
+    let payload = BridgeToolResultMessage::from(request);
     let line = serde_json::to_string(&payload)
         .map_err(|error| format!("Failed to serialize Copilot tool result: {}", error))?;
 
@@ -2501,36 +2342,6 @@ mod tests {
         assert!(validate_request_id("../runtime").is_err());
         assert!(validate_request_id("runtime\\stage").is_err());
         assert!(validate_request_id("/").is_err());
-    }
-
-    #[test]
-    fn bridge_done_event_deserializes_reasoning_summary() {
-        let event = serde_json::from_str::<BridgeSendEvent>(
-            r#"{
-                "type": "done",
-                "content": "Final answer.",
-                "reasoning_summary": "Reasoning shown to the user.",
-                "completion_reason": "length"
-            }"#,
-        )
-        .expect("done event should deserialize");
-
-        match event {
-            BridgeSendEvent::Done {
-                content,
-                reasoning_summary,
-                completion_reason,
-                ..
-            } => {
-                assert_eq!(content, "Final answer.");
-                assert_eq!(
-                    reasoning_summary.as_deref(),
-                    Some("Reasoning shown to the user.")
-                );
-                assert_eq!(completion_reason.as_deref(), Some("length"));
-            }
-            _ => panic!("expected done event"),
-        }
     }
 
     #[test]

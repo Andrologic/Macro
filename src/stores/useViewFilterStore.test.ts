@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   loadPersistedPreference,
@@ -50,6 +51,16 @@ describe('useViewFilterStore', () => {
 
   afterEach(() => {
     removeTauriRuntimeMock();
+  });
+
+  it('does not publish filters after application retirement and can retry', async () => {
+    const owner = createLifecycleScope();
+    const pending = useViewFilterStore.getState().hydrate(owner);
+    owner.stop();
+    await pending;
+    expect(useViewFilterStore.getState().isHydrated).toBe(false);
+    await useViewFilterStore.getState().hydrate();
+    expect(useViewFilterStore.getState().isHydrated).toBe(true);
   });
 
   it('hydrates the durable filters after an in-memory restart', async () => {
@@ -255,6 +266,41 @@ describe('useViewFilterStore', () => {
       },
     });
     await waitForViewFilterPersistence();
+  });
+
+  it('retries failed hydration and merges edits made before the successful retry', async () => {
+    let failRead = true;
+    const writes: unknown[] = [];
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'state_get_snapshot') {
+        if (failRead) throw new Error('temporary read failure');
+        return { schemaVersion: 1, values: {
+          [PREF_KEYS.IMPLEMENT_VIEW_FILTERS]: { version: 1, projectId: 'project-persisted', status: 'blocked', showArchived: true },
+          [PREF_KEYS.ARCHITECT_VIEW_FILTERS]: { version: 1, showArchived: true },
+          [PREF_KEYS.CHAT_VIEW_FILTERS]: { version: 1, showArchived: true },
+        } };
+      }
+      if (command === 'state_set_value') {
+        writes.push(payload?.value);
+        return { schemaVersion: 1, values: { [String(payload?.key)]: payload?.value } };
+      }
+      return undefined;
+    }));
+    await useViewFilterStore.getState().hydrate();
+    expect(useViewFilterStore.getState().isHydrated).toBe(false);
+    useViewFilterStore.getState().setImplementStatusFilter('ready');
+    await waitForViewFilterPersistence();
+    expect(writes).toHaveLength(0);
+    failRead = false;
+    await useViewFilterStore.getState().hydrate();
+    await waitForViewFilterPersistence();
+    expect(useViewFilterStore.getState()).toMatchObject({
+      isHydrated: true,
+      implement: { version: 1, projectId: 'project-persisted', status: 'ready', showArchived: true },
+      architect: { version: 1, showArchived: true },
+      chat: { version: 1, showArchived: true },
+    });
+    expect(writes).toContainEqual(useViewFilterStore.getState().implement);
   });
 
   it('resets a project filter that no longer exists', () => {

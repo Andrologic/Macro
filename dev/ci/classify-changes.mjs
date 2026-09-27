@@ -26,6 +26,7 @@ const FRONTEND_PATTERNS = [
 ];
 
 const NATIVE_PATTERNS = [
+  /^src\/types\/generated\/(?:config|ipc)\//,
   /^src-tauri\//,
   /^copilot-bridge\//,
   /^dev\/(?:ai-runtime-linux-wrapper|build-ai-runtime|tauri-cli|verify-macos-bundle)\.mjs$/,

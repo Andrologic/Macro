@@ -1,61 +1,28 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useAppStore, SettingsTab } from '../../stores/useAppStore';
-import { Icon, IconName } from '../ui/Icon';
+import { useAppStore } from '../../stores/useAppStore';
+import { Icon } from '../ui/Icon';
+import { settingsRegistry } from '../../composition/settings/registry';
+import { SettingsContent } from './SettingsContent';
 import { cn } from '../../utils/cn';
-import { GeneralView } from './views/GeneralView';
-import { NotificationsView } from './views/NotificationsView';
-import { AppearanceView } from './views/AppearanceView';
-import { ProvidersSettings } from './views/ai/ProvidersSettings';
-import { ModelsSettings } from './views/ai/ModelsSettings';
-import { SpeechSettings } from './views/ai/SpeechSettings';
-import { ToolsView } from './views/ToolsView';
-import { SkillsView } from './views/SkillsView';
-import { ShortcutsView } from './views/ShortcutsView';
-import { PromptsView } from './views/PromptsView';
-import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import { Dialog } from '../ui/Dialog';
 import { SettingsSearchProvider } from './search/SettingsSearch';
-import { DiagnosticsView } from './views/DiagnosticsView';
-import { PilotView } from './views/PilotView';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
   const appVersion = useAppVersion();
   const { settingsOpen, closeSettings, activeSettingsTab, setSettingsTab } = useAppStore();
 
+  useSyncExternalStore(settingsRegistry.subscribe, settingsRegistry.getRevision, settingsRegistry.getRevision);
+  const context = { settingsOpen };
+  const tabs = settingsRegistry.list(context);
+  const activeTab = settingsRegistry.get(activeSettingsTab, context) ?? tabs[0];
+  const activeTabDescription = activeTab
+    ? t(activeTab.descriptionKey, activeTab.description ?? 'Configure your application settings')
+    : '';
+
   if (!settingsOpen) return null;
-
-  const activeTabDescription =
-    activeSettingsTab === 'speech'
-      ? t('settings.desc.speech', 'Configure microphone dictation and speech-to-text providers')
-      : activeSettingsTab === 'notifications'
-      ? t(
-          'settings.desc.notifications',
-          'Configure in-app and desktop notification delivery'
-        )
-      : t(`settings.desc.${activeSettingsTab}`) || 'Configure your application settings';
-
-  const tabs: { id: SettingsTab; icon: IconName; label: string }[] = [
-    { id: 'general', icon: 'settings', label: t('settings.general') || 'General' },
-    {
-      id: 'notifications',
-      icon: 'bell',
-      label: t('settings.notifications', 'Notifications'),
-    },
-    { id: 'appearance', icon: 'palette', label: t('settings.appearance') || 'Appearance' },
-    { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
-    { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
-    { id: 'speech', icon: 'mic', label: t('settings.speech', 'Dictation') },
-    { id: 'pilot', icon: 'cloud', label: t('settings.pilot.label', 'Pilot') },
-    { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
-    { id: 'skills', icon: 'sparkles', label: t('settings.skills', 'Skills') },
-    { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
-    { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Git workflow' },
-    { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
-    { id: 'diagnostics', icon: 'file-text', label: t('settings.diagnostics') || 'Diagnostics' },
-  ];
 
   return (
     <Dialog
@@ -86,13 +53,13 @@ export const SettingsModal: React.FC = () => {
                 }}
                 className={cn(
                   "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
-                  activeSettingsTab === tab.id
+                  activeTab?.id === tab.id
                     ? "bg-primary/10 text-primary shadow-sm"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
               >
                 <Icon name={tab.icon} size={18} />
-                {tab.label}
+                {t(tab.labelKey, tab.label)}
               </button>
             ))}
           </nav>
@@ -107,12 +74,12 @@ export const SettingsModal: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <SettingsSearchProvider key={activeSettingsTab}>
+        <SettingsSearchProvider key={activeTab?.id}>
           <div className="flex-1 flex flex-col bg-background/50 min-h-0">
             <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">
-                  {tabs.find(t => t.id === activeSettingsTab)?.label}
+                  {activeTab && t(activeTab.labelKey, activeTab.label)}
                 </h3>
                 <p className="text-sm text-muted-foreground">
                   {activeTabDescription}
@@ -130,19 +97,7 @@ export const SettingsModal: React.FC = () => {
 
             <div className="flex-1 overflow-y-auto p-4 md:p-6">
               <div className="max-w-3xl mx-auto animate-fade-in">
-                {activeSettingsTab === 'general' && <GeneralView />}
-                {activeSettingsTab === 'notifications' && <NotificationsView />}
-                {activeSettingsTab === 'appearance' && <AppearanceView />}
-                {activeSettingsTab === 'providers' && <ProvidersSettings />}
-                {activeSettingsTab === 'models' && <ModelsSettings />}
-                {activeSettingsTab === 'speech' && <SpeechSettings />}
-                {activeSettingsTab === 'pilot' && <PilotView />}
-                {activeSettingsTab === 'tools' && <ToolsView />}
-                {activeSettingsTab === 'skills' && <SkillsView />}
-                {activeSettingsTab === 'prompts' && <PromptsView />}
-                {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
-                {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
-                {activeSettingsTab === 'diagnostics' && <DiagnosticsView />}
+                {activeTab && <SettingsContent contribution={activeTab} />}
               </div>
             </div>
           </div>

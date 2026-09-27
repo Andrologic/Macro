@@ -1,5 +1,6 @@
 import { reportPersistenceIssue, clearPersistenceIssue } from "../../services/persistenceHealth";
 import type {
+  ChatMessage,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
   PersistedContextReference,
@@ -19,12 +20,17 @@ export const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
 const QUESTIONNAIRE_DRAFTS_STORAGE_KEY = "macro_chat_questionnaire_drafts";
 export const COMPOSER_DRAFTS_STORAGE_KEY = "macro_chat_composer_drafts_v1";
+export const UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY =
+  "macro_chat_unsaved_assistant_responses_v1";
 
 const MAX_COMPOSER_DRAFTS = 50;
 const MAX_COMPOSER_DRAFT_TEXT_LENGTH = 200_000;
 const MAX_COMPOSER_DRAFT_IMAGES = 10;
 const MAX_COMPOSER_DRAFT_IMAGE_DATA_URL_LENGTH = 10_000_000;
 const MAX_COMPOSER_DRAFT_CONTEXT_REFS = 50;
+const MAX_UNSAVED_ASSISTANT_RESPONSES = 25;
+const MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH = 4_000_000;
+const MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH = 4_000_000;
 const MAX_SHORT_FIELD_LENGTH = 4_096;
 
 export interface PersistedComposerDraft {
@@ -38,16 +44,31 @@ const hasLocalStorage = (): boolean => typeof window !== "undefined";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
+const serializeBoundedUnsavedAssistantJson = (value: unknown): string | null => {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized.length <= MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH
+      ? serialized
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const isBoundedString = (value: unknown, maxLength = MAX_SHORT_FIELD_LENGTH): value is string =>
   typeof value === "string" && value.length <= maxLength;
 
-const isOptionalBoundedString = (value: unknown): value is string | undefined =>
-  value === undefined || isBoundedString(value);
+const isOptionalBoundedString = (
+  value: unknown,
+  maxLength = MAX_SHORT_FIELD_LENGTH,
+): value is string | undefined =>
+  value === undefined || isBoundedString(value, maxLength);
 
 const isOptionalNullableBoundedString = (
   value: unknown,
+  maxLength = MAX_SHORT_FIELD_LENGTH,
 ): value is string | null | undefined =>
-  value === undefined || value === null || isBoundedString(value);
+  value === undefined || value === null || isBoundedString(value, maxLength);
 
 const isFinitePositiveDimension = (value: unknown): value is number | undefined =>
   value === undefined ||
@@ -121,7 +142,125 @@ const isPersistedContextReference = (
   );
 };
 
-const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
+const parseUnsavedAssistantResponse = (value: unknown): ChatMessage | null => {
+  if (!isRecord(value) || serializeBoundedUnsavedAssistantJson(value) === null) {
+    return null;
+  }
+  if (
+    !isBoundedString(value.id) ||
+    !isBoundedString(value.task_id) ||
+    !isBoundedString(value.conversation_id) ||
+    value.role !== "assistant" ||
+    !isBoundedString(value.content, MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH) ||
+    !isBoundedString(value.timestamp, 128) ||
+    !isOptionalNullableBoundedString(value.turn_id) ||
+    !isOptionalBoundedString(
+      value.hidden_context,
+      MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH,
+    ) ||
+    !isOptionalBoundedString(value.persistence_error) ||
+    (value.tool_traces !== undefined && !Array.isArray(value.tool_traces)) ||
+    (value.provider_input_items !== undefined && !Array.isArray(value.provider_input_items)) ||
+    (value.provider_turn_state !== undefined && !isRecord(value.provider_turn_state)) ||
+    (value.context_refs !== undefined &&
+      (!Array.isArray(value.context_refs) ||
+        !value.context_refs.every(isPersistedContextReference)))
+  ) {
+    return null;
+  }
+
+  return {
+    ...(value as unknown as ChatMessage),
+    role: "assistant",
+    persistence_state: "failed",
+    persistence_error:
+      typeof value.persistence_error === "string" && value.persistence_error.trim()
+        ? value.persistence_error
+        : "This response has not been saved.",
+  };
+};
+
+export const loadUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
+  if (!hasLocalStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(
+      UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+    );
+    if (!raw) return [];
+    if (raw.length > MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return [];
+    return Object.values(parsed)
+      .slice(0, MAX_UNSAVED_ASSISTANT_RESPONSES)
+      .map(parseUnsavedAssistantResponse)
+      .filter((message): message is ChatMessage => message !== null);
+  } catch {
+    return [];
+  }
+};
+
+const writeUnsavedAssistantResponsesToStorage = (
+  messages: ChatMessage[],
+): boolean => {
+  if (!hasLocalStorage()) return false;
+  try {
+    if (messages.length === 0) {
+      window.localStorage.removeItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
+      return true;
+    }
+    const serialized = serializeBoundedUnsavedAssistantJson(
+      Object.fromEntries(messages.map((message) => [message.id, message])),
+    );
+    if (serialized === null) return false;
+    window.localStorage.setItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY, serialized);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const saveUnsavedAssistantResponseToStorage = (
+  message: ChatMessage,
+): boolean => {
+  const existing = loadUnsavedAssistantResponsesFromStorage().filter(
+    (candidate) => candidate.id !== message.id,
+  );
+  const failedMessage = parseUnsavedAssistantResponse({
+    ...message,
+    persistence_state: "failed",
+  });
+  if (!failedMessage) return false;
+  return writeUnsavedAssistantResponsesToStorage(
+    [...existing, failedMessage]
+      .sort(
+        (left, right) =>
+          new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+      )
+      .slice(-MAX_UNSAVED_ASSISTANT_RESPONSES),
+  );
+};
+
+export const removeUnsavedAssistantResponseFromStorage = (
+  messageId: string,
+): boolean =>
+  writeUnsavedAssistantResponsesToStorage(
+    loadUnsavedAssistantResponsesFromStorage().filter(
+      (message) => message.id !== messageId,
+    ),
+  );
+
+export const clearUnsavedAssistantResponsesForConversations = (
+  conversationIds: string[],
+): boolean => {
+  const ids = new Set(conversationIds);
+  return writeUnsavedAssistantResponsesToStorage(
+    loadUnsavedAssistantResponsesFromStorage().filter(
+      (message) => !ids.has(message.conversation_id),
+    ),
+  );
+};
+
+export const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
   if (!isRecord(value)) return null;
   if (
     !isBoundedString(value.text, MAX_COMPOSER_DRAFT_TEXT_LENGTH) ||
@@ -141,6 +280,66 @@ const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
   };
 };
 
+class ComposerDraftValidationError extends Error {}
+
+function validateComposerDrafts(
+  value: unknown,
+): asserts value is Record<string, PersistedComposerDraft> {
+  if (!isRecord(value)) {
+    throw new ComposerDraftValidationError(
+      "Invalid composer draft storage. Original data preserved.",
+    );
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length > MAX_COMPOSER_DRAFTS) {
+    throw new ComposerDraftValidationError(
+      `Too many composer drafts. The limit is ${MAX_COMPOSER_DRAFTS}. Original data preserved.`,
+    );
+  }
+
+  for (const [contextKey, draft] of entries) {
+    if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) {
+      throw new ComposerDraftValidationError(
+        `Invalid composer draft context key. Original data preserved.`,
+      );
+    }
+    if (!parseComposerDraft(draft)) {
+      throw new ComposerDraftValidationError(
+        `Composer draft "${contextKey}" exceeds a storage limit or has invalid content. Original data preserved.`,
+      );
+    }
+  }
+}
+
+const parseComposerDraftsJson = (
+  raw: string,
+): { drafts: Record<string, PersistedComposerDraft>; damaged: boolean } => {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!isRecord(parsed)) {
+    throw new ComposerDraftValidationError(
+      "Invalid composer draft storage. Original data preserved.",
+    );
+  }
+
+  const entries = Object.entries(parsed);
+  const damaged = entries.length > MAX_COMPOSER_DRAFTS;
+  const drafts: Array<[string, PersistedComposerDraft]> = [];
+  for (const [contextKey, value] of entries.slice(0, MAX_COMPOSER_DRAFTS)) {
+    const draft = contextKey && contextKey.length <= MAX_SHORT_FIELD_LENGTH
+      ? parseComposerDraft(value)
+      : null;
+    if (!draft) continue;
+    drafts.push([contextKey, draft]);
+  }
+
+  return {
+    drafts: Object.fromEntries(drafts),
+    damaged:
+      damaged || drafts.length !== Math.min(entries.length, MAX_COMPOSER_DRAFTS),
+  };
+};
+
 export const loadComposerDraftsFromStorage = (): Record<
   string,
   PersistedComposerDraft
@@ -148,34 +347,68 @@ export const loadComposerDraftsFromStorage = (): Record<
   if (!hasLocalStorage()) return {};
   try {
     const raw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return {};
-    const drafts: Array<[string, PersistedComposerDraft]> = [];
-    for (const [contextKey, value] of Object.entries(parsed)) {
-      if (drafts.length >= MAX_COMPOSER_DRAFTS) break;
-      if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) continue;
-      const draft = parseComposerDraft(value);
-      if (draft) drafts.push([contextKey, draft]);
+    if (!raw) {
+      clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
+      return {};
     }
-    return Object.fromEntries(drafts);
-  } catch {
+
+    const parsed = parseComposerDraftsJson(raw);
+    if (parsed.damaged) {
+      reportPersistenceIssue(
+        COMPOSER_DRAFTS_STORAGE_KEY,
+        "Some stored composer drafts could not be restored. Valid drafts were recovered; the original data was preserved.",
+      );
+    } else {
+      clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
+    }
+    return parsed.drafts;
+  } catch (error) {
+    reportPersistenceIssue(
+      COMPOSER_DRAFTS_STORAGE_KEY,
+      error instanceof Error
+        ? error.message
+        : "The composer drafts could not be restored. The original data was preserved.",
+    );
     return {};
   }
 };
 
 export const saveComposerDraftsToStorage = (
   draftsByContextKey: Record<string, PersistedComposerDraft>,
-): void => {
-  if (!hasLocalStorage()) return;
+): boolean => {
+  if (!hasLocalStorage()) {
+    reportPersistenceIssue(
+      COMPOSER_DRAFTS_STORAGE_KEY,
+      "The composer draft could not be saved. Keep this session open.",
+    );
+    return false;
+  }
   try {
+    validateComposerDrafts(draftsByContextKey);
+    const previous = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    if (previous !== null) {
+      validateComposerDrafts(JSON.parse(previous) as unknown);
+    }
+    const serialized = JSON.stringify(draftsByContextKey);
+    if (typeof serialized !== "string") {
+      throw new ComposerDraftValidationError(
+        "The composer drafts could not be serialized. Original data preserved.",
+      );
+    }
     window.localStorage.setItem(
       COMPOSER_DRAFTS_STORAGE_KEY,
-      JSON.stringify(draftsByContextKey),
+      serialized,
     );
     clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
-  } catch {
-    reportPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY, "The composer draft could not be saved. Keep this session open.");
+    return true;
+  } catch (error) {
+    reportPersistenceIssue(
+      COMPOSER_DRAFTS_STORAGE_KEY,
+      error instanceof ComposerDraftValidationError
+        ? error.message
+        : "The composer draft could not be saved. Keep this session open.",
+    );
+    return false;
   }
 };
 

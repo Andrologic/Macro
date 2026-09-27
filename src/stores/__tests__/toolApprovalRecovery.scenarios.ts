@@ -271,6 +271,33 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
       await context.flushAsyncWork();
     });
 
+    it.each(['trace', 'marker', 'immediate'])('honors denial during approval finalization: %s', async (stage) => {
+      const { useChatStore, onToolCall } = await context.startImplementToolConversation();
+      context.tauriAvailable = true;
+      const pending = onToolCall('terminal_run', { command: 'bun test', session_id: 'session-1' }, 'revocable-call');
+      await context.flushAsyncWork();
+      const gate = context.createDeferred();
+      let closing = false;
+      const pause = async () => { closing = true; await gate.promise; return undefined; };
+      if (stage === 'trace') context.updateMessageMock.mockImplementationOnce(pause);
+      if (stage === 'marker') context.dbDeleteAppSettingMock.mockImplementationOnce(async () => {
+        await pause();
+        return context.appSettingValues.delete('toolApprovalRecovery:v1');
+      });
+      useChatStore.getState().approvePendingToolApprovalOnce('implement-conv');
+      if (stage !== 'immediate') {
+        await context.flushAsyncWork();
+        expect(closing).toBe(true);
+      }
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')).not.toBeNull();
+      useChatStore.getState().denyPendingToolApproval('implement-conv', 'Changed my decision');
+      gate.resolve();
+      expect(String(await pending)).toContain('Changed my decision');
+      expect(context.terminalRunCommandFromChatMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+      expect(hasRecovery()).toBe(false);
+    });
+
     it('persists identifiers before showing approval and removes them before executing', async () => {
       const { useChatStore, onToolCall } = await context.startImplementToolConversation();
       context.tauriAvailable = true;
@@ -335,7 +362,7 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
       expect(context.terminalRunCommandFromChatMock).not.toHaveBeenCalled();
     });
 
-    it.each([false, true])('uses current scoped MCP availability and lease after approval, disabled=%s', async (disabled) => {
+    it.each(['current', 'disabled', 'renamed'])('uses current scoped MCP availability and identity after approval: %s', async (scenario) => {
       const { services } = await import('../../services');
       const originalConnect = services.mcpRuntimeConnect;
       const originalCatalog = services.mcpRuntimeRefreshCatalog;
@@ -346,7 +373,7 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
         key: { serverId: selector.serverId, projectId: null, projectIds: selector.projectIds, configGeneration: generation },
         status: 'ready' as const, updatedAt: '2026-09-04T00:00:00Z',
       }));
-      services.mcpRuntimeRefreshCatalog = mock(async (key) => ({ key, tools: [{ id: 'mcp__project_docs__search', serverId: 'project_docs', name: 'search', enabled: true }] }));
+      services.mcpRuntimeRefreshCatalog = mock(async (key) => ({ key, tools: [{ id: 'mcp__project_docs__search', serverId: 'project_docs', name: scenario === 'renamed' && generation > 1 ? 'SEARCH' : 'search', enabled: true }] }));
       services.mcpRuntimeCallTool = call;
       context.scopedTurnConfigurationForTest = {
         projectIds: ['project-1'], focusProjectId: 'project-1', riskLevel: 'balanced', maxTurns: null,
@@ -359,9 +386,9 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
         await context.flushAsyncWork();
         expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe('mcp-approval');
         generation = 2;
-        if (disabled) context.scopedTurnConfigurationForTest = { ...context.scopedTurnConfigurationForTest!, allowedMcpServerIds: [], mcpServers: {} };
+        if (scenario === 'disabled') context.scopedTurnConfigurationForTest = { ...context.scopedTurnConfigurationForTest!, allowedMcpServerIds: [], mcpServers: {} };
         useChatStore.getState().approvePendingToolApprovalOnce('implement-conv');
-        if (disabled) {
+        if (scenario !== 'current') {
           expect(String(await pending)).toContain('policy or workspace changed');
           expect(call).not.toHaveBeenCalled();
         } else {
