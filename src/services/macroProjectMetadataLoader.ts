@@ -84,6 +84,8 @@ export interface LoadMacroProjectMetadataForSelectionParams {
   selectedProjectId?: string | null;
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
+  /** Keep the live selection only for an in-place refresh; project changes should restore context. */
+  preferCurrentActivePlan?: boolean;
   currentTargetBranch?: string | null;
   candidateBranches?: Array<string | null | undefined>;
   includeArchivedInVisible?: boolean;
@@ -194,11 +196,26 @@ const selectCatalogPlan = (params: {
   visiblePlans: ArchitectPlanSummary[];
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
+  preferCurrentActivePlan?: boolean;
 }): {
   plan: ArchitectPlanSummary | null;
   branchName: string | null;
   reason: ArchitectPlanCatalogSelectionReason;
 } => {
+  // A live active selection is authoritative while the catalog is being
+  // refreshed. The remembered context can lag behind a rename or another
+  // mutation and must only be used when there is no current selection.
+  const currentPlan = params.preferCurrentActivePlan
+    ? findVisiblePlanById(params.visiblePlans, params.currentActivePlanId)
+    : null;
+  if (currentPlan) {
+    return {
+      plan: currentPlan,
+      branchName: findBranchForPlan(params.branches, currentPlan),
+      reason: 'current_plan',
+    };
+  }
+
   const rememberedPlan = findVisiblePlanById(
     params.visiblePlans,
     params.rememberedPlanId,
@@ -211,14 +228,14 @@ const selectCatalogPlan = (params: {
     };
   }
 
-  const currentPlan = findVisiblePlanById(
+  const fallbackCurrentPlan = findVisiblePlanById(
     params.visiblePlans,
     params.currentActivePlanId,
   );
-  if (currentPlan) {
+  if (fallbackCurrentPlan) {
     return {
-      plan: currentPlan,
-      branchName: findBranchForPlan(params.branches, currentPlan),
+      plan: fallbackCurrentPlan,
+      branchName: findBranchForPlan(params.branches, fallbackCurrentPlan),
       reason: 'current_plan',
     };
   }
@@ -341,6 +358,7 @@ export const loadMacroProjectMetadataForSelection = async (
     visiblePlans,
     rememberedPlanId: params.rememberedPlanId,
     currentActivePlanId: params.currentActivePlanId,
+    preferCurrentActivePlan: params.preferCurrentActivePlan,
   });
 
   const branchCatalogByBranch = Object.fromEntries(

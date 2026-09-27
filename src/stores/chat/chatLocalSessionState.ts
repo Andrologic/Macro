@@ -95,6 +95,7 @@ const CONTEXT_REF_KINDS = new Set([
   "skill",
   "file",
   "source",
+  "agsdl",
 ]);
 
 const isSkillLocation = (value: unknown): boolean =>
@@ -135,6 +136,14 @@ const isPersistedContextReference = (
     !isOptionalBoundedString(value.url)
   ) {
     return false;
+  }
+  if (value.kind === 'agsdl') {
+    const ref = value.agsdl;
+    if (!isRecord(ref) || ref.document !== 'agsdl' ||
+      !['id', 'conversationId', 'branchName', 'planId', 'version', 'path', 'title'].every(key => isBoundedString(ref[key])) ||
+      typeof ref.persistedRevision !== 'number' || !Number.isFinite(ref.persistedRevision) ||
+      !isOptionalBoundedString(ref.diagnostic) ||
+      (ref.relatedPaths !== undefined && (!Array.isArray(ref.relatedPaths) || !ref.relatedPaths.every(path => isBoundedString(path))))) return false;
   }
   return (
     (value.location === undefined || isSkillLocation(value.location)) &&

@@ -9,6 +9,7 @@ import type {
   Options,
   UnlistenFn,
 } from '@tauri-apps/api/event';
+import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from './browserRuntimeEvents';
 
 const BRIDGE_PORT = 1430;
 const INITIAL_RECONNECT_DELAY_MS = 500;
@@ -173,6 +174,9 @@ const connect = (): Promise<WebSocket> => {
           reconnectTimer = null;
         }
         rejectPendingRequests(terminalDisconnectError);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event(BROWSER_RUNTIME_SESSION_REPLACED_EVENT));
+        }
         return;
       }
       rejectPendingRequests(browserRuntimeConnectionError('BROWSER_RUNTIME_CONNECTION_CLOSED'));

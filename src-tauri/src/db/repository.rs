@@ -156,6 +156,7 @@ pub struct PrepareConversationReplayInput<'a> {
     pub replay_id: &'a str,
     pub content: &'a str,
     pub hidden_context: Option<String>,
+    pub context_refs_json: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub code_checkpoints_json: Option<String>,
     pub delete_context_compaction_state: bool,
@@ -1489,8 +1490,8 @@ pub async fn prepare_conversation_replay(
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
       .bind(replay_recovery_key(input.conversation_id)).bind(snapshot_json).bind(&now).execute(&mut *transaction).await?;
-    sqlx::query("UPDATE messages SET content = ?, turn_id = ?, hidden_context = ?, provider_input_items_json = ? WHERE id = ? AND conversation_id = ?")
-      .bind(input.content).bind(input.turn_id).bind(&input.hidden_context).bind(&input.provider_input_items_json).bind(input.message_id).bind(input.conversation_id).execute(&mut *transaction).await?;
+    sqlx::query("UPDATE messages SET content = ?, turn_id = ?, hidden_context = ?, context_refs_json = COALESCE(?, context_refs_json), provider_input_items_json = ? WHERE id = ? AND conversation_id = ?")
+      .bind(input.content).bind(input.turn_id).bind(&input.hidden_context).bind(&input.context_refs_json).bind(&input.provider_input_items_json).bind(input.message_id).bind(input.conversation_id).execute(&mut *transaction).await?;
     sqlx::query("DELETE FROM conversation_citations WHERE conversation_id = ? AND message_id IN (SELECT id FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)))")
       .bind(input.conversation_id).bind(input.conversation_id).bind(&snapshot.original_message.created_at).bind(&snapshot.original_message.created_at).bind(input.message_id).execute(&mut *transaction).await?;
     sqlx::query("DELETE FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))")
@@ -4310,6 +4311,7 @@ mod tests {
                 content: "Edited",
                 hidden_context: Some("hidden".to_string()),
                 provider_input_items_json: Some("[]".to_string()),
+                context_refs_json: Some("[]".to_string()),
                 code_checkpoints_json: Some("[\"after\"]".to_string()),
                 delete_context_compaction_state: true,
             },
@@ -4322,6 +4324,15 @@ mod tests {
                 .expect("trimmed")
                 .len(),
             1
+        );
+
+        assert_eq!(
+            list_messages(&pool, &conversation.id)
+                .await
+                .expect("edited references")[0]
+                .context_refs_json
+                .as_deref(),
+            Some("[]")
         );
 
         assert!(
@@ -4337,6 +4348,7 @@ mod tests {
         let messages = list_messages(&pool, &conversation.id)
             .await
             .expect("restored messages");
+        assert_eq!(messages[0].context_refs_json, None);
         assert_eq!(
             messages
                 .iter()
@@ -4396,6 +4408,7 @@ mod tests {
             content: "Edited",
             hidden_context: None,
             provider_input_items_json: None,
+            context_refs_json: None,
             code_checkpoints_json: None,
             delete_context_compaction_state: false,
         };
@@ -4544,6 +4557,7 @@ mod tests {
                 content: "Edited",
                 hidden_context: None,
                 provider_input_items_json: None,
+                context_refs_json: None,
                 code_checkpoints_json: None,
                 delete_context_compaction_state: false,
             },

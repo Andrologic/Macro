@@ -26,6 +26,7 @@ function harness(source = '') {
     listPlans: async () => ({ activePlanId: null, plans: [{ ...plan, nodeCount: 0, hasAgsdl: true }] }),
     getPlan: async () => plan,
     createPlan: async input => { created = input; return { ...plan, id: 'new-blueprint', title: input.title!, agsdl: { ...input.agsdl!, revision: 1 } }; },
+    refreshCatalog: async () => undefined,
   };
   return { session, plan, state, deps, saved: () => saved, created: () => created };
 }
@@ -67,10 +68,38 @@ describe('design snapshots through Architect metadata', () => {
     expect(JSON.stringify(h.session)).toBe(before);
     expect(h.saved()).toBe(0);
   });
+  it('refreshes the plan catalog after saving and ignores empty snapshots', async () => {
+    const h = harness(builtInDesignSources()[0].source);
+    let refreshed = 0;
+    h.deps.refreshCatalog = async () => { refreshed += 1; };
+    await saveBlueprint(target, 'Reusable release', h.deps);
+    expect(refreshed).toBe(1);
+    h.deps.listPlans = async () => ({ activePlanId: null, plans: [
+      { ...h.plan, id: 'empty', nodeCount: 0, hasAgsdl: true, agsdl: { source: '', annexes: {}, revision: 0 } },
+    ] });
+    h.deps.getPlan = async (_branch, planId) => planId === 'empty'
+      ? { ...h.plan, id: 'empty', agsdl: { source: '', annexes: {}, revision: 0 } }
+      : h.plan;
+    const result = await listDesignSources(h.deps);
+    expect(result.failureCount).toBe(0);
+    expect(result.sources.every(item => item.builtin)).toBe(true);
+  });
   it('lists real persisted versions and exposes library failures rather than hiding them', async () => {
     const h = harness(builtInDesignSources()[0].source);
-    const sources = await listDesignSources(h.deps);
-    expect(sources.find(item => !item.builtin)?.origin?.revision).toBe(3);
+    const result = await listDesignSources(h.deps);
+    expect(result.sources.find(item => !item.builtin)?.origin?.revision).toBe(3);
+    expect(result.failureCount).toBe(0);
+    h.deps.listPlans = async () => ({ activePlanId: null, plans: [
+      { ...h.plan, nodeCount: 0, hasAgsdl: true },
+      { ...h.plan, id: 'unreadable', nodeCount: 0, hasAgsdl: true },
+    ] });
+    h.deps.getPlan = async (_branch, planId) => {
+      if (planId === 'unreadable') throw new Error('Unreadable plan');
+      return h.plan;
+    };
+    const partial = await listDesignSources(h.deps);
+    expect(partial.sources.find(item => !item.builtin)?.origin?.revision).toBe(3);
+    expect(partial.failureCount).toBe(1);
     h.deps.listBranches = async () => { throw new Error('Metadata unavailable'); };
     await expect(listDesignSources(h.deps)).rejects.toThrow('Metadata unavailable');
     expect(builtInDesignSources()).toHaveLength(4);

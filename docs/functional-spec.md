@@ -268,6 +268,10 @@ un blueprint. Il peut modifier localement les instructions et la configuration
 prise en charge. Les changements de structure passent principalement par la
 conversation. L’objectif, le contexte partagé, les règles et les informations
 à compléter sont consultables dans la fiche de conception du système.
+L’adaptation présente d’abord les valeurs attendues pour le projet ; la définition
+de chaque champ se modifie par le chat. Après une copie, les informations manquantes
+s’ouvrent dans cette fiche. La bibliothèque permet de prévisualiser le point de
+départ et conserve les sources lisibles si une autre source échoue au chargement.
 
 Les contrôles de document et les champs à compléter accompagnent la conception
 progressive. Ils ne certifient pas l’exécution. Macro est le moteur retenu pour
@@ -278,18 +282,20 @@ les agents ; l’adaptateur d’exécution du graphe reste un chantier distinct.
 Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
 conserve sa place centrale. L’agent peut modifier le document ; une modale permet
 aussi de modifier le nom, les instructions et les propriétés prises en charge d’un
-composant dans un plan en brouillon. Les outils, ressources et contrats restent
-dans des sections repliées ; les références partagées conservent leur propriétaire.
+composant dans un plan en brouillon. Les outils et ressources modifiables restent
+dans des sections repliées ; les contrats se modifient par le chat. Les références
+partagées conservent leur propriétaire.
 Le canvas propose une lecture de l’enchaînement ou des échanges déclarés. Des
 groupes explicitement nommés peuvent être repliés, sans changer le processus.
 Le canvas montre les participants, les relations déclarées, les conditions et
 les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
-créent pas de nœuds. Le bouton de détails dans l’en-tête donne accès au point de
-départ, aux interfaces, aux ressources et à la configuration du système.
+créent pas de nœuds. Le bouton de détails dans l’en-tête présente l’objectif du système et les valeurs
+à compléter. Les diagnostics détaillés sont joints au chat pour analyse.
 Les cartes affichent l’identité du composant. La modale d’un agent sépare son
 prompt, ses entrées, ses sorties prévues et ses outils/connexions. Chaque échange
 indique sa provenance ou ses destinataires déclarés ; les agents liés sont
-prévisualisables au survol et au focus, puis consultables au clic. Les paramètres
+prévisualisables au survol et au focus, puis consultables au clic. Un bouton de
+retour permet de retrouver la fiche précédente sans quitter le graphe. Les paramètres
 des moteurs et des connexions restent repliés, avec leur configuration AgSDL.
 Les sorties du système se distinguent des tâches et aucun transfert n’est déduit
 du seul ordre d’exécution. Le graphe conserve son espace et son zoom. Les changements manuels sont enregistrés avec un contrôle
@@ -304,6 +310,9 @@ lorsqu’un emplacement fiable permet d’identifier un composant. Ils peuvent a
 être joints au chat pour préparer une correction.
 Les boutons Annuler et Rétablir parcourent les modifications de la session et
 enregistrent le document dans le plan en brouillon.
+La revue montre les composants modifiés et permet de déplier leurs valeurs avant
+et après. Un changement de modèle marque les appels de l’agent concerné ; une
+simple remise en forme du document n’affiche pas de revue vide.
 Le bouton d’agrandissement ouvre le visualisateur dans une modale sans modifier
 la disposition des panneaux.
 Les anciennes stratégies sont converties en déclarations AgSDL descriptives,
@@ -350,7 +359,7 @@ Lors du premier envoi d'une tâche indépendante encore au brouillon, Macro enre
 
 Avant ce premier envoi, l'instruction de démarrage flotte au bas de la conversation, au-dessus de toute la zone de composition et de ses contrôles, et non dans l'en-tête. La notice disparaît dès que le premier message est accepté. Macro vide alors le composer sans attendre la fin de la préparation. Si l'envoi échoue avant d'être accepté, Macro restaure le brouillon et ses pièces jointes.
 
-Macro persiste localement le brouillon non envoyé de chaque composer. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
+Macro persiste localement le brouillon non envoyé de chaque composer. Les sélections AgSDL utilisent les mêmes références que les skills, fichiers et sources : leur identité et leur révision sont sauvegardées avec le brouillon. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. La restauration respecte les modifications faites pendant l’envoi et ne rattache pas les anciennes références à une nouvelle saisie. L’édition d’un message reprend ses références enregistrées ; annuler cette édition rend le brouillon précédent. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
 
 La sauvegarde des brouillons applique les mêmes limites que leur restauration. Un dépassement ou une donnée illisible laisse la copie précédente intacte et affiche une erreur de persistance ; le contenu courant reste dans la session. Un chargement des conversations en échec ne suffit pas à supprimer leurs brouillons.
 

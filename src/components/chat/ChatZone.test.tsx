@@ -48,6 +48,7 @@ export type MockMessage = {
   task_id?: string | null;
   tool_traces?: unknown[];
   context_refs?: unknown[];
+  hidden_context?: string;
   questionnaire_response_summary?: {
     assistantMessageId: string;
     source?: 'tool' | 'legacy_quick_replies';
@@ -197,6 +198,7 @@ export type MockChatState = {
   retryArchitectPlanNamingRecovery: ReturnType<typeof mock>;
   submitArchitectPlanManualName: ReturnType<typeof mock>;
   composerContextRefs: unknown[];
+  replaceComposerContextRefs: ReturnType<typeof mock>;
   addComposerContextRef: ReturnType<typeof mock>;
   clearComposerContextRefs: ReturnType<typeof mock>;
 };
@@ -867,6 +869,10 @@ const resetState = () => {
     retryArchitectPlanNamingRecovery: mock(async () => false),
     submitArchitectPlanManualName: mock(async () => false),
     composerContextRefs: [],
+    replaceComposerContextRefs: mock((refs: unknown[]) => {
+      chatState = { ...chatState, composerContextRefs: refs };
+      useChatStore.emit();
+    }),
     addComposerContextRef: mock((ref: unknown) => {
       chatState = {
         ...chatState,
@@ -1171,33 +1177,63 @@ describe('ChatZone', () => {
   });
 
   it('keeps AgSDL context removable, scoped to its plan, and includes it only on explicit send', async () => {
-    const { useAgsdlChatContext } = await import('../../stores/agsdl/chatContext');
+    const { getAgsdlContext } = await import('../../stores/agsdl/chatContext');
     const { useAgsdlStore, agsdlSessionKey } = await import('../../stores/useAgsdlStore');
     const context = { id: 'selection-1', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'version-1', persistedRevision: 1, path: '/definitions/0', title: 'Selected agent' };
     useAgsdlStore.setState({ sessions: { [agsdlSessionKey(context)]: { source: '{}', annexes: {}, version: 'version-1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
-    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft' } };
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
     chatState.conversations = [{ ...buildConversation(), scope_mode: 'Architect' }];
     await act(async () => requireRoot().render(<ChatZone />));
     await setComposerText('Keep my draft');
-    await act(async () => useAgsdlChatContext.setState({ pending: { 'conv-1': context } }));
+    await act(async () => useChatStore.setState({ composerContextRefs: [{ id: context.id, kind: 'agsdl', title: context.title, data: context }] }));
     expect(getComposerEditor().value).toBe('Keep my draft');
     expect(chatState.sendMessage).not.toHaveBeenCalled();
-    expect(requireContainer().textContent).toContain('Selected agent');
     await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-2' }); });
     expect(requireContainer().textContent).not.toContain('Selected agent');
     await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-1' }); });
     chatState.sendMessage.mockRejectedValueOnce(new Error('Provider unavailable'));
     await clickSendButton();
     expect(getComposerEditor().value).toBe('Keep my draft');
-    expect(useAgsdlChatContext.getState().pending['conv-1']).toEqual(context);
+    expect(getAgsdlContext(chatState.composerContextRefs as import('../../types').ContextReference[])).toEqual(context);
+    const pendingSend = createDeferred<{ status: 'sent' }>();
+    chatState.sendMessage.mockImplementationOnce(() => pendingSend.promise);
     await clickSendButton();
+    expect(getAgsdlContext(chatState.composerContextRefs as import('../../types').ContextReference[])).toBeUndefined();
+    expect(requireContainer().textContent).not.toContain('Selected agent');
+    await act(async () => { pendingSend.resolve({ status: 'sent' }); await pendingSend.promise; });
     expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-1', content: 'Keep my draft', hiddenContext: expect.stringContaining('"path":"/definitions/0"') }));
-    expect(useAgsdlChatContext.getState().pending['conv-1']).toBeUndefined();
-    await act(async () => useAgsdlChatContext.setState({ pending: { 'conv-1': context } }));
-    const remove = requireContainer().querySelector<HTMLButtonElement>('[aria-label="agsdl.removeChatSelection"]');
-    expect(remove).not.toBeNull();
-    await act(async () => remove!.click());
-    expect(useAgsdlChatContext.getState().pending['conv-1']).toBeUndefined();
+    expect(getAgsdlContext(chatState.composerContextRefs as import('../../types').ContextReference[])).toBeUndefined();
+    await act(async () => useChatStore.setState({ composerContextRefs: [{ id: context.id, kind: 'agsdl', title: context.title, data: context }] }));
+    await act(async () => useChatStore.setState({ composerContextRefs: [] }));
+
+  });
+
+  it('does not send an AgSDL selection pasted into Chat mode', async () => {
+    appState = { ...appState, mode: 'Chat' };
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Review pasted selection');
+    const context = { id: 'pasted-selection', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+    await act(async () => useChatStore.setState({
+      composerContextRefs: [{ id: context.id, kind: 'agsdl', title: context.title, data: context }],
+    }));
+    await clickSendButton();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(getComposerEditor().value).toBe('Review pasted selection');
+    expect(chatState.composerContextRefs).toHaveLength(1);
+  });
+
+  it('shows a sent AgSDL selection from persisted context without exposing its technical data', async () => {
+    chatState.messages = [buildMessage({
+      id: 'sent-selection', role: 'user', content: 'Review this system',
+      hidden_context: '<agsdl_selection>\n{"document":"agsdl","title":"Release","diagnostic":"Internal diagnostic","path":"/definitions/0"}\n</agsdl_selection>',
+    })];
+    await act(async () => requireRoot().render(<ChatZone />));
+    const message = requireContainer().querySelector('[data-user-message-content]');
+    expect(message?.querySelector('[data-agsdl-sent-selection]')?.textContent).toContain('Release');
+    expect(message?.textContent).toContain('Review this system');
+    expect(message?.textContent).not.toContain('Internal diagnostic');
+    expect(message?.textContent).not.toContain('/definitions/0');
+    expect(message?.querySelector('button')).toBeNull();
   });
 
   it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
@@ -1427,6 +1463,44 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
       'Message suivant pendant la préparation.',
     );
+  });
+
+  it('does not restore an accepted message when the agent later fails', async () => {
+    chatState.sendMessage = mock(async (payload: { onUserMessagePublished?: (id: string) => void }) => {
+      payload.onUserMessagePublished?.('accepted');
+      throw new Error('Agent failed after acceptance');
+    });
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Already accepted');
+    await clickSendButton();
+    expect(getComposerEditor().value).toBe('');
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it('does not attach failed submission references to a newer draft', async () => {
+    const pending = createDeferred<{ status: 'sent' }>();
+    const ref = { id: 'old-file', kind: 'file', title: 'old.md', data: { id: 'old-file', path: '/repo/old.md', relativePath: 'old.md' } };
+    chatState = { ...chatState, composerContextRefs: [ref], sendMessage: mock(async () => { await pending.promise; throw new Error("Failed"); }) };
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('First request');
+    await clickSendButton();
+    await setComposerText('A different request');
+    await act(async () => { pending.resolve({ status: 'sent' }); await pending.promise; });
+    expect(getComposerEditor().value).toBe('A different request');
+    expect(chatState.composerContextRefs).toEqual([]);
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ contextRefs: [expect.objectContaining({ id: 'old-file' })] }));
+  });
+
+  it('does not clear a changed draft after a delayed active-turn submission', async () => {
+    const pending = createDeferred<string>();
+    chatState = { ...chatState, isStreaming: true, submitDuringActiveTurn: mock(() => pending.promise) };
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Direction for the agent');
+    await clickSendButton();
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+    await setComposerText('Next direction');
+    await act(async () => { pending.resolve('steered'); await pending.promise; });
+    expect(getComposerEditor().value).toBe('Next direction');
   });
 
   it('removes the persisted draft after a confirmed send', async () => {
@@ -2060,6 +2134,9 @@ describe('ChatZone', () => {
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({
+      onUserMessagePublished: expect.any(Function),
+      contextRefs: [],
+      hiddenContext: undefined,
       conversationId: 'conv-1',
       content: 'Finish the authentication migration',
       taskId: null,
@@ -2433,6 +2510,9 @@ describe('ChatZone', () => {
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({
+      onUserMessagePublished: expect.any(Function),
+      contextRefs: [],
+      hiddenContext: undefined,
       conversationId: 'conv-1',
       content: 'Draft the migration plan',
       taskId: null,
@@ -2488,6 +2568,9 @@ describe('ChatZone', () => {
 
     expect(taskState.startTask).not.toHaveBeenCalled();
     expect(chatState.sendMessage).toHaveBeenCalledWith({
+      onUserMessagePublished: expect.any(Function),
+      contextRefs: [],
+      hiddenContext: undefined,
       conversationId: 'conv-1',
       content: 'Ship the CSV export end to end',
       taskId: 'task-1',
@@ -2866,7 +2949,7 @@ describe('ChatZone', () => {
     expect(chatState.editMessage).toHaveBeenCalledWith(
       'msg-user-1',
       '[skill: test-skill] utilise ce skill modifié',
-      { skipAgentCodeReplayCheck: undefined }
+      { skipAgentCodeReplayCheck: undefined, contextRefs: [], hiddenContext: undefined, providerInputItems: undefined, replaceStructuredFields: true }
     );
     expect(chatState.sendMessage).not.toHaveBeenCalled();
   });
@@ -3012,6 +3095,7 @@ describe('ChatZone', () => {
 
     expect(chatState.restoreAgentCodeForReplay).toHaveBeenCalledWith(preview);
     expect(chatState.editMessage).toHaveBeenCalledWith('msg-user-1', 'Edited after checkpoint', {
+      contextRefs: [], hiddenContext: undefined, providerInputItems: undefined, replaceStructuredFields: true,
       skipAgentCodeReplayCheck: true,
     });
     expect(getComposerEditor().value).toBe('Draft before edit');
@@ -3066,6 +3150,7 @@ describe('ChatZone', () => {
 
     expect(chatState.editMessage).toHaveBeenCalledWith('msg-user-1', 'Edited image message', {
       skipAgentCodeReplayCheck: undefined,
+      contextRefs: [], hiddenContext: undefined, providerInputItems: undefined, replaceStructuredFields: true,
     });
     expect(chatState.setMessageImages).toHaveBeenCalledWith('msg-user-1', []);
   });

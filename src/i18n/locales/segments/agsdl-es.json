@@ -199,7 +199,8 @@
       "noTools": "No hay herramientas declaradas",
       "engineUnset": "Motor sin configurar",
       "selected": "Seleccionada"
-    }
+    },
+    "backToComponent": "Volver a los detalles anteriores"
   },
   "attachToChat": "Adjuntar al chat",
   "chatSelection": "Selección AgSDL",
@@ -250,6 +251,7 @@
     "notEmpty": "Este sistema ya contiene un documento. Crea un nuevo plan para elegir otro punto de partida.",
     "emptySystem": "Describe las responsabilidades y reglas en el chat para construir los primeros bloques. También puedes preparar aquí el contexto compartido.",
     "pending": "{{count}} elementos por completar",
+    "pending_one": "{{count}} elemento por completar",
     "changes": "Revisar los últimos cambios",
     "dismissChanges": "Ocultar el resaltado de cambios",
     "added": "Añadido",
@@ -263,7 +265,17 @@
     "groupHint": "Usa el chat para agrupar responsabilidades relacionadas.",
     "createSystem": "Crear un sistema",
     "createSystemHelp": "Empieza de cero o usa un blueprint.",
-    "otherPlanTypes": "Otros tipos de planes"
+    "otherPlanTypes": "Otros tipos de planes",
+    "fillAdaptationsHint": "Estos datos guían al agente al adaptar el sistema a este proyecto.",
+    "defineField": "Editar etiqueta y ayuda",
+    "pending_other": "{{count}} datos por completar",
+    "undoChange": "Deshacer este cambio",
+    "emptyValue": "Vacío",
+    "loadFailed": "No se pudieron cargar algunas fuentes.",
+    "preview": "Punto de partida seleccionado",
+    "noPurpose": "Objetivo sin definir.",
+    "components": "Componentes principales",
+    "noComponents": "Todavía no hay componentes definidos."
   },
   "designGraph": {
     "changed": "Modificado",
@@ -277,7 +289,9 @@
     "overview": "Vista general",
     "exchanges": "Intercambios",
     "groups": "Grupos",
-    "noExchanges": "No hay intercambios declarados entre estos componentes"
+    "noExchanges": "No hay intercambios declarados entre estos componentes",
+    "members_one": "{{count}} componente",
+    "members_other": "{{count}} componentes"
   },
   "macroConfig": {
     "title": "Configuración del agente",
@@ -290,5 +304,27 @@
     "scope": "Solo las herramientas y conexiones declaradas pertenecen a este agente. Elegir un modelo no concede acceso adicional.",
     "unset": "Sin configurar",
     "parameters": "Ajustes adicionales"
-  }
+  },
+  "taskState": {
+    "idle_prompt": "Listo",
+    "awaiting_response": "Espera tu respuesta",
+    "running": "En curso",
+    "plan_finalization": "Finalización",
+    "merging": "Fusionando",
+    "merge_partial": "Fusión parcial",
+    "merge_blocked": "Fusión bloqueada",
+    "merge_failed": "Fusión fallida",
+    "in_review": "En revisión",
+    "completed": "Completado",
+    "failed": "Fallido",
+    "blocked": "Bloqueado"
+  },
+  "saveAndChat": "Guardar y abrir el chat",
+  "reviewWithAI": "Revisar con IA",
+  "chatReview": "Revisar",
+  "chatSystem": "Sistema",
+  "chatContextHint": "Este contexto acompañará tu próximo mensaje. No se ha enviado ningún mensaje.",
+  "reviewHint": "Hay un problema que revisar. Haz clic para adjuntarlo al chat.",
+  "documentSource": "Origen del documento",
+  "jsonProperties": "Propiedades JSON"
 }

@@ -1569,6 +1569,7 @@ interface AppStore {
     hydrateActivePlan?: boolean;
     refreshTasks?: boolean;
     includeArchivedInVisible?: boolean;
+    preserveCurrentActivePlan?: boolean;
     reason?: "boot" | "project_switch" | "selector" | "auto_plan" | "manual";
   }) => Promise<MacroProjectMetadataLoadResult | null>;
   setActivePlanContext: (plan: ArchitectPlanContext | null) => void;
@@ -2307,6 +2308,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: state.selectedProjectId,
         rememberedPlanId: localContext?.lastPlanId ?? null,
         currentActivePlanId: state.activeArchitectPlanId,
+        preferCurrentActivePlan:
+          options.preserveCurrentActivePlan === true || options.reason === "selector",
         currentTargetBranch: state.activePlanContext?.targetBranch ?? null,
         candidateBranches: collectArchitectBranchCandidatesForScope({
           registry,

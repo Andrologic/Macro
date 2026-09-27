@@ -1,8 +1,9 @@
+import { readDesign } from "./design";
 import { keyId, list, object, readDocument } from "./document";
 import { projectViewer, type ViewerCard } from "./viewer";
 
 export type DesignChangeAspect = "identity" | "instructions" | "connections" | "configuration";
-export interface DesignChange { kind: "added" | "modified" | "removed"; title: string; path?: string; before?: string; after?: string; aspects?: DesignChangeAspect[] }
+export interface DesignChange { kind: "added" | "modified" | "removed"; title: string; path?: string; before?: string; after?: string; aspects?: DesignChangeAspect[]; details?: Array<{ aspect: DesignChangeAspect; before: string; after: string; technical?: boolean }> }
 const stable = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 const connectionKeys = new Set(["success", "failure", "true", "false", "bindings", "context", "inputs", "outputs", "resources", "approvers", "approvalCall", "dependencies", "interface"]);
 function withoutPrompt(value: Record<string, unknown>, agentLike = false) {
@@ -73,7 +74,7 @@ function snapshot(source: string) {
 }
 
 /** Compare source identities and authored references, never neighboring display labels. */
-export function reviewDesignChanges(before: string, after: string): { changes: DesignChange[]; configuration: boolean; design: boolean; other: boolean } {
+export function reviewDesignChanges(before: string, after: string): { changes: DesignChange[]; configuration: boolean; design: boolean; other: boolean; designDetails?: Array<{ label: string; before: string; after: string }> } {
   try {
     const empty = { participants: new Map<string, Participant>(), residual: {}, doc: {} as Record<string, unknown> };
     const old = before ? snapshot(before) : empty, next = after ? snapshot(after) : empty;
@@ -83,11 +84,34 @@ export function reviewDesignChanges(before: string, after: string): { changes: D
       // A declaration becoming unused is revealed in the viewer, not newly authored.
       if (!previous && id.startsWith("definition:") && list(old.doc.definitions).some(value => keyId(object(value).key) === keyId(card.details.key) && stable(value) === stable(card.details))) continue;
       const aspects = (Object.keys(parts) as DesignChangeAspect[]).filter(aspect => !previous || stable(previous.parts[aspect]) !== stable(parts[aspect]));
-      if (!previous || aspects.length) changes.push({ kind: previous ? "modified" : "added", title: card.title, path: card.path, before: previous?.card.mission, after: card.mission, aspects });
+      if (!previous || aspects.length) {
+        const details = aspects.map(aspect => ({
+          aspect,
+          before: aspect === "identity" ? previous?.card.title ?? "" : aspect === "instructions" ? previous?.card.mission ?? "" : "",
+          after: aspect === "identity" ? card.title : aspect === "instructions" ? card.mission : "",
+          technical: aspect === "connections" || aspect === "configuration",
+        }));
+        changes.push({ kind: previous ? "modified" : "added", title: card.title, path: card.path, before: previous?.card.mission, after: card.mission, aspects, details });
+      }
     }
     for (const [id, { card }] of old.participants) if (!next.participants.has(id) && !(id.startsWith("definition:") && list(next.doc.definitions).some(value => keyId(object(value).key) === keyId(card.details.key) && stable(value) === stable(card.details)))) changes.push({ kind: "removed", title: card.title, before: card.mission });
     const configuration = stable(old.doc.runtime) !== stable(next.doc.runtime);
     const design = stable(object(object(old.doc.root).annotations).macroDesign) !== stable(object(object(next.doc.root).annotations).macroDesign);
-    return { changes, configuration, design, other: stable(old.residual) !== stable(next.residual) };
+    const designDetails: Array<{ label: string; before: string; after: string }> = [];
+    if (design && before && after) {
+      const previous = readDesign(before), current = readDesign(after);
+      for (const field of ["purpose", "context"] as const) {
+        if (previous[field] !== current[field]) designDetails.push({ label: `agsdl.design.${field}`, before: previous[field], after: current[field] });
+      }
+      for (const id of new Set([...previous.requirements, ...current.requirements].map(item => item.id))) {
+        const oldValue = previous.requirements.find(item => item.id === id), newValue = current.requirements.find(item => item.id === id);
+        if (stable(oldValue) !== stable(newValue)) designDetails.push({ label: newValue?.label || oldValue?.label || "agsdl.design.adaptations", before: oldValue?.value ?? "", after: newValue?.value ?? "" });
+      }
+      for (const id of new Set([...previous.rules, ...current.rules].map(item => item.id))) {
+        const oldRule = previous.rules.find(item => item.id === id), newRule = current.rules.find(item => item.id === id);
+        if (stable(oldRule) !== stable(newRule)) designDetails.push({ label: newRule?.title || oldRule?.title || "agsdl.design.rules", before: oldRule?.instructions ?? "", after: newRule?.instructions ?? "" });
+      }
+    }
+    return { changes, configuration, design, ...(designDetails.length ? { designDetails } : {}), other: stable(old.residual) !== stable(next.residual) };
   } catch { return { changes: [], configuration: false, design: false, other: before !== after }; }
 }

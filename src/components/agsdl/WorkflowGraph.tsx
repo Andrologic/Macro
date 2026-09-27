@@ -8,6 +8,8 @@ import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
+import { TaskStatusIndicator } from "../tasks/TaskStatusIndicator";
+import { groupTaskState, type TrackedTask } from "../../services/agsdl/taskTracking";
 
 type GraphNode = Node<{
   card: ViewerCard;
@@ -21,6 +23,7 @@ type GraphNode = Node<{
   expand?: () => void;
   changed: boolean;
   pending: boolean;
+  task?: TrackedTask;
 }, "workflow">;
 
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
@@ -45,7 +48,9 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         aria-expanded={data.members ? false : undefined}
         title={data.members ? `${data.title} · ${data.members.join(", ")}` : label}
       >
-        <span className="agsdl-node-icon"><Icon size={15} aria-hidden="true" /></span>
+        {data.task ? <span className={`agsdl-node-task agsdl-task-${data.task.state}`} role="img" aria-label={t(`agsdl.taskState.${data.task.state}`)} title={`${data.task.title} · ${t(`agsdl.taskState.${data.task.state}`)}`}>
+          <TaskStatusIndicator state={data.task.state} layout="graph" size={15} />
+        </span> : <span className="agsdl-node-icon"><Icon size={15} aria-hidden="true" /></span>}
         <span className="agsdl-node-text">
           <span className="agsdl-node-title">{data.title}</span>
           {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
@@ -62,7 +67,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
 const nodeTypes = { workflow: WorkflowNode };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [] }: {
+function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {} }: {
   cards: ViewerCard[];
   edges: ViewerEdge[];
   selected: string;
@@ -70,6 +75,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   title: (card: ViewerCard) => string;
   source?: string;
   changedPaths?: string[];
+  trackedTasks?: Record<string, TrackedTask>;
 }) {
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
@@ -114,6 +120,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),
         pending: (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
+        task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],
       },
     };
   });

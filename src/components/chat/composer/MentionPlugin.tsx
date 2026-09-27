@@ -57,7 +57,7 @@ export const MentionPlugin: React.FC = () => {
           return;
         }
 
-        const mentionNode = $createMentionNode(ref.kind, ref.id, ref.title);
+        const mentionNode = $createMentionNode(ref.kind, ref.id, ref.title, { reference: ref });
         const spaceAfter = $createTextNode(' ');
 
         const selection = $getSelection();

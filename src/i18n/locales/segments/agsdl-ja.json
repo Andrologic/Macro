@@ -199,7 +199,8 @@
       "noTools": "ツールの宣言なし",
       "engineUnset": "エンジンが未設定",
       "selected": "選択済み"
-    }
+    },
+    "backToComponent": "前の詳細に戻る"
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",
@@ -250,6 +251,7 @@
     "notEmpty": "このシステムには既にドキュメントがあります。別の作成元を使うには新しいプランを作成してください。",
     "emptySystem": "チャットで役割とルールを説明して、最初のブロックを作成しましょう。共有コンテキストはここでも準備できます。",
     "pending": "要入力 {{count}} 件",
+    "pending_one": "{{count}} 件の未入力項目",
     "changes": "最新の変更を確認",
     "dismissChanges": "変更の強調表示を解除",
     "added": "追加",
@@ -263,7 +265,17 @@
     "groupHint": "チャットで関連する役割をグループにまとめられます。",
     "createSystem": "システムを作成",
     "createSystemHelp": "最初から作成するか、ブループリントを使います。",
-    "otherPlanTypes": "その他のプランの種類"
+    "otherPlanTypes": "その他のプランの種類",
+    "fillAdaptationsHint": "この情報をもとに、エージェントがシステムをこのプロジェクトに合わせて調整します。",
+    "defineField": "ラベルと説明を編集",
+    "pending_other": "未入力の項目：{{count}}",
+    "undoChange": "この変更を元に戻す",
+    "emptyValue": "空欄",
+    "loadFailed": "一部の作成元を読み込めませんでした。",
+    "preview": "選択した作成元",
+    "noPurpose": "目的が未入力です。",
+    "components": "主なコンポーネント",
+    "noComponents": "コンポーネントはまだ定義されていません。"
   },
   "designGraph": {
     "changed": "変更あり",
@@ -277,7 +289,9 @@
     "overview": "全体表示",
     "exchanges": "受け渡し",
     "groups": "グループ",
-    "noExchanges": "これらのコンポーネント間にデータの受け渡しは宣言されていません"
+    "noExchanges": "これらのコンポーネント間にデータの受け渡しは宣言されていません",
+    "members_one": "{{count}} 個のコンポーネント",
+    "members_other": "{{count}} 個のコンポーネント"
   },
   "macroConfig": {
     "title": "エージェント設定",
@@ -290,5 +304,27 @@
     "scope": "このエージェントが使うのは、宣言されたツールと接続のみです。モデルを選択してもアクセス権は追加されません。",
     "unset": "未設定",
     "parameters": "追加設定"
-  }
+  },
+  "taskState": {
+    "idle_prompt": "準備完了",
+    "awaiting_response": "回答待ち",
+    "running": "実行中",
+    "plan_finalization": "最終処理",
+    "merging": "マージ中",
+    "merge_partial": "一部マージ済み",
+    "merge_blocked": "マージがブロック中",
+    "merge_failed": "マージ失敗",
+    "in_review": "レビュー中",
+    "completed": "完了",
+    "failed": "失敗",
+    "blocked": "ブロック中"
+  },
+  "saveAndChat": "保存してチャットを開く",
+  "reviewWithAI": "AIで確認",
+  "chatReview": "確認",
+  "chatSystem": "システム",
+  "chatContextHint": "このコンテキストは次のメッセージに添付されます。まだ送信されていません。",
+  "reviewHint": "確認が必要です。クリックしてチャットに添付します。",
+  "documentSource": "ドキュメントソース",
+  "jsonProperties": "JSONプロパティ"
 }

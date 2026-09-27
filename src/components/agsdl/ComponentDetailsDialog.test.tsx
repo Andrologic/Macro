@@ -38,6 +38,9 @@ describe("component detail editing", () => {
     rename("Changed");
     expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
     act(() => document.body.querySelector<HTMLButtonElement>("footer button")!.click());
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+    expect(document.body.querySelector("input")!.value).toBe("Changed");
+    act(() => { Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent === "Discard changes")!.click(); });
     expect(document.body.querySelector("input")).toBeNull();
     expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
   });

@@ -1,6 +1,10 @@
-import { useAgsdlChatContext, serializeAgsdlChatContext, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
+import { getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
+import { createComposerTransaction } from "../../services/chat/composerTransaction";
+import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
+import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
+import type { ContextRefKind } from "../../types";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
-import { AgsdlChatSelection } from "../agsdl/AgsdlChatSelection";
+import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
@@ -452,7 +456,7 @@ interface ChatMessageRowProps {
   standaloneLaunchProgress?: StandaloneTaskLaunchProgress | null;
 }
 
-const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
+const USER_CONTEXT_MENTION_PATTERN = COMPOSER_REFERENCE_PATTERN;
 
 interface SavedComposerDraft {
   savedDraftText: string;
@@ -467,20 +471,11 @@ const composerDraftMatchesSavedDraft = (
   draft: ComposerDraft | null,
   savedDraft: SavedComposerDraft,
 ): boolean =>
-  Boolean(
-    draft &&
-    draft.text === savedDraft.savedDraftText &&
-    draft.images.length === savedDraft.savedDraftImages.length &&
-    draft.images.every((image, index) => {
-      const savedImage = savedDraft.savedDraftImages[index];
-      return savedImage?.id === image.id && savedImage.dataUrl === image.dataUrl;
-    }) &&
-    draft.contextRefs.length === savedDraft.savedDraftContextRefs.length &&
-    draft.contextRefs.every((ref, index) => {
-      const savedRef = savedDraft.savedDraftContextRefs[index];
-      return savedRef?.id === ref.id && savedRef.kind === ref.kind;
-    }),
-  );
+  Boolean(draft && sameComposerSnapshot(draft, {
+    text: savedDraft.savedDraftText,
+    images: savedDraft.savedDraftImages,
+    contextRefs: savedDraft.savedDraftContextRefs,
+  }));
 
 interface ComposerEditSession extends SavedComposerDraft {
   messageId: string;
@@ -507,6 +502,7 @@ const EMPTY_COMPOSER_DRAFT_SNAPSHOT: ComposerDraftSnapshot = {
 const buildSnapshotContextRefData = (
   ref: PersistedContextReference,
 ): ContextReference['data'] => {
+  if (ref.kind === 'agsdl' && ref.agsdl) return ref.agsdl;
   if (ref.kind === 'skill') {
     return {
       id: ref.id,
@@ -586,7 +582,7 @@ const cloneContextRefs = (
         kind: ref.kind,
         title: ref.title,
         subtitle: ref.subtitle,
-        data: 'data' in ref ? ref.data : buildSnapshotContextRefData(ref),
+        data: structuredClone('data' in ref ? ref.data : buildSnapshotContextRefData(ref)),
       }))
     : [];
 
@@ -613,11 +609,16 @@ const resolveAssistantActivityAnchorId = (
   return latestMessage?.role === 'assistant' ? latestMessage.id : null;
 };
 
-const UserMessageContent: React.FC<{ content: string }> = ({ content }) => {
+const UserMessageContent: React.FC<{ content: string; hiddenContext?: string; contextRefs?: PersistedContextReference[] }> = ({ content, hiddenContext, contextRefs }) => {
+  const attached = contextRefs?.find(ref => ref.kind === "agsdl")?.agsdl;
+  const selection = attached
+    ? { title: attached.title, review: Boolean(attached.diagnostic) }
+    : readAgsdlChatSelection(hiddenContext);
   const lines = content.split('\n');
 
   return (
     <div data-user-message-content="true" className="break-words leading-[1.35]">
+      {selection && <AgsdlSentSelection {...selection} />}
       {lines.map((line, lineIndex) => {
         const parts: React.ReactNode[] = [];
         let lastIndex = 0;
@@ -629,15 +630,11 @@ const UserMessageContent: React.FC<{ content: string }> = ({ content }) => {
             parts.push(line.slice(lastIndex, match.index));
           }
 
-          const rawKind = match[1]?.toLocaleLowerCase();
-          const kind = rawKind === 'file'
-            ? 'file'
-            : rawKind === 'source'
-            ? 'source'
-            : 'skill';
-          const title = match[2]?.trim() ?? '';
+          const kind = match[1].toLowerCase() as ContextRefKind;
+          const ref = resolveReference(match, contextRefs);
+          const title = ref?.title ?? match[2]?.trim() ?? '';
           parts.push(
-            <ContextReferenceChip
+            !ref && match[3] ? title : <ContextReferenceChip
               key={`${lineIndex}-${match.index}-${title}`}
               kind={kind}
               title={title}
@@ -951,7 +948,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
                 </Suspense>
               ) : (
-                <UserMessageContent content={message.content} />
+                <UserMessageContent content={message.content} hiddenContext={message.hidden_context} contextRefs={message.context_refs} />
               )}
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
@@ -1376,6 +1373,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
   const skipComposerDraftPersistenceRef = useRef(false);
   const pendingSentComposerDraftContextKeysRef = useRef(new Set<string>());
+  const composerDraftRevisionRef = useRef(0);
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1814,6 +1812,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   useLayoutEffect(() => {
     if (renderedComposerDraftContextKeyRef.current === composerDraftContextKey) return;
     renderedComposerDraftContextKeyRef.current = composerDraftContextKey;
+    composerDraftRevisionRef.current += 1;
     goalComposerEditSessionRef.current = null;
   }, [composerDraftContextKey]);
 
@@ -1907,12 +1906,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
   ]);
 
-  useEffect(() => {
-    latestComposerDraftRef.current = {
-      text: inputValue,
-      images: [...composerImages],
-      contextRefs: cloneContextRefs(composerContextRefs),
-    };
+  useLayoutEffect(() => {
+    const next = { text: inputValue, images: [...composerImages], contextRefs: cloneContextRefs(composerContextRefs) };
+    if (!sameComposerSnapshot(latestComposerDraftRef.current, next)) composerDraftRevisionRef.current += 1;
+    latestComposerDraftRef.current = next;
   }, [composerContextRefs, composerImages, inputValue]);
 
   useEffect(() => {
@@ -2585,6 +2582,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (!selectedProviderId || !selectedModelId) return false;
     if (startingExecutionRef.current) return false;
 
+    const kickoffSnapshot = captureComposerSnapshot(latestComposerDraftRef.current);
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
     let goalActivated = false;
@@ -2623,12 +2621,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         branchName: selectedTask.branch_name,
         dependencies: selectedTask.dependencies,
         estimatedChanges: selectedTask.estimated_changes,
-        notes: params?.notesOverride ?? composerEditorRef.current?.getTextContent() ?? '',
+        notes: params?.notesOverride ?? kickoffSnapshot.text,
       });
       const sentDraft: SavedComposerDraft = {
-        savedDraftText: latestComposerDraftRef.current.text,
-        savedDraftImages: [...latestComposerDraftRef.current.images],
-        savedDraftContextRefs: cloneContextRefs(latestComposerDraftRef.current.contextRefs),
+        savedDraftText: kickoffSnapshot.text,
+        savedDraftImages: kickoffSnapshot.images,
+        savedDraftContextRefs: kickoffSnapshot.contextRefs,
       };
       saveComposerDraftForContext(composerDraftContextKey, {
         text: sentDraft.savedDraftText,
@@ -2644,6 +2642,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         conversationId,
         content,
         taskId: selectedTask.id,
+        images: kickoffSnapshot.images,
+        contextRefs: persistableContextRefs(kickoffSnapshot.contextRefs) ?? [],
       });
       if (goalActivated) {
         setConversationGoalStatus(
@@ -2984,10 +2984,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [applySavedComposerDraft]);
 
   const { t: agsdlT } = useAgsdlTranslation();
-  const agsdlContext = useAgsdlChatContext(state => {
-    const pending = selectedConversationId ? state.pending[selectedConversationId] : undefined;
-    return mode === 'Architect' && pending?.planId === activeArchitectPlanId ? pending : undefined;
-  });
 
   const sendComposerMessage = async (
     textOverride?: string,
@@ -2997,8 +2993,27 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (activeTurnSubmissionInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
-    const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
-    if (agsdlContext && !isAgsdlChatContextCurrent(agsdlContext)) {
+    const transaction = createComposerTransaction({
+      contextKey: composerDraftContextKey,
+      revision: composerDraftRevisionRef.current,
+      draft: {
+        text: textOverride ?? composerEditorRef.current?.getTextContent() ?? '',
+        images: composerImages,
+        contextRefs: composerContextRefs,
+      },
+    });
+    const snapshot = transaction.snapshot;
+    const text = snapshot.text.trim();
+    const currentComposerState = () => ({
+      contextKey: activeComposerDraftContextKeyRef.current,
+      revision: composerDraftRevisionRef.current,
+      draft: latestComposerDraftRef.current,
+    });
+    const ownsUnchangedComposer = () => transaction.canClear(currentComposerState());
+    const capturedRefs = persistableContextRefs(snapshot.contextRefs);
+    const agsdlContext = getAgsdlContext(snapshot.contextRefs);
+
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
@@ -3027,13 +3042,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             conversationId: submittedConversationId,
             content: text,
             hiddenContext: serializeAgsdlChatContext(agsdlContext),
+            contextRefs: capturedRefs ?? [],
             taskId: implementTaskIdForSend,
-            images: [...composerImages],
+            images: snapshot.images,
             ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
-        if (agsdlContext) useAgsdlChatContext.getState().remove(selectedConversationId, agsdlContext.id);
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
@@ -3076,7 +3091,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         kind: 'edit',
         messageId: composerEditSession.messageId,
         content: text,
-        images: [...composerImages],
+        images: snapshot.images,
+        contextRefs: capturedRefs ?? [],
+        hiddenContext: replaceAgsdlChatContext(currentMessages.find(message => message.id === composerEditSession.messageId)?.hidden_context, agsdlContext),
+        providerInputItems: currentMessages.find(message => message.id === composerEditSession.messageId)?.provider_input_items,
+        replaceStructuredFields: true,
       });
       return;
     }
@@ -3115,14 +3134,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    if (agsdlContext && !isAgsdlChatContextCurrent(agsdlContext)) {
+    if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
     const conversationDraftKey = `conversation:${conversationId}`;
     migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = goalCommand?.kind === 'activate' ? goalCommand.objective : text;
-    const imagesForMessage = [...composerImages];
+    const imagesForMessage = snapshot.images;
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
     let tracksGoalTurn = false;
@@ -3166,9 +3185,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const sentDraft: SavedComposerDraft = {
       savedDraftText: text,
       savedDraftImages: imagesForMessage,
-      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+      savedDraftContextRefs: snapshot.contextRefs,
     };
-    const clearsComposerImmediately = !goalComposerEditSession;
+    const clearsComposerImmediately = !goalComposerEditSession && ownsUnchangedComposer();
     const pendingDraftContextKeys = [composerDraftContextKey, conversationDraftKey];
     const finishPendingDraft = (confirmed: boolean) => {
       pendingDraftContextKeys.forEach((contextKey) => {
@@ -3200,30 +3219,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       });
     };
     const restoreSentDraft = () => {
+      if (transaction.accepted) { finishPendingDraft(true); return; }
       finishPendingDraft(false);
-      const activeDraftContext = activeComposerDraftContextKeyRef.current;
-      if (
-        activeDraftContext !== composerDraftContextKey &&
-        activeDraftContext !== conversationDraftKey
-      ) {
-        return;
-      }
-      const latestDraft = latestComposerDraftRef.current;
-      if (
-        latestDraft.text.length > 0 ||
-        latestDraft.images.length > 0 ||
-        latestDraft.contextRefs.length > 0
-      ) {
-        return;
-      }
+      if (!transaction.canRestore(currentComposerState(), conversationDraftKey)) return;
       applySavedComposerDraft(sentDraft);
     };
 
     try {
       const sendPromise = sendMessage({
+        onUserMessagePublished: () => { transaction.accept(); finishPendingDraft(true); },
         conversationId,
         content,
         hiddenContext: serializeAgsdlChatContext(agsdlContext?.conversationId === conversationId ? agsdlContext : undefined),
+        contextRefs: capturedRefs ?? [],
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
@@ -3241,11 +3249,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           images: [],
           contextRefs: [],
         };
+        composerDraftRevisionRef.current += 1;
+        transaction.markCleared(composerDraftRevisionRef.current);
         resetPromptHistoryNavigation();
       }
       const result = await sendPromise;
       if (result.status === 'sent') {
-        if (agsdlContext) useAgsdlChatContext.getState().remove(conversationId, agsdlContext.id);
         if (goalEditTransactionId) {
           if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
             setConversationGoalStatus(conversationId, 'executor_running');
@@ -3552,8 +3561,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
 
-    const content = message.content;
+    let content = message.content;
     const messageContextRefs = cloneContextRefs(message.context_refs);
+    if (!messageContextRefs.some(ref => ref.kind === 'agsdl')) {
+      const legacy = legacyAgsdlReference(message.hidden_context, message.conversation_id, message.id);
+      if (legacy) {
+        messageContextRefs.push(legacy);
+        content = `${referenceText(legacy.kind, legacy.id, legacy.title)} ${content}`;
+      }
+    }
     const draftText = composerEditorRef.current?.getTextContent() ?? inputValue;
     const session: ComposerEditSession = {
       messageId: message.id,
@@ -3563,7 +3579,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       savedDraftContextRefs: [...composerContextRefs],
     };
     setComposerEditSession(session);
-    clearComposerContextRefs();
+    replaceComposerContextRefs(messageContextRefs, selectedConversationId);
     setComposerImages(getMessageImages(message.id));
     setInputValue(content);
     setPromptHistoryIndex(null);
@@ -4166,7 +4182,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {agsdlContext && <AgsdlChatSelection context={agsdlContext} />}
             {!activeQuestionnaire && !activePendingToolApproval && <input
               ref={composerFileInputRef}
               type="file"
@@ -4464,6 +4479,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   >
                     <Suspense fallback={<ComposerFallbackStatus />}>
                       <LazyComposerEditor
+                        historyKey={`${composerDraftContextKey}:${composerEditSession?.messageId ?? "draft"}`}
                         ref={composerEditorRef}
                         editable={!!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                         readOnly={isSpeechEnhancing}

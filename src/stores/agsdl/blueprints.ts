@@ -3,6 +3,7 @@ import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from '../useAgsdlSto
 import { AGSDL_EXAMPLES, createExample } from '../../services/agsdl/examples';
 import { applyChanges, object, readDocument, text } from '../../services/agsdl/document';
 import { readDesign, withDesign, type DesignMetadata } from '../../services/agsdl/design';
+import { useAppStore } from '../useAppStore';
 
 export interface DesignSource {
   id: string;
@@ -12,6 +13,10 @@ export interface DesignSource {
   annexes: Record<string, string>;
   origin?: DesignMetadata['origin'];
   builtin?: boolean;
+}
+export interface DesignSourceLoadResult {
+  sources: DesignSource[];
+  failureCount: number;
 }
 const examplePurposes = {
   feature: 'Implement and verify the requested change.',
@@ -32,21 +37,57 @@ export interface BlueprintDependencies {
   listPlans: typeof listArchitectPlans;
   getPlan: typeof getArchitectPlan;
   createPlan: typeof createArchitectPlan;
+  refreshCatalog?: () => Promise<unknown>;
   store: typeof useAgsdlStore.getState;
 }
-const dependencies = (): BlueprintDependencies => ({ listBranches: listArchitectPlanTargetBranches, listPlans: listArchitectPlans, getPlan: getArchitectPlan, createPlan: createArchitectPlan, store: useAgsdlStore.getState });
-export async function listDesignSources(deps = dependencies()): Promise<DesignSource[]> {
+const dependencies = (): BlueprintDependencies => ({
+  listBranches: listArchitectPlanTargetBranches,
+  listPlans: listArchitectPlans,
+  getPlan: getArchitectPlan,
+  createPlan: createArchitectPlan,
+  refreshCatalog: () => useAppStore.getState().loadMacroProjectMetadataForSelection({
+    hydrateActivePlan: false,
+    preserveCurrentActivePlan: true,
+    refreshTasks: false,
+    reason: 'manual',
+  }),
+  store: useAgsdlStore.getState,
+});
+export async function listDesignSources(deps = dependencies()): Promise<DesignSourceLoadResult> {
   const branches = await deps.listBranches();
   const groups = await Promise.all(branches.map(async branch => {
-    const { plans } = await deps.listPlans(branch);
-    return Promise.all(plans.filter(plan => plan.hasAgsdl && plan.status !== 'deleted' && plan.status !== 'archived').map(async summary => {
-      const plan = await deps.getPlan(branch, summary.id);
-      if (!plan?.agsdl) return null;
-      const name = plan.label || text(object(object(readDocument(plan.agsdl.source).root).annotations).title) || plan.title;
-      return { id: JSON.stringify([branch, plan.id]), name, kind: readDesign(plan.agsdl.source).kind, source: plan.agsdl.source, annexes: { ...plan.agsdl.annexes }, origin: { planId: plan.id, name, revision: plan.agsdl.revision } } satisfies DesignSource;
-    }));
+    try {
+      const { plans } = await deps.listPlans(branch);
+      const entries = await Promise.all(plans
+        .filter(plan => plan.hasAgsdl && plan.status !== 'deleted' && plan.status !== 'archived')
+        .map(async summary => {
+          try {
+            const plan = await deps.getPlan(branch, summary.id);
+            // A stale catalog entry can legitimately have no snapshot (for example
+            // after undo). It is not a malformed document and should not hide the
+            // usable entries or show a misleading load error.
+            if (!plan?.agsdl || !plan.agsdl.source.trim()) return { source: undefined, failureCount: 0 };
+            const name = plan.label || text(object(object(readDocument(plan.agsdl.source).root).annotations).title) || plan.title;
+            return {
+              source: { id: JSON.stringify([branch, plan.id]), name, kind: readDesign(plan.agsdl.source).kind, source: plan.agsdl.source, annexes: { ...plan.agsdl.annexes }, origin: { planId: plan.id, name, revision: plan.agsdl.revision } } satisfies DesignSource,
+              failureCount: 0,
+            };
+          } catch {
+            return { source: undefined, failureCount: 1 };
+          }
+        }));
+      return {
+        sources: entries.flatMap(entry => entry.source ? [entry.source] : []),
+        failureCount: entries.reduce((count, entry) => count + entry.failureCount, 0),
+      };
+    } catch {
+      return { sources: [], failureCount: 1 };
+    }
   }));
-  return [...builtInDesignSources(), ...groups.flat().filter((item): item is NonNullable<typeof item> => item !== null)];
+  return {
+    sources: [...builtInDesignSources(), ...groups.flatMap(group => group.sources)],
+    failureCount: groups.reduce((count, group) => count + group.failureCount, 0),
+  };
 }
 export async function saveBlueprint(target: AgsdlTarget, name: string, deps = dependencies(), expectedVersion?: string): Promise<ArchitectPlanRecord> {
   if (!name.trim()) throw new Error('Give the blueprint a name.');
@@ -59,7 +100,13 @@ export async function saveBlueprint(target: AgsdlTarget, name: string, deps = de
   const annexes = { ...session.annexes };
   const plan = await deps.getPlan(target.branchName, target.planId);
   if (!plan || plan.status === 'deleted') throw new Error('The source plan is unavailable.');
-  return deps.createPlan({ branchName: target.branchName, label: name.trim(), title: name.trim(), description: readDesign(source).purpose, status: 'draft', projectIds: plan.projectIds ?? (plan.projectId ? [plan.projectId] : []), contextProjectIds: plan.contextProjectIds, setActive: false, agsdl: { source, annexes } });
+  const created = await deps.createPlan({ branchName: target.branchName, label: name.trim(), title: name.trim(), description: readDesign(source).purpose, status: 'draft', projectIds: plan.projectIds ?? (plan.projectId ? [plan.projectId] : []), contextProjectIds: plan.contextProjectIds, setActive: false, agsdl: { source, annexes } });
+  // Keep the Architect navigator/sidebar in sync with the newly persisted plan.
+  // A refresh failure must not turn a successful save into a reported failure.
+  if (deps.refreshCatalog) {
+    try { await deps.refreshCatalog(); } catch { /* the saved plan remains valid */ }
+  }
+  return created;
 }
 export async function instantiateDesign(target: AgsdlTarget, source: DesignSource, expectedVersion: string, options: { replace?: boolean; onApplied?: (version: string) => void } = {}, deps = dependencies()): Promise<void> {
   // A library entry is already a pinned snapshot, including its annexes and revision.

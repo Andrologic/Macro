@@ -614,6 +614,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     expect(context.taskState.startTask).toHaveBeenCalledWith('task-1');
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: expect.stringContaining('DEVELOPER NOTES\nNeed to reuse checkout components.'),
       taskId: 'task-1',
@@ -659,6 +660,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     expect(context.taskState.startTask).toHaveBeenCalledWith('task-1');
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: expect.stringContaining(
         'DEVELOPER NOTES\nShip the checkout flow end to end',
@@ -727,6 +729,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     expect(context.taskState.startTask).toHaveBeenCalledWith('task-1');
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: expect.stringContaining('DEVELOPER NOTES\nFocus on a minimal diff.'),
       taskId: 'task-1',
@@ -863,10 +866,11 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     });
 
     expect(context.chatState.sendMessage).toHaveBeenCalledWith({
+      images: [], contextRefs: [],
       conversationId: 'conv-1',
       content: 'Implement the standalone feature directly.',
+      hiddenContext: undefined, onUserMessagePublished: expect.any(Function),
       taskId: 'task-1',
-      images: [],
     });
     expect(context.taskState.startTask).not.toHaveBeenCalled();
   });

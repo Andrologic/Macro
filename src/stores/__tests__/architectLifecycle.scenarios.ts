@@ -848,6 +848,7 @@ export const registerArchitectLifecycleScenarios = (
       const pendingConversationId =
         await useChatStore.getState().ensureConversationForCurrentMode();
       expect(pendingConversationId).toMatch(/^pending-architect-/);
+      expect(useChatStore.getState().getPendingArchitectConversationTarget(pendingConversationId!)).toEqual({ planId: blankPlan.id, branchName: 'develop' });
       expect(
         useChatStore
           .getState()
@@ -863,6 +864,7 @@ export const registerArchitectLifecycleScenarios = (
         await useChatStore.getState().ensureConversationForCurrentMode();
 
       expect(selectedConversationId).toBe('started-plan-conv');
+      expect(useChatStore.getState().getPendingArchitectConversationTarget(pendingConversationId!)).toBeNull();
       expect(
         useChatStore
           .getState()

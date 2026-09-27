@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createExample } from "./examples";
 import { projectViewer } from "./viewer";
-import { applyChanges } from "./document";
+import { applyChanges, validateDocument } from "./document";
 import { macroAgentConfiguration, macroConfigurationChanges } from "./macroAgentConfiguration";
 
 const setup = () => {
@@ -18,16 +18,24 @@ describe("Macro model configuration", () => {
     original.tools = [{ tool: { scope: "demo", id: "declared", version: "1" }, choices: [] }];
     const result = JSON.parse(applyChanges(source(), macroConfigurationChanges(source(), card(), "provider-a", "model-a")));
     const binding = result.runtime.configurations[0].agents[0];
-    expect(binding.engine).toEqual({ identity: "macro", version: "1" });
+    expect(binding.engine).toEqual({ identity: "macro/desktop", version: "1" });
     expect(binding.parameters).toEqual({ ...original.parameters, providerId: "provider-a", modelId: "model-a" });
     expect(binding.tools).toEqual(original.tools);
     expect(binding.applications).toEqual(original.applications);
     expect(result.runtime.selected).toBeUndefined();
     expect(result.runtime.configurations[0].agents.slice(1)).toEqual(doc.runtime.configurations[0].agents.slice(1));
   });
+  it("produces a binding accepted by the AgSDL reader", async () => {
+    const source = createExample("release");
+    const card = projectViewer(source).graphs[0].cards[0];
+    const configured = applyChanges(source, macroConfigurationChanges(source, card, "provider-a", "model-a"));
+    const reports = await validateDocument(configured);
+    const failures = reports.flatMap(report => report.results.filter(result => result.verdict !== "pass"));
+    expect(failures).toEqual([]);
+  });
   it("blocks foreign engines and unsupported Macro editions without modifying them", () => {
     const { doc, source, card } = setup();
-    for (const engine of [{ identity: "foreign", version: "1" }, { identity: "macro", version: "2" }]) {
+    for (const engine of [{ identity: "foreign", version: "1" }, { identity: "macro/desktop", version: "2" }]) {
       doc.runtime.configurations[0].agents[0].engine = engine;
       expect(macroAgentConfiguration(source(), card()).editable).toBe(false);
       expect(() => macroConfigurationChanges(source(), card(), "p", "m")).toThrow();

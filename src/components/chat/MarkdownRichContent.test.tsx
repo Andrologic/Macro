@@ -191,6 +191,14 @@ describe('MarkdownRichContent context references', () => {
     expect(markup).not.toContain('[skill: test-skill]');
   });
 
+  it('renders stable AgSDL references without exposing internal links', () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'Inspect [agsdl: Release](macro-context://agsdl/selection-1)'} />,
+    );
+    expect(markup).toContain('data-context-reference-kind="agsdl"');
+    expect(markup).not.toContain('href="macro-context:');
+  });
+
   it('does not render context reference chips inside inline code', () => {
     const markup = renderToStaticMarkup(
       <MarkdownRichContent content={'Keep `[skill: test-skill]` literal'} />

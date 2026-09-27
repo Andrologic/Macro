@@ -39,7 +39,7 @@ export function macroAgentConfiguration(source: string, card: ViewerCard): Macro
     .filter(({ value }) => valid(value.agent) && keyId(value.agent) === keyId(agent));
   if (bindings.length !== 1) return blocked;
   const binding = bindings[0].value, engine = object(binding.engine), params = object(binding.parameters);
-  const editable = (binding.engine == null || (engine.identity === "macro" && engine.version === "1")) &&
+  const editable = (binding.engine == null || (engine.identity === "macro/desktop" && engine.version === "1")) &&
     (binding.parameters == null || (typeof binding.parameters === "object" && !Array.isArray(binding.parameters))) &&
     [params.providerId, params.modelId].every(value => value === undefined || typeof value === "string");
   return { editable, providerId: text(params.providerId), modelId: text(params.modelId),
@@ -54,7 +54,7 @@ export function macroConfigurationChanges(source: string, card: ViewerCard, prov
   const parts = config.bindingPath.split("/");
   const binding = object(list(object(list(object(doc.runtime).configurations)[Number(parts[3])]).agents)[Number(parts[5])]);
   const changes: AgsdlChange[] = [];
-  if (binding.engine == null) changes.push({ op: "set", path: `${config.bindingPath}/engine`, valueJson: JSON.stringify({ identity: "macro", version: "1" }) });
+  if (binding.engine == null) changes.push({ op: "set", path: `${config.bindingPath}/engine`, valueJson: JSON.stringify({ identity: "macro/desktop", version: "1" }) });
   if (binding.parameters == null) changes.push({ op: "set", path: `${config.bindingPath}/parameters`, valueJson: "{}" });
   changes.push({ op: "set", path: `${config.bindingPath}/parameters/providerId`, valueJson: JSON.stringify(providerId) },
     { op: "set", path: `${config.bindingPath}/parameters/modelId`, valueJson: JSON.stringify(modelId) });

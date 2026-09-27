@@ -1,3 +1,4 @@
+import { DisclosureSummary } from "./DisclosureSummary";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, Bot, Box, Settings2, Terminal, Wrench } from "lucide-react";
@@ -65,7 +66,7 @@ function ReferencePreview({ reference, cards, onSelect }: {
 function Parameters({ value }: { value: Record<string, unknown> }) {
   return <dl className="agsdl-configuration-values">{Object.entries(value).map(([key, item]) => <div key={key}>
     <dt>{key}</dt><dd>{item !== null && typeof item === "object"
-      ? <details><summary>{Array.isArray(item) ? `${item.length}` : "…"}</summary><Parameters value={item as Record<string, unknown>} /></details>
+      ? <details><DisclosureSummary>{Array.isArray(item) ? `${item.length}` : "…"}</DisclosureSummary><Parameters value={item as Record<string, unknown>} /></details>
       : String(item)}</dd>
   </div>)}</dl>;
 }
@@ -126,6 +127,9 @@ export function AgentDetails({ card, cards, source, onSelect }: {
           ? `${id} · ${t("agsdl.macroConfig.unavailable", { defaultValue: "Unavailable locally" })}`
           : t("agsdl.macroConfig.unset", { defaultValue: "Not configured" });
         const parameters = macro ? Object.fromEntries(Object.entries(config.parameters).filter(([key]) => !["providerId", "modelId"].includes(key))) : config.parameters;
+        if (!macro && !Object.keys(parameters).length && !config.tools.length) {
+          return <div className="agsdl-runtime-empty" key={`${config.id}-${index}`}><Settings2 size={13} />{config.engine || t("agsdl.viewer.detail.engineUnset")}</div>;
+        }
         return <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>
           <summary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></summary>
           {macro && <dl className="agsdl-configuration-values">
@@ -134,7 +138,7 @@ export function AgentDetails({ card, cards, source, onSelect }: {
             <div><dt>{t("agsdl.macroConfig.model", { defaultValue: "Model" })}</dt><dd>{model?.name || unavailable(modelId)}</dd></div>
           </dl>}
           {!!Object.keys(parameters).length && (macro
-            ? <details className="agsdl-details"><summary>{t("agsdl.macroConfig.parameters", { defaultValue: "Additional settings" })}</summary><Parameters value={parameters} /></details>
+            ? <details className="agsdl-details"><DisclosureSummary>{t("agsdl.macroConfig.parameters", { defaultValue: "Additional settings" })}</DisclosureSummary><Parameters value={parameters} /></details>
             : <Parameters value={parameters} />)}
           {config.tools.map((tool, i) => <div className="agsdl-tool-connection" key={i}>{reference(tool.reference)}
             {tool.choices.map((choice, j) => <div key={j}><p>{choice.implementation || choice.id}{choice.selected && <small> · {t("agsdl.viewer.detail.selected")}</small>}</p><Parameters value={choice.parameters} /></div>)}

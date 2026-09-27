@@ -199,7 +199,8 @@
       "noTools": "선언된 도구 없음",
       "engineUnset": "엔진 미설정",
       "selected": "선택됨"
-    }
+    },
+    "backToComponent": "이전 상세 정보로 돌아가기"
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",
@@ -250,6 +251,7 @@
     "notEmpty": "이 시스템에는 이미 문서가 있습니다. 다른 시작점을 사용하려면 새 플랜을 만드세요.",
     "emptySystem": "채팅에서 역할과 규칙을 설명해 첫 블록을 만드세요. 여기에서 공유 컨텍스트를 준비할 수도 있습니다.",
     "pending": "{{count}}개 항목 입력 필요",
+    "pending_one": "완료할 항목 {{count}}개",
     "changes": "최근 변경 사항 검토",
     "dismissChanges": "변경 사항 강조 해제",
     "added": "추가됨",
@@ -263,7 +265,17 @@
     "groupHint": "채팅에서 관련 역할을 그룹으로 묶으세요.",
     "createSystem": "시스템 만들기",
     "createSystemHelp": "처음부터 만들거나 블루프린트를 사용하세요.",
-    "otherPlanTypes": "다른 플랜 유형"
+    "otherPlanTypes": "다른 플랜 유형",
+    "fillAdaptationsHint": "에이전트가 이 정보를 참고하여 시스템을 이 프로젝트에 맞게 조정합니다.",
+    "defineField": "이름과 안내 편집",
+    "pending_other": "입력할 항목 {{count}}개",
+    "undoChange": "이 변경 실행 취소",
+    "emptyValue": "비어 있음",
+    "loadFailed": "일부 원본을 불러오지 못했습니다.",
+    "preview": "선택한 원본",
+    "noPurpose": "목적이 입력되지 않았습니다.",
+    "components": "주요 구성 요소",
+    "noComponents": "아직 정의된 구성 요소가 없습니다."
   },
   "designGraph": {
     "changed": "변경됨",
@@ -277,7 +289,9 @@
     "overview": "전체 보기",
     "exchanges": "데이터 교환",
     "groups": "그룹",
-    "noExchanges": "이 구성 요소 사이에 선언된 데이터 교환이 없습니다"
+    "noExchanges": "이 구성 요소 사이에 선언된 데이터 교환이 없습니다",
+    "members_one": "구성 요소 {{count}}개",
+    "members_other": "구성 요소 {{count}}개"
   },
   "macroConfig": {
     "title": "에이전트 설정",
@@ -290,5 +304,27 @@
     "scope": "선언된 도구와 연결만 이 에이전트에 속합니다. 모델을 선택해도 추가 접근 권한이 부여되지 않습니다.",
     "unset": "설정되지 않음",
     "parameters": "추가 설정"
-  }
+  },
+  "taskState": {
+    "idle_prompt": "준비됨",
+    "awaiting_response": "응답 대기 중",
+    "running": "실행 중",
+    "plan_finalization": "마무리",
+    "merging": "병합 중",
+    "merge_partial": "부분 병합",
+    "merge_blocked": "병합 차단됨",
+    "merge_failed": "병합 실패",
+    "in_review": "검토 중",
+    "completed": "완료",
+    "failed": "실패",
+    "blocked": "차단됨"
+  },
+  "saveAndChat": "저장 후 채팅 열기",
+  "reviewWithAI": "AI로 검토",
+  "chatReview": "검토",
+  "chatSystem": "시스템",
+  "chatContextHint": "이 컨텍스트는 다음 메시지에 첨부됩니다. 아직 전송된 메시지는 없습니다.",
+  "reviewHint": "검토가 필요합니다. 클릭하면 채팅에 첨부됩니다.",
+  "documentSource": "문서 소스",
+  "jsonProperties": "JSON 속성"
 }

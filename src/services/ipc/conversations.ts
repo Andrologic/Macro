@@ -397,6 +397,7 @@ export async function dbPrepareConversationReplay(params: {
   replayId: string;
   content: string;
   hiddenContext?: string | null;
+  contextRefsJson?: string | null;
   providerInputItemsJson?: string | null;
   codeCheckpointsJson?: string | null;
   deleteContextCompactionState: boolean;

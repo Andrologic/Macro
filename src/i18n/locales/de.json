@@ -1,7 +1,16 @@
 {
   "speech": {
-    "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Audio gesendet · Transkription läuft", "enhancing": "Transkript empfangen · Intelligente Bereinigung" },
-    "recording": { "active": "Aufnahme läuft", "stopAndInsert": "Stoppen und Transkription einfügen", "stopAndSend": "Stoppen, transkribieren und senden" },
+    "button": {
+      "start": "Diktat starten",
+      "stop": "Diktat beenden",
+      "transcribing": "Audio gesendet · Transkription läuft",
+      "enhancing": "Transkript empfangen · Intelligente Bereinigung"
+    },
+    "recording": {
+      "active": "Aufnahme läuft",
+      "stopAndInsert": "Stoppen und Transkription einfügen",
+      "stopAndSend": "Stoppen, transkribieren und senden"
+    },
     "errors": {
       "title": "Diktat nicht verfügbar",
       "provider-missing": "Konfigurieren und wählen Sie zuerst einen Sprachanbieter.",
@@ -18,24 +27,52 @@
       "enhancement-failed": "Macro hat die Rohtranskription beibehalten."
     },
     "settings": {
-      "validation": "Name, Endpunkt und Modell sind erforderlich.", "saved": "Sprachanbieter gespeichert.",
-      "saveFailed": "Der Sprachanbieter konnte nicht gespeichert werden.", "deleted": "Sprachanbieter gelöscht.",
-      "deleteFailed": "Der Sprachanbieter konnte nicht gelöscht werden.", "deleteTitle": "Sprachanbieter löschen",
-      "deleteConfirm": "{{name}} und den lokal gespeicherten API-Schlüssel löschen?", "title": "Mikrofondiktat",
+      "validation": "Name, Endpunkt und Modell sind erforderlich.",
+      "saved": "Sprachanbieter gespeichert.",
+      "saveFailed": "Der Sprachanbieter konnte nicht gespeichert werden.",
+      "deleted": "Sprachanbieter gelöscht.",
+      "deleteFailed": "Der Sprachanbieter konnte nicht gelöscht werden.",
+      "deleteTitle": "Sprachanbieter löschen",
+      "deleteConfirm": "{{name}} und den lokal gespeicherten API-Schlüssel löschen?",
+      "title": "Mikrofondiktat",
       "description": "Nehmen Sie im Composer auf, transkribieren Sie mit dem gewählten Anbieter und prüfen Sie den Text vor dem Senden.",
-      "testTitle": "Mikrofon und Transkription testen", "testDescription": "Nimmt bis zu 15 Sekunden auf und sendet die Aufnahme nur für diesen Test an den ausgewählten Anbieter.",
-      "testStart": "Mikrofon testen", "testStop": "Stoppen und transkribieren", "testRequesting": "Mikrofonzugriff wird angefordert...", "testTranscribing": "Test wird transkribiert...", "testCancelled": "Mikrofontest abgebrochen.", "testFailed": "Der Mikrofontest ist fehlgeschlagen.", "testProviderRequired": "Wählen Sie vor dem Test einen aktiven Anbieter aus.",
-      "activeProvider": "Aktiver Anbieter", "noProvider": "Kein Anbieter", "language": "Sprache", "autoLanguage": "Automatisch",
-      "maxDuration": "Maximale Aufnahmedauer", "enhancementTitle": "Intelligente Transkriptbereinigung", "enhancementDescription": "Verwenden Sie das aktive Unterhaltungsmodell für eine kurze, vorsichtige Korrektur von Erkennungsfehlern, Zögern und Wiederholungen.",
-      "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.", "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
+      "testTitle": "Mikrofon und Transkription testen",
+      "testDescription": "Nimmt bis zu 15 Sekunden auf und sendet die Aufnahme nur für diesen Test an den ausgewählten Anbieter.",
+      "testStart": "Mikrofon testen",
+      "testStop": "Stoppen und transkribieren",
+      "testRequesting": "Mikrofonzugriff wird angefordert...",
+      "testTranscribing": "Test wird transkribiert...",
+      "testCancelled": "Mikrofontest abgebrochen.",
+      "testFailed": "Der Mikrofontest ist fehlgeschlagen.",
+      "testProviderRequired": "Wählen Sie vor dem Test einen aktiven Anbieter aus.",
+      "activeProvider": "Aktiver Anbieter",
+      "noProvider": "Kein Anbieter",
+      "language": "Sprache",
+      "autoLanguage": "Automatisch",
+      "maxDuration": "Maximale Aufnahmedauer",
+      "enhancementTitle": "Intelligente Transkriptbereinigung",
+      "enhancementDescription": "Verwenden Sie das aktive Unterhaltungsmodell für eine kurze, vorsichtige Korrektur von Erkennungsfehlern, Zögern und Wiederholungen.",
+      "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.",
+      "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
       "andrologicPrivacy": "Andrologic verarbeitet Audio über das authentifizierte Macro-Gateway und speichert es nicht. Transkripte werden in Betriebsprotokollen erfasst.",
       "durationUnit": "Sekunden",
-      "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.", "providers": "Sprachanbieter",
-      "compatibility": "Unterstützt OpenAI-kompatible und Deepgram-Transkriptionsendpunkte.", "addProvider": "Anbieter hinzufügen",
-      "keyStored": "API-Schlüssel lokal gespeichert", "managedAuth": "Authentifizierung wird von Macro verwaltet", "noKeyRequired": "Kein API-Schlüssel erforderlich", "keyMissing": "API-Schlüssel erforderlich",
-      "editProvider": "Anbieter bearbeiten", "newProvider": "Neuer Anbieter", "protocol": "Protokoll", "model": "Transkriptionsmodell",
-      "endpoint": "Basis-URL", "apiKey": "API-Schlüssel", "keepKey": "Leer lassen, um den gespeicherten Schlüssel beizubehalten",
-      "localProvider": "Lokaler oder schlüsselloser Anbieter", "removeKey": "Gespeicherten API-Schlüssel entfernen"
+      "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.",
+      "providers": "Sprachanbieter",
+      "compatibility": "Unterstützt OpenAI-kompatible und Deepgram-Transkriptionsendpunkte.",
+      "addProvider": "Anbieter hinzufügen",
+      "keyStored": "API-Schlüssel lokal gespeichert",
+      "managedAuth": "Authentifizierung wird von Macro verwaltet",
+      "noKeyRequired": "Kein API-Schlüssel erforderlich",
+      "keyMissing": "API-Schlüssel erforderlich",
+      "editProvider": "Anbieter bearbeiten",
+      "newProvider": "Neuer Anbieter",
+      "protocol": "Protokoll",
+      "model": "Transkriptionsmodell",
+      "endpoint": "Basis-URL",
+      "apiKey": "API-Schlüssel",
+      "keepKey": "Leer lassen, um den gespeicherten Schlüssel beizubehalten",
+      "localProvider": "Lokaler oder schlüsselloser Anbieter",
+      "removeKey": "Gespeicherten API-Schlüssel entfernen"
     }
   },
   "startup": {
@@ -52,7 +89,10 @@
       "skipped": "Automatische @macro-Wiederherstellung übersprungen",
       "blockedConflictDescription": "Macro hat ungelöste Konflikte im Metadaten-Arbeitsverzeichnis gefunden und die Wiederherstellung nicht automatisch angewendet.",
       "blockedDirtyDescription": "Macro hat lokale Änderungen im Metadaten-Arbeitsverzeichnis gefunden und die Wiederherstellung nicht automatisch angewendet."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "Diese Browsersitzung ist nicht mehr mit Macro verbunden.",
+    "browserRuntimeSessionReplacedDescription": "Ein anderer Browser-Tab hat die Kontrolle über die Desktop-Laufzeit übernommen. Laden Sie diesen Tab neu, um fortzufahren.",
+    "browserRuntimeSessionReplacedReload": "Tab neu laden"
   },
   "shutdown": {
     "activeWorkSingle": "Eine Aufgabe läuft noch. Beim Schließen von Macro wird sie unterbrochen.",
@@ -2006,10 +2046,17 @@
       "deleteFailed": "Der MCP-Server konnte nicht gelöscht werden.",
       "toggleFailed": "Der MCP-Server konnte nicht aktualisiert werden.",
       "transportHint": "Verwende stdio für lokale Server oder Streamable HTTP für ältere und zustandslose Remote-Server.",
-      "transport": { "stdio": "Lokales stdio", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "Lokales stdio",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://beispiel.de/mcp",
       "headersPlaceholder": "Authorization=Bearer Token\nX-API-Key=Wert",
-      "protocol": { "auto": "Automatische Erkennung", "legacy": "Ältere Sitzung", "modern": "Modern und zustandslos" },
+      "protocol": {
+        "auto": "Automatische Erkennung",
+        "legacy": "Ältere Sitzung",
+        "modern": "Modern und zustandslos"
+      },
       "oauth": {
         "enable": "OAuth verwenden",
         "scopes": "Durch Leerzeichen getrennte Bereiche",
@@ -2064,51 +2111,188 @@
     "hideDetails": "Details ausblenden",
     "showDetails": "Details anzeigen",
     "degraded": {
-      "fallback": { "title": "Hier ist Ihre Aufmerksamkeit erforderlich", "body": "Macro konnte diese Aktion nicht sicher abschließen.", "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut.", "dynamic": "{{message}}" },
-      "worktree": {
-        "checkedOut": { "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten", "body": "Der für diese Aufgabe benötigte Branch ist im Haupt-Repository noch mit lokalen Änderungen geöffnet.", "nextStep": "Committen, stashen oder verwerfen Sie diese lokalen Änderungen und starten Sie die Aufgabe erneut." },
-        "missingBase": { "title": "Macro konnte den Basis-Branch nicht finden", "body": "Diese Aufgabe benötigt einen Basis-Branch, bevor ihr Worktree erstellt werden kann.", "nextStep": "Erstellen Sie den Branch oder aktualisieren Sie die Git-Workflow-Einstellungen des Projekts und versuchen Sie es erneut." },
-        "fallback": { "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten", "body": "Der Aufgabenarbeitsbereich ist noch nicht bereit. Macro kann Dateien daher nicht sicher prüfen oder bearbeiten.", "nextStep": "Starten Sie die Aufgabe erneut. Falls sie weiterhin fehlschlägt, öffnen Sie die Git-Einstellungen des Projekts und prüfen Sie den Repository-Status." }
+      "fallback": {
+        "title": "Hier ist Ihre Aufmerksamkeit erforderlich",
+        "body": "Macro konnte diese Aktion nicht sicher abschließen.",
+        "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut.",
+        "dynamic": "{{message}}"
       },
-      "readOnly": { "title": "Dieses Projekt ist nur zum Lesen verfügbar", "body": "Dieses Projekt kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.", "namedBody": "{{projectName}} kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.", "missingGitNextStep": "Initialisieren Sie Git für dieses Projekt und aktivieren Sie anschließend die Bearbeitung.", "settingsNextStep": "Öffnen Sie die Projekteinstellungen und stellen Sie sicher, dass der Git-Workflow bereit ist." },
+      "worktree": {
+        "checkedOut": {
+          "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten",
+          "body": "Der für diese Aufgabe benötigte Branch ist im Haupt-Repository noch mit lokalen Änderungen geöffnet.",
+          "nextStep": "Committen, stashen oder verwerfen Sie diese lokalen Änderungen und starten Sie die Aufgabe erneut."
+        },
+        "missingBase": {
+          "title": "Macro konnte den Basis-Branch nicht finden",
+          "body": "Diese Aufgabe benötigt einen Basis-Branch, bevor ihr Worktree erstellt werden kann.",
+          "nextStep": "Erstellen Sie den Branch oder aktualisieren Sie die Git-Workflow-Einstellungen des Projekts und versuchen Sie es erneut."
+        },
+        "fallback": {
+          "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten",
+          "body": "Der Aufgabenarbeitsbereich ist noch nicht bereit. Macro kann Dateien daher nicht sicher prüfen oder bearbeiten.",
+          "nextStep": "Starten Sie die Aufgabe erneut. Falls sie weiterhin fehlschlägt, öffnen Sie die Git-Einstellungen des Projekts und prüfen Sie den Repository-Status."
+        }
+      },
+      "readOnly": {
+        "title": "Dieses Projekt ist nur zum Lesen verfügbar",
+        "body": "Dieses Projekt kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.",
+        "namedBody": "{{projectName}} kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.",
+        "missingGitNextStep": "Initialisieren Sie Git für dieses Projekt und aktivieren Sie anschließend die Bearbeitung.",
+        "settingsNextStep": "Öffnen Sie die Projekteinstellungen und stellen Sie sicher, dass der Git-Workflow bereit ist."
+      },
       "replica": {
-        "missing": { "titleSingular": "Planmetadaten fehlen in {{count}} Repository", "titlePlural": "Planmetadaten fehlen in {{count}} Repositories", "body": "Macro benötigt alle erwarteten Replikate der Planmetadaten, bevor der Plan sicher aktualisiert werden kann.", "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut." },
-        "diverged": { "title": "Planmetadaten unterscheiden sich zwischen Repositories", "body": "Macro hat mehrere Versionen dieser Planmetadaten gefunden und muss vor dem Fortfahren eine kanonische Kopie auswählen.", "nextStep": "Reparieren Sie anhand des neuesten Replikats, sofern Sie nicht absichtlich eine ältere Kopie benötigen." }
+        "missing": {
+          "titleSingular": "Planmetadaten fehlen in {{count}} Repository",
+          "titlePlural": "Planmetadaten fehlen in {{count}} Repositories",
+          "body": "Macro benötigt alle erwarteten Replikate der Planmetadaten, bevor der Plan sicher aktualisiert werden kann.",
+          "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut."
+        },
+        "diverged": {
+          "title": "Planmetadaten unterscheiden sich zwischen Repositories",
+          "body": "Macro hat mehrere Versionen dieser Planmetadaten gefunden und muss vor dem Fortfahren eine kanonische Kopie auswählen.",
+          "nextStep": "Reparieren Sie anhand des neuesten Replikats, sofern Sie nicht absichtlich eine ältere Kopie benötigen."
+        }
       },
       "gitFlow": {
-        "repositoryDirty": { "title": "Das Repository enthält lokale Änderungen", "body": "Macro kann diesen Merge nicht abschließen, solange das Ziel-Repository nicht zugehörige, uncommittete Änderungen enthält.", "nextStep": "Committen, stashen oder verwerfen Sie die lokalen Änderungen und versuchen Sie den Merge erneut." },
-        "mergeInProgress": { "title": "Ein Merge läuft bereits", "body": "Macro hat in diesem Repository einen unvollständigen Merge gefunden.", "nextStep": "Schließen Sie den vorhandenen Merge ab oder brechen Sie ihn ab und versuchen Sie es erneut." },
-        "conflict": { "title": "Lösen Sie diese Konflikte vor dem Abschluss", "body": "Der Plan kann noch nicht sauber zusammengeführt werden.", "filesNextStep": "Lösen Sie die aufgeführten Dateien und versuchen Sie den Merge erneut.", "blockersNextStep": "Beheben Sie die Merge-Blockaden und versuchen Sie es erneut." }
+        "repositoryDirty": {
+          "title": "Das Repository enthält lokale Änderungen",
+          "body": "Macro kann diesen Merge nicht abschließen, solange das Ziel-Repository nicht zugehörige, uncommittete Änderungen enthält.",
+          "nextStep": "Committen, stashen oder verwerfen Sie die lokalen Änderungen und versuchen Sie den Merge erneut."
+        },
+        "mergeInProgress": {
+          "title": "Ein Merge läuft bereits",
+          "body": "Macro hat in diesem Repository einen unvollständigen Merge gefunden.",
+          "nextStep": "Schließen Sie den vorhandenen Merge ab oder brechen Sie ihn ab und versuchen Sie es erneut."
+        },
+        "conflict": {
+          "title": "Lösen Sie diese Konflikte vor dem Abschluss",
+          "body": "Der Plan kann noch nicht sauber zusammengeführt werden.",
+          "filesNextStep": "Lösen Sie die aufgeführten Dateien und versuchen Sie den Merge erneut.",
+          "blockersNextStep": "Beheben Sie die Merge-Blockaden und versuchen Sie es erneut."
+        }
       },
       "metadata": {
-        "clean": { "title": "Die @macro-Metadaten sind aktuell", "body": "Es ist keine Aktion erforderlich." },
-        "dirty": { "title": "Die @macro-Metadaten enthalten lokale Änderungen", "body": "Macro muss Metadatenänderungen vor der Synchronisierung speichern.", "nextStep": "Speichern Sie die @macro-Metadaten und versuchen Sie die Synchronisierung erneut." },
-        "ahead": { "title": "Die @macro-Metadaten können veröffentlicht werden", "body": "Ihr lokaler Metadaten-Branch enthält Änderungen, die noch nicht im Remote-Repository liegen.", "nextStep": "Pushen Sie @macro, sobald Sie bereit sind." },
-        "behind": { "title": "Die @macro-Metadaten liegen hinter dem Remote-Stand", "body": "Die Remote-Metadaten enthalten Aktualisierungen, die lokal noch fehlen.", "nextStep": "Pullen Sie @macro und versuchen Sie die Aktion erneut." },
-        "diverged": { "title": "Die @macro-Metadaten sind divergiert", "body": "Sowohl lokale als auch Remote-Metadaten wurden geändert.", "nextStep": "Pullen Sie @macro, lösen Sie mögliche Konflikte und pushen Sie anschließend." },
-        "mergeConflict": { "title": "Die @macro-Metadaten enthalten Konflikte", "body": "Der Metadaten-Branch enthält nicht aufgelöste Konfliktdateien.", "nextStep": "Lösen Sie die Konflikte in den Metadatendateien und wiederholen Sie denselben Synchronisierungsschritt." },
-        "missingOrigin": { "title": "Das Remote-Repository für @macro ist nicht konfiguriert", "body": "Macro kann die Metadaten nicht synchronisieren, weil das Repository kein origin-Remote besitzt.", "nextStep": "Konfigurieren Sie das Git-Remote und versuchen Sie es erneut." },
-        "missingUpstream": { "title": "@macro besitzt keinen Upstream-Branch", "body": "Der Metadaten-Branch ist lokal vorhanden, aber noch nicht mit einem Remote-Branch verknüpft.", "nextStep": "Pushen Sie @macro zur Veröffentlichung oder ignorieren Sie diese Warnung, um die Metadaten lokal zu behalten." },
-        "authRequired": { "title": "Git-Authentifizierung ist erforderlich", "body": "Macro kann mit den aktuellen Anmeldedaten nicht auf das Metadaten-Remote zugreifen.", "nextStep": "Konfigurieren Sie die Git-Authentifizierung und versuchen Sie es erneut." },
-        "networkError": { "title": "Die Metadatensynchronisierung konnte das Remote-Repository nicht erreichen", "body": "Das Netzwerk oder der Remote-Dienst ist derzeit nicht verfügbar.", "nextStep": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut." },
-        "unknownError": { "title": "Die Macro-Metadatensynchronisierung ist fehlgeschlagen", "body": "Macro konnte die Metadatensynchronisierung nicht sicher abschließen.", "nextStep": "Versuchen Sie die Synchronisierung erneut. Prüfen Sie bei einem weiteren Fehler die technischen Details." }
+        "clean": {
+          "title": "Die @macro-Metadaten sind aktuell",
+          "body": "Es ist keine Aktion erforderlich."
+        },
+        "dirty": {
+          "title": "Die @macro-Metadaten enthalten lokale Änderungen",
+          "body": "Macro muss Metadatenänderungen vor der Synchronisierung speichern.",
+          "nextStep": "Speichern Sie die @macro-Metadaten und versuchen Sie die Synchronisierung erneut."
+        },
+        "ahead": {
+          "title": "Die @macro-Metadaten können veröffentlicht werden",
+          "body": "Ihr lokaler Metadaten-Branch enthält Änderungen, die noch nicht im Remote-Repository liegen.",
+          "nextStep": "Pushen Sie @macro, sobald Sie bereit sind."
+        },
+        "behind": {
+          "title": "Die @macro-Metadaten liegen hinter dem Remote-Stand",
+          "body": "Die Remote-Metadaten enthalten Aktualisierungen, die lokal noch fehlen.",
+          "nextStep": "Pullen Sie @macro und versuchen Sie die Aktion erneut."
+        },
+        "diverged": {
+          "title": "Die @macro-Metadaten sind divergiert",
+          "body": "Sowohl lokale als auch Remote-Metadaten wurden geändert.",
+          "nextStep": "Pullen Sie @macro, lösen Sie mögliche Konflikte und pushen Sie anschließend."
+        },
+        "mergeConflict": {
+          "title": "Die @macro-Metadaten enthalten Konflikte",
+          "body": "Der Metadaten-Branch enthält nicht aufgelöste Konfliktdateien.",
+          "nextStep": "Lösen Sie die Konflikte in den Metadatendateien und wiederholen Sie denselben Synchronisierungsschritt."
+        },
+        "missingOrigin": {
+          "title": "Das Remote-Repository für @macro ist nicht konfiguriert",
+          "body": "Macro kann die Metadaten nicht synchronisieren, weil das Repository kein origin-Remote besitzt.",
+          "nextStep": "Konfigurieren Sie das Git-Remote und versuchen Sie es erneut."
+        },
+        "missingUpstream": {
+          "title": "@macro besitzt keinen Upstream-Branch",
+          "body": "Der Metadaten-Branch ist lokal vorhanden, aber noch nicht mit einem Remote-Branch verknüpft.",
+          "nextStep": "Pushen Sie @macro zur Veröffentlichung oder ignorieren Sie diese Warnung, um die Metadaten lokal zu behalten."
+        },
+        "authRequired": {
+          "title": "Git-Authentifizierung ist erforderlich",
+          "body": "Macro kann mit den aktuellen Anmeldedaten nicht auf das Metadaten-Remote zugreifen.",
+          "nextStep": "Konfigurieren Sie die Git-Authentifizierung und versuchen Sie es erneut."
+        },
+        "networkError": {
+          "title": "Die Metadatensynchronisierung konnte das Remote-Repository nicht erreichen",
+          "body": "Das Netzwerk oder der Remote-Dienst ist derzeit nicht verfügbar.",
+          "nextStep": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+        },
+        "unknownError": {
+          "title": "Die Macro-Metadatensynchronisierung ist fehlgeschlagen",
+          "body": "Macro konnte die Metadatensynchronisierung nicht sicher abschließen.",
+          "nextStep": "Versuchen Sie die Synchronisierung erneut. Prüfen Sie bei einem weiteren Fehler die technischen Details."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "Die Git-Review wurde angehalten", "body": "Ein für diese Review benötigtes Git-Objekt ist nicht verfügbar. Macro hat keine Arbeitsdateien geändert.", "bodyUncertain": "Git konnte ein für diesen Vorgang benötigtes Objekt nicht lesen. Prüfen Sie vor dem erneuten Versuch die technischen Details.", "nextStep": "Versuchen Sie es erneut, damit Git das Objekt noch einmal abruft. In den technischen Details finden Sie Vorgang, Objekt-ID und bereinigte Git-Ausgabe." },
-        "directModeConfigurationRequired": { "title": "Der Review-Modus muss konfiguriert werden", "body": "Dieses Projekt ist kein Git-Repository, aber die Aufgabendaten erlauben keine direkte Review. Macro hat keine Git-Review gestartet und keine Arbeitsdateien geändert.", "nextStep": "Konfigurieren Sie Git für dieses Projekt oder erstellen Sie die Aufgabe im direkten Modus neu. Die technischen Details zeigen den gespeicherten Modus." },
-        "directCheckpointMissing": { "title": "Macros Review-Prüfpunkt ist nicht verfügbar", "body": "Der interne Prüfpunkt für die Review dieses Projekts ohne Git fehlt. Macro hat keine Arbeitsdateien geändert.", "nextStep": "Versuchen Sie es nach einer erneuten Vorbereitung der Aufgabe erneut. Die technischen Details zeigen die Prüfpunkt-ID." },
-        "directCheckpointCorrupt": { "title": "Macros Review-Prüfpunkt ist beschädigt", "body": "Der interne Prüfpunkt für die Review dieses Projekts ohne Git ist unvollständig. Macro hat ihn beibehalten und keine Arbeitsdateien geändert.", "nextStep": "Versuchen Sie es einmal erneut. Setzen Sie den Prüfpunkt nicht zurück, wenn akzeptierter Verlauf erhalten bleiben muss. Öffnen Sie die technischen Details zur Diagnose." },
-        "directCheckpointProjectMismatch": { "title": "Macros Review-Prüfpunkt gehört zu einem anderen Projektpfad", "body": "Die gespeicherte Identität des Prüfpunkts stimmt nicht mit dem aktuellen Pfad dieses Projekts überein. Macro hat den Prüfpunkt beibehalten und keine Arbeitsdateien geändert.", "nextStep": "Prüfen Sie den gespeicherten Projektpfad oder öffnen Sie das ursprüngliche Projekt erneut. Verwenden Sie die technischen Details, um den Prüfpunkt vor einer Korrektur der Metadaten zu identifizieren." },
-        "resourcePressure": { "title": "Macro ist vorübergehend überlastet", "body": "Im System sind zu viele Dateien geöffnet. Macro hat daher automatische Repository-Aktualisierungen vor dem erneuten Versuch pausiert.", "nextStep": "Warten Sie einen Moment und versuchen Sie es erneut. Falls das Problem bestehen bleibt, schließen Sie zusätzliche Projektfenster oder Terminals." },
-        "replicaRepair": { "title": "Die Planmetadaten müssen repariert werden", "body": "Macro hat inkonsistente Planmetadaten gefunden und muss die kanonische Kopie vor dem Fortfahren reparieren.", "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut." },
-        "metadataMissing": { "title": "Die Planmetadaten sind unvollständig", "body": "Macro hat eine Aufgabe oder Unterhaltung gefunden, die auf fehlende oder nur teilweise gespeicherte Planmetadaten verweist.", "nextStep": "Reparieren Sie die Metadatenverknüpfungen und versuchen Sie es erneut." },
-        "workspaceUnavailable": { "title": "Der Arbeitsbereichsstatus ist vorübergehend nicht verfügbar", "body": "Macro konnte den für diese Aktion erforderlichen Arbeitsbereichsstatus nicht lesen.", "nextStep": "Versuchen Sie es nach Abschluss der Arbeitsbereichsaktualisierung erneut. Öffnen Sie das Projekt neu, falls das Problem bestehen bleibt." },
-        "gitNotReady": { "title": "Dieses Projekt ist noch nicht zur Bearbeitung bereit", "body": "Macro kann dieses Projekt weiterhin als Kontext verwenden, aber erst darin schreiben, wenn Git bereit ist.", "nextStep": "Öffnen Sie die Projekteinstellungen und schließen Sie die Git-Einrichtung ab." },
-        "fallback": { "title": "Hier ist Ihre Aufmerksamkeit erforderlich", "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut." }
+        "gitObjectMissing": {
+          "title": "Die Git-Review wurde angehalten",
+          "body": "Ein für diese Review benötigtes Git-Objekt ist nicht verfügbar. Macro hat keine Arbeitsdateien geändert.",
+          "bodyUncertain": "Git konnte ein für diesen Vorgang benötigtes Objekt nicht lesen. Prüfen Sie vor dem erneuten Versuch die technischen Details.",
+          "nextStep": "Versuchen Sie es erneut, damit Git das Objekt noch einmal abruft. In den technischen Details finden Sie Vorgang, Objekt-ID und bereinigte Git-Ausgabe."
+        },
+        "directModeConfigurationRequired": {
+          "title": "Der Review-Modus muss konfiguriert werden",
+          "body": "Dieses Projekt ist kein Git-Repository, aber die Aufgabendaten erlauben keine direkte Review. Macro hat keine Git-Review gestartet und keine Arbeitsdateien geändert.",
+          "nextStep": "Konfigurieren Sie Git für dieses Projekt oder erstellen Sie die Aufgabe im direkten Modus neu. Die technischen Details zeigen den gespeicherten Modus."
+        },
+        "directCheckpointMissing": {
+          "title": "Macros Review-Prüfpunkt ist nicht verfügbar",
+          "body": "Der interne Prüfpunkt für die Review dieses Projekts ohne Git fehlt. Macro hat keine Arbeitsdateien geändert.",
+          "nextStep": "Versuchen Sie es nach einer erneuten Vorbereitung der Aufgabe erneut. Die technischen Details zeigen die Prüfpunkt-ID."
+        },
+        "directCheckpointCorrupt": {
+          "title": "Macros Review-Prüfpunkt ist beschädigt",
+          "body": "Der interne Prüfpunkt für die Review dieses Projekts ohne Git ist unvollständig. Macro hat ihn beibehalten und keine Arbeitsdateien geändert.",
+          "nextStep": "Versuchen Sie es einmal erneut. Setzen Sie den Prüfpunkt nicht zurück, wenn akzeptierter Verlauf erhalten bleiben muss. Öffnen Sie die technischen Details zur Diagnose."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Macros Review-Prüfpunkt gehört zu einem anderen Projektpfad",
+          "body": "Die gespeicherte Identität des Prüfpunkts stimmt nicht mit dem aktuellen Pfad dieses Projekts überein. Macro hat den Prüfpunkt beibehalten und keine Arbeitsdateien geändert.",
+          "nextStep": "Prüfen Sie den gespeicherten Projektpfad oder öffnen Sie das ursprüngliche Projekt erneut. Verwenden Sie die technischen Details, um den Prüfpunkt vor einer Korrektur der Metadaten zu identifizieren."
+        },
+        "resourcePressure": {
+          "title": "Macro ist vorübergehend überlastet",
+          "body": "Im System sind zu viele Dateien geöffnet. Macro hat daher automatische Repository-Aktualisierungen vor dem erneuten Versuch pausiert.",
+          "nextStep": "Warten Sie einen Moment und versuchen Sie es erneut. Falls das Problem bestehen bleibt, schließen Sie zusätzliche Projektfenster oder Terminals."
+        },
+        "replicaRepair": {
+          "title": "Die Planmetadaten müssen repariert werden",
+          "body": "Macro hat inkonsistente Planmetadaten gefunden und muss die kanonische Kopie vor dem Fortfahren reparieren.",
+          "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut."
+        },
+        "metadataMissing": {
+          "title": "Die Planmetadaten sind unvollständig",
+          "body": "Macro hat eine Aufgabe oder Unterhaltung gefunden, die auf fehlende oder nur teilweise gespeicherte Planmetadaten verweist.",
+          "nextStep": "Reparieren Sie die Metadatenverknüpfungen und versuchen Sie es erneut."
+        },
+        "workspaceUnavailable": {
+          "title": "Der Arbeitsbereichsstatus ist vorübergehend nicht verfügbar",
+          "body": "Macro konnte den für diese Aktion erforderlichen Arbeitsbereichsstatus nicht lesen.",
+          "nextStep": "Versuchen Sie es nach Abschluss der Arbeitsbereichsaktualisierung erneut. Öffnen Sie das Projekt neu, falls das Problem bestehen bleibt."
+        },
+        "gitNotReady": {
+          "title": "Dieses Projekt ist noch nicht zur Bearbeitung bereit",
+          "body": "Macro kann dieses Projekt weiterhin als Kontext verwenden, aber erst darin schreiben, wenn Git bereit ist.",
+          "nextStep": "Öffnen Sie die Projekteinstellungen und schließen Sie die Git-Einrichtung ab."
+        },
+        "fallback": {
+          "title": "Hier ist Ihre Aufmerksamkeit erforderlich",
+          "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut."
+        }
       }
     }
   },
-  "prompts": { "title": "System-Prompts", "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.", "restoreAll": "Alle wiederherstellen", "saveFailed": "System-Prompts konnten nicht gespeichert werden." },
+  "prompts": {
+    "title": "System-Prompts",
+    "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.",
+    "restoreAll": "Alle wiederherstellen",
+    "saveFailed": "System-Prompts konnten nicht gespeichert werden."
+  },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",
     "settingsSaved": "Einstellungen gespeichert",

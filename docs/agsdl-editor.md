@@ -14,8 +14,8 @@ attente restent visibles ; les détails du système se consultent à la demande.
    du premier chargement du panneau, sans changer le statut du plan.
 2. Lire les participants et leurs relations sur le canvas. Les interfaces du
    système et les fins techniques ne sont pas des étapes affichées. Le bouton
-   « Détails du système » dans l’en-tête ouvre ses interfaces déclarées, son point
-   de départ et ses ressources ; sa configuration reste dans les détails techniques.
+   « Détails du système » présente son objectif et les informations à compléter.
+   Les diagnostics et contrats techniques sont joints au chat pour être analysés par le modèle.
    Sélectionner une flèche pour consulter la relation et les données
    explicitement transmises. Aucun transfert n’est déduit du seul ordre des étapes.
 3. Sélectionner un agent pour ouvrir une fiche compartimentée, sans réduire le
@@ -31,10 +31,9 @@ attente restent visibles ; les détails du système se consultent à la demande.
    de validation n’exécute cette étape : il s’agit du visualisateur du processus.
    La croix, le fond de la modale et la touche Échap referment les détails. Dans
    un plan en brouillon, le bouton de modification ouvre le nom et les instructions
-   avec Enregistrer et Annuler. Les sections repliées donnent accès aux outils,
-   ressources et contrats pris en charge. Les références se choisissent parmi les
-   déclarations existantes ; un contrat déjà consommé reste en lecture seule.
-   « Toutes les déclarations » donne aussi accès aux définitions inutilisées.
+   avec Enregistrer et Annuler. Les sections repliées donnent accès aux outils et
+   ressources modifiables parmi les déclarations existantes. Les contrats et la
+   création de nouvelles déclarations se modifient par le chat.
    Les instructions conservent leur propriétaire AgSDL,
    y compris lorsqu’elles sont partagées. Une saisie non enregistrée est confirmée
    avant fermeture. Un conflit de version conserve la saisie ; un échec de sauvegarde
@@ -52,10 +51,12 @@ attente restent visibles ; les détails du système se consultent à la demande.
    peut être retirée ; si la source change, il faut la joindre à nouveau. Les
    métadonnées techniques accompagnent la requête sans apparaître dans le texte
    du message. Les erreurs de sauvegarde restent visibles.
-6. Utiliser Annuler ou Rétablir dans l’en-tête pour parcourir les modifications
-   de la session. Le document restauré est enregistré dans le plan. Ces commandes
-   sont désactivées pendant une sauvegarde et hors du statut brouillon.
-7. Ouvrir les diagnostics depuis les détails du système. Lorsqu’un problème
+6. Ouvrir la revue de la dernière modification pour comparer les valeurs et,
+   si nécessaire, annuler ce changement. Le document restauré est enregistré
+   dans le plan. Cette action est désactivée pendant une sauvegarde et hors brouillon.
+7. Cliquer sur le signal de problème dans l’en-tête pour joindre directement
+   les diagnostics au chat. Une pastille compacte dans la saisie indique le
+   système à examiner ; son survol précise qu’aucun message n’a été envoyé. Lorsqu’un problème
    désigne un composant identifiable, le retrouver ou le joindre au chat pour
    correction. Un problème sans emplacement fiable reste global. Les contrôles
    vérifient le document ; ils ne garantissent pas son exécution.
@@ -66,12 +67,17 @@ Un plan conserve pour l’instant une conversation de conception et un document
 AgSDL. Depuis un plan vide, le panneau propose de commencer un système vide,
 d’utiliser un blueprint inclus ou enregistré, ou d’adapter un système existant.
 La bibliothèque lit les plans accessibles dans les métadonnées Macro. Une erreur
-de lecture reste visible ; les exemples inclus restent disponibles.
+de lecture reste visible avec une action de reprise ; les sources lisibles et les
+exemples inclus restent disponibles. Sélectionner une source affiche son objectif
+et ses composants principaux avant de créer une copie.
 
 La fiche de conception sépare l’objectif, le contexte partagé, les règles du
 processus et les informations à fournir pour adapter le système au projet.
-Un brouillon peut rester incomplet. Les champs sans valeur restent à compléter,
-et les agents sans instructions portent un indicateur discret. Ces informations
+Un brouillon peut rester incomplet. Les champs sans valeur restent à compléter ;
+la valeur du projet est directement accessible. Les définitions de champs et
+les règles se modifient par le chat. « Enregistrer et ouvrir le chat » joint le
+système enregistré sans envoyer de message. Après une copie contenant des informations manquantes, cette fiche
+s’ouvre. Les agents sans instructions portent un indicateur discret. Ces informations
 sont des consignes de conception : l’agent doit les traduire explicitement dans
 les instructions, ressources, contrats ou étapes du graphe. Une règle décrite
 n’est pas une garantie d’exécution.
@@ -92,15 +98,19 @@ nommés explicitement par l’agent peuvent être repliés ; ces groupes ne sont
 des étapes d’exécution. Une édition d’instructions conserve le cadrage.
 
 Après une modification, une action permet d’examiner les derniers changements
-de la session : composants ajoutés, modifiés ou retirés, instructions avant et
-après, configuration et informations de conception. Les modifications locales
+de la session : composants ajoutés, modifiés ou retirés, valeurs avant et après
+pour le nom et les instructions, et signalement des connexions et configurations
+modifiées sans exposer leur structure technique. Les détails restent repliés.
+Les changements de modèle concernent les appels de l’agent
+configuré. La revue signale aussi les informations de conception modifiées.
+Les changements limités à la mise en forme n’affichent pas de revue vide. Les modifications locales
 et celles de l’IA suivent le même historique Annuler/Rétablir. Fermer cet aperçu
 ou masquer ses repères ne change pas le document. Cet historique ne constitue
 pas un historique durable de toutes les versions du système.
 
 La modale d’édition d’un agent permet de choisir un fournisseur et un modèle
 configurés dans Macro lorsqu’une configuration AgSDL unique peut être identifiée.
-Le moteur est Macro. Les configurations importées étrangères ou ambiguës restent
+Le moteur déclaré est Macro. Les configurations importées étrangères ou ambiguës restent
 préservées et doivent être préparées par l’agent avant cette édition. Les outils
 et MCP restent des autorisations déclarées, indépendantes du choix du modèle.
 Cette version ne lance pas les systèmes AgSDL et n’ajoute pas de mode orchestrateur.
@@ -124,8 +134,8 @@ L’interface et les outils de rédaction de stratégie legacy sont retirés du
 parcours Architect. Les données d’exécution historiques restent présentes pour
 les tâches Implement déjà créées. Leur suppression complète dépend d’un
 adaptateur d’exécution AgSDL ; cette version ne l’introduit pas. Le document
-converti est un instantané descriptif, pas un moteur d’exécution ni un suivi en
-direct des tâches historiques.
+converti reste un instantané descriptif. Le visualisateur peut toutefois afficher
+les états actuels des tâches Macro liées, indépendamment de cet instantané.
 
 ## Contrat et conservation
 
@@ -142,3 +152,19 @@ et ses adaptations sont décrites dans
 ```sh
 bun dev/agsdl/check-reader-parity.mjs <checkout-AgSDL-v0.1.0>
 ```
+
+## Indicateurs de tâches dans le graphe
+
+Les blocs liés à une tâche reprennent les indicateurs partagés de Macro et ses
+états réels, y compris l’activité de la conversation et les blocages. Aucun
+statut n’est déduit du titre du bloc ou du statut enregistré dans la migration.
+
+Pour les cartes legacy, le lien utilise l’identifiant original du nœud. Pour
+un document natif, `macroTaskId` doit référencer l’identifiant exact de la tâche
+dans les annotations de la déclaration, ou dans
+`ControlFlow.annotations.macroSteps[stepId]` pour une étape. Le lien est limité
+au même plan et à la même branche ; les tâches archivées et les liens ambigus
+sont ignorés. Sans lien, le bloc conserve son icône habituelle. Un groupe replié
+ne s’affiche terminé que si tous ses membres sont liés et terminés.
+
+Ce suivi ne crée pas de tâches et ne remplace pas le moteur d’exécution Macro.

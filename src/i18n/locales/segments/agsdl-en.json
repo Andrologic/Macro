@@ -199,7 +199,8 @@
       "noTools": "No tools declared",
       "engineUnset": "Engine not configured",
       "selected": "Selected"
-    }
+    },
+    "backToComponent": "Back to previous details"
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
@@ -250,6 +251,7 @@
     "notEmpty": "This system already contains a document. Create a new plan to use another starting point.",
     "emptySystem": "Describe the responsibilities and rules in the chat to build the first blocks. You can also prepare the shared context here.",
     "pending": "{{count}} items to complete",
+    "pending_one": "{{count}} item to complete",
     "changes": "Review latest changes",
     "dismissChanges": "Dismiss change highlights",
     "added": "Added",
@@ -263,7 +265,17 @@
     "groupHint": "Use the chat to group related responsibilities.",
     "createSystem": "Create a system",
     "createSystemHelp": "Start from scratch or use a blueprint.",
-    "otherPlanTypes": "Other plan types"
+    "otherPlanTypes": "Other plan types",
+    "fillAdaptationsHint": "These details guide the agent when adapting the system to this project.",
+    "defineField": "Edit label and guidance",
+    "pending_other": "{{count}} items to complete",
+    "undoChange": "Undo this change",
+    "emptyValue": "Empty",
+    "loadFailed": "Some starting points could not be loaded.",
+    "preview": "Selected starting point",
+    "noPurpose": "No purpose provided.",
+    "components": "Main components",
+    "noComponents": "No components defined yet."
   },
   "designGraph": {
     "changed": "Modified",
@@ -277,7 +289,9 @@
     "overview": "Overview",
     "exchanges": "Exchanges",
     "groups": "Groups",
-    "noExchanges": "No exchanges declared between these components"
+    "noExchanges": "No exchanges declared between these components",
+    "members_one": "{{count}} component",
+    "members_other": "{{count}} components"
   },
   "macroConfig": {
     "title": "Agent configuration",
@@ -290,5 +304,27 @@
     "scope": "Only the declared tools and connections belong to this agent. Model selection does not grant additional access.",
     "unset": "Not configured",
     "parameters": "Additional settings"
-  }
+  },
+  "taskState": {
+    "idle_prompt": "Ready",
+    "awaiting_response": "Waiting for your response",
+    "running": "Running",
+    "plan_finalization": "Finalization",
+    "merging": "Merging",
+    "merge_partial": "Partially merged",
+    "merge_blocked": "Merge blocked",
+    "merge_failed": "Merge failed",
+    "in_review": "In review",
+    "completed": "Completed",
+    "failed": "Failed",
+    "blocked": "Blocked"
+  },
+  "saveAndChat": "Save and open chat",
+  "reviewWithAI": "Review with AI",
+  "chatReview": "Review",
+  "chatSystem": "System",
+  "chatContextHint": "This context will accompany your next message. No message has been sent.",
+  "reviewHint": "An issue needs review. Click to attach it to chat.",
+  "documentSource": "Document source",
+  "jsonProperties": "JSON properties"
 }

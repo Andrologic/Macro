@@ -1,5 +1,7 @@
+import { DiscardChangesDialog } from "./DiscardChangesDialog";
+import { DisclosureSummary } from "./DisclosureSummary";
 import { useState, type ReactNode } from "react";
-import { Pencil, X, MessageSquarePlus } from "lucide-react";
+import { ArrowLeft, Pencil, X, MessageSquarePlus } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
@@ -9,8 +11,8 @@ import { macroAgentConfiguration, macroConfigurationChanges, type MacroConfigura
 import { MacroAgentConfiguration } from "./MacroAgentConfiguration";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 
-export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach }: {
-  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>;
+export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
+  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
@@ -18,11 +20,11 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
   const [applied, setApplied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [discard, setDiscard] = useState(false);
+  const [discard, setDiscard] = useState<"close" | "edit" | null>(null);
   const dirty = draft && (draft.fields.some((field, index) => field.value !== draft.values[index]) || draft.properties.fields.some((field, index) => field.value !== draft.propertyValues[index]) || draft.providerId !== draft.configuration.providerId || draft.modelId !== draft.configuration.modelId);
   const close = () => {
     if (busy) return;
-    if (dirty && !applied) setDiscard(true);
+    if (dirty && !applied) setDiscard("close");
     else onClose();
   };
   const start = () => {
@@ -34,7 +36,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     setError("");
   };
   const save = async () => {
-    if (!draft || busy) return;
+    if (!draft || busy || !canEdit || session?.status !== "draft") return;
     setBusy(true); setError("");
     try {
       const store = useAgsdlStore.getState();
@@ -48,7 +50,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
         setDraft({ ...draft, version }); setApplied(true);
       }
       await store.save(target);
-      setDraft(undefined); setApplied(false); setDiscard(false);
+      setDraft(undefined); setApplied(false); setDiscard(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setError(t(message, { defaultValue: message }));
@@ -57,7 +59,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
   return <Dialog title={title} onClose={close} closeOnBackdropClick
     backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
     panelClassName="agsdl-detail-modal">
-    <header><strong>{title}</strong><div className="agsdl-header-actions">
+    <header>{!draft && onBack && <button className="agsdl-icon-button" disabled={busy} onClick={onBack} aria-label={t("agsdl.viewer.backToComponent")} title={t("agsdl.viewer.backToComponent")}><ArrowLeft size={16} /></button>}<strong>{title}</strong><div className="agsdl-header-actions">
       {!draft && onAttach && <button className="agsdl-icon-button" disabled={busy} title={t("agsdl.attachToChat")} aria-label={t("agsdl.attachToChat")} onClick={() => {
         setBusy(true); setError("");
         void onAttach().then(onClose).catch((error: unknown) => setError(error instanceof Error ? error.message : String(error))).finally(() => setBusy(false));
@@ -67,21 +69,20 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     </div></header>
     <div className="agsdl-inspector-body">
       {draft ? <form id="agsdl-component-form" onSubmit={event => { event.preventDefault(); void save(); }}>
-        {card && ["Agent", "invoke"].includes(card.kind) && <p className="agsdl-muted">{t("agsdl.viewer.editScope")}</p>}
         {draft.fields.map((field, index) => <label className="agsdl-edit-field" key={field.path}>
           <span>{t(field.kind === "name" ? "agsdl.viewer.componentName" : field.kind === "description" ? "agsdl.viewer.property.description" : "agsdl.instructions")}{field.kind === "instructions" && draft.fields.length > 2 ? ` ${index}` : ""}</span>
           {field.kind === "name" ? <input required value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />
             : <textarea rows={7} value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />}
         </label>)}
         {card && ["Agent", "invoke"].includes(card.kind) && <MacroAgentConfiguration configuration={draft.configuration} providerId={draft.providerId} modelId={draft.modelId} disabled={busy || applied} onChange={(providerId, modelId) => setDraft({ ...draft, providerId, modelId })} />}
-        {(["tools", "resources", "contracts"] as const).map(group => {
+        {(["tools", "resources"] as const).map(group => {
           const members = draft.properties.fields.map((field, index) => ({ field, index })).filter(({ field }) => {
             const category = ["tools", "addTool"].includes(field.label) ? "tools" : ["resources", "addResource"].includes(field.label) ? "resources" : "contracts";
-            return category === group;
+            return category === group && !field.readonly && (!field.label.startsWith("add") || (field.options?.length ?? 0) > 1);
           });
-          if (!members.length && !(group === "contracts" && draft.properties.unsupported)) return null;
+          if (!members.length) return null;
           return <details className="agsdl-details" key={group}>
-            <summary>{t(`agsdl.viewer.property.${group}`)}</summary>
+            <DisclosureSummary>{t(`agsdl.viewer.property.${group}`)}</DisclosureSummary>
             {draft.properties.shared && group !== "resources" && <p className="agsdl-muted">{t("agsdl.viewer.sharedProperties")}</p>}
             {members.map(({ field, index }) => <label className="agsdl-edit-field" key={field.path}>
               <span>{t(`agsdl.viewer.property.${field.label.split(" · ")[0]}`, { defaultValue: field.label.split(" · ")[0] })}{field.label.includes(" · ") ? ` · ${field.label.split(" · ").slice(1).join(" · ")}` : ""}</span>
@@ -89,21 +90,17 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
                 {field.options.map(option => <option value={option.value} key={option.value}>{["none", "remove"].includes(option.label) ? t(`agsdl.viewer.property.${option.label}`) : option.label}</option>)}
               </select> : <input readOnly value={field.value} />}
             </label>)}
-            {group === "contracts" && draft.properties.unsupported && <p className="agsdl-muted">{t("agsdl.viewer.unsupportedProperties")}</p>}
           </details>;
         })}
       </form> : children}
       {error && <p role="alert" className="agsdl-unresolved">{error}</p>}
       {applied && error && <p>{t("agsdl.viewer.editSaveFailed")}</p>}
-      {discard && <div className="agsdl-discard" role="alert">
-        <p>{t("agsdl.discardTitle")}</p>
-        <button onClick={() => setDiscard(false)}>{t("agsdl.cancel")}</button>
-        <button onClick={onClose}>{t("agsdl.viewer.discardEdit")}</button>
-      </div>}
+
     </div>
     {draft && <footer>
-      <button disabled={busy} onClick={() => { if (applied) close(); else { setDraft(undefined); setError(""); setDiscard(false); } }}>{t(applied ? "agsdl.close" : "agsdl.cancel")}</button>
-      <button form="agsdl-component-form" type="submit" disabled={busy || session?.saving || !dirty || ((draft.providerId !== draft.configuration.providerId || draft.modelId !== draft.configuration.modelId) && (!draft.providerId || !draft.modelId))}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : "agsdl.save")}</button>
+      <button disabled={busy} onClick={() => { if (applied) close(); else if (dirty) setDiscard("edit"); else { setDraft(undefined); setError(""); } }}>{t(applied ? "agsdl.close" : "agsdl.cancel")}</button>
+      <button form="agsdl-component-form" type="submit" disabled={busy || session?.saving || !canEdit || session?.status !== "draft" || !dirty || ((draft.providerId !== draft.configuration.providerId || draft.modelId !== draft.configuration.modelId) && (!draft.providerId || !draft.modelId))}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : "agsdl.save")}</button>
     </footer>}
+    {discard && <DiscardChangesDialog onCancel={() => setDiscard(null)} onDiscard={() => { if (discard === "close") onClose(); else { setDraft(undefined); setError(""); setDiscard(null); } }} />}
   </Dialog>;
 }

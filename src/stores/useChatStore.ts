@@ -1,3 +1,4 @@
+import { persistableContextRefs } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
@@ -945,6 +946,7 @@ interface ChatStore {
     restoredTranscript: boolean;
     createdConversation: boolean;
   }>;
+  getPendingArchitectConversationTarget: (conversationId: string) => { planId: string; branchName: string } | null;
   ensureConversationForCurrentMode: (lifecycle?: LifecycleContext) => Promise<string | null>;
   reapplySelectionForCurrentContext: (lifecycle?: LifecycleContext) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -1013,6 +1015,7 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
+    onUserMessagePublished?: (messageId: string) => void;
   }, queuedSubmission?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
@@ -1037,6 +1040,7 @@ interface ChatStore {
     newContent: string,
     options?: {
       hiddenContext?: string;
+      contextRefs?: ChatMessage["context_refs"];
       providerInputItems?: unknown[];
       replaceStructuredFields?: boolean;
       clearQuestionnaireSession?: boolean;
@@ -1095,11 +1099,7 @@ interface ResolvedConversationForContext {
   fallbackGroupId?: string | null;
 }
 
-export interface ComposerDraft {
-  text: string;
-  images: MessageImageAttachment[];
-  contextRefs: ContextReference[];
-}
+export type ComposerDraft = import("../services/chat/composerSubmission").ComposerSnapshot;
 
 const buildChatContextKey = (
   appState: Pick<
@@ -5530,68 +5530,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ...citation,
   });
 
-  const persistableContextRefs = (
-    refs: ContextReference[],
-  ): PersistedContextReference[] | undefined => {
-    const persisted = refs.map((ref) => {
-      const skill =
-        ref.kind === "skill" &&
-        ref.data &&
-        typeof ref.data === "object"
-          ? (ref.data as SkillManifest)
-          : null;
-      const file =
-        ref.kind === "file" &&
-        ref.data &&
-        typeof ref.data === "object" &&
-        "path" in ref.data
-          ? (ref.data as WorkspaceFileReference)
-          : null;
-      const source =
-        ref.kind === "source" &&
-        ref.data &&
-        typeof ref.data === "object"
-          ? (ref.data as Citation)
-          : null;
-      return {
-        id: ref.id,
-        kind: ref.kind,
-        title: ref.title,
-        subtitle: ref.subtitle,
-        ...(skill
-          ? {
-              skillFilePath: skill.skillFilePath,
-              contentHash: skill.contentHash,
-              location: skill.location,
-              source: skill.source,
-            }
-          : {}),
-        ...(file
-          ? {
-              path: file.path,
-              relativePath: file.relativePath,
-              projectId: file.projectId ?? null,
-              projectName: file.projectName ?? null,
-            }
-          : {}),
-        ...(source
-          ? {
-              snippet: source.content || source.snippet,
-              sourceLabel: source.source,
-              url: source.url,
-            }
-          : {}),
-      } satisfies PersistedContextReference;
-    });
-    return persisted.length > 0 ? persisted : undefined;
-  };
-
   const isPersistedContextRefKind = (value: string): value is ContextRefKind =>
     value === "plan-node" ||
     value === "predicted-branch" ||
     value === "skill" ||
     value === "file" ||
-    value === "source";
+    value === "source" || value === "agsdl";
 
   const parsePersistedContextRefsJson = (
     raw: string | null | undefined,
@@ -5644,6 +5588,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ref: PersistedContextReference,
   ): ContextReference | null => {
     const appState = useAppStore.getState();
+    if (ref.kind === "agsdl") {
+      return ref.agsdl ? { id: ref.id, kind: ref.kind, title: ref.title, data: ref.agsdl } : null;
+    }
     if (ref.kind === "source") {
       const citation = useCitationsStore
         .getState()
@@ -8666,6 +8613,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     turnId?: string | null;
     content: string;
     hiddenContext?: string;
+    contextRefs?: ChatMessage["context_refs"];
     providerInputItems?: unknown[];
     replaceStructuredFields?: boolean;
   }) => {
@@ -8686,11 +8634,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     try {
       await updateEditedUserMessage(chatPersistenceAdapters, {
         message: currentMessage,
+        contextRefs: params.contextRefs,
         content: params.content,
         turnId: params.turnId,
         hiddenContext: nextHiddenContext,
         providerInputItems: nextProviderInputItems,
       });
+      if (params.contextRefs) get().updateMessageFields(params.messageId, { context_refs: params.contextRefs });
       if (params.replaceStructuredFields) {
         replaceUserMessagePresentationLocally({
           messageId: params.messageId,
@@ -8727,6 +8677,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       replayId: string;
       content: string;
       hiddenContext?: string;
+      contextRefs?: ChatMessage["context_refs"];
       providerInputItems?: unknown[];
     };
   }) => {
@@ -8815,6 +8766,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               replayId: params.replayRecovery.replayId,
               content: params.replayRecovery.content,
               hiddenContext: params.replayRecovery.hiddenContext ?? null,
+              contextRefsJson: params.replayRecovery.contextRefs ? JSON.stringify(params.replayRecovery.contextRefs) : null,
               providerInputItemsJson: params.replayRecovery.providerInputItems
                 ? JSON.stringify(params.replayRecovery.providerInputItems)
                 : null,
@@ -12200,6 +12152,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       void get().ensureConversationForCurrentMode();
     },
 
+    getPendingArchitectConversationTarget: (conversationId) => {
+      const details = pendingArchitectConversationDetailsById.get(conversationId);
+      return details ? { planId: details.planId, branchName: details.targetBranch } : null;
+    },
+
     selectConversation: async (conversationId) => {
       if (get().hydrationStatus === "hydrating") {
         await waitForHydration();
@@ -13577,6 +13534,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           publishUser: (message, context) => {
             get().addMessage(message);
+            payload.onUserMessagePublished?.(message.id);
             if (context.images?.length) get().setMessageImages(message.id, context.images);
             for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
               const path = getFileRefPath(ref);
@@ -14195,6 +14153,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             turnId,
             content: newContent,
             hiddenContext: options?.hiddenContext,
+            contextRefs: options?.contextRefs,
             providerInputItems: options?.providerInputItems,
             replaceStructuredFields: options?.replaceStructuredFields,
           });
@@ -14206,6 +14165,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               content: newContent,
               turn_id: turnId,
               hidden_context: nextHiddenContext,
+              context_refs: options?.contextRefs ?? target.context_refs,
               provider_input_items: nextProviderInputItems,
             }
           : get().messages.find((message) => message.id === messageId) ?? target;
@@ -14223,6 +14183,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   replayId,
                   content: newContent,
                   hiddenContext: nextHiddenContext,
+                  contextRefs: options?.contextRefs ?? target.context_refs,
                   providerInputItems: nextProviderInputItems,
                 }
               : undefined,
@@ -14236,6 +14197,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               turnId: getMessageTurnId(target),
               content: target.content,
               hiddenContext: target.hidden_context,
+              contextRefs: target.context_refs,
               providerInputItems: target.provider_input_items,
               replaceStructuredFields: true,
             });

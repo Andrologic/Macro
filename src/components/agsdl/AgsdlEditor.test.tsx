@@ -77,9 +77,10 @@ describe("AgSDL viewer", () => {
     expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
     act(() => container!.querySelector<HTMLButtonElement>(".agsdl-header-actions button")!.click());
     const overview = globalThis.document.body.querySelector(".agsdl-inspector")!;
-    expect(overview.textContent).toContain("brief");
-    expect(overview.textContent).toContain("context");
-    expect(overview.textContent).toContain("report");
+    expect(overview.textContent).not.toContain("brief");
+    expect(overview.textContent).not.toContain("Technical details");
+    expect(overview.textContent).not.toContain("All declarations");
+    expect(overview.querySelector("details")).toBeNull();
     expect(overview.querySelector(".agsdl-provenance")).toBeNull();
     act(() => nodes[0].click());
     const agentDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
@@ -87,6 +88,19 @@ describe("AgSDL viewer", () => {
     expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("System input");
     expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("Implementation");
     expect(agentDetails.querySelector(".agsdl-properties")).toBeNull();
+  });
+
+  it("attaches the whole system to chat without exposing its technical contracts", async () => {
+    await mount();
+    const source = useAgsdlStore.getState().sessions[key].source;
+    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValue(undefined);
+    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-header-actions button")!.click());
+    const button = document.body.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!;
+    expect(button).not.toBeNull();
+    await act(async () => button.click());
+    expect(attach).toHaveBeenCalledWith(target, { path: "", title: "Feature", diagnostic: undefined });
+    expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
+    expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
   });
 
   it("previews a linked agent on focus and opens its modal on click without changing source", async () => {
@@ -119,8 +133,11 @@ describe("AgSDL viewer", () => {
       ] }] }],
     } } })));
     expect(container!.querySelector('[role="status"]')).not.toBeNull();
-    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-header-actions button")!.click());
-    expect(globalThis.document.body.querySelector(".agsdl-inspector")!.textContent).toContain("Unknown agent reference");
+    expect(container!.querySelector('[aria-label="Undo"], [aria-label="Redo"]')).toBeNull();
+    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValue(undefined);
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Diagnostics"]')!.click());
+    expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
+    expect(attach.mock.calls[0][1].diagnostic).toContain("Unknown agent reference");
   });
 
   it("keeps an unreadable document recoverable through chat with technical details collapsed", async () => {

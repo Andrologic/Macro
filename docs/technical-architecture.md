@@ -570,6 +570,8 @@ d'approbation. Les workflows de rejeu et checkpoints ainsi que les adaptateurs
 Architect/Implement restent une dette distincte de l'orchestration d'un envoi.
 Cette extraction ne supprime donc pas à elle seule la grande SCC historique.
 
+Le [contrat du composeur](composer-contract.md) précise la capture des brouillons, les références persistées, l’acceptation des messages et les protections contre les retours asynchrones.
+
 En mode Implement, l'en-tête de la conversation dérive le contexte visible de la tâche cataloguée sélectionnée. Il utilise `plan_title` et `branch_name` de cette tâche, puis résout les noms de projets depuis le registre déjà chargé. Une valeur absente n'est pas remplacée par une sélection globale et aucun état d'affichage durable n'est ajouté.
 
 ### 6.3 `useTaskStore`
@@ -1797,7 +1799,7 @@ plan vide et épingle la provenance ; elle ne crée ni lien mutable vers le mod�
 ni stockage localStorage parallèle. L’historique d’édition reste limité à la
 session du store.
 
-La convention de configuration Macro utilise `engine.identity = "macro"`,
+La convention de configuration Macro utilise `engine.identity = "macro/desktop"`,
 `engine.version = "1"` et `parameters.providerId` / `parameters.modelId`. Ces
 identifiants locaux référencent le catalogue configuré dans Macro, sans copier
 les secrets. Une configuration d’agent doit être résolue sans ambiguïté avant

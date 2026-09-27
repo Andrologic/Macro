@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { SystemDesignDialog } from './SystemDesignDialog';
-import { createEmptySystem, readDesign } from '../../services/agsdl/design';
+import { createEmptySystem, readDesign, withDesign } from '../../services/agsdl/design';
 import { agsdlSessionKey, useAgsdlStore } from '../../stores/useAgsdlStore';
 
 const target = { branchName: 'develop', planId: 'system-design' };
@@ -15,8 +15,7 @@ afterEach(() => {
   host?.remove();
   useAgsdlStore.setState({ sessions: {}, save: originalSave });
 });
-async function mount(canEdit = true, onClose = () => {}) {
-  const source = createEmptySystem('Release');
+async function mount(canEdit = true, onClose = () => {}, source = createEmptySystem('Release')) {
   useAgsdlStore.setState({ sessions: { [key]: { source, annexes: {}, version: 'initial', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
   host = document.createElement('div'); document.body.appendChild(host);
   root = createRoot(host);
@@ -34,6 +33,30 @@ const submit = () => act(async () => {
 });
 
 describe('system design editing', () => {
+  it('fills a project value without exposing or changing its definition', async () => {
+    const source = createEmptySystem('Release');
+    const design = { ...readDesign(source), requirements: [{ id: 'command', label: 'Verification command', description: 'Use the project command.', value: '', targetPath: '/definitions/0' }] };
+    await mount(true, () => {}, withDesign(source, design));
+    const input = document.body.querySelector<HTMLTextAreaElement>('.agsdl-requirement > textarea')!;
+    expect(document.body.querySelector(`label[for="${input.id}"]`)?.textContent).toContain('Verification command');
+    expect(document.body.querySelector('.agsdl-requirement-definition')).toBeNull();
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'bun run check');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    useAgsdlStore.setState({ save: async () => {} });
+    await submit();
+    expect(readDesign(useAgsdlStore.getState().sessions[key].source).requirements).toEqual([{ ...design.requirements[0], value: 'bun run check' }]);
+  });
+  it('allows an incomplete rule to remain a saved draft even when its section is collapsed', async () => {
+    const source = createEmptySystem('Release');
+    await mount(true, () => {}, withDesign(source, { ...readDesign(source), rules: [{ id: 'draft', title: '', instructions: '' }] }));
+    purpose('A draft process');
+    expect(document.body.querySelector('form')!.checkValidity()).toBe(true);
+    useAgsdlStore.setState({ save: async () => {} });
+    await submit();
+    expect(readDesign(useAgsdlStore.getState().sessions[key].source).rules[0].instructions).toBe('');
+  });
   it('rejects a stale form while keeping the draft and concurrent source unchanged', async () => {
     await mount(); purpose('Prepare a release');
     act(() => useAgsdlStore.getState().edit(target, [{ op: 'set', path: '/root/annotations/title', valueJson: '"Concurrent agent edit"' }], 'initial'));

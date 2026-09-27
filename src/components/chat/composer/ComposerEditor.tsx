@@ -1,3 +1,6 @@
+import { useComposerClipboard } from './useComposerClipboard';
+import { COMPOSER_REFERENCE_PATTERN, resolveReference } from "../../../services/chat/composerReferenceText";
+import { CLEAR_HISTORY_COMMAND, HISTORIC_TAG, PASTE_TAG } from 'lexical';
 import React, { useEffect, useImperativeHandle, forwardRef, useRef, useCallback, useMemo } from 'react';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
@@ -57,6 +60,7 @@ export interface ComposerEditorHandle {
 }
 
 interface ComposerEditorProps {
+  historyKey?: string;
   editable: boolean;
   readOnly?: boolean;
   placeholder: string;
@@ -108,7 +112,7 @@ export const registerComposerSubmitCommand = (
   COMMAND_PRIORITY_HIGH,
 );
 
-const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+const EDITOR_CONTEXT_MENTION_PATTERN = COMPOSER_REFERENCE_PATTERN;
 
 const appendTextWithContextReferences = (
   parent: ElementNode,
@@ -129,16 +133,14 @@ const appendTextWithContextReferences = (
     const kind = match[1]?.toLowerCase() as ContextRefKind | undefined;
     const title = match[2]?.trim() ?? '';
     if (kind && title) {
-      const matchingRef = contextRefs.find(
-        (ref) =>
-          ref.kind === kind && (ref.title === title || ref.id === title),
-      );
-      parent.append(
-        $createMentionNode(kind, matchingRef?.id ?? title, title, {
-          surface,
-          syncContextRefs,
+      const matchingRef = resolveReference(match, contextRefs);
+      parent.append(matchingRef
+        ? $createMentionNode(kind, matchingRef.id, matchingRef.title, {
+          surface, syncContextRefs, reference: matchingRef,
         })
-      );
+        : match[3] !== undefined
+          ? $createTextNode(title)
+          : $createMentionNode(kind, title, title, { surface, syncContextRefs }));
     } else {
       parent.append($createTextNode(match[0]));
     }
@@ -256,6 +258,7 @@ export const shouldUsePromptHistoryForPosition = (
 const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   ({
     editable,
+    historyKey,
     readOnly = false,
     placeholder,
     accessibleName,
@@ -268,6 +271,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   }, ref) => {
     const [editor] = useLexicalComposerContext();
     const textRef = useRef('');
+    useEffect(() => { editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined); }, [editor, historyKey]);
     const suppressMentionRefRemovalRef = useRef(false);
     const compositionActiveRef = useRef(false);
 
@@ -297,7 +301,10 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
             setEditorPlainText('', surface, syncContextRefs, { selectEnd: false });
             $setSelection(null);
           },
-          { tag: [LEXICAL_UPDATE_TAGS.skipDomSelection, LEXICAL_UPDATE_TAGS.historyMerge] }
+          {
+            tag: [LEXICAL_UPDATE_TAGS.skipDomSelection, LEXICAL_UPDATE_TAGS.historyMerge],
+            onUpdate: () => editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined),
+          }
         );
         if (shouldClearDomSelection) {
           clearWindowSelection();
@@ -397,6 +404,8 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       );
     }, [editor]);
 
+    useComposerClipboard(editor);
+
     // Mutation listener: sync store when MentionNodes are destroyed
     // We keep a map of nodeKey → {refId, kind} so we can look up data after destruction
     const mentionMapRef = useRef<Map<string, { refId: string; kind: string }>>(new Map());
@@ -406,13 +415,17 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       }
       return editor.registerMutationListener(
         MentionNode,
-        (mutations: Map<string, NodeMutation>) => {
+        (mutations: Map<string, NodeMutation>, { updateTags }) => {
           for (const [nodeKey, mutation] of mutations) {
             if (mutation === 'created') {
               // Read the node data and cache it
               editor.getEditorState().read(() => {
                 const node = $getNodeByKey(nodeKey);
                 if (node && node instanceof MentionNode) {
+                  const reference = node.getReference();
+                  if ((updateTags.has(HISTORIC_TAG) || updateTags.has(PASTE_TAG)) && reference) {
+                    useChatStore.getState().addComposerContextRef(reference);
+                  }
                   mentionMapRef.current.set(nodeKey, {
                     refId: node.getRefId(),
                     kind: node.getKind(),
@@ -423,7 +436,14 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
               const data = mentionMapRef.current.get(nodeKey);
               mentionMapRef.current.delete(nodeKey);
               if (data) {
-                if (!suppressMentionRefRemovalRef.current) {
+                const stillPresent = editor.getEditorState().read(() => {
+                  const visit = (node: LexicalNode): boolean =>
+                    node instanceof MentionNode
+                      ? node.getRefId() === data.refId && node.getKind() === data.kind
+                      : $isElementNode(node) && node.getChildren().some(visit);
+                  return visit($getRoot());
+                });
+                if (!stillPresent && !suppressMentionRefRemovalRef.current) {
                   useChatStore.getState().removeComposerContextRef(
                     data.refId,
                     data.kind as ContextRefKind

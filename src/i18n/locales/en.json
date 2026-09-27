@@ -1,7 +1,16 @@
 {
   "speech": {
-    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Audio sent · Transcribing", "enhancing": "Transcript received · Smart cleanup" },
-    "recording": { "active": "Recording", "stopAndInsert": "Stop and insert transcription", "stopAndSend": "Stop, transcribe and send" },
+    "button": {
+      "start": "Start dictation",
+      "stop": "Stop dictation",
+      "transcribing": "Audio sent · Transcribing",
+      "enhancing": "Transcript received · Smart cleanup"
+    },
+    "recording": {
+      "active": "Recording",
+      "stopAndInsert": "Stop and insert transcription",
+      "stopAndSend": "Stop, transcribe and send"
+    },
     "errors": {
       "title": "Dictation unavailable",
       "provider-missing": "Configure and select a speech provider first.",
@@ -80,7 +89,10 @@
       "skipped": "Automatic @macro recovery skipped",
       "blockedConflictDescription": "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
       "blockedDirtyDescription": "Macro found local changes in the metadata worktree and did not apply recovery automatically."
-    }
+    },
+    "browserRuntimeSessionReplacedTitle": "This browser session is no longer connected to Macro.",
+    "browserRuntimeSessionReplacedDescription": "Another browser tab took control of the desktop runtime. Reload this tab to continue.",
+    "browserRuntimeSessionReplacedReload": "Reload tab"
   },
   "shutdown": {
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
@@ -2034,10 +2046,17 @@
       "deleteFailed": "Failed to delete MCP server.",
       "toggleFailed": "Failed to update MCP server.",
       "transportHint": "Use stdio for local servers or Streamable HTTP for legacy and stateless remote servers.",
-      "transport": { "stdio": "Local stdio", "streamableHttp": "Streamable HTTP" },
+      "transport": {
+        "stdio": "Local stdio",
+        "streamableHttp": "Streamable HTTP"
+      },
       "urlPlaceholder": "https://example.com/mcp",
       "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
-      "protocol": { "auto": "Automatic detection", "legacy": "Legacy session", "modern": "Modern stateless" },
+      "protocol": {
+        "auto": "Automatic detection",
+        "legacy": "Legacy session",
+        "modern": "Modern stateless"
+      },
       "oauth": {
         "enable": "Use OAuth",
         "scopes": "Scopes, separated by spaces",
@@ -2154,34 +2173,126 @@
         }
       },
       "metadata": {
-        "clean": { "title": "@macro metadata is up to date", "body": "No action is needed." },
-        "dirty": { "title": "@macro metadata has local changes", "body": "Macro needs to save metadata changes before syncing.", "nextStep": "Save @macro metadata, then retry the sync." },
-        "ahead": { "title": "@macro metadata is ready to publish", "body": "Your local metadata branch has changes that are not on the remote yet.", "nextStep": "Push @macro when you are ready." },
-        "behind": { "title": "@macro metadata is behind remote", "body": "Remote metadata has updates that are not local yet.", "nextStep": "Pull @macro, then retry your action." },
-        "diverged": { "title": "@macro metadata has diverged", "body": "Local and remote metadata both changed.", "nextStep": "Pull @macro, resolve any conflicts, then push." },
-        "mergeConflict": { "title": "@macro metadata has conflicts", "body": "The metadata branch has unresolved conflict files.", "nextStep": "Resolve the conflicted metadata files, then retry the same sync step." },
-        "missingOrigin": { "title": "@macro remote is not configured", "body": "Macro cannot sync metadata because the repository has no origin remote.", "nextStep": "Configure the Git remote, then retry." },
-        "missingUpstream": { "title": "@macro has no upstream branch", "body": "The metadata branch exists locally but is not linked to a remote branch yet.", "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local." },
-        "authRequired": { "title": "Git authentication is required", "body": "Macro cannot reach the metadata remote with the current credentials.", "nextStep": "Configure Git authentication, then retry." },
-        "networkError": { "title": "Metadata sync could not reach the remote", "body": "The network or remote service is unavailable right now.", "nextStep": "Check your connection, then retry." },
-        "unknownError": { "title": "Macro metadata sync failed", "body": "Macro could not complete the metadata sync safely.", "nextStep": "Retry the sync. If it fails again, inspect the technical details." }
+        "clean": {
+          "title": "@macro metadata is up to date",
+          "body": "No action is needed."
+        },
+        "dirty": {
+          "title": "@macro metadata has local changes",
+          "body": "Macro needs to save metadata changes before syncing.",
+          "nextStep": "Save @macro metadata, then retry the sync."
+        },
+        "ahead": {
+          "title": "@macro metadata is ready to publish",
+          "body": "Your local metadata branch has changes that are not on the remote yet.",
+          "nextStep": "Push @macro when you are ready."
+        },
+        "behind": {
+          "title": "@macro metadata is behind remote",
+          "body": "Remote metadata has updates that are not local yet.",
+          "nextStep": "Pull @macro, then retry your action."
+        },
+        "diverged": {
+          "title": "@macro metadata has diverged",
+          "body": "Local and remote metadata both changed.",
+          "nextStep": "Pull @macro, resolve any conflicts, then push."
+        },
+        "mergeConflict": {
+          "title": "@macro metadata has conflicts",
+          "body": "The metadata branch has unresolved conflict files.",
+          "nextStep": "Resolve the conflicted metadata files, then retry the same sync step."
+        },
+        "missingOrigin": {
+          "title": "@macro remote is not configured",
+          "body": "Macro cannot sync metadata because the repository has no origin remote.",
+          "nextStep": "Configure the Git remote, then retry."
+        },
+        "missingUpstream": {
+          "title": "@macro has no upstream branch",
+          "body": "The metadata branch exists locally but is not linked to a remote branch yet.",
+          "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local."
+        },
+        "authRequired": {
+          "title": "Git authentication is required",
+          "body": "Macro cannot reach the metadata remote with the current credentials.",
+          "nextStep": "Configure Git authentication, then retry."
+        },
+        "networkError": {
+          "title": "Metadata sync could not reach the remote",
+          "body": "The network or remote service is unavailable right now.",
+          "nextStep": "Check your connection, then retry."
+        },
+        "unknownError": {
+          "title": "Macro metadata sync failed",
+          "body": "Macro could not complete the metadata sync safely.",
+          "nextStep": "Retry the sync. If it fails again, inspect the technical details."
+        }
       },
       "service": {
-        "gitObjectMissing": { "title": "Git review is paused", "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.", "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.", "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output." },
-        "directModeConfigurationRequired": { "title": "The review mode needs configuration", "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.", "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode." },
-        "directCheckpointMissing": { "title": "Macro's review checkpoint is unavailable", "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.", "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier." },
-        "directCheckpointCorrupt": { "title": "Macro's review checkpoint is damaged", "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.", "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis." },
-        "directCheckpointProjectMismatch": { "title": "Macro's review checkpoint belongs to another project path", "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.", "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata." },
-        "resourcePressure": { "title": "Macro is temporarily overloaded", "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.", "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals." },
-        "replicaRepair": { "title": "Plan metadata needs repair", "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.", "nextStep": "Repair the plan metadata, then retry the action." },
-        "metadataMissing": { "title": "Plan metadata is incomplete", "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.", "nextStep": "Repair the metadata links, then retry the action." },
-        "workspaceUnavailable": { "title": "Workspace state is temporarily unavailable", "body": "Macro could not read the workspace state needed for this action.", "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project." },
-        "gitNotReady": { "title": "This project is not ready for editable work", "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.", "nextStep": "Open project settings and finish the Git setup." },
-        "fallback": { "title": "Something needs attention", "nextStep": "Review the details, fix the blocking state, then retry." }
+        "gitObjectMissing": {
+          "title": "Git review is paused",
+          "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.",
+          "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.",
+          "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output."
+        },
+        "directModeConfigurationRequired": {
+          "title": "The review mode needs configuration",
+          "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.",
+          "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode."
+        },
+        "directCheckpointMissing": {
+          "title": "Macro's review checkpoint is unavailable",
+          "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.",
+          "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier."
+        },
+        "directCheckpointCorrupt": {
+          "title": "Macro's review checkpoint is damaged",
+          "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.",
+          "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis."
+        },
+        "directCheckpointProjectMismatch": {
+          "title": "Macro's review checkpoint belongs to another project path",
+          "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.",
+          "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata."
+        },
+        "resourcePressure": {
+          "title": "Macro is temporarily overloaded",
+          "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.",
+          "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals."
+        },
+        "replicaRepair": {
+          "title": "Plan metadata needs repair",
+          "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.",
+          "nextStep": "Repair the plan metadata, then retry the action."
+        },
+        "metadataMissing": {
+          "title": "Plan metadata is incomplete",
+          "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.",
+          "nextStep": "Repair the metadata links, then retry the action."
+        },
+        "workspaceUnavailable": {
+          "title": "Workspace state is temporarily unavailable",
+          "body": "Macro could not read the workspace state needed for this action.",
+          "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project."
+        },
+        "gitNotReady": {
+          "title": "This project is not ready for editable work",
+          "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.",
+          "nextStep": "Open project settings and finish the Git setup."
+        },
+        "fallback": {
+          "title": "Something needs attention",
+          "nextStep": "Review the details, fix the blocking state, then retry."
+        }
       }
     }
   },
-  "prompts": { "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
+  "prompts": {
+    "title": "System Prompts",
+    "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.",
+    "restoreAll": "Restore All",
+    "saveFailed": "Unable to save system prompts."
+  },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
     "settingsSaved": "Settings saved",

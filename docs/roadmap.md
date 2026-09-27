@@ -60,6 +60,8 @@ L'application dispose déjà d'une base solide :
 - démarrage manuel des tâches autonomes avec progression visible et reprise sûre après échec
 - recherche locale compacte dans les listes Architect, Implement et Chat
 - brouillons de composer persistants par conversation ou tâche
+- références communes AgSDL, skills et fichiers avec identité stable, brouillons et messages conservés à travers l’envoi, le replay et le redémarrage
+- visualisation AgSDL des tâches liées par identifiant exact, sans création ni exécution de tâches par le document
 - tâches directes Git et édition directe des projets sans Git, avec checkpoints internes pour la review
 - contrats de domaine et adaptateurs de composition présents, avec extraction des workflows Chat, Tasks et Plans hors des stores
 - registres internes de vues, raccourcis et réglages présents, avec chargement différé des panneaux

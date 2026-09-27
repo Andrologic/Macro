@@ -11,6 +11,10 @@ interface AgentCodeReplayRequest {
   messageId: string;
   content: string;
   images?: MessageImageAttachment[];
+  contextRefs?: import("../../types").PersistedContextReference[];
+  hiddenContext?: string;
+  replaceStructuredFields?: boolean;
+  providerInputItems?: unknown[];
 }
 
 interface UseAgentCodeReplayConfirmationParams {
@@ -22,7 +26,7 @@ interface UseAgentCodeReplayConfirmationParams {
   editMessage: (
     messageId: string,
     content: string,
-    options?: { skipAgentCodeReplayCheck?: boolean },
+    options?: { skipAgentCodeReplayCheck?: boolean; contextRefs?: import("../../types").PersistedContextReference[]; hiddenContext?: string; replaceStructuredFields?: boolean; providerInputItems?: unknown[] },
   ) => Promise<void>;
   setMessageImages: (messageId: string, images: MessageImageAttachment[]) => void;
   getMessageImages: (messageId: string) => MessageImageAttachment[];
@@ -56,6 +60,10 @@ export const useAgentCodeReplayConfirmation = ({
       try {
         await editMessage(params.messageId, params.content, {
           skipAgentCodeReplayCheck: params.skipAgentCodeReplayCheck,
+          contextRefs: params.contextRefs,
+          hiddenContext: params.hiddenContext,
+          replaceStructuredFields: params.replaceStructuredFields,
+          providerInputItems: params.providerInputItems,
         });
       } catch (error) {
         if (params.kind === 'edit') {
@@ -79,6 +87,10 @@ export const useAgentCodeReplayConfirmation = ({
           messageId: params.messageId,
           content: params.content,
           images: params.images,
+          contextRefs: params.contextRefs,
+          hiddenContext: params.hiddenContext,
+          replaceStructuredFields: params.replaceStructuredFields,
+          providerInputItems: params.providerInputItems,
           preview,
         });
         return;

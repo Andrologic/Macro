@@ -706,6 +706,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         throw new Error(t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.'));
       }
 
+      await useChatStore.getState().ensureConversationForCurrentMode();
+      if (!isCurrentActivationRequest(requestId, requestContext)) return;
       setActivePlanId(planId);
       setIsOpen(false);
       setShowCreateKinds(false);

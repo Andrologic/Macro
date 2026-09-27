@@ -447,6 +447,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       hydrateActivePlan: true,
       refreshTasks: true,
       includeArchivedInVisible: false,
+      preserveCurrentActivePlan: true,
       reason: 'manual',
     });
     await refreshPlans();
@@ -751,12 +752,12 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </span>
             {showScope && <span className="block truncate text-[10px] text-muted-foreground/75">{entry.scopeLabel}</span>}
           </span>
-          <span
+          {!entry.plan.hasAgsdl && <span
             className="max-w-14 shrink-0 truncate rounded bg-muted/65 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
             title={planKindHelp(kind)}
           >
             {planKindLabel(kind)}
-          </span>
+          </span>}
         </button>
         <button
           type="button"

@@ -64,7 +64,7 @@ it("rejects a model selection if the agent has changed the document while the fo
 it("shows Macro provider and model names while keeping opaque parameters collapsed", async () => {
   await mount();
   const doc = JSON.parse(createExample("release"));
-  doc.runtime.configurations[0].agents[0].engine = { identity: "macro", version: "1" };
+  doc.runtime.configurations[0].agents[0].engine = { identity: "macro/desktop", version: "1" };
   doc.runtime.configurations[0].agents[0].parameters = { providerId: "demo-provider", modelId: "demo-model", temperature: 0.5 };
   const source = JSON.stringify(doc);
   const cards = projectViewer(source).graphs[0].cards;

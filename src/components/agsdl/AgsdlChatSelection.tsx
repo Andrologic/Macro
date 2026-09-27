@@ -1,13 +1,11 @@
-import { X } from "lucide-react";
+import { Network, ScanSearch } from "lucide-react";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
-import { useAgsdlChatContext, type AgsdlChatContext } from "../../stores/agsdl/chatContext";
 
-export function AgsdlChatSelection({ context }: { context: AgsdlChatContext }) {
+export function AgsdlSentSelection({ title, review }: { title: string; review: boolean }) {
   const { t } = useAgsdlTranslation();
-  return <div className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs" role="group" aria-label={t("agsdl.chatSelection")}>
-    <span className="min-w-0 flex-1 truncate" title={`${context.planId} · ${context.branchName} · ${context.path} · ${context.version}`}>
-      {t("agsdl.chatSelection")} · {context.title}
-    </span>
-    <button type="button" aria-label={t("agsdl.removeChatSelection")} title={t("agsdl.removeChatSelection")} onClick={() => useAgsdlChatContext.getState().remove(context.conversationId, context.id)}><X size={14} /></button>
-  </div>;
+  const Icon = review ? ScanSearch : Network;
+  return <span data-agsdl-sent-selection="true" className="mr-1 inline-flex max-w-full items-center gap-1 rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 align-middle text-xs text-primary">
+    <Icon size={12} aria-hidden="true" />
+    <span className="truncate">{review ? t("agsdl.chatReview") : t("agsdl.chatSystem")} · {title}</span>
+  </span>;
 }

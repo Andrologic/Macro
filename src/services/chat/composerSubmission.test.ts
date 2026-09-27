@@ -1,0 +1,33 @@
+import { expect, it } from 'bun:test';
+import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs } from './composerSubmission';
+import { COMPOSER_REFERENCE_PATTERN, referenceId, referenceText } from './composerReferenceText';
+import type { AgsdlSelectionReference, ContextReference } from '../../types';
+
+it('captures selection metadata independently of later draft mutations', () => {
+  const selection: AgsdlSelectionReference = { id: 'a', conversationId: 'c', branchName: 'develop', planId: 'p', document: 'agsdl', version: 'v1', persistedRevision: 1, path: '', title: 'System' };
+  const ref: ContextReference = { id: 'a', kind: 'agsdl', title: 'System', data: selection };
+  const draft = { text: 'Review', images: [], contextRefs: [ref] };
+  const snapshot = captureComposerSnapshot(draft);
+  expect(sameComposerSnapshot(snapshot, draft)).toBe(true);
+  selection.version = 'v2';
+  expect(sameComposerSnapshot(snapshot, draft)).toBe(false);
+  expect(persistableContextRefs(snapshot.contextRefs)?.[0].agsdl?.version).toBe('v1');
+});
+
+it('keeps identity for equal titles, punctuation and legacy markers', () => {
+  const text = `${referenceText('file', '/a/README.md', 'README.md')} ${referenceText('file', '/b/README.md', 'README.md')}`;
+  const matches = [...text.matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))];
+  expect(matches.map(match => referenceId(match))).toEqual(['/a/README.md', '/b/README.md']);
+  expect(referenceId([...referenceText('agsdl', 'id (1)', 'A ] B').matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))][0])).toBe('id (1)');
+  expect(referenceId([...('[skill: old]').matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))][0])).toBeUndefined();
+});
+
+it('never resolves a missing or malformed stable identity by its title', async () => {
+  const { resolveReference } = await import('./composerReferenceText');
+  const refs = [{ kind: 'file' as const, id: 'actual', title: 'README' }];
+  const parse = (value: string) => [...value.matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))][0];
+  expect(resolveReference(parse(referenceText('file', 'missing', 'README')), refs)).toBeUndefined();
+  expect(resolveReference(parse('[file: README](macro-context://skill/actual)'), refs)).toBeUndefined();
+  expect(resolveReference(parse('[file: README]'), refs)).toEqual(refs[0]);
+  expect(resolveReference(parse('[file: README]'), [...refs, { ...refs[0], id: 'other' }])).toBeUndefined();
+});

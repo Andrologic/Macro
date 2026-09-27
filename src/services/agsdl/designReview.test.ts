@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'bun:test';
+import { readDesign, withDesign } from "./design";
 import { createExample } from './examples';
 import { reviewDesignChanges } from './designReview';
 const original = () => createExample('release');
 const edit = (source: string, change: (doc: ReturnType<typeof JSON.parse>) => void) => { const doc = JSON.parse(source); change(doc); return JSON.stringify(doc); };
 describe('authored design changes', () => {
+  it('shows the changed project value without exposing metadata identifiers', () => {
+    const base = original();
+    const before = withDesign(base, { ...readDesign(base), requirements: [{ id: 'internal-id', label: 'Verification command', description: '', value: '' }] });
+    const after = withDesign(before, { ...readDesign(before), requirements: [{ id: 'internal-id', label: 'Verification command', description: '', value: 'bun run check' }] });
+    expect(reviewDesignChanges(before, after).designDetails).toEqual([{ label: 'Verification command', before: '', after: 'bun run check' }]);
+  });
   it('renames only the authored participant, not its incoming and outgoing neighbors', () => {
     const before = original();
     const review = reviewDesignChanges(before, edit(before, doc => { doc.definitions.find((item: { kind: string }) => item.kind === 'ControlFlow').annotations = { macroSteps: { review: { title: 'Final review' } } }; }));

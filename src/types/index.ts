@@ -260,17 +260,32 @@ export interface WorkspaceFileReference {
 }
 
 // Context references for chat composer (nodes, branches, skills, files, sources)
-export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source';
+export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'agsdl';
+
+export interface AgsdlSelectionReference {
+  id: string;
+  conversationId: string;
+  branchName: string;
+  planId: string;
+  document: 'agsdl';
+  version: string;
+  persistedRevision: number;
+  path: string;
+  title: string;
+  relatedPaths?: string[];
+  diagnostic?: string;
+}
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation;
+  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation | AgsdlSelectionReference;
 }
 
 export interface PersistedContextReference {
+  agsdl?: AgsdlSelectionReference;
   id: string;
   kind: ContextRefKind;
   title: string;

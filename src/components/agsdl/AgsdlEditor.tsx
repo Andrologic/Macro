@@ -1,5 +1,7 @@
+import { DisclosureSummary } from "./DisclosureSummary";
+import { useTrackedTasks } from "./useTrackedTasks";
 import React, { useEffect, useMemo, useState } from "react";
-import { BookOpen, CircleAlert, Info, Maximize2, X, Undo2, Redo2 } from "lucide-react";
+import { BookOpen, CircleAlert, Info, MessageSquarePlus, Maximize2, X } from "lucide-react";
 import { DesignLibraryDialog, DesignStart } from "./DesignLibraryDialog";
 import { SystemDesignDialog } from "./SystemDesignDialog";
 import { DesignChangesDialog } from "./DesignChangesDialog";
@@ -44,7 +46,7 @@ export const AgsdlEditor: React.FC<{
   const [attaching, setAttaching] = useState(false);
   const [diagnosticError, setDiagnosticError] = useState("");
   const [graphIndex, setGraphIndex] = useState(0);
-  const [selection, setSelection] = useState<{ key: string; path: string; card?: ViewerCard }>();
+  const [selection, setSelection] = useState<{ key: string; path: string; card?: ViewerCard; trail?: Array<{ key: string; path: string; card?: ViewerCard }> }>();
   useEffect(() => {
     let active = true;
     useAgsdlStore
@@ -73,7 +75,7 @@ export const AgsdlEditor: React.FC<{
     try { return source ? readDesign(source) : undefined; } catch { return undefined; }
   }, [source]);
   const review = useMemo(() => session?.history.length ? reviewDesignChanges(session.history.at(-1)!.source, session.source) : undefined, [session]);
-  const showChanges = !!review && session?.version !== dismissedVersion;
+  const showChanges = !!review && (review.changes.length > 0 || review.design || review.configuration || review.other) && session?.version !== dismissedVersion;
   const pendingRequirements = design?.requirements.filter(item => !item.value.trim()) ?? [];
   useEffect(() => {
     if (!source) return;
@@ -97,6 +99,7 @@ export const AgsdlEditor: React.FC<{
   const diagnostics = useMemo(() => source && document ? localizeDiagnostics(source, session?.reports ?? [], [...document.graphs.flatMap(graph => graph.cards), ...document.declarations, ...document.legacyCards]) : [], [source, document, session?.reports]);
   const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length })), [system.cards, diagnostics]);
   const selectedEdge = system.edges.find(edge => edge.id === selected);
+  const trackedTasks = useTrackedTasks(cards, target);
   const currentCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
   // Keep an open form alive if an agent removes its component. Its captured
   // version will reject saving; the user's text remains available to copy.
@@ -104,18 +107,33 @@ export const AgsdlEditor: React.FC<{
   const selectedCard = snapshotCard && (!currentCard || currentCard.id !== snapshotCard.id) ? snapshotCard : currentCard;
   const select = (path: string) => {
     setDiagnosticError("");
-    setSelection({ key, path, card: cards.find(item => item.path === path) ?? graph?.cards.find(item => item.path === path) ?? document?.declarations.find(item => item.path === path) });
+    const card = cards.find(item => item.path === path) ?? graph?.cards.find(item => item.path === path) ?? document?.declarations.find(item => item.path === path);
+    setSelection(current => !path ? undefined : {
+      key, path, card,
+      trail: current?.key === key && current.path && current.path !== path
+        ? [...(current.trail ?? []), { key, path: current.path, card: current.card }].slice(-20)
+        : current?.key === key ? current.trail : [],
+    });
     setOverview(false);
+  };
+  const previousSelection = selection?.key === key ? selection.trail?.at(-1) : undefined;
+  const goBack = () => {
+    if (!previousSelection) return;
+    const index = document?.graphs.findIndex(graph => graph.cards.some(card => card.path === previousSelection.path)) ?? -1;
+    if (index >= 0) setGraphIndex(index);
+    setSelection({ ...previousSelection, trail: selection?.trail?.slice(0, -1) });
+    setDiagnosticError("");
   };
   const attachContext = async (selection: Parameters<typeof prepareAgsdlChatContext>[1]) => {
     await prepareAgsdlChatContext(target, selection);
     setOverview(false);
     setSelection(undefined);
+    setDesignOpen(false);
     if (expanded) onExpand?.();
   };
-  const diagnosticAction = (issue: LocalizedDiagnostic, title: string) => issue.path !== undefined && <button className="agsdl-link" disabled={attaching} onClick={() => {
+  const diagnosticAction = (issues: LocalizedDiagnostic[], path: string, title: string) => issues.length > 0 && <button className="agsdl-link" disabled={attaching} onClick={() => {
     setAttaching(true); setDiagnosticError("");
-    void attachContext({ path: issue.path!, title, diagnostic: `${issue.rule}: ${issue.details}` })
+    void attachContext({ path: issues.length === 1 ? issues[0].path ?? path : path, title, diagnostic: issues.map(issue => `${issue.rule}: ${issue.details}`).join("\n") })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         setDiagnosticError(t(message, { defaultValue: message }));
@@ -202,7 +220,7 @@ export const AgsdlEditor: React.FC<{
       {["Agent", "invoke"].includes(item.kind)
         ? <AgentDetails card={item} cards={[...(document?.graphs.flatMap(graph => graph.cards) ?? []), ...(document?.declarations ?? []), ...(document?.legacyCards ?? [])]} source={source!} onSelect={select} />
         : item.mission && <p className="agsdl-mission">{item.mission}</p>}
-      {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <div key={index}><p className="agsdl-unresolved">{issue.details}</p>{diagnosticAction(issue, nodeTitle(item))}</div>)}
+      {diagnosticAction(diagnostics.filter(issue => issue.targets.includes(item.path)), item.path, nodeTitle(item))}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
       {!["Agent", "invoke"].includes(item.kind) && <>
         {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
@@ -218,7 +236,7 @@ export const AgsdlEditor: React.FC<{
           {item.approvers?.length ? item.approvers.map((ref, index) => <div key={index}>{reference(ref)}</div>) : <p className="agsdl-muted">{t("agsdl.viewer.approverMissing")}</p>}
         </section>}
         <details className="agsdl-details">
-          <summary>{t("agsdl.viewer.technicalDetails")}</summary>
+          <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
           {portList(item.inputs, "inputs", true, item.kind !== "input")}
           {portList(item.outputs, "outputs", true)}
           {item.tools?.length ? <section className="agsdl-ports">
@@ -254,15 +272,17 @@ export const AgsdlEditor: React.FC<{
             {expanded ? <X size={14} /> : <Maximize2 size={14} />}
           </button>}
           {showOverview && <button className="agsdl-icon-button" aria-label={t(hasIssues ? "agsdl.diagnostics" : "agsdl.viewer.overview")}
-            title={t(hasIssues ? "agsdl.diagnostics" : "agsdl.viewer.overview")} aria-pressed={overview}
-            onClick={() => { setOverview(!overview); setSelection(undefined); }}>
+            title={t(hasIssues ? "agsdl.reviewHint" : "agsdl.viewer.overview")} aria-pressed={hasIssues ? undefined : overview} disabled={attaching}
+            onClick={() => {
+              if (!hasIssues) { setOverview(!overview); setSelection(undefined); return; }
+              setAttaching(true); setError("");
+              void attachContext({ path: "", title: document!.title, diagnostic: [...findings.map(issue => `${issue.rule}: ${issue.details}`), ...document!.unresolved.map(item => JSON.stringify(item))].join("\n") })
+                .catch(error => setError(String(error))).finally(() => setAttaching(false));
+            }}>
             {hasIssues ? <CircleAlert size={14} className="agsdl-unresolved" /> : <Info size={14} />}
           </button>}
           {source && <button className="agsdl-icon-button" title={t("agsdl.design.saveBlueprint")} aria-label={t("agsdl.design.saveBlueprint")} disabled={session?.saving} onClick={() => setLibrary("save")}><BookOpen size={14} /></button>}
-          {session?.status === "draft" && (!planStatus || planStatus === "draft") && <>
-            <button className="agsdl-icon-button" title={t("agsdl.undo")} aria-label={t("agsdl.undo")} disabled={session.saving || !session.history.length} onClick={() => void changeHistory()}><Undo2 size={14} /></button>
-            <button className="agsdl-icon-button" title={t("agsdl.redo")} aria-label={t("agsdl.redo")} disabled={session.saving || !session.future.length} onClick={() => void changeHistory(true)}><Redo2 size={14} /></button>
-          </>}
+
         </div>
         {document && document.graphs.length > 1 && (
           <select
@@ -288,7 +308,7 @@ export const AgsdlEditor: React.FC<{
             <>
               <p>{t("agsdl.viewer.unreadable")}</p>
               <details className="agsdl-details">
-                <summary>{t("agsdl.viewer.technicalDetails")}</summary>
+                <DisclosureSummary>{t("agsdl.viewer.technicalDetails")}</DisclosureSummary>
                 <p>{parsed.error}</p>
               </details>
             </>
@@ -317,6 +337,7 @@ export const AgsdlEditor: React.FC<{
           {cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
             cards={cards} edges={system.edges} selected={selected}
+            trackedTasks={trackedTasks}
             select={select} title={nodeTitle} source={source}
             changedPaths={showChanges ? review?.changes.flatMap(change => change.path ? [change.path] : []) : []}
           /> : <div className="agsdl-start"><h3>{document.title}</h3><p>{t("agsdl.design.emptySystem")}</p><button onClick={() => setDesignOpen(true)}>{t("agsdl.design.settings")}</button></div>}
@@ -327,9 +348,11 @@ export const AgsdlEditor: React.FC<{
             key={selectedCard?.path ?? selectedEdge?.id ?? "overview"}
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
             card={selectedCard} canEdit={!attaching && selectedCard === currentCard && (!planStatus || planStatus === "draft")} target={target}
-            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedCard
+            onBack={previousSelection ? goBack : undefined}
+            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge || overview) ? () => attachContext(selectedCard
               ? { path: selectedCard.path, title: nodeTitle(selectedCard) }
-              : { path: selectedEdge!.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` }) : undefined}
+              : selectedEdge ? { path: selectedEdge.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` }
+              : { path: "", title: document.title, diagnostic: findings.length ? findings.map(issue => `${issue.rule}: ${issue.details}`).join("\n") : undefined }) : undefined}
             onClose={() => { setOverview(false); setSelection(undefined); setDiagnosticError(""); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {diagnosticError && <p role="alert" className="agsdl-unresolved">{diagnosticError}</p>}
@@ -345,44 +368,25 @@ export const AgsdlEditor: React.FC<{
               </> : <>
                 <section className="agsdl-design-summary">
                   {design?.purpose && <p>{design.purpose}</p>}
-                  {pendingRequirements.length > 0 && <span className="agsdl-design-pending"><CircleAlert size={13} />{t("agsdl.design.pending", { count: pendingRequirements.length })}</span>}
+                  {hasIssues && <button className="agsdl-link agsdl-design-pending" disabled={attaching} onClick={() => {
+                    setAttaching(true); setDiagnosticError("");
+                    void attachContext({ path: "", title: document.title, diagnostic: [...findings.map(issue => `${issue.rule}: ${issue.details}`), ...document.unresolved.map(item => JSON.stringify(item))].join("\n") })
+                      .catch(error => setDiagnosticError(String(error))).finally(() => setAttaching(false));
+                  }}><MessageSquarePlus size={14} />{t("agsdl.reviewWithAI")}</button>}
+                  {pendingRequirements.length > 0 && <button className="agsdl-design-pending agsdl-link" onClick={() => { setOverview(false); setDesignOpen(true); }}><CircleAlert size={13} />{t("agsdl.design.pending", { count: pendingRequirements.length })}</button>}
                   <button className="agsdl-link" onClick={() => { setOverview(false); setDesignOpen(true); }}>{t("agsdl.design.settings")}</button>
-                  {design?.context && <details className="agsdl-details"><summary>{t("agsdl.design.context")}</summary><p>{design.context}</p></details>}
-                  {!!design?.rules.length && <details className="agsdl-details"><summary>{t("agsdl.design.rules")} · {design.rules.length}</summary>{design.rules.map(rule => <div key={rule.id}><strong>{rule.title}</strong><p>{rule.instructions}</p></div>)}</details>}
                 </section>
-                {document.migrated && <p>{t("agsdl.viewer.migrationNote")}</p>}
-                {document.migrationIssues.filter(issue => issue !== "execution-not-migrated").map(issue => <p key={issue}>{t(`agsdl.viewer.issues.${issue}`, { defaultValue: issue })}</p>)}
-                {graph && <>
-                  <p>{t("agsdl.viewer.entry")} → {reference(graph.entry)}</p>
-                  {portList(graph.inputs, "inputs", false, false)}
-                  {portList(graph.outputs, "outputs", false, false)}
-                </>}
-                {document.declarations.filter(item => item.kind === "Resource").length > 0 && <details className="agsdl-details">
-                  <summary>{t("agsdl.viewer.resources")}</summary>
-                  {document.declarations.filter(item => item.kind === "Resource").map(item => <div key={item.path}>{reference({ label: nodeTitle(item), target: item.path, source: "unknown" })}</div>)}
-                </details>}
-                <details className="agsdl-details"><summary>{t("agsdl.viewer.technicalDetails")}</summary><ReadOnlyValue value={document.systemDetails} /></details>
-                <details className="agsdl-details"><summary>{t("agsdl.allDeclarations")} · {document.declarations.length}</summary>
-                  {document.declarations.map(item => <div key={item.path}><button className="agsdl-link" onClick={() => select(item.path)}>{nodeTitle(item)} · {t(`agsdl.kind.${item.kind}`, { defaultValue: item.kind })}</button></div>)}
-                </details>
-                {document.dependencies.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.dependencies")}</summary><ReadOnlyValue value={document.dependencies} /></details>}
-                {document.unresolved.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.viewer.unresolved")}</summary><ReadOnlyValue value={document.unresolved} /></details>}
-                {findings.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.diagnostics")} · {findings.length}</summary>
-                  {findings.map((finding, index) => <div key={index}><p><strong>{finding.rule}</strong> {finding.details}</p>
-                    {diagnosticAction(finding, document.title)}
-                    {finding.targets.map(path => <button className="agsdl-link" key={path} onClick={() => {
-                      const index = document.graphs.findIndex(graph => graph.cards.some(card => card.path === path));
-                      if (index >= 0) setGraphIndex(index);
-                      select(path);
-                    }}>{t("agsdl.viewer.locateIssue")} · {document.graphs.flatMap(graph => graph.cards).concat(document.declarations, document.legacyCards).find(card => card.path === path)?.title || path}</button>)}
-                  </div>)}
-                </details>}
               </>}
             </section>
           </ComponentDetailsDialog>}
         </>}
-      {library && session && <DesignLibraryDialog key={`${key}:${library}`} target={target} mode={library} onClose={() => setLibrary(undefined)} />}
-      {designOpen && session && <SystemDesignDialog key={key} target={target} canEdit={!planStatus || planStatus === "draft"} onClose={() => setDesignOpen(false)} />}
+      {library && session && <DesignLibraryDialog key={`${key}:${library}`} target={target} mode={library} onClose={() => setLibrary(undefined)} onCreated={() => {
+        const created = useAgsdlStore.getState().sessions[key];
+        try {
+          if (created && readDesign(created.source).requirements.some(item => !item.value.trim())) setDesignOpen(true);
+        } catch (error) { setError(String(error)); }
+      }} />}
+      {designOpen && session && <SystemDesignDialog key={key} target={target} canEdit={!planStatus || planStatus === "draft"} onAttach={() => attachContext({ path: "", title: document?.title || t("agsdl.design.settings") })} onClose={() => setDesignOpen(false)} />}
       {changesOpen && review && <DesignChangesDialog review={review} onClose={() => setChangesOpen(false)} onSelect={path => {
         const index = document?.graphs.findIndex(graph => graph.cards.some(card => card.path === path)) ?? -1;
         if (index >= 0) setGraphIndex(index);

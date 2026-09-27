@@ -54,7 +54,7 @@ describe('loadMacroProjectMetadataForSelection', () => {
     ).toBe('group-1::project-2::project-1\u0000project-2');
   });
 
-  it('selects the remembered visible plan before branch active and recent plans', async () => {
+  it('keeps the current visible plan before a stale remembered plan during refresh', async () => {
     const remembered = buildPlan({
       id: 'remembered',
       projectIds: ['project-1'],
@@ -80,11 +80,13 @@ describe('loadMacroProjectMetadataForSelection', () => {
     const result = await loadMacroProjectMetadataForSelection({
       scopedProjectIds: ['project-1'],
       rememberedPlanId: remembered.id,
+      currentActivePlanId: active.id,
+      preferCurrentActivePlan: true,
       deps,
     });
 
-    expect(result.selectedPlan?.id).toBe(remembered.id);
-    expect(result.selectionReason).toBe('remembered_plan');
+    expect(result.selectedPlan?.id).toBe(active.id);
+    expect(result.selectionReason).toBe('current_plan');
     expect(result.snapshot.visiblePlans.map((plan) => plan.id)).toEqual([
       recent.id,
       active.id,
@@ -96,6 +98,25 @@ describe('loadMacroProjectMetadataForSelection', () => {
     expect(deps.listArchitectPlans).toHaveBeenCalledWith('develop', true, true, {
       scopedProjectIdsHint: ['project-1'],
     });
+  });
+
+  it('restores the remembered plan when a load is for a new project context', async () => {
+    const remembered = buildPlan({ id: 'remembered', projectIds: ['project-1'] });
+    const current = buildPlan({ id: 'current', projectIds: ['project-1'] });
+    const deps = createDeps({
+      develop: { activePlanId: current.id, plans: [remembered, current] },
+    });
+
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'],
+      rememberedPlanId: remembered.id,
+      currentActivePlanId: current.id,
+      preferCurrentActivePlan: false,
+      deps,
+    });
+
+    expect(result.selectedPlan?.id).toBe(remembered.id);
+    expect(result.selectionReason).toBe('remembered_plan');
   });
 
   it('keeps standalone project plans visible when their project ids match the current scope', async () => {
