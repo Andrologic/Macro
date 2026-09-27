@@ -20,7 +20,7 @@ const pilotState = {
   status: 'connected',
   vaultStatus: 'ready' as PilotVaultStatus,
   configurationId: 'config:desktop',
-  relayOrigin: 'https://pilot.example.com',
+  relayOrigin: 'https://pilot.example.com' as string | null,
   account: null as PilotPublicState['account'],
   deviceSession: null as PilotPublicState['deviceSession'],
   instance: {
@@ -102,6 +102,7 @@ describe('PilotView', () => {
   beforeEach(async () => {
     pilotState.busy = false; pilotState.reading = false;
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
+    pilotState.relayOrigin = 'https://pilot.example.com';
     pilotState.account = null; pilotState.deviceSession = null; pilotState.accountCatalog = null;
     pilotState.instanceAccess = null; pilotState.accessRequests = [];
     pilotState.deleteAccount.mockClear(); pilotState.resolveAccess.mockClear();
@@ -116,6 +117,7 @@ describe('PilotView', () => {
     resumeVaultAccessMock.mockReset(); resumeVaultAccessMock.mockImplementation(async () => undefined);
     notifySuccessMock.mockClear(); notifyWarningMock.mockClear();
     pilotState.revokeSession.mockClear(); pilotState.revokeAllSessions.mockClear();
+    pilotState.connect.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -174,6 +176,19 @@ describe('PilotView', () => {
     await act(async () => root.render(<PilotView />));
   };
   const button = (label: string) => [...document.body.querySelectorAll('button')].find(item => item.textContent === label)!;
+
+  it('uses the product relay without exposing a relay address field or an early offline error', async () => {
+    pilotState.status = 'unconfigured';
+    pilotState.relayOrigin = null;
+    pilotState.lastError = 'offline';
+    await act(async () => root.render(<PilotView />));
+
+    expect(container.textContent).not.toContain('Relay HTTPS origin');
+    expect(container.querySelector('input[placeholder^="https://"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => button('Connect with GitHub').click());
+    expect(pilotState.connect).toHaveBeenCalledWith('https://macro.andrologic.ai', 'Macro desktop');
+  });
 
   const showVaultStatus = async (status: Exclude<PilotVaultStatus, 'ready'>) => {
     pilotState.status = 'vault_unavailable';
@@ -248,7 +263,7 @@ describe('PilotView', () => {
       await Promise.resolve();
     });
     await act(async () => root.render(<PilotView />));
-    expect(container.textContent).toContain('GitHub @example');
+    expect(container.textContent).toContain('@example');
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
@@ -289,8 +304,11 @@ describe('PilotView', () => {
     Object.assign(pilotState, { instance: null });
     try {
       await showAccount();
-      expect(container.textContent).toContain('GitHub @example');
+      expect(container.textContent).toContain('@example');
       expect(container.textContent).toContain('Example desktop');
+      expect(container.querySelector('details')?.open).toBe(false);
+      await act(async () => container.querySelector('summary')!.click());
+      expect(container.querySelector('details')?.open).toBe(true);
       expect(button('Revoke all sessions')).toBeDefined();
       await act(async () => button('Delete relay account').click());
       expect(pilotState.deleteAccount).not.toHaveBeenCalled();

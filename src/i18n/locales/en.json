@@ -1000,7 +1000,7 @@
     "pilot": {
       "label": "Pilot",
       "title": "Macro Pilot",
-      "description": "Connect this desktop to the configured Pilot relay. Macro remains fully usable locally without an account.",
+      "description": "Connect your GitHub account to use Macro Pilot on your phone. Macro remains available locally without an account.",
       "connection": "Connection",
       "vaultRecovery": {
         "title": "Pilot data is paused",
@@ -1047,7 +1047,7 @@
       "reconciliationFailed": "The local reconciliation could not be saved.",
       "runtimeUnavailable": "Desktop supervision is unavailable. Its journal could not be loaded or the relay could not be reached. Local commands are not replayed.",
       "status": {
-        "unconfigured": "Not configured",
+        "unconfigured": "Not connected",
         "signed_out": "Signed out",
         "authorizing": "Waiting for GitHub",
         "confirming_account": "Confirmation required",
@@ -1056,7 +1056,7 @@
         "vault_unavailable": "Credential vault unavailable"
       },
       "errors": {
-        "invalid_configuration": "Check the relay address and the required fields.",
+        "invalid_configuration": "Check the device name and try again.",
         "invalid_response": "The relay returned an invalid response.",
         "response_too_large": "The relay response exceeded the 1 MB limit.",
         "redirect_refused": "The relay tried to redirect the request.",

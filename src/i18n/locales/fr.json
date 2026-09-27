@@ -998,7 +998,7 @@
     "pilot": {
       "label": "Pilot",
       "title": "Macro Pilot",
-      "description": "Connectez cet ordinateur au relais Pilot configuré. Macro reste entièrement utilisable en local sans compte.",
+      "description": "Connectez votre compte GitHub pour utiliser Macro Pilot sur votre téléphone. Macro reste utilisable en local sans compte.",
       "connection": "Connexion",
       "vaultRecovery": {
         "title": "Les données Pilot sont en pause",
@@ -1045,7 +1045,7 @@
       "reconciliationFailed": "Le rapprochement local n’a pas pu être enregistré.",
       "runtimeUnavailable": "La supervision desktop est indisponible. Son journal n’a pas pu être chargé ou le relais est inaccessible. Les commandes locales ne sont pas rejouées.",
       "status": {
-        "unconfigured": "Non configuré",
+        "unconfigured": "Non connecté",
         "signed_out": "Déconnecté",
         "authorizing": "En attente de GitHub",
         "confirming_account": "Confirmation requise",
@@ -1054,7 +1054,7 @@
         "vault_unavailable": "Coffre d’identifiants indisponible"
       },
       "errors": {
-        "invalid_configuration": "Vérifiez l’adresse du relais et les champs obligatoires.",
+        "invalid_configuration": "Vérifiez le nom de l’appareil et réessayez.",
         "invalid_response": "Le relais a renvoyé une réponse invalide.",
         "response_too_large": "La réponse du relais dépasse la limite de 1 Mo.",
         "redirect_refused": "Le relais a tenté de rediriger la requête.",
