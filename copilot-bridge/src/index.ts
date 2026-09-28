@@ -202,9 +202,10 @@ const handleCopilotSessionEvent = (params: {
   toolTraces: Map<string, ToolTraceSnapshot>;
   hiddenContextBlocks: string[];
   acceptedRelayToolCallIds?: ReadonlySet<string>;
+  hasFrontendRelay?: boolean;
   emit: (payload: JsonRecord) => void;
 }): void => {
-  const { event, state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit } = params;
+  const { event, state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, hasFrontendRelay = false, emit } = params;
   const data = (event.data || {}) as Record<string, unknown>;
 
   if (event.type === 'assistant.reasoning_delta') {
@@ -291,7 +292,7 @@ const handleCopilotSessionEvent = (params: {
       trace.detail,
       resultText
     );
-    if (block && existing && (!isFrontendRelayToolId(existing.tool_name) || acceptedRelayToolCallIds?.has(toolCallId))) {
+    if (block && existing && (!isFrontendRelayToolId(existing.tool_name, hasFrontendRelay) || acceptedRelayToolCallIds?.has(toolCallId))) {
       hiddenContextBlocks.push(block);
     }
     return;
@@ -1718,6 +1719,7 @@ const handleSend = async (): Promise<void> => {
             toolTraces,
             hiddenContextBlocks,
             acceptedRelayToolCallIds,
+            hasFrontendRelay: Boolean(controlChannel),
             emit: emitJson,
           });
         });

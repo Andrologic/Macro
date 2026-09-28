@@ -80,26 +80,50 @@ describe('copilot bridge tool registration', () => {
     const state = __testables.createCopilotSessionEventState();
     const toolTraces = new Map();
     const hiddenContextBlocks: string[] = [];
-    const acceptedRelayToolCallIds = new Set(['accepted']);
+    const acceptedRelayToolCallIds = new Set(['accepted', 'git-accepted']);
     const emit = () => undefined;
     for (const [toolCallId, toolName] of [
-      ['rejected', 'read_file'], ['accepted', 'read_file'], ['native', 'mark_source_passage'],
+      ['rejected', 'read_file'], ['accepted', 'read_file'],
+      ['git-rejected', 'git_status'], ['git-accepted', 'git_status'],
+      ['native', 'mark_source_passage'],
     ]) {
       __testables.handleCopilotSessionEvent({
         event: { type: 'tool.execution_start', data: { toolCallId, toolName, arguments: {} } },
-        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit,
+        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, hasFrontendRelay: true, emit,
       });
       __testables.handleCopilotSessionEvent({
         event: { type: 'tool.execution_complete', data: {
           toolCallId, result: { content: `${toolCallId} result` },
         } },
-        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit,
+        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, hasFrontendRelay: true, emit,
       });
     }
 
-    expect(hiddenContextBlocks.join('\n')).not.toContain('rejected result');
-    expect(hiddenContextBlocks.join('\n')).toContain('accepted result');
-    expect(hiddenContextBlocks.join('\n')).toContain('native result');
+    expect(hiddenContextBlocks).toHaveLength(3);
+    expect(hiddenContextBlocks[0]).toContain('tool_call_id="accepted"');
+    expect(hiddenContextBlocks[1]).toContain('tool_call_id="git-accepted"');
+    expect(hiddenContextBlocks[2]).toContain('tool_call_id="native"');
+  });
+
+  it('keeps a built-in Git read in hidden context when no frontend relay exists', async () => {
+    const { __testables } = await loadBridge();
+    const state = __testables.createCopilotSessionEventState();
+    const toolTraces = new Map();
+    const hiddenContextBlocks: string[] = [];
+    const emit = () => undefined;
+    __testables.handleCopilotSessionEvent({
+      event: { type: 'tool.execution_start', data: {
+        toolCallId: 'host-git', toolName: 'git_status', arguments: {},
+      } },
+      state, toolTraces, hiddenContextBlocks, hasFrontendRelay: false, emit,
+    });
+    __testables.handleCopilotSessionEvent({
+      event: { type: 'tool.execution_complete', data: {
+        toolCallId: 'host-git', result: { content: 'host status' },
+      } },
+      state, toolTraces, hiddenContextBlocks, hasFrontendRelay: false, emit,
+    });
+    expect(hiddenContextBlocks.join('\n')).toContain('host status');
   });
 
   it('carries Rust error metadata through the concrete channel to the SDK handler', async () => {
