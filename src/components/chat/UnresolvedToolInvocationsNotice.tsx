@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getServiceRuntime } from '../../services/serviceRuntime';
-import { listUnresolvedToolInvocations } from '../../services/tauriIpc';
+import { isTauriAvailable, listUnresolvedToolInvocations } from '../../services/tauriIpc';
 import type { ToolInvocation } from '../../types/generated/ipc';
 
 interface Props {
@@ -21,11 +20,7 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase }: Props
     setResult(null);
     if (!conversationId) return () => { current = false; };
 
-    try {
-      if (getServiceRuntime().effectiveTransport !== 'desktop') {
-        return () => { current = false; };
-      }
-    } catch {
+    if (!isTauriAvailable()) {
       return () => { current = false; };
     }
 

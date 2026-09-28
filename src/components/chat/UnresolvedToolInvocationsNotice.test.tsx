@@ -6,7 +6,7 @@ import { createTranslationMock, installReactI18nextMock } from '../../test-utils
 import type { ToolInvocation } from '../../types/generated/ipc';
 
 const list = mock((_conversationId: string): Promise<ToolInvocation[]> => Promise.resolve([]));
-let transport: 'desktop' | 'remote' = 'desktop';
+let tauriAvailable = true;
 let Notice: typeof import('./UnresolvedToolInvocationsNotice').UnresolvedToolInvocationsNotice;
 let root: Root;
 let container: HTMLDivElement;
@@ -19,17 +19,15 @@ const invocation = (status: 'pending' | 'unknown', toolName = 'terminal_run'): T
 
 beforeAll(async () => {
   installReactI18nextMock(createTranslationMock({}));
-  mock.module('../../services/serviceRuntime', () => ({
-    getServiceRuntime: () => ({ effectiveTransport: transport }),
-  }));
   mock.module('../../services/tauriIpc', () => ({
+    isTauriAvailable: () => tauriAvailable,
     listUnresolvedToolInvocations: list,
   }));
   ({ UnresolvedToolInvocationsNotice: Notice } = await import('./UnresolvedToolInvocationsNotice'));
 });
 
 beforeEach(() => {
-  transport = 'desktop';
+  tauriAvailable = true;
   list.mockReset();
   list.mockImplementation(async () => []);
   container = document.createElement('div');
@@ -80,10 +78,32 @@ describe('UnresolvedToolInvocationsNotice', () => {
     expect(list.mock.calls.map(([id]) => id)).toEqual(['first', 'second']);
   });
 
-  it('does not query SQLite in remote mode', async () => {
-    transport = 'remote';
-    await render('first', 'idle');
-    expect(list).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+  it('shows local unknown outcomes with Tauri even when services request remote', async () => {
+    const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
+    process.env.VITE_BACKEND_TRANSPORT = 'remote';
+    try {
+      list.mockImplementation(async () => [invocation('unknown')]);
+      await render('first', 'idle');
+      expect(list).toHaveBeenCalledWith('first');
+      expect(container.textContent).toContain('terminal_run');
+      expect(container.textContent).toContain('outcome unknown');
+    } finally {
+      if (previousTransport === undefined) delete process.env.VITE_BACKEND_TRANSPORT;
+      else process.env.VITE_BACKEND_TRANSPORT = previousTransport;
+    }
+  });
+
+  it('does not query SQLite in remote mode without Tauri', async () => {
+    tauriAvailable = false;
+    const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
+    process.env.VITE_BACKEND_TRANSPORT = 'remote';
+    try {
+      await render('first', 'idle');
+      expect(list).not.toHaveBeenCalled();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally {
+      if (previousTransport === undefined) delete process.env.VITE_BACKEND_TRANSPORT;
+      else process.env.VITE_BACKEND_TRANSPORT = previousTransport;
+    }
   });
 });
