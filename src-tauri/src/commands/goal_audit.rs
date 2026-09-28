@@ -5,6 +5,7 @@ use crate::db::conversation_goals::{
     ConversationGoalAudit, DeactivateConversationGoalInput, GoalCasOutcome,
     UpdateConversationGoalInput,
 };
+use crate::db::goal_audit_children;
 use crate::db::goal_audit_transitions::{self, RecordGoalAuditTransitionInput};
 use crate::db::models::AgentRun;
 use tauri::State;
@@ -102,6 +103,21 @@ pub async fn db_link_goal_audit_child_conversation(
         &run_id,
         &parent_conversation_id,
         &child_conversation_id,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_reserve_goal_audit_child_conversation(
+    pool: State<'_, DbPool>,
+    run_id: String,
+    parent_conversation_id: String,
+) -> CommandResult<String> {
+    goal_audit_children::reserve_goal_audit_child_conversation(
+        &get_pool(&pool).await?,
+        &run_id,
+        &parent_conversation_id,
     )
     .await
     .map_err(Into::into)

@@ -32,3 +32,12 @@ export function linkGoalAuditChildConversation(
     runId, parentConversationId, childConversationId,
   });
 }
+
+export function reserveGoalAuditChildConversation(
+  runId: string,
+  parentConversationId: string,
+): Promise<string> {
+  return invoke<string>("db_reserve_goal_audit_child_conversation", {
+    runId, parentConversationId,
+  });
+}

@@ -760,6 +760,7 @@ pub fn run() {
             commands::tool_invocations::db_list_unresolved_tool_invocations,
             commands::goal_audit::db_record_goal_audit_transition,
             commands::goal_audit::db_link_goal_audit_child_conversation,
+            commands::goal_audit::db_reserve_goal_audit_child_conversation,
             commands::goal_auditor_read::tool_execute_goal_auditor_read,
             commands::goal_audit::db_get_current_conversation_goal,
             commands::goal_audit::db_activate_conversation_goal,
