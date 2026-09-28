@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { useProviderStore } from "../../stores/useProviderStore";
-import type { AIModel, ProviderConfig } from "../../types";
-import type { GoalAuditChildInput } from "./types";
-import { createGoalAuditProviderResolver } from "./providerResolver";
+import { useProviderStore } from "./useProviderStore";
+import type { AIModel, ProviderConfig } from "../types";
+import type { GoalAuditChildInput } from "../services/conversationGoalAudit/types";
+import { createStoreGoalAuditProviderResolver } from "./goalAuditProviderPort";
 
 const original = useProviderStore.getState();
 afterEach(() => useProviderStore.setState(original, true));
@@ -39,7 +39,7 @@ const setup = () => useProviderStore.setState({
 describe("goal auditor provider resolver", () => {
   it("uses the frozen provider, model, effort and workspace despite UI selection changes", async () => {
     setup();
-    const resolve = createGoalAuditProviderResolver({
+    const resolve = createStoreGoalAuditProviderResolver({
       providerId: "frozen", modelId: "model", effort: "high", workspacePath: "/workspace",
     });
     useProviderStore.setState({ selectedProviderId: "ui", selectedReasoningEffort: "low" });
@@ -52,14 +52,14 @@ describe("goal auditor provider resolver", () => {
   it("rejects stale, disabled and unauthorized selections without falling back to the UI", async () => {
     setup();
     const signal = new AbortController().signal;
-    await expect(createGoalAuditProviderResolver({ providerId: "gone", modelId: "model" })(input(), signal)).rejects.toThrow("provider is unavailable");
-    await expect(createGoalAuditProviderResolver({ providerId: "frozen", modelId: "missing" })(input(), signal)).rejects.toThrow("model is unavailable");
-    await expect(createGoalAuditProviderResolver({ providerId: "frozen", modelId: "model", effort: "max" })(input(), signal)).rejects.toThrow("reasoning effort is unavailable");
-    await expect(createGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" })(input("other"), signal)).rejects.toThrow("conflicts with its authorization");
+    await expect(createStoreGoalAuditProviderResolver({ providerId: "gone", modelId: "model" })(input(), signal)).rejects.toThrow("provider is unavailable");
+    await expect(createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "missing" })(input(), signal)).rejects.toThrow("model is unavailable");
+    await expect(createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model", effort: "max" })(input(), signal)).rejects.toThrow("reasoning effort is unavailable");
+    await expect(createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" })(input("other"), signal)).rejects.toThrow("conflicts with its authorization");
     useProviderStore.setState({ providerConfigs: [{ ...config("frozen"), isEnabled: false }, config("ui")] });
-    await expect(createGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" })(input(), signal)).rejects.toThrow("provider is unavailable");
+    await expect(createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" })(input(), signal)).rejects.toThrow("provider is unavailable");
     useProviderStore.setState({ providerConfigs: [config("frozen"), config("ui")], modelsByProvider: { frozen: [{ ...model("frozen"), isEnabled: false }], ui: [model("ui")] } });
-    await expect(createGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" })(input(), signal)).rejects.toThrow("model is unavailable");
+    await expect(createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" })(input(), signal)).rejects.toThrow("model is unavailable");
   });
 
   it("rejects an abort or configuration change while the API key is resolving", async () => {
@@ -67,7 +67,7 @@ describe("goal auditor provider resolver", () => {
     let finish!: (key: string) => void;
     const resolveProviderApiKey = mock(() => new Promise<string>((resolve) => { finish = resolve; }));
     useProviderStore.setState({ resolveProviderApiKey });
-    const resolve = createGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" });
+    const resolve = createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" });
     const controller = new AbortController();
     const aborted = resolve(input(), controller.signal);
     controller.abort();
@@ -82,5 +82,20 @@ describe("goal auditor provider resolver", () => {
     finish("key");
     await expect(changed).rejects.toThrow("configuration changed");
     expect(resolveProviderApiKey).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a key rotated while resolution is pending", async () => {
+    setup();
+    let finish!: (key: string) => void;
+    useProviderStore.setState({
+      resolveProviderApiKey: () => new Promise<string>((resolve) => { finish = resolve; }),
+    });
+    const resolve = createStoreGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" });
+    const pending = resolve(input(), new AbortController().signal);
+    useProviderStore.setState({
+      providerConfigs: [{ ...config("frozen"), apiKey: "new-key" }, config("ui")],
+    });
+    finish("frozen-key");
+    await expect(pending).rejects.toThrow("API key changed during resolution");
   });
 });

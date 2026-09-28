@@ -99,6 +99,29 @@ describe("goal auditor provider executor", () => {
     expect(executeReadTool).not.toHaveBeenCalled();
   });
 
+  it("resolves the provider again after child creation before streaming", async () => {
+    const resolveProvider = mock(() => ({
+      providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid",
+      modelId: "model",
+    }));
+    const stream = mock(async () => {});
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider,
+      resolveChildConversation: () => {
+        resolveProvider.mockImplementation(() => { throw new Error("Provider changed during child creation."); });
+        return resolvedChild();
+      },
+      executeReadTool: async () => "unused",
+      stream,
+    });
+    await expect(executor.execute({
+      childRunId: "child", parentConversationId: "parent", depth: 1,
+      input: input(), signal: new AbortController().signal,
+    })).rejects.toThrow("Provider changed during child creation.");
+    expect(resolveProvider).toHaveBeenCalledTimes(2);
+    expect(stream).not.toHaveBeenCalled();
+  });
+
   it("settles after abort and does not return partial provider output", async () => {
     const controller = new AbortController();
     const executor = createGoalAuditProviderExecutor({
