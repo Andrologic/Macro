@@ -1,4 +1,4 @@
-import { useProviderStore, providerHasCredentials, isLinkedProviderType } from "../../stores/useProviderStore";
+import { useProviderStore, providerHasCredentials, isLinkedProviderType, isProviderTransportUnavailable } from "../../stores/useProviderStore";
 import type { ReasoningEffort } from "../../types";
 import type { GoalAuditProvider, GoalAuditProviderPorts } from "./providerExecutor";
 
@@ -65,6 +65,9 @@ export function createGoalAuditProviderResolver(
     if (!current.isLocal && !isLinkedProviderType(current.providerType) &&
       current.apiKey !== apiKey) {
       throw new Error("Goal auditor provider API key changed during resolution.");
+    }
+    if (isProviderTransportUnavailable(providerId)) {
+      throw new Error("Goal auditor provider configuration changed during resolution.");
     }
     return {
       providerId,

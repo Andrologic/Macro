@@ -93,7 +93,7 @@ const providerModelScanGenerationById = new Map<string, number>();
 const providerModelPreferenceVersionById = new Map<string, number>();
 const providerTransportMutations = new Set<string>();
 const providerConfigsNeedingReload = new Set<string>();
-const isProviderTransportUnavailable = (providerId: string): boolean =>
+export const isProviderTransportUnavailable = (providerId: string): boolean =>
   providerTransportMutations.has(providerId) || providerConfigsNeedingReload.has(providerId);
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
 const enqueueProviderMutation = createKeyedSerialQueue<string>();
