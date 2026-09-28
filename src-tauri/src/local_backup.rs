@@ -294,6 +294,22 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&9) {
+        sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
+            .execute(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+        for statement in [
+            "DROP TABLE conversation_goal_audit_runs",
+            "DROP TABLE conversation_goal_audits",
+            "DROP TABLE conversation_goals",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if !versions.contains(&8) {
         sqlx::query("DROP TABLE agent_run_transitions")
             .execute(&reference)
@@ -318,7 +334,11 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table == "tool_invocations" || table == "agent_run_transitions" {
+        if table == "tool_invocations"
+            || table == "agent_run_transitions"
+            || table == "conversation_goals"
+            || table.starts_with("conversation_goal_")
+        {
             // This table has no legacy schema variants. Compare its full DDL
             // so a backup cannot omit its CHECK constraints while retaining
             // the same columns, foreign key, and indexes.
@@ -1189,6 +1209,7 @@ mod tests {
     }
 
     async fn remove_post_v4_schema(db: &mut SqliteConnection) {
+        remove_v9_schema(db).await;
         sqlx::query("DROP TABLE agent_run_transitions")
             .execute(&mut *db)
             .await
@@ -1202,6 +1223,24 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("DELETE FROM schema_migrations WHERE version >= 5")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+    }
+
+    async fn remove_v9_schema(db: &mut SqliteConnection) {
+        sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        for statement in [
+            "DROP TABLE conversation_goal_audit_runs",
+            "DROP TABLE conversation_goal_audits",
+            "DROP TABLE conversation_goals",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 9")
             .execute(&mut *db)
             .await
             .unwrap();
@@ -1370,7 +1409,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            8
+            9
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1403,7 +1442,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -1420,6 +1459,7 @@ mod tests {
         let (_temp, data, config) = profile().await;
         let database = data.join("macro.db");
         let mut db = connection(&database).await.unwrap();
+        remove_v9_schema(&mut db).await;
         sqlx::query("DROP TABLE agent_run_transitions")
             .execute(&mut db)
             .await
@@ -1460,6 +1500,7 @@ mod tests {
         let (_temp, data, config) = profile().await;
         let database = data.join("macro.db");
         let mut db = connection(&database).await.unwrap();
+        remove_v9_schema(&mut db).await;
         sqlx::query("DROP TABLE agent_run_transitions")
             .execute(&mut db)
             .await
@@ -1486,6 +1527,31 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tool_table, 1);
+    }
+
+    #[tokio::test]
+    async fn validates_v8_archive_without_migrating_source() {
+        let (_temp, data, config) = profile().await;
+        let database = data.join("macro.db");
+        let mut db = connection(&database).await.unwrap();
+        remove_v9_schema(&mut db).await;
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let mut source = connection(&database).await.unwrap();
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(&mut source)
+            .await
+            .unwrap();
+        assert_eq!(version, 8);
+        let goals: Option<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE name = 'conversation_goals'")
+                .fetch_optional(&mut source)
+                .await
+                .unwrap();
+        assert!(goals.is_none());
     }
 
     #[tokio::test]
@@ -1769,6 +1835,110 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(indexed_message, "message");
+    }
+
+    #[tokio::test]
+    async fn v9_backup_restores_goal_criteria_and_audit_run_link() {
+        use crate::db::conversation_goals::{
+            self, ActivateConversationGoalInput, ClaimConversationGoalAuditInput,
+        };
+        use crate::db::models::CreateAgentRunInput;
+        let (_temp, data, config) = profile().await;
+        let database = data.join("macro.db");
+        let pool = crate::db::create_pool(&database).await.unwrap();
+        conversation_goals::activate_goal(
+            &pool,
+            ActivateConversationGoalInput {
+                conversation_id: "conversation".into(),
+                goal_id: "goal".into(),
+                objective: "Finish".into(),
+                success_criteria: vec!["Check tests".into()],
+                provider_id: None,
+                model_id: None,
+                reasoning_effort: None,
+                replace_goal_id: None,
+                replace_revision: None,
+            },
+        )
+        .await
+        .unwrap();
+        conversation_goals::update_goal(
+            &pool,
+            conversation_goals::UpdateConversationGoalInput {
+                conversation_id: "conversation".into(),
+                goal_id: "goal".into(),
+                expected_revision: 1,
+                objective: "Finish".into(),
+                success_criteria: vec!["Check tests".into()],
+                status: conversation_goals::GoalStatus::AuditPending,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES ('executor', 'conversation', 'turn', 'assistant', 'Done', '2026-09-05')")
+            .execute(&pool).await.unwrap();
+        crate::db::goal_audit_transitions::record_goal_audit_transition(&pool,
+            crate::db::goal_audit_transitions::RecordGoalAuditTransitionInput {
+              descriptor: Some(CreateAgentRunInput {
+                id: Some("run".into()),
+                parent_conversation_id: "conversation".into(),
+                child_conversation_id: None,
+                agent_profile: "goal_auditor".into(),
+                depth: 1,
+                prompt: "Audit".into(),
+                model_metadata_json: None,
+              }),
+              audit_claim: Some(ClaimConversationGoalAuditInput {
+                audit_id: "audit".into(), conversation_id: "conversation".into(),
+                goal_id: "goal".into(), expected_revision: 2,
+                executor_turn_id: "turn".into(), run_id: "run".into(),
+              }),
+              audit_resume: None,
+              transition: crate::db::goal_audit_transitions::GoalAuditTransition {
+                run_id: "run".into(), parent_conversation_id: "conversation".into(),
+                sequence: 0, previous_state: None,
+                state: crate::db::models::AgentRunStatus::Queued,
+                occurred_at: chrono::Utc::now().timestamp_millis(),
+                snapshot: serde_json::json!({"runId": "run", "parentConversationId": "conversation", "state": "queued"}),
+                result: None,
+              },
+              usage: crate::db::models::AgentRunUsageInput::default(),
+            }
+        )
+        .await
+        .unwrap();
+        pool.close().await;
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let mut db = connection(&database).await.unwrap();
+        sqlx::query("UPDATE conversation_goals SET objective = 'Changed'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        apply(&archive, &data, &config).unwrap();
+        let pool = crate::db::create_pool(&database).await.unwrap();
+        let goal = conversation_goals::get_current_goal(&pool, "conversation")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(goal.objective, "Finish");
+        assert_eq!(goal.success_criteria, ["Check tests"]);
+        let audit = conversation_goals::get_audit(&pool, "audit")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(audit.current_run_id, "run");
+        let linked: String = sqlx::query_scalar(
+            "SELECT run_id FROM conversation_goal_audit_runs WHERE audit_id = 'audit'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(linked, "run");
     }
     #[tokio::test]
     async fn startup_export_and_restore_round_trip_with_attachments_and_preferences() {

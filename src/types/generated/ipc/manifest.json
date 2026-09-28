@@ -4,6 +4,14 @@
       "families": [
         "db"
       ],
+      "name": "ActivateConversationGoalInput",
+      "origin": "macro_lib::db::conversation_goals::ActivateConversationGoalInput",
+      "path": "ActivateConversationGoalInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "AgentRun",
       "origin": "macro_lib::db::models::AgentRun",
       "path": "AgentRun.ts"
@@ -197,6 +205,14 @@
       "families": [
         "db"
       ],
+      "name": "ApplyConversationGoalVerdictInput",
+      "origin": "macro_lib::db::conversation_goals::ApplyConversationGoalVerdictInput",
+      "path": "ApplyConversationGoalVerdictInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ArchitectPlanConversationSyncRecord",
       "origin": "macro_lib::db::models::ArchitectPlanConversationSyncRecord",
       "path": "ArchitectPlanConversationSyncRecord.ts"
@@ -283,6 +299,14 @@
     },
     {
       "families": [
+        "db"
+      ],
+      "name": "ClaimConversationGoalAuditInput",
+      "origin": "macro_lib::db::conversation_goals::ClaimConversationGoalAuditInput",
+      "path": "ClaimConversationGoalAuditInput.ts"
+    },
+    {
+      "families": [
         "errors"
       ],
       "name": "CommandErrorPayload",
@@ -336,6 +360,22 @@
       "name": "ConversationCompactionStateRecord",
       "origin": "macro_lib::db::models::ConversationCompactionStateRecord",
       "path": "ConversationCompactionStateRecord.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationGoal",
+      "origin": "macro_lib::db::conversation_goals::ConversationGoal",
+      "path": "ConversationGoal.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationGoalAudit",
+      "origin": "macro_lib::db::conversation_goals::ConversationGoalAudit",
+      "path": "ConversationGoalAudit.ts"
     },
     {
       "families": [
@@ -520,6 +560,14 @@
       "name": "DbUpdateProviderConfigParams",
       "origin": "macro_lib::commands::DbUpdateProviderConfigParams",
       "path": "DbUpdateProviderConfigParams.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "DeactivateConversationGoalInput",
+      "origin": "macro_lib::db::conversation_goals::DeactivateConversationGoalInput",
+      "path": "DeactivateConversationGoalInput.ts"
     },
     {
       "families": [
@@ -919,6 +967,14 @@
       "families": [
         "db"
       ],
+      "name": "GoalAuditStatus",
+      "origin": "macro_lib::db::conversation_goals::GoalAuditStatus",
+      "path": "GoalAuditStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "GoalAuditTransition",
       "origin": "macro_lib::db::goal_audit_transitions::GoalAuditTransition",
       "path": "GoalAuditTransition.ts"
@@ -930,6 +986,62 @@
       "name": "GoalAuditorReadInput",
       "origin": "macro_lib::commands::goal_auditor_read::GoalAuditorReadInput",
       "path": "GoalAuditorReadInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalCasOutcome",
+      "origin": "macro_lib::db::conversation_goals::GoalCasOutcome",
+      "path": "GoalCasOutcome.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalCriterionResult",
+      "origin": "macro_lib::db::conversation_goals::GoalCriterionResult",
+      "path": "GoalCriterionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalCriterionStatus",
+      "origin": "macro_lib::db::conversation_goals::GoalCriterionStatus",
+      "path": "GoalCriterionStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalEvidence",
+      "origin": "macro_lib::db::conversation_goals::GoalEvidence",
+      "path": "GoalEvidence.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalStatus",
+      "origin": "macro_lib::db::conversation_goals::GoalStatus",
+      "path": "GoalStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalVerdict",
+      "origin": "macro_lib::db::conversation_goals::GoalVerdict",
+      "path": "GoalVerdict.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalVerdictKind",
+      "origin": "macro_lib::db::conversation_goals::GoalVerdictKind",
+      "path": "GoalVerdictKind.ts"
     },
     {
       "families": [
@@ -1477,6 +1589,14 @@
       "families": [
         "db"
       ],
+      "name": "ResumeConversationGoalAuditInput",
+      "origin": "macro_lib::db::conversation_goals::ResumeConversationGoalAuditInput",
+      "path": "ResumeConversationGoalAuditInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "SessionContextStateRecord",
       "origin": "macro_lib::db::models::SessionContextStateRecord",
       "path": "SessionContextStateRecord.ts"
@@ -1720,6 +1840,14 @@
       "name": "TranscriptionResult",
       "origin": "macro_lib::speech::TranscriptionResult",
       "path": "TranscriptionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpdateConversationGoalInput",
+      "origin": "macro_lib::db::conversation_goals::UpdateConversationGoalInput",
+      "path": "UpdateConversationGoalInput.ts"
     },
     {
       "families": [

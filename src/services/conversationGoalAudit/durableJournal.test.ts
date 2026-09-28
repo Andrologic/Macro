@@ -21,6 +21,19 @@ const transition = (sequence: number, state: "queued" | "running" | "completed")
 });
 
 describe("DurableGoalAuditJournal", () => {
+  it("carries an explicit resume in the queued IPC payload only", async () => {
+    const inputs: RecordGoalAuditTransitionInput[] = [];
+    const journal = new DurableGoalAuditJournal({
+      async recordTransition(input) { inputs.push(input); return {} as AgentRun; },
+      async linkChildConversation() { return {} as AgentRun; },
+    }, undefined, { auditId: "audit-1", expectedRunId: "old-run" });
+    journal.registerRun({ runId: "run-1", parentConversationId: "parent-1", profile: "goal_auditor", depth: 1, prompt: "Audit" });
+    await journal.recordTransition(transition(0, "queued"));
+    await journal.recordTransition(transition(1, "running"));
+    expect(inputs[0]?.auditResume).toEqual({ auditId: "audit-1", expectedRunId: "old-run", newRunId: "run-1" });
+    expect(inputs[1]?.auditResume).toBeUndefined();
+  });
+
   it("retries a rejected sequence instead of inheriting a rejected tail", async () => {
     let attempts = 0;
     const journal = new DurableGoalAuditJournal({

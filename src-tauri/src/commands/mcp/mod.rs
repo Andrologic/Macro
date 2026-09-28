@@ -290,6 +290,14 @@ pub fn mcp_runtime_close_interaction_port(
 }
 
 #[tauri::command]
+pub fn mcp_runtime_list_pending_interactions(
+    runtime: State<'_, McpRuntimeManager>,
+    lease_id: String,
+) -> Result<Vec<String>, McpRuntimeError> {
+    runtime.interaction_broker().pending_request_ids(&lease_id)
+}
+
+#[tauri::command]
 pub fn mcp_runtime_respond_to_interaction(
     runtime: State<'_, McpRuntimeManager>,
     lease_id: String,

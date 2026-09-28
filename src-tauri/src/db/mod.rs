@@ -3,6 +3,7 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+pub mod conversation_goals;
 pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;
@@ -44,13 +45,14 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
 const MIGRATION_006_SQL: &str = include_str!("migrations/006_generation_attempts.sql");
 const MIGRATION_007_SQL: &str = include_str!("migrations/007_tool_invocations.sql");
 const MIGRATION_008_SQL: &str = include_str!("migrations/008_agent_run_transitions.sql");
+const MIGRATION_009_SQL: &str = include_str!("migrations/009_conversation_goals.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -70,6 +72,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 
     let pool = create_pool(&db_path).await?;
     agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
+    conversation_goals::reconcile_audits_after_restart(&pool).await?;
     tool_invocations::reconcile_pending_after_restart(&pool).await?;
 
     Ok(pool)
@@ -257,6 +260,16 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
+    if !list_applied_migrations(connection).await?.contains(&9) {
+        apply_migration(
+            connection,
+            9,
+            "009_conversation_goals".to_string(),
+            MIGRATION_009_SQL.to_string(),
+        )
+        .await?;
+    }
+
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
     insert_default_speech_provider(connection).await?;
@@ -275,6 +288,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&6) && !applied.contains(&5))
         || (applied.contains(&7) && !applied.contains(&6))
         || (applied.contains(&8) && !applied.contains(&7))
+        || (applied.contains(&9) && !applied.contains(&8))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),

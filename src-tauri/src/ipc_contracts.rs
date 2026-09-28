@@ -3,6 +3,13 @@
 
 pub mod db {
     pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
+    pub use crate::db::conversation_goals::{
+        ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
+        ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,
+        DeactivateConversationGoalInput, GoalAuditStatus, GoalCasOutcome, GoalCriterionResult,
+        GoalCriterionStatus, GoalEvidence, GoalStatus, GoalVerdict, GoalVerdictKind,
+        ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
+    };
     pub use crate::db::goal_audit_transitions::{
         GoalAuditTransition, RecordGoalAuditTransitionInput,
     };

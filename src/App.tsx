@@ -9,6 +9,7 @@ import { ModeRouter } from "./components/layout/ModeRouter";
 import { useWorkspaceShell } from "./composition/useWorkspaceShell";
 import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
+import { McpFormHostView } from "./components/mcp/McpFormHost";
 import { notify } from "./components/ui/toastService";
 import { useAppStore } from "./stores/useAppStore";
 import { useConversationArchiveStore } from "./stores/useConversationArchiveStore";
@@ -579,6 +580,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
       </Suspense>
 
       <Toaster />
+      {isTauriAvailable() && <McpFormHostView />}
       <Suspense fallback={null}>
         <WorkflowAttentionNotifications />
       </Suspense>

@@ -2,7 +2,7 @@
 //! No interaction or response is persisted or logged.
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,6 +33,8 @@ pub struct McpInteractionRequest {
     pub request_id: String,
     pub key: McpRuntimeKey,
     pub operation_id: String,
+    /// Absolute deadline for the ephemeral UI queue; Rust remains authoritative.
+    pub expires_at_ms: u64,
     pub prompts: Vec<McpElicitationPrompt>,
 }
 
@@ -102,6 +104,15 @@ fn error(code: &'static str, message: &'static str) -> McpRuntimeError {
 }
 
 impl McpInteractionBroker {
+    /// The port is installed only after the global form host has mounted.
+    pub fn has_host(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !state.closed && state.port.is_some()
+    }
+
     pub fn open(&self, channel: Channel<McpInteractionRequest>) -> Result<String, McpRuntimeError> {
         let mut state = self
             .state
@@ -125,6 +136,29 @@ impl McpInteractionBroker {
             channel,
         });
         Ok(lease_id)
+    }
+
+    /// Exposes only opaque IDs to the active host so it can discard prompts after
+    /// an external abort. The server request and submitted values stay in memory.
+    pub fn pending_request_ids(&self, lease_id: &str) -> Result<Vec<String>, McpRuntimeError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed
+            || state
+                .port
+                .as_ref()
+                .is_none_or(|port| port.lease_id != lease_id)
+        {
+            return Err(error(
+                "MCP_INTERACTION_PORT_STALE",
+                "The MCP interaction host lease is no longer active.",
+            ));
+        }
+        let mut ids: Vec<_> = state.pending.keys().cloned().collect();
+        ids.sort();
+        Ok(ids)
     }
 
     pub fn close(&self, lease_id: &str) -> Result<(), McpRuntimeError> {
@@ -332,10 +366,17 @@ impl McpInteractionBroker {
             broker: self.clone(),
             request_id: request_id.clone(),
         };
+        let expires_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .saturating_add(response_timeout.as_millis())
+            .min(u64::MAX as u128) as u64;
         let request = McpInteractionRequest {
             request_id: request_id.clone(),
             key,
             operation_id,
+            expires_at_ms,
             prompts,
         };
         if channel.send(request).is_err() {
@@ -437,6 +478,12 @@ mod tests {
             .await
         });
         let request = rx.recv().await.unwrap();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(request.expires_at_ms > now_ms);
+        assert!(request.expires_at_ms <= now_ms + RESPONSE_TIMEOUT.as_millis() as u64);
         broker
             .respond(
                 &lease,
@@ -609,8 +656,17 @@ mod tests {
             .await
         });
         let pending = rx.recv().await.unwrap();
+        assert_eq!(
+            broker.pending_request_ids(&lease).unwrap(),
+            vec![pending.request_id.clone()]
+        );
+        assert_eq!(
+            broker.pending_request_ids("wrong").unwrap_err().code,
+            "MCP_INTERACTION_PORT_STALE"
+        );
         task.abort();
         assert!(task.await.is_err());
+        assert!(broker.pending_request_ids(&lease).unwrap().is_empty());
         assert_eq!(
             broker
                 .respond(

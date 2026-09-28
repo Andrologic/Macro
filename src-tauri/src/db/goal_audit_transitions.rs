@@ -1,3 +1,6 @@
+use super::conversation_goals::{
+    ClaimConversationGoalAuditInput, ResumeConversationGoalAuditInput,
+};
 use super::models::{AgentRun, AgentRunStatus, AgentRunUsageInput, CreateAgentRunInput};
 use super::{DbError, DbResult};
 use serde::{Deserialize, Serialize};
@@ -21,6 +24,12 @@ pub struct GoalAuditTransition {
 #[serde(rename_all = "camelCase")]
 pub struct RecordGoalAuditTransitionInput {
     pub descriptor: Option<CreateAgentRunInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audit_claim: Option<ClaimConversationGoalAuditInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audit_resume: Option<ResumeConversationGoalAuditInput>,
     pub transition: GoalAuditTransition,
     pub usage: AgentRunUsageInput,
 }
@@ -101,6 +110,23 @@ pub async fn record_goal_audit_transition(
         if existing != payload {
             return Err(invalid("Conflicting goal audit transition replay"));
         }
+        if let Some(audit_id) = input
+            .audit_claim
+            .as_ref()
+            .map(|claim| &claim.audit_id)
+            .or_else(|| input.audit_resume.as_ref().map(|resume| &resume.audit_id))
+        {
+            let linked: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM conversation_goal_audit_runs WHERE audit_id = ? AND run_id = ?",
+            )
+            .bind(audit_id)
+            .bind(&transition.run_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if linked.is_none() {
+                return Err(invalid("Replayed goal audit claim is missing"));
+            }
+        }
         transaction.commit().await?;
         let run = super::agent_runs::get_agent_run(pool, &transition.run_id)
             .await?
@@ -138,6 +164,19 @@ pub async fn record_goal_audit_transition(
         {
             return Err(invalid("Invalid queued goal audit descriptor"));
         }
+        if input.audit_claim.is_some() && input.audit_resume.is_some() {
+            return Err(invalid("Queued run cannot claim and resume an audit"));
+        }
+        if input.audit_claim.as_ref().is_some_and(|claim| {
+            claim.run_id != transition.run_id
+                || claim.conversation_id != transition.parent_conversation_id
+        }) || input
+            .audit_resume
+            .as_ref()
+            .is_some_and(|resume| resume.new_run_id != transition.run_id)
+        {
+            return Err(invalid("Queued audit claim does not match the run"));
+        }
         super::agent_runs::validate_lineage(
             &mut transaction,
             &transition.parent_conversation_id,
@@ -157,6 +196,9 @@ pub async fn record_goal_audit_transition(
         .execute(&mut *transaction)
         .await?;
     } else {
+        if input.audit_claim.is_some() || input.audit_resume.is_some() {
+            return Err(invalid("Only queued may bind a goal audit"));
+        }
         if input.descriptor.is_some() {
             return Err(invalid("Only the queued transition accepts a descriptor"));
         }
@@ -193,6 +235,19 @@ pub async fn record_goal_audit_transition(
         }
 
         if transition.state == AgentRunStatus::Running {
+            // A queued run can outlive its audit at startup. Only the current
+            // queued attempt may start; older attempts remain historical links.
+            let owner = sqlx::query("SELECT audit.current_run_id, audit.status AS audit_status, audit.goal_revision, goal.revision AS current_revision, goal.status AS goal_status, goal.is_current FROM conversation_goal_audit_runs AS link JOIN conversation_goal_audits AS audit ON audit.audit_id = link.audit_id JOIN conversation_goals AS goal ON goal.conversation_id = audit.conversation_id AND goal.goal_id = audit.goal_id WHERE link.run_id = ?")
+                .bind(&transition.run_id).fetch_optional(&mut *transaction).await?;
+            if owner.as_ref().is_some_and(|row| {
+                row.get::<&str, _>("current_run_id") != transition.run_id
+                    || row.get::<&str, _>("audit_status") != "queued"
+                    || row.get::<i64, _>("goal_revision") != row.get::<i64, _>("current_revision")
+                    || row.get::<&str, _>("goal_status") != "auditing"
+                    || row.get::<i64, _>("is_current") != 1
+            }) {
+                return Err(invalid("Goal audit run no longer owns the queued audit"));
+            }
             if transition.result.is_some() {
                 return Err(invalid("Running goal audit cannot have a terminal result"));
             }
@@ -276,6 +331,12 @@ pub async fn record_goal_audit_transition(
         .bind(transition.previous_state.map(AgentRunStatus::as_str))
         .bind(transition.state.as_str()).bind(payload).bind(&occurred_at)
         .execute(&mut *transaction).await?;
+    if let Some(claim) = &input.audit_claim {
+        super::conversation_goals::claim_audit_in_transaction(&mut transaction, claim).await?;
+    }
+    if let Some(resume) = &input.audit_resume {
+        super::conversation_goals::resume_audit_in_transaction(&mut transaction, resume).await?;
+    }
     transaction.commit().await?;
     super::agent_runs::get_agent_run(pool, &transition.run_id)
         .await?
@@ -326,9 +387,222 @@ mod tests {
         });
         RecordGoalAuditTransitionInput {
             descriptor,
+            audit_claim: None,
+            audit_resume: None,
             transition,
             usage: AgentRunUsageInput::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn queued_run_and_goal_claim_commit_together_and_replay_once() {
+        use crate::db::conversation_goals::{self, ActivateConversationGoalInput};
+        let temp = tempfile::tempdir().unwrap();
+        let pool = crate::db::create_pool(&temp.path().join("atomic-claim.db"))
+            .await
+            .unwrap();
+        let parent = create_conversation(
+            &pool,
+            CreateConversationInput {
+                title: None,
+                scope_mode: "Chat".into(),
+                task_id: None,
+                group_id: None,
+                project_id: None,
+                provider_id: None,
+                model_id: None,
+                reasoning_effort: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+        conversation_goals::activate_goal(
+            &pool,
+            ActivateConversationGoalInput {
+                conversation_id: parent.clone(),
+                goal_id: "goal".into(),
+                objective: "Finish".into(),
+                success_criteria: vec![],
+                provider_id: None,
+                model_id: None,
+                reasoning_effort: None,
+                replace_goal_id: None,
+                replace_revision: None,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES ('message', ?, 'turn', 'assistant', 'Done', '2026-01-01')")
+            .bind(&parent).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES ('message-2', ?, 'turn-2', 'assistant', 'Done', '2026-01-01')")
+            .bind(&parent).execute(&pool).await.unwrap();
+        let mut premature = input(transition(
+            "premature",
+            &parent,
+            0,
+            None,
+            AgentRunStatus::Queued,
+        ));
+        premature.audit_claim = Some(ClaimConversationGoalAuditInput {
+            audit_id: "premature-audit".into(),
+            conversation_id: parent.clone(),
+            goal_id: "goal".into(),
+            expected_revision: 1,
+            executor_turn_id: "turn".into(),
+            run_id: "premature".into(),
+        });
+        assert!(record_goal_audit_transition(&pool, premature)
+            .await
+            .is_err());
+        assert!(crate::db::agent_runs::get_agent_run(&pool, "premature")
+            .await
+            .unwrap()
+            .is_none());
+        conversation_goals::update_goal(
+            &pool,
+            conversation_goals::UpdateConversationGoalInput {
+                conversation_id: parent.clone(),
+                goal_id: "goal".into(),
+                expected_revision: 1,
+                objective: "Finish".into(),
+                success_criteria: vec![],
+                status: conversation_goals::GoalStatus::AuditPending,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut first = input(transition(
+            "run-1",
+            &parent,
+            0,
+            None,
+            AgentRunStatus::Queued,
+        ));
+        first.audit_claim = Some(ClaimConversationGoalAuditInput {
+            audit_id: "audit".into(),
+            conversation_id: parent.clone(),
+            goal_id: "goal".into(),
+            expected_revision: 2,
+            executor_turn_id: "turn".into(),
+            run_id: "run-1".into(),
+        });
+        record_goal_audit_transition(&pool, first.clone())
+            .await
+            .unwrap();
+        let goal = conversation_goals::get_current_goal(&pool, &parent)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(goal.revision, 2);
+        assert_eq!(goal.status, conversation_goals::GoalStatus::Auditing);
+        // A lost IPC response retries the identical payload without adding a second claim.
+        record_goal_audit_transition(&pool, first.clone())
+            .await
+            .unwrap();
+        let links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM conversation_goal_audit_runs WHERE audit_id = 'audit'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(links, 1);
+        let mut conflicting = first.clone();
+        conflicting.audit_claim.as_mut().unwrap().executor_turn_id = "other".into();
+        assert!(record_goal_audit_transition(&pool, conflicting)
+            .await
+            .is_err());
+
+        // A competing turn at the same revision fails after run insertion, and the queued transaction rolls back.
+        let mut duplicate = input(transition(
+            "run-2",
+            &parent,
+            0,
+            None,
+            AgentRunStatus::Queued,
+        ));
+        duplicate.audit_claim = Some(ClaimConversationGoalAuditInput {
+            audit_id: "other-audit".into(),
+            conversation_id: parent.clone(),
+            goal_id: "goal".into(),
+            expected_revision: 2,
+            executor_turn_id: "turn-2".into(),
+            run_id: "run-2".into(),
+        });
+        assert!(record_goal_audit_transition(&pool, duplicate)
+            .await
+            .is_err());
+        assert!(crate::db::agent_runs::get_agent_run(&pool, "run-2")
+            .await
+            .unwrap()
+            .is_none());
+        let transitions: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_run_transitions WHERE run_id = 'run-2'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(transitions, 0);
+        let audits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversation_goal_audits")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(audits, 1);
+
+        conversation_goals::reconcile_audits_after_restart(&pool)
+            .await
+            .unwrap();
+        let goal = conversation_goals::get_current_goal(&pool, &parent)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(goal.status, conversation_goals::GoalStatus::Paused);
+        let mut resumed = input(transition(
+            "run-3",
+            &parent,
+            0,
+            None,
+            AgentRunStatus::Queued,
+        ));
+        resumed.audit_resume = Some(ResumeConversationGoalAuditInput {
+            audit_id: "audit".into(),
+            expected_run_id: "run-1".into(),
+            new_run_id: "run-3".into(),
+        });
+        record_goal_audit_transition(&pool, resumed.clone())
+            .await
+            .unwrap();
+        record_goal_audit_transition(&pool, resumed).await.unwrap();
+        let goal = conversation_goals::get_current_goal(&pool, &parent)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (goal.revision, goal.status),
+            (2, conversation_goals::GoalStatus::Auditing)
+        );
+        let links: Vec<String> = sqlx::query_scalar("SELECT run_id FROM conversation_goal_audit_runs WHERE audit_id = 'audit' ORDER BY attempt")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(links, ["run-1", "run-3"]);
+        let mut wrong_resume = input(transition(
+            "run-4",
+            &parent,
+            0,
+            None,
+            AgentRunStatus::Queued,
+        ));
+        wrong_resume.audit_resume = Some(ResumeConversationGoalAuditInput {
+            audit_id: "audit".into(),
+            expected_run_id: "run-1".into(),
+            new_run_id: "run-4".into(),
+        });
+        assert!(record_goal_audit_transition(&pool, wrong_resume)
+            .await
+            .is_err());
+        assert!(crate::db::agent_runs::get_agent_run(&pool, "run-4")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -478,6 +752,13 @@ mod tests {
         let mut conflict = queued;
         conflict.transition.occurred_at += 1;
         assert!(record_goal_audit_transition(&pool, conflict).await.is_err());
+        let audit_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM conversation_goal_audit_runs WHERE run_id = 'audit-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_links, 0);
         record_goal_audit_transition(&pool, running).await.unwrap();
         let linked = crate::db::agent_runs::link_goal_audit_child_conversation(
             &pool, "audit-1", &parent, &child,

@@ -1414,10 +1414,12 @@ describe("tauriIpc persistent MCP runtime", () => {
       answers: [{ id: "prompt-1", action: "decline" as const, content: null }],
     };
     await tauriIpc.mcpRuntimeRespondToInteraction("lease-1", response);
+    await tauriIpc.mcpRuntimeListPendingInteractions("lease-1");
     await tauriIpc.mcpRuntimeCloseInteractionPort("lease-1");
     expect(invokeCalls).toEqual([
       { command: "mcp_runtime_open_interaction_port", payload: { channel } },
       { command: "mcp_runtime_respond_to_interaction", payload: { leaseId: "lease-1", response } },
+      { command: "mcp_runtime_list_pending_interactions", payload: { leaseId: "lease-1" } },
       { command: "mcp_runtime_close_interaction_port", payload: { leaseId: "lease-1" } },
     ]);
   });

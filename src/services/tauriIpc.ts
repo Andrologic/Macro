@@ -43,6 +43,19 @@ export {
   linkGoalAuditChildConversation,
   executeGoalAuditorRead,
 } from "./ipc/goalAudit";
+export type {
+  ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
+  ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,
+  DeactivateConversationGoalInput,
+  GoalCasOutcome, GoalAuditStatus, GoalStatus, GoalVerdict,
+  ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
+} from "../types/generated/ipc";
+export {
+  getCurrentConversationGoal, activateConversationGoal, updateConversationGoal, deactivateConversationGoal,
+  getConversationGoalAudit,
+  listRecoverableConversationGoalAudits,
+  applyConversationGoalVerdict, createNativeGoalAuditVerdictPort,
+} from "./ipc/conversationGoals";
 
 export type {
   DbProviderConfig,
@@ -507,6 +520,7 @@ export {
   mcpRuntimeCancelOperation,
   mcpRuntimeOpenInteractionPort,
   mcpRuntimeCloseInteractionPort,
+  mcpRuntimeListPendingInteractions,
   mcpRuntimeRespondToInteraction,
 } from "./ipc/mcp";
 

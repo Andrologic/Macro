@@ -2,4 +2,8 @@
 import type { McpElicitationPrompt } from "./McpElicitationPrompt";
 import type { McpRuntimeKey } from "./McpRuntimeKey";
 
-export type McpInteractionRequest = { requestId: string, key: McpRuntimeKey, operationId: string, prompts: Array<McpElicitationPrompt>, };
+export type McpInteractionRequest = { requestId: string, key: McpRuntimeKey, operationId: string,
+/**
+ * Absolute deadline for the ephemeral UI queue; Rust remains authoritative.
+ */
+expiresAtMs: number, prompts: Array<McpElicitationPrompt>, };
