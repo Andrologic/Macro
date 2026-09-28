@@ -17,6 +17,7 @@ import {
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import { createDeferred } from '../test-utils/deferred';
+import { allowChatToolInvocationJournal } from '../test-utils/chatToolInvocationJournal';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
@@ -882,7 +883,17 @@ const sendChatNonStreamingMock = mock((async (
     sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
   return implementation(...args);
 }) as SendChatNonStreaming);
-const streamChatMock = mock(async () => ({ usage: null }));
+let syntheticToolCallId = 0;
+const streamChatMock = mock(async (options: {
+  onToolCall?: (name: string, args: Record<string, unknown>, id?: string) => Promise<unknown>;
+}) => {
+  if (options.onToolCall) {
+    const onToolCall = options.onToolCall;
+    options.onToolCall = (name, args, id) =>
+      onToolCall(name, args, id ?? `store-test-tool-call-${++syntheticToolCallId}`);
+  }
+  return { usage: null };
+});
 const executeWorkspaceToolMock = mock(async () => undefined);
 const estimateChatCompletionSerializedPayloadTokensMock = mock(
   (params: { messages: unknown[] }) =>
@@ -1529,6 +1540,12 @@ useTaskStoreMock.subscribe = (
 
 const registerUseChatStoreMocks = async () => {
   mock.restore();
+
+  // The store scenarios exercise tool policy and execution. Dispatch and
+  // SQLite reservation failures have focused tests in chatToolDispatch.test.ts.
+  mock.module('../services/chatToolInvocationJournal', () => ({
+    chatToolInvocationJournal: allowChatToolInvocationJournal,
+  }));
 
   // Scoped configuration has focused tests of its own. Keep this broad chat
   // suite on its existing preference harness so native-only tests do not need
