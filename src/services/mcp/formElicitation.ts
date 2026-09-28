@@ -123,7 +123,9 @@ function parseField(name: string, value: unknown, required: boolean): FormField 
 
 // Fail closed on fields that appear to solicit credentials. No raw request or
 // response is logged or persisted; Rust still validates every accepted value.
-const SECRET_HINT = /(?:password|passphrase|secret|credential|api[\s_-]*key|private[\s_-]*key|access[\s_-]*token|auth[\s_-]*token|mot de passe|clé[\s_-]*api|clé[\s_-]*privée|jeton d'accès|passwort|contraseña|パスワード|비밀번호)/i;
+// Free-text fields remain available for ordinary names and descriptions. A
+// declared credential or verification challenge is never rendered or accepted.
+const SECRET_HINT = /(?:password|passphrase|passcode|secret|credential|api[\s_-]*key|private[\s_-]*key|access[\s_-]*token|auth[\s_-]*token|bearer[\s_-]*token|recovery[\s_-]*code|verification[\s_-]*code|security[\s_-]*code|one[\s_-]*time[\s_-]*(?:code|passcode|password)|\b(?:pin|otp|totp|mfa|2fa|cvv|cvc)\b|mot de passe|code [àa] usage unique|code de v[ée]rification|code secret|clé[\s_-]*api|clé[\s_-]*privée|jeton d'accès|passwort|einmalcode|bestätigungscode|contraseña|código de un solo uso|código de verificación|パスワード|ワンタイム|認証コード|비밀번호|일회용|인증 코드)/i;
 
 export function parseFormPrompt(prompt: McpElicitationPrompt): FormPrompt | null {
   const request = prompt.request;
@@ -163,6 +165,19 @@ export function parseFormPrompt(prompt: McpElicitationPrompt): FormPrompt | null
   };
 }
 
+function validAsciiEmail(value: string): boolean {
+  const at = value.indexOf('@');
+  if (at < 0) return false;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (!local || local.length > 64 || local.startsWith('.') || local.endsWith('.') ||
+      local.includes('..') || !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local) ||
+      domain.length > 253) return false;
+  const labels = domain.split('.');
+  return labels.length >= 2 && labels.every((label) => label.length > 0 && label.length <= 63 &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label));
+}
+
 function checkValue(field: FormField, value: unknown): FormError | null {
   if (field.kind === 'string') {
     if (typeof value !== 'string') return 'invalid';
@@ -170,7 +185,7 @@ function checkValue(field: FormField, value: unknown): FormError | null {
     if (field.minLength !== undefined && length < field.minLength) return 'minimum';
     if (field.maxLength !== undefined && length > field.maxLength) return 'maximum';
     if (field.choices && !field.choices.some((choice) => choice.value === value)) return 'choice';
-    if (field.format === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return 'invalid';
+    if (field.format === 'email' && !validAsciiEmail(value)) return 'invalid';
     if (field.format === 'uri') {
       try { new URL(value); } catch { return 'invalid'; }
     }

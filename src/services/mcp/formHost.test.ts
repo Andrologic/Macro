@@ -81,12 +81,41 @@ describe('global MCP form host', () => {
     expect(close).toHaveBeenCalledWith('lease-2');
   });
 
+  it('ignores a request delivered by an old port callback after remount', async () => {
+    let resolveFirst: ((leaseId: string) => void) | undefined;
+    const firstOpen = new Promise<string>((resolve) => { resolveFirst = resolve; });
+    const callbacks: Array<(request: McpInteractionRequest) => void> = [];
+    const port: FormHostPort = {
+      open: async (callback) => {
+        callbacks.push(callback);
+        return callbacks.length === 1 ? firstOpen : 'lease-2';
+      },
+      close: async () => undefined,
+      pending: async () => [],
+      respond: async () => undefined,
+    };
+    const host = new McpFormHost(port);
+    const releaseFirst = host.mount();
+    releaseFirst();
+    await tick();
+    const releaseSecond = host.mount();
+    callbacks[0]?.(request('alpha', 'stale-before-open'));
+    resolveFirst?.('lease-1');
+    await tick();
+    callbacks[0]?.(request('alpha', 'stale-after-open'));
+    callbacks[1]?.(request('beta', 'current'));
+    expect(host.snapshot().queue.map((item) => item.request.requestId)).toEqual(['current']);
+    releaseSecond();
+    await tick();
+  });
+
   it('waits for a previous lease to close before reopening after remount', async () => {
     let finishClose: (() => void) | undefined;
     const closePending = new Promise<void>((resolve) => { finishClose = resolve; });
     let opens = 0;
+    const callbacks: Array<(request: McpInteractionRequest) => void> = [];
     const port: FormHostPort = {
-      open: async () => `lease-${++opens}`,
+      open: async (callback) => { callbacks.push(callback); return `lease-${++opens}`; },
       close: async (leaseId) => { if (leaseId === 'lease-1') await closePending; },
       pending: async () => [],
       respond: async () => undefined,
@@ -99,6 +128,8 @@ describe('global MCP form host', () => {
     const releaseSecond = host.mount();
     expect(host.snapshot().status).toBe('opening');
     expect(opens).toBe(1);
+    callbacks[0]?.(request('alpha', 'stale-during-close'));
+    expect(host.snapshot().queue).toEqual([]);
     finishClose?.();
     await tick();
     expect(opens).toBe(2);

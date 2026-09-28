@@ -46,12 +46,16 @@ describe('MCP form presentation contract', () => {
     expect(result.errors).toEqual({
       name: 'minimum', role: 'choice', tags: 'duplicate', age: 'minimum', contact: 'invalid',
     });
+    expect(validateFormDraft(form, { name: 'Ada', role: 'reader', tags: ['a', 'b'],
+      contact: 'user@-example.com' }).errors.contact).toBe('invalid');
   });
 
   it('fails closed for unsupported schema and flags credential requests without rendering fields', () => {
     expect(parseFormPrompt(prompt({ type: 'object', properties: { nested: { type: 'object' } } }))).toBeNull();
     expect(parseFormPrompt(prompt({ type: 'object', properties: { key: { type: 'string', pattern: '.+' } } }))).toBeNull();
     expect(parseFormPrompt(prompt({ type: 'object', properties: { api_key: { type: 'string' } } }))?.blockedForSecrets).toBe(true);
+    expect(parseFormPrompt(prompt({ type: 'object', properties: { pin: { type: 'string', title: 'PIN' } } }, 'Enter the one-time code'))?.blockedForSecrets).toBe(true);
+    expect(parseFormPrompt(prompt({ type: 'object', properties: { otp: { type: 'integer' } } }, 'Verification code'))?.blockedForSecrets).toBe(true);
     expect(parseFormPrompt(prompt({ type: 'object', properties: {} }, 'Enter your password'))?.blockedForSecrets).toBe(true);
   });
 });

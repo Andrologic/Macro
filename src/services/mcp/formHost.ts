@@ -106,7 +106,9 @@ export class McpFormHost {
     this.active = true;
     const generation = ++this.generation;
     this.update({ status: 'opening', issue: null });
-    const open = this.port.open((request) => this.receive(request))
+    const open = this.port.open((request) => {
+      if (this.active && this.generation === generation) this.receive(request);
+    })
       .then(async (leaseId) => {
         if (!this.active || this.generation !== generation) {
           await this.port.close(leaseId).catch(() => undefined);
