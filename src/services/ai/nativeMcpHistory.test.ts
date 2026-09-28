@@ -105,6 +105,7 @@ test('native requests expose discovery tools and reject direct hidden MCP calls'
 test('native cancellation from a live context observer emits no later provider update', async () => {
   scenario = 'completed'; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
   const live: LiveStreamContextSnapshot[] = [];
+  let lateSnapshots = 0;
   const options: StreamingChatOptions = {
     providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
     messages: [], signal: controller.signal, allowedToolIds: ['mcp__fixture__read'],
@@ -112,16 +113,18 @@ test('native cancellation from a live context observer emits no later provider u
     onToken() {}, onComplete() {}, onError(error) { throw error; },
     onToolCall: async () => 'confirmed',
     onLiveContextUpdate: context => {
+      if (controller.signal.aborted) lateSnapshots += 1;
       live.push(context);
-      if (context.hiddenContext?.includes('turn-1-call-0')) controller.abort();
+      if (ids(context.providerInputItems ?? [], 'function_call_output').includes('turn-1-call-0')) controller.abort();
     },
   };
   const accumulator = createStreamAccumulator(options);
   const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
-  await runToolCallingLoop(options, adapter, accumulator);
+  const result = await runToolCallingLoop(options, adapter, accumulator);
   expect(submissions.map(item => item.toolCallId)).toEqual(['turn-1-call-0']);
   expect(live.some(snapshot => snapshot.hiddenContext?.includes('turn-1-call-0'))).toBe(true);
-  expect(live.every(snapshot => ids(snapshot.providerInputItems ?? [], 'function_call_output').length === 0)).toBe(true);
+  expect(ids(result.providerInputItems ?? [], 'function_call_output')).toEqual(['turn-1-call-0']);
+  expect(lateSnapshots).toBe(0);
 });
 
 for (const mode of scenarios) {

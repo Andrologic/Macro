@@ -15,7 +15,7 @@ import type { ProviderTurnState, ToolTrace } from '../../types';
 export { emptyStreamCompletionResult } from './streamCompletionResult';
 
 export const createStreamAccumulator = (
-  options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate'>
+  options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate' | 'signal'>
 ) => {
   let visibleContent = '';
   const toolTraces = new Map<string, ToolTrace>();
@@ -53,12 +53,13 @@ export const createStreamAccumulator = (
   });
 
   const publishLiveContext = () => {
-    if (!options.onLiveContextUpdate) return;
+    if (options.signal?.aborted || !options.onLiveContextUpdate) return;
     liveContextVersion += 1;
     options.onLiveContextUpdate(snapshotLiveContext());
   };
 
   const publishToolTraces = () => {
+    if (options.signal?.aborted) return;
     options.onToolTracesUpdate?.(snapshotToolTraces());
     publishLiveContext();
   };
@@ -187,6 +188,22 @@ export const createStreamAccumulator = (
         liveOnlyHiddenContextBlocks.push(block);
         publishLiveContext();
       }
+    },
+    addConfirmedNativeToolResult(
+      toolCallId: string,
+      toolName: string,
+      detail: string | undefined,
+      result: string,
+      hiddenContext: string | undefined,
+      context: { providerInputItems?: unknown[] | null; providerTurnState?: ProviderTurnState },
+    ) {
+      const block = buildToolContextBlock(toolCallId, toolName, detail, result);
+      if (block) liveOnlyHiddenContextBlocks.push(block);
+      const normalized = hiddenContext?.trim();
+      if (normalized) hiddenContextBlocks.push(normalized);
+      providerInputItems = cloneProviderInputItems(context.providerInputItems);
+      providerTurnState = context.providerTurnState;
+      publishLiveContext();
     },
     addHiddenContextBlock(block: string | undefined) {
       const normalized = block?.trim();

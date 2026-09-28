@@ -308,6 +308,7 @@ describe('shared tool batch', () => {
     const late: string[] = [];
     const acc = createStreamAccumulator({
       onToken: () => undefined,
+      signal: controller.signal,
       onToolTracesUpdate: () => { if (controller.signal.aborted) late.push('traces'); },
       onLiveContextUpdate: () => { if (controller.signal.aborted) late.push('context'); },
     });
@@ -322,5 +323,38 @@ describe('shared tool batch', () => {
     releases.forEach((release, index) => release(String(index)));
     await Promise.resolve();
     expect(late).toEqual([]);
+  });
+
+  it('does not notify observers after a sequential handler cancels', async () => {
+    const controller = new AbortController();
+    const late: string[] = [];
+    const acc = createStreamAccumulator({
+      onToken: () => undefined,
+      signal: controller.signal,
+      onToolTracesUpdate: () => { if (controller.signal.aborted) late.push('traces'); },
+      onLiveContextUpdate: () => { if (controller.signal.aborted) late.push('context'); },
+    });
+    await expect(run([call('write')], {
+      ...options(() => { controller.abort(); return 'late'; }),
+      signal: controller.signal,
+    }, acc)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(late).toEqual([]);
+  });
+
+  it('does not notify live context after a trace observer cancels', async () => {
+    const controller = new AbortController();
+    const live = mock(() => undefined);
+    const acc = createStreamAccumulator({
+      onToken: () => undefined,
+      signal: controller.signal,
+      onToolTracesUpdate: () => controller.abort(),
+      onLiveContextUpdate: live,
+    });
+    const handler = mock(() => 'never started');
+    await expect(run([call('read', 'one'), call('grep', 'two')], {
+      ...options(handler), signal: controller.signal,
+    }, acc)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(live).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
   });
 });
