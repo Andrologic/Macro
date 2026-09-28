@@ -204,6 +204,28 @@ mod tests {
             agent_runs::link_goal_audit_child_conversation(&pool, &run_id, &parent_id, &child_id)
                 .await
                 .expect("link child");
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query("INSERT INTO conversation_goals (goal_id, conversation_id, revision, objective, success_criteria_json, status, created_at, updated_at) VALUES ('goal-1', ?, 1, 'Verify the goal', '[\"evidence\"]', 'auditing', ?, ?)")
+                .bind(&parent_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .expect("current auditing goal");
+            sqlx::query("INSERT INTO conversation_goal_audits (audit_id, conversation_id, goal_id, goal_revision, executor_turn_id, current_run_id, status, created_at, updated_at) VALUES ('audit-1', ?, 'goal-1', 1, 'turn-1', ?, 'running', ?, ?)")
+                .bind(&parent_id)
+                .bind(&run_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .expect("active audit");
+            sqlx::query("INSERT INTO conversation_goal_audit_runs (audit_id, run_id, attempt, linked_at) VALUES ('audit-1', ?, 1, ?)")
+                .bind(&run_id)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .expect("linked audit run");
             Self {
                 _temp: temp,
                 pool,
@@ -456,5 +478,83 @@ mod tests {
         let active_input = unavailable.input("read", json!({"path": "proof.txt"}));
         unavailable.pool.close().await;
         assert!(unavailable.execute(active_input).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_a_run_without_its_audit_link() {
+        let fixture = Fixture::new().await;
+        sqlx::query("DELETE FROM conversation_goal_audit_runs WHERE run_id = ?")
+            .bind(&fixture.run_id)
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        assert!(fixture
+            .execute(fixture.input("read", json!({"path": "proof.txt"})))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_a_historical_run_even_while_it_is_running() {
+        let fixture = Fixture::new().await;
+        agent_runs::create_agent_run(
+            &fixture.pool,
+            CreateAgentRunInput {
+                id: Some("replacement-run".into()),
+                parent_conversation_id: fixture.parent_id.clone(),
+                child_conversation_id: None,
+                agent_profile: "goal_auditor".into(),
+                depth: 1,
+                prompt: "Retry the audit".into(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .expect("replacement run");
+        sqlx::query("UPDATE conversation_goal_audits SET current_run_id = 'replacement-run' WHERE audit_id = 'audit-1'")
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO conversation_goal_audit_runs (audit_id, run_id, attempt, linked_at) VALUES ('audit-1', 'replacement-run', 2, ?)")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        assert!(fixture
+            .execute(fixture.input("read", json!({"path": "proof.txt"})))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_interrupted_or_missing_active_audit() {
+        let fixture = Fixture::new().await;
+        let input = fixture.input("read", json!({"path": "proof.txt"}));
+        sqlx::query(
+            "UPDATE conversation_goal_audits SET status = 'interrupted' WHERE audit_id = 'audit-1'",
+        )
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        assert!(fixture.execute(input.clone()).await.is_err());
+        sqlx::query("DELETE FROM conversation_goal_audits WHERE audit_id = 'audit-1'")
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        assert!(fixture.execute(input).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_a_changed_or_inactive_goal_revision() {
+        let fixture = Fixture::new().await;
+        let input = fixture.input("read", json!({"path": "proof.txt"}));
+        for change in [
+            "UPDATE conversation_goals SET revision = 2 WHERE goal_id = 'goal-1'",
+            "UPDATE conversation_goals SET revision = 1, status = 'paused' WHERE goal_id = 'goal-1'",
+            "UPDATE conversation_goals SET status = 'auditing', is_current = 0 WHERE goal_id = 'goal-1'",
+        ] {
+            sqlx::query(change).execute(&fixture.pool).await.unwrap();
+            assert!(fixture.execute(input.clone()).await.is_err(), "{change}");
+        }
     }
 }
