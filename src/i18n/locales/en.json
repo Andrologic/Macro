@@ -485,6 +485,7 @@
     "maximize": "Maximize"
   },
   "chat": {
+    "conversationSourcesUsed": "{{count}} cited conversation sources",
     "imageImportContextChanged": "Conversation changed. Images were not added; select them again.",
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",
     "newChat": "New Chat",
@@ -661,6 +662,11 @@
     "messageComposer": "Message composer",
     "debugSession": "Debug Session",
     "contextToolbox": {
+      "conversationSources": "Conversation sources",
+      "conversationSourcesHint": "Choose up to three conversations in this project. Relevant passages are selected and cited when you send.",
+      "searchConversations": "Find a conversation",
+      "removeConversationSource": "Remove conversation source",
+      "selectConversationFirst": "Open a conversation to add a source.",
       "importBusy": "An attachment import is already in progress. Try again when it finishes.",
       "importContextChanged": "Conversation changed. No files were added; select them again.",
       "persistenceFailed": "Saved: {{saved}}. Could not save {{file}}; remaining files were not added.",

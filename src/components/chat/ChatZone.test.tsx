@@ -2773,6 +2773,25 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('[file: src/App.tsx]');
   });
 
+  it('shows the frozen cited conversation excerpts on a sent user message', async () => {
+    chatState = {
+      ...chatState,
+      messages: [buildMessage({
+        id: 'msg-cited', role: 'user', content: 'What did we decide?',
+        context_refs: [{
+          id: 'source-conv', conversationId: 'source-conv', kind: 'conversation',
+          title: 'Earlier discussion', sourceUpdatedAt: '2026-09-28T12:00:00Z',
+          snippet: '[message_id=source-msg; role=user; at=2026-09-28T11:00:00Z]\nReview every release.',
+        }],
+      })],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const details = requireContainer().querySelector('details');
+    expect(details?.textContent).toContain('Earlier discussion');
+    expect(details?.textContent).toContain('message_id=source-msg');
+    expect(details?.textContent).toContain('Review every release.');
+  });
+
   it('moves message editing into the composer and saves bracket text', async () => {
     chatState = {
       ...chatState,

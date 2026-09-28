@@ -1137,6 +1137,9 @@ const dbDeleteAppSettingMock = mock(async (key: string) =>
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
+const getConversationMock = mock(async (id: string) =>
+  chatSnapshotConversations.find((conversation) => conversation.id === id) ?? null
+);
 const dbGetArchitectPlanConversationSyncMock = mock(
   async (conversationId: string) =>
     architectPlanConversationSyncRecords.get(conversationId) ?? null
@@ -1894,6 +1897,7 @@ const registerUseChatStoreMocks = async () => {
     getChatSnapshot: getChatSnapshotMock,
     importMessages: importMessagesMock,
     listMessages: listMessagesMock,
+    getConversation: getConversationMock,
     dbGetArchitectPlanConversationSync: dbGetArchitectPlanConversationSyncMock,
     dbGetArchitectPlanConversationSyncForPlan:
       dbGetArchitectPlanConversationSyncForPlanMock,

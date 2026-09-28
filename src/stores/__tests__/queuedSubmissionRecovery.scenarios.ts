@@ -23,6 +23,54 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
   };
 
   describe('queued submission recovery through the real send contract', () => {
+    it('uses the submitted conversation references for steering even if the composer has changed', async () => {
+      c.chatSnapshotConversations = [
+        c.createChatSnapshotConversation('queued-conv'),
+        c.createChatSnapshotConversation('source-conv'),
+      ];
+      c.chatSnapshotMessages = [{
+        id: 'source-message', conversation_id: 'source-conv', role: 'user',
+        content: 'The deployment decision requires review.', created_at: '2026-09-28T10:00:00Z',
+      }];
+      const store = await prepare();
+      store.setState({ composerContextRefs: [{ id: 'foreign', kind: 'file', title: 'Foreign', path: 'foreign.txt' }] });
+      await store.getState().submitDuringActiveTurn({
+        conversationId: 'queued-conv', content: 'What was the deployment decision?',
+        composerContextRefs: [{ id: 'source-conv', kind: 'conversation', title: 'Prior work',
+          data: { conversationId: 'source-conv' } }],
+      }, 'steer');
+      const refs = c.createMessageMock.mock.calls.find(call => call[1] === 'user')?.[3]?.contextRefs;
+      expect(refs).toMatchObject([{ id: 'source-conv', conversationId: 'source-conv' }]);
+      expect(JSON.stringify(refs)).toContain('message_id=source-message');
+      expect(JSON.stringify(refs)).not.toContain('foreign');
+    });
+
+    it('selects conversation passages when a queued composer submission actually departs', async () => {
+      c.chatSnapshotConversations = [
+        c.createChatSnapshotConversation('queued-conv'),
+        c.createChatSnapshotConversation('source-conv'),
+      ];
+      c.chatSnapshotMessages = [{
+        id: 'source-message', conversation_id: 'source-conv', role: 'user',
+        content: 'Review every deployment.', created_at: '2026-09-28T10:00:00Z',
+      }];
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({
+        conversationId: 'queued-conv', content: 'What about deployment?',
+        composerContextRefs: [{ id: 'source-conv', kind: 'conversation', title: 'Prior work',
+          data: { conversationId: 'source-conv' } }],
+      }, 'queue');
+      expect(loadQueuedSubmissions()[0].input.contextRefs?.[0]).toMatchObject({
+        conversationId: 'source-conv',
+      });
+      expect(loadQueuedSubmissions()[0].input.contextRefs?.[0]?.snippet).toBeUndefined();
+      release(store);
+      await store.getState().retryQueuedSubmissions('queued-conv');
+      const refs = c.createMessageMock.mock.calls.find(call => call[1] === 'user')?.[3]?.contextRefs;
+      expect(JSON.stringify(refs)).toContain('message_id=source-message');
+      expect(loadQueuedSubmissions()).toEqual([]);
+    });
+
     it('retains a failed pre-persistence send across restart and retries once', async () => {
       const store = await prepare();
       await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Keep this message' }, 'queue');

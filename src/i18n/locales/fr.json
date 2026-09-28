@@ -484,6 +484,7 @@
     "maximize": "Maximiser"
   },
   "chat": {
+    "conversationSourcesUsed": "{{count}} conversations sources citées",
     "imageImportContextChanged": "La conversation a changé. Les images n’ont pas été ajoutées ; sélectionnez-les à nouveau.",
     "imageImportFailed": "Aucune image ajoutée. Utilisez des images PNG, JPEG, GIF ou WebP valides : 2 Mo par image, 8 Mo au total et 10 images maximum.",
     "newChat": "Nouvelle discussion",
@@ -660,6 +661,11 @@
     "messageComposer": "Zone de rédaction du message",
     "debugSession": "Session de débogage",
     "contextToolbox": {
+      "conversationSources": "Conversations sources",
+      "conversationSourcesHint": "Choisissez jusqu’à trois conversations de ce projet. Les passages pertinents seront sélectionnés et cités à l’envoi.",
+      "searchConversations": "Rechercher une conversation",
+      "removeConversationSource": "Retirer la conversation source",
+      "selectConversationFirst": "Ouvrez une conversation pour ajouter une source.",
       "importBusy": "Un import de pièces jointes est déjà en cours. Réessayez une fois terminé.",
       "importContextChanged": "La conversation a changé. Aucun fichier ajouté ; sélectionnez-les à nouveau.",
       "persistenceFailed": "Enregistrés : {{saved}}. Impossible d’enregistrer {{file}} ; les fichiers suivants n’ont pas été ajoutés.",

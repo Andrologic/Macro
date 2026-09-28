@@ -43,6 +43,35 @@ export const registerSendRuntimeAndDeletionScenarios = (
   } = context;
 
   describe('useChatStore send runtime and deletion', () => {
+    it('freezes cited conversation passages in the normal user message before streaming', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('target', { project_id: null, scope_mode: 'Chat' }),
+        createChatSnapshotConversation('source', { project_id: null, scope_mode: 'Chat' }),
+      ];
+      context.chatSnapshotMessages = [{
+        id: 'source-message', conversation_id: 'source', role: 'user',
+        content: 'The deployment decision requires review.',
+        created_at: '2026-09-28T10:00:00Z',
+      }];
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('target', ''), createConversation('source', '')],
+        selectedConversationId: 'target', selectedConversationIdsByMode: { Chat: 'target' },
+        composerContextRefs: [{
+          id: 'source', kind: 'conversation', title: 'Prior work', data: { conversationId: 'source' },
+        }],
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'target', content: 'What was the deployment decision?' });
+      const saved = createMessageMock.mock.calls.find((call) => call[1] === 'user');
+      expect(saved?.[3]?.contextRefs).toMatchObject([{
+        conversationId: 'source', sourceUpdatedAt: '2026-03-19T00:00:00.000Z',
+      }]);
+      expect(JSON.stringify(saved?.[3]?.contextRefs)).toContain('message_id=source-message');
+      expect(streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects sends without a selected provider or model before committing any message', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';

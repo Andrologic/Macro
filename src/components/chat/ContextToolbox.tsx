@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
+import { isConversationRuntimeActive } from '../../domains/chat/runtimeState';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
@@ -54,6 +55,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const { t, i18n } = useTranslation();
   const {
     selectedConversationId,
+    conversations = [],
+    conversationRuntimeById = {},
     createConversation,
     composerContextRefs,
     addComposerContextRef,
@@ -73,6 +76,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [urlError, setUrlError] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [sourceSearch, setSourceSearch] = useState('');
+  const [conversationSearch, setConversationSearch] = useState('');
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(() => new Set());
   const [failedFaviconUrls, setFailedFaviconUrls] = useState<Set<string>>(() => new Set());
@@ -89,6 +93,19 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       ? webSearchSettings.hasTavilySecret
       : webSearchSettings.hasBraveSecret;
   const effectiveConversationId = selectedConversationId ?? contextConversationId;
+  const targetConversation = conversations.find((conversation) => conversation.id === effectiveConversationId);
+  const selectedConversationSources = composerContextRefs.filter((ref) => ref.kind === 'conversation');
+  const availableConversationSources = useMemo(() => {
+    if (!targetConversation) return [];
+    const query = conversationSearch.trim().toLocaleLowerCase();
+    return conversations
+      .filter((conversation) => conversation.id !== targetConversation.id &&
+        conversation.project_id === targetConversation.project_id &&
+        !isConversationRuntimeActive(conversationRuntimeById[conversation.id]) &&
+        (!query || conversation.title.toLocaleLowerCase().includes(query)))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+      .slice(0, 6);
+  }, [conversations, conversationRuntimeById, conversationSearch, targetConversation]);
   const contextCitations = useMemo(
     () =>
       effectiveConversationId
@@ -479,6 +496,57 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
 
         {activeTab === 'context' && (
           <div className="space-y-4">
+            <section className="space-y-2">
+              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {t('chat.contextToolbox.conversationSources', 'Conversation sources')}
+              </h3>
+              <p className="text-[11px] text-muted-foreground">
+                {t('chat.contextToolbox.conversationSourcesHint', 'Choose up to three conversations in this project. Relevant passages are selected and cited when you send.')}
+              </p>
+              {targetConversation ? (
+                <>
+                  <Input
+                    value={conversationSearch}
+                    onChange={(event) => setConversationSearch(event.target.value)}
+                    placeholder={t('chat.contextToolbox.searchConversations', 'Find a conversation')}
+                    className="h-8"
+                  />
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {availableConversationSources.map((conversation) => {
+                      const selected = selectedConversationSources.some((ref) => ref.id === conversation.id);
+                      return (
+                        <button
+                          key={conversation.id}
+                          type="button"
+                          disabled={selected || selectedConversationSources.length >= 3}
+                          onClick={() => addComposerContextRef({
+                            id: conversation.id,
+                            kind: 'conversation',
+                            title: conversation.title,
+                            data: { conversationId: conversation.id },
+                          })}
+                          className="flex w-full items-center gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+                        >
+                          <Icon name={selected ? 'check' : 'message-square'} size={12} />
+                          <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {formatRelativeTimeShort(conversation.updated_at, Date.now(), locale)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedConversationSources.map((ref) => (
+                    <div key={ref.id} className="flex items-center gap-2 rounded-md bg-primary/5 px-2 py-1 text-xs">
+                      <span className="min-w-0 flex-1 truncate">{ref.title}</span>
+                      <button type="button" onClick={() => removeComposerContextRef(ref.id, 'conversation')}
+                        aria-label={t('chat.contextToolbox.removeConversationSource', 'Remove conversation source')}
+                        className="text-muted-foreground hover:text-foreground"><Icon name="x" size={12} /></button>
+                    </div>
+                  ))}
+                </>
+              ) : <p className="text-xs text-muted-foreground">{t('chat.contextToolbox.selectConversationFirst', 'Open a conversation to add a source.')}</p>}
+            </section>
             <section className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
