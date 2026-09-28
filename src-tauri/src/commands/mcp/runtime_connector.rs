@@ -1063,54 +1063,26 @@ impl McpSession for ModernRmcpSession {
                                 "No MCP interaction context is attached to this operation.",
                             )
                         })?;
-                        let object = raw_result.as_object().ok_or_else(|| {
-                            runtime_error(
-                                "MCP_INTERACTION_INVALID_REQUEST",
-                                "The MCP server returned an invalid interaction request.",
+                        let (request_state, prompts) = parse_form_input_required(&raw_result)?;
+                        let answers = if prompts.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                context
+                                    .broker
+                                    .request(
+                                        context.key,
+                                        context.operation_id,
+                                        prompts,
+                                        cancellation.clone(),
+                                    )
+                                    .await?,
                             )
-                        })?;
-                        let request_state = read_opaque_request_state(object.get("requestState"))?;
-                        let requests = object
-                            .get("inputRequests")
-                            .and_then(Value::as_object)
-                            .ok_or_else(|| {
-                                runtime_error(
-                                    "MCP_INTERACTION_INVALID_REQUEST",
-                                    "The MCP server returned no interaction prompts.",
-                                )
-                            })?;
-                        let prompts = requests
-                            .iter()
-                            .map(|(id, request)| {
-                                if request.get("method").and_then(Value::as_str)
-                                    != Some("elicitation/create")
-                                    || request
-                                        .pointer("/params/mode")
-                                        .is_some_and(|mode| mode.as_str() != Some("form"))
-                                    || request.pointer("/params/requestedSchema").is_none()
-                                {
-                                    return Err(runtime_error(
-                                        "MCP_INTERACTION_UNSUPPORTED",
-                                        "Only form elicitation is supported for this MCP call.",
-                                    ));
-                                }
-                                Ok(McpElicitationPrompt {
-                                    id: id.clone(),
-                                    request: request.clone(),
-                                })
+                        };
+                        if answers.as_ref().is_some_and(|answers| {
+                            answers.values().any(|answer| {
+                                answer.get("action").and_then(Value::as_str) == Some("cancel")
                             })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let answers = context
-                            .broker
-                            .request(
-                                context.key,
-                                context.operation_id,
-                                prompts,
-                                cancellation.clone(),
-                            )
-                            .await?;
-                        if answers.values().any(|answer| {
-                            answer.get("action").and_then(Value::as_str) == Some("cancel")
                         }) {
                             return Err(runtime_error(
                                 "MCP_RUNTIME_OPERATION_CANCELLED",
@@ -1400,6 +1372,56 @@ fn map_protocol_mode(mode: ConfigProtocolMode) -> McpProtocolMode {
     }
 }
 
+fn parse_form_input_required(
+    raw_result: &Value,
+) -> Result<(Option<String>, Vec<McpElicitationPrompt>), McpRuntimeError> {
+    let object = raw_result.as_object().ok_or_else(|| {
+        runtime_error(
+            "MCP_INTERACTION_INVALID_REQUEST",
+            "The MCP server returned an invalid interaction request.",
+        )
+    })?;
+    let request_state = read_opaque_request_state(object.get("requestState"))?;
+    let requests = match object.get("inputRequests") {
+        None => None,
+        Some(Value::Object(requests)) => Some(requests),
+        Some(_) => {
+            return Err(runtime_error(
+                "MCP_INTERACTION_INVALID_REQUEST",
+                "The MCP server returned malformed interaction prompts.",
+            ));
+        }
+    };
+    let prompts = requests
+        .into_iter()
+        .flat_map(|requests| requests.iter())
+        .map(|(id, request)| {
+            if request.get("method").and_then(Value::as_str) != Some("elicitation/create")
+                || request
+                    .pointer("/params/mode")
+                    .is_some_and(|mode| mode.as_str() != Some("form"))
+                || request.pointer("/params/requestedSchema").is_none()
+            {
+                return Err(runtime_error(
+                    "MCP_INTERACTION_UNSUPPORTED",
+                    "Only form elicitation is supported for this MCP call.",
+                ));
+            }
+            Ok(McpElicitationPrompt {
+                id: id.clone(),
+                request: request.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if prompts.is_empty() && request_state.is_none() {
+        return Err(runtime_error(
+            "MCP_INTERACTION_INVALID_REQUEST",
+            "The MCP server returned neither requestState nor interaction prompts.",
+        ));
+    }
+    Ok((request_state, prompts))
+}
+
 fn read_opaque_request_state(value: Option<&Value>) -> Result<Option<String>, McpRuntimeError> {
     match value {
         None => Ok(None),
@@ -1463,6 +1485,24 @@ fn add_page_budget(current: usize, tools: &[McpToolDto]) -> Result<usize, McpRun
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn state_only_round_needs_no_host_but_requires_opaque_state() {
+        let result =
+            serde_json::json!({ "resultType": "input_required", "requestState": " état " });
+        let (state, prompts) = super::parse_form_input_required(&result).unwrap();
+        assert_eq!(state.as_deref(), Some(" état "));
+        assert!(prompts.is_empty());
+        for result in [
+            serde_json::json!({ "resultType": "input_required" }),
+            serde_json::json!({ "resultType": "input_required", "inputRequests": {} }),
+        ] {
+            assert_eq!(
+                super::parse_form_input_required(&result).unwrap_err().code,
+                "MCP_INTERACTION_INVALID_REQUEST"
+            );
+        }
+    }
+
     #[test]
     fn opaque_request_state_is_exact_or_rejected() {
         let value = serde_json::json!(" opaque\nétat:α ");

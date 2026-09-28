@@ -738,10 +738,12 @@ Le chemin stdio moderne traite `input_required` lorsque toutes les demandes sont
 des formulaires `elicitation/create`. Il conserve `requestState` en mémoire dans
 le backend et le retransmet tel quel avec `inputResponses` au tour MCP suivant.
 Une valeur non chaîne ou dépassant 128 Kio est refusée sans journalisation ;
-aucun appel n'est relancé après une erreur de transport. Il s'arrête après quatre
-continuations. Aucun hôte de formulaire n'est encore connecté à ce port et
-la capacité d'élicitation n'est pas annoncée dans le handshake MCP. Les
-demandes URL, le chemin HTTP moderne et le chemin legacy restent fermés. En particulier,
+un tour contenant uniquement `requestState` se poursuit sans hôte UI et sans
+`inputResponses`. Aucun appel n'est relancé après une erreur de transport. Le
+runtime s'arrête après quatre continuations. Aucun hôte de formulaire n'est
+encore connecté à ce port et la capacité d'élicitation n'est pas annoncée
+dans le handshake MCP. Les demandes URL, le chemin HTTP moderne et le chemin
+legacy restent fermés. En particulier,
 les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
 raccorder demandera d'associer les requêtes serveur au bon appel et à sa durée
 de vie. Le point 21 reste donc incomplet.

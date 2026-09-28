@@ -319,14 +319,14 @@ impl RmcpModernStdioClient {
         tool_name: &str,
         arguments: Value,
         request_state: Option<String>,
-        input_responses: std::collections::BTreeMap<String, Value>,
+        input_responses: Option<std::collections::BTreeMap<String, Value>>,
         cancellation: Arc<McpOperationCancellation>,
     ) -> CommandResult<McpModernToolCallOutcome> {
         self.call_tool_round(
             tool_name,
             arguments,
             request_state,
-            Some(input_responses),
+            input_responses,
             cancellation,
         )
         .await
@@ -1079,6 +1079,28 @@ mod tests {
                 ))
                 .await
                 .unwrap();
+            let ClientJsonRpcMessage::Request(state_only) = server.receive().await.unwrap() else {
+                panic!("expected state-only continuation")
+            };
+            let ClientRequest::CallToolRequest(tool) = state_only.request else {
+                panic!("expected tools/call")
+            };
+            assert_eq!(tool.params.request_state.as_deref(), Some(" state only "));
+            assert!(tool.params.input_responses.is_none());
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::CallToolResult(
+                        serde_json::from_value(serde_json::json!({
+                            "resultType": "complete",
+                            "content": [{"type": "text", "text": "done"}],
+                            "isError": false
+                        }))
+                        .unwrap(),
+                    ),
+                    state_only.id,
+                ))
+                .await
+                .unwrap();
         });
         let client = RmcpModernStdioClient::connect_transport(&config(), client_io)
             .await
@@ -1092,12 +1114,23 @@ mod tests {
                 "tool",
                 serde_json::json!({"x":1}),
                 Some(" opaque\nstate:α ".into()),
-                answers,
+                Some(answers),
                 Arc::new(McpOperationCancellation::default()),
             )
             .await
             .unwrap();
         assert!(matches!(result, McpModernToolCallOutcome::Complete(_)));
+        let state_only = client
+            .continue_tool(
+                "tool",
+                serde_json::json!({"x":1}),
+                Some(" state only ".into()),
+                None,
+                Arc::new(McpOperationCancellation::default()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(state_only, McpModernToolCallOutcome::Complete(_)));
         server_task.await.unwrap();
         client.shutdown().await;
     }
