@@ -5,8 +5,48 @@ import { normalizeLegacyToolExecutionResult } from "./toolResultNormalization";
 import type { MCPTool } from '../types';
 import { allowedMcpTools, MCP_CALL_TOOL_ID, MCP_SEARCH_TOOL_ID, searchMcpTools, shouldDiscoverMcpTools } from './mcp/toolDiscovery';
 import { isMCPToolId } from './mcpToolNames';
+import type { CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult, ToolInvocation, ToolInvocationIdentity, ToolEffectClass } from '../types/generated/ipc';
+
+export interface ChatToolInvocationJournal {
+  /** The remote kernel has its own execution journal for supported mutations. */
+  isRemoteRuntime(): boolean;
+  record(input: RecordToolInvocationInput): Promise<RecordToolInvocationResult>;
+  complete(input: CompleteToolInvocationInput): Promise<ToolInvocation>;
+  markUnknown(identity: ToolInvocationIdentity): Promise<ToolInvocation>;
+}
+
+const READ_ONLY_TOOLS = new Set([
+  'read_sources', 'read_file', 'config_list', 'config_get', 'config_validate',
+  'skill_activate', 'skill_read_resource', 'task_artifact_get', 'task_artifact_list',
+  'task_todo_get', 'strategy_get', 'plan_get', 'plan_list', 'list', 'read',
+  'glob', 'grep', 'ast_grep', 'git_status', 'git_log', 'git_branch_list',
+  'git_diff', 'git_get_tree', 'terminal_read',
+]);
+const WORKSPACE_MUTATIONS = new Set([
+  'write', 'edit', 'delete', 'apply_patch', 'git_add', 'git_commit',
+  'git_checkout', 'git_merge', 'git_reset', 'git_stash',
+]);
+
+export function classifyChatToolEffect(name: string): ToolEffectClass {
+  if (isMCPToolId(name)) return 'external_effect';
+  if (READ_ONLY_TOOLS.has(name)) return 'read_only';
+  if (WORKSPACE_MUTATIONS.has(name)) return 'workspace_mutation';
+  return 'external_effect';
+}
+
+const isValidIdentityPart = (value: string | undefined): value is string =>
+  typeof value === 'string' && value.trim().length > 0 && value.length <= 512 &&
+  !Array.from(value).some(char => {
+    const code = char.codePointAt(0) ?? 0;
+    return code < 32 || (code >= 127 && code <= 159);
+  });
+
+const journalFailure = (message: string): ToolCallResolution => ({
+  kind: 'result', result: message, isError: true, errorKind: 'execution',
+});
 
 export interface ChatToolDispatchPorts {
+  journal: ChatToolInvocationJournal;
   execute(operation: FrozenToolCallContext, name: string, args: Record<string, unknown>, callId?: string, isCurrent?: () => boolean): Promise<ToolCallResolution | string | void>;
   preserve(operation: FrozenToolCallContext, name: string, callId: string | undefined, resolution: ToolCallResolution | string | void): Promise<ToolCallResolution | string | void>;
   boundError(operation: FrozenToolCallContext, name: string, callId: string | undefined, error: unknown): Promise<unknown>;
@@ -33,6 +73,66 @@ export function createChatToolDispatch(
     progress();
     let normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
+    const journalState: { localIntent: ToolInvocationIdentity | null } = { localIntent: null };
+    const markUnknown = async () => {
+      if (!journalState.localIntent) return;
+      try { await ports.journal.markUnknown(journalState.localIntent); } catch { /* Pending becomes unknown on restart. */ }
+    };
+    const executeJournaled = async (name: string, executionArgs: Record<string, unknown>) => {
+      const identity: ToolInvocationIdentity = {
+        conversationId: operation.conversationId,
+        turnId: operation.turnId,
+        messageId: operation.assistantMessageId,
+        callId: toolCallId ?? '',
+      };
+      if (Object.values(identity).some(value => !isValidIdentityPart(value))) {
+        return journalFailure('Tool execution refused because its invocation identity is missing or invalid.');
+      }
+      let canonicalArgs: Record<string, unknown>;
+      try {
+        canonicalArgs = JSON.parse(JSON.stringify(executionArgs)) as Record<string, unknown>;
+      } catch {
+        return journalFailure('Tool execution refused because its arguments are not valid JSON.');
+      }
+      // Remote mode has no SQLite conversation journal. Its workspace mutation
+      // transport owns the executionId, durable intent, and status recovery.
+      // Keep this path on its existing contract until a remote conversation
+      // journal can reserve the same executionId before dispatch.
+      if (ports.journal.isRemoteRuntime()) {
+        return ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
+      }
+      try {
+        const recorded = await ports.journal.record({
+          ...identity, toolName: name, effectClass: classifyChatToolEffect(name),
+          arguments: canonicalArgs as RecordToolInvocationInput['arguments'], remoteExecutionId: null,
+        });
+        if (!recorded.is_new) {
+          return journalFailure('Tool execution refused because this invocation was already recorded. Inspect its outcome before retrying.');
+        }
+        journalState.localIntent = identity;
+      } catch {
+        return journalFailure('Tool execution refused because its durable invocation journal is unavailable.');
+      }
+      if (!isCurrent()) {
+        await markUnknown();
+        return ABORTED;
+      }
+      let result: ToolCallResolution | string | void;
+      try {
+        result = await ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
+      } catch (error) {
+        await markUnknown();
+        throw error;
+      }
+      if (!isCurrent() || result === undefined ||
+        (typeof result === 'object' && result?.kind === 'result' && result.errorKind === 'aborted')) {
+        await markUnknown();
+        return result === undefined
+          ? journalFailure('Tool execution returned no confirmed result. Inspect its outcome before retrying.')
+          : ABORTED;
+      }
+      return result;
+    };
     try {
       if (discoveryEnabled && toolName === MCP_SEARCH_TOOL_ID) {
         const result = searchMcpTools(args.query, searchableTools);
@@ -47,12 +147,12 @@ export function createChatToolDispatch(
           resolution = { kind: 'result', result: 'Select a tool returned by mcp_search and provide an arguments object.', isError: true, errorKind: 'validation' };
         } else {
           normalizedName = target;
-          resolution = await ports.execute(operation, target, targetArgs as Record<string, unknown>, toolCallId, isCurrent);
+          resolution = await executeJournaled(target, targetArgs as Record<string, unknown>);
         }
       } else if (discoveryEnabled && isMCPToolId(toolName)) {
         resolution = { kind: 'result', result: 'Search for this MCP tool with mcp_search before calling it.', isError: true, errorKind: 'permission' };
       } else {
-        resolution = await ports.execute(operation, toolName, args, toolCallId, isCurrent);
+        resolution = await executeJournaled(normalizedName, args);
       }
     } catch (error) {
       if (!isCurrent()) return ABORTED;
@@ -61,12 +161,37 @@ export function createChatToolDispatch(
       throw bounded;
     }
     if (!isCurrent()) {
+      await markUnknown();
       // Preserve explicit denial without starting a new artifact write after Stop.
       return typeof resolution === "object" && resolution?.kind === "result" && resolution.errorKind === "permission"
         ? resolution : ABORTED;
     }
-    const preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
-    if (!isCurrent()) return ABORTED;
+    let preserved: ToolCallResolution | string | void;
+    try {
+      preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
+    } catch (error) {
+      await markUnknown();
+      if (!isCurrent()) return ABORTED;
+      throw await ports.boundError(operation, normalizedName, toolCallId, error);
+    }
+    if (!isCurrent()) {
+      await markUnknown();
+      return ABORTED;
+    }
+    if (journalState.localIntent) {
+      if (preserved === undefined) {
+        await markUnknown();
+        return journalFailure('Tool result could not be preserved. Inspect the outcome before retrying.');
+      }
+      try {
+        // Confirm the executor response after optional large-result preservation.
+        // Short results are not journaled; Copilot acceptance is separate.
+        await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
+      } catch {
+        await markUnknown();
+        return journalFailure('Tool result was preserved, but its durable completion could not be confirmed. Inspect the outcome before retrying.');
+      }
+    }
     return normalizeLegacyToolExecutionResult(normalizedName, preserved);
   };
 }
