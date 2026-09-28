@@ -1,4 +1,4 @@
-import { isMCPToolId } from '../../src/services/mcp/identifiers';
+import { isMCPToolId, isMcpDiscoveryToolId } from '../../src/services/mcp/identifiers';
 import {
   CopilotClient,
   defineTool,
@@ -1328,7 +1328,7 @@ const TOOL_HOST_GIT_READ_IDS = new Set([
 ]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
-  isMCPToolId(toolId) ||
+  isMCPToolId(toolId) || isMcpDiscoveryToolId(toolId) ||
   toolId === 'question' ||
   toolId === 'read_file' ||
   toolId === 'web_fetch' ||
@@ -1497,7 +1497,7 @@ const buildMacroTools = (
   }
 
   const mcpTools: Tool[] = [];
-  const allowedMcpIds = new Set((request.allowed_tool_ids ?? []).filter(isMCPToolId));
+  const allowedMcpIds = new Set((request.allowed_tool_ids ?? []).filter(id => isMCPToolId(id) || isMcpDiscoveryToolId(id)));
   const seen = new Set<string>();
   for (const tool of request.tools ?? []) {
     if (!isToolArgumentObject(tool) || tool.type !== 'function' || !isToolArgumentObject(tool.function)) continue;

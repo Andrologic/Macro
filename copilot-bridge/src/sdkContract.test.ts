@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import type { PermissionRequest, ToolInvocation } from '@github/copilot-sdk';
 import { MACRO_TOOL_REGISTRY, filterCopilotSupportedToolIds, requireMacroToolRegistryEntry, toFunctionToolShape } from '../../src/shared/macroToolRegistry';
 import { collectAllowedTools } from '../../src/services/ai/toolDefinitions';
+import { mcpDiscoveryToolShapes } from '../../src/services/mcp/toolDiscovery';
 import type { BridgeControlChannel } from './controlChannel';
 
 process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT = '1';
@@ -131,6 +132,20 @@ describe('installed Copilot SDK contract', () => {
       expect(await config.onPermissionRequest!({ kind: 'custom-tool', toolName } as PermissionRequest, { sessionId: 'session' }))
         .toEqual({ kind: [name, 'read_file'].includes(toolName) ? 'approved' : 'denied-no-approval-rule-and-could-not-request-from-user' });
     }
+  });
+
+  it('relays discovery tools while withholding the large catalog from the SDK session', async () => {
+    const requestTool = mock(async () => ({ result: 'found', interrupt: false }));
+    const hidden = 'mcp__fixture__hidden';
+    const config = __testables.buildSessionToolConfig({
+      model_id: 'model', messages: [],
+      allowed_tool_ids: ['mcp_search', 'mcp_call'],
+      tools: [...mcpDiscoveryToolShapes, { type: 'function', function: { name: hidden, description: 'Hidden', parameters: { type: 'object' } } }],
+    }, { controlChannel: { requestTool } as unknown as BridgeControlChannel });
+    expect(config.tools!.map(tool => tool.name)).toEqual(['mcp_search', 'mcp_call']);
+    const search = config.tools!.find(tool => tool.name === 'mcp_search')!;
+    await expect(search.handler({ query: 'docs' }, invocation('mcp_search'))).resolves.toBe('found');
+    expect(requestTool).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'mcp_search', args: { query: 'docs' } }));
   });
 
   it('dispatches every advertised SDK tool to a frontend, local source, or tool-host route', async () => {

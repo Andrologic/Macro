@@ -2,6 +2,7 @@ import type { StreamingChatOptions, StreamingTurnResult } from './contracts';
 import type { ReasoningEffort } from '../../types';
 import type { ToolCallingAdapter, StreamAccumulator } from './toolCallingLoop';
 import { streamNativeTurnViaTauri } from './nativeTurnTransport';
+import { modelAllowedToolIds } from '../mcp/toolDiscovery';
 import { classifyReasoningRejection } from './providerErrors';
 import type { ActiveStreamResources } from './streamResources';
 import type { ReasoningCompatibility } from './reasoningCompatibility';
@@ -47,7 +48,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             conversationId: options.conversationId,
             messages,
             tools,
-            allowedToolIds: recovering ? [] : options.allowedToolIds,
+            allowedToolIds: recovering ? [] : modelAllowedToolIds(options.allowedToolIds ?? [], options.mcpTools ?? []),
             workspacePath: options.workspacePath,
             defaultWorkspacePath: options.defaultWorkspacePath,
             projectMounts: options.projectMounts,

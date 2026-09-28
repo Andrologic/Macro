@@ -6,6 +6,7 @@ import type { StreamMessage, StreamingChatOptions, StreamingTurnResult, ToolCall
 import { createStreamAccumulator } from './streamAccumulator';
 import { cloneStreamMessage, cloneProviderInputItems } from './jsonValues';
 import { collectAllowedTools } from './toolDefinitions';
+import { modelAllowedToolIds, MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import { runToolBatch } from './toolCallRunner';
 import { getValidToolCalls } from './toolCallProtocol';
 import { INCOMPLETE_RECOVERY_PROMPT, isIncompleteCompletionReason, recoveredCompletionReason, shouldRetryMissingRequiredTool, stripContinuationOverlap } from './completionRecovery';
@@ -46,9 +47,10 @@ export async function runToolCallingLoop(
   adapter: ToolCallingAdapter,
   accumulator: StreamAccumulator,
 ) {
-  const allowedTools = new Set(options.allowedToolIds ?? []);
+  const originalAllowedTools = new Set(options.allowedToolIds ?? []);
+  const allowedTools = new Set(modelAllowedToolIds(options.allowedToolIds ?? [], options.mcpTools ?? []));
   const tools = collectAllowedTools({
-    allowedTools,
+    allowedTools: originalAllowedTools,
     enableWebSearch: options.enableWebSearch ?? true,
     enableWebFetch: options.enableWebFetch ?? true,
     webSearchOptions: options.webSearchOptions,
@@ -60,6 +62,9 @@ export async function runToolCallingLoop(
   for (const name of allowedTools) {
     const entry = getMacroToolRegistryEntry(name);
     if (entry) schemas.set(name, entry.parameters);
+  }
+  for (const entry of MCP_DISCOVERY_DEFINITIONS) {
+    if (allowedTools.has(entry.id)) schemas.set(entry.id, entry.parameters);
   }
   let messages = [...options.messages];
   const transcript: unknown[] = [];

@@ -6,6 +6,14 @@ const escapeToolContextAttribute = (value: string): string =>
     .replace(/>/g, '&gt;');
 
 export const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>): string | undefined => {
+  if (toolName === 'mcp_search') {
+    return typeof args.query === 'string' ? args.query : undefined;
+  }
+
+  if (toolName === 'mcp_call') {
+    return typeof args.tool_id === 'string' ? args.tool_id : undefined;
+  }
+
   if (toolName === 'web_search') {
     return typeof args.query === 'string' ? args.query : undefined;
   }

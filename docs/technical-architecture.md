@@ -502,6 +502,7 @@ successeur et l'attente de fin suit les remplacements dus à la récupération.
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
 MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
+`mcp/toolDiscovery` décide, à partir de l'allowlist et du catalogue figés du tour, si le modèle reçoit les schémas MCP directs ou les fonctions `mcp_search` et `mcp_call`. La recherche est bornée et ne parcourt que les outils autorisés. Le dispatch conserve les identifiants trouvés pour ce tour ; `mcp_call` transmet ensuite l'identifiant et les arguments à l'exécuteur MCP existant, qui revalide la politique, l'approbation éventuelle et la génération. Les transports commun, natif et Copilot exposent les mêmes fonctions de découverte. Une récupération d'overflow conserve le catalogue initial ; elle ne crée pas de nouveaux droits.
 La récupération d'overflow transmet les capacités capturées à la préparation :
 type d'agent, allowlist, catalogue et clé MCP, risque et réglages d'outils. Elle
 reconstruit le contexte compacté sans résoudre une nouvelle génération MCP ni

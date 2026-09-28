@@ -273,7 +273,8 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
               ? await ports.policy.resolveMcpRuntime(currentConfiguration.mcpServers, toolsState.servers, { projectIds: currentConfiguration.projectIds })
               : { servers: toolsState.servers, tools: toolsState.tools };
             currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) =>
-              tool.id === normalizedToolName && tool.name === mcpApprovalTool?.name && tool.serverId === mcpApprovalTool?.serverId);
+              tool.id === normalizedToolName && tool.name === mcpApprovalTool?.name && tool.serverId === mcpApprovalTool?.serverId &&
+              JSON.stringify(tool.inputSchema ?? {}) === JSON.stringify(mcpApprovalTool?.inputSchema ?? {}));
             executionMcpServers = currentMcpRuntime.servers;
             executionMcpProjectIds = currentConfiguration?.projectIds ?? currentExecutionContext.projectIds;
           } else {

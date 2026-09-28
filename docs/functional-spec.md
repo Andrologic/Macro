@@ -991,6 +991,8 @@ Les résultats MCP conservent des blocs typés dans l’historique. Le
 [contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
 modèle, les replis explicites et le retour à une ancienne version.
 
+Lorsque le catalogue MCP autorisé dépasse douze outils ou 16 000 caractères de schémas, Macro présente au modèle une recherche et un appel ciblé plutôt que tous les schémas. La recherche retourne au plus cinq outils autorisés dans une réponse de 24 Ko. Un outil doit avoir été trouvé pendant le tour avant son appel ; il garde ses propres contrôles de permissions, de validation, d'approbation et de génération du serveur. Les petits catalogues restent présentés directement. La découverte ne demande aucune interaction supplémentaire à l'utilisateur.
+
 Le mode Chat peut accéder :
 
 - au web

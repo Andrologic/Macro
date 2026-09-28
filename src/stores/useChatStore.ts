@@ -10,6 +10,7 @@ import { composeChatStreamCompaction } from "../composition/chatStreamCompositio
 import { cloneProviderInputItems, cloneStreamMessage, normalizeMessagesForProviderContext, shouldCountProviderInputItemsForContext } from "../services/chatStreamCompactionMessages";
 import { createChatTurnRuntime, ChatTurnSupersededError } from "../services/chatTurnRuntime";
 import { createAssistantStreamRuntime } from "../services/chatAssistantStreamRuntime";
+import { MCP_DISCOVERY_DEFINITIONS, shouldDiscoverMcpTools } from '../services/mcp/toolDiscovery';
 import type { PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
 import { create } from "zustand";
 import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers } from "../services/toolApprovalRecovery";
@@ -3384,8 +3385,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ) => {
     const allowedIdSet = new Set(toolIds);
     const macroDefinitions = MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
+    const availableMcpTools = frozenMcpTools ?? useToolsStore.getState().getEnabledMCPTools();
+    const discoverMcpTools = shouldDiscoverMcpTools(allowedIdSet, availableMcpTools);
     const mcpDefinitions: MacroToolRegistryEntry[] = (
-      frozenMcpTools ?? useToolsStore.getState().getEnabledMCPTools()
+      discoverMcpTools ? [] : availableMcpTools
     )
       .filter((tool) => allowedIdSet.has(tool.id))
       .map((tool) => ({
@@ -3396,7 +3399,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           properties: {},
         },
       }));
-    return [...macroDefinitions, ...mcpDefinitions];
+    return [...macroDefinitions, ...mcpDefinitions, ...(discoverMcpTools ? MCP_DISCOVERY_DEFINITIONS : [])];
   };
 
   const getSelectedModelContext = (
