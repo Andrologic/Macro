@@ -27,6 +27,16 @@ export type {
 } from "./ipc/database.types";
 
 export type {
+  ToolInvocation,
+  ToolInvocationIdentity,
+  ToolInvocationStatus,
+  ToolEffectClass,
+  RecordToolInvocationInput,
+  RecordToolInvocationResult,
+  CompleteToolInvocationInput,
+} from "../types/generated/ipc";
+
+export type {
   DbProviderConfig,
   DbAiModel,
   DbProviderSettings,
@@ -282,6 +292,13 @@ export {
   getDatabaseInitializationStatus,
   retryDatabaseInitialization,
 } from "./ipc/database";
+
+export {
+  recordToolInvocation,
+  completeToolInvocation,
+  markToolInvocationUnknown,
+  listUnresolvedToolInvocations,
+} from "./ipc/toolInvocations";
 
 export {
   listConversations,

@@ -3,6 +3,11 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::db::ToolInvocation>("db")?;
+    registry.add::<ipc_contracts::db::ToolInvocationIdentity>("db")?;
+    registry.add::<ipc_contracts::db::RecordToolInvocationInput>("db")?;
+    registry.add::<ipc_contracts::db::RecordToolInvocationResult>("db")?;
+    registry.add::<ipc_contracts::db::CompleteToolInvocationInput>("db")?;
     registry.add::<ipc_contracts::db::AgentRunStatus>("db")?;
     registry.add::<ipc_contracts::db::AgentRun>("db")?;
     registry.add::<ipc_contracts::db::CreateAgentRunInput>("db")?;
