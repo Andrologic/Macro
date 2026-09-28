@@ -1,5 +1,4 @@
-import { useProviderStore, providerHasCredentials, isLinkedProviderType, isProviderTransportUnavailable } from "../../stores/useProviderStore";
-import type { ReasoningEffort } from "../../types";
+import type { AIModel, ProviderConfig, ReasoningEffort } from "../../types";
 import type { GoalAuditProvider, GoalAuditProviderPorts } from "./providerExecutor";
 
 export interface GoalAuditProviderSelection {
@@ -9,14 +8,32 @@ export interface GoalAuditProviderSelection {
   workspacePath?: string;
 }
 
+export interface GoalAuditProviderSnapshot {
+  config?: ProviderConfig;
+  model?: AIModel;
+  hasCredentials: boolean;
+  availableReasoningEfforts: readonly ReasoningEffort[];
+  transportUnavailable: boolean;
+  requiresApiKey: boolean;
+}
+
+export interface GoalAuditProviderResolutionPort {
+  readSnapshot(providerId: string, modelId: string): GoalAuditProviderSnapshot;
+  resolveApiKey(providerId: string): Promise<string | undefined>;
+}
+
 const abortError = () => new DOMException("Aborted", "AbortError");
 
-const awaitKey = (providerId: string, signal: AbortSignal): Promise<string | undefined> =>
+const awaitKey = (
+  port: GoalAuditProviderResolutionPort,
+  providerId: string,
+  signal: AbortSignal,
+): Promise<string | undefined> =>
   new Promise((resolve, reject) => {
     if (signal.aborted) return reject(abortError());
     const onAbort = () => reject(abortError());
     signal.addEventListener("abort", onAbort, { once: true });
-    useProviderStore.getState().resolveProviderApiKey(providerId).then(
+    port.resolveApiKey(providerId).then(
       (key) => resolve(key),
       (error) => reject(error),
     ).finally(() => signal.removeEventListener("abort", onAbort));
@@ -25,6 +42,7 @@ const awaitKey = (providerId: string, signal: AbortSignal): Promise<string | und
 /** Bind an explicit selection at audit start; UI selection changes cannot redirect the child. */
 export function createGoalAuditProviderResolver(
   selection: GoalAuditProviderSelection,
+  port: GoalAuditProviderResolutionPort,
 ): GoalAuditProviderPorts["resolveProvider"] {
   const { providerId, modelId, effort, workspacePath } = { ...selection };
   return async (input, signal): Promise<GoalAuditProvider> => {
@@ -36,38 +54,38 @@ export function createGoalAuditProviderResolver(
     }
 
     const resolveConfig = () => {
-      const state = useProviderStore.getState();
-      const config = state.providerConfigs.find((entry) => entry.id === providerId);
-      const model = state.modelsByProvider[providerId]?.find((entry) => entry.id === modelId);
-      if (!config?.isEnabled || !providerHasCredentials(config) || !config.baseUrl?.trim()) {
+      const snapshot = port.readSnapshot(providerId, modelId);
+      const { config, model } = snapshot;
+      if (snapshot.transportUnavailable) {
+        throw new Error("Goal auditor provider configuration changed during resolution.");
+      }
+      if (!config?.isEnabled || !snapshot.hasCredentials || !config.baseUrl?.trim()) {
         throw new Error("Goal auditor provider is unavailable or disabled.");
       }
       if (!model || model.isEnabled === false || model.provider_id !== providerId) {
         throw new Error("Goal auditor model is unavailable or disabled.");
       }
-      if (effort && !state.getAvailableReasoningEfforts(providerId, modelId).includes(effort)) {
+      if (effort && !snapshot.availableReasoningEfforts.includes(effort)) {
         throw new Error("Goal auditor reasoning effort is unavailable for this model.");
       }
-      return config;
+      return { ...snapshot, config, model };
     };
 
-    const config = resolveConfig();
-    const apiKey = await awaitKey(providerId, signal);
+    const { config } = resolveConfig();
+    const apiKey = await awaitKey(port, providerId, signal);
     if (signal.aborted) throw abortError();
-    const current = resolveConfig();
-    if (current.providerType !== config.providerType || current.baseUrl !== config.baseUrl ||
-      current.isLocal !== config.isLocal || current.authStatus !== config.authStatus) {
+    const currentSnapshot = resolveConfig();
+    const current = currentSnapshot.config;
+    const initial = config;
+    if (current.providerType !== initial.providerType || current.baseUrl !== initial.baseUrl ||
+      current.isLocal !== initial.isLocal || current.authStatus !== initial.authStatus) {
       throw new Error("Goal auditor provider configuration changed during resolution.");
     }
-    if (!current.isLocal && !isLinkedProviderType(current.providerType) && !apiKey?.trim()) {
+    if (currentSnapshot.requiresApiKey && !apiKey?.trim()) {
       throw new Error("Goal auditor provider API key is unavailable.");
     }
-    if (!current.isLocal && !isLinkedProviderType(current.providerType) &&
-      current.apiKey !== apiKey) {
+    if (currentSnapshot.requiresApiKey && current.apiKey !== apiKey) {
       throw new Error("Goal auditor provider API key changed during resolution.");
-    }
-    if (isProviderTransportUnavailable(providerId)) {
-      throw new Error("Goal auditor provider configuration changed during resolution.");
     }
     return {
       providerId,
