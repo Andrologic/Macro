@@ -184,6 +184,10 @@ export const runAssistantStream = async ({
       onToken: (token) => {
         if (!handledComplete && !handledError && !handledAbort) tokenBatcher.push(token);
       },
+      onGenerationAttemptsUpdate: async (attempts) => {
+        tokenBatcher.flushNow();
+        await streamOptions.onGenerationAttemptsUpdate?.(attempts);
+      },
       onComplete: (result) => {
         if (handledComplete || handledError || handledAbort) return;
         completionPromise = handleCompleteOnce(result);

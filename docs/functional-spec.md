@@ -324,6 +324,8 @@ L'utilisateur peut joindre explicitement jusqu'à trois autres conversations du 
 
 Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
+Pour chaque réponse, le chat rend consultable l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent consultables séparément. Un coût non attribuable à une tentative est affiché comme inconnu, jamais comme nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
+
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
 La progression reste liée à la conversation lorsque l'utilisateur consulte une autre tâche. Revenir sur la tâche montre l'étape courante sans relancer la préparation. La carte disparaît dès que l'agent commence sa première réponse. Macro remplace le titre provisoire lorsque le nom final est prêt. Si une étape échoue, la carte conserve cette étape et son erreur. Elle propose de réessayer uniquement lorsque Macro a pu remettre la tâche dans son brouillon sûr. Tant que la préparation ou l'agent est actif, un nouvel envoi ne peut pas lancer une seconde exécution de la même conversation.
@@ -782,6 +784,19 @@ session. L'agent doit vérifier les effets déjà produits avant de répéter un
 La demande initiale reste consultable dans l'historique. Si le nouveau tour échoue
 avant tout envoi, la demande reste disponible. Le refus, l'arrêt, la suppression,
 l'archivage et la fin de tâche invalident l'attente.
+
+Les traces d'outils distinguent un résultat terminé ou refusé, une exécution
+encore vivante dans le tour courant, une approbation restaurée qui permet une
+nouvelle demande, et une issue inconnue après interruption ou fin du tour sans
+résultat d'outil confirmé. Une trace inconnue n'autorise aucun rejeu automatique.
+Pour un outil relayé par Copilot, la seule écriture de sa réponse dans le canal
+natif ne confirme pas son acceptation par le bridge : une réponse ignorée après
+expiration reste inconnue et son contexte caché n'est pas repris.
+Un ancien marqueur `[TOOL]` sans `[TOOL_DONE]` reste d'issue inconnue après
+rechargement et ne figure pas parmi les outils terminés. La consultation du
+résultat d'une mutation distante par son identifiant durable reste propre à ce
+transport ; elle ne rend
+pas interrogeables les autres outils ni les effets externes sans journal de résultat.
 
 ### 14.4 Review humaine
 

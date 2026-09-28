@@ -33,6 +33,7 @@ mock.module('../tauriIpc', () => ({ ...ipc,
     submissions.push(submission);
     if (submissions.length === doneAfter) emit('ai:done', {
       request_id: requestId, output_text: 'Done', tool_calls: [],
+      accepted_submission_ids: submissions.map(item => item.submissionId).filter((id): id is string => !!id),
     });
     await submissionGate?.(submission);
   },
@@ -117,7 +118,38 @@ test('native reads respect the limit and publish out-of-order completions in req
     typeof item === 'object' && item !== null && 'type' in item && 'call_id' in item)
     .filter(item => item.type === 'function_call_output').map(item => item.call_id))
     .toEqual(['call-0', 'call-1', 'call-2', 'call-3']);
-  expect(traces.filter(trace => trace.status === 'running').map(trace => trace.order)).toEqual([0, 1, 2, 3]);
+  expect(traces.filter(trace => trace.status === 'running' && trace.started_at_ms !== undefined)
+    .map(trace => trace.order)).toEqual([0, 1, 2, 3]);
+  expect(traces.filter(trace => trace.recovery_state === 'unknown').map(trace => trace.order))
+    .toEqual([0, 1, 2, 3]);
+});
+
+test('native submissions stay ordered and ai:done waits for the submitted result', async () => {
+  const gates = [deferred<void>(), deferred<void>()];
+  const live: string[] = [];
+  submissionGate = () => gates[submissions.length - 1].promise;
+  const run = turn({ onToolCall: async (_name, args) => String(args.path),
+    onLiveToolResult: item => live.push(item.toolCallId) });
+  await started;
+  request('first', 'read', { path: 'first.txt' });
+  request('second', 'read', { path: 'second.txt' });
+  await waitFor(() => submissions.length === 1);
+  expect(submissions.map(item => item.toolCallId)).toEqual(['first']);
+  gates[0].resolve();
+  await waitFor(() => submissions.length === 2);
+  expect(submissions.map(item => item.toolCallId)).toEqual(['first', 'second']);
+  emit('ai:done', { request_id: requestId, output_text: 'Done', tool_calls: [],
+    accepted_submission_ids: submissions.map(item => item.submissionId) });
+  let completed = false;
+  void run.then(() => { completed = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(completed).toBe(false);
+  expect(live).toEqual([]);
+  gates[1].resolve();
+  const result = await run;
+  expect(live).toEqual(['first', 'second']);
+  expect(JSON.stringify(result.providerInputItems)).toContain('first.txt');
+  expect(JSON.stringify(result.providerInputItems)).toContain('second.txt');
 });
 
 for (const [barrier, args] of [
@@ -178,6 +210,22 @@ test('native cancellation drops running and queued tool results', async () => {
   expect(live).not.toHaveBeenCalled();
 });
 
+test('native cancellation from the first trace observer prevents tool execution', async () => {
+  const controller = new AbortController();
+  const executed = mock(async () => 'unexpected');
+  const traces: ToolTrace[] = [];
+  const run = turn({ signal: controller.signal, onToolCall: executed, onToolTrace: trace => {
+    traces.push(trace);
+    controller.abort();
+  } });
+  await started;
+  request('read-call', 'read', { path: 'file' });
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  expect(executed).not.toHaveBeenCalled();
+  expect(submissions).toEqual([]);
+  expect(traces).toHaveLength(1);
+});
+
 test('native question interrupt prevents a queued write from starting or submitting', async () => {
   doneAfter = 1;
   const launched: string[] = [];
@@ -198,24 +246,64 @@ test('native question interrupt prevents a queued write from starting or submitt
   expect(result.content).toBe('Done');
 });
 
-test('failed native submission rejects without publishing success or resubmitting the call id', async () => {
-  doneAfter = 1;
-  const gate = deferred<void>();
-  submissionGate = () => gate.promise;
+test('failed native submission offers one error fallback and stays unknown without a receipt', async () => {
   const live = mock(() => undefined);
   const completed = mock(() => undefined);
-  const run = turn({ onToolCall: async () => 'read succeeded', onLiveToolResult: live, onToolResult: completed });
+  const traces: ToolTrace[] = [];
+  submissionGate = async () => { throw new Error('submission outcome unknown'); };
+  const run = turn({ onToolCall: async () => 'read succeeded', onLiveToolResult: live,
+    onToolResult: completed, onToolTrace: trace => traces.push(trace) });
   await started;
   request('read-call', 'read', { path: 'file' });
-  await waitFor(() => submissions.length === 1);
-  gate.reject(new Error('submission outcome unknown'));
-  await expect(run).rejects.toThrow('submission outcome unknown');
-  expect(submissions).toEqual([{ requestId, toolCallId: 'read-call', result: 'read succeeded',
-    hiddenContext: undefined, visibleContent: undefined, interrupt: undefined, isError: false, errorKind: undefined }]);
+  await waitFor(() => submissions.length === 2);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  emit('ai:done', { request_id: requestId, output_text: 'Done', tool_calls: [] });
+  const result = await run;
+  expect(submissions).toHaveLength(2);
+  expect(submissions[0]).toMatchObject({ toolCallId: 'read-call', result: 'read succeeded',
+    submissionId: expect.any(String), isError: false });
+  expect(submissions[1]).toMatchObject({ toolCallId: 'read-call', submissionId: expect.any(String),
+    isError: true, errorKind: 'execution' });
+  expect(submissions[1].submissionId).not.toBe(submissions[0].submissionId);
+  expect(submissions[1].result).toContain('submission outcome unknown');
+  expect(result.providerInputItems ?? []).toEqual([]);
+  expect(traces.at(-1)).toMatchObject({ tool_call_id: 'read-call', status: 'running', recovery_state: 'unknown' });
   expect(live).not.toHaveBeenCalled();
   expect(completed).not.toHaveBeenCalled();
-  expect(cancelCount).toBe(1);
+  expect(cancelCount).toBe(0);
 });
+
+for (const acceptedIndex of [0, 1]) {
+  test(`bridge receipt selects submission ${acceptedIndex} after an IPC failure`, async () => {
+    const gate = deferred<void>();
+    const fallbackStarted = deferred<void>();
+    const live: string[] = [];
+    const notified: string[] = [];
+    const mutate = mock(async () => 'write completed');
+    submissionGate = async () => {
+      if (submissions.length === 1) throw new Error('primary submission failed');
+      emit('ai:done', { request_id: requestId, output_text: 'Done', tool_calls: [],
+        accepted_submission_ids: [submissions[acceptedIndex].submissionId] });
+      fallbackStarted.resolve();
+      await gate.promise;
+    };
+    const run = turn({ onToolCall: mutate,
+      onLiveToolResult: item => live.push(item.result),
+      onToolResult: (_name, result) => notified.push(result) });
+    await started;
+    request('write-call', 'write', { path: 'file', content: 'changed' });
+    await fallbackStarted.promise;
+    expect(live).toEqual([]);
+    gate.resolve();
+    const result = await run;
+    const accepted = submissions[acceptedIndex].result;
+    expect(live).toEqual([accepted]);
+    expect(notified).toEqual([accepted]);
+    expect(JSON.stringify(result.providerInputItems)).toContain(accepted);
+    expect(submissions).toHaveLength(2);
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+}
 
 test('ai:done during submission waits for confirmed MCP media before completing', async () => {
   doneAfter = 1;

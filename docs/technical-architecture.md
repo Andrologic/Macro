@@ -498,6 +498,27 @@ forme le point de raccord des transports. `claimStream` attribue une identité
 de tentative distincte lors d'une récupération du même tour. Un stream remplacé ne libère pas son
 successeur et l'attente de fin suit les remplacements dus à la récupération.
 
+Cette identité de stream ne désigne pas une requête modèle. `toolCallingLoop`
+attribue un identifiant distinct à chaque requête fournisseur, y compris les
+renvois internes des transports HTTP et natif ; le
+message assistant conserve son texte brut, le texte accepté et un coût
+`null` tant qu'aucun coût par tentative n'est attribuable. Avant une écriture
+partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publie
+le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
+écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Quand
+un utilisateur arrête le stream, la tentative en cours, suivie en mémoire au fil
+des tokens ou dès l'envoi de la requête, rejoint le message avant sa sauvegarde
+partielle. Si la préparation après un dépassement de contexte échoue, Macro
+garde les tentatives déjà enregistrées sur le message assistant. Quand
+une récupération de dépassement de contexte remplace le stream sur le même
+message, ses nouvelles tentatives s'ajoutent aux précédentes par identifiant.
+Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses
+tentatives. Son échec utilise la récupération de réponse non sauvegardée, qui
+retransmet aussi les tentatives. Un crash pendant un tour fournisseur ou après un échec d'écriture
+intermédiaire peut laisser ses derniers tokens et sa tentative hors de SQLite.
+`chatPersistenceService` sérialise les écritures partielles et finales par
+message assistant : une ancienne sauvegarde ne peut pas écraser celle de Stop.
+
 `chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
@@ -973,6 +994,19 @@ revalidation ou la clôture durable, un refus révoque l'autorisation avant le
 dispatch. Les approbations MCP exposent l'identité protocolaire et un aperçu des
 arguments, avec champs sensibles masqués et troncature signalée.
 
+La colonne `messages.generation_attempts_json` stocke les tentatives déjà
+observées par le runtime. `toolTraceState` reclasse les traces au rechargement
+et dès qu'un flux se termine ou s'interrompt : `done` et `denied` sont clos,
+une trace non résolue devient `unknown`, et seul le marqueur d'approbation
+restauré rend cette demande `replayable`. `live` exige un flux propriétaire
+encore actif. Ces états décrivent la preuve disponible pour la trace, pas une
+garantie d'exécution unique de l'effet externe.
+`streamAccumulator` laisse une trace sans résultat confirmé en `running` avec
+`recovery_state=unknown` à la fin du tour. Le rendu des anciens marqueurs
+`[TOOL]` exige `[TOOL_DONE]` pour afficher une fin confirmée.
+Le transport natif ne marque une trace `done` que si le backend a confirmé la
+remise du résultat, y compris lorsque la remise d'une erreur est nécessaire.
+
 ### 10.2 Persistance locale frontend
 
 Le frontend utilise aussi de la persistance locale légère pour :
@@ -1272,6 +1306,13 @@ Les remplacements atomiques conservent les bits de permission Unix de la cible. 
 
 Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
 
+L'état d'une mutation headless est interrogeable par `execution_id` via
+`/tools/executions/{execution_id}` dans ce protocole. Cette capacité existe
+pour l'invocation distante suivie par `remoteKernelApi` ; l'identifiant n'est
+pas relié au `ToolTrace` SQLite et aucune interrogation générale des outils
+desktop, MCP ou terminaux n'est déduite de `recovery_state`. Une intention
+distante encore `pending` après redémarrage reste indéterminée.
+
 ### 13.5 Sorties bornées et reprise
 
 Les outils de lecture du workspace et d'inspection Git ne peuvent pas injecter une sortie arbitrairement grande dans le contexte agent. Leur contrat est additif : les réponses structurées paginables ajoutent `limit`, `offset`, `truncated` et `next_cursor`. `list`, `glob` et `git_status` ajoutent aussi `total_count`, car leur résultat est complètement matérialisé avant pagination. `grep` et `git_log` exposent `total_count=null` avec `total_is_exact=false` lorsqu'ils s'arrêtent après avoir trouvé l'élément qui prouve qu'une page suivante existe.
@@ -1486,6 +1527,17 @@ accepte le premier, puis refuse les suivants.
 
 `streamAccumulator.ts` garde l'ordre d'insertion des traces et leur contexte
 visible/caché. La priorité des statuts protégés vient de `toolTraceState.ts`.
+Pour les outils relayés par Copilot, chaque résultat proposé, y compris une
+erreur de secours, porte son propre `submission_id`. Le bridge ne place cet
+identifiant dans `accepted_submission_ids` qu'après avoir résolu la réponse du
+canal. Le transport natif utilise ces identifiants à `ai:done` pour conserver
+les traces et les éléments rejouables des seuls résultats acceptés. Le
+`hidden_context` durable
+provient du même événement du bridge ; les blocs d'outils relayés émis par le
+SDK exigent aussi un reçu de remise accepté. L'accusé de l'écriture IPC ne suffit pas.
+Une fin reçue pendant une remise attend au plus cinq secondes la réponse IPC,
+puis les remises sans preuve d'acceptation restent d'issue inconnue. Cette
+classification n'implique aucune reprise exactement une fois des effets externes.
 L'approbation, la persistance et l'identité de tentative restent aux modules
 Chat. Chaque transport nettoie ses propres ressources, y compris les listeners
 acquis après un échec partiel, sans toucher à celles d'une requête suivante.

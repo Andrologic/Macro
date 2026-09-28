@@ -74,6 +74,7 @@ describe('shared tool batch', () => {
     await expect(run([call('read'), call('write')], { ...options(handler), signal: controller.signal }, acc)).rejects.toMatchObject({ name: 'AbortError' });
     expect(handler).toHaveBeenCalledTimes(1);
     expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
+    expect(acc.completeToolTrace).not.toHaveBeenCalled();
   });
 
   it('rejects malformed invocation envelopes without imposing the Macro schema dialect on MCP', () => {

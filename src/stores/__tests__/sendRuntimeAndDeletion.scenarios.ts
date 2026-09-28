@@ -480,6 +480,38 @@ export const registerSendRuntimeAndDeletionScenarios = (
       );
     });
 
+    it('keeps an unsaved attempt when SQLite has the same answer text', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('chat-conv', { message_count: 1 }),
+      ];
+      context.chatSnapshotMessages = [{
+        id: 'assistant-1', conversation_id: 'chat-conv', role: 'assistant',
+        content: 'Réponse commune', created_at: '2026-08-30T08:01:00.000Z',
+      }];
+      const attempt = { id: 'unsaved-attempt', status: 'abandoned' as const, rawText: 'brouillon', acceptedText: '', costUsd: null };
+      window.localStorage.setItem(
+        'macro_chat_unsaved_assistant_responses_v1',
+        JSON.stringify({
+          'assistant-1': {
+            id: 'assistant-1', turn_id: 'turn-1', task_id: '',
+            conversation_id: 'chat-conv', role: 'assistant', content: 'Réponse commune',
+            timestamp: '2026-08-30T08:01:00.000Z', generation_attempts: [attempt],
+            persistence_state: 'failed', persistence_error: 'SQLite unavailable',
+          },
+        }),
+      );
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initializeCritical();
+
+      expect(useChatStore.getState().getConversationMessages('chat-conv')).toContainEqual(
+        expect.objectContaining({ id: 'assistant-1', generation_attempts: [attempt], persistence_state: 'failed' }),
+      );
+      expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('unsaved-attempt');
+    });
+
     it('deletes an unsaved assistant turn with later steering messages and unblocks the conversation', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';

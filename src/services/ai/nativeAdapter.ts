@@ -31,7 +31,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
   const rejectedReasoningEfforts = new Set<ReasoningEffort>();
   return {
     kind: 'native',
-    streamTurn: async ({ messages, tools, recovering, onDelta }) => {
+    streamTurn: async ({ messages, tools, recovering, onDelta, onRetry }) => {
       // Live callbacks contain the current turn's cumulative results only.
       // Keep the previous turns once, without re-appending each live snapshot.
       const previousContext = accumulator.snapshotLiveContext();
@@ -66,9 +66,9 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             },
             onToolCall: options.onToolCall,
             onToolResult: options.onToolResult,
-            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext, providerInputItems }) => {
+            onLiveToolResult: ({ toolName, args, toolCallId, result, providerInputItems }) => {
               const detail = formatToolTraceDetail(toolName, args);
-              accumulator.addConfirmedNativeToolResult(toolCallId, toolName, detail, result, hiddenContext, {
+              accumulator.addConfirmedNativeToolResult(toolCallId, toolName, detail, result, undefined, {
                 providerInputItems: [...(previousContext.providerInputItems ?? []), ...(providerInputItems ?? [])],
                 providerTurnState: previousContext.providerTurnState,
               });
@@ -83,6 +83,8 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             didRetryWithoutReasoning = true;
             currentReasoningEffort = null;
             reasoning.disableReasoning();
+            await onRetry?.();
+            streamedTurnContent = '';
             continue;
           }
           if (
@@ -93,6 +95,8 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             rejectedReasoningEfforts.add(rejectedEffort);
             reasoning.disableEffort(rejectedEffort);
             currentReasoningEffort = null;
+            await onRetry?.();
+            streamedTurnContent = '';
             continue;
           }
           throw error;

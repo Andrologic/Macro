@@ -124,9 +124,6 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
       throwIfToolAborted(options.signal);
       if (error instanceof Error && error.name === 'AbortError') throw error;
       resolution = { kind: 'result', result: `Error executing tool ${name}: ${formatToolExecutionError(error)}`, isError: true, errorKind: 'execution' };
-    } finally {
-      // Completion never overwrites a locally protected approval/refusal trace.
-      if (options.signal?.aborted) accumulator.completeToolTrace(call.id);
     }
     throwIfToolAborted(options.signal);
     if (resolution.kind === 'interrupt') {

@@ -6,6 +6,8 @@ import type { AssistantStreamLaunch, FrozenToolCallContext, PrepareAssistantStre
 import { getMessageTurnId } from "../domains/chat/runtimeState";
 import type { ChatTurnRuntime, ChatTurnIdentity } from "./chatTurnRuntime";
 import { runAssistantStream, type ChatStreamTokenControls, type ChatStreamTransport } from "./chatStreamOrchestrator";
+import type { GenerationAttempt } from "./ai/contracts";
+import { mergeGenerationAttempts } from "./ai/generationAttemptState";
 import { createChatStreamLifecycleRuntime, type ChatStreamLifecycleRuntimeAdapters } from "./chatStreamLifecycleRuntime";
 import { deleteMessagesAfter as deletePersistedMessagesAfter, type ChatPersistenceAdapters } from "./chatPersistenceService";
 import { extractContextLimitTokensFromErrorLike, isContextOverflowErrorLike as isProviderContextOverflowError } from "./contextOverflow";
@@ -355,14 +357,25 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         });
         await maybeMarkImplementTaskFailedAfterStreamError();
         if (ports.owner.matches(identity, "overflow_recovery")) {
-          ports.messages.removeEmpty(params.assistantMessage.id);
+          const recordedMessage = ports.messages.get(params.assistantMessage.id);
+          const hasRecordedAttempt = Boolean(recordedMessage?.generation_attempts?.length);
+          if (!hasRecordedAttempt) ports.messages.removeEmpty(params.assistantMessage.id);
           ports.owner.set(params.conversationId, {
             phase: "error", sessionId: params.sessionId, turnId: streamTurnId,
-            assistantMessageId: null, abortController: null, lastError: message,
+            assistantMessageId: hasRecordedAttempt ? params.assistantMessage.id : null,
+            abortController: null, lastError: message,
             lastErrorOrigin: "macro", lastErrorDisplayTarget: "composer",
           }, { globalLastError: message });
+          if (hasRecordedAttempt && recordedMessage) {
+            try {
+              await ports.persistence.partial(recordedMessage);
+            } catch (persistError) {
+              console.warn("Failed to persist generation attempts after overflow recovery error:", persistError);
+            }
+          } else {
+            await deleteEmptyAssistantMessageFromDb();
+          }
         }
-        await deleteEmptyAssistantMessageFromDb();
         return true;
       }
     };
@@ -373,6 +386,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
     } = ports.compaction.create(params, contextDiagnosticsBaseline, shouldAcceptStreamUpdate,
       () => ports.owner.ownsCompletion(identity));
 
+    let activeGenerationAttempt: GenerationAttempt | undefined;
     const streamLifecycle = createChatStreamLifecycleRuntime({
       stream: {
         conversationId: params.conversationId,
@@ -497,7 +511,18 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       maxTurns: params.maxTurns,
       sessionId: params.sessionId,
       signal: abortController.signal,
-      lifecycle: streamLifecycle,
+      lifecycle: {
+        ...streamLifecycle,
+        onAbort: (controls) => {
+          const message = ports.messages.get(params.assistantMessage.id);
+          if (activeGenerationAttempt && message && shouldAcceptStreamUpdate()) {
+            ports.messages.fields(message.id, {
+              generation_attempts: mergeGenerationAttempts(message.generation_attempts, [activeGenerationAttempt]),
+            });
+          }
+          return streamLifecycle.onAbort(controls);
+        },
+      },
       onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
@@ -508,6 +533,27 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         ports.messages.fields(params.assistantMessage.id, {
           tool_traces: toolTraces,
         });
+      },
+      onGenerationAttemptsUpdate: async (generationAttempts) => {
+        if (!shouldAcceptStreamUpdate()) return;
+        const previousAttempts = ports.messages.get(params.assistantMessage.id)?.generation_attempts;
+        ports.messages.fields(params.assistantMessage.id, {
+          generation_attempts: mergeGenerationAttempts(previousAttempts, generationAttempts),
+        });
+        if (generationAttempts.some((attempt) => attempt.id === activeGenerationAttempt?.id)) {
+          activeGenerationAttempt = undefined;
+        }
+        const message = ports.messages.get(params.assistantMessage.id);
+        if (message) {
+          try {
+            await ports.persistence.partial(message);
+          } catch (error) {
+            console.warn("Failed to persist generation attempts during stream:", error);
+          }
+        }
+      },
+      onGenerationAttemptProgress: (attempt) => {
+        if (shouldAcceptStreamUpdate()) activeGenerationAttempt = attempt;
       },
       onBeforeFollowUpRequest: async (request) => {
         const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);

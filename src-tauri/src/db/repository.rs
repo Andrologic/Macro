@@ -785,7 +785,7 @@ pub async fn update_git_worktree_project_access(
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
         FROM messages
         WHERE conversation_id = ?
         ORDER BY created_at ASC, id ASC
@@ -811,6 +811,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
             provider_turn_state_json: row.get("provider_turn_state_json"),
             context_refs_json: row.get("context_refs_json"),
             completion_reason: row.get("completion_reason"),
+            generation_attempts_json: row.get("generation_attempts_json"),
         })
         .collect();
 
@@ -820,7 +821,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
         FROM messages
         ORDER BY created_at ASC, id ASC
         "#,
@@ -844,6 +845,7 @@ pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
             provider_turn_state_json: row.get("provider_turn_state_json"),
             context_refs_json: row.get("context_refs_json"),
             completion_reason: row.get("completion_reason"),
+            generation_attempts_json: row.get("generation_attempts_json"),
         })
         .collect();
 
@@ -912,7 +914,7 @@ pub async fn get_chat_bootstrap_snapshot(
         let placeholders = vec!["?"; unique_preload_ids.len()].join(", ");
         let query = format!(
             r#"
-            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason
+            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
             FROM messages
             WHERE conversation_id IN ({})
             ORDER BY conversation_id ASC, created_at ASC, id ASC
@@ -940,6 +942,7 @@ pub async fn get_chat_bootstrap_snapshot(
                 provider_turn_state_json: row.get("provider_turn_state_json"),
                 context_refs_json: row.get("context_refs_json"),
                 completion_reason: row.get("completion_reason"),
+                generation_attempts_json: row.get("generation_attempts_json"),
             };
             messages_by_conversation_id
                 .entry(message.conversation_id.clone())
@@ -979,9 +982,10 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
             provider_input_items_json,
             provider_turn_state_json,
             context_refs_json,
-            completion_reason
+            completion_reason,
+            generation_attempts_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
@@ -997,6 +1001,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     .bind(&input.provider_turn_state_json)
     .bind(&input.context_refs_json)
     .bind(&input.completion_reason)
+    .bind(&input.generation_attempts_json)
     .execute(&mut *transaction)
     .await?;
 
@@ -1022,6 +1027,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         provider_turn_state_json: input.provider_turn_state_json,
         context_refs_json: input.context_refs_json,
         completion_reason: input.completion_reason,
+        generation_attempts_json: input.generation_attempts_json,
     })
 }
 
@@ -1085,6 +1091,7 @@ pub async fn import_messages(
             provider_turn_state_json: None,
             context_refs_json: None,
             completion_reason: message.completion_reason,
+            generation_attempts_json: None,
         });
     }
 
@@ -1112,6 +1119,7 @@ pub struct UpdateMessageContentInput<'a> {
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
     pub completion_reason: Option<String>,
+    pub generation_attempts_json: Option<String>,
 }
 
 pub async fn update_message_content(
@@ -1129,6 +1137,7 @@ pub async fn update_message_content(
         provider_turn_state_json,
         context_refs_json,
         completion_reason,
+        generation_attempts_json,
     } = input;
 
     let mut transaction = pool.begin().await?;
@@ -1141,7 +1150,7 @@ pub async fn update_message_content(
     sqlx::query(
         r#"
         UPDATE messages
-        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?, context_refs_json = ?, completion_reason = COALESCE(?, completion_reason)
+        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?, context_refs_json = ?, completion_reason = COALESCE(?, completion_reason), generation_attempts_json = COALESCE(?, generation_attempts_json)
         WHERE id = ?
         "#,
     )
@@ -1154,6 +1163,7 @@ pub async fn update_message_content(
     .bind(provider_turn_state_json)
     .bind(context_refs_json)
     .bind(completion_reason)
+    .bind(generation_attempts_json)
     .bind(id)
     .execute(&mut *transaction)
     .await?;
@@ -1347,6 +1357,7 @@ fn map_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
         provider_turn_state_json: row.get("provider_turn_state_json"),
         context_refs_json: row.get("context_refs_json"),
         completion_reason: row.get("completion_reason"),
+        generation_attempts_json: row.get("generation_attempts_json"),
     }
 }
 
@@ -1400,20 +1411,20 @@ async fn restore_message_with_connection(
     message: &Message,
 ) -> DbResult<()> {
     sqlx::query(
-        r#"INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        r#"INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              conversation_id = excluded.conversation_id, turn_id = excluded.turn_id,
              role = excluded.role, content = excluded.content, created_at = excluded.created_at,
              token_count = excluded.token_count, tool_traces_json = excluded.tool_traces_json,
              hidden_context = excluded.hidden_context, provider_input_items_json = excluded.provider_input_items_json,
              provider_turn_state_json = excluded.provider_turn_state_json, context_refs_json = excluded.context_refs_json,
-             completion_reason = excluded.completion_reason"#,
+             completion_reason = excluded.completion_reason, generation_attempts_json = excluded.generation_attempts_json"#,
     )
     .bind(&message.id).bind(&message.conversation_id).bind(&message.turn_id).bind(&message.role)
     .bind(&message.content).bind(&message.created_at).bind(message.token_count)
     .bind(&message.tool_traces_json).bind(&message.hidden_context).bind(&message.provider_input_items_json)
-    .bind(&message.provider_turn_state_json).bind(&message.context_refs_json).bind(&message.completion_reason)
+    .bind(&message.provider_turn_state_json).bind(&message.context_refs_json).bind(&message.completion_reason).bind(&message.generation_attempts_json)
     .execute(connection).await?;
     Ok(())
 }
@@ -1446,11 +1457,11 @@ pub async fn prepare_conversation_replay(
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
     let row = sqlx::query(
-        "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason FROM messages WHERE id = ? AND conversation_id = ?",
+        "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json FROM messages WHERE id = ? AND conversation_id = ?",
     ).bind(input.message_id).bind(input.conversation_id).fetch_one(&mut *transaction).await?;
     let original_message = map_message_row(&row);
     let tail_rows = sqlx::query(
-        "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC",
+        "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC",
     ).bind(input.conversation_id).bind(&original_message.created_at).bind(&original_message.created_at).bind(input.message_id).fetch_all(&mut *transaction).await?;
     let citations = sqlx::query(
         "SELECT id, conversation_id, message_id, type, scope, source, title, snippet, content, url, favicon, path, language, size_bytes, kind, reason, created_at, updated_at FROM conversation_citations WHERE conversation_id = ?",
@@ -3472,6 +3483,57 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
         (temp_dir, pool)
+    }
+
+    #[tokio::test]
+    async fn generation_attempts_survive_message_reload() {
+        let (_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Attempts").await;
+        let message = create_message(
+            &pool,
+            CreateMessageInput {
+                id: Some("attempt-message".to_string()),
+                conversation_id: conversation.id.clone(),
+                turn_id: None,
+                role: "assistant".to_string(),
+                content: String::new(),
+                token_count: None,
+                tool_traces_json: None,
+                hidden_context: None,
+                provider_input_items_json: None,
+                provider_turn_state_json: None,
+                context_refs_json: None,
+                completion_reason: None,
+                generation_attempts_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let attempts = r#"[{"id":"attempt-1","status":"abandoned","rawText":"draft","acceptedText":"","costUsd":null}]"#;
+        update_message_content(
+            &pool,
+            UpdateMessageContentInput {
+                id: &message.id,
+                turn_id: None,
+                content: "answer",
+                token_count: None,
+                tool_traces_json: None,
+                hidden_context: None,
+                provider_input_items_json: None,
+                provider_turn_state_json: None,
+                context_refs_json: None,
+                completion_reason: None,
+                generation_attempts_json: Some(attempts.to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        let loaded = list_messages(&pool, &conversation.id).await.unwrap();
+        assert_eq!(
+            loaded[0].generation_attempts_json.as_deref(),
+            Some(attempts)
+        );
+        assert_eq!(loaded[0].content, "answer");
     }
 
     async fn seed_search_conversation(pool: &SqlitePool, id: &str, title: &str) {

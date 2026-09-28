@@ -35,6 +35,7 @@ export async function retryAssistantPersistence(messageId: string, ports: Assist
         visibleContent: assistantMessage.content, hiddenContext: assistantMessage.hidden_context,
         providerInputItems: assistantMessage.provider_input_items, providerTurnState: assistantMessage.provider_turn_state,
         toolTraces: assistantMessage.tool_traces ?? [], completionReason: assistantMessage.completion_reason,
+        generationAttempts: assistantMessage.generation_attempts,
       },
     });
   } catch (error) {

@@ -75,11 +75,38 @@ describe('Copilot model catalogue', () => {
 });
 
 describe('copilot bridge tool registration', () => {
+  it('keeps SDK tool context only for native tools or accepted relay results', async () => {
+    const { __testables } = await loadBridge();
+    const state = __testables.createCopilotSessionEventState();
+    const toolTraces = new Map();
+    const hiddenContextBlocks: string[] = [];
+    const acceptedRelayToolCallIds = new Set(['accepted']);
+    const emit = () => undefined;
+    for (const [toolCallId, toolName] of [
+      ['rejected', 'read_file'], ['accepted', 'read_file'], ['native', 'mark_source_passage'],
+    ]) {
+      __testables.handleCopilotSessionEvent({
+        event: { type: 'tool.execution_start', data: { toolCallId, toolName, arguments: {} } },
+        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit,
+      });
+      __testables.handleCopilotSessionEvent({
+        event: { type: 'tool.execution_complete', data: {
+          toolCallId, result: { content: `${toolCallId} result` },
+        } },
+        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit,
+      });
+    }
+
+    expect(hiddenContextBlocks.join('\n')).not.toContain('rejected result');
+    expect(hiddenContextBlocks.join('\n')).toContain('accepted result');
+    expect(hiddenContextBlocks.join('\n')).toContain('native result');
+  });
+
   it('carries Rust error metadata through the concrete channel to the SDK handler', async () => {
     const { __testables } = await loadBridge();
     const input = new PassThrough();
     const channel = new BridgeControlChannel(input, () => {});
-    const recorded = mock((_result: RelayToolResult) => {});
+    const recorded = mock((_toolCallId: string, _result: RelayToolResult) => {});
     input.write('{}\n');
     const tools = __testables.buildMacroTools({
       request_id: ' request:opaque ', model_id: 'synthetic', messages: [],
@@ -99,19 +126,20 @@ describe('copilot bridge tool registration', () => {
           throw new Error(`Invalid fixture SDK result type: ${resultType}`);
         }
         const result = handler({ path: 'example.txt' }, invocation);
-        input.write(`${JSON.stringify(payload)}\n`);
+        input.write(`${JSON.stringify({ ...payload, submission_id: 'submission-1' })}\n`);
         await expect(result).resolves.toEqual({
           textResultForLlm: payload.result, resultType,
           ...(payload.is_error ? { error: payload.result } : {}),
           toolTelemetry: { is_error: payload.is_error, error_kind: payload.error_kind },
         });
-        expect(recorded).toHaveBeenLastCalledWith({
+        expect(recorded).toHaveBeenLastCalledWith(' call/opaque ', {
           result: payload.result,
           isError: payload.is_error,
           errorKind: payload.error_kind,
           interrupt: payload.interrupt,
           hiddenContext: payload.hidden_context ?? undefined,
           visibleContent: payload.visible_content ?? undefined,
+          submissionId: 'submission-1',
         });
       }
 
