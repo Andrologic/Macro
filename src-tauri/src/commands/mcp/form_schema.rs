@@ -361,11 +361,13 @@ impl FieldSchema {
                 max_items,
             } => value.as_array().is_some_and(|items| {
                 let count = items.len() as u64;
+                let mut selected = BTreeSet::new();
                 min_items.is_none_or(|min| count >= min)
                     && max_items.is_none_or(|max| count <= max)
                     && items.iter().all(|item| {
-                        item.as_str()
-                            .is_some_and(|item| choices.iter().any(|choice| choice == item))
+                        item.as_str().is_some_and(|item| {
+                            choices.iter().any(|choice| choice == item) && selected.insert(item)
+                        })
                     })
             }),
         }
@@ -545,6 +547,7 @@ mod tests {
             ("count", serde_json::json!(9007199254740994.0)),
             ("role", serde_json::json!("admin")),
             ("tags", serde_json::json!(["a", "c"])),
+            ("tags", serde_json::json!(["a", "a"])),
             ("enabled", serde_json::json!("true")),
         ] {
             let mut changed = valid.clone();
