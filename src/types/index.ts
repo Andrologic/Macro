@@ -260,14 +260,18 @@ export interface WorkspaceFileReference {
 }
 
 // Context references for chat composer (nodes, branches, skills, files, sources)
-export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source';
+export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'conversation';
+
+export interface ConversationContextSource {
+  conversationId: string;
+}
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation;
+  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation | ConversationContextSource;
 }
 
 export interface PersistedContextReference {
@@ -286,6 +290,8 @@ export interface PersistedContextReference {
   snippet?: string;
   sourceLabel?: string;
   url?: string;
+  conversationId?: string;
+  sourceUpdatedAt?: string;
 }
 
 // Activity indicator for projects

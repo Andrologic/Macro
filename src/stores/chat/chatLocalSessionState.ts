@@ -95,6 +95,7 @@ const CONTEXT_REF_KINDS = new Set([
   "skill",
   "file",
   "source",
+  "conversation",
 ]);
 
 const isSkillLocation = (value: unknown): boolean =>
@@ -132,7 +133,11 @@ const isPersistedContextReference = (
     !isOptionalNullableBoundedString(value.projectName) ||
     !isOptionalBoundedString(value.snippet) ||
     !isOptionalBoundedString(value.sourceLabel) ||
-    !isOptionalBoundedString(value.url)
+    !isOptionalBoundedString(value.url) ||
+    !isOptionalBoundedString(value.conversationId) ||
+    !isOptionalBoundedString(value.sourceUpdatedAt) ||
+    (value.kind === "conversation" &&
+      (value.conversationId !== value.id || value.snippet !== undefined))
   ) {
     return false;
   }

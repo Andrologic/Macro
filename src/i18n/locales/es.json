@@ -461,6 +461,7 @@
     "maximize": "maximizar"
   },
   "chat": {
+    "conversationSourcesUsed": "{{count}} conversaciones citadas como fuentes",
     "imageImportContextChanged": "La conversación ha cambiado. No se añadieron las imágenes; selecciónalas de nuevo.",
     "imageImportFailed": "No se añadieron imágenes. Usa PNG, JPEG, GIF o WebP válidos: máximo 2 MB por imagen, 8 MB en total y 10 imágenes.",
     "newChat": "Nuevo chat",
@@ -637,6 +638,11 @@
     "messageComposer": "Editor de mensajes",
     "debugSession": "Sesión de depuración",
     "contextToolbox": {
+      "conversationSources": "Conversaciones como fuentes",
+      "conversationSourcesHint": "Elige hasta tres conversaciones de este proyecto. Los pasajes pertinentes se seleccionan y citan al enviar.",
+      "searchConversations": "Buscar una conversación",
+      "removeConversationSource": "Quitar la conversación fuente",
+      "selectConversationFirst": "Abre una conversación para añadir una fuente.",
       "importBusy": "Ya hay una importación en curso. Inténtalo cuando termine.",
       "importContextChanged": "La conversación cambió. No se añadieron archivos; selecciónalos de nuevo.",
       "persistenceFailed": "Guardados: {{saved}}. No se pudo guardar {{file}}; los archivos restantes no se añadieron.",

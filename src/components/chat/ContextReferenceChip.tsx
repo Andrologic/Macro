@@ -9,6 +9,7 @@ const KIND_CONFIG: Record<ContextRefKind, { label: string; icon: IconName; color
   'skill': { label: 'Skill', icon: 'sparkles', color: 'text-fuchsia-400', bg: 'bg-fuchsia-400/10' },
   'file': { label: 'File', icon: 'file-text', color: 'text-blue-400', bg: 'bg-blue-400/10' },
   'source': { label: 'Source', icon: 'book-open', color: 'text-primary', bg: 'bg-primary/10' },
+  'conversation': { label: 'Chat', icon: 'message-square', color: 'text-primary', bg: 'bg-primary/10' },
 };
 
 interface ContextReferenceChipProps {

@@ -504,6 +504,9 @@ const EMPTY_COMPOSER_DRAFT_SNAPSHOT: ComposerDraftSnapshot = {
 const buildSnapshotContextRefData = (
   ref: PersistedContextReference,
 ): ContextReference['data'] => {
+  if (ref.kind === 'conversation') {
+    return { conversationId: ref.conversationId ?? ref.id };
+  }
   if (ref.kind === 'skill') {
     return {
       id: ref.id,
@@ -781,6 +784,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
+  const citedConversations = message.context_refs?.filter(
+    (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
+  ) ?? [];
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const architectActionMessage =
@@ -948,7 +954,25 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
                 </Suspense>
               ) : (
-                <UserMessageContent content={message.content} />
+                <>
+                  <UserMessageContent content={message.content} />
+                  {message.role === 'user' && citedConversations.length > 0 && (
+                    <details className="mt-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        {t('chat.conversationSourcesUsed', '{{count}} cited conversation sources', { count: citedConversations.length })}
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {citedConversations.map((ref) => (
+                          <div key={ref.id} className="border-t border-border/50 pt-2">
+                            <div className="font-medium">{ref.title}</div>
+                            <div className="text-[10px] text-muted-foreground">{ref.conversationId} · {ref.sourceUpdatedAt}</div>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-sans text-xs text-foreground/80">{ref.snippet}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </>
               )}
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
@@ -3015,6 +3039,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             content: text,
             taskId: implementTaskIdForSend,
             images: [...composerImages],
+            composerContextRefs: submittedDraft.savedDraftContextRefs,
             ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,

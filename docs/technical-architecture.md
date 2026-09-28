@@ -475,6 +475,8 @@ ni mock de store. L'adaptateur capture les sélections UI avant la première
 attente ; le runtime reçoit ensuite ce snapshot, ses dépendances et les
 opérations de projection séparément.
 
+Une référence de conversation conserve l'identifiant de la source dans le brouillon ou la file. Juste avant la persistance du message utilisateur, `conversationContextSource` vérifie l'existence et le projet des deux conversations, refuse une source encore active, lit le transcript courant et sélectionne des extraits bornés. L'identifiant des messages, leur rôle, leur date et la date de mise à jour de la conversation accompagnent les extraits figés dans `context_refs_json`. La préparation de requête ne recherche pas de nouveaux passages : elle injecte ces extraits en les marquant comme matériau non fiable. La modification d'une source pendant la lecture interrompt la sélection. Le filtrage du transcript repose sur `db_list_messages`, qui ne retourne plus les messages supprimés lors d'un retour en arrière.
+
 Les soumissions différées utilisent le stockage local de récupération du chat.
 Leur runtime, la revalidation de contexte, les instructions du plan Architect et
 le panneau de récupération sont chargés à la demande pour préserver le budget du bundle initial. La capture
