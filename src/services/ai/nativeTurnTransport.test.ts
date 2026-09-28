@@ -1,5 +1,7 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
 import type { ToolTrace } from '../../types';
+import fixture from '../../../src-tauri/src/commands/mcp/fixtures/typed-result.json';
+import { normalizeToolResultBlocks, readTypedToolResult } from '../../shared/toolResultContent';
 
 const ipc = await import('../tauriIpc');
 const bridge = await import('../tauriRuntimeBridge');
@@ -13,6 +15,7 @@ let started: Promise<void>;
 let submissions: Submission[] = [];
 let cancelCount = 0;
 let doneAfter = 0;
+let submissionGate: ((submission: Submission) => Promise<void>) | undefined;
 const emit = (event: string, payload: Record<string, unknown>) => handlers.get(event)?.({ payload });
 
 mock.module('../tauriRuntimeBridge', () => ({ ...bridge, listen: async (event: string, handler: Handler) => {
@@ -31,6 +34,7 @@ mock.module('../tauriIpc', () => ({ ...ipc,
     if (submissions.length === doneAfter) emit('ai:done', {
       request_id: requestId, output_text: 'Done', tool_calls: [],
     });
+    await submissionGate?.(submission);
   },
 }));
 
@@ -44,6 +48,7 @@ beforeEach(() => {
   submissions = [];
   cancelCount = 0;
   doneAfter = 0;
+  submissionGate = undefined;
 });
 
 const deferred = <T>() => {
@@ -171,4 +176,88 @@ test('native cancellation drops running and queued tool results', async () => {
   expect(launched).toEqual(['call-0', 'call-1', 'call-2']);
   expect(submissions).toEqual([]);
   expect(live).not.toHaveBeenCalled();
+});
+
+test('native question interrupt prevents a queued write from starting or submitting', async () => {
+  doneAfter = 1;
+  const launched: string[] = [];
+  const run = turn({
+    onToolCall: async (name) => {
+      launched.push(name);
+      return name === 'question'
+        ? { kind: 'interrupt', result: 'Question queued', visibleContent: 'Choose' }
+        : 'unexpected write';
+    },
+  });
+  await started;
+  request('question-call', 'question', { questions: [{ id: 'q', prompt: 'Choose', choices: ['A', 'B'] }] });
+  request('write-call', 'write', { path: 'file', content: 'changed' });
+  const result = await run;
+  expect(launched).toEqual(['question']);
+  expect(submissions).toMatchObject([{ toolCallId: 'question-call', interrupt: true }]);
+  expect(result.content).toBe('Done');
+});
+
+test('failed native submission rejects without publishing success or resubmitting the call id', async () => {
+  doneAfter = 1;
+  const gate = deferred<void>();
+  submissionGate = () => gate.promise;
+  const live = mock(() => undefined);
+  const completed = mock(() => undefined);
+  const run = turn({ onToolCall: async () => 'read succeeded', onLiveToolResult: live, onToolResult: completed });
+  await started;
+  request('read-call', 'read', { path: 'file' });
+  await waitFor(() => submissions.length === 1);
+  gate.reject(new Error('submission outcome unknown'));
+  await expect(run).rejects.toThrow('submission outcome unknown');
+  expect(submissions).toEqual([{ requestId, toolCallId: 'read-call', result: 'read succeeded',
+    hiddenContext: undefined, visibleContent: undefined, interrupt: undefined, isError: false, errorKind: undefined }]);
+  expect(live).not.toHaveBeenCalled();
+  expect(completed).not.toHaveBeenCalled();
+  expect(cancelCount).toBe(1);
+});
+
+test('ai:done during submission waits for confirmed MCP media before completing', async () => {
+  doneAfter = 1;
+  const gate = deferred<void>();
+  submissionGate = () => gate.promise;
+  const blocks = normalizeToolResultBlocks(fixture.content);
+  const live: unknown[][] = [];
+  const run = turn({
+    onToolCall: async () => ({ kind: 'result', result: 'MCP media', blocks }),
+    onLiveToolResult: item => live.push(item.providerInputItems ?? []),
+  });
+  await started;
+  request('mcp-call', 'mcp__fixture__read');
+  await waitFor(() => submissions.length === 1);
+  let completed = false;
+  void run.then(() => { completed = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(completed).toBe(false);
+  expect(live).toEqual([]);
+  gate.resolve();
+  const result = await run;
+  expect(live).toHaveLength(1);
+  expect((result.providerInputItems ?? []).map(readTypedToolResult).filter(Boolean).map(item => item?.blocks)).toEqual([blocks]);
+  expect(live[0].map(readTypedToolResult).filter(Boolean).map(item => item?.blocks)).toEqual([blocks]);
+});
+
+test('failed submission during cancellation publishes no success', async () => {
+  const controller = new AbortController();
+  const gate = deferred<void>();
+  submissionGate = () => gate.promise;
+  const live = mock(() => undefined);
+  const completed = mock(() => undefined);
+  const run = turn({ signal: controller.signal, onToolCall: async () => 'read succeeded',
+    onLiveToolResult: live, onToolResult: completed });
+  await started;
+  request('read-call', 'read', { path: 'file' });
+  await waitFor(() => submissions.length === 1);
+  controller.abort();
+  gate.reject(new Error('cancelled submission'));
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cancelCount).toBe(1);
+  expect(submissions).toHaveLength(1);
+  expect(live).not.toHaveBeenCalled();
+  expect(completed).not.toHaveBeenCalled();
 });

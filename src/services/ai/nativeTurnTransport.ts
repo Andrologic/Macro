@@ -123,11 +123,14 @@ export const streamNativeTurnViaTauri = async (params: {
     let executing = 0;
     let exclusiveActive = false;
     let publishing = false;
+    let interruptObserved = false;
+    let pendingAbort = false;
+    let pendingDone: tauriIpc.AiStreamDoneEvent | null = null;
 
-    const stopped = () => settled || params.signal?.aborted === true;
+    const stopped = () => settled || pendingAbort || params.signal?.aborted === true;
 
     const publishReady = () => {
-      if (publishing || stopped()) return;
+      if (publishing || stopped() || pendingDone) return;
       const request = requests[nextToPublish];
       if (!request?.outcome) return;
       publishing = true;
@@ -136,6 +139,12 @@ export const streamNativeTurnViaTauri = async (params: {
         const { result, blocks, hiddenContext, visibleContent, interrupt, isError, errorKind } = outcome!;
         try {
           if (stopped()) return;
+          await tauriIpc.aiSubmitToolResult({
+            requestId, toolCallId, result,
+            ...(blocks ? { blocks } : {}),
+            hiddenContext, visibleContent, interrupt, isError, errorKind,
+          });
+          if (settled) return;
           nativeToolItems.push(
             { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
             buildFunctionCallOutputProviderInputItem(toolCallId, result, blocks, isError),
@@ -144,25 +153,15 @@ export const streamNativeTurnViaTauri = async (params: {
             toolName, args, toolCallId, result, hiddenContext,
             providerInputItems: [...nativeToolItems],
           });
-          if (stopped()) return;
-          await tauriIpc.aiSubmitToolResult({
-            requestId, toolCallId, result,
-            ...(blocks ? { blocks } : {}),
-            hiddenContext, visibleContent, interrupt, isError, errorKind,
-          });
-          if (stopped()) return;
           params.onToolResult?.(toolName, result);
         } catch (error) {
-          if (stopped()) return;
-          const failure = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
-          await tauriIpc.aiSubmitToolResult({
-            requestId, toolCallId, result: failure, isError: true, errorKind: 'execution',
-          }).catch(() => undefined);
-          if (stopped()) return;
-          params.onLiveToolResult?.({ toolName, args, toolCallId, result: failure });
-          params.onToolResult?.(toolName, failure);
+          if (settled) return;
+          if (!pendingAbort) void tauriIpc.aiCancelStream(requestId).catch(() => undefined);
+          finish(() => reject(pendingAbort
+            ? new DOMException('Aborted', 'AbortError')
+            : error instanceof Error ? error : new Error(String(error))));
         } finally {
-          if (!stopped()) {
+          if (!settled) {
             params.onToolTrace?.({
               tool_call_id: toolCallId, tool_name: toolName, detail,
               status: 'done', execution_mode: request.safeRead ? 'parallel' : 'sequential',
@@ -171,8 +170,12 @@ export const streamNativeTurnViaTauri = async (params: {
             nextToPublish += 1;
             if (!request.safeRead) exclusiveActive = false;
             publishing = false;
-            publishReady();
-            startReady();
+            if (pendingAbort) finish(() => reject(new DOMException('Aborted', 'AbortError')));
+            else if (pendingDone) finishDone();
+            else {
+              publishReady();
+              startReady();
+            }
           }
         }
       })();
@@ -205,6 +208,7 @@ export const streamNativeTurnViaTauri = async (params: {
             outcome.hiddenContext = resolution.hiddenContext;
             outcome.visibleContent = resolution.visibleContent;
             outcome.interrupt = true;
+            interruptObserved = true;
           } else if (resolution?.kind === 'result') {
             outcome.result = resolution.result;
             outcome.blocks = resolution.blocks;
@@ -228,7 +232,7 @@ export const streamNativeTurnViaTauri = async (params: {
     };
 
     const startReady = () => {
-      if (stopped() || exclusiveActive) return;
+      if (stopped() || exclusiveActive || interruptObserved || pendingDone) return;
       while (nextToStart < requests.length) {
         const request = requests[nextToStart];
         if (request.safeRead) {
@@ -276,10 +280,45 @@ export const streamNativeTurnViaTauri = async (params: {
       fn();
     };
 
+    const finishDone = () => {
+      const payload = pendingDone;
+      if (!payload || stopped() || publishing) return;
+      const providerInputItems = nativeToolItems.length ? [
+        ...nativeToolItems, ...(payload.provider_input_items ?? buildAssistantProviderInputItemsFromTurn(payload.output_text || fullContent, payload.tool_calls || [])),
+      ] : payload.provider_input_items ?? undefined;
+      const providerTurnState =
+        payload.provider_turn_state ??
+        (params.providerType === 'chatgpt'
+          ? buildChatGptProviderTurnState(
+            payload.response_id,
+            payload.output_items,
+          )
+          : undefined);
+      const derivedOutputText =
+        extractVisibleTextFromProviderInputItems(providerInputItems) ||
+        extractVisibleTextFromProviderInputItems(payload.output_items ?? undefined);
+      finish(() =>
+        resolve({
+          content: payload.output_text || fullContent || derivedOutputText,
+          toolCalls: payload.tool_calls || [],
+          providerInputItems,
+          providerTurnState,
+          reasoningSummary: payload.reasoning_summary ?? undefined,
+          toolTraces: payload.tool_traces ?? undefined,
+          hiddenContext: payload.hidden_context ?? undefined,
+          completionReason: payload.completion_reason ?? undefined,
+        })
+      );
+    };
+
     const signalHandler = () => {
       void tauriIpc.aiCancelStream(requestId).catch(() => {
         // Ignore backend cancel failures
       });
+      if (publishing) {
+        pendingAbort = true;
+        return;
+      }
       finish(() => reject(new DOMException('Aborted', 'AbortError')));
     };
 
@@ -333,32 +372,8 @@ export const streamNativeTurnViaTauri = async (params: {
           }),
           ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            const providerInputItems = nativeToolItems.length ? [
-              ...nativeToolItems, ...(event.payload.provider_input_items ?? buildAssistantProviderInputItemsFromTurn(event.payload.output_text || fullContent, event.payload.tool_calls || [])),
-            ] : event.payload.provider_input_items ?? undefined;
-            const providerTurnState =
-              event.payload.provider_turn_state ??
-              (params.providerType === 'chatgpt'
-                ? buildChatGptProviderTurnState(
-                  event.payload.response_id,
-                  event.payload.output_items,
-                )
-                : undefined);
-            const derivedOutputText =
-              extractVisibleTextFromProviderInputItems(providerInputItems) ||
-              extractVisibleTextFromProviderInputItems(event.payload.output_items ?? undefined);
-            finish(() =>
-              resolve({
-                content: event.payload.output_text || fullContent || derivedOutputText,
-                toolCalls: event.payload.tool_calls || [],
-                providerInputItems,
-                providerTurnState,
-                reasoningSummary: event.payload.reasoning_summary ?? undefined,
-                toolTraces: event.payload.tool_traces ?? undefined,
-                hiddenContext: event.payload.hidden_context ?? undefined,
-                completionReason: event.payload.completion_reason ?? undefined,
-              })
-            );
+            pendingDone = event.payload;
+            finishDone();
           }),
           ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
             if (settled || event.payload.request_id !== requestId) return;

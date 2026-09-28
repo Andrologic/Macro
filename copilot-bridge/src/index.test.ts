@@ -340,7 +340,7 @@ describe('copilot bridge tool registration', () => {
     }));
   });
 
-  it('relays workspace tools and mutating Git tools through the frontend unchanged', async () => {
+  it('relays workspace and Git tools through the frontend when connected', async () => {
     const { __testables } = await loadBridge();
     const requestTool = mock(async (params: Record<string, unknown>) => ({
       result: `frontend:${String(params.toolName)}`,
@@ -367,6 +367,9 @@ describe('copilot bridge tool registration', () => {
       'git_stash',
       'git_branch_list',
       'git_get_tree',
+      'git_status',
+      'git_log',
+      'git_diff',
     ];
     const tools = __testables.buildMacroTools(
       {
@@ -404,7 +407,7 @@ describe('copilot bridge tool registration', () => {
     }>;
 
     for (const toolId of relayedToolIds) {
-      expect(__testables.isFrontendRelayToolId(toolId)).toBe(true);
+      expect(__testables.isFrontendRelayToolId(toolId, true)).toBe(true);
       const args = {
         path: 'web/src/index.ts',
         repo_path: 'web',
@@ -426,7 +429,7 @@ describe('copilot bridge tool registration', () => {
     expect(requestTool).toHaveBeenCalledTimes(relayedToolIds.length);
   });
 
-  it('keeps read-only Git inspection on the confined Macro tool host', async () => {
+  it('keeps read-only Git inspection on the confined tool host without a frontend relay', async () => {
     const fetchCalls: Array<Record<string, unknown>> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {

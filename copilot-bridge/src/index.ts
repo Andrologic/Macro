@@ -1327,7 +1327,7 @@ const TOOL_HOST_GIT_READ_IDS = new Set([
   'git_diff',
 ]);
 
-const isFrontendRelayToolId = (toolId: string): boolean =>
+const isFrontendRelayToolId = (toolId: string, hasFrontendRelay = false): boolean =>
   isMCPToolId(toolId) || isMcpDiscoveryToolId(toolId) ||
   toolId === 'question' ||
   toolId === 'read_file' ||
@@ -1335,6 +1335,7 @@ const isFrontendRelayToolId = (toolId: string): boolean =>
   FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
   FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
   FRONTEND_RELAY_PAGED_GIT_READ_IDS.has(toolId) ||
+  (hasFrontendRelay && TOOL_HOST_GIT_READ_IDS.has(toolId)) ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||
@@ -1395,7 +1396,7 @@ const executeCopilotMacroTool = async (
 ): Promise<string | ToolResultObject> => {
   const mode = inferMacroMode(request.allowed_tool_ids || []);
 
-  if (isFrontendRelayToolId(toolId)) {
+  if (isFrontendRelayToolId(toolId, Boolean(controlChannel))) {
     if (!controlChannel) {
       throw new BridgeError(
         'frontend_tool_relay_unavailable',
