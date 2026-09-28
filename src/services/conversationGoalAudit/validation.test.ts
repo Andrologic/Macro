@@ -70,4 +70,24 @@ describe("validateConversationGoalVerdict", () => {
       validateConversationGoalVerdict(candidate, ["Confirm the release artifact"]),
     ).toMatchObject({ ok: false });
   });
+
+  it("rejects normalized duplicate evidence but keeps distinct pairs containing NUL", () => {
+    const duplicate = validVerdict();
+    duplicate.criteria[0].evidence.push({
+      source: " dist/ ",
+      finding: " No signed artifact is available for inspection. ",
+    });
+    expect(
+      validateConversationGoalVerdict(duplicate, ["Confirm the release artifact"]).ok,
+    ).toBe(false);
+
+    const distinct = validVerdict();
+    distinct.criteria[0].evidence = [
+      { source: "a\u0000b", finding: "c" },
+      { source: "a", finding: "b\u0000c" },
+    ];
+    expect(
+      validateConversationGoalVerdict(distinct, ["Confirm the release artifact"]).ok,
+    ).toBe(true);
+  });
 });

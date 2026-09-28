@@ -158,7 +158,7 @@ export const validateConversationGoalVerdict = (
           const source = readRequiredText(item.source, `${evidencePath}.source`, issues);
           const finding = readRequiredText(item.finding, `${evidencePath}.finding`, issues);
           if (!source || !finding) return;
-          const key = `${source}\u0000${finding}`;
+          const key = JSON.stringify([source, finding]);
           if (seenEvidence.has(key)) {
             issues.push({ path: evidencePath, message: "Duplicate evidence item." });
             return;

@@ -950,10 +950,14 @@ mod tests {
         let (_temp, pool) = fixture().await;
         let mut blank_activation = activation();
         blank_activation.success_criteria = vec!["\u{feff} \t ".into()];
+        let blank_activation: ActivateConversationGoalInput =
+            serde_json::from_value(serde_json::to_value(blank_activation).unwrap()).unwrap();
         assert!(activate_goal(&pool, blank_activation).await.is_err());
         assert!(get_current_goal(&pool, "parent").await.unwrap().is_none());
         let mut formatted_activation = activation();
         formatted_activation.success_criteria = vec!["\u{feff}Checks\u{00a0}pass  ".into()];
+        let formatted_activation: ActivateConversationGoalInput =
+            serde_json::from_value(serde_json::to_value(formatted_activation).unwrap()).unwrap();
         let goal = activate_goal(&pool, formatted_activation).await.unwrap();
         assert_eq!(goal.revision, 1);
         assert_eq!(goal.success_criteria, ["Checks pass"]);
@@ -983,6 +987,8 @@ mod tests {
         };
         let mut blank_update = update.clone();
         blank_update.success_criteria = vec!["\n  ".into()];
+        let blank_update: UpdateConversationGoalInput =
+            serde_json::from_value(serde_json::to_value(blank_update).unwrap()).unwrap();
         assert!(update_goal(&pool, blank_update).await.is_err());
         assert_eq!(
             get_current_goal(&pool, "parent")
@@ -992,6 +998,8 @@ mod tests {
                 .revision,
             1
         );
+        let update: UpdateConversationGoalInput =
+            serde_json::from_value(serde_json::to_value(update).unwrap()).unwrap();
         assert_eq!(
             update_goal(&pool, update.clone()).await.unwrap(),
             GoalCasOutcome::Applied
