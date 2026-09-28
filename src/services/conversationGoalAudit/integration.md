@@ -8,6 +8,8 @@ The executor passes the abort signal to provider resolution, child resolution, r
 
 `DurableGoalAuditJournal` records ordered `SubagentTransition` events through Tauri IPC. `registerRun` runs before the queued transition and supplies the metadata required by the Rust repository. Each transition and its `agent_runs` projection are committed in one SQLite transaction. Replaying the same `(runId, sequence)` and payload is idempotent; conflicting or skipped transitions fail. The mapping is:
 
+The runtime waits for the durable `queued` claim before scheduling, for `running` before calling the child executor, and for the terminal transition before returning success to the coordinator. Journal failure or an unconfirmed write returns a local `SUBAGENT_CLAIM_FAILED` or `SUBAGENT_JOURNAL_FAILED`; it never authorizes a verdict. These waits use an abort signal and a 10-second default ceiling, configurable through `transitionTimeoutMs`. SQLite validates the parent's depth when inserting `queued`, before any child link. Cancelling a wait cannot roll back an IPC call already in flight: its port must stop or reconcile late effects, and an interrupted write may leave an indeterminate durable state requiring inspection by run id. The verdict port must likewise honor its abort signal and revision compare-and-swap; the coordinator will not report a late `applied` result after cancellation, but cannot undo an external side effect already committed by a non-cooperative port.
+
 | Runtime event | Rust repository call |
 | --- | --- |
 | `registerRun`, then `queued` sequence 0 | Insert the run with its registered id, parent conversation, `goal_auditor`, depth 1, prompt, and model metadata |

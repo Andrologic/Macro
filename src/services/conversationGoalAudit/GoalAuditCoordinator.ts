@@ -430,6 +430,17 @@ export class GoalAuditCoordinator<
     cycle: ActiveAuditCycle,
   ): Promise<GoalAuditResult> {
     const runtimeResult = await handle.result;
+    if (runtimeResult.status === "failed") {
+      return {
+        status: "failed",
+        runId: runtimeResult.runId,
+        error: {
+          code: runtimeResult.error.code,
+          message: runtimeResult.error.message,
+          details: runtimeResult.error.details,
+        },
+      };
+    }
     if (cycle.cancellationReason) {
       return this.#cancellationResult(
         request,
@@ -451,18 +462,6 @@ export class GoalAuditCoordinator<
         reason: runtimeResult.reason,
       };
     }
-    if (runtimeResult.status === "failed") {
-      return {
-        status: "failed",
-        runId: runtimeResult.runId,
-        error: {
-          code: runtimeResult.error.code,
-          message: runtimeResult.error.message,
-          details: runtimeResult.error.details,
-        },
-      };
-    }
-
     const verdict = this.#readVerdict(runtimeResult, expectedCriteria);
     if (!verdict.ok) {
       return {
@@ -478,14 +477,17 @@ export class GoalAuditCoordinator<
 
     let application: unknown;
     try {
-      application = await this.#options.verdictPort.applyVerdict({
-        conversationId: request.conversationId,
-        goalId: request.goalId,
-        expectedRevision: request.goalRevision,
-        verdict: verdict.value,
-        runId: runtimeResult.runId,
-        signal: cycle.controller.signal,
-      });
+      application = await this.#awaitVerdictApplication(
+        () => this.#options.verdictPort.applyVerdict({
+          conversationId: request.conversationId,
+          goalId: request.goalId,
+          expectedRevision: request.goalRevision,
+          verdict: verdict.value,
+          runId: runtimeResult.runId,
+          signal: cycle.controller.signal,
+        }),
+        cycle.controller.signal,
+      );
     } catch (error) {
       if (cycle.cancellationReason) {
         return this.#cancellationResult(
@@ -503,6 +505,13 @@ export class GoalAuditCoordinator<
           details: error,
         },
       };
+    }
+    if (cycle.cancellationReason || cycle.controller.signal.aborted) {
+      return this.#cancellationResult(
+        request,
+        runtimeResult.runId,
+        cycle.cancellationReason ?? "parent_cancelled",
+      );
     }
     if (application === "stale" || application === "missing") {
       return {
@@ -524,6 +533,31 @@ export class GoalAuditCoordinator<
       };
     }
     return { status: "applied", runId: runtimeResult.runId, verdict: verdict.value };
+  }
+
+  #awaitVerdictApplication<T>(start: () => Promise<T> | T, signal: AbortSignal): Promise<T> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new Error("Goal audit cancelled before verdict application"));
+        return;
+      }
+      let done = false;
+      const finish = (error: unknown, value?: T) => {
+        if (done) return;
+        done = true;
+        signal.removeEventListener("abort", onAbort);
+        if (error !== undefined) reject(error);
+        else resolve(value as T);
+      };
+      const onAbort = () => finish(new Error("Goal audit cancelled during verdict application"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      void Promise.resolve()
+        .then(() => {
+          if (signal.aborted) throw new Error("Goal audit cancelled before verdict application");
+          return start();
+        })
+        .then((value) => finish(undefined, value), finish);
+    });
   }
 
   #readVerdict(

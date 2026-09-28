@@ -18,6 +18,7 @@ import {
 } from "./types";
 
 type CancellationReason = CancelledSubagentResult["reason"] | "timed_out";
+const DEFAULT_TRANSITION_TIMEOUT_MS = 10_000;
 
 interface ParentPool<
   TInput,
@@ -38,6 +39,7 @@ interface RunRecord<
   snapshot: SubagentRunSnapshot<TProgress>;
   claimState: "pending" | "claimed";
   controller: AbortController;
+  terminalWaitController?: AbortController;
   cancellationReason?: CancellationReason;
   timeoutHandle?: unknown;
   removeParentAbortListener?: () => void;
@@ -181,6 +183,9 @@ export class SubagentRuntime<
   ) {
     this.#options = options;
     this.#clock = options.clock ?? systemClock;
+    if (options.transitionTimeoutMs !== undefined) {
+      validatePositiveInteger(options.transitionTimeoutMs, "transitionTimeoutMs");
+    }
   }
 
   run(
@@ -273,6 +278,12 @@ export class SubagentRuntime<
       maximumConcurrency,
     );
     pool.queue.push(record);
+    this.#attachParentSignal(record);
+    if (timeoutMs !== undefined) {
+      record.timeoutHandle = this.#clock.setTimeout(() => {
+        this.#requestCancellation(record, "timed_out");
+      }, timeoutMs);
+    }
 
     const handle: SubagentRunHandle<TStructuredOutput> = {
       runId,
@@ -360,7 +371,6 @@ export class SubagentRuntime<
     if (this.#disposed && !record.cancellationReason) {
       this.#requestCancellation(record, "runtime_disposed");
     }
-    this.#attachParentSignal(record);
     if (record.cancellationReason) {
       this.#requestQueuedCancellation(record);
       return;
@@ -389,18 +399,13 @@ export class SubagentRuntime<
     const recorder = this.#options.transitionRecorder;
     if (!recorder) return false;
     try {
-      if (recorder.claimRun) {
-        await recorder.claimRun(transition);
-      } else {
-        await recorder.recordTransition(transition);
-      }
+      await this.#awaitTransition(
+        () => recorder.claimRun ? recorder.claimRun(transition) : recorder.recordTransition(transition),
+        record.controller.signal,
+      );
       return true;
     } catch (error) {
-      try {
-        await this.#options.onTransitionError?.(error, transition);
-      } catch {
-        // The claim failure remains authoritative even if reporting it fails.
-      }
+      this.#notifyTransitionError(error, transition);
       this.#finishUnclaimed(record, {
         code: "SUBAGENT_CLAIM_FAILED",
         message: "Subagent run could not be claimed",
@@ -416,6 +421,7 @@ export class SubagentRuntime<
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
     error: NormalizedSubagentError,
   ): void {
+    this.#clearRunResources(record);
     const endedAt = this.#clock.now();
     const result: SubagentRunResult<TStructuredOutput> = {
       runId: record.snapshot.runId,
@@ -438,7 +444,7 @@ export class SubagentRuntime<
 
   cancelChild(runId: string): boolean {
     const record = this.#runs.get(runId);
-    if (!record || this.#isTerminal(record.snapshot.state)) {
+    if (!record || record.settled) {
       return false;
     }
     this.#requestCancellation(record, "child_cancelled");
@@ -450,7 +456,7 @@ export class SubagentRuntime<
     for (const record of this.#runs.values()) {
       if (
         record.snapshot.parentConversationId === parentConversationId &&
-        !this.#isTerminal(record.snapshot.state)
+        !record.settled
       ) {
         cancelledCount += 1;
         this.#requestCancellation(record, "parent_cancelled");
@@ -497,7 +503,7 @@ export class SubagentRuntime<
     if (!this.#disposed) {
       this.#disposed = true;
       for (const record of this.#runs.values()) {
-        if (!this.#isTerminal(record.snapshot.state)) {
+        if (!record.settled) {
           this.#requestCancellation(record, "runtime_disposed");
         }
       }
@@ -534,7 +540,7 @@ export class SubagentRuntime<
       pool.queue.shift();
       if (record.snapshot.state !== "queued") continue;
       pool.activeCount += 1;
-      this.#startExecution(record);
+      void this.#startExecution(record);
     }
 
     if (pool.activeCount === 0 && pool.queue.length === 0) {
@@ -542,25 +548,37 @@ export class SubagentRuntime<
     }
   }
 
-  #startExecution(
+  async #startExecution(
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
-  ): void {
-    const previousState = record.snapshot.state;
-    record.snapshot = {
-      ...record.snapshot,
-      state: "running",
-      startedAt: this.#clock.now(),
-    };
-    this.#publishTransition(record, previousState);
-
-    const timeoutMs = record.snapshot.timeoutMs;
-    if (timeoutMs !== undefined) {
-      record.timeoutHandle = this.#clock.setTimeout(() => {
-        this.#requestCancellation(record, "timed_out");
-      }, timeoutMs);
+  ): Promise<void> {
+    try {
+      if (record.cancellationReason) {
+        this.#finishForCancellation(record);
+      } else {
+        const previousState = record.snapshot.state;
+        record.snapshot = {
+          ...record.snapshot,
+          state: "running",
+          startedAt: this.#clock.now(),
+        };
+        const runningWrite = this.#publishTransition(record, previousState, undefined, record.controller.signal);
+        if (this.#options.transitionRecorder) await runningWrite;
+        if (record.cancellationReason) {
+          this.#finishForCancellation(record);
+        } else {
+          await this.#execute(record);
+        }
+      }
+      await record.result;
+    } catch (error) {
+      this.#finishJournalFailure(record, error);
+    } finally {
+      const pool = this.#pools.get(record.snapshot.parentConversationId);
+      if (pool) {
+        pool.activeCount -= 1;
+        this.#pump(record.snapshot.parentConversationId);
+      }
     }
-
-    void this.#execute(record);
   }
 
   async #execute(
@@ -614,10 +632,15 @@ export class SubagentRuntime<
       }
     }
 
-    const pool = this.#pools.get(record.snapshot.parentConversationId);
-    if (pool) {
-      pool.activeCount -= 1;
-      this.#pump(record.snapshot.parentConversationId);
+  }
+
+  #finishForCancellation(
+    record: RunRecord<TInput, TStructuredOutput, TProgress>,
+  ): void {
+    if (record.cancellationReason === "timed_out") {
+      this.#finishTimedOut(record);
+    } else if (record.cancellationReason) {
+      this.#finishCancelled(record, record.cancellationReason);
     }
   }
 
@@ -659,13 +682,21 @@ export class SubagentRuntime<
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
     reason: CancellationReason,
   ): void {
-    if (this.#isTerminal(record.snapshot.state) || record.cancellationReason) {
+    if (record.settled) {
       return;
     }
+    if (record.terminalWaitController) {
+      record.cancellationReason ??= reason;
+      record.terminalWaitController.abort(reason);
+      return;
+    }
+    if (record.cancellationReason) return;
     record.cancellationReason = reason;
     if (record.snapshot.state === "queued") {
       if (record.transitionSequence > 0) {
         this.#requestQueuedCancellation(record);
+      } else {
+        record.controller.abort(reason);
       }
       return;
     }
@@ -806,9 +837,8 @@ export class SubagentRuntime<
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
     result: SubagentRunResult<TStructuredOutput>,
   ): void {
-    if (this.#isTerminal(record.snapshot.state)) return;
+    if (this.#isTerminal(record.snapshot.state) || record.settled) return;
     const previousState = record.snapshot.state;
-    this.#clearRunResources(record);
     record.snapshot = {
       ...record.snapshot,
       state: result.status,
@@ -816,10 +846,44 @@ export class SubagentRuntime<
       ...(result.status === "failed" ? { error: result.error } : {}),
       ...(result.metrics ? { metrics: { ...result.metrics } } : {}),
     };
-    this.#publishTransition(record, previousState, result);
-    void record.transitionWrites.then(() => {
-      record.settled = true;
-      record.resolveResult(result);
+    const terminalWaitController = new AbortController();
+    record.terminalWaitController = terminalWaitController;
+    void this.#publishTransition(record, previousState, result, terminalWaitController.signal)
+      .then(() => {
+        if (record.settled) return;
+        record.terminalWaitController = undefined;
+        this.#clearRunResources(record);
+        record.settled = true;
+        record.resolveResult(result);
+      })
+      .catch((error: unknown) => this.#finishJournalFailure(record, error));
+  }
+
+  #finishJournalFailure(
+    record: RunRecord<TInput, TStructuredOutput, TProgress>,
+    cause: unknown,
+  ): void {
+    if (record.settled) return;
+    this.#clearRunResources(record);
+    record.terminalWaitController = undefined;
+    const endedAt = this.#clock.now();
+    const error: NormalizedSubagentError = {
+      code: "SUBAGENT_JOURNAL_FAILED",
+      message: "Subagent transition could not be confirmed",
+      details: cause,
+      retryable: true,
+    };
+    record.snapshot = { ...record.snapshot, state: "failed", endedAt, error };
+    record.settled = true;
+    this.#emit(record.snapshot);
+    record.resolveResult({
+      runId: record.snapshot.runId,
+      parentConversationId: record.snapshot.parentConversationId,
+      status: "failed",
+      queuedAt: record.snapshot.queuedAt,
+      ...(record.snapshot.startedAt === undefined ? {} : { startedAt: record.snapshot.startedAt }),
+      endedAt,
+      error,
     });
   }
 
@@ -838,7 +902,8 @@ export class SubagentRuntime<
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
     previousState: SubagentRunState | null,
     result?: SubagentRunResult<TStructuredOutput>,
-  ): void {
+    signal?: AbortSignal,
+  ): Promise<void> {
     const transition: SubagentTransition<TStructuredOutput, TProgress> = {
       runId: record.snapshot.runId,
       parentConversationId: record.snapshot.parentConversationId,
@@ -853,16 +918,58 @@ export class SubagentRuntime<
     this.#emit(record.snapshot);
 
     const recorder = this.#options.transitionRecorder;
-    if (!recorder) return;
-    record.transitionWrites = record.transitionWrites.then(async () => {
+    if (!recorder) return record.transitionWrites;
+    const write = record.transitionWrites.then(() =>
+      this.#awaitTransition(() => recorder.recordTransition(transition), signal),
+    );
+    record.transitionWrites = write;
+    void write.catch((error: unknown) => this.#notifyTransitionError(error, transition));
+    return write;
+  }
+
+  #notifyTransitionError(
+    error: unknown,
+    transition: SubagentTransition<TStructuredOutput, TProgress>,
+  ): void {
+    try {
+      const notification = this.#options.onTransitionError?.(error, transition);
+      if (notification) void Promise.resolve(notification).catch(() => undefined);
+    } catch {
+      // Diagnostic callbacks cannot delay the lifecycle.
+    }
+  }
+
+  #awaitTransition(
+    start: () => void | Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      let timer: unknown;
+      const finish = (error?: unknown) => {
+        if (done) return;
+        done = true;
+        if (timer !== undefined) this.#clock.clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const onAbort = () => finish(new Error("Subagent transition wait aborted"));
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      timer = this.#clock.setTimeout(
+        () => finish(new Error("Subagent transition wait timed out")),
+        this.#options.transitionTimeoutMs ?? DEFAULT_TRANSITION_TIMEOUT_MS,
+      );
       try {
-        await recorder.recordTransition(transition);
+        const operation = start();
+        if (operation === undefined) finish();
+        else void Promise.resolve(operation).then(() => finish(), finish);
       } catch (error) {
-        try {
-          await this.#options.onTransitionError?.(error, transition);
-        } catch {
-          // Observability failures must not alter the child result.
-        }
+        finish(error);
       }
     });
   }

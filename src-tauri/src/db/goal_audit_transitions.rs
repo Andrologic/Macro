@@ -138,6 +138,13 @@ pub async fn record_goal_audit_transition(
         {
             return Err(invalid("Invalid queued goal audit descriptor"));
         }
+        super::agent_runs::validate_lineage(
+            &mut transaction,
+            &transition.parent_conversation_id,
+            None,
+            descriptor.depth,
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO agent_runs (id, parent_conversation_id, agent_profile, depth, status, prompt, model_metadata_json, attempt_count, created_at, updated_at) VALUES (?, ?, 'goal_auditor', 1, 'queued', ?, ?, 0, ?, ?)",
         )
@@ -322,6 +329,83 @@ mod tests {
             transition,
             usage: AgentRunUsageInput::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_queued_audit_under_an_existing_child_conversation() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = crate::db::create_pool(&temp.path().join("macro.db"))
+            .await
+            .unwrap();
+        let parent = create_conversation(
+            &pool,
+            CreateConversationInput {
+                title: None,
+                scope_mode: "Chat".into(),
+                task_id: None,
+                group_id: None,
+                project_id: None,
+                provider_id: None,
+                model_id: None,
+                reasoning_effort: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+        let child = create_conversation(
+            &pool,
+            CreateConversationInput {
+                title: None,
+                scope_mode: "Chat".into(),
+                task_id: None,
+                group_id: None,
+                project_id: None,
+                provider_id: None,
+                model_id: None,
+                reasoning_effort: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+        super::super::agent_runs::create_agent_run(
+            &pool,
+            CreateAgentRunInput {
+                id: Some("outer".into()),
+                parent_conversation_id: parent,
+                child_conversation_id: Some(child.clone()),
+                agent_profile: "implementer".into(),
+                depth: 1,
+                prompt: "Outer run".into(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(record_goal_audit_transition(
+            &pool,
+            input(transition(
+                "nested",
+                &child,
+                0,
+                None,
+                AgentRunStatus::Queued
+            )),
+        )
+        .await
+        .is_err());
+        assert!(super::super::agent_runs::get_agent_run(&pool, "nested")
+            .await
+            .unwrap()
+            .is_none());
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_run_transitions WHERE run_id = 'nested'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

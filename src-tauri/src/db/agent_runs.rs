@@ -81,7 +81,7 @@ async fn begin_immediate(pool: &SqlitePool) -> DbResult<sqlx::Transaction<'stati
     Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
 }
 
-async fn validate_lineage(
+pub(super) async fn validate_lineage(
     connection: &mut sqlx::SqliteConnection,
     parent_conversation_id: &str,
     child_conversation_id: Option<&str>,

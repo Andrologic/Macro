@@ -485,9 +485,11 @@ describe("SubagentRuntime", () => {
     expect(executor.started).toEqual(["first", "second"]);
     executor.complete("second");
     await handles[1].result;
+    await waitForExecution(executor, "third");
     expect(executor.started).toEqual(["first", "second", "third"]);
     executor.complete("first");
     await handles[0].result;
+    await waitForExecution(executor, "fourth");
     expect(executor.started).toEqual(["first", "second", "third", "fourth"]);
     executor.complete("third");
     executor.complete("fourth");
@@ -687,7 +689,7 @@ describe("SubagentRuntime", () => {
     expect(transitionErrors).toHaveLength(1);
   });
 
-  it("keeps post-claim recorder failures observational", async () => {
+  it("fails closed when running cannot be recorded", async () => {
     const executor = new ControlledExecutor();
     const failedStates: string[] = [];
     const runtime = new SubagentRuntime<TestInput, TestOutput>({
@@ -708,14 +710,115 @@ describe("SubagentRuntime", () => {
       parentDepth: 0,
       input: { name: "observable" },
     });
-    await waitForExecution(executor, "observable");
-    executor.complete("observable", { text: "done" });
-
     expect(await handle.result).toMatchObject({
-      status: "completed",
-      output: { text: "done" },
+      status: "failed",
+      error: { code: "SUBAGENT_JOURNAL_FAILED" },
     });
-    expect(failedStates).toEqual(["running", "completed"]);
+    expect(executor.started).toEqual([]);
+    expect(failedStates).toEqual(["running"]);
+  });
+
+  it("settles a never-resolving queued claim on cancel, timeout, dispose or recorder deadline", async () => {
+    for (const reason of ["cancel", "timeout", "dispose", "ceiling"] as const) {
+      const executor = new ControlledExecutor();
+      const clock = new FakeClock();
+      const runtime = new SubagentRuntime<TestInput, TestOutput>({
+        executor,
+        clock,
+        idFactory: createIdFactory(),
+        transitionTimeoutMs: 20,
+        transitionRecorder: {
+          claimRun: () => new Promise<void>(() => undefined),
+          recordTransition: () => undefined,
+        },
+      });
+      const handle = runtime.run({
+        parentConversationId: "parent-1",
+        parentDepth: 0,
+        input: { name: reason },
+        ...(reason === "timeout" ? { timeoutMs: 5 } : {}),
+      });
+      if (reason === "cancel") handle.cancel();
+      if (reason === "timeout") clock.advanceBy(5);
+      if (reason === "dispose") await runtime.dispose();
+      if (reason === "ceiling") clock.advanceBy(20);
+      expect(await handle.result).toMatchObject({
+        status: "failed",
+        error: { code: "SUBAGENT_CLAIM_FAILED" },
+      });
+      expect(executor.started).toEqual([]);
+      expect(clock.timers.size).toBe(0);
+    }
+  });
+
+  it("bounds a terminal write that never resolves and blocks success", async () => {
+    const clock = new FakeClock();
+    const executor = new ControlledExecutor();
+    const states: string[] = [];
+    const runtime = new SubagentRuntime<TestInput, TestOutput>({
+      executor,
+      clock,
+      transitionTimeoutMs: 20,
+      transitionRecorder: {
+        recordTransition: (transition) => {
+          states.push(transition.state);
+          if (transition.state === "completed") return new Promise<void>(() => undefined);
+        },
+      },
+    });
+    const handle = runtime.run({
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "terminal" },
+    });
+    await waitForExecution(executor, "terminal");
+    executor.complete("terminal", { text: "done" });
+    for (let index = 0; index < 10 && !states.includes("completed"); index += 1) {
+      await Promise.resolve();
+    }
+    expect(states).toEqual(["queued", "running", "completed"]);
+    clock.advanceBy(20);
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      error: { code: "SUBAGENT_JOURNAL_FAILED" },
+    });
+    expect(clock.timers.size).toBe(0);
+  });
+
+  it("aborts an outstanding terminal write on cancel or dispose", async () => {
+    for (const action of ["cancel", "dispose"] as const) {
+      const clock = new FakeClock();
+      const executor = new ControlledExecutor();
+      let terminalStarted!: () => void;
+      const started = new Promise<void>((resolve) => { terminalStarted = resolve; });
+      const runtime = new SubagentRuntime<TestInput, TestOutput>({
+        executor,
+        clock,
+        transitionRecorder: {
+          recordTransition: (transition) => {
+            if (transition.state === "completed") {
+              terminalStarted();
+              return new Promise<void>(() => undefined);
+            }
+          },
+        },
+      });
+      const handle = runtime.run({
+        parentConversationId: "parent-1",
+        parentDepth: 0,
+        input: { name: action },
+      });
+      await waitForExecution(executor, action);
+      executor.complete(action, { text: "done" });
+      await started;
+      if (action === "cancel") handle.cancel();
+      else await runtime.dispose();
+      expect(await handle.result).toMatchObject({
+        status: "failed",
+        error: { code: "SUBAGENT_JOURNAL_FAILED" },
+      });
+      expect(clock.timers.size).toBe(0);
+    }
   });
 
   it("normalizes ambiguous executor output as a failed run", async () => {
@@ -796,6 +899,8 @@ describe("SubagentRuntime", () => {
       parentDepth: 0,
       input: { name: "queued" },
     });
+
+    await waitForExecution(executor, "active");
 
     let disposed = false;
     const disposal = runtime.dispose().then(() => {

@@ -1679,6 +1679,8 @@ La première politique est volontairement restrictive : enfants en lecture seule
 
 Le coordinateur `goal_auditor` peut être assemblé avec le transport fournisseur et le journal durable par ports injectés. Le profil lecture seule est appliqué aux outils du tour enfant. Le journal IPC enregistre chaque transition et sa projection dans `agent_runs` en une transaction SQLite, avec idempotence par `(runId, sequence)`. La conversation enfant est créée ou reprise par un port, puis liée au run avant le streaming. Le choix du déclencheur UI reste ouvert.
 
+Le runtime attend la confirmation de `queued` avant de planifier l'enfant, celle de `running` avant son exécution et celle de la transition terminale avant tout verdict applicable. Une écriture refusée ou non confirmée échoue localement sans appliquer le verdict. Les attentes du journal sont annulables et bornées à dix secondes par défaut ; l'insertion SQLite de `queued` vérifie immédiatement la profondeur du parent. L'annulation ne peut pas annuler rétroactivement un effet IPC déjà lancé : le port doit traiter le signal et réconcilier un résultat tardif éventuel à partir de l'identifiant du run. Le port de verdict doit respecter le signal et la révision attendue pour éviter un effet tardif après annulation.
+
 ---
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
