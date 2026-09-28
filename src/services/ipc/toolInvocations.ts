@@ -18,8 +18,10 @@ const notifyToolInvocationsChanged = (conversationId: string): void => {
 };
 
 /** Persist this intent before dispatch. A retry with the same identity must match. */
-export function recordToolInvocation(input: RecordToolInvocationInput): Promise<RecordToolInvocationResult> {
-  return invoke<RecordToolInvocationResult>("db_record_tool_invocation", { input });
+export async function recordToolInvocation(input: RecordToolInvocationInput): Promise<RecordToolInvocationResult> {
+  const result = await invoke<RecordToolInvocationResult>("db_record_tool_invocation", { input });
+  if (result.is_new) notifyToolInvocationsChanged(input.conversationId);
+  return result;
 }
 
 /** Call only after the result was confirmed by the owning transport. */

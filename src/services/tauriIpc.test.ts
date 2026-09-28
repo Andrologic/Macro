@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
 const actualCore = await import("@tauri-apps/api/core");
 const invokeCalls: Array<{ command: string; payload: unknown; options?: unknown }> = [];
-const invokeMock = mock(async (command: string, payload?: unknown, options?: unknown) => {
+const invokeMock = mock(async (command: string, payload?: unknown, options?: unknown): Promise<unknown> => {
   invokeCalls.push({ command, payload, ...(options ? { options } : {}) });
   return '{"ok":true}';
 });
@@ -104,6 +104,26 @@ describe("tauriIpc tool invocation journal notifications", () => {
   beforeEach(() => {
     invokeCalls.length = 0;
     invokeMock.mockClear();
+  });
+
+  it("announces a newly recorded invocation before dispatch", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const changed: string[] = [];
+    const onChange = (event: Event) => {
+      changed.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    };
+    window.addEventListener("macro:tool-invocations-changed", onChange);
+    try {
+      invokeMock.mockImplementationOnce(async () => ({ is_new: true }));
+      await tauriIpc.recordToolInvocation({
+        conversationId: "conversation-a", turnId: "turn-a", messageId: "message-a",
+        callId: "call-a", toolName: "write", effectClass: "workspace_mutation",
+        arguments: { path: "file.txt" }, remoteExecutionId: null,
+      });
+      expect(changed).toEqual(["conversation-a"]);
+    } finally {
+      window.removeEventListener("macro:tool-invocations-changed", onChange);
+    }
   });
 
   it("refreshes the owning conversation after confirmed journal mutations", async () => {

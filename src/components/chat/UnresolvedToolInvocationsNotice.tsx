@@ -22,11 +22,11 @@ const isVisible = (
   (item.status === 'pending' && (!isActiveTurn(phase) || item.turn_id !== activeTurnId));
 
 const invocationReference = (item: ToolInvocation): string => {
-  let hash = 0x811c9dc5;
+  let hash = 0xcbf29ce484222325n;
   for (const character of `${item.turn_id}\0${item.message_id}\0${item.call_id}`) {
-    hash = Math.imul(hash ^ (character.codePointAt(0) ?? 0), 0x01000193);
+    hash = BigInt.asUintN(64, (hash ^ BigInt(character.codePointAt(0) ?? 0)) * 0x100000001b3n);
   }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return hash.toString(16).padStart(16, '0');
 };
 
 const isUnresolvedInvocation = (value: unknown, conversationId: string): value is ToolInvocation => {
@@ -42,6 +42,7 @@ const isUnresolvedInvocation = (value: unknown, conversationId: string): value i
 
 export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeTurnId }: Props) {
   const { t } = useTranslation();
+  const canReadJournal = isTauriAvailable();
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<{
     conversationId: string;
@@ -68,7 +69,7 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
     let current = true;
     if (!conversationId) return () => { current = false; };
 
-    if (!isTauriAvailable()) {
+    if (!canReadJournal) {
       return () => { current = false; };
     }
 
@@ -84,14 +85,15 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
         if (current) setResult({ conversationId, phase, activeTurnId, revision, items: null });
       });
     return () => { current = false; };
-  }, [conversationId, phase, activeTurnId, revision]);
+  }, [conversationId, phase, activeTurnId, revision, canReadJournal]);
 
+  if (!conversationId || !canReadJournal) return null;
   const isCurrentResult = result?.conversationId === conversationId &&
     result.phase === phase && result.activeTurnId === activeTurnId && result.revision === revision;
   const items = result?.conversationId === conversationId && Array.isArray(result.items)
     ? result.items.filter((item) => isVisible(item, phase, activeTurnId))
     : [];
-  if (isCurrentResult && result?.items === null) {
+  if (result?.conversationId === conversationId && result.items === null) {
     return (
       <div role="alert" data-testid="unresolved-tool-invocations-error" className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-xs text-foreground">
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
@@ -100,6 +102,15 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
             {t('chat.toolJournalRetryRead', 'Retry journal read')}
           </button>
         </div>
+      </div>
+    );
+  }
+  if (items.length === 0 && !isCurrentResult && !isActiveTurn(phase)) {
+    return (
+      <div role="status" data-testid="unresolved-tool-invocations-checking" className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-xs text-foreground">
+        <p className="mx-auto max-w-4xl">
+          {t('chat.toolJournalChecking', 'Checking local tool effects. Inspect them before sending another request.')}
+        </p>
       </div>
     );
   }

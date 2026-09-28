@@ -70,6 +70,18 @@ describe('UnresolvedToolInvocationsNotice', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it('shows inspection in progress when the first pending entry is not yet readable', async () => {
+    const afterTurn = createDeferred<ToolInvocation[]>();
+    list.mockImplementationOnce(async () => []);
+    list.mockImplementationOnce(() => afterTurn.promise);
+    await render('first', 'streaming', 'turn');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await render('first', 'idle');
+    expect(container.textContent).toContain('Checking local tool effects');
+    await act(async () => afterTurn.resolve([invocation('pending')]));
+    expect(container.textContent).toContain('pending after turn ended');
+  });
+
   it('keeps a pending reservation hidden while the turn is persisting', async () => {
     list.mockImplementation(async () => [invocation('pending')]);
     await render('first', 'persisting', 'turn');
@@ -111,8 +123,8 @@ describe('UnresolvedToolInvocationsNotice', () => {
     await render('first', 'idle');
     const calls = Array.from(container.querySelectorAll('li'), (item) => item.textContent);
     expect(calls).toHaveLength(2);
-    const firstReference = calls[0]?.match(/#[0-9a-f]{8}/)?.[0];
-    const remainingReference = calls[1]?.match(/#[0-9a-f]{8}/)?.[0];
+    const firstReference = calls[0]?.match(/#[0-9a-f]{16}/)?.[0];
+    const remainingReference = calls[1]?.match(/#[0-9a-f]{16}/)?.[0];
     expect(firstReference).toBeTruthy();
     expect(remainingReference).toBeTruthy();
     expect(firstReference).not.toBe(remainingReference);
@@ -124,13 +136,16 @@ describe('UnresolvedToolInvocationsNotice', () => {
   });
 
   it('warns when the local journal cannot be read', async () => {
+    const afterRetry = createDeferred<ToolInvocation[]>();
     list.mockImplementationOnce(async () => { throw new Error('sensitive SQLite path'); });
-    list.mockImplementationOnce(async () => []);
+    list.mockImplementationOnce(() => afterRetry.promise);
     await render('first', 'idle');
     expect(container.textContent).toContain('Unable to check the local tool journal');
     expect(container.textContent).not.toContain('sensitive SQLite path');
     await act(async () => container.querySelector('button')?.click());
     expect(list).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Unable to check the local tool journal');
+    await act(async () => afterRetry.resolve([]));
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
