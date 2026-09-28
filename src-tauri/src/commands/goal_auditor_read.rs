@@ -1,6 +1,7 @@
 use super::{command_error, execute_workspace_tool_controlled, get_pool, CommandResult, DbPool};
 use crate::db::agent_runs;
 use crate::git::GitState;
+use crate::workspace;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,13 +24,45 @@ const GOAL_AUDITOR_READ_TOOLS: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct GoalAuditorReadInput {
     pub run_id: String,
     pub parent_conversation_id: String,
     pub child_conversation_id: String,
     pub tool_id: String,
     pub args: Value,
-    pub workspace_path: Option<String>,
+}
+
+async fn auditor_workspace(
+    default_workspace: &PathBuf,
+    metadata_workspace: &PathBuf,
+    project_id: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let Some(project_id) = project_id else {
+        return Ok(default_workspace.clone());
+    };
+    let project = workspace::get_project_by_id(default_workspace, metadata_workspace, project_id)
+        .await
+        .map_err(|error| command_error(error.to_string()))?
+        .ok_or_else(|| command_error("Goal auditor project is unavailable"))?;
+    if let Some(wsl_path) = workspace::parse_wsl_unc_path(&project.path) {
+        return Ok(PathBuf::from(wsl_path.unc_path));
+    }
+    let path = PathBuf::from(project.path);
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        default_workspace.join(path)
+    };
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|_| command_error("Goal auditor project path is unavailable"))?;
+    if !resolved.is_dir() {
+        return Err(command_error(
+            "Goal auditor project path is not a directory",
+        ));
+    }
+    Ok(resolved)
 }
 
 async fn execute_goal_auditor_read(
@@ -42,27 +75,27 @@ async fn execute_goal_auditor_read(
     if !GOAL_AUDITOR_READ_TOOLS.contains(&input.tool_id.as_str()) || !input.args.is_object() {
         return Err(command_error("Goal auditor tool is not an allowed read"));
     }
-    let authorized = agent_runs::authorize_goal_auditor_read(
+    let scope = agent_runs::authorize_goal_auditor_read(
         pool,
         &input.run_id,
         &input.parent_conversation_id,
         &input.child_conversation_id,
     )
     .await?;
-    if !authorized {
-        return Err(command_error("Goal auditor run is not active or linked"));
-    }
+    let scope = scope.ok_or_else(|| command_error("Goal auditor run is not active or linked"))?;
+    let scoped_workspace =
+        auditor_workspace(&workspace, &metadata_workspace, scope.project_id.as_deref()).await?;
 
     // Architect is fixed here because Chat intentionally denies workspace reads.
     // The exact native allowlist above is the authority for this command.
     let result = execute_workspace_tool_controlled(
-        workspace,
+        scoped_workspace,
         metadata_workspace,
         git_state,
         "Architect".to_string(),
         input.tool_id,
         input.args,
-        input.workspace_path,
+        None,
         None,
         None,
         Some(false),
@@ -70,13 +103,14 @@ async fn execute_goal_auditor_read(
         None,
     )
     .await?;
-    if !agent_runs::authorize_goal_auditor_read(
+    if agent_runs::authorize_goal_auditor_read(
         pool,
         &input.run_id,
         &input.parent_conversation_id,
         &input.child_conversation_id,
     )
     .await?
+        != Some(scope)
     {
         return Err(command_error("Goal auditor run ended during the read"));
     }
@@ -145,6 +179,8 @@ mod tests {
             std::fs::create_dir(&workspace).expect("workspace");
             std::fs::write(workspace.join("proof.txt"), "verified audit evidence")
                 .expect("proof file");
+            std::fs::write(temp.path().join("outside.txt"), "outside audit secret")
+                .expect("outside file");
             let parent_id = Self::conversation(&pool, "Parent").await;
             let child_id = Self::conversation(&pool, "Audit child").await;
             let run_id = "audit-run".to_owned();
@@ -204,7 +240,6 @@ mod tests {
                 child_conversation_id: self.child_id.clone(),
                 tool_id: tool_id.into(),
                 args,
-                workspace_path: None,
             }
         }
 
@@ -239,6 +274,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_path_cannot_escape_the_authorized_workspace() {
+        let fixture = Fixture::new().await;
+        let absolute = fixture.workspace.parent().unwrap().join("outside.txt");
+        for path in ["../outside.txt".to_owned(), absolute.display().to_string()] {
+            let result = fixture
+                .execute(fixture.input("read", json!({"path": path})))
+                .await;
+            assert!(
+                result.is_err(),
+                "a path outside the audit workspace must fail"
+            );
+            let message = result.unwrap_or_else(|error| error.message);
+            assert!(!message.contains("outside audit secret"));
+        }
+        let outside_repo = fixture.workspace.parent().unwrap().display().to_string();
+        assert!(fixture
+            .execute(fixture.input("git_status", json!({"repo_path": outside_repo})))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn rejects_every_non_read_tool_before_execution() {
         let fixture = Fixture::new().await;
         for tool in [
@@ -262,6 +319,21 @@ mod tests {
             .execute(fixture.input("read", json!("not an argument object")))
             .await
             .is_err());
+    }
+
+    #[test]
+    fn caller_cannot_supply_a_workspace_mode_or_profile() {
+        for field in ["workspacePath", "mode", "profile"] {
+            let mut input = json!({
+                "runId": "audit-run",
+                "parentConversationId": "parent",
+                "childConversationId": "child",
+                "toolId": "read",
+                "args": {"path": "proof.txt"},
+            });
+            input[field] = json!("/another/workspace");
+            assert!(serde_json::from_value::<GoalAuditorReadInput>(input).is_err());
+        }
     }
 
     #[tokio::test]
@@ -315,6 +387,56 @@ mod tests {
             .await
             .unwrap();
         assert!(fixture.execute(input).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_parent_project_does_not_fall_back_to_the_global_workspace() {
+        let fixture = Fixture::new().await;
+        sqlx::query("UPDATE conversations SET project_id = 'missing-project' WHERE id = ?")
+            .bind(&fixture.parent_id)
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        let result = fixture
+            .execute(fixture.input("read", json!({"path": "proof.txt"})))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn parent_project_selects_its_native_registered_root() {
+        let fixture = Fixture::new().await;
+        let project_path = fixture.workspace.join("project");
+        std::fs::create_dir(&project_path).unwrap();
+        std::fs::write(project_path.join("proof.txt"), "project audit evidence").unwrap();
+        let project = workspace::create_project(
+            &fixture.workspace,
+            &fixture.workspace,
+            workspace::metadata::CreateProjectRequest {
+                name: "Audit project".into(),
+                description: String::new(),
+                group_id: None,
+                group_name: None,
+                path: Some(project_path.display().to_string()),
+                git_flow_settings: None,
+                direct_edit: true,
+            },
+        )
+        .await
+        .expect("registered project");
+        sqlx::query("UPDATE conversations SET project_id = ? WHERE id = ?")
+            .bind(&project.id)
+            .bind(&fixture.parent_id)
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+
+        let result = fixture
+            .execute(fixture.input("read", json!({"path": "proof.txt"})))
+            .await
+            .expect("project-scoped read");
+        assert!(result.contains("project audit evidence"));
+        assert!(!result.contains("verified audit evidence"));
     }
 
     #[tokio::test]

@@ -8,12 +8,11 @@ import type {
 /** The native command derives authorization from the durable run, never from a caller mode. */
 export type GoalAuditorReadInput = Omit<
   NativeGoalAuditorReadInput,
-  "toolId" | "args" | "workspacePath"
+  "toolId" | "args"
 > & {
   toolId: "list" | "read" | "glob" | "grep" | "ast_grep"
     | "git_status" | "git_log" | "git_branch_list" | "git_diff" | "git_get_tree";
   args: Record<string, unknown>;
-  workspacePath?: NativeGoalAuditorReadInput["workspacePath"];
 };
 
 export function executeGoalAuditorRead(input: GoalAuditorReadInput): Promise<string> {
