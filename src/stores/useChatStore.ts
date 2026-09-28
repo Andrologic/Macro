@@ -357,7 +357,7 @@ import {
   type PersistedComposerDraft,
 } from "./chat/chatLocalSessionState";
 import type { QueuedSubmission } from "./chat/chatQueuedSubmissions";
-import type { QueuedSubmissionRuntime } from "./chat/chatQueuedSubmissionRuntime";
+import type { QueuedSubmissionPreview, QueuedSubmissionRuntime } from "./chat/chatQueuedSubmissionRuntime";
 import {
   buildConversationRuntimePatch,
   buildLegacyStreamingFlags,
@@ -1017,6 +1017,9 @@ interface ChatStore {
   ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string) => void;
   retryQueuedSubmissions: (conversationId: string) => Promise<void>;
+  editQueuedSubmission: (id: string, content: string) => Promise<void>;
+  removeQueuedSubmission: (id: string) => Promise<void>;
+  queuedSubmissionPreviews: QueuedSubmissionPreview[];
   queuedSubmissionRecoveryByConversationId: Record<string, { count: number; error?: string }>;
   clearConversationRuntimeError: (conversationId: string) => void;
   retryAssistantPersistence: (messageId: string) => Promise<void>;
@@ -1369,6 +1372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return true;
       },
       recovery: value => set({ queuedSubmissionRecoveryByConversationId: value }),
+      previews: value => set({ queuedSubmissionPreviews: value }),
     });
     return queueRuntime;
   });
@@ -13561,10 +13565,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     queuedSubmissionRecoveryByConversationId: {},
+    queuedSubmissionPreviews: [],
 
     retryQueuedSubmissions: async (conversationId) => {
       const queue = await getQueueRuntime();
       await queue.retry(conversationId);
+    },
+    editQueuedSubmission: async (id, content) => {
+      const queue = await getQueueRuntime();
+      await queue.edit(id, content);
+    },
+    removeQueuedSubmission: async (id) => {
+      const queue = await getQueueRuntime();
+      await queue.removeEntry(id);
     },
 
     stopConversationStream: (conversationId) => {

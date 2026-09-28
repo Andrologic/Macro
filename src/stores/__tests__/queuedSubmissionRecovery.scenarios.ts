@@ -126,9 +126,59 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       const { useChatStore: restarted } = await c.loadChatStore();
       await restarted.getState().initializeCritical();
       expect(restarted.getState().queuedSubmissionRecoveryByConversationId['queued-conv']).toEqual({ count: 1, error: undefined });
+      expect(restarted.getState().queuedSubmissionPreviews).toEqual([{
+        id: loadQueuedSubmissions()[0].id,
+        conversationId: 'queued-conv',
+        content: 'Recover after restart',
+      }]);
       await restarted.getState().retryQueuedSubmissions('queued-conv');
       expect(restarted.getState().queuedSubmissionRecoveryByConversationId).toEqual({});
+      expect(restarted.getState().queuedSubmissionPreviews).toEqual([]);
       expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('edits a recovered instruction before sending it in its original conversation', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Original instruction' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      const { useChatStore: restarted } = await c.loadChatStore();
+      restarted.setState(c.createIdleChatStoreState({ conversations: store.getState().conversations }));
+
+      await restarted.getState().editQueuedSubmission(accepted.id, 'Revised instruction');
+      expect(loadQueuedSubmissions()[0].input.content).toBe('Revised instruction');
+      await restarted.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.createMessageMock.mock.calls[0]?.[2]).toBe('Revised instruction');
+      expect(c.createMessageMock.mock.calls[0]?.[3]?.turnId).toBe(accepted.id);
+      expect(loadQueuedSubmissions()).toEqual([]);
+    });
+
+    it('removes a recovered instruction without sending it', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Discard this instruction' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      const { useChatStore: restarted } = await c.loadChatStore();
+      restarted.setState(c.createIdleChatStoreState({ conversations: store.getState().conversations }));
+
+      await restarted.getState().removeQueuedSubmission(accepted.id);
+      expect(loadQueuedSubmissions()).toEqual([]);
+      await restarted.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.createMessageMock).not.toHaveBeenCalled();
+      expect(c.streamChatMock).not.toHaveBeenCalled();
+    });
+
+    it('does not edit a queued entry whose user message was already saved', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Already saved' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      const { useChatStore: restarted } = await c.loadChatStore();
+      restarted.setState(c.createIdleChatStoreState({ conversations: store.getState().conversations }));
+      c.listMessagesMock.mockImplementationOnce(async () => [{
+        id: 'saved-user', conversation_id: 'queued-conv', role: 'user', content: 'Already saved',
+        turn_id: accepted.id, created_at: '2026-09-22T00:00:00Z',
+      }]);
+
+      await expect(restarted.getState().editQueuedSubmission(accepted.id, 'Too late')).rejects.toThrow('already saved');
+      expect(loadQueuedSubmissions()[0].input.content).toBe('Already saved');
     });
 
     for (const restart of [false, true]) it(`resolves the original task merge workspace after navigation, restart=${restart}`, async () => {

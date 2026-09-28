@@ -11,7 +11,12 @@ installReactI18nextMock(createTranslationMock({
   'backup.diagnostics': 'Diagnostics',
   'chat.queueRecoveryTitle': 'Queued messages need attention',
   'chat.queueRecoveryDescription': '{{count}} queued message(s) are retained. Retry resumes them in their original context.',
+  'chat.queueEditMessage': 'Edit queued message',
+  'chat.queueRemoveMessage': 'Remove from queue',
   'common.retry': 'Retry',
+  'common.edit': 'Edit',
+  'common.save': 'Save',
+  'common.cancel': 'Cancel',
 }));
 
 const openSettingsMock = mock(() => undefined);
@@ -23,12 +28,18 @@ type ChatTestState = {
   conversations: Conversation[];
   queuedSubmissionRecoveryByConversationId: Record<string, { count: number; error?: string }>;
   retryQueuedSubmissions: (conversationId: string) => Promise<void>;
+  queuedSubmissionPreviews: { id: string; conversationId: string; content: string }[];
+  editQueuedSubmission: (id: string, content: string) => Promise<void>;
+  removeQueuedSubmission: (id: string) => Promise<void>;
 };
 
 const useChatStore = create<ChatTestState>(() => ({
   conversations: [],
   queuedSubmissionRecoveryByConversationId: {},
   retryQueuedSubmissions: async () => undefined,
+  queuedSubmissionPreviews: [],
+  editQueuedSubmission: async () => undefined,
+  removeQueuedSubmission: async () => undefined,
 }));
 
 mock.module('../../stores/useChatStore', () => ({ useChatStore }));
@@ -72,6 +83,9 @@ describe('PersistenceHealthNotifications', () => {
       conversations: [conversation],
       queuedSubmissionRecoveryByConversationId: {},
       retryQueuedSubmissions: async () => undefined,
+      queuedSubmissionPreviews: [],
+      editQueuedSubmission: async () => undefined,
+      removeQueuedSubmission: async () => undefined,
     });
     notifyActionRequiredMock.mockClear();
     openSettingsMock.mockClear();
@@ -140,6 +154,33 @@ describe('PersistenceHealthNotifications', () => {
     expect(panel?.getAttribute('aria-label')).toBe('Recovery required. Original data preserved.');
     expect(panel?.querySelector('[role="alert"]')?.textContent).toContain('The queued message could not be saved.');
     expect(panel?.querySelector('button')).toBeNull();
+  });
+
+  it('offers edit and removal actions for a recovered instruction', async () => {
+    const editQueuedSubmission = mock(async () => undefined);
+    const removeQueuedSubmission = mock(async () => undefined);
+    useChatStore.setState({
+      queuedSubmissionRecoveryByConversationId: { [conversation.id]: { count: 1 } },
+      queuedSubmissionPreviews: [{ id: 'queued-turn', conversationId: conversation.id, content: 'Original' }],
+      editQueuedSubmission,
+      removeQueuedSubmission,
+    });
+    await act(async () => { root?.render(<PersistenceHealthNotifications />); await flush(); });
+
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(button => button.textContent === label);
+    expect(container.textContent).toContain('Original');
+    await act(async () => { findButton('Edit')?.click(); await flush(); });
+    const editor = container.querySelector('textarea')!;
+    expect(editor.value).toBe('Original');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, 'Revised');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      await flush();
+    });
+    await act(async () => { findButton('Save')?.click(); await flush(); });
+    expect(editQueuedSubmission).toHaveBeenCalledWith('queued-turn', 'Revised');
+    await act(async () => { findButton('Remove from queue')?.click(); await flush(); });
+    expect(removeQueuedSubmission).toHaveBeenCalledWith('queued-turn');
   });
 
   it('releases the retry lock without an unhandled rejection when the action rejects', async () => {
