@@ -29,6 +29,7 @@ import {
   validateToolInvocation,
   invokeToolHandler,
 } from './toolCallRunner';
+import { isParallelSafeReadTool, MAX_PARALLEL_READS } from './toolExecutionEffects';
 import {
   formatToolExecutionError,
   isToolInterruptResolution,
@@ -41,6 +42,7 @@ import * as tauriIpc from '../tauriIpc';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
 import { MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import type { ProjectMount, ReasoningEffort, ToolTrace } from '../../types';
+import { devLogger } from '../../utils/devLogger';
 
 const DONE_SUBMISSION_GRACE_MS = 5_000;
 
@@ -94,50 +96,182 @@ export const streamNativeTurnViaTauri = async (params: {
   }
 
   let fullContent = '';
-  const nativeToolItems: unknown[] = [];
-  const nativeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
-  const nativeToolSubmissions = new Map<string, Array<{ id: string; result: string; items: unknown[] }>>();
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
     const nativeUnlisteners: UnlistenFn[] = [];
     let questionToolRequestCount = 0;
     let nativeToolRequestOrder = 0;
-    const pendingToolSubmissions = new Map<string, { toolName: string; args: Record<string, unknown> }>();
+    type NativeOutcome = {
+      result: string;
+      blocks?: ToolResultBlock[];
+      hiddenContext?: string;
+      visibleContent?: string;
+      interrupt?: boolean;
+      isError?: boolean;
+      errorKind?: ToolResult['error_kind'];
+    };
+    type NativeSubmission = { id: string; result: string; items: unknown[]; hiddenContext?: string };
+    type NativeRequest = {
+      toolName: string;
+      toolCallId: string;
+      args: Record<string, unknown>;
+      detail?: string;
+      order: number;
+      safeRead: boolean;
+      started: boolean;
+      outcome?: NativeOutcome;
+      submissions: NativeSubmission[];
+    };
+    const requests: NativeRequest[] = [];
+    const pendingToolSubmissions = new Set<string>();
+    let nextToStart = 0;
+    let nextToPublish = 0;
+    let executing = 0;
+    let exclusiveActive = false;
+    let publishing = false;
+    let interruptObserved = false;
+    let submissionChannelFailed = false;
     let deferredDonePayload: tauriIpc.AiStreamDoneEvent | undefined;
     let deferredDoneTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const removeNativeToolItems = (toolCallId: string) => {
-      const index = nativeToolItems.findIndex((item) => item && typeof item === 'object' &&
-        'type' in item && item.type === 'function_call' &&
-        'call_id' in item && item.call_id === toolCallId);
-      if (index !== -1) nativeToolItems.splice(index, 2);
+    const stopped = () => settled || params.signal?.aborted === true;
+    const emitToolTrace = (trace: ToolTrace) => {
+      try { params.onToolTrace?.(trace); }
+      catch (error) { devLogger.warn('Native tool trace observer failed', formatToolExecutionError(error)); }
     };
-    const proposeNativeToolResult = (
-      toolCallId: string, toolName: string, args: Record<string, unknown>,
-      result: string, blocks: ToolResultBlock[] | undefined, isError: boolean,
-    ) => {
-      const id = createStreamingRequestId();
-      const items = [
-        { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
-        buildFunctionCallOutputProviderInputItem(toolCallId, result, blocks, isError),
-      ];
-      nativeToolSubmissions.set(toolCallId, [
-        ...(nativeToolSubmissions.get(toolCallId) ?? []), { id, result, items },
-      ]);
-      nativeToolItems.push(...items);
-      return id;
-    };
-    const discardNativeToolResult = (toolCallId: string) => {
-      removeNativeToolItems(toolCallId);
-      const call = nativeToolCalls.get(toolCallId);
-      if (!call) return;
+    const submitResult = async (request: NativeRequest, outcome: NativeOutcome) => {
+      const submission: NativeSubmission = {
+        id: createStreamingRequestId(), result: outcome.result,
+        hiddenContext: outcome.hiddenContext,
+        items: [
+          { type: 'function_call', call_id: request.toolCallId, name: request.toolName, arguments: JSON.stringify(request.args) },
+          buildFunctionCallOutputProviderInputItem(request.toolCallId, outcome.result, outcome.blocks, outcome.isError),
+        ],
+      };
+      request.submissions.push(submission);
+      pendingToolSubmissions.add(submission.id);
       try {
-        params.onLiveToolResult?.({
-          ...call, toolCallId, result: '', providerInputItems: [...nativeToolItems],
+        await tauriIpc.aiSubmitToolResult({
+          requestId, toolCallId: request.toolCallId, submissionId: submission.id,
+          result: outcome.result, ...(outcome.blocks ? { blocks: outcome.blocks } : {}),
+          hiddenContext: outcome.hiddenContext, visibleContent: outcome.visibleContent,
+          interrupt: outcome.interrupt, isError: outcome.isError, errorKind: outcome.errorKind,
         });
-      } catch {
-        // A stale live preview must not prevent completion or error submission.
+      } finally {
+        pendingToolSubmissions.delete(submission.id);
+      }
+    };
+
+    const publishReady = () => {
+      if (publishing || stopped() || deferredDonePayload || submissionChannelFailed) return;
+      const request = requests[nextToPublish];
+      if (!request?.outcome) return;
+      publishing = true;
+      void (async () => {
+        try {
+          await submitResult(request, request.outcome!);
+        } catch (error) {
+          if (stopped() || deferredDonePayload) return;
+          // The tool has already run. Submit an error once, without running it again;
+          // only the bridge receipt can decide which submission was accepted.
+          try {
+            await submitResult(request, {
+              result: `Error executing tool ${request.toolName}: ${formatToolExecutionError(error)}`,
+              isError: true,
+              errorKind: 'execution',
+            });
+          } catch (fallbackError) {
+            if (stopped()) return;
+            submissionChannelFailed = true;
+            devLogger.warn('Native tool result fallback submission failed', formatToolExecutionError(fallbackError));
+          }
+        } finally {
+          if (!settled) {
+            emitToolTrace({
+              tool_call_id: request.toolCallId, tool_name: request.toolName,
+              detail: request.detail, status: 'running', recovery_state: 'unknown',
+              execution_mode: request.safeRead ? 'parallel' : 'sequential',
+              batch_id: requestId, order: request.order,
+            });
+            nextToPublish += 1;
+            if (!request.safeRead) exclusiveActive = false;
+            publishing = false;
+            if (deferredDonePayload) flushDeferredDone();
+            else { publishReady(); startReady(); }
+          }
+        }
+      })();
+    };
+
+    const executeRequest = async (request: NativeRequest) => {
+      const { toolName, toolCallId, args } = request;
+      const outcome: NativeOutcome = { result: '' };
+      try {
+        const invalid = validateToolInvocation({
+          toolName, args, schema: toolSchemas.get(toolName), allowedTools,
+          questionErrorKind: questionToolRequestCount > 0 ? 'execution' : undefined,
+        });
+        if (invalid) {
+          outcome.result = invalid.result;
+          outcome.isError = true;
+          outcome.errorKind = invalid.errorKind;
+        } else if (!params.onToolCall) {
+          outcome.result = `Tool ${toolName} is unavailable in this provider context.`;
+          outcome.isError = true;
+          outcome.errorKind = 'permission';
+        } else {
+          if (toolName === 'question') questionToolRequestCount += 1;
+          const resolution = await invokeToolHandler(params.onToolCall, toolName, args, toolCallId, params.signal);
+          if (stopped()) return;
+          if (isToolInterruptResolution(resolution)) {
+            outcome.result = resolution.result;
+            outcome.hiddenContext = resolution.hiddenContext;
+            outcome.visibleContent = resolution.visibleContent;
+            outcome.interrupt = true;
+            interruptObserved = true;
+          } else if (resolution?.kind === 'result') {
+            outcome.result = resolution.result;
+            outcome.blocks = resolution.blocks;
+            outcome.isError = resolution.isError === true;
+            outcome.errorKind = resolution.errorKind;
+          }
+        }
+      } catch (error) {
+        if (stopped()) return;
+        outcome.result = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
+        outcome.isError = true;
+        outcome.errorKind = 'execution';
+      } finally {
+        if (!stopped()) {
+          request.outcome = outcome;
+          executing -= 1;
+          publishReady();
+          startReady();
+        }
+      }
+    };
+
+    const startReady = () => {
+      if (stopped() || exclusiveActive || interruptObserved || deferredDonePayload || submissionChannelFailed) return;
+      while (nextToStart < requests.length) {
+        const request = requests[nextToStart];
+        if (request.safeRead) {
+          if (executing >= MAX_PARALLEL_READS) return;
+        } else if (executing > 0 || publishing || nextToPublish !== nextToStart) return;
+        nextToStart += 1;
+        executing += 1;
+        request.started = true;
+        if (!request.safeRead) exclusiveActive = true;
+        emitToolTrace({
+          tool_call_id: request.toolCallId, tool_name: request.toolName,
+          detail: request.detail, status: 'running',
+          execution_mode: request.safeRead ? 'parallel' : 'sequential',
+          batch_id: requestId, order: request.order, started_at_ms: Date.now(),
+        });
+        if (stopped()) return;
+        void executeRequest(request);
+        if (!request.safeRead) return;
       }
     };
 
@@ -169,65 +303,65 @@ export const streamNativeTurnViaTauri = async (params: {
     };
 
     const completeDone = (payload: tauriIpc.AiStreamDoneEvent) => {
-      if (settled) return;
-      if (params.providerType === 'copilot') {
-        const accepted = new Set(payload.accepted_submission_ids ?? []);
-        const acceptedByCall = new Map([...nativeToolCalls.keys()].map(toolCallId => [
-          toolCallId,
-          nativeToolSubmissions.get(toolCallId)?.find(submission => accepted.has(submission.id)),
-        ]));
-        nativeToolItems.splice(0, nativeToolItems.length);
-        for (const submission of acceptedByCall.values()) {
-          if (submission) nativeToolItems.push(...submission.items);
+      if (stopped()) return;
+      const acceptedIds = new Set(payload.accepted_submission_ids ?? []);
+      const nativeToolItems: unknown[] = [];
+      const acceptedHiddenContext: string[] = [];
+      for (const request of requests) {
+        if (stopped()) return;
+        if (!request.started) continue;
+        const submission = request.submissions.find(item => acceptedIds.has(item.id));
+        if (!submission) {
+          emitToolTrace({
+            tool_call_id: request.toolCallId, tool_name: request.toolName,
+            detail: request.detail, status: 'running', recovery_state: 'unknown',
+            execution_mode: request.safeRead ? 'parallel' : 'sequential',
+            batch_id: requestId, order: request.order,
+          });
+          continue;
         }
-        for (const [toolCallId, { toolName, args }] of nativeToolCalls) {
-          const submission = acceptedByCall.get(toolCallId);
-          try {
-            params.onLiveToolResult?.({
-              toolName, args, toolCallId, result: submission?.result ?? '',
-              providerInputItems: [...nativeToolItems],
-            });
-          } catch {
-            // A live preview failure must not hold the completed turn open.
-          }
-          if (submission) {
-            try {
-              params.onToolResult?.(toolName, submission.result);
-            } catch {
-              // A result observer must not hold the completed turn open.
-            }
-            try {
-              params.onToolTrace?.({
-                tool_call_id: toolCallId, tool_name: toolName,
-                detail: formatToolTraceDetail(toolName, args), status: 'done',
-                recovery_state: 'completed', completed_at_ms: Date.now(),
-              });
-            } catch {
-              // The final result still carries its provider context.
-            }
-          }
+        nativeToolItems.push(...submission.items);
+        if (submission.hiddenContext?.trim()) acceptedHiddenContext.push(submission.hiddenContext.trim());
+        try {
+          params.onLiveToolResult?.({
+            toolName: request.toolName, args: request.args, toolCallId: request.toolCallId,
+            result: submission.result, hiddenContext: submission.hiddenContext,
+            providerInputItems: [...nativeToolItems],
+          });
+        } catch (error) {
+          devLogger.warn('Native live result observer failed', formatToolExecutionError(error));
         }
+        if (stopped()) return;
+        try { params.onToolResult?.(request.toolName, submission.result); }
+        catch (error) { devLogger.warn('Native tool result observer failed', formatToolExecutionError(error)); }
+        if (stopped()) return;
+        emitToolTrace({
+          tool_call_id: request.toolCallId, tool_name: request.toolName,
+          detail: request.detail, status: 'done', recovery_state: 'completed',
+          execution_mode: request.safeRead ? 'parallel' : 'sequential',
+          batch_id: requestId, order: request.order, completed_at_ms: Date.now(),
+        });
       }
       const providerInputItems = nativeToolItems.length ? [
         ...nativeToolItems, ...(payload.provider_input_items ?? buildAssistantProviderInputItemsFromTurn(payload.output_text || fullContent, payload.tool_calls || [])),
       ] : payload.provider_input_items ?? undefined;
-      const providerTurnState =
-        payload.provider_turn_state ??
+      const providerTurnState = payload.provider_turn_state ??
         (params.providerType === 'chatgpt'
           ? buildChatGptProviderTurnState(payload.response_id, payload.output_items)
           : undefined);
-      const derivedOutputText =
-        extractVisibleTextFromProviderInputItems(providerInputItems) ||
+      const derivedOutputText = extractVisibleTextFromProviderInputItems(providerInputItems) ||
         extractVisibleTextFromProviderInputItems(payload.output_items ?? undefined);
+      const localCallIds = new Set(requests.map(request => request.toolCallId));
+      // Copilot builds hidden_context from accepted relay results and built-in tool results.
+      const confirmedHiddenContext = params.providerType === 'copilot' && payload.accepted_submission_ids
+        ? payload.hidden_context ?? (acceptedHiddenContext.join('\n\n') || undefined)
+        : requests.length ? acceptedHiddenContext.join('\n\n') || undefined : payload.hidden_context ?? undefined;
       finish(() => resolve({
         content: payload.output_text || fullContent || derivedOutputText,
-        toolCalls: payload.tool_calls || [],
-        providerInputItems,
-        providerTurnState,
+        toolCalls: payload.tool_calls || [], providerInputItems, providerTurnState,
         reasoningSummary: payload.reasoning_summary ?? undefined,
-        toolTraces: payload.tool_traces?.filter(trace =>
-          params.providerType !== 'copilot' || !nativeToolCalls.has(trace.tool_call_id)) ?? undefined,
-        hiddenContext: payload.hidden_context ?? undefined,
+        toolTraces: payload.tool_traces?.filter(trace => !localCallIds.has(trace.tool_call_id)) ?? undefined,
+        hiddenContext: confirmedHiddenContext,
         completionReason: payload.completion_reason ?? undefined,
       }));
     };
@@ -277,174 +411,29 @@ export const streamNativeTurnViaTauri = async (params: {
           }),
           ownListener<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            if (params.providerType === 'copilot' && event.payload.tool_trace.status === 'done' &&
-              nativeToolCalls.has(event.payload.tool_trace.tool_call_id)) return;
-            params.onToolTrace?.(event.payload.tool_trace);
+            if (event.payload.tool_trace.status === 'done' &&
+              requests.some(request => request.toolCallId === event.payload.tool_trace.tool_call_id)) return;
+            emitToolTrace(event.payload.tool_trace);
           }),
           ownListener<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-
-            void (async () => {
-              const toolName = event.payload.tool_name;
-              const toolCallId = event.payload.tool_call_id;
-              const args =
-                event.payload.args && typeof event.payload.args === 'object'
-                  ? event.payload.args
-                  : {};
-              nativeToolCalls.set(toolCallId, { toolName, args });
-              const detail = formatToolTraceDetail(toolName, args);
-              const order = nativeToolRequestOrder;
-              nativeToolRequestOrder += 1;
-
-              params.onToolTrace?.({
-                tool_call_id: toolCallId,
-                tool_name: toolName,
-                detail,
-                status: 'running',
-                execution_mode: 'parallel',
-                batch_id: requestId,
-                order,
-                started_at_ms: Date.now(),
-              });
-
-              let resultSubmitted = false;
-              let proposedResultAdded = false;
-              let submissionPending = false;
-              try {
-                let toolResult = '';
-                let blocks: ToolResultBlock[] | undefined;
-                let hiddenContext: string | undefined;
-                let visibleContent: string | undefined;
-                let interrupt = false;
-                let isError = false;
-                let errorKind: ToolResult['error_kind'] | undefined;
-
-                const invalid = validateToolInvocation({
-                  toolName, args, schema: toolSchemas.get(toolName), allowedTools,
-                  questionErrorKind: questionToolRequestCount > 0 ? 'execution' : undefined,
-                });
-                if (invalid) {
-                  toolResult = invalid.result;
-                  isError = true;
-                  errorKind = invalid.errorKind;
-                } else if (!params.onToolCall) {
-                  toolResult = `Tool ${toolName} is unavailable in this provider context.`;
-                  isError = true;
-                  errorKind = 'permission';
-                } else {
-                  if (toolName === 'question') questionToolRequestCount += 1;
-                  const resolution = await invokeToolHandler(
-                    params.onToolCall, toolName, args, toolCallId, params.signal,
-                  );
-
-                  // A stopped generation must never submit a late tool result
-                  // back to the native provider loop.
-                  if (settled || params.signal?.aborted) {
-                    return;
-                  }
-
-                  if (isToolInterruptResolution(resolution)) {
-                    toolResult = resolution.result;
-                    hiddenContext = resolution.hiddenContext;
-                    visibleContent = resolution.visibleContent;
-                    interrupt = true;
-                  } else if (resolution?.kind === 'result') {
-                    toolResult = resolution.result;
-                    blocks = resolution.blocks;
-                    isError = resolution.isError === true;
-                    errorKind = resolution.errorKind;
-                  }
-                }
-
-                if (settled || params.signal?.aborted) return;
-                pendingToolSubmissions.set(toolCallId, { toolName, args });
-                submissionPending = true;
-                const submissionId = proposeNativeToolResult(toolCallId, toolName, args, toolResult, blocks, isError);
-                proposedResultAdded = true;
-                params.onLiveToolResult?.({
-                  toolName, args, toolCallId, result: toolResult,
-                  providerInputItems: [...nativeToolItems],
-                });
-                await tauriIpc.aiSubmitToolResult({
-                  requestId,
-                  toolCallId,
-                  submissionId,
-                  result: toolResult,
-                  ...(blocks ? { blocks } : {}),
-                  hiddenContext,
-                  visibleContent,
-                  interrupt,
-                  isError,
-                  errorKind,
-                });
-                resultSubmitted = true;
-                if (settled || params.signal?.aborted) return;
-                if (params.providerType !== 'copilot') params.onToolResult?.(toolName, toolResult);
-              } catch (error) {
-                if (settled || params.signal?.aborted || resultSubmitted) {
-                  return;
-                }
-                if (proposedResultAdded) {
-                  discardNativeToolResult(toolCallId);
-                }
-                const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
-                if (settled || params.signal?.aborted) return;
-                const submissionId = proposeNativeToolResult(toolCallId, toolName, args, toolResult, undefined, true);
-                try {
-                  params.onLiveToolResult?.({
-                    toolName, args, toolCallId, result: toolResult,
-                    providerInputItems: [...nativeToolItems],
-                  });
-                } catch {
-                  // A live preview failure must not prevent error submission.
-                }
-                try {
-                  await tauriIpc.aiSubmitToolResult({
-                    requestId,
-                    toolCallId,
-                    submissionId,
-                    result: toolResult,
-                    isError: true,
-                    errorKind: 'execution',
-                  });
-                  resultSubmitted = true;
-                } catch {
-                  discardNativeToolResult(toolCallId);
-                  return;
-                }
-                if (settled || params.signal?.aborted) return;
-                if (params.providerType !== 'copilot') params.onToolResult?.(toolName, toolResult);
-              } finally {
-                try {
-                  if (!settled && !params.signal?.aborted) params.onToolTrace?.({
-                    tool_call_id: toolCallId,
-                    tool_name: toolName,
-                    detail,
-                    status: resultSubmitted && params.providerType !== 'copilot' ? 'done' : 'running',
-                    recovery_state: resultSubmitted && params.providerType !== 'copilot' ? 'completed' : 'unknown',
-                    execution_mode: 'parallel',
-                    batch_id: requestId,
-                    order,
-                    ...(resultSubmitted && params.providerType !== 'copilot' ? { completed_at_ms: Date.now() } : {}),
-                  });
-                } finally {
-                  if (submissionPending) {
-                    pendingToolSubmissions.delete(toolCallId);
-                    flushDeferredDone();
-                  }
-                }
-              }
-            })();
+            const toolName = event.payload.tool_name;
+            const args = event.payload.args && typeof event.payload.args === 'object'
+              ? event.payload.args : {};
+            requests.push({
+              toolName, toolCallId: event.payload.tool_call_id ?? '', args,
+              detail: formatToolTraceDetail(toolName, args),
+              order: nativeToolRequestOrder++, safeRead: isParallelSafeReadTool(toolName),
+              started: false, submissions: [],
+            });
+            startReady();
           }),
           ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            // Completion may arrive before IPC confirms or rejects the proposed tool result.
-            if (pendingToolSubmissions.size === 0) {
-              completeDone(event.payload);
-              return;
-            }
+            // Completion may arrive before IPC settles the submitted result.
             deferredDonePayload = event.payload;
-            if (!deferredDoneTimer) deferredDoneTimer = setTimeout(() => {
+            if (pendingToolSubmissions.size === 0) flushDeferredDone();
+            else if (!deferredDoneTimer) deferredDoneTimer = setTimeout(() => {
               if (deferredDonePayload) completeDone(deferredDonePayload);
             }, DONE_SUBMISSION_GRACE_MS);
           }),

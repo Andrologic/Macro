@@ -104,6 +104,32 @@ test('native requests expose discovery tools and reject direct hidden MCP calls'
   expect(submissions.every(item => item.isError)).toBe(true);
 });
 
+test('native cancellation from a live context observer emits no later provider update', async () => {
+  scenario = 'completed'; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
+  const live: LiveStreamContextSnapshot[] = [];
+  let lateSnapshots = 0;
+  const options: StreamingChatOptions = {
+    providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
+    messages: [], signal: controller.signal, allowedToolIds: ['mcp__fixture__read'],
+    mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
+    onToken() {}, onComplete() {}, onError(error) { throw error; },
+    onToolCall: async () => 'confirmed',
+    onLiveContextUpdate: context => {
+      if (controller.signal.aborted) lateSnapshots += 1;
+      live.push(context);
+      if (ids(context.providerInputItems ?? [], 'function_call_output').includes('turn-1-call-0')) controller.abort();
+    },
+  };
+  const accumulator = createStreamAccumulator(options);
+  const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
+  const result = await runToolCallingLoop(options, adapter, accumulator);
+  // The second result can already be in flight when the confirmed first result is observed.
+  expect(submissions.map(item => item.toolCallId)).toEqual(['turn-1-call-0', 'turn-1-call-1']);
+  expect(live.some(snapshot => snapshot.hiddenContext?.includes('turn-1-call-0'))).toBe(true);
+  expect(ids(result.providerInputItems ?? [], 'function_call_output')).toEqual(['turn-1-call-0']);
+  expect(lateSnapshots).toBe(0);
+});
+
 for (const mode of scenarios) {
   test(`${mode}: native executed pairs survive the loop, persistence and reload exactly once`, async () => {
     scenario = mode; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
@@ -138,12 +164,19 @@ for (const mode of scenarios) {
     await persistAssistantCompletionResult({ isTauriAvailable: () => true, ipc: { ...ipc,
       updateMessage: async (_id, _text, persistenceOptions) => { stored = JSON.stringify(persistenceOptions?.providerInputItems); },
     } }, { assistantMessageId: 'fixture-message', result });
-    const restored = parseDbProviderInputItems(stored)!;
+    const restored = parseDbProviderInputItems(stored) ?? [];
     const turns = mode === 'guided-multiple' || mode === 'guided-limit' ? 3 : isSteer() || mode === 'guided-abort' || guidedRecovery() ? 2 : 1;
-    const expectedIds = Array.from({ length: turns }, (_, turn) => [0, 1].map(index => `turn-${turn + 1}-call-${index}`)).flat();
+    const expectedIds = Array.from({ length: turns }, (_, turn) => {
+      // Cancellation before ai:done leaves the whole turn without an acceptance receipt.
+      const abortedSubmit = (mode === 'initial-abort' && turn === 0)
+        || (mode.endsWith('abort') && mode !== 'initial-abort' && turn === 1 && mode !== 'guided-stop-before-response');
+      return (abortedSubmit ? [] : [0, 1]).map(index => `turn-${turn + 1}-call-${index}`);
+    }).flat();
     expect(ids(restored, 'function_call')).toEqual(expectedIds);
     expect(ids(restored, 'function_call_output')).toEqual(expectedIds);
-    expect(submissions.map(item => item.toolCallId)).toEqual(expectedIds);
+    const attemptedIds = Array.from({ length: turns }, (_, turn) => [0, 1].map(index => `turn-${turn + 1}-call-${index}`)).flat();
+    expect(submissions.map(item => item.toolCallId)).toEqual(attemptedIds);
+    expect(expectedIds.every(id => attemptedIds.includes(id))).toBe(true);
     const typed = restored.map(readTypedToolResult).filter(item => item !== undefined);
     const typedIds = mode === 'native-interrupt' ? expectedIds.slice(0, 1) : expectedIds;
     expect(typed.map(item => item.blocks)).toEqual(typedIds.map(() => blocks));

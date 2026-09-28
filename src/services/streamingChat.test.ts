@@ -3792,6 +3792,7 @@ describe('streamingChat tool rendering helpers', () => {
           request: {
             request_id: string;
             result: string;
+            submission_id: string;
           };
         }).request;
         queueMicrotask(() => {
@@ -3800,6 +3801,7 @@ describe('streamingChat tool rendering helpers', () => {
               request_id: request.request_id,
               output_text: 'Plan loaded.',
               tool_calls: [],
+              accepted_submission_ids: [request.submission_id],
               hidden_context: `<tool_context tool_call_id="call_plan" tool="plan_get">\n${request.result}\n</tool_context>`,
             },
           });
@@ -4554,9 +4556,9 @@ describe('streamingChat transport lifetime', () => {
     expect(submissions[0]).toMatchObject({ hidden_context: '<questionnaire_context>rejected result</questionnaire_context>' });
     expect(submissions[1]).toMatchObject({ is_error: true });
     expect(submissions[1]?.hidden_context).toBeNull();
-    expect(live.some((snapshot) => snapshot.hiddenContext?.includes('Question queued'))).toBe(true);
     const result = completed.mock.calls[0]?.[0];
     if (bridgeAcceptsFirst) {
+      expect(live.some((snapshot) => snapshot.hiddenContext?.includes('Question queued'))).toBe(true);
       expect(result?.hiddenContext).toContain('rejected result');
       expect(JSON.stringify(result?.providerInputItems)).toContain('Question queued');
       expect(JSON.stringify(result?.providerInputItems)).not.toContain('result submission failed');
@@ -4681,14 +4683,16 @@ describe('streamingChat transport lifetime', () => {
     expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
   }, 12_000);
 
-  it('waits for parallel native submissions before settling a provider completion', async () => {
+  it('publishes parallel native read results in order and waits for the final submission receipt', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const submissions: Array<{ tool_call_id: string; submission_id: string }> = [];
     const release = new Map<string, () => void>();
     let requestId = '';
     let started!: () => void;
+    let firstSubmitting!: () => void;
     let bothSubmitting!: () => void;
     const ready = new Promise<void>((resolve) => { started = resolve; });
+    const firstSubmissionReady = new Promise<void>((resolve) => { firstSubmitting = resolve; });
     const submissionsReady = new Promise<void>((resolve) => { bothSubmitting = resolve; });
     const { streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
@@ -4705,6 +4709,7 @@ describe('streamingChat transport lifetime', () => {
           const submission = params.request as typeof submissions[number];
           submissions.push(submission);
           const gate = new Promise<void>((resolve) => { release.set(submission.tool_call_id, resolve); });
+          if (submissions.length === 1) firstSubmitting();
           if (submissions.length === 2) bothSubmitting();
           await gate;
         }
@@ -4721,12 +4726,16 @@ describe('streamingChat transport lifetime', () => {
     for (const toolCallId of ['first', 'second']) listeners.get('ai:tool-request')!({ payload: {
       request_id: requestId, tool_call_id: toolCallId, tool_name: 'read', args: { path: `${toolCallId}.txt` },
     } });
+    await firstSubmissionReady;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(submissions.map(submission => submission.tool_call_id)).toEqual(['first']);
+    expect(completed).not.toHaveBeenCalled();
+    release.get('first')!();
     await submissionsReady;
     listeners.get('ai:done')!({ payload: {
       request_id: requestId, output_text: 'done', tool_calls: [],
       accepted_submission_ids: submissions.map(submission => submission.submission_id),
     } });
-    release.get('first')!();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(completed).not.toHaveBeenCalled();
     release.get('second')!();
@@ -4804,7 +4813,7 @@ describe('streamingChat partial native listener setup', () => {
 
 
 for (const ending of ['done', 'abort'] as const) {
-  it(`retains native MCP media when ${ending} races tool submission`, async () => {
+  it(`${ending === 'done' ? 'retains confirmed' : 'does not claim unconfirmed'} native MCP media when ${ending} races tool submission`, async () => {
     const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
     const { normalizeToolResultBlocks, readTypedToolResult } = await import('../shared/toolResultContent');
     const blocks = normalizeToolResultBlocks(fixture.content);
@@ -4838,8 +4847,12 @@ for (const ending of ['done', 'abort'] as const) {
     });
     expect(submitted!.blocks).toEqual(blocks);
     expect(submitted!.is_error).toBe(true);
-    const storedResult = completed!.providerInputItems!.find(item => readTypedToolResult(item));
-    expect(readTypedToolResult(storedResult)).toEqual({ version: 1, blocks, isError: true });
+    const storedResult = completed?.providerInputItems?.find(item => readTypedToolResult(item));
+    if (ending === 'done') {
+      expect(readTypedToolResult(storedResult)).toEqual({ version: 1, blocks, isError: true });
+    } else {
+      expect(storedResult).toBeUndefined();
+    }
   });
 }
 

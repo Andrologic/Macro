@@ -5,6 +5,7 @@ import type { StreamMessage, StreamingChatOptions, ToolCall, ToolCallResolution,
 import { formatToolExecutionError, normalizeToolCallResolution, throwIfToolAborted } from './toolCallResolution';
 import { formatToolTraceDetail, formatToolUsageLabel } from './toolPresentation';
 import { executeFallbackTool } from './fallbackTools';
+import { isParallelSafeReadTool, MAX_PARALLEL_READS } from './toolExecutionEffects';
 
 export function validateToolInvocation(params: {
   toolName: string;
@@ -62,7 +63,7 @@ export interface ToolBatchAccumulator {
   appendSystemChunk(chunk: string, includeInHiddenContext?: boolean): void;
 }
 
-export async function runToolBatch(params: {
+interface ToolBatchParams {
   calls: ToolCall[];
   messages: StreamMessage[];
   options: StreamingChatOptions;
@@ -72,18 +73,27 @@ export async function runToolBatch(params: {
   batchId: string;
   usedToolNames: Set<string>;
   onCompletedResult?: (result: ToolResult) => void;
-}): Promise<{ toolResults: ToolResult[]; interruptResolution: ToolInterruptResolution | null }> {
+}
+
+type ToolBatchResult = { toolResults: ToolResult[]; interruptResolution: ToolInterruptResolution | null };
+
+async function runSequentialToolBatch(params: ToolBatchParams & {
+  orderOffset?: number;
+  questionCount?: number;
+  executionMode?: 'parallel' | 'sequential';
+}): Promise<ToolBatchResult> {
   const { calls, messages, options, allowedTools, schemas, accumulator, batchId, usedToolNames } = params;
   const toolResults: ToolResult[] = [];
   let interruptResolution: ToolInterruptResolution | null = null;
-  const questionCount = calls.filter(call => call.function.name === 'question').length;
+  const questionCount = params.questionCount ?? calls.filter(call => call.function.name === 'question').length;
   for (const [order, call] of calls.entries()) {
     throwIfToolAborted(options.signal);
     const name = call.function.name;
     usedToolNames.add(name);
     let detail: string | undefined;
-    const metadata = { execution_mode: 'sequential' as const, batch_id: batchId, order };
+    const metadata = { execution_mode: params.executionMode ?? 'sequential', batch_id: batchId, order: (params.orderOffset ?? 0) + order };
     accumulator.beginToolTrace(call.id, name, detail, metadata);
+    throwIfToolAborted(options.signal);
     let resolution: ToolCallResolution;
     // Disabled tools historically publish hidden output, but no onToolResult.
     let notifyResult = true;
@@ -96,6 +106,7 @@ export async function runToolBatch(params: {
         if (args && typeof args === 'object' && !Array.isArray(args)) {
           detail = formatToolTraceDetail(name, args as Record<string, unknown>);
           accumulator.beginToolTrace(call.id, name, detail, metadata);
+          throwIfToolAborted(options.signal);
         }
         if (invalid) {
           resolution = invalid;
@@ -123,11 +134,107 @@ export async function runToolBatch(params: {
     toolResults.push(completed);
     // Journal before notifications or the next handler can cancel/interrupt the batch.
     params.onCompletedResult?.(completed);
+    throwIfToolAborted(options.signal);
     if (resolution.kind === 'interrupt') accumulator.addHiddenContextBlock(resolution.hiddenContext);
+    throwIfToolAborted(options.signal);
     accumulator.addHiddenToolContext(call.id, name, detail, resolution.result);
+    throwIfToolAborted(options.signal);
     accumulator.completeToolTrace(call.id);
+    throwIfToolAborted(options.signal);
     if (notifyResult) options.onToolResult?.(name, resolution.result);
+    throwIfToolAborted(options.signal);
     if (interruptResolution) break;
+  }
+  return { toolResults, interruptResolution };
+}
+
+async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: number; questionCount: number }): Promise<ToolBatchResult> {
+  const { calls, accumulator, options } = params;
+  const perCall: Array<{ events: Array<() => void> }> = [];
+  const settled: Array<Promise<{ status: 'fulfilled'; value: ToolBatchResult } | { status: 'rejected'; reason: unknown }>> = [];
+  const toolResults: ToolResult[] = [];
+  let interruptResolution: ToolInterruptResolution | null = null;
+  for (const [index, call] of calls.entries()) {
+    throwIfToolAborted(options.signal);
+    const events: Array<() => void> = [];
+    const bufferedAccumulator: ToolBatchAccumulator = {
+      beginToolTrace: (...args) => events.push(() => accumulator.beginToolTrace(...args)),
+      completeToolTrace: (...args) => events.push(() => accumulator.completeToolTrace(...args)),
+      addHiddenToolContext: (...args) => events.push(() => accumulator.addHiddenToolContext(...args)),
+      addHiddenContextBlock: (...args) => events.push(() => accumulator.addHiddenContextBlock(...args)),
+      appendSystemChunk: (...args) => events.push(() => accumulator.appendSystemChunk(...args)),
+    };
+    // Expose each running read, then publish completed effects in call order.
+    accumulator.beginToolTrace(call.id, call.function.name, undefined, {
+      execution_mode: 'parallel', batch_id: params.batchId, order: params.orderOffset + index,
+    });
+    throwIfToolAborted(options.signal);
+    const run = runSequentialToolBatch({
+      ...params,
+      calls: [call],
+      options: { ...options, onToolResult: (name, result) => events.push(() => options.onToolResult?.(name, result)) },
+      accumulator: bufferedAccumulator,
+      orderOffset: params.orderOffset + index,
+      executionMode: 'parallel',
+      onCompletedResult: (result) => events.push(() => params.onCompletedResult?.(result)),
+    });
+    perCall.push({ events });
+    // Handle each rejection as soon as the read starts, even if setup aborts.
+    settled.push(run.then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason }),
+    ));
+  }
+  throwIfToolAborted(options.signal);
+  for (const [index, pending] of settled.entries()) {
+    let removeAbortListener: () => void = () => undefined;
+    const outcome = options.signal
+      ? await Promise.race([
+          pending,
+          new Promise<never>((_resolve, reject) => {
+            const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
+            options.signal!.addEventListener('abort', onAbort, { once: true });
+            removeAbortListener = () => options.signal!.removeEventListener('abort', onAbort);
+            if (options.signal!.aborted) onAbort();
+          }),
+        ]).finally(() => removeAbortListener())
+      : await pending;
+    throwIfToolAborted(options.signal);
+    if (outcome.status === 'rejected') throw outcome.reason;
+    for (const event of perCall[index].events) {
+      throwIfToolAborted(options.signal);
+      event();
+    }
+    toolResults.push(...outcome.value.toolResults);
+    if (outcome.value.interruptResolution) {
+      interruptResolution = outcome.value.interruptResolution;
+      break;
+    }
+    throwIfToolAborted(options.signal);
+  }
+  return { toolResults, interruptResolution };
+}
+
+export async function runToolBatch(params: ToolBatchParams): Promise<ToolBatchResult> {
+  const questionCount = params.calls.filter((call) => call.function.name === 'question').length;
+  const toolResults: ToolResult[] = [];
+  let interruptResolution: ToolInterruptResolution | null = null;
+  for (let index = 0; index < params.calls.length;) {
+    throwIfToolAborted(params.options.signal);
+    let readCount = 0;
+    while (readCount < MAX_PARALLEL_READS &&
+      isParallelSafeReadTool(params.calls[index + readCount]?.function.name ?? '')) readCount += 1;
+    const count = readCount > 1 ? readCount : 1;
+    const batch = { ...params, calls: params.calls.slice(index, index + count), orderOffset: index, questionCount };
+    const result = count > 1
+      ? await runParallelReadGroup(batch)
+      : await runSequentialToolBatch(batch);
+    toolResults.push(...result.toolResults);
+    if (result.interruptResolution) {
+      interruptResolution = result.interruptResolution;
+      break;
+    }
+    index += count;
   }
   return { toolResults, interruptResolution };
 }
