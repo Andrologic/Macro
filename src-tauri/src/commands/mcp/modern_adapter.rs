@@ -56,8 +56,8 @@ pub(crate) struct McpModernServerMetadata {
 }
 
 /// A modern tool call can finish, request another MRTR round, or materialize a
-/// task. Lot G will broker the latter two; this adapter preserves their exact
-/// SDK representation now instead of converting them into lossy strings.
+/// task. The runtime brokers form input requests; task results remain unsupported.
+/// The adapter preserves their SDK representation without lossy diagnostics.
 #[derive(Debug, Clone)]
 pub(crate) enum McpModernToolCallOutcome {
     Complete(McpCallToolResponse),
@@ -310,6 +310,36 @@ impl RmcpModernStdioClient {
         arguments: Value,
         cancellation: Arc<McpOperationCancellation>,
     ) -> CommandResult<McpModernToolCallOutcome> {
+        self.call_tool_round(tool_name, arguments, None, None, cancellation)
+            .await
+    }
+
+    pub(crate) async fn continue_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        request_state: Option<String>,
+        input_responses: Option<std::collections::BTreeMap<String, Value>>,
+        cancellation: Arc<McpOperationCancellation>,
+    ) -> CommandResult<McpModernToolCallOutcome> {
+        self.call_tool_round(
+            tool_name,
+            arguments,
+            request_state,
+            input_responses,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn call_tool_round(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        request_state: Option<String>,
+        input_responses: Option<std::collections::BTreeMap<String, Value>>,
+        cancellation: Arc<McpOperationCancellation>,
+    ) -> CommandResult<McpModernToolCallOutcome> {
         let arguments = match arguments {
             Value::Null => None,
             Value::Object(map) => Some(map),
@@ -321,6 +351,8 @@ impl RmcpModernStdioClient {
         };
         let mut params = CallToolRequestParams::new(tool_name.to_owned());
         params.arguments = arguments;
+        params.request_state = request_state;
+        params.input_responses = input_responses;
 
         let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
         let operation_timeout = tokio::time::sleep(self.operation_timeout);
@@ -588,7 +620,9 @@ mod tests {
                 request_meta.client_info().map(|info| info.name),
                 Some("Macro".to_owned())
             );
-            assert!(request_meta.client_capabilities().is_some());
+            assert!(request_meta
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.elicitation.is_none()));
 
             let mut result = DiscoverResult::new(
                 vec![ProtocolVersion::V_2026_07_28],
@@ -997,6 +1031,114 @@ mod tests {
             .is_err());
 
         server_task.await.expect("server task");
+        client.shutdown().await;
+    }
+    #[tokio::test]
+    async fn continuation_echoes_opaque_request_state_and_typed_answers() {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let mut server = IntoTransport::<rmcp::RoleServer, _, _>::into_transport(server_io);
+        let server_task = tokio::spawn(async move {
+            let ClientJsonRpcMessage::Request(discover) = server.receive().await.unwrap() else {
+                panic!("expected discovery")
+            };
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::DiscoverResult(DiscoverResult::new(
+                        vec![ProtocolVersion::V_2026_07_28],
+                        ServerCapabilities::builder().enable_tools().build(),
+                    )),
+                    discover.id,
+                ))
+                .await
+                .unwrap();
+            let ClientJsonRpcMessage::Request(call) = server.receive().await.unwrap() else {
+                panic!("expected continuation")
+            };
+            assert!(call
+                .request
+                .get_meta()
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.elicitation.is_none()));
+            let ClientRequest::CallToolRequest(tool) = call.request else {
+                panic!("expected tools/call")
+            };
+            assert_eq!(
+                tool.params.request_state.as_deref(),
+                Some(" opaque\nstate:α ")
+            );
+            assert_eq!(
+                tool.params.input_responses.unwrap()["prompt"],
+                serde_json::json!({
+                    "action": "cancel"
+                })
+            );
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::CallToolResult(
+                        serde_json::from_value(serde_json::json!({
+                            "resultType": "complete",
+                            "content": [{"type": "text", "text": "done"}],
+                            "isError": false
+                        }))
+                        .unwrap(),
+                    ),
+                    call.id,
+                ))
+                .await
+                .unwrap();
+            let ClientJsonRpcMessage::Request(state_only) = server.receive().await.unwrap() else {
+                panic!("expected state-only continuation")
+            };
+            let ClientRequest::CallToolRequest(tool) = state_only.request else {
+                panic!("expected tools/call")
+            };
+            assert_eq!(tool.params.request_state.as_deref(), Some(" state only "));
+            assert!(tool.params.input_responses.is_none());
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::CallToolResult(
+                        serde_json::from_value(serde_json::json!({
+                            "resultType": "complete",
+                            "content": [{"type": "text", "text": "done"}],
+                            "isError": false
+                        }))
+                        .unwrap(),
+                    ),
+                    state_only.id,
+                ))
+                .await
+                .unwrap();
+        });
+        let client = RmcpModernStdioClient::connect_transport(&config(), client_io)
+            .await
+            .unwrap();
+        let answers = std::collections::BTreeMap::from([(
+            "prompt".to_string(),
+            serde_json::json!({"action":"cancel"}),
+        )]);
+        let result = client
+            .continue_tool(
+                "tool",
+                serde_json::json!({"x":1}),
+                Some(" opaque\nstate:α ".into()),
+                Some(answers),
+                Arc::new(McpOperationCancellation::default()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, McpModernToolCallOutcome::Complete(_)));
+        let state_only = client
+            .continue_tool(
+                "tool",
+                serde_json::json!({"x":1}),
+                Some(" state only ".into()),
+                None,
+                Arc::new(McpOperationCancellation::default()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(state_only, McpModernToolCallOutcome::Complete(_)));
+        server_task.await.unwrap();
         client.shutdown().await;
     }
 }

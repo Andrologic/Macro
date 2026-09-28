@@ -1044,6 +1044,46 @@
       "families": [
         "mcp"
       ],
+      "name": "McpElicitationAction",
+      "origin": "macro_lib::commands::mcp::interaction::McpElicitationAction",
+      "path": "McpElicitationAction.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpElicitationAnswer",
+      "origin": "macro_lib::commands::mcp::interaction::McpElicitationAnswer",
+      "path": "McpElicitationAnswer.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpElicitationPrompt",
+      "origin": "macro_lib::commands::mcp::interaction::McpElicitationPrompt",
+      "path": "McpElicitationPrompt.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpInteractionRequest",
+      "origin": "macro_lib::commands::mcp::interaction::McpInteractionRequest",
+      "path": "McpInteractionRequest.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpInteractionResponse",
+      "origin": "macro_lib::commands::mcp::interaction::McpInteractionResponse",
+      "path": "McpInteractionResponse.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
       "name": "McpProtocolEra",
       "origin": "macro_lib::commands::mcp::types::McpProtocolEra",
       "path": "McpProtocolEra.ts"

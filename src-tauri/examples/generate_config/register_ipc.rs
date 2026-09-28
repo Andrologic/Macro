@@ -177,6 +177,8 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::mcp::McpCallToolResponse>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeSelector>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeKey>("mcp")?;
+    registry.add::<ipc_contracts::mcp::McpInteractionRequest>("mcp")?;
+    registry.add::<ipc_contracts::mcp::McpInteractionResponse>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpProtocolMode>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpProtocolEra>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeStatus>("mcp")?;

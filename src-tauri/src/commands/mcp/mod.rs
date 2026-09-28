@@ -1,5 +1,7 @@
 mod env_secrets;
+mod form_schema;
 mod ids;
+mod interaction;
 mod modern_adapter;
 mod oauth;
 mod protocol;
@@ -24,8 +26,13 @@ pub use self::types::{
 use crate::commands::{command_error, CommandResult};
 use crate::config::ConfigManager;
 use crate::secrets;
+pub use interaction::{
+    McpElicitationAction, McpElicitationAnswer, McpElicitationPrompt, McpInteractionRequest,
+    McpInteractionResponse,
+};
 pub use runtime::{McpRuntimeError, McpRuntimeManager};
 use serde_json::Value;
+use tauri::ipc::Channel;
 use tauri::AppHandle;
 use tauri::State;
 
@@ -264,6 +271,31 @@ pub async fn mcp_runtime_call_tool(
     runtime
         .call_tool(&key, &tool_name, arguments, operation_id)
         .await
+}
+
+#[tauri::command]
+pub fn mcp_runtime_open_interaction_port(
+    runtime: State<'_, McpRuntimeManager>,
+    channel: Channel<McpInteractionRequest>,
+) -> Result<String, McpRuntimeError> {
+    runtime.interaction_broker().open(channel)
+}
+
+#[tauri::command]
+pub fn mcp_runtime_close_interaction_port(
+    runtime: State<'_, McpRuntimeManager>,
+    lease_id: String,
+) -> Result<(), McpRuntimeError> {
+    runtime.interaction_broker().close(&lease_id)
+}
+
+#[tauri::command]
+pub fn mcp_runtime_respond_to_interaction(
+    runtime: State<'_, McpRuntimeManager>,
+    lease_id: String,
+    response: McpInteractionResponse,
+) -> Result<(), McpRuntimeError> {
+    runtime.interaction_broker().respond(&lease_id, response)
 }
 
 #[tauri::command]

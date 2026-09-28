@@ -1,5 +1,10 @@
 /** mcp IPC wrappers and frontend adapters. */
 
+import { Channel } from "@tauri-apps/api/core";
+import type {
+  McpInteractionRequest,
+  McpInteractionResponse,
+} from "../../types/generated/ipc";
 import type { MCPServer } from "../../types";
 import type {
   MCPCatalogDto,
@@ -114,6 +119,26 @@ export async function mcpRuntimeCallTool(params: {
     arguments: params.arguments,
     operationId: params.operationId,
   });
+}
+
+/** Opens the explicit interaction host port. Closing its lease rejects pending requests. */
+export async function mcpRuntimeOpenInteractionPort(
+  onRequest: (request: McpInteractionRequest) => void,
+): Promise<string> {
+  const channel = new Channel<McpInteractionRequest>();
+  channel.onmessage = onRequest;
+  return invoke<string>("mcp_runtime_open_interaction_port", { channel });
+}
+
+export async function mcpRuntimeCloseInteractionPort(leaseId: string): Promise<void> {
+  return invoke("mcp_runtime_close_interaction_port", { leaseId });
+}
+
+export async function mcpRuntimeRespondToInteraction(
+  leaseId: string,
+  response: McpInteractionResponse,
+): Promise<void> {
+  return invoke("mcp_runtime_respond_to_interaction", { leaseId, response });
 }
 
 export async function mcpRuntimeCancelOperation(
