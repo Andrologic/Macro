@@ -357,4 +357,22 @@ describe('shared tool batch', () => {
     expect(live).not.toHaveBeenCalled();
     expect(handler).not.toHaveBeenCalled();
   });
+
+  it('leaves an interrupted sibling read unresolved until turn finalization', async () => {
+    let releaseSecond!: (value: string) => void;
+    const second = new Promise<string>(resolve => { releaseSecond = resolve; });
+    const acc = createStreamAccumulator({ onToken: () => undefined });
+    const result = await run([call('read', 'one'), call('grep', 'pending')],
+      options((_name, _args, id) => id === 'one'
+        ? { kind: 'interrupt', result: 'Question queued', visibleContent: 'Choose', hiddenContext: 'Pending question' }
+        : second), acc);
+    expect(result.interruptResolution).not.toBeNull();
+    expect(result.toolResults.map(item => item.tool_call_id)).toEqual(['one']);
+    expect(acc.snapshotLiveContext().toolTraces.map(trace => [trace.tool_call_id, trace.status])).toEqual([
+      ['one', 'done'], ['pending', 'running'],
+    ]);
+    releaseSecond('late result');
+    await Promise.resolve();
+    expect(acc.snapshotLiveContext().toolTraces[1].status).toBe('running');
+  });
 });

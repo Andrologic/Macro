@@ -153,78 +153,67 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
 
 async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: number; questionCount: number }): Promise<ToolBatchResult> {
   const { calls, accumulator, options } = params;
-  const perCall: Array<{ call: ToolCall; events: Array<() => void> }> = [];
+  const perCall: Array<{ events: Array<() => void> }> = [];
   const settled: Array<Promise<{ status: 'fulfilled'; value: ToolBatchResult } | { status: 'rejected'; reason: unknown }>> = [];
   const toolResults: ToolResult[] = [];
   let interruptResolution: ToolInterruptResolution | null = null;
-  let flushed = 0;
-  try {
-    for (const [index, call] of calls.entries()) {
+  for (const [index, call] of calls.entries()) {
+    throwIfToolAborted(options.signal);
+    const events: Array<() => void> = [];
+    const bufferedAccumulator: ToolBatchAccumulator = {
+      beginToolTrace: (...args) => events.push(() => accumulator.beginToolTrace(...args)),
+      completeToolTrace: (...args) => events.push(() => accumulator.completeToolTrace(...args)),
+      addHiddenToolContext: (...args) => events.push(() => accumulator.addHiddenToolContext(...args)),
+      addHiddenContextBlock: (...args) => events.push(() => accumulator.addHiddenContextBlock(...args)),
+      appendSystemChunk: (...args) => events.push(() => accumulator.appendSystemChunk(...args)),
+    };
+    // Expose each running read, then publish completed effects in call order.
+    accumulator.beginToolTrace(call.id, call.function.name, undefined, {
+      execution_mode: 'parallel', batch_id: params.batchId, order: params.orderOffset + index,
+    });
+    throwIfToolAborted(options.signal);
+    const run = runSequentialToolBatch({
+      ...params,
+      calls: [call],
+      options: { ...options, onToolResult: (name, result) => events.push(() => options.onToolResult?.(name, result)) },
+      accumulator: bufferedAccumulator,
+      orderOffset: params.orderOffset + index,
+      executionMode: 'parallel',
+      onCompletedResult: (result) => events.push(() => params.onCompletedResult?.(result)),
+    });
+    perCall.push({ events });
+    // Handle each rejection as soon as the read starts, even if setup aborts.
+    settled.push(run.then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason }),
+    ));
+  }
+  throwIfToolAborted(options.signal);
+  for (const [index, pending] of settled.entries()) {
+    let removeAbortListener: () => void = () => undefined;
+    const outcome = options.signal
+      ? await Promise.race([
+          pending,
+          new Promise<never>((_resolve, reject) => {
+            const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
+            options.signal!.addEventListener('abort', onAbort, { once: true });
+            removeAbortListener = () => options.signal!.removeEventListener('abort', onAbort);
+            if (options.signal!.aborted) onAbort();
+          }),
+        ]).finally(() => removeAbortListener())
+      : await pending;
+    throwIfToolAborted(options.signal);
+    if (outcome.status === 'rejected') throw outcome.reason;
+    for (const event of perCall[index].events) {
       throwIfToolAborted(options.signal);
-      const events: Array<() => void> = [];
-      const bufferedAccumulator: ToolBatchAccumulator = {
-        beginToolTrace: (...args) => events.push(() => accumulator.beginToolTrace(...args)),
-        completeToolTrace: (...args) => events.push(() => accumulator.completeToolTrace(...args)),
-        addHiddenToolContext: (...args) => events.push(() => accumulator.addHiddenToolContext(...args)),
-        addHiddenContextBlock: (...args) => events.push(() => accumulator.addHiddenContextBlock(...args)),
-        appendSystemChunk: (...args) => events.push(() => accumulator.appendSystemChunk(...args)),
-      };
-      // Expose each running read, then publish completed effects in call order.
-      accumulator.beginToolTrace(call.id, call.function.name, undefined, {
-        execution_mode: 'parallel', batch_id: params.batchId, order: params.orderOffset + index,
-      });
-      throwIfToolAborted(options.signal);
-      const run = runSequentialToolBatch({
-        ...params,
-        calls: [call],
-        options: { ...options, onToolResult: (name, result) => events.push(() => options.onToolResult?.(name, result)) },
-        accumulator: bufferedAccumulator,
-        orderOffset: params.orderOffset + index,
-        executionMode: 'parallel',
-        onCompletedResult: (result) => events.push(() => params.onCompletedResult?.(result)),
-      });
-      perCall.push({ call, events });
-      // Handle each rejection as soon as the read starts, even if setup aborts.
-      settled.push(run.then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        (reason: unknown) => ({ status: 'rejected' as const, reason }),
-      ));
+      event();
+    }
+    toolResults.push(...outcome.value.toolResults);
+    if (outcome.value.interruptResolution) {
+      interruptResolution = outcome.value.interruptResolution;
+      break;
     }
     throwIfToolAborted(options.signal);
-    for (const [index, pending] of settled.entries()) {
-      let removeAbortListener: () => void = () => undefined;
-      const outcome = options.signal
-        ? await Promise.race([
-            pending,
-            new Promise<never>((_resolve, reject) => {
-              const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
-              options.signal!.addEventListener('abort', onAbort, { once: true });
-              removeAbortListener = () => options.signal!.removeEventListener('abort', onAbort);
-              if (options.signal!.aborted) onAbort();
-            }),
-          ]).finally(() => removeAbortListener())
-        : await pending;
-      throwIfToolAborted(options.signal);
-      if (outcome.status === 'rejected') throw outcome.reason;
-      for (const event of perCall[index].events) {
-        throwIfToolAborted(options.signal);
-        event();
-      }
-      toolResults.push(...outcome.value.toolResults);
-      flushed += 1;
-      if (outcome.value.interruptResolution) {
-        interruptResolution = outcome.value.interruptResolution;
-        break;
-      }
-      throwIfToolAborted(options.signal);
-    }
-  } finally {
-    // An interrupt closes unused siblings. Cancellation must not publish any
-    // further trace update; the turn's finalization owns their unresolved state.
-    for (const item of perCall.slice(flushed)) {
-      if (options.signal?.aborted) break;
-      accumulator.completeToolTrace(item.call.id);
-    }
   }
   return { toolResults, interruptResolution };
 }
