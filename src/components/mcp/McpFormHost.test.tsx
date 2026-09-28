@@ -118,7 +118,37 @@ describe('global MCP form dialog', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 35)); });
     const error = document.querySelector<HTMLElement>('[role="alert"]');
     expect(error?.textContent).toContain('expired');
-    expect(error?.className).toContain('z-[14010]');
+    const noticeRoot = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'))
+      .find((candidate) => candidate.textContent?.includes('expired'));
+    expect(noticeRoot?.style.zIndex).toBe('14010');
+    expect(noticeRoot?.hasAttribute('inert')).toBe(false);
+    expect(releaseRoot?.hasAttribute('inert')).toBe(true);
+    await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')?.click(); });
+    expect(document.querySelector<HTMLElement>('[role="alert"]')).toBeNull();
+    expect(releaseRoot?.hasAttribute('inert')).toBe(false);
+  });
+
+  it('submits a required __proto__ field as an own JSON value after review', async () => {
+    const { host, send, responses } = setup();
+    await act(async () => { root.render(<McpFormHostView host={host} />); await Promise.resolve(); });
+    const ownKeyRequest = request('own-key', 'alpha');
+    ownKeyRequest.prompts = [{ id: 'prompt', request: {
+      method: 'elicitation/create', params: { mode: 'form', message: 'Display name', requestedSchema:
+        JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string","title":"Display name","default":"Ada"}},"required":["__proto__"]}'),
+      },
+    } }];
+    await act(async () => { send(ownKeyRequest); });
+    const input = document.querySelector<HTMLInputElement>('input[type="text"]');
+    expect(input?.value).toBe('Ada');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Grace');
+      input?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { click('Review values'); });
+    await act(async () => { click('Send reviewed values'); await Promise.resolve(); });
+    const content = responses[0]?.answers[0]?.content as Record<string, unknown>;
+    expect(Object.hasOwn(content, '__proto__')).toBe(true);
+    expect(JSON.stringify(content)).toBe('{"__proto__":"Grace"}');
   });
 
   it('shows queued server identities and sends decline and cancel as separate actions', async () => {

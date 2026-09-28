@@ -145,7 +145,7 @@ export function parseFormPrompt(prompt: McpElicitationPrompt): FormPrompt | null
   ].includes(String(schema.$schema))) return null;
   const properties = schema.properties as JsonObject;
   const required = schema.required === undefined ? [] : schema.required;
-  if (!Array.isArray(required) || required.some((name) => typeof name !== 'string' || !(name in properties)) ||
+  if (!Array.isArray(required) || required.some((name) => typeof name !== 'string' || !Object.hasOwn(properties, name)) ||
       new Set(required).size !== required.length) return null;
   const fields: FormField[] = [];
   for (const [name, definition] of Object.entries(properties)) {
@@ -227,7 +227,7 @@ function checkValue(field: FormField, value: unknown): FormError | null {
 }
 
 export function initialFormDraft(prompt: FormPrompt): FormDraft {
-  const draft: FormDraft = {};
+  const draft: FormDraft = Object.create(null);
   for (const field of prompt.fields) {
     if (field.defaultValue === undefined) continue;
     const value = field.defaultValue;
@@ -240,10 +240,10 @@ export function validateFormDraft(prompt: FormPrompt, draft: FormDraft): {
   content: JsonObject | null;
   errors: Record<string, FormError>;
 } {
-  const content: JsonObject = {};
-  const errors: Record<string, FormError> = {};
+  const content: JsonObject = Object.create(null);
+  const errors: Record<string, FormError> = Object.create(null);
   for (const field of prompt.fields) {
-    const raw = draft[field.name];
+    const raw = Object.hasOwn(draft, field.name) ? draft[field.name] : undefined;
     if (raw === undefined || (raw === '' && field.kind !== 'string')) {
       if (field.required) errors[field.name] = 'required';
       continue;

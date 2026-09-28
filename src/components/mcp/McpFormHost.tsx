@@ -125,8 +125,8 @@ function FormEditor({ item, host, submitting, waiting, issue }: {
 }) {
   const { t } = useTranslation();
   const [drafts, setDrafts] = useState<FormDraft[]>(() =>
-    item.forms.map((form) => form ? initialFormDraft(form) : {}));
-  const [errors, setErrors] = useState<Array<Record<string, FormError>>>(() => item.forms.map(() => ({})));
+    item.forms.map((form) => form ? initialFormDraft(form) : Object.create(null)));
+  const [errors, setErrors] = useState<Array<Record<string, FormError>>>(() => item.forms.map(() => Object.create(null)));
   const [reviewing, setReviewing] = useState(false);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -139,14 +139,14 @@ function FormEditor({ item, host, submitting, waiting, issue }: {
   const updateField = (index: number, name: string, value: string | string[] | undefined) => {
     setDrafts((previous) => previous.map((draft, i) => {
       if (i !== index) return draft;
-      const next = { ...draft };
+      const next: FormDraft = Object.assign(Object.create(null), draft);
       if (value === undefined) delete next[name];
       else next[name] = value;
       return next;
     }));
     setErrors((previous) => previous.map((group, i) => {
       if (i !== index) return group;
-      const next = { ...group };
+      const next: Record<string, FormError> = Object.assign(Object.create(null), group);
       delete next[name];
       return next;
     }));
@@ -154,7 +154,7 @@ function FormEditor({ item, host, submitting, waiting, issue }: {
 
   const validate = () => {
     const results = item.forms.map((form, index) => form ? validateFormDraft(form, drafts[index] ?? {}) : null);
-    setErrors(results.map((result) => result?.errors ?? {}));
+    setErrors(results.map((result) => result?.errors ?? Object.create(null)));
     return results.every((result) => result?.content) ? results : null;
   };
 
@@ -276,13 +276,17 @@ export function McpFormHostView({ host = mcpFormHost }: { host?: McpFormHost }) 
   }, [host]);
   const active = snapshot.queue[0];
   return <>
-    {snapshot.issue && !active && <div role="alert" className="fixed bottom-12 right-4 z-[14010] flex max-w-sm items-center gap-3 rounded-lg border border-border bg-card p-3 text-xs text-foreground shadow-xl">
-      <span>{issueText(snapshot.issue, t)}</span>
-      {snapshot.status === 'unavailable' && <button type="button" className={buttonClass} onClick={() => void host.retry()}>
-        {t('mcpForm.retry', 'Retry')}
-      </button>}
-      <button type="button" aria-label={t('mcpForm.dismiss', 'Dismiss')} className={buttonClass} onClick={() => host.dismissIssue()}>×</button>
-    </div>}
+    {snapshot.issue && !active && <Dialog title={t('mcpForm.title', 'MCP form request')}
+      onClose={() => host.dismissIssue()}
+      backdropClassName="fixed inset-0 z-[14010] flex items-center justify-center bg-black/60 p-4">
+      <div role="alert" className="flex max-w-sm items-center gap-3 rounded-lg border border-border bg-card p-3 text-xs text-foreground shadow-xl">
+        <span>{issueText(snapshot.issue, t)}</span>
+        {snapshot.status === 'unavailable' && <button type="button" className={buttonClass} onClick={() => void host.retry()}>
+          {t('mcpForm.retry', 'Retry')}
+        </button>}
+        <button type="button" aria-label={t('mcpForm.dismiss', 'Dismiss')} className={buttonClass} onClick={() => host.dismissIssue()}>×</button>
+      </div>
+    </Dialog>}
     {active && <>
       <FormEditor key={active.request.requestId} item={active} host={host}
         waiting={snapshot.queue.slice(1)} issue={snapshot.issue}

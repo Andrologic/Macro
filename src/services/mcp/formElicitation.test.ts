@@ -55,6 +55,19 @@ describe('MCP form presentation contract', () => {
     expect(validateFormDraft(timed, { when: '2026-02-28T12:00:00Z' }).content).toEqual({ when: '2026-02-28T12:00:00Z' });
   });
 
+  it('keeps prototype-shaped field names as own data and validates required values', () => {
+    const schema = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string","default":"Ada"},"constructor":{"type":"string"}},"required":["__proto__","constructor"]}');
+    const form = parseFormPrompt(prompt(schema))!;
+    const draft = initialFormDraft(form);
+    expect(Object.hasOwn(draft, '__proto__')).toBe(true);
+    expect(draft.__proto__).toBe('Ada');
+    expect(JSON.stringify(validateFormDraft(form, draft).errors)).toBe('{"constructor":"required"}');
+    const content = validateFormDraft(form, Object.assign(Object.create(null), draft, { constructor: 'safe' })).content!;
+    expect(Object.hasOwn(content, '__proto__')).toBe(true);
+    expect(JSON.stringify(content)).toBe('{"__proto__":"Ada","constructor":"safe"}');
+    expect(parseFormPrompt(prompt({ type: 'object', properties: {}, required: ['toString'] }))).toBeNull();
+  });
+
   it('fails closed for unsupported schema and flags credential requests without rendering fields', () => {
     expect(parseFormPrompt(prompt({ type: 'object', properties: { nested: { type: 'object' } } }))).toBeNull();
     expect(parseFormPrompt(prompt({ type: 'object', properties: { key: { type: 'string', pattern: '.+' } } }))).toBeNull();
