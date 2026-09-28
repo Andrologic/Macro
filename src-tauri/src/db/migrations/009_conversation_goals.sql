@@ -38,6 +38,7 @@ CREATE TABLE conversation_goal_audits (
     updated_at TEXT NOT NULL,
     FOREIGN KEY (conversation_id, goal_id) REFERENCES conversation_goals(conversation_id, goal_id) ON DELETE CASCADE,
     UNIQUE (conversation_id, executor_turn_id),
+    UNIQUE (conversation_id, goal_id, goal_revision),
     UNIQUE (current_run_id)
 );
 CREATE INDEX idx_conversation_goal_audits_recovery

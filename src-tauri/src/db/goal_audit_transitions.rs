@@ -422,6 +422,44 @@ mod tests {
         .unwrap();
         sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES ('message', ?, 'turn', 'assistant', 'Done', '2026-01-01')")
             .bind(&parent).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES ('message-2', ?, 'turn-2', 'assistant', 'Done', '2026-01-01')")
+            .bind(&parent).execute(&pool).await.unwrap();
+        let mut premature = input(transition(
+            "premature",
+            &parent,
+            0,
+            None,
+            AgentRunStatus::Queued,
+        ));
+        premature.audit_claim = Some(ClaimConversationGoalAuditInput {
+            audit_id: "premature-audit".into(),
+            conversation_id: parent.clone(),
+            goal_id: "goal".into(),
+            expected_revision: 1,
+            executor_turn_id: "turn".into(),
+            run_id: "premature".into(),
+        });
+        assert!(record_goal_audit_transition(&pool, premature)
+            .await
+            .is_err());
+        assert!(crate::db::agent_runs::get_agent_run(&pool, "premature")
+            .await
+            .unwrap()
+            .is_none());
+        conversation_goals::update_goal(
+            &pool,
+            conversation_goals::UpdateConversationGoalInput {
+                conversation_id: parent.clone(),
+                goal_id: "goal".into(),
+                expected_revision: 1,
+                objective: "Finish".into(),
+                success_criteria: vec![],
+                status: conversation_goals::GoalStatus::AuditPending,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
         let mut first = input(transition(
             "run-1",
             &parent,
@@ -433,7 +471,7 @@ mod tests {
             audit_id: "audit".into(),
             conversation_id: parent.clone(),
             goal_id: "goal".into(),
-            expected_revision: 1,
+            expected_revision: 2,
             executor_turn_id: "turn".into(),
             run_id: "run-1".into(),
         });
@@ -444,7 +482,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(goal.revision, 1);
+        assert_eq!(goal.revision, 2);
         assert_eq!(goal.status, conversation_goals::GoalStatus::Auditing);
         // A lost IPC response retries the identical payload without adding a second claim.
         record_goal_audit_transition(&pool, first.clone())
@@ -463,7 +501,7 @@ mod tests {
             .await
             .is_err());
 
-        // A duplicate turn fails after the run insert, but the whole queued transaction rolls back.
+        // A competing turn at the same revision fails after run insertion, and the queued transaction rolls back.
         let mut duplicate = input(transition(
             "run-2",
             &parent,
@@ -475,8 +513,8 @@ mod tests {
             audit_id: "other-audit".into(),
             conversation_id: parent.clone(),
             goal_id: "goal".into(),
-            expected_revision: 1,
-            executor_turn_id: "turn".into(),
+            expected_revision: 2,
+            executor_turn_id: "turn-2".into(),
             run_id: "run-2".into(),
         });
         assert!(record_goal_audit_transition(&pool, duplicate)
@@ -528,7 +566,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (goal.revision, goal.status),
-            (1, conversation_goals::GoalStatus::Auditing)
+            (2, conversation_goals::GoalStatus::Auditing)
         );
         let links: Vec<String> = sqlx::query_scalar("SELECT run_id FROM conversation_goal_audit_runs WHERE audit_id = 'audit' ORDER BY attempt")
             .fetch_all(&pool).await.unwrap();

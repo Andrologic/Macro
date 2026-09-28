@@ -1862,6 +1862,20 @@ mod tests {
         )
         .await
         .unwrap();
+        conversation_goals::update_goal(
+            &pool,
+            conversation_goals::UpdateConversationGoalInput {
+                conversation_id: "conversation".into(),
+                goal_id: "goal".into(),
+                expected_revision: 1,
+                objective: "Finish".into(),
+                success_criteria: vec!["Check tests".into()],
+                status: conversation_goals::GoalStatus::AuditPending,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES ('executor', 'conversation', 'turn', 'assistant', 'Done', '2026-09-05')")
             .execute(&pool).await.unwrap();
         crate::db::goal_audit_transitions::record_goal_audit_transition(&pool,
@@ -1875,7 +1889,11 @@ mod tests {
                 prompt: "Audit".into(),
                 model_metadata_json: None,
               }),
-              audit_claim: None,
+              audit_claim: Some(ClaimConversationGoalAuditInput {
+                audit_id: "audit".into(), conversation_id: "conversation".into(),
+                goal_id: "goal".into(), expected_revision: 2,
+                executor_turn_id: "turn".into(), run_id: "run".into(),
+              }),
               audit_resume: None,
               transition: crate::db::goal_audit_transitions::GoalAuditTransition {
                 run_id: "run".into(), parent_conversation_id: "conversation".into(),
@@ -1887,19 +1905,6 @@ mod tests {
               },
               usage: crate::db::models::AgentRunUsageInput::default(),
             }
-        )
-        .await
-        .unwrap();
-        conversation_goals::claim_audit(
-            &pool,
-            ClaimConversationGoalAuditInput {
-                audit_id: "audit".into(),
-                conversation_id: "conversation".into(),
-                goal_id: "goal".into(),
-                expected_revision: 1,
-                executor_turn_id: "turn".into(),
-                run_id: "run".into(),
-            },
         )
         .await
         .unwrap();

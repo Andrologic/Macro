@@ -28,15 +28,18 @@ conflicting or out-of-order writes. The run row and transition row are changed
 in one SQLite transaction. Version 7 remains unchanged.
 
 Version 9 adds current and historical conversation goals, success criteria and
-revision counters, plus a unique audit identity per conversation/executor turn.
+revision counters, plus unique audit identities per conversation/executor turn
+and per goal/revision.
 Each audit keeps its current run and append-only links to earlier attempts.
 The queued run, transition, audit identity and run link commit in one transaction.
 An identical queued payload may be replayed after a lost response. The audit
 status follows durable run transitions; startup marks remaining
 queued/running audits interrupted so a caller must explicitly resume them with
 a fresh queued run. Verdict application checks the exact audit, turn, run,
-completed run output and goal revision in one transaction. It never decides
-when the UI should start an audit or which criteria are required.
+completed run output and goal revision in one transaction. A new claim requires
+`audit_pending`; resume requires an interrupted audit and paused goal. Achieved
+goals are terminal, though they can be replaced by a new goal. The migration
+does not decide when the UI should start an audit.
 
 The supported inputs are:
 

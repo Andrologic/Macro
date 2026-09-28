@@ -435,6 +435,13 @@ pub async fn update_goal(
         serde_json::to_string(&input.success_criteria).map_err(|e| invalid(e.to_string()))?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let current_status: Option<String> = sqlx::query_scalar("SELECT status FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
+        .bind(&input.conversation_id).bind(&input.goal_id).fetch_optional(&mut *tx).await?;
+    if current_status.as_deref() == Some("achieved") {
+        return Err(invalid(
+            "An achieved goal is terminal; activate a replacement goal",
+        ));
+    }
     let changed = sqlx::query("UPDATE conversation_goals SET revision = revision + 1, objective = ?, success_criteria_json = ?, status = ?, updated_at = ?, last_executor_turn_at = CASE WHEN ? = 'audit_pending' THEN ? ELSE last_executor_turn_at END, executor_turn_count = executor_turn_count + CASE WHEN ? = 'audit_pending' THEN 1 ELSE 0 END, awaiting_user_since_at = CASE WHEN ? = 'awaiting_user' THEN ? ELSE NULL END, last_error = CASE WHEN ? = 'error' THEN ? ELSE NULL END WHERE conversation_id = ? AND goal_id = ? AND revision = ? AND is_current = 1")
         .bind(&input.objective).bind(criteria).bind(input.status.as_str()).bind(&now)
         .bind(input.status.as_str()).bind(&now).bind(input.status.as_str())
@@ -461,6 +468,13 @@ pub async fn deactivate_goal(
     input: DeactivateConversationGoalInput,
 ) -> DbResult<GoalCasOutcome> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let current_status: Option<String> = sqlx::query_scalar("SELECT status FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
+        .bind(&input.conversation_id).bind(&input.goal_id).fetch_optional(&mut *tx).await?;
+    if current_status.as_deref() == Some("achieved") {
+        return Err(invalid(
+            "An achieved goal is terminal; activate a replacement goal",
+        ));
+    }
     let changed = sqlx::query("UPDATE conversation_goals SET is_current = 0, revision = revision + 1, updated_at = ? WHERE conversation_id = ? AND goal_id = ? AND revision = ? AND is_current = 1")
         .bind(chrono::Utc::now().to_rfc3339()).bind(&input.conversation_id).bind(&input.goal_id)
         .bind(input.expected_revision).execute(&mut *tx).await?.rows_affected();
@@ -522,10 +536,13 @@ pub(super) async fn claim_audit_in_transaction(
         nonempty(value, field)?;
     }
     let now = chrono::Utc::now().to_rfc3339();
-    let revision: Option<i64> = sqlx::query_scalar("SELECT revision FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
+    let goal = sqlx::query("SELECT revision, status FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
         .bind(&input.conversation_id).bind(&input.goal_id).fetch_optional(&mut **tx).await?;
-    if revision != Some(input.expected_revision) {
-        return Err(invalid("Goal audit revision is stale or missing"));
+    if goal.as_ref().is_none_or(|row| {
+        row.get::<i64, _>("revision") != input.expected_revision
+            || row.get::<&str, _>("status") != "audit_pending"
+    }) {
+        return Err(invalid("Goal audit requires the expected pending revision"));
     }
     let turn_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM messages WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' LIMIT 1")
         .bind(&input.conversation_id).bind(&input.executor_turn_id).fetch_optional(&mut **tx).await?;
@@ -591,10 +608,14 @@ pub(super) async fn resume_audit_in_transaction(
     let conversation_id: &str = row.get("conversation_id");
     let goal_id: &str = row.get("goal_id");
     let revision: i64 = row.get("goal_revision");
-    let current_revision: Option<i64> = sqlx::query_scalar("SELECT revision FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
+    let goal = sqlx::query("SELECT revision, status FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
         .bind(conversation_id).bind(goal_id).fetch_optional(&mut **tx).await?;
-    if current_revision != Some(revision) {
-        return Err(invalid("Goal changed since audit interruption"));
+    if goal.as_ref().is_none_or(|row| {
+        row.get::<i64, _>("revision") != revision || row.get::<&str, _>("status") != "paused"
+    }) {
+        return Err(invalid(
+            "Goal must be paused at the interrupted audit revision",
+        ));
     }
     let status = validated_run(tx, &input.new_run_id, conversation_id).await?;
     let attempt: i64 = sqlx::query_scalar(
@@ -758,6 +779,27 @@ mod tests {
             replace_goal_id: None,
             replace_revision: None,
         }
+    }
+
+    async fn activate_pending(pool: &SqlitePool, input: ActivateConversationGoalInput) {
+        let goal = activate_goal(pool, input).await.unwrap();
+        assert_eq!(
+            update_goal(
+                pool,
+                UpdateConversationGoalInput {
+                    conversation_id: goal.conversation_id,
+                    goal_id: goal.goal_id,
+                    expected_revision: goal.revision,
+                    objective: goal.objective,
+                    success_criteria: goal.success_criteria,
+                    status: GoalStatus::AuditPending,
+                    reason: None,
+                }
+            )
+            .await
+            .unwrap(),
+            GoalCasOutcome::Applied
+        );
     }
 
     async fn transition(pool: &SqlitePool, id: &str, sequence: i64, state: AgentRunStatus) {
@@ -1027,35 +1069,37 @@ mod tests {
     #[tokio::test]
     async fn claim_refuses_duplicate_turn_and_verdict_cas_is_atomic() {
         let (_temp, pool) = fixture().await;
-        activate_goal(&pool, activation()).await.unwrap();
+        activate_pending(&pool, activation()).await;
         run(&pool, "run-1").await;
         run(&pool, "run-2").await;
-        assert!(claim_audit(&pool, claim("audit-0", "unknown", "run-2", 1))
+        assert!(claim_audit(&pool, claim("audit-0", "unknown", "run-2", 2))
             .await
             .is_err());
-        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
             .await
             .unwrap();
-        assert!(claim_audit(&pool, claim("audit-2", "turn-1", "run-2", 1))
+        assert!(sqlx::query("INSERT INTO conversation_goal_audits (audit_id, conversation_id, goal_id, goal_revision, executor_turn_id, current_run_id, status, created_at, updated_at) VALUES ('audit-2', 'parent', 'goal-1', 2, 'turn-2', 'run-2', 'queued', '2026-01-01', '2026-01-01')")
+            .execute(&pool).await.is_err());
+        assert!(claim_audit(&pool, claim("audit-2", "turn-2", "run-2", 2))
             .await
             .is_err());
         assert!(
-            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 2))
                 .await
                 .is_err()
         );
         complete(&pool, "run-1").await;
-        let mut mismatched = application("audit-1", "turn-1", "run-1", 1);
+        let mut mismatched = application("audit-1", "turn-1", "run-1", 2);
         mismatched.verdict.summary = "Forged".into();
         assert!(apply_verdict(&pool, mismatched).await.is_err());
         assert_eq!(
-            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap(),
             GoalCasOutcome::Applied
         );
         assert_eq!(
-            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap(),
             GoalCasOutcome::Duplicate
@@ -1063,11 +1107,11 @@ mod tests {
         let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
         assert_eq!(
             (goal.revision, goal.audit_count, goal.continuation_count),
-            (2, 1, 1)
+            (3, 1, 1)
         );
         assert_eq!(goal.status, GoalStatus::ContinuationPending);
         assert_eq!(
-            apply_verdict(&pool, application("missing", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("missing", "turn-1", "run-1", 2))
                 .await
                 .unwrap(),
             GoalCasOutcome::Missing
@@ -1077,9 +1121,9 @@ mod tests {
     #[tokio::test]
     async fn normalized_verdict_applies_against_raw_durable_provider_output() {
         let (_temp, pool) = fixture().await;
-        activate_goal(&pool, activation()).await.unwrap();
+        activate_pending(&pool, activation()).await;
         run(&pool, "run-1").await;
-        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
             .await
             .unwrap();
         transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
@@ -1090,9 +1134,9 @@ mod tests {
         raw["criteria"][0]["evidence"][0]["source"] = serde_json::json!(" test ");
         transition_with_verdict(&pool, "run-1", 2, AgentRunStatus::Completed, Some(raw)).await;
         let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
-        assert_eq!((goal.revision, goal.status), (1, GoalStatus::Auditing));
+        assert_eq!((goal.revision, goal.status), (2, GoalStatus::Auditing));
         assert_eq!(
-            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap(),
             GoalCasOutcome::Applied
@@ -1122,9 +1166,9 @@ mod tests {
             ("missing question", missing_question),
         ] {
             let (_temp, pool) = fixture().await;
-            activate_goal(&pool, activation()).await.unwrap();
+            activate_pending(&pool, activation()).await;
             run(&pool, "run-1").await;
-            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap();
             transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
@@ -1136,13 +1180,13 @@ mod tests {
                 Some(serde_json::json!(candidate)),
             )
             .await;
-            let mut application = application("audit-1", "turn-1", "run-1", 1);
+            let mut application = application("audit-1", "turn-1", "run-1", 2);
             application.verdict = candidate;
             assert!(apply_verdict(&pool, application).await.is_err(), "{case}");
             let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
             assert_eq!(
                 (goal.revision, goal.status),
-                (1, GoalStatus::Auditing),
+                (2, GoalStatus::Auditing),
                 "{case}"
             );
         }
@@ -1154,9 +1198,9 @@ mod tests {
             let (_temp, pool) = fixture().await;
             let mut goal = activation();
             goal.success_criteria.clear();
-            activate_goal(&pool, goal).await.unwrap();
+            activate_pending(&pool, goal).await;
             run(&pool, "run-1").await;
-            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap();
             transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
@@ -1171,7 +1215,7 @@ mod tests {
                 Some(serde_json::json!(candidate)),
             )
             .await;
-            let mut application = application("audit-1", "turn-1", "run-1", 1);
+            let mut application = application("audit-1", "turn-1", "run-1", 2);
             application.verdict = candidate;
             let outcome = apply_verdict(&pool, application).await;
             if verdict_kind == GoalVerdictKind::Achieved {
@@ -1185,9 +1229,9 @@ mod tests {
     #[tokio::test]
     async fn proved_achievement_applies_from_matching_durable_output() {
         let (_temp, pool) = fixture().await;
-        activate_goal(&pool, activation()).await.unwrap();
+        activate_pending(&pool, activation()).await;
         run(&pool, "run-1").await;
-        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
             .await
             .unwrap();
         transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
@@ -1203,7 +1247,7 @@ mod tests {
             Some(serde_json::json!(candidate)),
         )
         .await;
-        let mut application = application("audit-1", "turn-1", "run-1", 1);
+        let mut application = application("audit-1", "turn-1", "run-1", 2);
         application.verdict = candidate;
         assert_eq!(
             apply_verdict(&pool, application).await.unwrap(),
@@ -1217,14 +1261,57 @@ mod tests {
                 .status,
             GoalStatus::Achieved
         );
+        assert!(update_goal(
+            &pool,
+            UpdateConversationGoalInput {
+                conversation_id: "parent".into(),
+                goal_id: "goal-1".into(),
+                expected_revision: 3,
+                objective: "Reopen".into(),
+                success_criteria: vec!["Checks pass".into()],
+                status: GoalStatus::ActiveReady,
+                reason: None,
+            }
+        )
+        .await
+        .is_err());
+        assert!(deactivate_goal(
+            &pool,
+            DeactivateConversationGoalInput {
+                conversation_id: "parent".into(),
+                goal_id: "goal-1".into(),
+                expected_revision: 3,
+            }
+        )
+        .await
+        .is_err());
+        run(&pool, "run-2").await;
+        assert!(claim_audit(&pool, claim("audit-2", "turn-2", "run-2", 3))
+            .await
+            .is_err());
+        let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
+        assert_eq!((goal.revision, goal.status), (3, GoalStatus::Achieved));
+        let mut replacement = activation();
+        replacement.goal_id = "goal-2".into();
+        replacement.replace_goal_id = Some("goal-1".into());
+        replacement.replace_revision = Some(3);
+        activate_goal(&pool, replacement).await.unwrap();
+        assert_eq!(
+            get_current_goal(&pool, "parent")
+                .await
+                .unwrap()
+                .unwrap()
+                .goal_id,
+            "goal-2"
+        );
     }
 
     #[tokio::test]
     async fn stale_revision_and_interrupted_runs_never_apply_late_verdicts() {
         let (_temp, pool) = fixture().await;
-        activate_goal(&pool, activation()).await.unwrap();
+        activate_pending(&pool, activation()).await;
         run(&pool, "run-1").await;
-        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
             .await
             .unwrap();
         complete(&pool, "run-1").await;
@@ -1233,7 +1320,7 @@ mod tests {
             UpdateConversationGoalInput {
                 conversation_id: "parent".into(),
                 goal_id: "goal-1".into(),
-                expected_revision: 1,
+                expected_revision: 2,
                 objective: "Changed".into(),
                 success_criteria: vec![],
                 status: GoalStatus::ActiveReady,
@@ -1243,7 +1330,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap(),
             GoalCasOutcome::Stale
@@ -1251,10 +1338,10 @@ mod tests {
         let mut replacement = activation();
         replacement.goal_id = "goal-2".into();
         replacement.replace_goal_id = Some("goal-1".into());
-        replacement.replace_revision = Some(2);
+        replacement.replace_revision = Some(3);
         activate_goal(&pool, replacement).await.unwrap();
         assert_eq!(
-            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 2))
                 .await
                 .unwrap(),
             GoalCasOutcome::Missing
@@ -1263,65 +1350,66 @@ mod tests {
 
     #[tokio::test]
     async fn queued_and_running_recovery_requires_explicit_new_run_and_retains_links() {
-        let (_temp, pool) = fixture().await;
-        activate_goal(&pool, activation()).await.unwrap();
-        run(&pool, "queued-run").await;
-        run(&pool, "running-run").await;
-        claim_audit(&pool, claim("queued-audit", "turn-1", "queued-run", 1))
-            .await
-            .unwrap();
-        claim_audit(&pool, claim("running-audit", "turn-2", "running-run", 1))
-            .await
-            .unwrap();
-        transition(&pool, "running-run", 1, AgentRunStatus::Running).await;
-        assert_eq!(
-            get_audit(&pool, "running-audit")
+        for was_running in [false, true] {
+            let (_temp, pool) = fixture().await;
+            activate_pending(&pool, activation()).await;
+            run(&pool, "old-run").await;
+            claim_audit(&pool, claim("audit-1", "turn-1", "old-run", 2))
                 .await
-                .unwrap()
-                .unwrap()
-                .status,
-            GoalAuditStatus::Running
-        );
-        agent_runs::reconcile_active_agent_runs_after_restart(&pool)
-            .await
-            .unwrap();
-        assert_eq!(reconcile_audits_after_restart(&pool).await.unwrap(), 1);
-        for id in ["queued-audit", "running-audit"] {
+                .unwrap();
+            if was_running {
+                transition(&pool, "old-run", 1, AgentRunStatus::Running).await;
+            }
+            agent_runs::reconcile_active_agent_runs_after_restart(&pool)
+                .await
+                .unwrap();
+            reconcile_audits_after_restart(&pool).await.unwrap();
             assert_eq!(
-                get_audit(&pool, id).await.unwrap().unwrap().status,
+                get_audit(&pool, "audit-1").await.unwrap().unwrap().status,
                 GoalAuditStatus::Interrupted
             );
+            let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
+            assert_eq!((goal.revision, goal.status), (2, GoalStatus::Paused));
+            run(&pool, "resume-run").await;
+            assert!(resume_audit(
+                &pool,
+                ResumeConversationGoalAuditInput {
+                    audit_id: "audit-1".into(),
+                    expected_run_id: "wrong".into(),
+                    new_run_id: "resume-run".into(),
+                }
+            )
+            .await
+            .is_err());
+            let resumed = resume_audit(
+                &pool,
+                ResumeConversationGoalAuditInput {
+                    audit_id: "audit-1".into(),
+                    expected_run_id: "old-run".into(),
+                    new_run_id: "resume-run".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(resumed.status, GoalAuditStatus::Queued);
+            let links: Vec<String> = sqlx::query_scalar("SELECT run_id FROM conversation_goal_audit_runs WHERE audit_id = 'audit-1' ORDER BY attempt")
+                .fetch_all(&pool).await.unwrap();
+            assert_eq!(links, ["old-run", "resume-run"]);
+            assert!(resume_audit(
+                &pool,
+                ResumeConversationGoalAuditInput {
+                    audit_id: "audit-1".into(),
+                    expected_run_id: "old-run".into(),
+                    new_run_id: "another-run".into(),
+                }
+            )
+            .await
+            .is_err());
+            assert!(
+                apply_verdict(&pool, application("audit-1", "turn-1", "old-run", 2))
+                    .await
+                    .is_err()
+            );
         }
-        run(&pool, "resume-run").await;
-        assert!(resume_audit(
-            &pool,
-            ResumeConversationGoalAuditInput {
-                audit_id: "queued-audit".into(),
-                expected_run_id: "wrong".into(),
-                new_run_id: "resume-run".into(),
-            }
-        )
-        .await
-        .is_err());
-        let resumed = resume_audit(
-            &pool,
-            ResumeConversationGoalAuditInput {
-                audit_id: "queued-audit".into(),
-                expected_run_id: "queued-run".into(),
-                new_run_id: "resume-run".into(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(resumed.status, GoalAuditStatus::Queued);
-        let links: Vec<String> = sqlx::query_scalar("SELECT run_id FROM conversation_goal_audit_runs WHERE audit_id = 'queued-audit' ORDER BY attempt")
-            .fetch_all(&pool).await.unwrap();
-        assert_eq!(links, ["queued-run", "resume-run"]);
-        assert!(apply_verdict(
-            &pool,
-            application("queued-audit", "turn-1", "queued-run", 1)
-        )
-        .await
-        .is_err());
     }
 }
