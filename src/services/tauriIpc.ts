@@ -497,6 +497,9 @@ export {
   mcpRuntimeRefreshCatalog,
   mcpRuntimeCallTool,
   mcpRuntimeCancelOperation,
+  mcpRuntimeOpenInteractionPort,
+  mcpRuntimeCloseInteractionPort,
+  mcpRuntimeRespondToInteraction,
 } from "./ipc/mcp";
 
 export {
@@ -616,6 +619,8 @@ export type {
   MCPProtocolEra,
   MCPProtocolMode,
   MCPRuntimeEvent,
+  McpInteractionRequest,
+  McpInteractionResponse,
   MCPRuntimeKey,
   MCPRuntimeSelector,
   MCPRuntimeServerSnapshot,

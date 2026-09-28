@@ -1319,6 +1319,38 @@ describe("tauriIpc persistent MCP runtime", () => {
     ]);
   });
 
+  it("binds a typed MCP interaction channel and routes responses to its lease", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const onRequest = mock(() => {});
+    const previousInternals = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { transformCallback: () => 1 },
+    });
+    try {
+      await tauriIpc.mcpRuntimeOpenInteractionPort(onRequest);
+    } finally {
+      if (previousInternals) Object.defineProperty(window, "__TAURI_INTERNALS__", previousInternals);
+      else Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
+    const channel = (invokeCalls[0].payload as { channel: InstanceType<typeof actualCore.Channel> }).channel;
+    expect(channel).toBeInstanceOf(actualCore.Channel);
+    expect(channel.onmessage).toBe(onRequest);
+    const response = {
+      requestId: "request-1",
+      key: { serverId: "server-a", projectId: null, projectIds: [], configGeneration: 1 },
+      operationId: "operation-1",
+      answers: [{ id: "prompt-1", action: "decline" as const, content: null }],
+    };
+    await tauriIpc.mcpRuntimeRespondToInteraction("lease-1", response);
+    await tauriIpc.mcpRuntimeCloseInteractionPort("lease-1");
+    expect(invokeCalls).toEqual([
+      { command: "mcp_runtime_open_interaction_port", payload: { channel } },
+      { command: "mcp_runtime_respond_to_interaction", payload: { leaseId: "lease-1", response } },
+      { command: "mcp_runtime_close_interaction_port", payload: { leaseId: "lease-1" } },
+    ]);
+  });
+
   it("exposes the planned runtime event channel name", async () => {
     const tauriIpc = await loadTauriIpc();
 

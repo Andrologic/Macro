@@ -5,6 +5,8 @@ import type {
   McpCatalogDto,
   McpProtocolEra,
   McpRuntimeKey,
+  McpInteractionRequest,
+  McpInteractionResponse,
   McpRuntimeSelector,
   McpRuntimeServerSnapshot,
   McpRuntimeSnapshotDto,
@@ -69,6 +71,7 @@ export interface MCPRuntimeKey extends OmitFields<McpRuntimeKey, 'projectId' | '
 }
 
 export type MCPRuntimeSelector = McpRuntimeSelector;
+export type { McpInteractionRequest, McpInteractionResponse };
 
 // Frontend snapshots allow omitted nullable metadata and the adapted runtime key.
 export interface MCPRuntimeServerSnapshot extends OmitFields<

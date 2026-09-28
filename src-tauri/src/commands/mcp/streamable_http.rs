@@ -1774,7 +1774,7 @@ impl RmcpLegacyHttpClient {
             }
             CallToolResponse::InputRequired(_) => Err(command_error(format!(
                 "Streamable HTTP MCP server '{}' requires interaction rounds; \
-                 interaction brokering arrives with plan Lot G.",
+                 interaction brokering is not connected for HTTP transport.",
                 self.server_name
             ))),
             CallToolResponse::Task(_) => Err(command_error(format!(

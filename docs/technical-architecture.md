@@ -723,7 +723,30 @@ inutilisée. La façade `tauriIpc.ts` et les réexports Rust de `commands` pourr
 pas être déduit d'une recherche d'imports nommés uniquement.
 
 
-### 7.4 Boucle d'outils et compatibilité des providers
+### 7.4 Courtier d'élicitation MCP, lot transport
+
+Le runtime persistant ouvre un port IPC typé seulement lorsqu'un hôte UI
+s'enregistre avec `mcp_runtime_open_interaction_port`. En l'absence de port, une
+requête échoue avec `MCP_INTERACTION_NO_HOST`. Le bail du port et les identifiants
+de serveur, de génération, d'opération et de demande lient chaque réponse à son
+appel. Le courtier limite les demandes simultanées, leur taille, le nombre de
+prompts et le délai de réponse. La fermeture du port, l'annulation de l'opération
+et l'arrêt du runtime retirent les demandes en attente. Les réponses `accept`,
+`decline` et `cancel` ont un contrat typé ; `cancel` arrête l'appel courant.
+
+Le chemin stdio moderne traite `input_required` lorsque toutes les demandes sont
+des formulaires `elicitation/create`. Il conserve `requestState` en mémoire dans
+le backend et le retransmet tel quel avec `inputResponses` au tour MCP suivant.
+Une valeur non chaîne ou dépassant 128 Kio est refusée sans journalisation ;
+aucun appel n'est relancé après une erreur de transport. Il s'arrête après quatre
+continuations. Aucun hôte de formulaire n'est encore connecté à ce port et
+la capacité d'élicitation n'est pas annoncée dans le handshake MCP. Les
+demandes URL, le chemin HTTP moderne et le chemin legacy restent fermés. En particulier,
+les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
+raccorder demandera d'associer les requêtes serveur au bon appel et à sa durée
+de vie. Le point 21 reste donc incomplet.
+
+### 7.5 Boucle d'outils et compatibilité des providers
 
 Les résultats MCP conservent des blocs typés dans l’historique. Le
 [contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
