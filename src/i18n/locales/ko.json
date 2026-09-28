@@ -983,6 +983,7 @@
         "resuming": "접근 재개 중…"
       },
       "relayOrigin": "Relay HTTPS origin",
+      "legacyRelay": "이 세션은 이전에 설정한 릴레이({{origin}})를 계속 사용하고 있습니다. Macro 릴레이를 사용하려면 로그아웃한 다음 GitHub로 다시 연결하세요.",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",
       "deviceCodeHelp": "Enter this code only in the GitHub page opened by this Macro window.",

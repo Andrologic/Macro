@@ -20,7 +20,7 @@ const pilotState = {
   status: 'connected',
   vaultStatus: 'ready' as PilotVaultStatus,
   configurationId: 'config:desktop',
-  relayOrigin: 'https://pilot.example.com' as string | null,
+  relayOrigin: 'https://macro.andrologic.ai' as string | null,
   account: null as PilotPublicState['account'],
   deviceSession: null as PilotPublicState['deviceSession'],
   instance: {
@@ -102,7 +102,7 @@ describe('PilotView', () => {
   beforeEach(async () => {
     pilotState.busy = false; pilotState.reading = false;
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
-    pilotState.relayOrigin = 'https://pilot.example.com';
+    pilotState.relayOrigin = 'https://macro.andrologic.ai';
     pilotState.account = null; pilotState.deviceSession = null; pilotState.accountCatalog = null;
     pilotState.instanceAccess = null; pilotState.accessRequests = [];
     pilotState.deleteAccount.mockClear(); pilotState.resolveAccess.mockClear();
@@ -188,6 +188,22 @@ describe('PilotView', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await act(async () => button('Connect with GitHub').click());
     expect(pilotState.connect).toHaveBeenCalledWith('https://macro.andrologic.ai', 'Macro desktop');
+  });
+
+  it('identifies a persisted session on a previous relay without moving it automatically', async () => {
+    pilotState.relayOrigin = 'https://pilot.example.com';
+    await showAccount();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('https://pilot.example.com');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Sign out, then connect with GitHub again');
+    expect(container.querySelector('input[placeholder^="https://"]')).toBeNull();
+    expect(button('Sign out')).toBeDefined();
+    expect(pilotState.connect).not.toHaveBeenCalled();
+    expect(pilotState.logout).not.toHaveBeenCalled();
+
+    pilotState.relayOrigin = 'https://macro.andrologic.ai';
+    await act(async () => root.render(<PilotView />));
+    expect(container.textContent).not.toContain('previously configured relay');
   });
 
   const showVaultStatus = async (status: Exclude<PilotVaultStatus, 'ready'>) => {
@@ -303,6 +319,7 @@ describe('PilotView', () => {
     const instance = pilotState.instance;
     Object.assign(pilotState, { instance: null });
     try {
+      pilotState.relayOrigin = 'https://pilot.example.com';
       await showAccount();
       expect(container.textContent).toContain('@example');
       expect(container.textContent).toContain('Example desktop');

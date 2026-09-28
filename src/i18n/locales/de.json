@@ -984,6 +984,7 @@
         "resuming": "Zugriff wird fortgesetzt…"
       },
       "relayOrigin": "Relay HTTPS origin",
+      "legacyRelay": "Diese Sitzung verwendet noch den zuvor konfigurierten Relay-Server: {{origin}}. Melde dich ab und verbinde dich erneut mit GitHub, um den Relay-Server von Macro zu verwenden.",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",
       "deviceCodeHelp": "Enter this code only in the GitHub page opened by this Macro window.",

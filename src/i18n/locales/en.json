@@ -1013,6 +1013,7 @@
         "resuming": "Resuming access…"
       },
       "relayOrigin": "Relay HTTPS origin",
+      "legacyRelay": "This session still uses the previously configured relay: {{origin}}. Sign out, then connect with GitHub again to use the Macro relay.",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",
       "deviceCodeHelp": "Enter this code only in the GitHub page opened by this Macro window.",

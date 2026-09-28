@@ -988,6 +988,7 @@
         "resuming": "Reanudando el acceso…"
       },
       "relayOrigin": "Relay HTTPS origin",
+      "legacyRelay": "Esta sesión sigue usando el relé configurado anteriormente: {{origin}}. Cierra sesión y vuelve a conectarte con GitHub para usar el relé de Macro.",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",
       "deviceCodeHelp": "Enter this code only in the GitHub page opened by this Macro window.",

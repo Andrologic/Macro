@@ -1011,6 +1011,7 @@
         "resuming": "Reprise de l’accès…"
       },
       "relayOrigin": "Origine HTTPS du relais",
+      "legacyRelay": "Cette session utilise encore le relais précédemment configuré : {{origin}}. Déconnectez-vous, puis reconnectez-vous avec GitHub pour utiliser le relais Macro.",
       "deviceLabel": "Nom de l’appareil",
       "signIn": "Se connecter avec GitHub",
       "deviceCodeHelp": "Saisissez ce code uniquement dans la page GitHub ouverte par cette fenêtre Macro.",

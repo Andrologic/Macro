@@ -179,6 +179,9 @@ export const PilotView: React.FC = () => {
     ? store.vaultStatus
     : vaultErrorStatus[store.lastError ?? ''];
   const vaultRecoveryActive = vaultRecoveryBusy;
+  const legacyRelayOrigin = store.deviceSession && store.relayOrigin !== PILOT_RELAY_ORIGIN
+    ? store.relayOrigin
+    : null;
 
   const accountMutation = (work: () => Promise<boolean>) => run(async () => {
     const confirmed = await work();
@@ -213,6 +216,16 @@ export const PilotView: React.FC = () => {
             {statusLabel}
           </span>
         </div>
+
+        {legacyRelayOrigin && (
+          <p role="alert" className="break-words rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+            {t(
+              'settings.pilot.legacyRelay',
+              'This session still uses the previously configured relay: {{origin}}. Sign out, then connect with GitHub again to use the Macro relay.',
+              { origin: legacyRelayOrigin },
+            )}
+          </p>
+        )}
 
         {store.lastError && !vaultRecoveryStatus && (store.lastError !== 'offline' || Boolean(store.relayOrigin)) && (
           <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">

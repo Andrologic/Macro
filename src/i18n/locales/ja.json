@@ -983,6 +983,7 @@
         "resuming": "アクセスを再開しています…"
       },
       "relayOrigin": "Relay HTTPS origin",
+      "legacyRelay": "このセッションは以前設定したリレー（{{origin}}）を引き続き使用しています。Macro のリレーを使用するには、サインアウトしてから GitHub で再接続してください。",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",
       "deviceCodeHelp": "Enter this code only in the GitHub page opened by this Macro window.",
