@@ -181,6 +181,7 @@ const loadStreamingChat = async (
     aiSubmitToolResult: async (params: {
       requestId: string;
       toolCallId: string;
+      submissionId?: string;
       result: string;
       blocks?: import('../shared/toolResultContent').ToolResultBlock[];
       hiddenContext?: string | null;
@@ -193,6 +194,7 @@ const loadStreamingChat = async (
         request: {
           request_id: params.requestId,
           tool_call_id: params.toolCallId,
+          ...(params.submissionId ? { submission_id: params.submissionId } : {}),
           result: params.result,
           ...(params.blocks ? { blocks: params.blocks } : {}),
           hidden_context: params.hiddenContext ?? null,
@@ -3848,6 +3850,7 @@ describe('streamingChat tool rendering helpers', () => {
       request: {
         request_id: expect.any(String),
         tool_call_id: 'call_plan',
+        submission_id: expect.any(String),
         result: 'plan_get:plan-1',
         hidden_context: null,
         visible_content: null,
@@ -4487,7 +4490,7 @@ describe('streamingChat transport lifetime', () => {
     expect(JSON.stringify(completed.mock.calls[0]?.[0].providerInputItems)).not.toContain('unsubmitted');
   });
 
-  it('discards rejected native interrupt context after submitting an error', async () => {
+  for (const bridgeAcceptsFirst of [false, true]) it(`uses the bridge-accepted native submission after an IPC failure (${bridgeAcceptsFirst})`, async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     let requestId = '';
     let started!: () => void;
@@ -4496,7 +4499,7 @@ describe('streamingChat transport lifetime', () => {
     const ready = new Promise<void>((resolve) => { started = resolve; });
     const fallbackDone = new Promise<void>((resolve) => { errorSubmitted = resolve; });
     const fallbackGate = new Promise<void>((resolve) => { releaseFallback = resolve; });
-    const submissions: Array<{ result: string; hidden_context?: string; is_error?: boolean }> = [];
+    const submissions: Array<{ result: string; submission_id?: string; hidden_context?: string; is_error?: boolean }> = [];
     const { streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
       listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
@@ -4511,7 +4514,11 @@ describe('streamingChat transport lifetime', () => {
         if (command === 'ai_submit_tool_result') {
           submissions.push(params.request as typeof submissions[number]);
           if (submissions.length === 1) throw new Error('result submission failed');
-          listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+          listeners.get('ai:done')!({ payload: {
+            request_id: requestId, output_text: 'done', tool_calls: [],
+            accepted_submission_ids: [submissions[bridgeAcceptsFirst ? 0 : 1].submission_id],
+            ...(bridgeAcceptsFirst ? { hidden_context: '<questionnaire_context>rejected result</questionnaire_context>' } : {}),
+          } });
           errorSubmitted();
           await fallbackGate;
         }
@@ -4548,15 +4555,21 @@ describe('streamingChat transport lifetime', () => {
     expect(submissions[1]).toMatchObject({ is_error: true });
     expect(submissions[1]?.hidden_context).toBeNull();
     expect(live.some((snapshot) => snapshot.hiddenContext?.includes('Question queued'))).toBe(true);
-    expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
-    expect(live.at(-1)?.hiddenContext ?? '').not.toContain('rejected result');
     const result = completed.mock.calls[0]?.[0];
-    expect(result?.hiddenContext ?? '').not.toContain('rejected result');
-    expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
-    expect(JSON.stringify(result?.providerInputItems)).toContain('result submission failed');
+    if (bridgeAcceptsFirst) {
+      expect(result?.hiddenContext).toContain('rejected result');
+      expect(JSON.stringify(result?.providerInputItems)).toContain('Question queued');
+      expect(JSON.stringify(result?.providerInputItems)).not.toContain('result submission failed');
+    } else {
+      expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
+      expect(result?.hiddenContext ?? '').not.toContain('rejected result');
+      expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
+      expect(JSON.stringify(result?.providerInputItems)).toContain('result submission failed');
+    }
+    expect(result?.toolTraces?.[0]).toMatchObject({ status: 'done', recovery_state: 'completed' });
   });
 
-  it('retains acknowledged native interrupt context when completion races submission', async () => {
+  for (const acceptedByBridge of [true, false]) it(`keeps only bridge-accepted native interrupt context when completion races submission (${acceptedByBridge})`, async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     let releaseSubmission!: () => void;
     let completionEmitted!: () => void;
@@ -4568,7 +4581,7 @@ describe('streamingChat transport lifetime', () => {
         listeners.set(name, callback);
         return () => listeners.delete(name);
       }),
-      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; submission_id?: string } }) => {
         const requestId = params.request!.request_id!;
         if (command === 'ai_stream_chat') {
           queueMicrotask(() => listeners.get('ai:tool-request')!({ payload: {
@@ -4577,7 +4590,11 @@ describe('streamingChat transport lifetime', () => {
           } }));
         }
         if (command === 'ai_submit_tool_result') {
-          listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'Choose', tool_calls: [] } });
+          listeners.get('ai:done')!({ payload: {
+            request_id: requestId, output_text: 'Choose', tool_calls: [],
+            accepted_submission_ids: acceptedByBridge ? [params.request!.submission_id] : [],
+            ...(acceptedByBridge ? { hidden_context: '<questionnaire_context>accepted result</questionnaire_context>' } : {}),
+          } });
           completionEmitted();
           await submissionGate;
         }
@@ -4601,7 +4618,126 @@ describe('streamingChat transport lifetime', () => {
     expect(completed).not.toHaveBeenCalled();
     releaseSubmission();
     await run;
-    expect(completed.mock.calls[0]?.[0].hiddenContext).toContain('accepted result');
+    if (acceptedByBridge) expect(completed.mock.calls[0]?.[0].hiddenContext).toContain('accepted result');
+    else {
+      expect(completed.mock.calls[0]?.[0].hiddenContext ?? '').not.toContain('accepted result');
+      expect(JSON.stringify(completed.mock.calls[0]?.[0].providerInputItems)).not.toContain('Question queued');
+      expect(completed.mock.calls[0]?.[0].toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    }
+  });
+
+  it('finishes with an unknown tool outcome when native submission never settles', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    let submitting!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const submissionReady = new Promise<void>((resolve) => { submitting = resolve; });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          submitting();
+          await new Promise<void>(() => undefined);
+        }
+      }),
+    });
+    const live: LiveStreamContextSnapshot[] = [];
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['question'],
+      onToolCall: () => ({
+        kind: 'interrupt' as const, result: 'Question queued', visibleContent: 'Choose',
+        hiddenContext: '<questionnaire_context>unconfirmed</questionnaire_context>',
+      }),
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => live.push(snapshot),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: {
+      request_id: requestId, tool_call_id: 'unconfirmed-question', tool_name: 'question',
+      args: { intro: 'Choose', questions: [{ id: 'choice', prompt: 'Pick one', choices: ['A', 'B'] }] },
+    } });
+    await submissionReady;
+    listeners.get('ai:done')!({ payload: {
+      request_id: requestId, output_text: 'done', tool_calls: [], accepted_submission_ids: [],
+    } });
+    await run;
+
+    const result = completed.mock.calls[0]?.[0];
+    expect(result?.hiddenContext ?? '').not.toContain('unconfirmed');
+    expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
+    expect(result?.toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
+  }, 12_000);
+
+  it('waits for parallel native submissions before settling a provider completion', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const submissions: Array<{ tool_call_id: string; submission_id: string }> = [];
+    const release = new Map<string, () => void>();
+    let requestId = '';
+    let started!: () => void;
+    let bothSubmitting!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const submissionsReady = new Promise<void>((resolve) => { bothSubmitting = resolve; });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; tool_call_id?: string; submission_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          const submission = params.request as typeof submissions[number];
+          submissions.push(submission);
+          const gate = new Promise<void>((resolve) => { release.set(submission.tool_call_id, resolve); });
+          if (submissions.length === 2) bothSubmitting();
+          await gate;
+        }
+      }),
+    });
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: (_toolName: string, args: Record<string, unknown>) => String(args.path),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    for (const toolCallId of ['first', 'second']) listeners.get('ai:tool-request')!({ payload: {
+      request_id: requestId, tool_call_id: toolCallId, tool_name: 'read', args: { path: `${toolCallId}.txt` },
+    } });
+    await submissionsReady;
+    listeners.get('ai:done')!({ payload: {
+      request_id: requestId, output_text: 'done', tool_calls: [],
+      accepted_submission_ids: submissions.map(submission => submission.submission_id),
+    } });
+    release.get('first')!();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(completed).not.toHaveBeenCalled();
+    release.get('second')!();
+    await run;
+
+    const result = completed.mock.calls[0]?.[0];
+    expect(JSON.stringify(result?.providerInputItems)).toContain('first.txt');
+    expect(JSON.stringify(result?.providerInputItems)).toContain('second.txt');
+    expect(result?.toolTraces?.map(trace => [trace.tool_call_id, trace.recovery_state])).toEqual([
+      ['first', 'completed'], ['second', 'completed'],
+    ]);
   });
 });
 
@@ -4689,7 +4825,7 @@ for (const ending of ['done', 'abort'] as const) {
         if (command === 'ai_submit_tool_result') {
           submitted = args.request;
           if (ending === 'abort') controller.abort();
-          else callbacks.get('ai:done')!({ payload: { request_id: submitted!.request_id, output_text: 'done', tool_calls: [] } });
+          else callbacks.get('ai:done')!({ payload: { request_id: submitted!.request_id, output_text: 'done', tool_calls: [], accepted_submission_ids: [submitted!.submission_id] } });
         }
       }),
     });

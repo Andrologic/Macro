@@ -73,7 +73,6 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
                 providerTurnState: previousContext.providerTurnState,
               });
             },
-            onConfirmedToolContext: (hiddenContext) => accumulator.addHiddenContextBlock(hiddenContext),
           }, resources);
           break;
         } catch (error) {

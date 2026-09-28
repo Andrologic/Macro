@@ -79,7 +79,7 @@ describe('copilot bridge tool registration', () => {
     const { __testables } = await loadBridge();
     const input = new PassThrough();
     const channel = new BridgeControlChannel(input, () => {});
-    const recorded = mock((_result: RelayToolResult) => {});
+    const recorded = mock((_toolCallId: string, _result: RelayToolResult) => {});
     input.write('{}\n');
     const tools = __testables.buildMacroTools({
       request_id: ' request:opaque ', model_id: 'synthetic', messages: [],
@@ -99,19 +99,20 @@ describe('copilot bridge tool registration', () => {
           throw new Error(`Invalid fixture SDK result type: ${resultType}`);
         }
         const result = handler({ path: 'example.txt' }, invocation);
-        input.write(`${JSON.stringify(payload)}\n`);
+        input.write(`${JSON.stringify({ ...payload, submission_id: 'submission-1' })}\n`);
         await expect(result).resolves.toEqual({
           textResultForLlm: payload.result, resultType,
           ...(payload.is_error ? { error: payload.result } : {}),
           toolTelemetry: { is_error: payload.is_error, error_kind: payload.error_kind },
         });
-        expect(recorded).toHaveBeenLastCalledWith({
+        expect(recorded).toHaveBeenLastCalledWith(' call/opaque ', {
           result: payload.result,
           isError: payload.is_error,
           errorKind: payload.error_kind,
           interrupt: payload.interrupt,
           hiddenContext: payload.hidden_context ?? undefined,
           visibleContent: payload.visible_content ?? undefined,
+          submissionId: 'submission-1',
         });
       }
 

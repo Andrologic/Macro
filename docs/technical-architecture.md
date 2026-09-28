@@ -1522,6 +1522,16 @@ accepte le premier, puis refuse les suivants.
 
 `streamAccumulator.ts` garde l'ordre d'insertion des traces et leur contexte
 visible/caché. La priorité des statuts protégés vient de `toolTraceState.ts`.
+Pour les outils relayés par Copilot, chaque résultat proposé, y compris une
+erreur de secours, porte son propre `submission_id`. Le bridge ne place cet
+identifiant dans `accepted_submission_ids` qu'après avoir résolu la réponse du
+canal. Le transport natif utilise ces identifiants à `ai:done` pour conserver
+les traces et les éléments rejouables des seuls résultats acceptés. Le
+`hidden_context` durable
+provient du même événement du bridge ; l'accusé de l'écriture IPC ne suffit pas.
+Une fin reçue pendant une remise attend au plus cinq secondes la réponse IPC,
+puis les remises sans preuve d'acceptation restent d'issue inconnue. Cette
+classification n'implique aucune reprise exactement une fois des effets externes.
 L'approbation, la persistance et l'identité de tentative restent aux modules
 Chat. Chaque transport nettoie ses propres ressources, y compris les listeners
 acquis après un échec partiel, sans toucher à celles d'une requête suivante.

@@ -1391,7 +1391,7 @@ const executeCopilotMacroTool = async (
   args: JsonRecord,
   invocation?: ToolInvocation,
   controlChannel?: BridgeControlChannel,
-  recordRelayResult?: (result: RelayToolResult) => void
+  recordRelayResult?: (toolCallId: string, result: RelayToolResult) => void
 ): Promise<string | ToolResultObject> => {
   const mode = inferMacroMode(request.allowed_tool_ids || []);
 
@@ -1403,14 +1403,15 @@ const executeCopilotMacroTool = async (
       );
     }
 
+    const toolCallId = invocation?.toolCallId ?? `${toolId}_${randomUUID()}`;
     const result = await controlChannel.requestTool({
       requestId: request.request_id ?? invocation?.sessionId ?? 'copilot',
-      toolCallId: invocation?.toolCallId ?? `${toolId}_${randomUUID()}`,
+      toolCallId,
       toolName: toolId,
       args,
       sessionTimeoutMs: normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms),
     });
-    recordRelayResult?.(result);
+    recordRelayResult?.(toolCallId, result);
     return toSdkToolResult(result);
   }
 
@@ -1474,7 +1475,7 @@ const buildMacroTools = (
   request: BridgeSendRequest,
   options?: {
     controlChannel?: BridgeControlChannel;
-    recordRelayResult?: (result: RelayToolResult) => void;
+    recordRelayResult?: (toolCallId: string, result: RelayToolResult) => void;
   }
 ): Tool[] => {
   const context = buildWorkspaceContext(request);
@@ -1669,9 +1670,11 @@ const handleSend = async (): Promise<void> => {
     const { system, prompt } = serializeConversationPrompt(request.messages);
     const toolTraces = new Map<string, ToolTraceSnapshot>();
     const hiddenContextBlocks: string[] = [];
+    const acceptedSubmissionIds = new Set<string>();
     const eventState = createCopilotSessionEventState();
     const relayState: { interruptResult: RelayToolResult | null } = { interruptResult: null };
-    const recordRelayResult = (result: RelayToolResult) => {
+    const recordRelayResult = (_toolCallId: string, result: RelayToolResult) => {
+      if (result.submissionId) acceptedSubmissionIds.add(result.submissionId);
       if (result.hiddenContext?.trim()) {
         hiddenContextBlocks.push(result.hiddenContext.trim());
       }
@@ -1737,6 +1740,7 @@ const handleSend = async (): Promise<void> => {
           : eventState.finalContent,
       reasoning_summary: getCopilotReasoningSummary(eventState),
       hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
+      accepted_submission_ids: [...acceptedSubmissionIds],
       tool_traces: Array.from(toolTraces.values()),
       completion_reason: eventState.completionReason ?? 'incomplete',
     });

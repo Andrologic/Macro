@@ -71,6 +71,7 @@ export type BridgeToolRequestMessage = {
 type HistoricalToolResultField =
   | 'blocks'
   | 'result'
+  | 'submission_id'
   | 'hidden_context'
   | 'visible_content'
   | 'interrupt'
@@ -90,6 +91,7 @@ export interface RelayToolResult {
   hiddenContext?: string;
   visibleContent?: string;
   interrupt?: boolean;
+  submissionId?: string;
 }
 
 export class BridgeError extends Error {
@@ -119,6 +121,9 @@ export const decodeToolResultMessage = (value: unknown): BridgeToolResultMessage
 
   const requestId = validateControlId(record.request_id, 'request_id');
   const toolCallId = validateControlId(record.tool_call_id, 'tool_call_id');
+  const submissionId = record.submission_id == null
+    ? undefined
+    : validateControlId(record.submission_id, 'submission_id');
   for (const field of ['result', 'error'] as const) {
     if (record[field] !== undefined && typeof record[field] !== 'string') {
       throw new BridgeControlError('invalid_control_message', `Invalid Copilot ${field}.`);
@@ -139,6 +144,7 @@ export const decodeToolResultMessage = (value: unknown): BridgeToolResultMessage
     type: 'tool_result',
     request_id: requestId,
     tool_call_id: toolCallId,
+    ...(submissionId ? { submission_id: submissionId } : {}),
     result: record.result as string | undefined,
     ...(record.blocks !== undefined ? { blocks: normalizeToolResultBlocks(record.blocks) } : {}),
     hidden_context: record.hidden_context as string | null | undefined,

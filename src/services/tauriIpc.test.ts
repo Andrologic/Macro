@@ -367,6 +367,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             hiddenContext: null,
             providerInputItemsJson: JSON.stringify([{ type: "message" }]),
             providerTurnStateJson: null,
+            generationAttemptsJson: null,
             contextRefsJson: null,
           },
         },
@@ -576,6 +577,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
     await tauriIpc.aiSubmitToolResult({
       requestId: "req-1",
       toolCallId: "call_question",
+      submissionId: "submission-1",
       result: "Questionnaire queued.",
       hiddenContext: "<questionnaire_context />",
       visibleContent: "Need one choice.",
@@ -589,6 +591,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           request: {
             request_id: "req-1",
             tool_call_id: "call_question",
+            submission_id: "submission-1",
             result: "Questionnaire queued.",
             hidden_context: "<questionnaire_context />",
           visible_content: "Need one choice.",

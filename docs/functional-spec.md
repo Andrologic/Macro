@@ -787,6 +787,9 @@ Les traces d'outils distinguent un résultat terminé ou refusé, une exécution
 encore vivante dans le tour courant, une approbation restaurée qui permet une
 nouvelle demande, et une issue inconnue après interruption ou fin du tour sans
 résultat d'outil confirmé. Une trace inconnue n'autorise aucun rejeu automatique.
+Pour un outil relayé par Copilot, la seule écriture de sa réponse dans le canal
+natif ne confirme pas son acceptation par le bridge : une réponse ignorée après
+expiration reste inconnue et son contexte caché n'est pas repris.
 Un ancien marqueur `[TOOL]` sans `[TOOL_DONE]` reste d'issue inconnue après
 rechargement et ne figure pas parmi les outils terminés. La consultation du
 résultat d'une mutation distante par son identifiant durable reste propre à ce
