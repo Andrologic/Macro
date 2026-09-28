@@ -39,6 +39,7 @@ import {
 import { listen, type UnlistenFn } from '../tauriRuntimeBridge';
 import * as tauriIpc from '../tauriIpc';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
+import { MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import type { ProjectMount, ReasoningEffort, ToolTrace } from '../../types';
 
 export const streamNativeTurnViaTauri = async (params: {
@@ -85,6 +86,9 @@ export const streamNativeTurnViaTauri = async (params: {
   for (const toolName of allowedTools) {
     const entry = getMacroToolRegistryEntry(toolName);
     if (entry) toolSchemas.set(toolName, entry.parameters);
+  }
+  for (const entry of MCP_DISCOVERY_DEFINITIONS) {
+    if (allowedTools.has(entry.id)) toolSchemas.set(entry.id, entry.parameters);
   }
 
   let fullContent = '';

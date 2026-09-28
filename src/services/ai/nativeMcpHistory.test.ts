@@ -79,6 +79,29 @@ const { buildFunctionCallOutputProviderInputItem } = await import('./responsesCo
 const blocks = normalizeToolResultBlocks(fixture.content);
 const ids = (items: unknown[], type: string) => items.filter(isRecord).filter(item => item.type === type).map(item => item.call_id);
 
+test('native requests expose discovery tools and reject direct hidden MCP calls', async () => {
+  scenario = 'completed'; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
+  const tools = Array.from({ length: 13 }, (_, index) => ({
+    id: index === 0 ? 'mcp__fixture__read' : `mcp__fixture__tool_${index}`,
+    name: index === 0 ? 'read' : `tool_${index}`, serverId: 'fixture',
+    inputSchema: { type: 'object', properties: {} },
+  }));
+  const handler = mock(async () => 'unexpected');
+  const options: StreamingChatOptions = {
+    providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
+    messages: [], allowedToolIds: tools.map(tool => tool.id), mcpTools: tools,
+    onToken() {}, onComplete() {}, onError(error) { throw error; }, onToolCall: handler,
+  };
+  const accumulator = createStreamAccumulator(options);
+  const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
+  await runToolCallingLoop(options, adapter, accumulator);
+  expect(requests[0].allowedToolIds).toEqual(['mcp_search', 'mcp_call']);
+  expect((requests[0].tools as Array<{ function: { name: string } }>).map(tool => tool.function.name)).toEqual(['mcp_search', 'mcp_call']);
+  expect(handler).not.toHaveBeenCalled();
+  expect(submissions.length).toBeGreaterThanOrEqual(2);
+  expect(submissions.every(item => item.isError)).toBe(true);
+});
+
 for (const mode of scenarios) {
   test(`${mode}: native executed pairs survive the loop, persistence and reload exactly once`, async () => {
     scenario = mode; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];

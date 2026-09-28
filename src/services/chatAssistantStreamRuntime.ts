@@ -538,7 +538,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           elapsedMs: event.elapsed_ms,
         });
       },
-      onToolCall: createChatToolDispatch(operation, ports.tools, shouldAcceptStreamUpdate, finalizeReplayRecoveryAfterProgress),
+      onToolCall: createChatToolDispatch(operation, ports.tools, shouldAcceptStreamUpdate, finalizeReplayRecoveryAfterProgress, params.mcpTools),
     });
     ports.owner.track(params.conversationId, streamPromise);
   };

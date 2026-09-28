@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import { collectAllowedTools, getFunctionToolName } from "./toolDefinitions";
 import { applyEditingStrategyToToolIds } from "../aiEditingStrategy";
 import { getImplementAgentToolPolicy, getToolModePolicy } from "../toolModePolicy";
@@ -11,6 +11,34 @@ const collect = (ids: string[], extra: Partial<Parameters<typeof collectAllowedT
 const names = (tools: unknown[]) => tools.map(getFunctionToolName);
 
 describe("tool availability at the model boundary", () => {
+  it('offers bounded MCP discovery on the common transport and rejects hidden direct calls', async () => {
+    const mcpTools = Array.from({ length: 13 }, (_, index) => ({
+      id: `mcp__fixture__tool_${index}`, serverId: 'fixture', name: `tool_${index}`,
+      inputSchema: { type: 'object', properties: {} },
+    }));
+    const handler = mock(() => 'unexpected');
+    const options: StreamingChatOptions = {
+      providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
+      messages: [], allowedToolIds: mcpTools.map(tool => tool.id), mcpTools, maxTurns: 1,
+      onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+      onToolCall: handler,
+    };
+    const results: ToolResult[] = [];
+    await runToolCallingLoop(options, {
+      kind: 'generic',
+      streamTurn: async ({ tools }) => {
+        expect(names(tools)).toEqual(['mcp_search', 'mcp_call']);
+        return { result: { content: '', toolCalls: [{ id: 'direct', type: 'function', function: {
+          name: mcpTools[0].id, arguments: '{}',
+        } }] }, projectAssistant: () => ({ items: [] }) };
+      },
+      projectTool: result => { results.push(result); return { output: result.content }; },
+      afterToolResults: () => undefined,
+    }, createStreamAccumulator(options));
+    expect(results[0].error_kind).toBe('permission');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("keeps permitted write/edit when a patch-first model cannot use apply_patch", () => {
     const allowed = getImplementAgentToolPolicy("build").allowedToolIds.filter(id => id !== "apply_patch");
     const tools = names(collect(applyEditingStrategyToToolIds(allowed, "openai", "gpt-5")));
