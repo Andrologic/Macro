@@ -95,10 +95,25 @@ fn optional_f64(object: &Map<String, Value>, name: &str) -> Result<Option<f64>, 
         .transpose()
 }
 
+fn integral_i64(value: &Value) -> Option<i64> {
+    let number = value.as_number()?;
+    if let Some(integer) = number.as_i64() {
+        return Some(integer);
+    }
+    if let Some(integer) = number.as_u64() {
+        return i64::try_from(integer).ok();
+    }
+    let decimal = number.as_f64()?;
+    // JSON Schema treats 1.0 as an integer. Bound floating representations to
+    // the exact-integer range before converting; larger decimals can round.
+    (decimal.is_finite() && decimal.fract() == 0.0 && decimal.abs() <= (1_u64 << 53) as f64)
+        .then(|| decimal as i64)
+}
+
 fn optional_i64(object: &Map<String, Value>, name: &str) -> Result<Option<i64>, McpRuntimeError> {
     object
         .get(name)
-        .map(|value| value.as_i64().ok_or_else(invalid_schema))
+        .map(|value| integral_i64(value).ok_or_else(invalid_schema))
         .transpose()
 }
 
@@ -336,7 +351,7 @@ impl FieldSchema {
                     && minimum.is_none_or(|min| number >= min)
                     && maximum.is_none_or(|max| number <= max)
             }),
-            Self::Integer { minimum, maximum } => value.as_i64().is_some_and(|number| {
+            Self::Integer { minimum, maximum } => integral_i64(value).is_some_and(|number| {
                 minimum.is_none_or(|min| number >= min) && maximum.is_none_or(|max| number <= max)
             }),
             Self::Boolean => value.is_boolean(),
@@ -516,7 +531,7 @@ mod tests {
         let valid = serde_json::json!({
             "name":"éa","email":"user@example.com","site":"https://example.com/",
             "day":"2026-09-28","when":"2026-09-28T12:00:00Z",
-            "score":1.5,"count":2,"enabled":true,"role":"r","tags":["a","b"]
+            "score":1.5,"count":2.0,"enabled":true,"role":"r","tags":["a","b"]
         });
         schema.validate_content(&valid).unwrap();
         for (field, bad) in [
@@ -527,6 +542,7 @@ mod tests {
             ("score", serde_json::json!(3.0)),
             ("score", serde_json::json!(9007199254740993u64)),
             ("count", serde_json::json!(1.5)),
+            ("count", serde_json::json!(9007199254740994.0)),
             ("role", serde_json::json!("admin")),
             ("tags", serde_json::json!(["a", "c"])),
             ("enabled", serde_json::json!("true")),

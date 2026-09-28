@@ -526,7 +526,7 @@ mod tests {
             operation_id: pending.operation_id,
             answers: vec![McpElicitationAnswer {
                 id: "form".into(), action: McpElicitationAction::Accept,
-                content: Some(serde_json::json!({"name":"Ada","role":"writer","age":25,"verified":true,"tags":["a","b"]})),
+                content: Some(serde_json::json!({"name":"Ada","role":"writer","age":25.0,"verified":true,"tags":["a","b"]})),
             }],
         }).unwrap();
         let answers = task.await.unwrap().unwrap();
