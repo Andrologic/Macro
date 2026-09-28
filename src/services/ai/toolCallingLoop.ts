@@ -35,6 +35,7 @@ export interface ToolCallingAdapter {
     turnCount: number;
     recovering: boolean;
     onDelta: (delta: string) => void;
+    onRetry?: () => Promise<void>;
   }) => Promise<LoopTurn | { stopped: string }>;
   projectTool: (result: ToolResult, calls: ToolCall[]) => unknown;
   afterToolResults: (messages: StreamMessage[], results: ToolResult[]) => void;
@@ -100,7 +101,7 @@ export async function runToolCallingLoop(
       const recovering = recoveryCause !== null;
       const bufferOutput = enforceGuidedRetry || recovering;
       let streamedContent = '';
-      const attemptId = `${attemptSessionId}:${++attemptSequence}`;
+      let attemptId = `${attemptSessionId}:${++attemptSequence}`;
       const interruptedAttempt = (): GenerationAttempt => ({
         id: attemptId,
         status: bufferOutput ? 'abandoned' : 'partial',
@@ -108,10 +109,18 @@ export async function runToolCallingLoop(
         acceptedText: bufferOutput ? '' : streamedContent,
         costUsd: null,
       });
+      options.onGenerationAttemptProgress?.(interruptedAttempt());
       let turn: Awaited<ReturnType<ToolCallingAdapter['streamTurn']>>;
       try {
         turn = await adapter.streamTurn({
           messages, tools: recovering ? [] : tools, turnCount, recovering,
+          onRetry: async () => {
+            const previousAttempt = interruptedAttempt();
+            await recordAttempt({ ...previousAttempt, status: previousAttempt.rawText ? previousAttempt.status : 'abandoned' });
+            streamedContent = '';
+            attemptId = `${attemptSessionId}:${++attemptSequence}`;
+            options.onGenerationAttemptProgress?.(interruptedAttempt());
+          },
           onDelta: (delta) => {
             streamedContent += delta;
             if (!bufferOutput) accumulator.appendProviderDelta(delta);

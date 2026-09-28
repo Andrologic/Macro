@@ -105,7 +105,7 @@ const hasAssistantProgress = (message: ChatMessage | undefined): boolean =>
     message &&
       (message.content.trim().length > 0 ||
         (message.tool_traces?.length ?? 0) > 0 ||
-        (message.generation_attempts?.some((attempt) => attempt.rawText.length > 0) ?? false)),
+        (message.generation_attempts?.length ?? 0) > 0),
   );
 
 const resolveErrorAssistantMessageId = (params: {

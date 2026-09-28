@@ -12,6 +12,9 @@ describe('GenerationAttemptDetails', () => {
     expect(html).toContain('data-attempt-id="tool-turn"');
     expect(html).toContain('data-attempt-id="answer-turn"');
     expect(html.match(/data-attempt-status="completed"/g)).toHaveLength(2);
+    expect(html.match(/Attempt text:/g)).toHaveLength(2);
+    expect(html).toContain('Reading.');
+    expect(html).toContain('Answer.');
   });
 
   it('keeps abandoned text inspectable without presenting an unknown cost as zero', () => {

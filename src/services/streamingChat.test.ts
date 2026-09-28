@@ -1368,6 +1368,49 @@ describe('streamingChat tool rendering helpers', () => {
     expect(requestBodies[1]?.reasoning_effort).toBeUndefined();
   });
 
+  it('gives a native reasoning retry its own generation attempt', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const requests: Array<Record<string, unknown>> = [];
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => { listeners.delete(eventName); };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command !== 'ai_stream_chat') return undefined;
+      const request = (payload as { request: Record<string, unknown> }).request;
+      requests.push(request);
+      if (requests.length === 1) throw new Error('Unknown parameter: reasoning_effort');
+      queueMicrotask(() => {
+        listeners.get('ai:done')?.({
+          payload: { request_id: request.request_id, output_text: 'Done.', tool_calls: [], completion_reason: 'completed' },
+        });
+      });
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock, listenImpl: listenMock, forceTauriAvailable: true,
+    });
+    const onComplete = mock((_result: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'gpt-test',
+      reasoningEffort: 'high', reasoningTransportMode: 'openai_effort',
+      messages: [{ role: 'user', content: 'Answer.' }],
+      enableWebSearch: false, enableWebFetch: false,
+      onToken: () => undefined, onComplete,
+      onError: (error: Error) => { throw error; },
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.reasoning_effort).toBe('high');
+    expect(requests[1]?.reasoning_effort).toBeNull();
+    const attempts = onComplete.mock.calls[0]?.[0].generationAttempts;
+    expect(attempts).toHaveLength(2);
+    expect(attempts?.[0]).toMatchObject({ status: 'abandoned', rawText: '' });
+    expect(attempts?.[1]).toMatchObject({ status: 'completed', rawText: 'Done.', acceptedText: 'Done.' });
+    expect(attempts?.[0]?.id).not.toBe(attempts?.[1]?.id);
+  });
+
   it('serializes provider reasoning metadata without replaying visible think blocks as content', async () => {
     const { __testables } = await loadStreamingChat();
     const reasoningDetails = [{ type: 'reasoning.trace', payload: 'opaque-provider-data' }];
@@ -2985,6 +3028,12 @@ describe('streamingChat tool rendering helpers', () => {
           json: async () => ({}),
         };
       }
+      if (requestCount === 2) {
+        return {
+          ok: true,
+          body: new ReadableStream({ start(controller) { controller.error(new Error('Stream interrupted')); } }),
+        };
+      }
 
       return {
         ok: true,
@@ -3007,6 +3056,8 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onError = mock(() => undefined);
     const onComplete = mock(() => undefined);
+    const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
+    const attemptProgress: Array<NonNullable<StreamCompletionResult['generationAttempts']>[number]> = [];
 
     await streamChat({
       providerId: 'openrouter',
@@ -3019,13 +3070,24 @@ describe('streamingChat tool rendering helpers', () => {
       onToken: () => undefined,
       onComplete,
       onError,
+      onGenerationAttemptsUpdate: (attempts: NonNullable<StreamCompletionResult['generationAttempts']>) => { attemptUpdates.push(attempts); },
+      onGenerationAttemptProgress: (attempt: NonNullable<StreamCompletionResult['generationAttempts']>[number]) => { attemptProgress.push(attempt); },
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(onError).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({ visibleContent: 'Recovered.' })
     );
+    const attempts = attemptUpdates.at(-1);
+    expect(attempts).toHaveLength(3);
+    expect(attempts?.[0]).toMatchObject({ status: 'abandoned', rawText: '', acceptedText: '', costUsd: null });
+    expect(attempts?.[1]).toMatchObject({ status: 'abandoned', rawText: '', acceptedText: '', costUsd: null });
+    expect(attempts?.[2]).toMatchObject({ status: 'completed', rawText: 'Recovered.', acceptedText: 'Recovered.', costUsd: null });
+    expect(attempts?.[0]?.id).not.toBe(attempts?.[1]?.id);
+    expect(attempts?.[1]?.id).not.toBe(attempts?.[2]?.id);
+    expect(attemptProgress[0]).toMatchObject({ id: attempts?.[0]?.id, rawText: '' });
+    expect(attemptProgress.some((attempt) => attempt.id === attempts?.[2]?.id && attempt.rawText === '')).toBe(true);
   });
 
   it('interrupts the turn immediately when the question tool is invoked', async () => {

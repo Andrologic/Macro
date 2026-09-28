@@ -504,7 +504,8 @@ partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publ
 le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
 écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Quand
 un utilisateur arrête le stream, la tentative en cours, suivie en mémoire au fil
-des tokens, rejoint le message avant sa sauvegarde partielle. Quand
+des tokens ou dès l'envoi de la requête, rejoint le message avant sa sauvegarde
+partielle. Chaque renvoi HTTP interne reçoit aussi un nouvel identifiant. Quand
 une récupération de dépassement de contexte remplace le stream sur le même
 message, ses nouvelles tentatives s'ajoutent aux précédentes par identifiant.
 Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses

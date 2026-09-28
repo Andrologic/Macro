@@ -4,6 +4,7 @@ import type { GenerationAttempt } from '../../services/ai/contracts';
 export function GenerationAttemptDetails({ attempts }: { attempts?: GenerationAttempt[] }) {
   const { t } = useTranslation();
   if (!attempts?.length || (attempts.length === 1 && attempts[0].status === 'completed' && attempts[0].rawText === attempts[0].acceptedText)) return null;
+  const showEachAttemptText = attempts.length > 1;
 
   return (
     <details className="mt-2 rounded-md border border-border bg-card/40 px-2.5 py-1.5 text-xs text-muted-foreground">
@@ -22,12 +23,12 @@ export function GenerationAttemptDetails({ attempts }: { attempts?: GenerationAt
                 ? t('chat.generationAttemptCostUnknown', 'cost unknown')
                 : t('chat.generationAttemptCost', { amount: attempt.costUsd, defaultValue: '${{amount}}' })}
             </div>
-            {attempt.rawText && (attempt.status !== 'completed' || attempt.rawText !== attempt.acceptedText) && (
+            {attempt.rawText && (showEachAttemptText || attempt.status !== 'completed' || attempt.rawText !== attempt.acceptedText) && (
               <div className="mt-1 whitespace-pre-wrap break-words">
                 {t('chat.generationAttemptRawText', 'Attempt text')}: {attempt.rawText}
               </div>
             )}
-            {attempt.acceptedText && attempt.rawText !== attempt.acceptedText && (
+            {attempt.acceptedText && (showEachAttemptText || attempt.rawText !== attempt.acceptedText) && (
               <div className="mt-1 whitespace-pre-wrap break-words">
                 {t('chat.generationAttemptAcceptedText', 'Text kept in response')}: {attempt.acceptedText}
               </div>

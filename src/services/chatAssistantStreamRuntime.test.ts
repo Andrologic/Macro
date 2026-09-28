@@ -374,6 +374,22 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     });
   }
 
+  test("stop before the first token persists an empty in-flight attempt", async () => {
+    const h = setup();
+    const params = launch("a");
+    const stream = h.start(params);
+    const attempt = { id: "attempt-before-token", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
+    stream.options.onGenerationAttemptProgress?.(attempt);
+
+    h.owner.stop("a");
+    stream.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.partials).toHaveLength(1);
+    expect(h.partials[0]).toMatchObject({ id: params.assistantMessage.id, content: "", generation_attempts: [attempt] });
+    expect(h.messages.has(params.assistantMessage.id)).toBe(true);
+  });
+
   test("a failed attempt checkpoint leaves the provider result and final persistence intact", async () => {
     const h = setup();
     const params = launch("a");
