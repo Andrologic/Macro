@@ -7,6 +7,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type { AgentType, ChatMessage, ConversationRuntimeState, ToolTrace } from "../types";
 import { EMPTY_CONVERSATION_RUNTIME } from "../domains/chat/runtimeState";
 import { createAssistantStreamRuntime, type ChatAssistantStreamPorts } from "./chatAssistantStreamRuntime";
+import { allowChatToolInvocationJournal } from "../test-utils/chatToolInvocationJournal";
 import { createChatTurnRuntime } from "./chatTurnRuntime";
 import type { AssistantStreamLaunch } from "./chatStreamContracts";
 import type { ConversationCompactionStatus } from "./contextCompactionSession";
@@ -157,7 +158,7 @@ function setup() {
         consolidatePendingToolBoundaryCompactionAfterPersistence: consolidate,
       }),
     },
-    tools: { execute, preserve, boundError }, replay: { finalize: mock(async () => undefined) },
+    tools: { journal: allowChatToolInvocationJournal, execute, preserve, boundError }, replay: { finalize: mock(async () => undefined) },
     transport: (options) => {
       const done = deferred<void>();
       calls.push({ options, done });
@@ -255,6 +256,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     const pendingTool = deferred<string>();
     h.execute.mockImplementationOnce(async () => pendingTool.promise);
     const oldTool = oldStream.options.onToolCall?.("read", { path: "file.txt" }, "in-flight");
+    await checkpoint();
     const next = launch("a", "next");
     const nextStream = h.start(next);
     const diagnosticsBefore = h.record.mock.calls.length;
@@ -305,6 +307,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       stream.options.onToken("Partial answer");
       stream.options.onToolTracesUpdate?.([trace]);
       const toolResult = stream.options.onToolCall?.("read", { path: "file.txt" }, "read-1");
+      await checkpoint();
       expect(h.execute).toHaveBeenCalledTimes(1);
 
       h.owner.stop("a");

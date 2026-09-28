@@ -1519,7 +1519,18 @@ pas autoriser à nouveau un effet potentiel portant la même identité. Une
 restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
 l'archive ; le futur transport doit donc vérifier son propre identifiant
 d'idempotence avant toute reprise depuis une sauvegarde.
-Ces commandes ne sont pas encore appelées par le streaming ni exposées dans l'UI.
+Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
+l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin confirme la
+réponse de cet exécuteur, pas l'acceptation par le fournisseur Copilot. Une
+annulation, une exception de transport ou une réponse non confirmée laisse
+l'intention `unknown`, sans rejeu automatique. Le mode frontend-only distant ne
+dispose pas encore d'un port durable pour ce journal de conversation : le
+dispatch refuse donc les appels d'outils, y compris les lectures, avant tout
+effet. La reprise propre à `remoteKernelApi` pour les mutations déjà envoyées
+reste distincte. Le raccordement de son `execution_id` au journal de
+conversation exige un contrat distant de réservation préalable et de reçu ;
+aucune correspondance n'est déduite de l'identifiant d'appel local. L'UI des
+invocations inconnues relève d'un lot séparé.
 La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
 avant de migrer sa copie temporaire, ce qui accepte les archives antérieures à
 la migration du journal sans assouplir le contrôle des objets SQLite existants.
