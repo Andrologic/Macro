@@ -1,6 +1,7 @@
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
+import { chatToolInvocationJournal } from "../services/chatToolInvocationJournal";
 import { prepareAssistantStreamLaunch as prepareChatRequest } from "../services/chatRequestPreparation";
 import { retryAssistantPersistence } from "../services/chatAssistantPersistenceRuntime";
 import { sendMessage as sendChatMessage } from "../services/chatSend/sendMessage";
@@ -9653,7 +9654,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       setStatus: setConversationCompactionStatus,
       create: createStreamCompaction,
     },
-    tools: { execute: handleToolCall, preserve: preserveLargeToolResult, boundError: buildBoundedToolCallError },
+    tools: { journal: chatToolInvocationJournal, execute: handleToolCall, preserve: preserveLargeToolResult, boundError: buildBoundedToolCallError },
     replay: { finalize: params => tauriIpc.dbFinalizeConversationReplay(params) },
   });
 

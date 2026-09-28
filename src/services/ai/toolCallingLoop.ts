@@ -152,6 +152,10 @@ export async function runToolCallingLoop(
       const replayContent = recovering
         ? stripContinuationOverlap(accumulator.buildResult().visibleContent, content)
         : content;
+      if (result.toolCalls.some(call => !call.id?.trim())) {
+        await recordAttempt(interruptedAttempt());
+        throw new Error('Provider returned a tool call without a stable call ID. Macro refused to execute the batch.');
+      }
       const rawCalls = getValidToolCalls(result.toolCalls);
       const incomplete = isIncompleteCompletionReason(result.completionReason);
       const recoveryAttemptedTool = recovering && rawCalls.length > 0;

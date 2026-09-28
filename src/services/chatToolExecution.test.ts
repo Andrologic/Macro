@@ -10,6 +10,7 @@ import { handleDeferredArchitectToolCall } from "./deferredArchitectTool";
 import type { ArchitectPlanRecord } from "./architectPlanService";
 import { createChatTurnRuntime } from "./chatTurnRuntime";
 import { createChatToolDispatch } from "./chatToolDispatch";
+import { allowChatToolInvocationJournal } from "../test-utils/chatToolInvocationJournal";
 import type { ConversationRuntimeState } from "../types";
 import { buildMCPToolId } from "./mcp/identifiers";
 
@@ -363,6 +364,7 @@ describe("durable tool approvals", () => {
     f.operation.allowedToolIds = tools.slice(1).map(tool => tool.id);
     f.operation.mcpServers = [{ id: 'server', name: 'Server', category: 'other', status: 'online', description: '', icon: 'terminal', tools }];
     const dispatch = createChatToolDispatch(f.operation, {
+      journal: allowChatToolInvocationJournal,
       execute: f.execute,
       preserve: async (_operation, _name, _callId, resolution) => resolution,
       boundError: async (_operation, _name, _callId, error) => error,
@@ -548,6 +550,7 @@ test("a tool suspended in an old attempt cannot execute after the same turn is r
   const gate = deferred<boolean>();
   f.ports.policy.isSourceToolEnabled = () => gate.promise;
   const dispatch = createChatToolDispatch(f.operation, {
+    journal: allowChatToolInvocationJournal,
     execute: f.execute, preserve: async (_op, _name, _id, value) => value,
     boundError: async (_op, _name, _id, error) => error,
   }, acceptsOld, () => {});
