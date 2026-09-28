@@ -312,6 +312,25 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
+        if table == "tool_invocations" {
+            // This table has no legacy schema variants. Compare its full DDL
+            // so a backup cannot omit status/receipt CHECK constraints while
+            // retaining the same columns, foreign key, and indexes.
+            let query = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?";
+            let actual: String = sqlx::query_scalar(query)
+                .bind(&table)
+                .fetch_one(&mut db)
+                .await
+                .map_err(|e| e.to_string())?;
+            let expected: String = sqlx::query_scalar(query)
+                .bind(&table)
+                .fetch_one(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+            if actual != expected {
+                return Err(format!("Incompatible backup table constraints: {table}"));
+            }
+        }
         let query =
             "SELECT name || ':' || type || ':' || pk FROM pragma_table_info(?) ORDER BY name";
         let actual: Vec<String> = sqlx::query_scalar(query)
@@ -1416,6 +1435,47 @@ mod tests {
                 .await
                 .unwrap();
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_v7_archive_with_weakened_tool_journal_constraints() {
+        let (_temp, data, _config) = profile().await;
+        let database = data.join("macro.db");
+        let mut db = connection(&database).await.unwrap();
+        let table_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tool_invocations'",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        let index_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_tool_invocations_unresolved'",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        let weakened =
+            table_sql.replace(" CHECK (status IN ('pending', 'completed', 'unknown'))", "");
+        assert_ne!(weakened, table_sql);
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        // Both statements come from this test database's own migration DDL.
+        sqlx::query(sqlx::AssertSqlSafe(weakened))
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(index_sql))
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+
+        assert_eq!(
+            check_database(&database).await.unwrap_err(),
+            "Incompatible backup table constraints: tool_invocations"
+        );
     }
 
     #[tokio::test]

@@ -1510,6 +1510,13 @@ ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encor
 `pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
 clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
 automatiquement. La suppression de conversation efface les entrées par cascade.
+La garantie est un dispatch au plus une fois par identité, pas une exécution
+exactement une fois : une interruption après l'écriture initiale peut laisser
+l'effet non exécuté. Supprimer un tour ne supprime pas son journal, afin de ne
+pas autoriser à nouveau un effet potentiel portant la même identité. Une
+restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
+l'archive ; le futur transport doit donc vérifier son propre identifiant
+d'idempotence avant toute reprise depuis une sauvegarde.
 Ces commandes ne sont pas encore appelées par le streaming ni exposées dans l'UI.
 La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
 avant de migrer sa copie temporaire, ce qui accepte les archives antérieures à
