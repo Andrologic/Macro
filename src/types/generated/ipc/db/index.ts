@@ -23,6 +23,7 @@ export type { FailAgentRunInput } from '../FailAgentRunInput';
 export type { GitRepositoryRecord } from '../GitRepositoryRecord';
 export type { GitWorktreeRecord } from '../GitWorktreeRecord';
 export type { GoalAuditTransition } from '../GoalAuditTransition';
+export type { GoalAuditorReadInput } from '../GoalAuditorReadInput';
 export type { ImportMessageInput } from '../ImportMessageInput';
 export type { InsertConversationCompactionEventInput } from '../InsertConversationCompactionEventInput';
 export type { JsonValue } from '../serde_json/JsonValue';

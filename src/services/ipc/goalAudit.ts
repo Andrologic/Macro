@@ -1,5 +1,24 @@
 import { invoke } from "../tauriRuntimeBridge";
-import type { AgentRun, RecordGoalAuditTransitionInput } from "../../types/generated/ipc";
+import type {
+  AgentRun,
+  GoalAuditorReadInput as NativeGoalAuditorReadInput,
+  RecordGoalAuditTransitionInput,
+} from "../../types/generated/ipc";
+
+/** The native command derives authorization from the durable run, never from a caller mode. */
+export type GoalAuditorReadInput = Omit<
+  NativeGoalAuditorReadInput,
+  "toolId" | "args" | "workspacePath"
+> & {
+  toolId: "list" | "read" | "glob" | "grep" | "ast_grep"
+    | "git_status" | "git_log" | "git_branch_list" | "git_diff" | "git_get_tree";
+  args: Record<string, unknown>;
+  workspacePath?: NativeGoalAuditorReadInput["workspacePath"];
+};
+
+export function executeGoalAuditorRead(input: GoalAuditorReadInput): Promise<string> {
+  return invoke<string>("tool_execute_goal_auditor_read", { input });
+}
 
 export function recordGoalAuditTransition(input: RecordGoalAuditTransitionInput): Promise<AgentRun> {
   return invoke<AgentRun>("db_record_goal_audit_transition", { input });

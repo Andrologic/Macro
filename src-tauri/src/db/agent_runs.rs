@@ -245,6 +245,49 @@ pub async fn get_agent_run(pool: &SqlitePool, id: &str) -> DbResult<Option<Agent
     .transpose()
 }
 
+/// Authorize a single read against the durable, currently running audit child.
+/// The caller's claimed profile or mode is never part of this decision.
+pub async fn authorize_goal_auditor_read(
+    pool: &SqlitePool,
+    run_id: &str,
+    parent_conversation_id: &str,
+    child_conversation_id: &str,
+) -> DbResult<bool> {
+    if [run_id, parent_conversation_id, child_conversation_id]
+        .iter()
+        .any(|value| value.is_empty() || value.trim() != *value)
+        || parent_conversation_id == child_conversation_id
+    {
+        return Ok(false);
+    }
+
+    let authorized: i64 = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM agent_runs AS run
+            JOIN conversations AS parent ON parent.id = run.parent_conversation_id
+            JOIN conversations AS child ON child.id = run.child_conversation_id
+            WHERE run.id = ?
+              AND run.parent_conversation_id = ?
+              AND run.child_conversation_id = ?
+              AND run.agent_profile = 'goal_auditor'
+              AND run.depth = 1
+              AND run.status = 'running'
+              AND run.attempt_count > 0
+              AND run.started_at IS NOT NULL
+              AND run.finished_at IS NULL
+        )
+        "#,
+    )
+    .bind(run_id)
+    .bind(parent_conversation_id)
+    .bind(child_conversation_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(authorized != 0)
+}
+
 pub async fn list_agent_runs_by_parent(
     pool: &SqlitePool,
     parent_conversation_id: &str,

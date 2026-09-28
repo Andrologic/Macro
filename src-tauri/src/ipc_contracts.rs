@@ -2,6 +2,7 @@
 //! These reexports expose data shapes, not application execution or transport authority.
 
 pub mod db {
+    pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
     pub use crate::db::goal_audit_transitions::{
         GoalAuditTransition, RecordGoalAuditTransitionInput,
     };

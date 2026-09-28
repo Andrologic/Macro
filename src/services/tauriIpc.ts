@@ -37,7 +37,12 @@ export type {
 } from "../types/generated/ipc";
 
 export type { GoalAuditTransition, RecordGoalAuditTransitionInput } from "../types/generated/ipc";
-export { recordGoalAuditTransition, linkGoalAuditChildConversation } from "./ipc/goalAudit";
+export type { GoalAuditorReadInput } from "./ipc/goalAudit";
+export {
+  recordGoalAuditTransition,
+  linkGoalAuditChildConversation,
+  executeGoalAuditorRead,
+} from "./ipc/goalAudit";
 
 export type {
   DbProviderConfig,

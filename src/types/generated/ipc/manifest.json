@@ -925,6 +925,14 @@
     },
     {
       "families": [
+        "db"
+      ],
+      "name": "GoalAuditorReadInput",
+      "origin": "macro_lib::commands::goal_auditor_read::GoalAuditorReadInput",
+      "path": "GoalAuditorReadInput.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",

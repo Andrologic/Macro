@@ -113,6 +113,7 @@ export type { GitWorktreeInspectionDto } from './GitWorktreeInspectionDto';
 export type { GitWorktreeRecord } from './GitWorktreeRecord';
 export type { GitWorktreeRemoveDto } from './GitWorktreeRemoveDto';
 export type { GoalAuditTransition } from './GoalAuditTransition';
+export type { GoalAuditorReadInput } from './GoalAuditorReadInput';
 export type { ImportGitRepoRequest } from './ImportGitRepoRequest';
 export type { ImportMessageInput } from './ImportMessageInput';
 export type { InsertConversationCompactionEventInput } from './InsertConversationCompactionEventInput';
