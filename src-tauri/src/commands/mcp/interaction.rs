@@ -10,6 +10,7 @@ use tauri::ipc::Channel;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use super::form_schema::FormSchema;
 use super::runtime::{McpOperationCancellation, McpRuntimeError};
 use super::types::McpRuntimeKey;
 
@@ -69,7 +70,7 @@ struct Pending {
     lease_id: String,
     key: McpRuntimeKey,
     operation_id: String,
-    prompt_ids: Vec<String>,
+    form_schemas: BTreeMap<String, FormSchema>,
     sender: oneshot::Sender<BTreeMap<String, Value>>,
 }
 
@@ -188,7 +189,7 @@ impl McpInteractionBroker {
                 "The MCP interaction does not belong to this host or operation.",
             ));
         }
-        if response.answers.len() != pending.prompt_ids.len() {
+        if response.answers.len() != pending.form_schemas.len() {
             return Err(error(
                 "MCP_INTERACTION_INVALID_RESPONSE",
                 "The MCP interaction response has the wrong number of answers.",
@@ -196,7 +197,7 @@ impl McpInteractionBroker {
         }
         let mut answers = BTreeMap::new();
         for answer in response.answers {
-            if !pending.prompt_ids.contains(&answer.id) || answers.contains_key(&answer.id) {
+            if !pending.form_schemas.contains_key(&answer.id) || answers.contains_key(&answer.id) {
                 return Err(error(
                     "MCP_INTERACTION_INVALID_RESPONSE",
                     "The MCP interaction response contains an unknown or duplicate prompt.",
@@ -210,12 +211,11 @@ impl McpInteractionBroker {
                             "Accepted MCP input requires content.",
                         )
                     })?;
-                    if !content.is_object() {
-                        return Err(error(
-                            "MCP_INTERACTION_INVALID_RESPONSE",
-                            "Accepted MCP form input must be an object.",
-                        ));
-                    }
+                    pending
+                        .form_schemas
+                        .get(&answer.id)
+                        .expect("checked above")
+                        .validate_content(&content)?;
                     serde_json::json!({ "action": "accept", "content": content })
                 }
                 McpElicitationAction::Decline => {
@@ -279,15 +279,15 @@ impl McpInteractionBroker {
                 "The MCP interaction exceeds its request limits.",
             ));
         }
-        let mut ids = Vec::new();
+        let mut form_schemas = BTreeMap::new();
         for prompt in &prompts {
-            if prompt.id.is_empty() || ids.contains(&prompt.id) {
+            if prompt.id.is_empty() || form_schemas.contains_key(&prompt.id) {
                 return Err(error(
                     "MCP_INTERACTION_INVALID_REQUEST",
                     "The MCP interaction contains an invalid prompt id.",
                 ));
             }
-            ids.push(prompt.id.clone());
+            form_schemas.insert(prompt.id.clone(), FormSchema::from_prompt(&prompt.request)?);
         }
         if cancellation.is_cancelled() {
             return Err(error(
@@ -322,7 +322,7 @@ impl McpInteractionBroker {
                     lease_id: lease_id.clone(),
                     key: key.clone(),
                     operation_id: operation_id.clone(),
-                    prompt_ids: ids,
+                    form_schemas,
                     sender,
                 },
             );
@@ -390,7 +390,11 @@ mod tests {
 
     fn prompts() -> Vec<McpElicitationPrompt> {
         ["a", "b", "c"].into_iter().map(|id| McpElicitationPrompt {
-            id: id.into(), request: serde_json::json!({ "method": "elicitation/create", "params": { "mode": "form" } }),
+            id: id.into(), request: serde_json::json!({ "method": "elicitation/create", "params": {
+                "mode": "form", "message": "Name", "requestedSchema": {
+                    "type": "object", "properties": { "name": { "type": "string", "minLength": 2 } }, "required": ["name"]
+                }
+            } }),
         }).collect()
     }
 
@@ -467,6 +471,82 @@ mod tests {
         );
         assert_eq!(result["b"], serde_json::json!({"action":"decline"}));
         assert_eq!(result["c"], serde_json::json!({"action":"cancel"}));
+    }
+
+    #[tokio::test]
+    async fn hostile_accept_must_match_the_pending_form_schema() {
+        let broker = McpInteractionBroker::default();
+        let (lease, mut rx) = open(&broker);
+        let prompt = McpElicitationPrompt {
+            id: "form".into(),
+            request: serde_json::json!({"method":"elicitation/create","params":{
+                "message":"Profile","requestedSchema":{"type":"object","properties":{
+                    "name":{"type":"string","minLength":2,"maxLength":8},
+                    "age":{"type":"integer","minimum":18,"maximum":120},
+                    "role":{"type":"string","enum":["reader","writer"]},
+                    "verified":{"type":"boolean"},
+                    "tags":{"type":"array","items":{"type":"string","enum":["a","b"]},"minItems":1,"maxItems":2}
+                },"required":["name","role"]}
+            }}),
+        };
+        let b = broker.clone();
+        let task = tokio::spawn(async move {
+            b.request(
+                key("alpha"),
+                "op".into(),
+                vec![prompt],
+                Arc::new(McpOperationCancellation::default()),
+            )
+            .await
+        });
+        let pending = rx.recv().await.unwrap();
+        let invalid = [
+            serde_json::json!({"role":"reader"}),
+            serde_json::json!({"name":"A","role":"reader"}),
+            serde_json::json!({"name":"Ada","role":"admin"}),
+            serde_json::json!({"name":"Ada","role":"reader","age":17}),
+            serde_json::json!({"name":"Ada","role":"reader","tags":["c"]}),
+            serde_json::json!({"name":"Ada","role":"reader","verified":"yes"}),
+            serde_json::json!({"name":"Ada","role":"reader","extra":"leak"}),
+        ];
+        for content in invalid {
+            let response: McpInteractionResponse = serde_json::from_value(serde_json::json!({
+                "requestId": pending.request_id, "key": pending.key, "operationId": pending.operation_id,
+                "answers": [{"id":"form","action":"accept","content":content}]
+            })).unwrap();
+            assert_eq!(
+                broker.respond(&lease, response).unwrap_err().code,
+                "MCP_INTERACTION_INVALID_RESPONSE"
+            );
+            assert!(!task.is_finished());
+        }
+        broker.respond(&lease, McpInteractionResponse {
+            request_id: pending.request_id,
+            key: pending.key,
+            operation_id: pending.operation_id,
+            answers: vec![McpElicitationAnswer {
+                id: "form".into(), action: McpElicitationAction::Accept,
+                content: Some(serde_json::json!({"name":"Ada","role":"writer","age":25,"verified":true,"tags":["a","b"]})),
+            }],
+        }).unwrap();
+        let answers = task.await.unwrap().unwrap();
+        assert_eq!(answers["form"]["action"], "accept");
+        assert_eq!(answers["form"]["content"]["name"], "Ada");
+    }
+
+    #[tokio::test]
+    async fn invalid_form_schema_is_rejected_before_handoff() {
+        let broker = McpInteractionBroker::default();
+        for schema in [
+            serde_json::json!({"type":"object","properties":{"nested":{"type":"object"}}}),
+            serde_json::json!({"type":"object","properties":{"name":{"type":"string"}},"required":["missing"]}),
+            serde_json::json!({"type":"object","properties":{"name":{"type":"string","pattern":".*"}}}),
+        ] {
+            let error = broker.request(key("alpha"), "op".into(), vec![McpElicitationPrompt {
+                id: "form".into(), request: serde_json::json!({"method":"elicitation/create","params":{"message":"Invalid","requestedSchema":schema}})
+            }], Arc::new(McpOperationCancellation::default())).await.unwrap_err();
+            assert_eq!(error.code, "MCP_INTERACTION_INVALID_REQUEST");
+        }
     }
 
     #[tokio::test]

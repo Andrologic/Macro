@@ -1079,16 +1079,6 @@ impl McpSession for ModernRmcpSession {
                                     .await?,
                             )
                         };
-                        if answers.as_ref().is_some_and(|answers| {
-                            answers.values().any(|answer| {
-                                answer.get("action").and_then(Value::as_str) == Some("cancel")
-                            })
-                        }) {
-                            return Err(runtime_error(
-                                "MCP_RUNTIME_OPERATION_CANCELLED",
-                                "The MCP interaction was cancelled.",
-                            ));
-                        }
                         if cancellation.is_cancelled() {
                             return Err(runtime_error(
                                 "MCP_RUNTIME_OPERATION_CANCELLED",

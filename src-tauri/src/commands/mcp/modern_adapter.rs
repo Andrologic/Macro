@@ -620,7 +620,9 @@ mod tests {
                 request_meta.client_info().map(|info| info.name),
                 Some("Macro".to_owned())
             );
-            assert!(request_meta.client_capabilities().is_some());
+            assert!(request_meta
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.elicitation.is_none()));
 
             let mut result = DiscoverResult::new(
                 vec![ProtocolVersion::V_2026_07_28],
@@ -1052,6 +1054,11 @@ mod tests {
             let ClientJsonRpcMessage::Request(call) = server.receive().await.unwrap() else {
                 panic!("expected continuation")
             };
+            assert!(call
+                .request
+                .get_meta()
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.elicitation.is_none()));
             let ClientRequest::CallToolRequest(tool) = call.request else {
                 panic!("expected tools/call")
             };
@@ -1062,7 +1069,7 @@ mod tests {
             assert_eq!(
                 tool.params.input_responses.unwrap()["prompt"],
                 serde_json::json!({
-                    "action": "decline"
+                    "action": "cancel"
                 })
             );
             server
@@ -1107,7 +1114,7 @@ mod tests {
             .unwrap();
         let answers = std::collections::BTreeMap::from([(
             "prompt".to_string(),
-            serde_json::json!({"action":"decline"}),
+            serde_json::json!({"action":"cancel"}),
         )]);
         let result = client
             .continue_tool(

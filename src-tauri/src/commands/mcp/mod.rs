@@ -1,4 +1,5 @@
 mod env_secrets;
+mod form_schema;
 mod ids;
 mod interaction;
 mod modern_adapter;

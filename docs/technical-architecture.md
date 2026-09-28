@@ -732,19 +732,28 @@ de serveur, de génération, d'opération et de demande lient chaque réponse à
 appel. Le courtier limite les demandes simultanées, leur taille, le nombre de
 prompts et le délai de réponse. La fermeture du port, l'annulation de l'opération
 et l'arrêt du runtime retirent les demandes en attente. Les réponses `accept`,
-`decline` et `cancel` ont un contrat typé ; `cancel` arrête l'appel courant.
+`decline` et `cancel` ont un contrat typé ; `cancel` est transmis au serveur
+dans `inputResponses`, tandis que l'annulation externe interrompt l'appel.
 
 Le chemin stdio moderne traite `input_required` lorsque toutes les demandes sont
 des formulaires `elicitation/create`. Il conserve `requestState` en mémoire dans
 le backend et le retransmet tel quel avec `inputResponses` au tour MCP suivant.
-Une valeur non chaîne ou dépassant 128 Kio est refusée sans journalisation ;
-un tour contenant uniquement `requestState` se poursuit sans hôte UI et sans
+Le schéma de formulaire plat est vérifié avant remise au port et conservé avec
+la demande en attente ; chaque `accept`, y compris depuis un IPC hostile, est
+validé contre ses champs, obligations, choix et contraintes avant continuation.
+Les schémas non pris en charge échouent fermés. Une valeur `requestState` non
+chaîne ou dépassant 128 Kio est refusée sans journalisation ; un tour contenant uniquement `requestState` se poursuit sans hôte UI et sans
 `inputResponses`. Aucun appel n'est relancé après une erreur de transport. Le
 runtime s'arrête après quatre continuations. Aucun hôte de formulaire n'est
-encore connecté à ce port et la capacité d'élicitation n'est pas annoncée
-dans le handshake MCP. Les demandes URL, le chemin HTTP moderne et le chemin
-legacy restent fermés. En particulier,
-les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
+encore connecté à ce port ; la capacité d'élicitation n'est donc annoncée
+dans aucune requête moderne. Son activation exigera un hôte UI capable
+d'identifier le serveur demandeur et de faire revoir, modifier, refuser ou
+annuler la saisie. Le client devra alors inclure `_meta.io.modelcontextprotocol/clientCapabilities`
+avec `elicitation: {form: {}}` dans chaque requête moderne. Le noyau seul ne rend
+pas l'élicitation utilisable avec un serveur conforme. Le validateur accepte
+les formats MCP usuels ; pour `email`, il applique un sous-ensemble ASCII
+conservateur. Les demandes URL, le chemin HTTP moderne et le chemin legacy
+restent fermés. En particulier, les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
 raccorder demandera d'associer les requêtes serveur au bon appel et à sa durée
 de vie. Le point 21 reste donc incomplet.
 
