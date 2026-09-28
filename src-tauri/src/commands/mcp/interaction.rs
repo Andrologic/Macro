@@ -138,6 +138,29 @@ impl McpInteractionBroker {
         Ok(lease_id)
     }
 
+    /// Exposes only opaque IDs to the active host so it can discard prompts after
+    /// an external abort. The server request and submitted values stay in memory.
+    pub fn pending_request_ids(&self, lease_id: &str) -> Result<Vec<String>, McpRuntimeError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed
+            || state
+                .port
+                .as_ref()
+                .is_none_or(|port| port.lease_id != lease_id)
+        {
+            return Err(error(
+                "MCP_INTERACTION_PORT_STALE",
+                "The MCP interaction host lease is no longer active.",
+            ));
+        }
+        let mut ids: Vec<_> = state.pending.keys().cloned().collect();
+        ids.sort();
+        Ok(ids)
+    }
+
     pub fn close(&self, lease_id: &str) -> Result<(), McpRuntimeError> {
         let mut state = self
             .state
@@ -633,8 +656,17 @@ mod tests {
             .await
         });
         let pending = rx.recv().await.unwrap();
+        assert_eq!(
+            broker.pending_request_ids(&lease).unwrap(),
+            vec![pending.request_id.clone()]
+        );
+        assert_eq!(
+            broker.pending_request_ids("wrong").unwrap_err().code,
+            "MCP_INTERACTION_PORT_STALE"
+        );
         task.abort();
         assert!(task.await.is_err());
+        assert!(broker.pending_request_ids(&lease).unwrap().is_empty());
         assert_eq!(
             broker
                 .respond(

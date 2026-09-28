@@ -1065,6 +1065,17 @@ mod tests {
             let ClientJsonRpcMessage::Request(discover) = server.receive().await.unwrap() else {
                 panic!("expected discovery")
             };
+            let discovery_meta = discover.request.get_meta();
+            let discovered_info = discovery_meta
+                .client_info()
+                .expect("discovery client identity");
+            assert_eq!(
+                discovery_meta.protocol_version(),
+                Some(ProtocolVersion::V_2026_07_28)
+            );
+            assert!(discovery_meta
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.elicitation.is_none()));
             server
                 .send(ServerJsonRpcMessage::response(
                     ServerResult::DiscoverResult(DiscoverResult::new(
@@ -1080,9 +1091,15 @@ mod tests {
             };
             let meta = call.request.get_meta();
             assert_eq!(meta.protocol_version(), Some(ProtocolVersion::V_2026_07_28));
-            assert_eq!(
-                meta.client_info().map(|info| info.name),
-                Some("Macro".into())
+            let info = meta
+                .client_info()
+                .expect("discovered client identity must survive");
+            assert_eq!(info, discovered_info);
+            assert_eq!(info.name, "Macro");
+            assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+            assert!(
+                meta.get_progress_token().is_some(),
+                "rmcp progress metadata must survive"
             );
             let capabilities = meta.client_capabilities().unwrap();
             let elicitation = capabilities.elicitation.unwrap();

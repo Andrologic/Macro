@@ -134,6 +134,11 @@ export async function mcpRuntimeCloseInteractionPort(leaseId: string): Promise<v
   return invoke("mcp_runtime_close_interaction_port", { leaseId });
 }
 
+/** Lists opaque pending IDs for the active form host lease. */
+export async function mcpRuntimeListPendingInteractions(leaseId: string): Promise<string[]> {
+  return invoke<string[]>("mcp_runtime_list_pending_interactions", { leaseId });
+}
+
 export async function mcpRuntimeRespondToInteraction(
   leaseId: string,
   response: McpInteractionResponse,
