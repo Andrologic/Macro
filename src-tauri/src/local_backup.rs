@@ -291,6 +291,21 @@ async fn check_database(path: &Path) -> Result<()> {
     let reference = crate::db::create_pool(&reference_dir.path().join("reference.db"))
         .await
         .map_err(|e| e.to_string())?;
+    // Compare the archive with the schema its migration stamps describe. Do
+    // not migrate the untrusted archive until its original objects pass this
+    // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&7) {
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if !versions.contains(&6) {
+        sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
+            .execute(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetch_all(&mut db).await.map_err(|e| e.to_string())?;
     let expected: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetch_all(&reference).await.map_err(|e| e.to_string())?;
     if tables != expected {
@@ -1148,6 +1163,21 @@ mod tests {
         (temp, data, config)
     }
 
+    async fn remove_post_v4_schema(db: &mut SqliteConnection) {
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version >= 5")
+            .execute(&mut *db)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn malformed_request_is_quarantined_and_does_not_block_repeated_startup() {
         let (_temp, data, config) = profile().await;
@@ -1250,11 +1280,8 @@ mod tests {
         let (temp, data, config) = profile().await;
         let database = data.join("macro.db");
         let mut db = connection(&database).await.unwrap();
-        // The last pre-v5 runtime had the same schema but only stamps 1/3/4.
-        sqlx::query("DELETE FROM schema_migrations WHERE version = 5")
-            .execute(&mut db)
-            .await
-            .unwrap();
+        // Preserve a representative pre-v5 archive, including its older schema.
+        remove_post_v4_schema(&mut db).await;
         db.close().await.unwrap();
         let archive = capture(&data, &config, BTreeMap::new(), true)
             .await
@@ -1314,7 +1341,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            5
+            7
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1338,7 +1365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn database_validation_accepts_v5_and_rejects_unknown_migration_versions() {
+    async fn database_validation_accepts_current_and_rejects_unknown_migration_versions() {
         let (_temp, data, _config) = profile().await;
         let database = data.join("macro.db");
         check_database(&database).await.unwrap();
@@ -1347,7 +1374,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 7);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -1357,6 +1384,38 @@ mod tests {
             check_database(&database).await.unwrap_err(),
             "Incompatible database schema"
         );
+    }
+
+    #[tokio::test]
+    async fn validates_v6_archive_without_migrating_the_source() {
+        let (_temp, data, config) = profile().await;
+        let database = data.join("macro.db");
+        let mut db = connection(&database).await.unwrap();
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 7")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let mut source = connection(&database).await.unwrap();
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(&mut source)
+            .await
+            .unwrap();
+        assert_eq!(version, 6);
+        let missing: Option<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE name = 'tool_invocations'")
+                .fetch_optional(&mut source)
+                .await
+                .unwrap();
+        assert!(missing.is_none());
     }
 
     #[tokio::test]
@@ -1373,10 +1432,7 @@ mod tests {
             .await
             .unwrap();
         // This fixture represents a pre-v5 database, not damage after migration.
-        sqlx::query("DELETE FROM schema_migrations WHERE version = 5")
-            .execute(&mut db)
-            .await
-            .unwrap();
+        remove_post_v4_schema(&mut db).await;
         db.close().await.unwrap();
         // The supported legacy upgrader adds this column at the end of the table.
         let pool = crate::db::create_pool(&database).await.unwrap();

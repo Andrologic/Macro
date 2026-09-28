@@ -2,7 +2,7 @@ use super::{DbError, DbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, Connection, Row, SqlitePool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
@@ -213,7 +213,13 @@ pub async fn record(
     // Sort object keys at every depth, regardless of serde_json's map feature.
     // Never persist the supplied arguments or put them in an error message.
     let digest = arguments_digest(&input.arguments)?;
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    // The shared pool uses WAL/NORMAL. A successful pre-dispatch insert must
+    // survive power loss before is_new can authorize the effect.
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous = FULL")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     let now = chrono::Utc::now().to_rfc3339();
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO tool_invocations (conversation_id, turn_id, message_id, call_id, tool_name, effect_class, arguments_sha256, remote_execution_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -244,6 +250,9 @@ pub async fn record(
         ));
     }
     tx.commit().await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(&mut *connection)
+        .await?;
     Ok(RecordToolInvocationResult {
         invocation: row,
         is_new: inserted,
@@ -256,7 +265,11 @@ pub async fn complete(
 ) -> DbResult<ToolInvocation> {
     validate_identity(&input.identity)?;
     opaque_id(&input.receipt_id, "receipt_id")?;
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA synchronous = FULL")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
     let previous = get_on_connection(&mut tx, &input.identity)
         .await?
         .ok_or_else(|| DbError::Validation("Tool invocation not found".into()))?;
@@ -267,6 +280,9 @@ pub async fn complete(
             ));
         }
         tx.commit().await?;
+        sqlx::query("PRAGMA synchronous = NORMAL")
+            .execute(&mut *connection)
+            .await?;
         return Ok(previous);
     }
     let now = chrono::Utc::now().to_rfc3339();
@@ -282,6 +298,9 @@ pub async fn complete(
         .await?
         .expect("row locked by transaction");
     tx.commit().await?;
+    sqlx::query("PRAGMA synchronous = NORMAL")
+        .execute(&mut *connection)
+        .await?;
     Ok(row)
 }
 

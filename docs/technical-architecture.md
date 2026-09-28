@@ -1495,6 +1495,8 @@ Le journal SQLite `tool_invocations` prépare le raccordement du streaming. La
 commande `db_record_tool_invocation` crée, avant dispatch, une intention liée à
 la conversation et identifiée par tour, message et appel. Le backend calcule une
 empreinte SHA-256 du JSON canonique des arguments sans conserver leur contenu.
+L'insertion et la clôture utilisent `synchronous=FULL` sur leur connexion SQLite
+avant de confirmer le commit ; la connexion revient à `NORMAL` après succès.
 Un second enregistrement de même identité est idempotent si le nom, la classe
 d'effet, l'empreinte et l'identifiant distant concordent ; sinon il échoue.
 La réponse porte `is_new=true` seulement lors de la première insertion ; le
@@ -1509,6 +1511,9 @@ ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encor
 clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
 automatiquement. La suppression de conversation efface les entrées par cascade.
 Ces commandes ne sont pas encore appelées par le streaming ni exposées dans l'UI.
+La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
+avant de migrer sa copie temporaire, ce qui accepte les archives antérieures à
+la migration du journal sans assouplir le contrôle des objets SQLite existants.
 
 ### 15.1 Chat streaming
 
