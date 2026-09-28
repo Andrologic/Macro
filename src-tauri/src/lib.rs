@@ -758,6 +758,8 @@ pub fn run() {
             commands::tool_invocations::db_complete_tool_invocation,
             commands::tool_invocations::db_mark_tool_invocation_unknown,
             commands::tool_invocations::db_list_unresolved_tool_invocations,
+            commands::goal_audit::db_record_goal_audit_transition,
+            commands::goal_audit::db_link_goal_audit_child_conversation,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
             commands::db_search_messages,

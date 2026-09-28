@@ -340,6 +340,80 @@ pub async fn start_agent_run(
     Ok(run)
 }
 
+pub async fn link_goal_audit_child_conversation(
+    pool: &SqlitePool,
+    run_id: &str,
+    parent_conversation_id: &str,
+    child_conversation_id: &str,
+) -> DbResult<AgentRun> {
+    if child_conversation_id.trim().is_empty() || child_conversation_id == parent_conversation_id {
+        return Err(DbError::Validation(
+            "Invalid goal audit child conversation".to_string(),
+        ));
+    }
+    let mut transaction = begin_immediate(pool).await?;
+    let current = sqlx::query(
+        "SELECT parent_conversation_id, child_conversation_id, agent_profile, depth, status FROM agent_runs WHERE id = ?",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| DbError::Validation(format!("Agent run not found: {run_id}")))?;
+    if current.get::<String, _>("parent_conversation_id") != parent_conversation_id
+        || current.get::<String, _>("agent_profile") != "goal_auditor"
+        || current.get::<i32, _>("depth") != 1
+    {
+        return Err(DbError::Validation(
+            "Goal audit child lineage mismatch".to_string(),
+        ));
+    }
+    if let Some(existing) = current.get::<Option<String>, _>("child_conversation_id") {
+        if existing != child_conversation_id {
+            return Err(DbError::Validation(
+                "Goal audit child conversation already linked".to_string(),
+            ));
+        }
+        transaction.commit().await?;
+        return get_agent_run(pool, run_id)
+            .await?
+            .ok_or_else(|| DbError::Validation(format!("Agent run not found: {run_id}")));
+    }
+    if current.get::<String, _>("status") != "running" {
+        return Err(DbError::Validation(
+            "Goal audit child can only be linked while running".to_string(),
+        ));
+    }
+    validate_lineage(
+        &mut transaction,
+        parent_conversation_id,
+        Some(child_conversation_id),
+        1,
+    )
+    .await?;
+    let owner: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM agent_runs WHERE child_conversation_id = ? AND id <> ? LIMIT 1",
+    )
+    .bind(child_conversation_id)
+    .bind(run_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if owner.is_some() {
+        return Err(DbError::Validation(
+            "Goal audit child conversation belongs to another run".to_string(),
+        ));
+    }
+    sqlx::query("UPDATE agent_runs SET child_conversation_id = ?, updated_at = ? WHERE id = ? AND status = 'running'")
+        .bind(child_conversation_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    get_agent_run(pool, run_id)
+        .await?
+        .ok_or_else(|| DbError::Validation(format!("Agent run not found: {run_id}")))
+}
+
 pub async fn complete_agent_run(
     pool: &SqlitePool,
     id: &str,

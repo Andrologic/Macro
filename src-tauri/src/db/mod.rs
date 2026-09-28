@@ -3,6 +3,7 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;
 pub mod repository;
@@ -43,12 +44,13 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
 const MIGRATION_006_SQL: &str = include_str!("migrations/006_generation_attempts.sql");
 const MIGRATION_007_SQL: &str = include_str!("migrations/007_tool_invocations.sql");
+const MIGRATION_008_SQL: &str = include_str!("migrations/008_agent_run_transitions.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -245,6 +247,16 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
+    if !list_applied_migrations(connection).await?.contains(&8) {
+        apply_migration(
+            connection,
+            8,
+            "008_agent_run_transitions".to_string(),
+            MIGRATION_008_SQL.to_string(),
+        )
+        .await?;
+    }
+
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
     insert_default_speech_provider(connection).await?;
@@ -262,6 +274,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&5) && !applied.contains(&4))
         || (applied.contains(&6) && !applied.contains(&5))
         || (applied.contains(&7) && !applied.contains(&6))
+        || (applied.contains(&8) && !applied.contains(&7))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -1885,6 +1898,7 @@ mod tests {
               AND name IN (
                 'architect_plan_conversation_sync',
                 'agent_runs',
+                'agent_run_transitions',
                 'conversation_citations',
                 'conversation_toolbox_state',
                 'schema_migrations',
@@ -1915,6 +1929,7 @@ mod tests {
         assert_eq!(
             table_names,
             vec![
+                "agent_run_transitions".to_string(),
                 "agent_runs".to_string(),
                 "ai_models".to_string(),
                 "app_settings".to_string(),
@@ -2320,6 +2335,20 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        // Reproduce the historical agent-run schema before the later, non-idempotent
+        // additive migrations. The missing metadata belongs to that schema.
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&pool)
+            .await
+            .expect("drop transition journal");
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&pool)
+            .await
+            .expect("drop tool journal");
+        sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
+            .execute(&pool)
+            .await
+            .expect("drop generation attempt column");
         sqlx::query("DROP TABLE schema_migrations")
             .execute(&pool)
             .await

@@ -22,9 +22,14 @@ Only a newly inserted row (`is_new=true`) authorizes a first dispatch. Repeated
 records never authorize dispatch, even when the stored state is still `pending`.
 Receipt IDs are checked per invocation and may be reused by separate calls.
 
+Version 8 records ordered goal-audit transitions under `agent_runs`. The
+`(run_id, sequence)` key makes an identical transition replay safe and rejects
+conflicting or out-of-order writes. The run row and transition row are changed
+in one SQLite transaction. Version 7 remains unchanged.
+
 The supported inputs are:
 
-- An empty database, initialized with version 1 and upgraded through version 7.
+- An empty database, initialized with version 1 and upgraded through version 8.
 - An unversioned database with historical runtime tables, adopted through the
   legacy path. Missing tables and known additive columns are supplied by the
   frozen compatibility helpers. Existing extra columns, tables, indexes and
@@ -34,7 +39,8 @@ The supported inputs are:
   the same bounded reconciliation once. It runs before any pending versions
   3 and 4 because those migrations require the runtime tables; version 5 is
   recorded only after their completion and its checks.
-- A version 7 database, reopened without compatibility helpers, DDL, timestamp
+- A version 7 database, upgraded to version 8 without rebuilding its tool journal.
+- A version 8 database, reopened without compatibility helpers, DDL, timestamp
   backfills or FTS rebuilds. Default provider seeding retains its existing
   startup behavior and is separate from schema migration.
 
