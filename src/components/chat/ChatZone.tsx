@@ -113,6 +113,7 @@ import { parseConversationGoalCommand } from '../../services/conversationGoalCom
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
+import { UnresolvedToolInvocationsNotice } from './UnresolvedToolInvocationsNotice';
 import {
   CONVERSATION_ATTACHMENT_ACCEPT,
   CONVERSATION_ATTACHMENT_EXTENSIONS,
@@ -3891,6 +3892,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {headerActions}
           </div>
         </header>
+
+        <UnresolvedToolInvocationsNotice
+          conversationId={selectedConversationId}
+          phase={selectedConversationRuntime.phase}
+        />
 
         {activeConversationGoal && (
           <Suspense fallback={null}>
