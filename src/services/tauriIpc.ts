@@ -38,6 +38,19 @@ export type {
 
 export type { GoalAuditTransition, RecordGoalAuditTransitionInput } from "../types/generated/ipc";
 export { recordGoalAuditTransition, linkGoalAuditChildConversation } from "./ipc/goalAudit";
+export type {
+  ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
+  ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,
+  DeactivateConversationGoalInput,
+  GoalCasOutcome, GoalAuditStatus, GoalStatus, GoalVerdict,
+  ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
+} from "../types/generated/ipc";
+export {
+  getCurrentConversationGoal, activateConversationGoal, updateConversationGoal, deactivateConversationGoal,
+  getConversationGoalAudit,
+  listRecoverableConversationGoalAudits,
+  applyConversationGoalVerdict, createNativeGoalAuditVerdictPort,
+} from "./ipc/conversationGoals";
 
 export type {
   DbProviderConfig,

@@ -48,6 +48,27 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
     connection
 }
 
+async fn drop_v9(connection: &mut SqliteConnection) {
+    sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    for statement in [
+        "DROP TABLE conversation_goal_audit_runs",
+        "DROP TABLE conversation_goal_audits",
+        "DROP TABLE conversation_goals",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 9")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+}
+
 async fn schema(connection: &mut SqliteConnection) -> Vec<(String, String, Option<String>)> {
     sqlx::query_as("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
         .fetch_all(connection)
@@ -275,6 +296,7 @@ async fn tool_journal_migration_rolls_back_if_version_stamp_fails() {
     )
     .await
     .unwrap();
+    drop_v9(&mut connection).await;
     sqlx::query("DROP TABLE agent_run_transitions")
         .execute(&mut connection)
         .await
@@ -329,6 +351,7 @@ async fn transition_migration_rolls_back_without_losing_v7_tool_journal() {
     )
     .await
     .unwrap();
+    drop_v9(&mut connection).await;
     sqlx::query("DROP TABLE agent_run_transitions")
         .execute(&mut connection)
         .await
@@ -366,6 +389,48 @@ async fn transition_migration_rolls_back_without_losing_v7_tool_journal() {
     assert!(table_exists(&mut connection, "tool_invocations".into())
         .await
         .unwrap());
+}
+
+#[tokio::test]
+async fn goal_migration_rolls_back_without_losing_v8_transition_journal() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("goals.db");
+    create_pool(&path).await.unwrap().close().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(true),
+    )
+    .await
+    .unwrap();
+    drop_v9(&mut connection).await;
+    sqlx::raw_sql("CREATE TRIGGER reject_v9 BEFORE INSERT ON schema_migrations WHEN new.version = 9 BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;")
+        .execute(&mut connection).await.unwrap();
+    assert!(create_pool(&path).await.is_err());
+    assert!(!table_exists(&mut connection, "conversation_goals".into())
+        .await
+        .unwrap());
+    assert!(
+        table_exists(&mut connection, "agent_run_transitions".into())
+            .await
+            .unwrap()
+    );
+    assert!(!list_applied_migrations(&mut connection)
+        .await
+        .unwrap()
+        .contains(&9));
+    sqlx::query("DROP TRIGGER reject_v9")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    let pool = create_pool(&path).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(table_exists(&mut connection, "conversation_goals".into())
+        .await
+        .unwrap());
+    let versions = list_applied_migrations(&mut connection).await.unwrap();
+    assert!(versions.contains(&8) && versions.contains(&9));
 }
 
 #[tokio::test]

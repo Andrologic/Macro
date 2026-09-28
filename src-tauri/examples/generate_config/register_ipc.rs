@@ -3,6 +3,15 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::db::ConversationGoal>("db")?;
+    registry.add::<ipc_contracts::db::ConversationGoalAudit>("db")?;
+    registry.add::<ipc_contracts::db::ActivateConversationGoalInput>("db")?;
+    registry.add::<ipc_contracts::db::UpdateConversationGoalInput>("db")?;
+    registry.add::<ipc_contracts::db::DeactivateConversationGoalInput>("db")?;
+    registry.add::<ipc_contracts::db::ClaimConversationGoalAuditInput>("db")?;
+    registry.add::<ipc_contracts::db::ResumeConversationGoalAuditInput>("db")?;
+    registry.add::<ipc_contracts::db::ApplyConversationGoalVerdictInput>("db")?;
+    registry.add::<ipc_contracts::db::GoalCasOutcome>("db")?;
     registry.add::<ipc_contracts::db::ToolInvocation>("db")?;
     registry.add::<ipc_contracts::db::ToolInvocationIdentity>("db")?;
     registry.add::<ipc_contracts::db::RecordToolInvocationInput>("db")?;
