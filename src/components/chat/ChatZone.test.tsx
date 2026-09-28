@@ -680,6 +680,15 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   ...overrides,
 });
 
+const installUnresolvedJournalMock = () => installTauriRuntimeMock(async (command) =>
+  command === 'db_list_unresolved_tool_invocations'
+    ? [{
+        conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
+        tool_name: 'old_tool', status: 'unknown',
+      }]
+    : undefined
+);
+
 export const buildCompactionEvent = (
   overrides: Partial<
     MockChatState['sessionCompactionEventsByConversationId'][string][number]
@@ -1210,16 +1219,30 @@ describe('ChatZone', () => {
   });
 
   it('hides the previous conversation journal while a new context resolves', async () => {
-    installTauriRuntimeMock(async (command) => command === 'db_list_unresolved_tool_invocations'
-      ? [{
-          conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
-          tool_name: 'old_tool', status: 'unknown',
-        }]
-      : undefined);
+    installUnresolvedJournalMock();
     chatState = { ...chatState, restoreStatus: 'resolving' };
     await act(async () => {
       requireRoot().render(<ChatZone />);
     });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the previous journal hidden when context resolution fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('hides a selected conversation outside the active mode', async () => {
+    installUnresolvedJournalMock();
+    chatState = {
+      ...chatState,
+      conversations: [{ ...buildConversation(), scope_mode: 'Implement' }],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
     expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
     expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
   });

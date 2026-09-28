@@ -14,6 +14,13 @@ interface Props {
 const isActiveTurn = (phase: ConversationExecutionPhase): boolean =>
   phase === 'preparing' || phase === 'streaming' || phase === 'overflow_recovery' || phase === 'persisting';
 
+const isVisible = (
+  item: ToolInvocation,
+  phase: ConversationExecutionPhase,
+  activeTurnId: string | null,
+): boolean => item.status === 'unknown' ||
+  (item.status === 'pending' && (!isActiveTurn(phase) || item.turn_id !== activeTurnId));
+
 const isUnresolvedInvocation = (value: unknown, conversationId: string): value is ToolInvocation => {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<ToolInvocation>;
@@ -47,9 +54,10 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
     return () => window.removeEventListener(TOOL_INVOCATIONS_CHANGED_EVENT, onChange);
   }, [conversationId]);
 
+  useEffect(() => setResult(null), [conversationId]);
+
   useEffect(() => {
     let current = true;
-    setResult(null);
     if (!conversationId) return () => { current = false; };
 
     if (!isTauriAvailable()) {
@@ -70,12 +78,13 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
     return () => { current = false; };
   }, [conversationId, phase, activeTurnId, revision]);
 
-  const currentResult = result?.conversationId === conversationId &&
-    result.phase === phase && result.activeTurnId === activeTurnId && result.revision === revision
-    ? result : null;
-  const items = currentResult?.items?.filter((item) => item.status === 'unknown' ||
-    (item.status === 'pending' && (!isActiveTurn(phase) || item.turn_id !== activeTurnId))) ?? [];
-  if (currentResult?.items === null) {
+  const isCurrentResult = result?.conversationId === conversationId &&
+    result.phase === phase && result.activeTurnId === activeTurnId && result.revision === revision;
+  const items = result?.conversationId === conversationId && Array.isArray(result.items)
+    ? result.items.filter((item) => isVisible(item, phase, activeTurnId) &&
+        (isCurrentResult || isVisible(item, result.phase, result.activeTurnId)))
+    : [];
+  if (isCurrentResult && result?.items === null) {
     return (
       <div role="alert" data-testid="unresolved-tool-invocations-error" className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-xs text-foreground">
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
@@ -94,8 +103,9 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
       <div className="mx-auto max-w-4xl">
         <p className="font-medium">{t('chat.toolJournalWarning', 'Tool effects need inspection')}</p>
         <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
-          {items.map((item) => (
+          {items.map((item, index) => (
             <li key={`${item.turn_id}:${item.message_id}:${item.call_id}`}>
+              <span className="text-muted-foreground">#{index + 1}</span>{' '}
               <span className="font-medium">{item.tool_name}</span>
               {' · '}
               {item.status === 'unknown'

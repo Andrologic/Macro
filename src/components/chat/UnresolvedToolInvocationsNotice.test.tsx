@@ -90,15 +90,31 @@ describe('UnresolvedToolInvocationsNotice', () => {
   });
 
   it('refreshes after a journal mutation without a phase change', async () => {
+    const refreshed = createDeferred<ToolInvocation[]>();
     list.mockImplementationOnce(async () => [invocation('unknown')]);
-    list.mockImplementationOnce(async () => []);
+    list.mockImplementationOnce(() => refreshed.promise);
     await render('first', 'idle');
     expect(container.textContent).toContain('terminal_run');
     await act(async () => window.dispatchEvent(new CustomEvent(TOOL_INVOCATIONS_CHANGED_EVENT, {
       detail: { conversationId: 'first' },
     })));
     expect(list).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('terminal_run');
+    await act(async () => refreshed.resolve([]));
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('distinguishes repeated calls to the same tool without showing arguments', async () => {
+    list.mockImplementation(async () => [
+      invocation('unknown', 'write', 'first-turn'),
+      invocation('unknown', 'write', 'second-turn'),
+    ]);
+    await render('first', 'idle');
+    const calls = Array.from(container.querySelectorAll('li'), (item) => item.textContent);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain('#1 write');
+    expect(calls[1]).toContain('#2 write');
+    expect(container.textContent).not.toContain('secret-hash');
   });
 
   it('warns when the local journal cannot be read', async () => {

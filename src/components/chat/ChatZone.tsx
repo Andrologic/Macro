@@ -3894,7 +3894,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         </header>
 
         <UnresolvedToolInvocationsNotice
-          conversationId={isConversationPending ? null : selectedConversationId}
+          conversationId={
+            hydrationStatus === 'ready' &&
+            restoreStatus === 'ready' &&
+            currentConversation?.scope_mode === mode
+              ? selectedConversationId : null
+          }
           phase={selectedConversationRuntime.phase}
           activeTurnId={selectedConversationRuntime.turnId ?? null}
         />
