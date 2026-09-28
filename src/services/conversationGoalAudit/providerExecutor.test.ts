@@ -20,6 +20,18 @@ const input = (): GoalAuditChildInput => ({
 
 const resolvedChild = () => ({ id: "conversation-child", runId: "child", parentConversationId: "parent" });
 
+const expectPromptAbort = async (pending: Promise<unknown>) => {
+  let deadline: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    deadline = setTimeout(() => reject(new Error("Abort did not settle promptly.")), 500);
+  });
+  try {
+    await expect(Promise.race([pending, timeout])).rejects.toHaveProperty("name", "AbortError");
+  } finally {
+    clearTimeout(deadline!);
+  }
+};
+
 describe("goal auditor provider executor", () => {
   it("streams an isolated child with read tools and progress", async () => {
     const progress: string[] = [];
@@ -138,5 +150,76 @@ describe("goal auditor provider executor", () => {
     finishResolution(resolvedChild());
     await expect(pending).rejects.toHaveProperty("name", "AbortError");
     expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("settles promptly when provider resolution never completes", async () => {
+    const controller = new AbortController();
+    const resolveChildConversation = mock(resolvedChild);
+    const stream = mock(async () => {});
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: (_input, signal) => {
+        expect(signal).toBe(controller.signal);
+        return new Promise(() => {});
+      },
+      resolveChildConversation,
+      executeReadTool: async () => "unused",
+      stream,
+    });
+    const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal });
+    controller.abort();
+    await expectPromptAbort(pending);
+    expect(resolveChildConversation).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("settles promptly when child resolution never completes", async () => {
+    const controller = new AbortController();
+    const stream = mock(async () => {});
+    let childStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => { childStarted = resolve; });
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveChildConversation: ({ signal }) => {
+        expect(signal).toBe(controller.signal);
+        childStarted();
+        return new Promise(() => {});
+      },
+      executeReadTool: async () => "unused",
+      stream,
+    });
+    const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal });
+    await started;
+    controller.abort();
+    await expectPromptAbort(pending);
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("settles promptly when streaming ignores abort and suppresses late progress", async () => {
+    const controller = new AbortController();
+    const progress: string[] = [];
+    let streamStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => { streamStarted = resolve; });
+    let callbacks: StreamingChatOptions | undefined;
+    const readTool = mock(async () => "unused");
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveChildConversation: resolvedChild,
+      executeReadTool: readTool,
+      stream: async (options) => {
+        callbacks = options;
+        streamStarted();
+        return new Promise(() => {});
+      },
+    });
+    const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal, onProgress: (event) => progress.push(event.kind) });
+    await started;
+    controller.abort();
+    await expectPromptAbort(pending);
+    callbacks?.onToken("late token");
+    callbacks?.onToolResult?.("read", "late result");
+    await callbacks?.onToolCall?.("read", {});
+    callbacks?.onComplete({ visibleContent: "late completion", toolTraces: [] });
+    expect(progress).toEqual([]);
+    expect(readTool).not.toHaveBeenCalled();
   });
 });
