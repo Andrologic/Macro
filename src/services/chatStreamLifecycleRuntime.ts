@@ -103,7 +103,8 @@ const hasAssistantProgress = (message: ChatMessage | undefined): boolean =>
   Boolean(
     message &&
       (message.content.trim().length > 0 ||
-        (message.tool_traces?.length ?? 0) > 0),
+        (message.tool_traces?.length ?? 0) > 0 ||
+        (message.generation_attempts?.some((attempt) => attempt.rawText.length > 0) ?? false)),
   );
 
 const resolveErrorAssistantMessageId = (params: {
@@ -144,6 +145,7 @@ export const applyAssistantStreamCompletion = (params: {
 
   params.adapters.updateMessageFields(params.assistantMessageId, {
     tool_traces: mergedToolTraces,
+    generation_attempts: params.result.generationAttempts,
     hidden_context: params.result.hiddenContext,
     provider_input_items: params.result.providerInputItems,
     provider_turn_state: params.result.providerTurnState,

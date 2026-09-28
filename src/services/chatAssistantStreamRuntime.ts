@@ -509,6 +509,14 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           tool_traces: toolTraces,
         });
       },
+      onGenerationAttemptsUpdate: async (generationAttempts) => {
+        if (!shouldAcceptStreamUpdate()) return;
+        ports.messages.fields(params.assistantMessage.id, {
+          generation_attempts: generationAttempts,
+        });
+        const message = ports.messages.get(params.assistantMessage.id);
+        if (message) await ports.persistence.partial(message);
+      },
       onBeforeFollowUpRequest: async (request) => {
         const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);
         const compactedMessages = Array.isArray(compacted)

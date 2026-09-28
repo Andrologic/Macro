@@ -119,6 +119,18 @@ const adapters = (params?: {
 });
 
 describe("chatPersistenceService", () => {
+  it("loads generation attempts separately from the accepted assistant response", async () => {
+    const attempts = [{ id: 'attempt-1', status: 'abandoned' as const, rawText: 'discarded', acceptedText: '', costUsd: null }];
+    const snapshot: DbChatBootstrapSnapshot = {
+      conversations: [dbConversation()],
+      messages_by_conversation_id: {
+        'conv-1': [dbMessage({ content: 'accepted', generation_attempts_json: JSON.stringify(attempts) })],
+      },
+    };
+    const loaded = await loadChatBootstrapSnapshot(adapters({ ipc: baseIpc({ getChatBootstrapSnapshot: async () => snapshot }) }));
+    expect(loaded.messages[0]?.content).toBe('accepted');
+    expect(loaded.messages[0]?.generation_attempts).toEqual(attempts);
+  });
   it("loads bootstrap snapshots and maps conversations/messages", async () => {
     const snapshot: DbChatBootstrapSnapshot = {
       conversations: [dbConversation({ message_count: 1 })],
@@ -251,7 +263,7 @@ describe("chatPersistenceService", () => {
     );
 
     expect(assistant.id).toBe("msg-1778925600000-abc123-assistant");
-    expect(assistant.tool_traces).toEqual([trace]);
+    expect(assistant.tool_traces).toEqual([{ ...trace, recovery_state: "completed" }]);
     expect(assistant.provider_input_items).toEqual([{ id: "provider-item" }]);
     expect(ipc.createMessage).toHaveBeenCalledWith(
       "conv-1",

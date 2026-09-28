@@ -47,6 +47,18 @@ export interface StreamCompletionResult {
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   completionReason?: StreamCompletionReason;
+  generationAttempts?: GenerationAttempt[];
+}
+
+export interface GenerationAttempt {
+  id: string;
+  status: 'completed' | 'partial' | 'abandoned';
+  /** Text emitted by this provider request, before overlap removal. */
+  rawText: string;
+  /** Portion accepted into the assistant response. */
+  acceptedText: string;
+  /** Null means the provider did not report an attributable cost. */
+  costUsd: number | null;
 }
 
 export interface LiveStreamContextSnapshot {
@@ -134,6 +146,7 @@ export interface StreamingChatOptions {
   onTimeline?: (event: StreamTimelineEvent) => void;
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
   onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
+  onGenerationAttemptsUpdate?: (attempts: GenerationAttempt[]) => Promise<void> | void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;

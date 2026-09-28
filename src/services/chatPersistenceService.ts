@@ -51,6 +51,7 @@ export interface ChatPersistenceIpc {
       providerTurnState?: ProviderTurnState;
       contextRefs?: ChatMessage["context_refs"];
       completionReason?: ChatMessage["completion_reason"];
+      generationAttempts?: ChatMessage["generation_attempts"];
     },
   ) => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -87,6 +88,7 @@ export interface AssistantCompletionPersistenceResult {
   providerTurnState?: ProviderTurnState;
   toolTraces?: ToolTrace[];
   completionReason?: ChatMessage["completion_reason"];
+  generationAttempts?: ChatMessage["generation_attempts"];
 }
 
 const cloneProviderInputItems = (
@@ -365,7 +367,8 @@ export const persistAssistantPartialResult = async (
   if (!adapters.isTauriAvailable()) return;
   if (
     assistantMessage.content.trim().length === 0 &&
-    (assistantMessage.tool_traces?.length ?? 0) === 0
+    (assistantMessage.tool_traces?.length ?? 0) === 0 &&
+    (assistantMessage.generation_attempts?.length ?? 0) === 0
   ) {
     return;
   }
@@ -379,6 +382,7 @@ export const persistAssistantPartialResult = async (
     ...(assistantMessage.completion_reason
       ? { completionReason: assistantMessage.completion_reason }
       : {}),
+    generationAttempts: assistantMessage.generation_attempts,
   });
 };
 
@@ -405,6 +409,7 @@ export const persistAssistantCompletionResult = async (
       ...(params.result.completionReason
         ? { completionReason: params.result.completionReason }
         : {}),
+      generationAttempts: params.result.generationAttempts,
     },
   );
 };

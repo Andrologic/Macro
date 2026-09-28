@@ -129,6 +129,24 @@ describe('MarkdownRenderer tool trace rendering', () => {
     expect(container?.querySelector('[data-testid="tool-trace-item"]')?.textContent).not.toContain('Tool');
   });
 
+  it('shows a persisted running trace as unknown rather than still running', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+    await act(async () => {
+      root?.render(<MarkdownRenderer content="" toolTraces={[
+        { tool_call_id: 'stale', tool_name: 'terminal_run', status: 'running', recovery_state: 'unknown' },
+      ]} />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      (container?.querySelector('[data-testid="tool-traces-completed-trigger"]') as HTMLButtonElement | null)?.click();
+      await Promise.resolve();
+    });
+    const item = container?.querySelector('[data-testid="tool-trace-item"]');
+    expect(item?.getAttribute('data-recovery-state')).toBe('unknown');
+    expect(item?.textContent).toContain('outcome unknown');
+    expect(container?.querySelector('[data-testid="tool-traces-running"]')).toBeNull();
+  });
+
   it('does not move a completed tool while another tool is still running', async () => {
     const { MarkdownRenderer } = await loadMarkdownRenderer();
 

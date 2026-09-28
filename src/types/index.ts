@@ -759,6 +759,8 @@ export interface ToolTrace {
   order?: number;
   started_at_ms?: number;
   completed_at_ms?: number;
+  /** Reconciled after loading a persisted trace; never proof that an effect did not occur. */
+  recovery_state?: 'completed' | 'live' | 'replayable' | 'unknown';
 }
 
 export interface PendingToolApproval {
@@ -1261,6 +1263,7 @@ export interface ChatMessage {
   provider_turn_state?: ProviderTurnState;
   context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
+  generation_attempts?: import('../services/ai/contracts').GenerationAttempt[];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 }

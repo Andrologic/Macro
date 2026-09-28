@@ -2,7 +2,7 @@ import type { ProviderTurnState } from '../../types';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../../domains/chat/prompts';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
 import { normalizeChatMaxTurns } from '../chatTurnLimits';
-import type { StreamMessage, StreamingChatOptions, StreamingTurnResult, ToolCall, ToolResult, StreamCompletionReason } from './contracts';
+import type { GenerationAttempt, StreamMessage, StreamingChatOptions, StreamingTurnResult, ToolCall, ToolResult, StreamCompletionReason } from './contracts';
 import { createStreamAccumulator } from './streamAccumulator';
 import { cloneStreamMessage, cloneProviderInputItems } from './jsonValues';
 import { collectAllowedTools } from './toolDefinitions';
@@ -71,6 +71,13 @@ export async function runToolCallingLoop(
   let enforceGuidedRetry = Boolean(options.guidedToolRetry);
   let recoveryCause: 'length' | 'incomplete' | null = null;
   const usedToolNames = new Set<string>();
+  const generationAttempts: GenerationAttempt[] = [];
+  const attemptSessionId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let attemptSequence = 0;
+  const recordAttempt = async (attempt: GenerationAttempt) => {
+    generationAttempts.push(attempt);
+    await options.onGenerationAttemptsUpdate?.(generationAttempts.map((item) => ({ ...item })));
+  };
   // Native live context also contains completed results from a turn interrupted
   // before projectAssistant could add it to the settled transcript.
   const complete = (completionReason?: StreamCompletionReason) => ({
@@ -78,6 +85,7 @@ export async function runToolCallingLoop(
     providerInputItems: cloneProviderInputItems(accumulator.snapshotLiveContext().providerInputItems ?? transcript),
     ...(providerTurnState ? { providerTurnState } : {}),
     ...(completionReason ? { completionReason } : {}),
+    generationAttempts: generationAttempts.map((attempt) => ({ ...attempt })),
   });
   const consumeSteers = () => {
     const steers = options.consumePendingSteers?.() ?? [];
@@ -92,15 +100,33 @@ export async function runToolCallingLoop(
       const recovering = recoveryCause !== null;
       const bufferOutput = enforceGuidedRetry || recovering;
       let streamedContent = '';
-      const turn = await adapter.streamTurn({
-        messages, tools: recovering ? [] : tools, turnCount, recovering,
-        onDelta: (delta) => {
-          streamedContent += delta;
-          if (!bufferOutput) accumulator.appendProviderDelta(delta);
-        },
+      const attemptId = `${attemptSessionId}:${++attemptSequence}`;
+      const interruptedAttempt = (): GenerationAttempt => ({
+        id: attemptId,
+        status: bufferOutput ? 'abandoned' : 'partial',
+        rawText: streamedContent,
+        acceptedText: bufferOutput ? '' : streamedContent,
+        costUsd: null,
       });
-      if (options.signal?.aborted) return complete();
+      let turn: Awaited<ReturnType<ToolCallingAdapter['streamTurn']>>;
+      try {
+        turn = await adapter.streamTurn({
+          messages, tools: recovering ? [] : tools, turnCount, recovering,
+          onDelta: (delta) => {
+            streamedContent += delta;
+            if (!bufferOutput) accumulator.appendProviderDelta(delta);
+          },
+        });
+      } catch (error) {
+        await recordAttempt(interruptedAttempt());
+        throw error;
+      }
+      if (options.signal?.aborted) {
+        await recordAttempt(interruptedAttempt());
+        return complete();
+      }
       if ('stopped' in turn) {
+        await recordAttempt(interruptedAttempt());
         accumulator.appendSystemChunk(turn.stopped, true);
         return complete();
       }
@@ -117,6 +143,7 @@ export async function runToolCallingLoop(
       const calls = incomplete || recoveryAttemptedTool ? [] : rawCalls;
 
       if (enforceGuidedRetry && !incomplete && !recovering && shouldRetryMissingRequiredTool(options.guidedToolRetry, calls, guidedRetryCount, turn.executedToolNames)) {
+        await recordAttempt({ id: attemptId, status: 'abandoned', rawText: content, acceptedText: '', costUsd: null });
         // Reject the answer, not effects that already completed in the native turn.
         const executedItems = cloneProviderInputItems(turn.executedToolItems);
         if (executedItems?.length) {
@@ -130,6 +157,13 @@ export async function runToolCallingLoop(
         continue;
       }
       enforceGuidedRetry = false;
+      await recordAttempt({
+        id: attemptId,
+        status: incomplete ? 'partial' : 'completed',
+        rawText: content,
+        acceptedText: replayContent,
+        costUsd: null,
+      });
       if (bufferOutput) {
         if (replayContent) accumulator.appendProviderDelta(replayContent);
       } else {

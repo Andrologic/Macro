@@ -6,6 +6,7 @@ import { normalizeArchitectToolId } from '../../services/architectToolNames';
 import { Icon, type IconName } from '../ui/Icon';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/Accordion';
 import type { ToolTrace } from '../../types';
+import { classifyToolTraceRecovery } from '../../services/toolTraceState';
 
 const MarkdownRichContent = lazy(() => import('./MarkdownRichContent'));
 
@@ -24,6 +25,7 @@ interface ToolRenderTrace {
   toolName: string;
   detail?: string;
   status: ToolTrace['status'];
+  recoveryState?: ToolTrace['recovery_state'];
   executionMode?: ToolTrace['execution_mode'];
   batchId?: string;
   order?: number;
@@ -100,18 +102,22 @@ const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: Re
   );
 };
 
-const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTrace['status'] }> = ({
+const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTrace['status']; recoveryState?: ToolTrace['recovery_state'] }> = ({
   toolName,
   detail,
   status,
+  recoveryState,
 }) => {
   const { t } = useTranslation();
-  const isRunning = status === 'running';
+  const isRunning = status === 'running' && (!recoveryState || recoveryState === 'live');
   const isPendingApproval = status === 'pending_approval';
   const isDenied = status === 'denied';
   const iconName = getToolTraceIconName(toolName);
-  const badgeLabel =
-    status === 'pending_approval'
+  const badgeLabel = recoveryState === 'unknown'
+    ? t('chat.toolOutcomeUnknown', 'outcome unknown')
+    : recoveryState === 'replayable'
+      ? t('chat.toolApprovalCanRetry', 'approval can be requested again')
+      : status === 'pending_approval'
       ? t('chat.toolPendingApproval', 'pending approval')
       : status === 'denied'
         ? t('chat.toolDenied', 'denied')
@@ -122,6 +128,7 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTr
       data-testid="tool-trace-item"
       data-tool-name={toolName}
       data-tool-status={status}
+      data-recovery-state={recoveryState}
       className="rounded-lg border border-border bg-card/60 px-2.5 py-1.5"
     >
       <div className="flex items-center gap-2 min-w-0">
@@ -152,7 +159,7 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTr
                 : isPendingApproval
                   ? 'bg-amber-500'
                   : 'bg-primary',
-              (isRunning || isPendingApproval) && 'animate-pulse'
+              (isRunning || (isPendingApproval && (!recoveryState || recoveryState === 'live'))) && 'animate-pulse'
             )}
           />
           {badgeLabel}
@@ -162,8 +169,8 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTr
   );
 };
 
-const isActiveToolTraceStatus = (status: ToolTrace['status']): boolean =>
-  status === 'running' || status === 'pending_approval';
+const isActiveToolTraceStatus = (status: ToolTrace['status'], recoveryState?: ToolTrace['recovery_state']): boolean =>
+  (!recoveryState || recoveryState === 'live') && (status === 'running' || status === 'pending_approval');
 
 const getToolTraceGroupExecutionMode = (
   tools: ToolRenderTrace[]
@@ -174,7 +181,7 @@ const getToolTraceGroupExecutionMode = (
 
   const activeBatchCounts = new Map<string, number>();
   for (const tool of tools) {
-    if (!tool.batchId || !isActiveToolTraceStatus(tool.status)) continue;
+    if (!tool.batchId || !isActiveToolTraceStatus(tool.status, tool.recoveryState)) continue;
     activeBatchCounts.set(tool.batchId, (activeBatchCounts.get(tool.batchId) ?? 0) + 1);
   }
   if (Array.from(activeBatchCounts.values()).some((count) => count > 1)) {
@@ -190,7 +197,7 @@ const getToolTraceGroupExecutionMode = (
 
 const ActiveToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }) => {
   const { t } = useTranslation();
-  const allActive = tools.every((tool) => isActiveToolTraceStatus(tool.status));
+  const allActive = tools.every((tool) => isActiveToolTraceStatus(tool.status, tool.recoveryState));
   const executionMode = getToolTraceGroupExecutionMode(tools);
   const executionModeLabel =
     executionMode === 'parallel'
@@ -232,6 +239,7 @@ const ActiveToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools })
             toolName={tool.toolName}
             detail={tool.detail}
             status={tool.status}
+            recoveryState={tool.recoveryState}
           />
         ))}
       </div>
@@ -275,6 +283,7 @@ const CompletedToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools
                   toolName={tool.toolName}
                   detail={tool.detail}
                   status={tool.status}
+                  recoveryState={tool.recoveryState}
                 />
               ))}
             </div>
@@ -499,6 +508,7 @@ const buildStructuredToolGroups = (
         toolName: trace.tool_name,
         detail: trace.detail,
         status: trace.status,
+        recoveryState: trace.recovery_state ?? classifyToolTraceRecovery(trace, { live: true }),
         executionMode: trace.execution_mode,
         batchId: trace.batch_id,
         order: trace.order,
@@ -571,7 +581,7 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
         }
 
         if (block.type === 'tool_group') {
-          const anyActiveTool = block.tools.some((tool) => isActiveToolTraceStatus(tool.status));
+          const anyActiveTool = block.tools.some((tool) => isActiveToolTraceStatus(tool.status, tool.recoveryState));
           return anyActiveTool ? (
             <ActiveToolTraceGroup key={`tools-${index}`} tools={block.tools} />
           ) : (

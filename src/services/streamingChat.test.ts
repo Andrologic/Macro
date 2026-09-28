@@ -628,6 +628,7 @@ describe('streamingChat SSE stream handling', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const emitted: string[] = [];
     const onError = mock(() => undefined);
+    const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
 
     await streamChat({
       providerId: 'provider-1',
@@ -640,9 +641,13 @@ describe('streamingChat SSE stream handling', () => {
       onToken: (token: string) => emitted.push(token),
       onComplete: () => undefined,
       onError,
+      onGenerationAttemptsUpdate: (attempts: NonNullable<StreamCompletionResult['generationAttempts']>) => { attemptUpdates.push(attempts); },
     });
 
     expect(emitted.join('')).toBe('Partial.');
+    expect(attemptUpdates.at(-1)).toEqual([
+      expect.objectContaining({ status: 'partial', rawText: 'Partial.', acceptedText: 'Partial.', costUsd: null }),
+    ]);
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'ProviderRuntimeError',
@@ -3552,6 +3557,12 @@ describe('streamingChat tool rendering helpers', () => {
     expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
       '"content":"repeated phrase and omega"',
     );
+    const attempts = (onComplete.mock.calls[0]?.[0] as StreamCompletionResult).generationAttempts;
+    expect(attempts).toEqual([
+      expect.objectContaining({ status: 'partial', rawText: 'Alpha repeated phrase', acceptedText: 'Alpha repeated phrase', costUsd: null }),
+      expect.objectContaining({ status: 'completed', rawText: 'repeated phrase and omega', acceptedText: ' and omega', costUsd: null }),
+    ]);
+    expect(new Set(attempts?.map((attempt) => attempt.id)).size).toBe(2);
   });
 
   it('stops after one generic incomplete recovery attempt', async () => {

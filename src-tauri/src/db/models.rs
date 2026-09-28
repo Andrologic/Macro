@@ -167,6 +167,7 @@ pub struct Message {
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
     pub completion_reason: Option<String>,
+    pub generation_attempts_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,6 +430,7 @@ pub struct CreateMessageInput {
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
     pub completion_reason: Option<String>,
+    pub generation_attempts_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]

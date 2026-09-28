@@ -5,6 +5,7 @@ import type {
   ReasoningEffort,
 } from "../types";
 import type { DbConversation, DbMessage } from "./tauriIpc";
+import type { GenerationAttempt } from "./ai/contracts";
 import { parseMessageQuickReplies } from "./chatQuickReplies";
 import {
   parseAssistantQuestionnaireState,
@@ -67,6 +68,25 @@ export const parseDbProviderInputItems = (
   try {
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export const parseDbGenerationAttempts = (raw: string | null | undefined): GenerationAttempt[] | undefined => {
+  if (!raw) return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return undefined;
+    const attempts = value.filter((item): item is GenerationAttempt => {
+      if (!item || typeof item !== 'object') return false;
+      const attempt = item as Partial<GenerationAttempt>;
+      return typeof attempt.id === 'string' &&
+        (attempt.status === 'completed' || attempt.status === 'partial' || attempt.status === 'abandoned') &&
+        typeof attempt.rawText === 'string' && typeof attempt.acceptedText === 'string' &&
+        (attempt.costUsd === null || (typeof attempt.costUsd === 'number' && Number.isFinite(attempt.costUsd)));
+    });
+    return attempts.length ? attempts : undefined;
   } catch {
     return undefined;
   }
@@ -171,6 +191,7 @@ export const mapDbMessageToChatMessage = (
       ),
       context_refs: parseDbContextRefs(message.context_refs_json),
       completion_reason: message.completion_reason ?? undefined,
+      generation_attempts: parseDbGenerationAttempts(message.generation_attempts_json),
     };
   }
 
