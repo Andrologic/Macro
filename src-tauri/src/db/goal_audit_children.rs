@@ -90,14 +90,13 @@ pub async fn reserve_goal_audit_child_conversation(
             return Err(invalid("Goal audit run already has another child"));
         }
         let child = sqlx::query(
-            "SELECT title, scope_mode, task_id, group_id, project_id, provider_id, model_id, reasoning_effort FROM conversations WHERE id = ?",
+            "SELECT scope_mode, task_id, group_id, project_id, provider_id, model_id, reasoning_effort FROM conversations WHERE id = ?",
         )
         .bind(&child_id)
         .fetch_optional(&mut *transaction)
         .await?
         .ok_or_else(|| invalid("Goal audit child link is dangling"))?;
-        if child.get::<String, _>("title") != "Goal audit"
-            || child.get::<String, _>("scope_mode") != scope
+        if child.get::<String, _>("scope_mode") != scope
             || child.get::<Option<String>, _>("task_id") != task
             || child.get::<Option<String>, _>("group_id") != group
             || child.get::<Option<String>, _>("project_id") != project
@@ -245,6 +244,93 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(linked, child);
+    }
+
+    #[tokio::test]
+    async fn reuses_child_after_its_title_is_edited() {
+        let (_temp, pool) = pool().await;
+        let parent = fixture(&pool, "Chat", Some("project-1"), None).await;
+        let child = reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE conversations SET title = 'Renamed audit' WHERE id = ?")
+            .bind(&child)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+                .await
+                .unwrap(),
+            child
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversations WHERE id = ?")
+                .bind(&child)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        for _ in 0..2 {
+            let linked = super::super::agent_runs::link_goal_audit_child_conversation(
+                &pool, "run-1", &parent, &child,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                linked.child_conversation_id.as_deref(),
+                Some(child.as_str())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_replay_after_parent_selection_changes() {
+        let (_temp, pool) = pool().await;
+        let parent = fixture(&pool, "Chat", Some("project-1"), None).await;
+        reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            .await
+            .unwrap();
+        for (column, change_query, reset_query, changed) in [
+            (
+                "scope_mode",
+                "UPDATE conversations SET scope_mode = ? WHERE id = ?",
+                "UPDATE conversations SET scope_mode = 'Chat' WHERE id = ?",
+                "Architect",
+            ),
+            (
+                "project_id",
+                "UPDATE conversations SET project_id = ? WHERE id = ?",
+                "UPDATE conversations SET project_id = 'project-1' WHERE id = ?",
+                "project-2",
+            ),
+            (
+                "task_id",
+                "UPDATE conversations SET task_id = ? WHERE id = ?",
+                "UPDATE conversations SET task_id = NULL WHERE id = ?",
+                "task-2",
+            ),
+        ] {
+            sqlx::query(change_query)
+                .bind(changed)
+                .bind(&parent)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(
+                reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+                    .await
+                    .is_err(),
+                "{column}"
+            );
+            sqlx::query(reset_query)
+                .bind(&parent)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]

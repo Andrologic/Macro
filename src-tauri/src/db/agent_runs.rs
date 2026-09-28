@@ -296,6 +296,13 @@ pub async fn authorize_goal_auditor_read(
           AND run.attempt_count > 0
           AND run.started_at IS NOT NULL
           AND run.finished_at IS NULL
+          AND child.scope_mode = parent.scope_mode
+          AND child.project_id IS parent.project_id
+          AND child.task_id IS parent.task_id
+          AND child.group_id IS parent.group_id
+          AND child.provider_id IS parent.provider_id
+          AND child.model_id IS parent.model_id
+          AND child.reasoning_effort IS parent.reasoning_effort
         "#,
     )
     .bind(run_id)

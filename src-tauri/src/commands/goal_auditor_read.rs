@@ -426,6 +426,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_parent_selection_changes_after_child_link() {
+        let fixture = Fixture::new().await;
+        let input = fixture.input("read", json!({"path": "proof.txt"}));
+        fixture.execute(input.clone()).await.unwrap();
+        for (column, change_query, reset_query, changed) in [
+            (
+                "scope_mode",
+                "UPDATE conversations SET scope_mode = ? WHERE id = ?",
+                "UPDATE conversations SET scope_mode = 'Chat' WHERE id = ?",
+                "Architect",
+            ),
+            (
+                "project_id",
+                "UPDATE conversations SET project_id = ? WHERE id = ?",
+                "UPDATE conversations SET project_id = NULL WHERE id = ?",
+                "another-project",
+            ),
+            (
+                "task_id",
+                "UPDATE conversations SET task_id = ? WHERE id = ?",
+                "UPDATE conversations SET task_id = NULL WHERE id = ?",
+                "another-task",
+            ),
+        ] {
+            sqlx::query(change_query)
+                .bind(changed)
+                .bind(&fixture.parent_id)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            assert!(fixture.execute(input.clone()).await.is_err(), "{column}");
+            sqlx::query(reset_query)
+                .bind(&fixture.parent_id)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn parent_project_selects_its_native_registered_root() {
         let fixture = Fixture::new().await;
         let project_path = fixture.workspace.join("project");
@@ -449,6 +489,12 @@ mod tests {
         sqlx::query("UPDATE conversations SET project_id = ? WHERE id = ?")
             .bind(&project.id)
             .bind(&fixture.parent_id)
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE conversations SET project_id = ? WHERE id = ?")
+            .bind(&project.id)
+            .bind(&fixture.child_id)
             .execute(&fixture.pool)
             .await
             .unwrap();
