@@ -4,6 +4,7 @@ import { usePersistenceHealth } from '../../services/persistenceHealth';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { Button } from '../ui/Button';
+import { Textarea } from '../ui/Textarea';
 import { NotificationSurface } from '../ui/notifications/NotificationSurface';
 import { notify } from '../ui/toastService';
 
@@ -15,6 +16,13 @@ export function PersistenceHealthNotifications() {
     (state) => state.queuedSubmissionRecoveryByConversationId,
   );
   const retryQueuedSubmissions = useChatStore((state) => state.retryQueuedSubmissions);
+  const queuedPreviews = useChatStore((state) => state.queuedSubmissionPreviews) ?? [];
+  const editQueuedSubmission = useChatStore((state) => state.editQueuedSubmission);
+  const removeQueuedSubmission = useChatStore((state) => state.removeQueuedSubmission);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [retryingConversationIds, setRetryingConversationIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -43,7 +51,7 @@ export function PersistenceHealthNotifications() {
   if (issueEntries.length === 0 && recoveryEntries.length === 0) return null;
 
   const retry = async (conversationId: string) => {
-    if (retryingConversationIdsRef.current.has(conversationId)) return;
+    if (retryingConversationIdsRef.current.has(conversationId) || busyId) return;
     retryingConversationIdsRef.current.add(conversationId);
     setRetryingConversationIds((current) => new Set(current).add(conversationId));
     try {
@@ -59,6 +67,19 @@ export function PersistenceHealthNotifications() {
         return next;
       });
     }
+  };
+
+  const changeQueuedMessage = async (id: string, action: 'save' | 'remove') => {
+    if (busyId) return;
+    setBusyId(id);
+    setActionError(null);
+    try {
+      if (action === 'save') await editQueuedSubmission(id, draft);
+      else await removeQueuedSubmission(id);
+      setEditingId(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally { setBusyId(null); }
   };
 
   const panelTitle = issueEntries.length > 0
@@ -100,36 +121,79 @@ export function PersistenceHealthNotifications() {
               const conversation = conversations.find((candidate) => candidate.id === conversationId);
               const conversationLabel = conversation?.title || conversationId;
               const isRetrying = retryingConversationIds.has(conversationId);
+              const previews = queuedPreviews.filter(entry => entry.conversationId === conversationId);
               return (
                 <div
                   key={conversationId}
-                  className="flex items-start gap-2 rounded-lg border border-border/60 bg-background/60 p-2"
+                  className="rounded-lg border border-border/60 bg-background/60 p-2"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-medium" title={conversationLabel}>
-                      {conversationLabel}
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium" title={conversationLabel}>
+                        {conversationLabel}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">×{recovery.count}</div>
+                      {recovery.error ? (
+                        <p role="alert" className="mt-1 break-words text-xs text-destructive">
+                          {recovery.error}
+                        </p>
+                      ) : null}
                     </div>
-                    <div className="text-[11px] text-muted-foreground">×{recovery.count}</div>
-                    {recovery.error ? (
-                      <p role="alert" className="mt-1 break-words text-xs text-destructive">
-                        {recovery.error}
-                      </p>
-                    ) : null}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      isLoading={isRetrying}
+                      disabled={isRetrying || Boolean(busyId) || editingId !== null}
+                      aria-label={`${t('common.retry', 'Retry')} ${conversationLabel}`}
+                      onClick={() => void retry(conversationId)}
+                    >
+                      {t('common.retry', 'Retry')}
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    isLoading={isRetrying}
-                    disabled={isRetrying}
-                    aria-label={`${t('common.retry', 'Retry')} ${conversationLabel}`}
-                    onClick={() => void retry(conversationId)}
-                  >
-                    {t('common.retry', 'Retry')}
-                  </Button>
+                  {previews.map(entry => (
+                    <div key={entry.id} className="mt-2 rounded-md border border-border/50 p-2 text-xs">
+                      {editingId === entry.id ? (
+                        <>
+                          <label htmlFor={`queue-edit-${entry.id}`} className="mb-1 block font-medium">
+                            {t('chat.queueEditMessage', 'Edit queued message')}
+                          </label>
+                          <Textarea
+                            id={`queue-edit-${entry.id}`}
+                            value={draft}
+                            onChange={event => setDraft(event.target.value)}
+                            maxLength={200000}
+                            rows={4}
+                            disabled={busyId === entry.id}
+                          />
+                          <div className="mt-2 flex gap-2">
+                            <Button type="button" size="sm" isLoading={busyId === entry.id} disabled={!draft.trim() || Boolean(busyId)} onClick={() => void changeQueuedMessage(entry.id, 'save')}>
+                              {t('common.save', 'Save')}
+                            </Button>
+                            <Button type="button" size="sm" variant="ghost" disabled={Boolean(busyId)} onClick={() => setEditingId(null)}>
+                              {t('common.cancel', 'Cancel')}
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <p className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words">{entry.content || t('chat.queueAttachmentOnly', 'Attachment only')}</p>
+                          <div className="mt-2 flex gap-2">
+                            <Button type="button" size="sm" variant="ghost" disabled={Boolean(busyId) || isRetrying} onClick={() => { setEditingId(entry.id); setDraft(entry.content); setActionError(null); }}>
+                              {t('common.edit', 'Edit')}
+                            </Button>
+                            <Button type="button" size="sm" variant="ghost" disabled={Boolean(busyId) || isRetrying} onClick={() => void changeQueuedMessage(entry.id, 'remove')}>
+                              {t('chat.queueRemoveMessage', 'Remove from queue')}
+                            </Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
                 </div>
               );
             })}
+            {actionError ? <p role="alert" className="text-xs text-destructive">{actionError}</p> : null}
           </div>
         )}
       />
