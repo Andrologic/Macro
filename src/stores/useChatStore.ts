@@ -198,6 +198,7 @@ import {
   updateProviderInputItemsForMessage,
   type ChatPersistenceAdapters,
 } from "../services/chatPersistenceService";
+import { classifyToolTraceRecovery } from "../services/toolTraceState";
 import {
   renderStandaloneTaskBranchName,
 } from "../services/architectGitNaming";
@@ -915,6 +916,7 @@ interface ChatStore {
         | "provider_turn_state"
         | "context_refs"
         | "completion_reason"
+        | "generation_attempts"
         | "persistence_state"
         | "persistence_error"
       >
@@ -1176,6 +1178,8 @@ const assistantPersistencePayloadMatches = (
     serializeAssistantPersistenceValue(recovered.provider_input_items) &&
   serializeAssistantPersistenceValue(persisted.provider_turn_state) ===
     serializeAssistantPersistenceValue(recovered.provider_turn_state) &&
+  serializeAssistantPersistenceValue(persisted.generation_attempts) ===
+    serializeAssistantPersistenceValue(recovered.generation_attempts) &&
   persisted.completion_reason === recovered.completion_reason;
 
 const mergeRecoveredAssistantResponses = (
@@ -8540,7 +8544,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       !targetMessage ||
       targetMessage.role !== "assistant" ||
       targetMessage.content.trim().length > 0 ||
-      (targetMessage.tool_traces?.length ?? 0) > 0
+      (targetMessage.tool_traces?.length ?? 0) > 0 ||
+      (targetMessage.generation_attempts?.length ?? 0) > 0
     ) {
       return {};
     }
@@ -11083,6 +11088,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const approval = get().pendingToolApprovalByConversationId[conversationId];
         if (approval) restoredApprovals[conversationId] = approval;
       }
+    }
+
+    for (const message of visibleMessages) {
+      const approval = restoredApprovals[message.conversation_id];
+      if (!approval || message.id !== approval.assistantMessageId) continue;
+      message.tool_traces = message.tool_traces?.map((trace) =>
+        trace.tool_call_id === approval.toolCallId
+          ? { ...trace, recovery_state: classifyToolTraceRecovery(trace, { approvalRecovered: true }) }
+          : trace,
+      );
     }
 
     set({

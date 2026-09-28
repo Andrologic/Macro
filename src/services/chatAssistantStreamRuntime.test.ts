@@ -129,7 +129,7 @@ function setup() {
       completed: mock(() => undefined),
       removeEmpty: (id) => {
         const message = messages.get(id);
-        if (message && !message.content && !message.tool_traces?.length) messages.delete(id);
+        if (message && !message.content && !message.tool_traces?.length && !message.generation_attempts?.length) messages.delete(id);
       },
     },
     persistence: {
@@ -312,7 +312,10 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       expect(params.abortController?.signal.aborted).toBe(true);
       expect(h.cancelTransport.mock.calls).toEqual([[params.sessionId]]);
       expect(h.partial).toHaveBeenCalledTimes(1);
-      expect(h.partial.mock.calls[0][0]).toMatchObject({ content: "Partial answer", tool_traces: [trace] });
+      expect(h.partial.mock.calls[0][0]).toMatchObject({
+        content: "Partial answer",
+        tool_traces: [{ ...trace, recovery_state: "unknown" }],
+      });
       expect(h.messages.get(params.assistantMessage.id)?.content).toBe("Partial answer");
       tool.resolve("Late tool result");
       expect(await toolResult).toMatchObject({ kind: "result", isError: true, errorKind: "aborted" });
@@ -332,12 +335,97 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       await drain;
       await checkpoint();
       expect(h.partials).toHaveLength(1);
-      expect(h.partials[0]).toMatchObject({ id: params.assistantMessage.id, content: "Partial answer", tool_traces: [trace] });
+      expect(h.partials[0]).toMatchObject({
+        id: params.assistantMessage.id,
+        content: "Partial answer",
+        tool_traces: [{ ...trace, recovery_state: "unknown" }],
+      });
       expect(h.settled.mock.calls).toEqual([["a"]]);
       expect(h.sync).not.toHaveBeenCalled();
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
     });
   }
+
+  for (const buffered of [false, true]) {
+    test(`stop persists the active ${buffered ? "buffered" : "visible"} generation attempt`, async () => {
+      const h = setup();
+      const params = launch("a");
+      const stream = h.start(params);
+      const attempt = {
+        id: "attempt-in-flight",
+        status: buffered ? "abandoned" as const : "partial" as const,
+        rawText: "Partial answer",
+        acceptedText: buffered ? "" : "Partial answer",
+        costUsd: null,
+      };
+      if (!buffered) stream.options.onToken("Partial answer");
+      stream.options.onGenerationAttemptProgress?.(attempt);
+
+      h.owner.stop("a");
+      stream.done.resolve();
+      await h.owner.drain("a");
+
+      expect(h.partials).toHaveLength(1);
+      expect(h.partials[0]).toMatchObject({
+        id: params.assistantMessage.id,
+        content: buffered ? "" : "Partial answer",
+        generation_attempts: [attempt],
+      });
+    });
+  }
+
+  test("stop before the first token persists an empty in-flight attempt", async () => {
+    const h = setup();
+    const params = launch("a");
+    const stream = h.start(params);
+    const attempt = { id: "attempt-before-token", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
+    stream.options.onGenerationAttemptProgress?.(attempt);
+
+    h.owner.stop("a");
+    stream.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.partials).toHaveLength(1);
+    expect(h.partials[0]).toMatchObject({ id: params.assistantMessage.id, content: "", generation_attempts: [attempt] });
+    expect(h.messages.has(params.assistantMessage.id)).toBe(true);
+  });
+
+  test("a failed attempt checkpoint leaves the provider result and final persistence intact", async () => {
+    const h = setup();
+    const params = launch("a");
+    const stream = h.start(params);
+    const attempts = [{ id: "attempt-1", status: "completed" as const, rawText: "Answer", acceptedText: "Answer", costUsd: null }];
+    h.partial.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+
+    stream.options.onToken("Answer");
+    await stream.options.onGenerationAttemptsUpdate?.(attempts);
+    expect(h.partial.mock.calls[0]?.[0]).toMatchObject({ content: "Answer", generation_attempts: attempts });
+    expect(h.messages.get(params.assistantMessage.id)?.content).toBe("Answer");
+
+    stream.options.onComplete({ ...result("Answer"), generationAttempts: attempts });
+    stream.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.owner.read("a").phase).toBe("idle");
+    expect(h.saved.get(params.assistantMessage.id)?.generationAttempts).toEqual(attempts);
+    expect(h.failed).not.toHaveBeenCalled();
+    expect(h.taskFailed).not.toHaveBeenCalled();
+  });
+
+  test("a provider error settles a running tool trace in the current session", async () => {
+    const h = setup();
+    const params = launch("a");
+    const stream = h.start(params);
+    stream.options.onToolTracesUpdate?.([{ tool_call_id: "tool-1", tool_name: "read", status: "running" }]);
+    stream.options.onError(new Error("provider failed"));
+    stream.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.messages.get(params.assistantMessage.id)?.tool_traces).toEqual([
+      { tool_call_id: "tool-1", tool_name: "read", status: "running", recovery_state: "unknown" },
+    ]);
+    expect(h.partials.at(-1)?.tool_traces?.[0]?.recovery_state).toBe("unknown");
+  });
 
   test("failed completion persistence retains the answer and a new turn can succeed", async () => {
     const h = setup();
@@ -420,6 +508,9 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       const h = setup();
       const params = launch("a");
       const old = h.start(params);
+      const initialAttempt = { id: "before-overflow", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
+      const recoveredAttempt = { id: "after-overflow", status: "completed" as const, rawText: "Recovered answer", acceptedText: "Recovered answer", costUsd: null };
+      await old.options.onGenerationAttemptsUpdate?.([initialAttempt]);
       const preparation = deferred<Awaited<ReturnType<ChatAssistantStreamPorts["prepare"]>>>();
       h.prepare.mockImplementationOnce(async () => preparation.promise);
       old.options.onError(new Error(`maximum context length is ${contextLimit} tokens`));
@@ -460,17 +551,41 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       expect(h.owner.read("a").phase).toBe("streaming");
       expect(recovered.options.consumePendingSteers?.()).toEqual([steer]);
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
-      recovered.options.onComplete(result("Recovered answer"));
+      recovered.options.onToken("Recovered answer");
+      await recovered.options.onGenerationAttemptsUpdate?.([recoveredAttempt]);
+      expect(h.messages.get(params.assistantMessage.id)?.generation_attempts).toEqual([initialAttempt, recoveredAttempt]);
+      recovered.options.onComplete({ ...result("Recovered answer"), generationAttempts: [recoveredAttempt] });
       recovered.done.resolve();
       await drain;
       await checkpoint();
 
       expect(h.saved.get(params.assistantMessage.id)?.visibleContent).toBe("Recovered answer");
+      expect(h.saved.get(params.assistantMessage.id)?.generationAttempts).toEqual([initialAttempt, recoveredAttempt]);
       expect(h.complete).toHaveBeenCalledTimes(1);
       expect(h.settled.mock.calls).toEqual([["a"]]);
       expect(h.owner.read("a").phase).toBe("idle");
     });
   }
+
+  test("failed overflow preparation retains and retries persistence of the first attempt", async () => {
+    const h = setup();
+    const params = launch("a");
+    const old = h.start(params);
+    const attempt = { id: "overflow-first", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
+    h.partial.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+    await old.options.onGenerationAttemptsUpdate?.([attempt]);
+    h.prepare.mockRejectedValueOnce(new Error("compaction failed"));
+
+    old.options.onError(new Error("maximum context length is 128000 tokens"));
+    old.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.owner.read("a")).toMatchObject({ phase: "error", assistantMessageId: params.assistantMessage.id });
+    expect(h.messages.get(params.assistantMessage.id)?.generation_attempts).toEqual([attempt]);
+    expect(h.partials.at(-1)?.generation_attempts).toEqual([attempt]);
+    expect(h.partial).toHaveBeenCalledTimes(2);
+    expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
+  });
 
   test("changing external selection keeps tool execution and metadata bound to the sending workspace", async () => {
     const h = setup();

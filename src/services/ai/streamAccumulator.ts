@@ -21,7 +21,7 @@ export const createStreamAccumulator = (
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
   const hiddenContextBlocks: string[] = [];
-  const liveOnlyHiddenContextBlocks: string[] = [];
+  const liveOnlyHiddenContextBlocks = new Map<string, string>();
   let providerInputItems: unknown[] | undefined;
   let providerTurnState: ProviderTurnState | undefined;
   let liveContextVersion = 0;
@@ -36,7 +36,7 @@ export const createStreamAccumulator = (
 
   const buildHiddenContext = (includeLiveOnly: boolean): string | undefined => {
     const blocks = includeLiveOnly
-      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks]
+      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks.values()]
       : hiddenContextBlocks;
     const hiddenContext = blocks.join('\n\n').trim();
     return hiddenContext || undefined;
@@ -75,6 +75,9 @@ export const createStreamAccumulator = (
       tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
       detail: trace.detail ?? existingTrace?.detail,
       status,
+      recovery_state: status === 'done' || status === 'denied'
+        ? 'completed'
+        : trace.recovery_state ?? existingTrace?.recovery_state,
       visible_offset:
         existingTrace?.visible_offset ?? trace.visible_offset ?? visibleContent.length,
       execution_mode: trace.execution_mode ?? existingTrace?.execution_mode,
@@ -90,15 +93,14 @@ export const createStreamAccumulator = (
     publishToolTraces();
   };
 
-  const markRunningToolTracesDone = () => {
+  const settleRunningToolTracesUnknown = () => {
     let changed = false;
     for (const toolCallId of toolTraceOrder) {
       const trace = toolTraces.get(toolCallId);
-      if (!trace || trace.status !== 'running') continue;
+      if (!trace || trace.status !== 'running' || trace.recovery_state === 'unknown') continue;
       toolTraces.set(toolCallId, {
         ...trace,
-        status: 'done',
-        completed_at_ms: trace.completed_at_ms ?? Date.now(),
+        recovery_state: 'unknown',
       });
       changed = true;
     }
@@ -107,10 +109,10 @@ export const createStreamAccumulator = (
     }
   };
 
-  const appendVisibleChunk = (chunk: string, markToolsDone = true) => {
+  const appendVisibleChunk = (chunk: string, settleTools = true) => {
     if (!chunk) return;
-    if (markToolsDone) {
-      markRunningToolTracesDone();
+    if (settleTools) {
+      settleRunningToolTracesUnknown();
     }
     visibleContent += chunk;
     options.onToken(chunk);
@@ -127,7 +129,7 @@ export const createStreamAccumulator = (
     appendSystemChunk(chunk: string, markToolsDone = false) {
       appendVisibleChunk(chunk, markToolsDone);
     },
-    markRunningToolTracesDone,
+    settleRunningToolTracesUnknown,
     upsertToolTrace,
     upsertToolTraceFromProvider(trace: ToolTrace) {
       upsertToolTrace(trace);
@@ -184,9 +186,11 @@ export const createStreamAccumulator = (
     addLiveOnlyHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
       const block = buildToolContextBlock(toolCallId, toolName, detail, result);
       if (block) {
-        liveOnlyHiddenContextBlocks.push(block);
-        publishLiveContext();
+        liveOnlyHiddenContextBlocks.set(toolCallId, block);
+      } else {
+        liveOnlyHiddenContextBlocks.delete(toolCallId);
       }
+      publishLiveContext();
     },
     addHiddenContextBlock(block: string | undefined) {
       const normalized = block?.trim();
@@ -213,7 +217,7 @@ export const createStreamAccumulator = (
       return buildHiddenContext(false);
     },
     buildResult(): StreamCompletionResult {
-      markRunningToolTracesDone();
+      settleRunningToolTracesUnknown();
       return {
         visibleContent,
         toolTraces: snapshotToolTraces(),

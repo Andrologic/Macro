@@ -65,6 +65,8 @@ mock.module('../tauriIpc', () => ({ ...ipc,
     if (scenario !== 'empty-steer-abort') emit('ai:stream', { request_id: submission.requestId, delta: `Response ${requests.length}` });
     emit('ai:done', { request_id: submission.requestId,
       output_text: scenario === 'native-interrupt' ? 'Choose' : scenario === 'empty-steer-abort' ? '' : `Response ${requests.length}`,
+      hidden_context: scenario === 'native-interrupt' ? '<questionnaire_context>fixture</questionnaire_context>' : undefined,
+      accepted_submission_ids: submissions.filter(item => item.requestId === submission.requestId).map(item => item.submissionId).filter((id): id is string => !!id),
       completion_reason: isRecovery() ? scenario : guidedRecovery() && requests.length === 2 ? 'length' : 'completed',
       tool_calls: isRecovery() || (isGuided() && scenario !== 'guided-native-satisfied' && requests.length === 1) ? [unexecutedCall] : [],
     });

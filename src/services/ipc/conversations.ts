@@ -338,6 +338,7 @@ export async function updateMessage(
     providerTurnState?: ProviderTurnState;
     contextRefs?: unknown[];
     completionReason?: ChatCompletionReason;
+    generationAttempts?: import('../ai/contracts').GenerationAttempt[];
   },
 ): Promise<void> {
   return invoke("db_update_message", {
@@ -362,6 +363,9 @@ export async function updateMessage(
       ...(options?.completionReason
         ? { completionReason: options.completionReason }
         : {}),
+      generationAttemptsJson: options?.generationAttempts
+        ? JSON.stringify(options.generationAttempts)
+        : null,
     },
   });
 }

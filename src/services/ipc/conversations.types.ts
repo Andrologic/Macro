@@ -31,7 +31,7 @@ export type DbConversation = OmitFields<NativeDbConversation, "scope_mode"> & {
 };
 
 /** Frontend compatibility: preserves adapted fields and omission rules. */
-export type DbMessage = OptionalFields<OmitFields<NativeDbMessage, "completion_reason">, "turn_id" | "context_refs_json"> & {
+export type DbMessage = OptionalFields<OmitFields<NativeDbMessage, "completion_reason">, "turn_id" | "context_refs_json" | "generation_attempts_json"> & {
   completion_reason?: ChatCompletionReason | null;
 };
 

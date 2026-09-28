@@ -444,6 +444,7 @@ pub async fn db_create_message(
             provider_turn_state_json: params.provider_turn_state_json,
             context_refs_json: params.context_refs_json,
             completion_reason: params.completion_reason,
+            generation_attempts_json: None,
         },
     )
     .await
@@ -477,6 +478,7 @@ pub struct DbUpdateMessageParams {
     provider_turn_state_json: Option<String>,
     context_refs_json: Option<String>,
     completion_reason: Option<String>,
+    generation_attempts_json: Option<String>,
 }
 
 #[tauri::command]
@@ -499,6 +501,7 @@ pub async fn db_update_message(
             provider_turn_state_json: params.provider_turn_state_json,
             context_refs_json: params.context_refs_json,
             completion_reason: params.completion_reason,
+            generation_attempts_json: params.generation_attempts_json,
         },
     )
     .await

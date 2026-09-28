@@ -47,6 +47,7 @@ import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { GenerationAttemptDetails } from './GenerationAttemptDetails';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -885,6 +886,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                     completionReason={message.completion_reason}
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
+                  <GenerationAttemptDetails attempts={message.generation_attempts} />
                   {hasAssistantPersistenceFailure && (
                     <div
                       data-chat-unsaved-assistant-response={message.persistence_state}

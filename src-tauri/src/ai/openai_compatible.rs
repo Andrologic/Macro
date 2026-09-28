@@ -242,6 +242,7 @@ async fn stream_chat_inner(
                 reasoning_summary: optional_text(accumulator.reasoning_summary),
                 tool_traces: None,
                 hidden_context: None,
+                accepted_submission_ids: None,
                 completion_reason: accumulator.completion_reason,
             },
         )
