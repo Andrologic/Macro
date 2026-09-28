@@ -723,7 +723,7 @@ inutilisée. La façade `tauriIpc.ts` et les réexports Rust de `commands` pourr
 pas être déduit d'une recherche d'imports nommés uniquement.
 
 
-### 7.4 Courtier d'élicitation MCP, lot transport
+### 7.4 Courtier et hôte de formulaires MCP
 
 Le runtime persistant ouvre un port IPC typé seulement lorsqu'un hôte UI
 s'enregistre avec `mcp_runtime_open_interaction_port`. En l'absence de port, une
@@ -744,16 +744,28 @@ validé contre ses champs, obligations, choix et contraintes avant continuation.
 Les schémas non pris en charge échouent fermés. Une valeur `requestState` non
 chaîne ou dépassant 128 Kio est refusée sans journalisation ; un tour contenant uniquement `requestState` se poursuit sans hôte UI et sans
 `inputResponses`. Aucun appel n'est relancé après une erreur de transport. Le
-runtime s'arrête après quatre continuations. Aucun hôte de formulaire n'est
-encore connecté à ce port ; la capacité d'élicitation n'est donc annoncée
-dans aucune requête moderne. Son activation exigera un hôte UI capable
-d'identifier le serveur demandeur et de faire revoir, modifier, refuser ou
-annuler la saisie. Le client devra alors inclure `_meta.io.modelcontextprotocol/clientCapabilities`
-avec `elicitation: {form: {}}` dans chaque requête moderne. Le noyau seul ne rend
-pas l'élicitation utilisable avec un serveur conforme. Le validateur accepte
-les formats MCP usuels ; pour `email`, il applique un sous-ensemble ASCII
-conservateur. Les demandes URL, le chemin HTTP moderne et le chemin legacy
-restent fermés. En particulier, les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
+runtime s'arrête après quatre continuations. L'hôte de formulaires est monté
+au niveau global de l'application Tauri, indépendamment de la conversation
+active. Sa modale et ses erreurs prennent la priorité sur les autres modales
+de l'application. Il ouvre un bail unique, conserve en mémoire une file de demandes bornée
+par le courtier, affiche l'identité du serveur et l'opération, puis demande une
+revue explicite des valeurs avant `accept`. `decline` et `cancel` restent deux
+réponses distinctes. La fermeture de l'hôte vide la file et révoque le bail.
+Le délai absolu accompagne chaque demande ; pendant qu'une file existe, l'hôte
+interroge les seuls identifiants encore en attente pour retirer rapidement les
+appels annulés ailleurs. Aucune valeur saisie, réponse ni donnée `requestState` n'est enregistrée
+dans l'historique. Les formulaires qui semblent demander
+un secret n'affichent aucun champ et ne proposent pas `accept` ; l'interface
+rappelle aussi de ne jamais saisir de secret. Une détection textuelle ne peut
+pas établir à elle seule qu'une saisie arbitraire n'est pas sensible.
+
+Chaque `tools/call` stdio moderne ajoute `elicitation: {form: {}}` à
+`_meta.io.modelcontextprotocol/clientCapabilities` uniquement si le courtier
+a un port vivant. rmcp fusionne ces capacités avec les métadonnées de découverte
+existantes, dont la version du protocole et l'identité du client. Aucun mode URL
+n'est annoncé. Le validateur Rust accepte les formats MCP usuels ; pour `email`,
+il applique un sous-ensemble ASCII conservateur. Les demandes URL, le chemin
+HTTP moderne et le chemin legacy restent fermés. En particulier, les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
 raccorder demandera d'associer les requêtes serveur au bon appel et à sa durée
 de vie. Le point 21 reste donc incomplet.
 

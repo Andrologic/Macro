@@ -892,6 +892,7 @@ pub fn run() {
             commands::mcp::mcp_runtime_cancel_operation,
             commands::mcp::mcp_runtime_open_interaction_port,
             commands::mcp::mcp_runtime_close_interaction_port,
+            commands::mcp::mcp_runtime_list_pending_interactions,
             commands::mcp::mcp_runtime_respond_to_interaction,
             commands::web_search::web_search_get_secret_status,
             commands::web_search::web_search_set_secret,

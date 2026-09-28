@@ -502,6 +502,7 @@ export {
   mcpRuntimeCancelOperation,
   mcpRuntimeOpenInteractionPort,
   mcpRuntimeCloseInteractionPort,
+  mcpRuntimeListPendingInteractions,
   mcpRuntimeRespondToInteraction,
 } from "./ipc/mcp";
 
