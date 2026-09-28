@@ -609,6 +609,7 @@
     "toolJournalPending": "en attente après la fin du tour",
     "toolJournalInspectFirst": "Vérifiez l’effet de l’outil avant toute nouvelle demande. Ne supposez pas qu’il a échoué et ne le relancez pas sans vérification.",
     "toolJournalUnavailable": "Impossible de consulter le journal local des outils. Vérifiez leurs effets récents avant toute nouvelle demande.",
+    "toolJournalRetryRead": "Relire le journal",
     "generationAttempts_one": "{{count}} tentative de génération",
     "generationAttempts_other": "{{count}} tentatives de génération",
     "generationAttemptNumber": "Tentative {{number}}",

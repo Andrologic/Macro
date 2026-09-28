@@ -102,11 +102,29 @@ describe('UnresolvedToolInvocationsNotice', () => {
   });
 
   it('warns when the local journal cannot be read', async () => {
-    list.mockImplementation(async () => { throw new Error('sensitive SQLite path'); });
+    list.mockImplementationOnce(async () => { throw new Error('sensitive SQLite path'); });
+    list.mockImplementationOnce(async () => []);
     await render('first', 'idle');
     expect(container.textContent).toContain('Unable to check the local tool journal');
     expect(container.textContent).not.toContain('sensitive SQLite path');
+    await act(async () => container.querySelector('button')?.click());
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
+
+  for (const [name, malformed] of [
+    ['a null response', null],
+    ['an object response', {}],
+    ['a null entry', [null]],
+    ['an entry from another conversation', [{ ...invocation('unknown'), conversation_id: 'second' }]],
+  ] as const) {
+    it(`treats ${name} as a journal read failure`, async () => {
+      list.mockImplementation(async () => malformed as unknown as ToolInvocation[]);
+      await render('first', 'idle');
+      expect(container.textContent).toContain('Unable to check the local tool journal');
+      expect(container.textContent).not.toContain('terminal_run');
+    });
+  }
 
   it('discards a late response from the previous conversation', async () => {
     const first = createDeferred<ToolInvocation[]>();

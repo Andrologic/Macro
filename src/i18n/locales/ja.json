@@ -581,6 +581,7 @@
     "toolJournalPending": "ターン終了後も保留中",
     "toolJournalInspectFirst": "次の依頼を送る前に、ツールの影響を確認してください。失敗したと決めつけず、確認せずに再実行しないでください。",
     "toolJournalUnavailable": "ローカルのツール履歴を確認できません。次の依頼を送る前に、最近のツールの影響を確認してください。",
+    "toolJournalRetryRead": "履歴を再読み込み",
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",

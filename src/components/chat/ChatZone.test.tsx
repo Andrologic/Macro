@@ -1125,7 +1125,9 @@ describe('ChatZone', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
-    installTauriRuntimeMock();
+    installTauriRuntimeMock(async (command) =>
+      command === 'db_list_unresolved_tool_invocations' ? [] : undefined
+    );
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback: FrameRequestCallback) =>
         setTimeout(() => callback(performance.now()), 0) as unknown as number;
@@ -1205,6 +1207,21 @@ describe('ChatZone', () => {
     expect(first?.style.transform).toBe('translateY(2700px)');
     expect(last?.style.transform).toBe('translateY(7312px)');
     expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
+  it('hides the previous conversation journal while a new context resolves', async () => {
+    installTauriRuntimeMock(async (command) => command === 'db_list_unresolved_tool_invocations'
+      ? [{
+          conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
+          tool_name: 'old_tool', status: 'unknown',
+        }]
+      : undefined);
+    chatState = { ...chatState, restoreStatus: 'resolving' };
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
   });
 
   it('renders the first user message when the selected conversation has messages', async () => {

@@ -586,6 +586,7 @@
     "toolJournalPending": "pendiente tras finalizar el turno",
     "toolJournalInspectFirst": "Comprueba el efecto de la herramienta antes de enviar otra solicitud. No des por hecho que falló ni la ejecutes de nuevo sin comprobarlo.",
     "toolJournalUnavailable": "No se puede consultar el registro local de herramientas. Comprueba sus efectos recientes antes de enviar otra solicitud.",
+    "toolJournalRetryRead": "Volver a leer el registro",
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",

@@ -610,6 +610,7 @@
     "toolJournalPending": "pending after turn ended",
     "toolJournalInspectFirst": "Inspect the tool’s effect before sending another request. Do not assume it failed or run it again.",
     "toolJournalUnavailable": "Unable to check the local tool journal. Inspect recent tool effects before sending another request.",
+    "toolJournalRetryRead": "Retry journal read",
     "generationAttempts_one": "{{count}} generation attempt",
     "generationAttempts_other": "{{count}} generation attempts",
     "generationAttemptNumber": "Attempt {{number}}",

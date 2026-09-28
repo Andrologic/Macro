@@ -14,6 +14,17 @@ interface Props {
 const isActiveTurn = (phase: ConversationExecutionPhase): boolean =>
   phase === 'preparing' || phase === 'streaming' || phase === 'overflow_recovery' || phase === 'persisting';
 
+const isUnresolvedInvocation = (value: unknown, conversationId: string): value is ToolInvocation => {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<ToolInvocation>;
+  return item.conversation_id === conversationId &&
+    typeof item.turn_id === 'string' &&
+    typeof item.message_id === 'string' &&
+    typeof item.call_id === 'string' &&
+    typeof item.tool_name === 'string' &&
+    (item.status === 'pending' || item.status === 'unknown');
+};
+
 export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeTurnId }: Props) {
   const { t } = useTranslation();
   const [revision, setRevision] = useState(0);
@@ -47,7 +58,11 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
 
     void listUnresolvedToolInvocations(conversationId)
       .then((items) => {
-        if (current) setResult({ conversationId, phase, activeTurnId, revision, items: Array.isArray(items) ? items : [] });
+        if (current) setResult({
+          conversationId, phase, activeTurnId, revision,
+          items: Array.isArray(items) && items.every((item) => isUnresolvedInvocation(item, conversationId))
+            ? items : null,
+        });
       })
       .catch(() => {
         if (current) setResult({ conversationId, phase, activeTurnId, revision, items: null });
@@ -63,9 +78,12 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
   if (currentResult?.items === null) {
     return (
       <div role="alert" data-testid="unresolved-tool-invocations-error" className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-xs text-foreground">
-        <p className="mx-auto max-w-4xl">
-          {t('chat.toolJournalUnavailable', 'Unable to check the local tool journal. Inspect recent tool effects before sending another request.')}
-        </p>
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
+          <p>{t('chat.toolJournalUnavailable', 'Unable to check the local tool journal. Inspect recent tool effects before sending another request.')}</p>
+          <button type="button" className="shrink-0 rounded border border-amber-500/30 px-2 py-1 hover:bg-amber-500/10" onClick={() => setRevision((current) => current + 1)}>
+            {t('chat.toolJournalRetryRead', 'Retry journal read')}
+          </button>
+        </div>
       </div>
     );
   }
