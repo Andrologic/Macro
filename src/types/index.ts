@@ -1196,6 +1196,7 @@ export interface ConversationGoalRecord {
   revision: number;
   status: ConversationGoalStatus;
   objective: string;
+  successCriteria?: string[];
   providerId: string | null;
   modelId: string | null;
   reasoningEffort: ReasoningEffort | null;
