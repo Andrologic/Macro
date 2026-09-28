@@ -62,7 +62,15 @@ export interface ToolBatchAccumulator {
   appendSystemChunk(chunk: string, includeInHiddenContext?: boolean): void;
 }
 
-export async function runToolBatch(params: {
+// Only built-in workspace/Git reads have an audited effect contract. Unknown,
+// interactive, remote and MCP tools retain sequential execution.
+const PARALLEL_READ_TOOL_IDS = new Set([
+  'read', 'list', 'glob', 'grep', 'ast_grep',
+  'git_status', 'git_log', 'git_diff', 'git_get_tree', 'git_branch_list',
+]);
+const MAX_PARALLEL_READS = 3;
+
+interface ToolBatchParams {
   calls: ToolCall[];
   messages: StreamMessage[];
   options: StreamingChatOptions;
@@ -72,17 +80,25 @@ export async function runToolBatch(params: {
   batchId: string;
   usedToolNames: Set<string>;
   onCompletedResult?: (result: ToolResult) => void;
-}): Promise<{ toolResults: ToolResult[]; interruptResolution: ToolInterruptResolution | null }> {
+}
+
+type ToolBatchResult = { toolResults: ToolResult[]; interruptResolution: ToolInterruptResolution | null };
+
+async function runSequentialToolBatch(params: ToolBatchParams & {
+  orderOffset?: number;
+  questionCount?: number;
+  executionMode?: 'parallel' | 'sequential';
+}): Promise<ToolBatchResult> {
   const { calls, messages, options, allowedTools, schemas, accumulator, batchId, usedToolNames } = params;
   const toolResults: ToolResult[] = [];
   let interruptResolution: ToolInterruptResolution | null = null;
-  const questionCount = calls.filter(call => call.function.name === 'question').length;
+  const questionCount = params.questionCount ?? calls.filter(call => call.function.name === 'question').length;
   for (const [order, call] of calls.entries()) {
     throwIfToolAborted(options.signal);
     const name = call.function.name;
     usedToolNames.add(name);
     let detail: string | undefined;
-    const metadata = { execution_mode: 'sequential' as const, batch_id: batchId, order };
+    const metadata = { execution_mode: params.executionMode ?? 'sequential', batch_id: batchId, order: (params.orderOffset ?? 0) + order };
     accumulator.beginToolTrace(call.id, name, detail, metadata);
     let resolution: ToolCallResolution;
     // Disabled tools historically publish hidden output, but no onToolResult.
@@ -131,6 +147,94 @@ export async function runToolBatch(params: {
     accumulator.completeToolTrace(call.id);
     if (notifyResult) options.onToolResult?.(name, resolution.result);
     if (interruptResolution) break;
+  }
+  return { toolResults, interruptResolution };
+}
+
+async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: number; questionCount: number }): Promise<ToolBatchResult> {
+  const { calls, accumulator, options } = params;
+  const perCall = calls.map((call, index) => {
+    const events: Array<() => void> = [];
+    const bufferedAccumulator: ToolBatchAccumulator = {
+      beginToolTrace: (...args) => events.push(() => accumulator.beginToolTrace(...args)),
+      completeToolTrace: (...args) => events.push(() => accumulator.completeToolTrace(...args)),
+      addHiddenToolContext: (...args) => events.push(() => accumulator.addHiddenToolContext(...args)),
+      addHiddenContextBlock: (...args) => events.push(() => accumulator.addHiddenContextBlock(...args)),
+      appendSystemChunk: (...args) => events.push(() => accumulator.appendSystemChunk(...args)),
+    };
+    // Show all in-flight reads immediately; their completion events are
+    // published in call order to keep provider history deterministic.
+    accumulator.beginToolTrace(call.id, call.function.name, undefined, {
+      execution_mode: 'parallel', batch_id: params.batchId, order: params.orderOffset + index,
+    });
+    const run = runSequentialToolBatch({
+      ...params,
+      calls: [call],
+      options: { ...options, onToolResult: (name, result) => events.push(() => options.onToolResult?.(name, result)) },
+      accumulator: bufferedAccumulator,
+      orderOffset: params.orderOffset + index,
+      executionMode: 'parallel',
+      onCompletedResult: (result) => events.push(() => params.onCompletedResult?.(result)),
+    });
+    return { call, events, run };
+  });
+  const toolResults: ToolResult[] = [];
+  let interruptResolution: ToolInterruptResolution | null = null;
+  let flushed = 0;
+  try {
+    const allSettled = Promise.allSettled(perCall.map((item) => item.run));
+    let removeAbortListener: () => void = () => undefined;
+    const settled = options.signal
+      ? await Promise.race([
+          allSettled,
+          new Promise<never>((_resolve, reject) => {
+            const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
+            options.signal!.addEventListener('abort', onAbort, { once: true });
+            removeAbortListener = () => options.signal!.removeEventListener('abort', onAbort);
+            if (options.signal!.aborted) onAbort();
+          }),
+        ]).finally(() => removeAbortListener())
+      : await allSettled;
+    throwIfToolAborted(options.signal);
+    for (const [index, outcome] of settled.entries()) {
+      if (outcome.status === 'rejected') throw outcome.reason;
+      for (const event of perCall[index].events) event();
+      toolResults.push(...outcome.value.toolResults);
+      flushed += 1;
+      if (outcome.value.interruptResolution) {
+        interruptResolution = outcome.value.interruptResolution;
+        break;
+      }
+      throwIfToolAborted(options.signal);
+    }
+  } finally {
+    // A cancelled or interrupted batch must not leave unread sibling traces
+    // looking live after the child operations have settled.
+    for (const item of perCall.slice(flushed)) accumulator.completeToolTrace(item.call.id);
+  }
+  return { toolResults, interruptResolution };
+}
+
+export async function runToolBatch(params: ToolBatchParams): Promise<ToolBatchResult> {
+  const questionCount = params.calls.filter((call) => call.function.name === 'question').length;
+  const toolResults: ToolResult[] = [];
+  let interruptResolution: ToolInterruptResolution | null = null;
+  for (let index = 0; index < params.calls.length;) {
+    throwIfToolAborted(params.options.signal);
+    let readCount = 0;
+    while (readCount < MAX_PARALLEL_READS &&
+      PARALLEL_READ_TOOL_IDS.has(params.calls[index + readCount]?.function.name ?? '')) readCount += 1;
+    const count = readCount > 1 ? readCount : 1;
+    const batch = { ...params, calls: params.calls.slice(index, index + count), orderOffset: index, questionCount };
+    const result = count > 1
+      ? await runParallelReadGroup(batch)
+      : await runSequentialToolBatch(batch);
+    toolResults.push(...result.toolResults);
+    if (result.interruptResolution) {
+      interruptResolution = result.interruptResolution;
+      break;
+    }
+    index += count;
   }
   return { toolResults, interruptResolution };
 }

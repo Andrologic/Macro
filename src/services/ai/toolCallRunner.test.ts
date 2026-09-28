@@ -80,4 +80,124 @@ describe('shared tool batch', () => {
     expect(validateToolInvocation({ ...input, args: [] })?.errorKind).toBe('validation');
     expect(validateToolInvocation({ ...input, args: { vendor: { extension: true } } })).toBeUndefined();
   });
+
+  it('runs independent built-in reads concurrently but publishes results in call order', async () => {
+    let releaseFirst!: (value: string) => void;
+    const first = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    const started: string[] = [];
+    const published: string[] = [];
+    const providerOrder: string[] = [];
+    const handler = mock((name: string, _args: Record<string, unknown>, id?: string) => {
+      started.push(id ?? '');
+      return name === 'read' && id === 'one' ? first : id ?? '';
+    });
+    const acc = accumulator();
+    const pending = runToolBatch({
+      calls: [call('read', 'one'), call('grep', 'two')], messages: [],
+      options: { ...options(handler), onToolResult: (_name, result) => published.push(result) },
+      accumulator: acc, allowedTools: new Set(['read', 'grep']), schemas: new Map(),
+      batchId: 'fixture', usedToolNames: new Set(),
+      onCompletedResult: (result) => providerOrder.push(result.tool_call_id),
+    });
+    await Promise.resolve();
+    expect(started).toEqual(['one', 'two']);
+    expect(published).toEqual([]);
+    releaseFirst('one');
+    const result = await pending;
+    expect(result.toolResults.map((item) => item.tool_call_id)).toEqual(['one', 'two']);
+    expect(published).toEqual(['one', 'two']);
+    expect(providerOrder).toEqual(['one', 'two']);
+    expect(acc.beginToolTrace).toHaveBeenCalledWith('one', 'read', undefined, {
+      execution_mode: 'parallel', batch_id: 'fixture', order: 0,
+    });
+  });
+
+  it('treats a mutation as a barrier between parallel read groups', async () => {
+    let releaseFirst!: (value: string) => void;
+    const first = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    const started: string[] = [];
+    const handler = mock((_name: string, _args: Record<string, unknown>, id?: string) => {
+      started.push(id ?? '');
+      return id === 'one' ? first : id ?? '';
+    });
+    const pending = run([
+      call('read', 'one'), call('grep', 'two'), call('write', 'three'), call('list', 'four'),
+    ], options(handler));
+    await Promise.resolve();
+    expect(started).toEqual(['one', 'two']);
+    releaseFirst('one');
+    const result = await pending;
+    expect(started).toEqual(['one', 'two', 'three', 'four']);
+    expect(result.toolResults.map((item) => item.tool_call_id)).toEqual(['one', 'two', 'three', 'four']);
+  });
+
+  it('keeps unknown MCP tools sequential even when their names suggest reads', async () => {
+    let releaseFirst!: (value: string) => void;
+    const first = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    const started: string[] = [];
+    const handler = mock((_name: string, _args: Record<string, unknown>, id?: string) => {
+      started.push(id ?? '');
+      return id === 'one' ? first : id ?? '';
+    });
+    const pending = run([call('mcp__fixture__read', 'one'), call('mcp__fixture__read', 'two')], options(handler));
+    await Promise.resolve();
+    expect(started).toEqual(['one']);
+    releaseFirst('one');
+    await pending;
+    expect(started).toEqual(['one', 'two']);
+  });
+
+  it('does not publish concurrent sibling results after cancellation', async () => {
+    const controller = new AbortController();
+    const acc = accumulator();
+    const published = mock(() => undefined);
+    const handler = mock(async (_name: string, _args: Record<string, unknown>, id?: string) => {
+      if (id === 'one') controller.abort();
+      await Promise.resolve();
+      return id ?? '';
+    });
+    await expect(run([call('read', 'one'), call('grep', 'two')], {
+      ...options(handler), signal: controller.signal, onToolResult: published,
+    }, acc)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(published).not.toHaveBeenCalled();
+    expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
+  });
+
+  it('caps concurrent reads at three and responds to abort while a handler is pending', async () => {
+    const releases: Array<(value: string) => void> = [];
+    const started: string[] = [];
+    const handler = mock((_name: string, _args: Record<string, unknown>, id?: string) => {
+      started.push(id ?? '');
+      return new Promise<string>((resolve) => releases.push(resolve));
+    });
+    const controller = new AbortController();
+    const acc = accumulator();
+    const pending = run([
+      call('read', 'one'), call('grep', 'two'), call('glob', 'three'), call('list', 'four'),
+    ], { ...options(handler), signal: controller.signal }, acc);
+    await Promise.resolve();
+    expect(started).toEqual(['one', 'two', 'three']);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(started).not.toContain('four');
+    for (const [index, release] of releases.entries()) release(String(index));
+    await Promise.resolve();
+    expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
+  });
+
+  it('stops publishing concurrent siblings when a result callback cancels the batch', async () => {
+    const controller = new AbortController();
+    const published: string[] = [];
+    const handler = mock((_name: string, _args: Record<string, unknown>, id?: string) => id ?? '');
+    await expect(runToolBatch({
+      calls: [call('read', 'one'), call('grep', 'two')], messages: [],
+      options: { ...options(handler), signal: controller.signal, onToolResult: (_name, result) => {
+        published.push(result);
+        controller.abort();
+      } },
+      accumulator: accumulator(), allowedTools: new Set(['read', 'grep']),
+      schemas: new Map(), batchId: 'fixture', usedToolNames: new Set(),
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(published).toEqual(['one']);
+  });
 });

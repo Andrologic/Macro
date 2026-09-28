@@ -1246,6 +1246,8 @@ Avant exécution d'un outil, Macro peut valider :
 - si le chemin cible est autorisé
 - si les restrictions metadata doivent s'appliquer
 
+Dans la boucle d'outils frontend commune, seuls les outils intégrés explicitement classés comme lectures du workspace ou de Git peuvent former un groupe concurrent. `runToolBatch` borne chaque groupe à trois appels, attend leur règlement et publie les résultats ainsi que le contexte fournisseur dans l'ordre initial. Les autres appels gardent leur ordre séquentiel et séparent les groupes ; les outils MCP restent hors de cette liste tant que leurs effets ne sont pas déclarés et vérifiés. Une annulation termine l'attente de la boucle et empêche la publication tardive d'un résultat, sans supposer qu'un transport puisse arrêter instantanément une opération de lecture déjà partie.
+
 ### 13.3 Exécution de workspace tools
 
 La couche d'exécution d'outils encapsule :
