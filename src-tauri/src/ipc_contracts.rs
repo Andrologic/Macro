@@ -18,6 +18,10 @@ pub mod db {
         UpsertConversationCompactionStateInput, UpsertConversationToolboxStateInput,
         UpsertProjectContextStateInput, UpsertSessionContextStateInput,
     };
+    pub use crate::db::tool_invocations::{
+        CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult,
+        ToolEffectClass, ToolInvocation, ToolInvocationIdentity, ToolInvocationStatus,
+    };
 }
 
 pub mod workspace {

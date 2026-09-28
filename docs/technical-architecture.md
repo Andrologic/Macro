@@ -1491,6 +1491,25 @@ La surface complète reste supportée par le desktop local via Tauri IPC.
 
 ## 15. Streaming IA et orchestration conversationnelle
 
+Le journal SQLite `tool_invocations` prépare le raccordement du streaming. La
+commande `db_record_tool_invocation` crée, avant dispatch, une intention liée à
+la conversation et identifiée par tour, message et appel. Le backend calcule une
+empreinte SHA-256 du JSON canonique des arguments sans conserver leur contenu.
+Un second enregistrement de même identité est idempotent si le nom, la classe
+d'effet, l'empreinte et l'identifiant distant concordent ; sinon il échoue.
+La réponse porte `is_new=true` seulement lors de la première insertion ; le
+futur appelant ne doit dispatcher que dans ce cas. Une nouvelle lecture de
+`pending`, `unknown` ou `completed` renvoie `is_new=false` et n'autorise pas un
+second effet. L'identifiant de reçu peut être partagé entre deux invocations
+distinctes ; sa cohérence est vérifiée à l'intérieur de chaque identité.
+`db_complete_tool_invocation` exige un identifiant de reçu que le futur appelant
+ne doit fournir qu'après confirmation du résultat par le transport. Le journal
+ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encore
+`pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
+clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
+automatiquement. La suppression de conversation efface les entrées par cascade.
+Ces commandes ne sont pas encore appelées par le streaming ni exposées dans l'UI.
+
 ### 15.1 Chat streaming
 
 `streamingChat.ts` conserve la façade publique, les estimateurs synchrones et

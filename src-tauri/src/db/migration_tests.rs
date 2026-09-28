@@ -264,6 +264,52 @@ async fn failed_stamp_rolls_back_schema_data_and_versions_then_can_retry() {
 }
 
 #[tokio::test]
+async fn tool_journal_migration_rolls_back_if_version_stamp_fails() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("tool-journal.db");
+    create_pool(&path).await.unwrap().close().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(true),
+    )
+    .await
+    .unwrap();
+    sqlx::query("DROP TABLE tool_invocations")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 7")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TRIGGER reject_v7 BEFORE INSERT ON schema_migrations WHEN new.version = 7 BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;")
+        .execute(&mut connection).await.unwrap();
+    assert!(create_pool(&path).await.is_err());
+    assert!(!table_exists(&mut connection, "tool_invocations".into())
+        .await
+        .unwrap());
+    assert!(!list_applied_migrations(&mut connection)
+        .await
+        .unwrap()
+        .contains(&7));
+    sqlx::query("DROP TRIGGER reject_v7")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    let pool = create_pool(&path).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(table_exists(&mut connection, "tool_invocations".into())
+        .await
+        .unwrap());
+    assert!(list_applied_migrations(&mut connection)
+        .await
+        .unwrap()
+        .contains(&7));
+}
+
+#[tokio::test]
 async fn interrupted_transaction_leaves_no_partial_migration() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("interrupted.db");
