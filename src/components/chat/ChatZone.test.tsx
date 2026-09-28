@@ -77,6 +77,8 @@ export type MockChatState = {
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
+  activeContextKey: string | null;
+  selectedConversationContextKey: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
   conversationCompactionStatusById: Record<
     string,
@@ -680,6 +682,15 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   ...overrides,
 });
 
+const installUnresolvedJournalMock = () => installTauriRuntimeMock(async (command) =>
+  command === 'db_list_unresolved_tool_invocations'
+    ? [{
+        conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
+        tool_name: 'old_tool', status: 'unknown',
+      }]
+    : undefined
+);
+
 export const buildCompactionEvent = (
   overrides: Partial<
     MockChatState['sessionCompactionEventsByConversationId'][string][number]
@@ -809,6 +820,8 @@ const resetState = () => {
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
     hydrationStatus: 'ready',
     restoreStatus: 'ready',
+    activeContextKey: 'Chat::scope-a',
+    selectedConversationContextKey: 'Chat::scope-a',
     isLoading: false,
     isStreaming: false,
     sendState: 'idle',
@@ -1125,7 +1138,9 @@ describe('ChatZone', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
-    installTauriRuntimeMock();
+    installTauriRuntimeMock(async (command) =>
+      command === 'db_list_unresolved_tool_invocations' ? [] : undefined
+    );
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback: FrameRequestCallback) =>
         setTimeout(() => callback(performance.now()), 0) as unknown as number;
@@ -1205,6 +1220,42 @@ describe('ChatZone', () => {
     expect(first?.style.transform).toBe('translateY(2700px)');
     expect(last?.style.transform).toBe('translateY(7312px)');
     expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
+  it('hides the previous conversation journal while a new context resolves', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'resolving' };
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the previous journal hidden when context resolution fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error', activeContextKey: 'Chat::scope-b' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the selected conversation journal visible if provider restoration fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('old_tool');
+  });
+
+  it('hides a selected conversation outside the active mode', async () => {
+    installUnresolvedJournalMock();
+    chatState = {
+      ...chatState,
+      conversations: [{ ...buildConversation(), scope_mode: 'Implement' }],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
   });
 
   it('renders the first user message when the selected conversation has messages', async () => {

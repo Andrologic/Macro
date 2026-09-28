@@ -854,6 +854,7 @@ interface ChatStore {
   hydrationStatus: ChatHydrationStatus;
   restoreStatus: ChatRestoreStatus;
   activeContextKey: ChatContextKey | null;
+  selectedConversationContextKey: ChatContextKey | null;
   selectionRequestId: number;
   pendingArchitectPlanSwitchRequestId: number | null;
   conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>;
@@ -9730,6 +9731,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     set((current) => ({
       selectedConversationId: conversationId,
+      selectedConversationContextKey: current.activeContextKey,
       selectedConversationIdsByMode: {
         ...current.selectedConversationIdsByMode,
         [mode]: conversationId,
@@ -11122,6 +11124,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       hydrationStatus: "ready",
       restoreStatus: "idle",
       activeContextKey: null,
+      selectedConversationContextKey: null,
       selectionRequestId: 0,
       pendingArchitectPlanSwitchRequestId: null,
       conversationRuntimeById: {},
@@ -11597,6 +11600,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     hydrationStatus: "idle",
     restoreStatus: "idle",
     activeContextKey: null,
+    selectedConversationContextKey: null,
     selectionRequestId: 0,
     pendingArchitectPlanSwitchRequestId: null,
     conversationRuntimeById: {},
@@ -12492,6 +12496,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             return get().selectedConversationId;
           }
+
+          set({ selectedConversationContextKey: contextKey });
 
           persistSelectionForConversationSwitch(
             mode,
@@ -14420,6 +14426,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         hydrationStatus: "hydrating",
         restoreStatus: "idle",
         activeContextKey: null,
+        selectedConversationContextKey: null,
         selectionRequestId: 0,
         pendingArchitectPlanSwitchRequestId: null,
         messageLoadStatusByConversationId: {},
@@ -14466,6 +14473,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           hydrationStatus: "error",
           restoreStatus: "error",
           activeContextKey: null,
+          selectedConversationContextKey: null,
           selectionRequestId: 0,
           pendingArchitectPlanSwitchRequestId: null,
           conversationRuntimeById: {},

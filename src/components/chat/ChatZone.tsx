@@ -113,6 +113,7 @@ import { parseConversationGoalCommand } from '../../services/conversationGoalCom
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
+import { UnresolvedToolInvocationsNotice } from './UnresolvedToolInvocationsNotice';
 import {
   CONVERSATION_ATTACHMENT_ACCEPT,
   CONVERSATION_ATTACHMENT_EXTENSIONS,
@@ -1190,6 +1191,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages,
     selectedConversationId,
     activeContextKey,
+    selectedConversationContextKey,
     selectedConversationRuntime,
     standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
@@ -1249,6 +1251,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
     activeContextKey: state.activeContextKey,
+    selectedConversationContextKey: state.selectedConversationContextKey,
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
@@ -3891,6 +3894,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {headerActions}
           </div>
         </header>
+
+        <UnresolvedToolInvocationsNotice
+          conversationId={
+            hydrationStatus === 'ready' &&
+            (restoreStatus === 'ready' ||
+              (restoreStatus === 'error' &&
+                activeContextKey !== null &&
+                selectedConversationContextKey === activeContextKey)) &&
+            currentConversation?.scope_mode === mode
+              ? selectedConversationId : null
+          }
+          phase={selectedConversationRuntime.phase}
+          activeTurnId={selectedConversationRuntime.turnId ?? null}
+        />
 
         {activeConversationGoal && (
           <Suspense fallback={null}>
