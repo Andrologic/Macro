@@ -227,6 +227,7 @@ export class McpFormHost {
     }
     this.update({ submittingId: requestId, issue: null });
     const { request } = item;
+    const generation = this.generation;
     try {
       await this.port.respond(leaseId, {
         requestId: request.requestId,
@@ -234,9 +235,11 @@ export class McpFormHost {
         operationId: request.operationId,
         answers,
       });
+      if (this.leaseId !== leaseId || this.generation !== generation) return false;
       this.remove(requestId);
       return true;
     } catch (error) {
+      if (this.leaseId !== leaseId || this.generation !== generation) return false;
       const code = toServiceError(error).code;
       if (code === 'MCP_INTERACTION_STALE' || code === 'MCP_RUNTIME_OPERATION_CANCELLED') {
         this.remove(requestId);

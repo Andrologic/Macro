@@ -188,6 +188,29 @@ describe('global MCP form host', () => {
     await tick();
   });
 
+  it('ignores a late answer failure from an earlier lease after remount', async () => {
+    let rejectOld: ((reason: unknown) => void) | undefined;
+    const oldResponse = new Promise<void>((_resolve, reject) => { rejectOld = reject; });
+    const { host, send, respond } = setup();
+    respond.mockImplementationOnce(async () => oldResponse);
+    const releaseFirst = host.mount();
+    await tick();
+    send(request('alpha', 'old'));
+    const answer = host.answer('old', [{ id: 'p', action: 'decline', content: null }]);
+    releaseFirst();
+    await tick();
+    const releaseSecond = host.mount();
+    await tick();
+    send(request('beta', 'current'));
+    rejectOld?.({ code: 'MCP_INTERACTION_PORT_STALE', message: 'old port' });
+    expect(await answer).toBe(false);
+    expect(host.snapshot().status).toBe('ready');
+    expect(host.snapshot().queue.map((item) => item.request.requestId)).toEqual(['current']);
+    expect(host.snapshot().issue).toBeNull();
+    releaseSecond();
+    await tick();
+  });
+
   it('removes a stale operation without sending or retaining another answer', async () => {
     const { host, send, respond } = setup();
     respond.mockImplementationOnce(async () => { throw { code: 'MCP_INTERACTION_STALE', message: 'stale' }; });

@@ -107,20 +107,23 @@ describe('global MCP form dialog', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('does not solicit a one-time PIN even when the schema uses a plain string', async () => {
+  it('does not solicit PIN or OTP fields named with underscores or camel case', async () => {
     const { host, send } = setup();
     await act(async () => { root.render(<McpFormHostView host={host} />); await Promise.resolve(); });
-    const pinRequest = request('pin-request', 'alpha');
-    pinRequest.prompts = [{ id: 'prompt', request: {
-      method: 'elicitation/create', params: { mode: 'form', message: 'Enter the one-time code', requestedSchema: {
-        type: 'object', properties: { pin: { type: 'string', title: 'PIN' } }, required: ['pin'],
-      } },
-    } }];
-    await act(async () => { send(pinRequest); });
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Macro will not collect it here');
-    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain('Enter the one-time code');
-    expect(document.querySelector('[role="dialog"] input')).toBeNull();
-    expect(Array.from(document.querySelectorAll('button')).some((button) => button.textContent?.includes('Review values'))).toBe(false);
+    for (const [index, name] of ['pin_code', 'pinCode', 'PINCode', 'PINCODE', 'otp_code', 'otpCode', 'otpValue'].entries()) {
+      const pinRequest = request(`secret-${index}`, 'alpha');
+      pinRequest.prompts = [{ id: 'prompt', request: {
+        method: 'elicitation/create', params: { mode: 'form', message: 'Enter the code', requestedSchema: {
+          type: 'object', properties: { [name]: { type: 'string', title: 'Entry' } }, required: [name],
+        } },
+      } }];
+      await act(async () => { send(pinRequest); });
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Macro will not collect it here');
+      expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain('Enter the code');
+      expect(document.querySelector('[role="dialog"] input')).toBeNull();
+      expect(Array.from(document.querySelectorAll('button')).some((button) => button.textContent?.includes('Review values'))).toBe(false);
+      await act(async () => { click('Decline'); await Promise.resolve(); });
+    }
   });
 
   it('does not render credential fields or offer accept for a secret-like form', async () => {

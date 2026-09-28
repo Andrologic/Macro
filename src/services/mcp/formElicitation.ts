@@ -125,7 +125,7 @@ function parseField(name: string, value: unknown, required: boolean): FormField 
 // response is logged or persisted; Rust still validates every accepted value.
 // Free-text fields remain available for ordinary names and descriptions. A
 // declared credential or verification challenge is never rendered or accepted.
-const SECRET_HINT = /(?:password|passphrase|passcode|secret|credential|api[\s_-]*key|private[\s_-]*key|access[\s_-]*token|auth[\s_-]*token|bearer[\s_-]*token|recovery[\s_-]*code|verification[\s_-]*code|security[\s_-]*code|one[\s_-]*time[\s_-]*(?:code|passcode|password)|\b(?:pin|otp|totp|mfa|2fa|cvv|cvc)\b|mot de passe|code [àa] usage unique|code de v[ée]rification|code secret|clé[\s_-]*api|clé[\s_-]*privée|jeton d'accès|passwort|einmalcode|bestätigungscode|contraseña|código de un solo uso|código de verificación|パスワード|ワンタイム|認証コード|비밀번호|일회용|인증 코드)/i;
+const SECRET_HINT = /(?:password|passphrase|passcode|secret|credential|api[\s_-]*key|private[\s_-]*key|access[\s_-]*token|auth[\s_-]*token|bearer[\s_-]*token|recovery[\s_-]*code|verification[\s_-]*code|security[\s_-]*code|one[\s_-]*time[\s_-]*(?:code|passcode|password)|\b(?:pin|otp|totp)(?:[\s_-]*(?:code|value|number))?\b|\b(?:mfa|2fa|cvv|cvc)\b|mot de passe|code [àa] usage unique|code de v[ée]rification|code secret|clé[\s_-]*api|clé[\s_-]*privée|jeton d'accès|passwort|einmalcode|bestätigungscode|contraseña|código de un solo uso|código de verificación|パスワード|ワンタイム|認証コード|비밀번호|일회용|인증 코드)/i;
 
 export function parseFormPrompt(prompt: McpElicitationPrompt): FormPrompt | null {
   const request = prompt.request;
@@ -161,7 +161,7 @@ export function parseFormPrompt(prompt: McpElicitationPrompt): FormPrompt | null
     fields,
     blockedForSecrets: [params.message, String(schema.title ?? ''), String(schema.description ?? ''),
       ...fields.flatMap((field) => [field.name, field.label, field.description ?? ''])]
-      .some((text) => SECRET_HINT.test(text)),
+      .some((text) => SECRET_HINT.test(text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]/g, ' '))),
   };
 }
 
@@ -178,6 +178,24 @@ function validAsciiEmail(value: string): boolean {
     /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label));
 }
 
+function validCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function validDateTime(value: string): boolean {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match || !validCalendarDate(match[1] ?? '')) return false;
+  const hour = Number(match[2]);
+  const minute = Number(match[3]);
+  const second = Number(match[4]);
+  const offset = match[5] ?? 'Z';
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  if (offset !== 'Z' && (Number(offset.slice(1, 3)) > 23 || Number(offset.slice(4, 6)) > 59)) return false;
+  return !Number.isNaN(Date.parse(value));
+}
+
 function checkValue(field: FormField, value: unknown): FormError | null {
   if (field.kind === 'string') {
     if (typeof value !== 'string') return 'invalid';
@@ -189,10 +207,8 @@ function checkValue(field: FormField, value: unknown): FormError | null {
     if (field.format === 'uri') {
       try { new URL(value); } catch { return 'invalid'; }
     }
-    if (field.format === 'date' && (!/^\d{4}-\d{2}-\d{2}$/.test(value) ||
-        Number.isNaN(Date.parse(`${value}T00:00:00Z`)) || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value)) return 'invalid';
-    if (field.format === 'date-time' && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
-        Number.isNaN(Date.parse(value)))) return 'invalid';
+    if (field.format === 'date' && !validCalendarDate(value)) return 'invalid';
+    if (field.format === 'date-time' && !validDateTime(value)) return 'invalid';
   } else if (field.kind === 'number' || field.kind === 'integer') {
     if (typeof value !== 'number' || !Number.isFinite(value) ||
         (field.kind === 'integer' && !Number.isSafeInteger(value))) return 'invalid';

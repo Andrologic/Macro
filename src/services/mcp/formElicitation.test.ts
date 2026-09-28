@@ -48,6 +48,11 @@ describe('MCP form presentation contract', () => {
     });
     expect(validateFormDraft(form, { name: 'Ada', role: 'reader', tags: ['a', 'b'],
       contact: 'user@-example.com' }).errors.contact).toBe('invalid');
+    const timed = parseFormPrompt(prompt({ type: 'object', properties: {
+      when: { type: 'string', format: 'date-time' },
+    }, required: ['when'] }))!;
+    expect(validateFormDraft(timed, { when: '2026-02-30T12:00:00Z' }).errors.when).toBe('invalid');
+    expect(validateFormDraft(timed, { when: '2026-02-28T12:00:00Z' }).content).toEqual({ when: '2026-02-28T12:00:00Z' });
   });
 
   it('fails closed for unsupported schema and flags credential requests without rendering fields', () => {
@@ -56,6 +61,9 @@ describe('MCP form presentation contract', () => {
     expect(parseFormPrompt(prompt({ type: 'object', properties: { api_key: { type: 'string' } } }))?.blockedForSecrets).toBe(true);
     expect(parseFormPrompt(prompt({ type: 'object', properties: { pin: { type: 'string', title: 'PIN' } } }, 'Enter the one-time code'))?.blockedForSecrets).toBe(true);
     expect(parseFormPrompt(prompt({ type: 'object', properties: { otp: { type: 'integer' } } }, 'Verification code'))?.blockedForSecrets).toBe(true);
+    for (const name of ['pin_code', 'pinCode', 'PINCode', 'PINCODE', 'otp_code', 'otpCode', 'otpValue']) {
+      expect(parseFormPrompt(prompt({ type: 'object', properties: { [name]: { type: 'string', title: 'Entry' } } }, 'Enter the code'))?.blockedForSecrets).toBe(true);
+    }
     expect(parseFormPrompt(prompt({ type: 'object', properties: {} }, 'Enter your password'))?.blockedForSecrets).toBe(true);
   });
 });
