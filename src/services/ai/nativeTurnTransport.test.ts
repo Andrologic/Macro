@@ -292,3 +292,20 @@ test('a failing trace observer cannot strand native tool execution', async () =>
     expect.objectContaining({ type: 'function_call_output', call_id: 'read-call' }),
   ]));
 });
+
+test('native cancellation during live-result callback skips later result notification', async () => {
+  doneAfter = 1;
+  const controller = new AbortController();
+  const notified = mock(() => undefined);
+  const run = turn({
+    signal: controller.signal,
+    onToolCall: async () => 'first',
+    onLiveToolResult: () => controller.abort(),
+    onToolResult: notified,
+  });
+  await started;
+  request('read-call', 'read', { path: 'file' });
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  expect(submissions.map(item => item.toolCallId)).toEqual(['read-call']);
+  expect(notified).not.toHaveBeenCalled();
+});

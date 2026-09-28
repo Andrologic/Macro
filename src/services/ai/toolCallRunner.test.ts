@@ -229,4 +229,24 @@ describe('shared tool batch', () => {
     expect(acc.addHiddenToolContext).toHaveBeenCalledWith('one', 'read', undefined, 'first');
     expect(acc.addHiddenToolContext).not.toHaveBeenCalledWith('two', 'grep', expect.anything(), 'late');
   });
+
+  it('stops replaying a read after its completion callback cancels the turn', async () => {
+    const controller = new AbortController();
+    const acc = accumulator();
+    const notified = mock(() => undefined);
+    const committed: string[] = [];
+    await expect(runToolBatch({
+      calls: [call('read', 'one'), call('grep', 'two')], messages: [],
+      options: { ...options((_name, _args, id) => id ?? ''), signal: controller.signal, onToolResult: notified },
+      accumulator: acc, allowedTools: new Set(['read', 'grep']), schemas: new Map(),
+      batchId: 'fixture', usedToolNames: new Set(),
+      onCompletedResult: (result) => {
+        committed.push(result.tool_call_id);
+        controller.abort();
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(committed).toEqual(['one']);
+    expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
+    expect(notified).not.toHaveBeenCalled();
+  });
 });

@@ -197,7 +197,10 @@ async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: num
         : await pending;
       throwIfToolAborted(options.signal);
       if (outcome.status === 'rejected') throw outcome.reason;
-      for (const event of perCall[index].events) event();
+      for (const event of perCall[index].events) {
+        throwIfToolAborted(options.signal);
+        event();
+      }
       toolResults.push(...outcome.value.toolResults);
       flushed += 1;
       if (outcome.value.interruptResolution) {

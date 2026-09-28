@@ -160,6 +160,7 @@ export const streamNativeTurnViaTauri = async (params: {
             toolName, args, toolCallId, result, hiddenContext,
             providerInputItems: [...nativeToolItems],
           });
+          if (stopped()) return;
           params.onToolResult?.(toolName, result);
         } catch (error) {
           if (stopped()) return;
