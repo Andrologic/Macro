@@ -130,6 +130,25 @@ describe("tauriIpc tool invocation journal notifications", () => {
       window.removeEventListener("macro:tool-invocations-changed", onChange);
     }
   });
+
+  it("does not announce a failed journal completion", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const changed: string[] = [];
+    const onChange = (event: Event) => {
+      changed.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    };
+    window.addEventListener("macro:tool-invocations-changed", onChange);
+    try {
+      invokeMock.mockImplementationOnce(async () => { throw new Error("database unavailable"); });
+      await expect(tauriIpc.completeToolInvocation({
+        conversationId: "conversation-a", turnId: "turn-a", messageId: "message-a",
+        callId: "call-a", receiptId: "receipt-a",
+      })).rejects.toThrow("database unavailable");
+      expect(changed).toEqual([]);
+    } finally {
+      window.removeEventListener("macro:tool-invocations-changed", onChange);
+    }
+  });
 });
 
 describe("tauriIpc executeWorkspaceTool", () => {

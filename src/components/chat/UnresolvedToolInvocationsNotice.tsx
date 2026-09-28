@@ -21,6 +21,14 @@ const isVisible = (
 ): boolean => item.status === 'unknown' ||
   (item.status === 'pending' && (!isActiveTurn(phase) || item.turn_id !== activeTurnId));
 
+const invocationReference = (item: ToolInvocation): string => {
+  let hash = 0x811c9dc5;
+  for (const character of `${item.turn_id}\0${item.message_id}\0${item.call_id}`) {
+    hash = Math.imul(hash ^ (character.codePointAt(0) ?? 0), 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
 const isUnresolvedInvocation = (value: unknown, conversationId: string): value is ToolInvocation => {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<ToolInvocation>;
@@ -81,8 +89,7 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
   const isCurrentResult = result?.conversationId === conversationId &&
     result.phase === phase && result.activeTurnId === activeTurnId && result.revision === revision;
   const items = result?.conversationId === conversationId && Array.isArray(result.items)
-    ? result.items.filter((item) => isVisible(item, phase, activeTurnId) &&
-        (isCurrentResult || isVisible(item, result.phase, result.activeTurnId)))
+    ? result.items.filter((item) => isVisible(item, phase, activeTurnId))
     : [];
   if (isCurrentResult && result?.items === null) {
     return (
@@ -103,9 +110,9 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
       <div className="mx-auto max-w-4xl">
         <p className="font-medium">{t('chat.toolJournalWarning', 'Tool effects need inspection')}</p>
         <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
-          {items.map((item, index) => (
+          {items.map((item) => (
             <li key={`${item.turn_id}:${item.message_id}:${item.call_id}`}>
-              <span className="text-muted-foreground">#{index + 1}</span>{' '}
+              <span className="font-mono text-muted-foreground">#{invocationReference(item)}</span>{' '}
               <span className="font-medium">{item.tool_name}</span>
               {' · '}
               {item.status === 'unknown'

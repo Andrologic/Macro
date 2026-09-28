@@ -65,9 +65,9 @@ describe('UnresolvedToolInvocationsNotice', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await render('first', 'idle');
     expect(list).toHaveBeenCalledTimes(2);
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    await act(async () => afterTurn.resolve([invocation('pending')]));
     expect(container.textContent).toContain('pending after turn ended');
+    await act(async () => afterTurn.resolve([]));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('keeps a pending reservation hidden while the turn is persisting', async () => {
@@ -105,15 +105,21 @@ describe('UnresolvedToolInvocationsNotice', () => {
   });
 
   it('distinguishes repeated calls to the same tool without showing arguments', async () => {
-    list.mockImplementation(async () => [
-      invocation('unknown', 'write', 'first-turn'),
-      invocation('unknown', 'write', 'second-turn'),
-    ]);
+    const remaining = invocation('unknown', 'write', 'second-turn');
+    list.mockImplementationOnce(async () => [invocation('unknown', 'write', 'first-turn'), remaining]);
+    list.mockImplementationOnce(async () => [remaining]);
     await render('first', 'idle');
     const calls = Array.from(container.querySelectorAll('li'), (item) => item.textContent);
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toContain('#1 write');
-    expect(calls[1]).toContain('#2 write');
+    const firstReference = calls[0]?.match(/#[0-9a-f]{8}/)?.[0];
+    const remainingReference = calls[1]?.match(/#[0-9a-f]{8}/)?.[0];
+    expect(firstReference).toBeTruthy();
+    expect(remainingReference).toBeTruthy();
+    expect(firstReference).not.toBe(remainingReference);
+    await act(async () => window.dispatchEvent(new CustomEvent(TOOL_INVOCATIONS_CHANGED_EVENT, {
+      detail: { conversationId: 'first' },
+    })));
+    expect(container.querySelector('li')?.textContent).toContain(`${remainingReference} write`);
     expect(container.textContent).not.toContain('secret-hash');
   });
 
