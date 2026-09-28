@@ -36,6 +36,9 @@ export type {
   CompleteToolInvocationInput,
 } from "../types/generated/ipc";
 
+export type { GoalAuditTransition, RecordGoalAuditTransitionInput } from "../types/generated/ipc";
+export { recordGoalAuditTransition, linkGoalAuditChildConversation } from "./ipc/goalAudit";
+
 export type {
   DbProviderConfig,
   DbAiModel,

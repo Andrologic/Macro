@@ -1652,7 +1652,7 @@ Le socle est séparé en quatre couches :
 
 La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
 
-Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+Le coordinateur `goal_auditor` peut être assemblé avec le transport fournisseur et le journal durable par ports injectés. Le profil lecture seule est appliqué aux outils du tour enfant. Le journal IPC enregistre chaque transition et sa projection dans `agent_runs` en une transaction SQLite, avec idempotence par `(runId, sequence)`. La conversation enfant est créée ou reprise par un port, puis liée au run avant le streaming. Le choix du déclencheur UI reste ouvert.
 
 ---
 
