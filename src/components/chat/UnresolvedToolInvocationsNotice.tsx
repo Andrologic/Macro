@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauriAvailable, listUnresolvedToolInvocations } from '../../services/tauriIpc';
+import type { ConversationExecutionPhase } from '../../types';
 import type { ToolInvocation } from '../../types/generated/ipc';
 
 interface Props {
   conversationId: string | null;
-  phase: string;
+  phase: ConversationExecutionPhase;
 }
 
-const isActiveTurn = (phase: string): boolean =>
-  phase === 'preparing' || phase === 'streaming' || phase === 'overflow_recovery';
+const isActiveTurn = (phase: ConversationExecutionPhase): boolean =>
+  phase === 'preparing' || phase === 'streaming' || phase === 'overflow_recovery' || phase === 'persisting';
 
 export function UnresolvedToolInvocationsNotice({ conversationId, phase }: Props) {
   const { t } = useTranslation();
-  const [result, setResult] = useState<{ conversationId: string; phase: string; items: ToolInvocation[] } | null>(null);
+  const [result, setResult] = useState<{ conversationId: string; phase: ConversationExecutionPhase; items: ToolInvocation[] } | null>(null);
 
   useEffect(() => {
     let current = true;

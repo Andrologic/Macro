@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createDeferred } from '../../test-utils/deferred';
 import { createTranslationMock, installReactI18nextMock } from '../../test-utils/reactI18nextMock';
+import type { ConversationExecutionPhase } from '../../types';
 import type { ToolInvocation } from '../../types/generated/ipc';
 
 const list = mock((_conversationId: string): Promise<ToolInvocation[]> => Promise.resolve([]));
@@ -40,7 +41,7 @@ afterEach(async () => {
   container.remove();
 });
 
-const render = async (conversationId: string | null, phase: string) => {
+const render = async (conversationId: string | null, phase: ConversationExecutionPhase) => {
   await act(async () => root.render(<Notice conversationId={conversationId} phase={phase} />));
 };
 
@@ -65,6 +66,15 @@ describe('UnresolvedToolInvocationsNotice', () => {
     expect(list).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await act(async () => afterTurn.resolve([invocation('pending')]));
+    expect(container.textContent).toContain('pending after turn ended');
+  });
+
+  it('keeps a pending reservation hidden while the turn is persisting', async () => {
+    list.mockImplementation(async () => [invocation('pending')]);
+    await render('first', 'persisting');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await render('first', 'idle');
+    expect(list).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('pending after turn ended');
   });
 
