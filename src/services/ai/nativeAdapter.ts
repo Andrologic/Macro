@@ -69,7 +69,9 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext, providerInputItems }) => {
               const detail = formatToolTraceDetail(toolName, args);
               accumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
+              if (options.signal?.aborted) return;
               accumulator.addHiddenContextBlock(hiddenContext);
+              if (options.signal?.aborted) return;
               if (providerInputItems) accumulator.setProviderContext({
                 providerInputItems: [...(previousContext.providerInputItems ?? []), ...providerInputItems],
                 providerTurnState: previousContext.providerTurnState,

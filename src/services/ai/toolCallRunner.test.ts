@@ -249,4 +249,55 @@ describe('shared tool batch', () => {
     expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
     expect(notified).not.toHaveBeenCalled();
   });
+
+  it('stops a sequential batch when its completion callback cancels the turn', async () => {
+    const controller = new AbortController();
+    const acc = accumulator();
+    const notified = mock(() => undefined);
+    const handler = mock((_name: string, _args: Record<string, unknown>, id?: string) => id ?? '');
+    const completed: string[] = [];
+    await expect(runToolBatch({
+      calls: [call('write', 'one'), call('write', 'two')], messages: [],
+      options: { ...options(handler), signal: controller.signal, onToolResult: notified },
+      accumulator: acc, allowedTools: new Set(['write']), schemas: new Map(),
+      batchId: 'fixture', usedToolNames: new Set(),
+      onCompletedResult: (result) => {
+        completed.push(result.tool_call_id);
+        controller.abort();
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(completed).toEqual(['one']);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
+    expect(notified).not.toHaveBeenCalled();
+  });
+
+  it('stops a sequential batch when its result observer cancels the turn', async () => {
+    const controller = new AbortController();
+    const handler = mock((_name: string, _args: Record<string, unknown>, id?: string) => id ?? '');
+    const notified: string[] = [];
+    await expect(run([call('write', 'one'), call('write', 'two')], {
+      ...options(handler), signal: controller.signal,
+      onToolResult: (_name, result) => { notified.push(result); controller.abort(); },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(notified).toEqual(['one']);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops concurrent read setup when its first trace observer cancels', async () => {
+    const controller = new AbortController();
+    const acc = accumulator();
+    const begin = acc.beginToolTrace;
+    acc.beginToolTrace = mock((...args: Parameters<ToolBatchAccumulator['beginToolTrace']>) => {
+      begin(...args);
+      controller.abort();
+    });
+    const handler = mock(() => 'never started');
+    await expect(run([call('read', 'one'), call('grep', 'two'), call('glob', 'three')], {
+      ...options(handler), signal: controller.signal,
+    }, acc)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(acc.beginToolTrace).toHaveBeenCalledTimes(1);
+    expect(acc.completeToolTrace).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
 });

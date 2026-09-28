@@ -93,6 +93,7 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
     let detail: string | undefined;
     const metadata = { execution_mode: params.executionMode ?? 'sequential', batch_id: batchId, order: (params.orderOffset ?? 0) + order };
     accumulator.beginToolTrace(call.id, name, detail, metadata);
+    throwIfToolAborted(options.signal);
     let resolution: ToolCallResolution;
     // Disabled tools historically publish hidden output, but no onToolResult.
     let notifyResult = true;
@@ -105,6 +106,7 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
         if (args && typeof args === 'object' && !Array.isArray(args)) {
           detail = formatToolTraceDetail(name, args as Record<string, unknown>);
           accumulator.beginToolTrace(call.id, name, detail, metadata);
+          throwIfToolAborted(options.signal);
         }
         if (invalid) {
           resolution = invalid;
@@ -135,10 +137,15 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
     toolResults.push(completed);
     // Journal before notifications or the next handler can cancel/interrupt the batch.
     params.onCompletedResult?.(completed);
+    throwIfToolAborted(options.signal);
     if (resolution.kind === 'interrupt') accumulator.addHiddenContextBlock(resolution.hiddenContext);
+    throwIfToolAborted(options.signal);
     accumulator.addHiddenToolContext(call.id, name, detail, resolution.result);
+    throwIfToolAborted(options.signal);
     accumulator.completeToolTrace(call.id);
+    throwIfToolAborted(options.signal);
     if (notifyResult) options.onToolResult?.(name, resolution.result);
+    throwIfToolAborted(options.signal);
     if (interruptResolution) break;
   }
   return { toolResults, interruptResolution };
@@ -146,41 +153,43 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
 
 async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: number; questionCount: number }): Promise<ToolBatchResult> {
   const { calls, accumulator, options } = params;
-  const perCall = calls.map((call, index) => {
-    const events: Array<() => void> = [];
-    const bufferedAccumulator: ToolBatchAccumulator = {
-      beginToolTrace: (...args) => events.push(() => accumulator.beginToolTrace(...args)),
-      completeToolTrace: (...args) => events.push(() => accumulator.completeToolTrace(...args)),
-      addHiddenToolContext: (...args) => events.push(() => accumulator.addHiddenToolContext(...args)),
-      addHiddenContextBlock: (...args) => events.push(() => accumulator.addHiddenContextBlock(...args)),
-      appendSystemChunk: (...args) => events.push(() => accumulator.appendSystemChunk(...args)),
-    };
-    // Show all in-flight reads immediately; their completion events are
-    // published in call order to keep provider history deterministic.
-    accumulator.beginToolTrace(call.id, call.function.name, undefined, {
-      execution_mode: 'parallel', batch_id: params.batchId, order: params.orderOffset + index,
-    });
-    const run = runSequentialToolBatch({
-      ...params,
-      calls: [call],
-      options: { ...options, onToolResult: (name, result) => events.push(() => options.onToolResult?.(name, result)) },
-      accumulator: bufferedAccumulator,
-      orderOffset: params.orderOffset + index,
-      executionMode: 'parallel',
-      onCompletedResult: (result) => events.push(() => params.onCompletedResult?.(result)),
-    });
-    return { call, events, run };
-  });
+  const perCall: Array<{ call: ToolCall; events: Array<() => void> }> = [];
+  const settled: Array<Promise<{ status: 'fulfilled'; value: ToolBatchResult } | { status: 'rejected'; reason: unknown }>> = [];
   const toolResults: ToolResult[] = [];
   let interruptResolution: ToolInterruptResolution | null = null;
   let flushed = 0;
-  // Attach both handlers now: an unobserved sibling must not reject while an
-  // earlier read is still pending. Only the completed prefix is published.
-  const settled = perCall.map((item) => item.run.then(
-    (value) => ({ status: 'fulfilled' as const, value }),
-    (reason: unknown) => ({ status: 'rejected' as const, reason }),
-  ));
   try {
+    for (const [index, call] of calls.entries()) {
+      throwIfToolAborted(options.signal);
+      const events: Array<() => void> = [];
+      const bufferedAccumulator: ToolBatchAccumulator = {
+        beginToolTrace: (...args) => events.push(() => accumulator.beginToolTrace(...args)),
+        completeToolTrace: (...args) => events.push(() => accumulator.completeToolTrace(...args)),
+        addHiddenToolContext: (...args) => events.push(() => accumulator.addHiddenToolContext(...args)),
+        addHiddenContextBlock: (...args) => events.push(() => accumulator.addHiddenContextBlock(...args)),
+        appendSystemChunk: (...args) => events.push(() => accumulator.appendSystemChunk(...args)),
+      };
+      // Expose each running read, then publish completed effects in call order.
+      accumulator.beginToolTrace(call.id, call.function.name, undefined, {
+        execution_mode: 'parallel', batch_id: params.batchId, order: params.orderOffset + index,
+      });
+      throwIfToolAborted(options.signal);
+      const run = runSequentialToolBatch({
+        ...params,
+        calls: [call],
+        options: { ...options, onToolResult: (name, result) => events.push(() => options.onToolResult?.(name, result)) },
+        accumulator: bufferedAccumulator,
+        orderOffset: params.orderOffset + index,
+        executionMode: 'parallel',
+        onCompletedResult: (result) => events.push(() => params.onCompletedResult?.(result)),
+      });
+      perCall.push({ call, events });
+      // Handle each rejection as soon as the read starts, even if setup aborts.
+      settled.push(run.then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason }),
+      ));
+    }
     throwIfToolAborted(options.signal);
     for (const [index, pending] of settled.entries()) {
       let removeAbortListener: () => void = () => undefined;
