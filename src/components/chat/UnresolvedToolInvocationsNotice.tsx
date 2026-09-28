@@ -105,7 +105,7 @@ export function UnresolvedToolInvocationsNotice({ conversationId, phase, activeT
       </div>
     );
   }
-  if (items.length === 0 && !isCurrentResult && !isActiveTurn(phase)) {
+  if (items.length === 0 && !isCurrentResult) {
     return (
       <div role="status" data-testid="unresolved-tool-invocations-checking" className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-xs text-foreground">
         <p className="mx-auto max-w-4xl">

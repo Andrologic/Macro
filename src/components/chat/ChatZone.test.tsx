@@ -77,6 +77,8 @@ export type MockChatState = {
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
+  activeContextKey: string | null;
+  selectedConversationContextKey: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
   conversationCompactionStatusById: Record<
     string,
@@ -818,6 +820,8 @@ const resetState = () => {
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
     hydrationStatus: 'ready',
     restoreStatus: 'ready',
+    activeContextKey: 'Chat::scope-a',
+    selectedConversationContextKey: 'Chat::scope-a',
     isLoading: false,
     isStreaming: false,
     sendState: 'idle',
@@ -1230,10 +1234,17 @@ describe('ChatZone', () => {
 
   it('keeps the previous journal hidden when context resolution fails', async () => {
     installUnresolvedJournalMock();
-    chatState = { ...chatState, restoreStatus: 'error' };
+    chatState = { ...chatState, restoreStatus: 'error', activeContextKey: 'Chat::scope-b' };
     await act(async () => { requireRoot().render(<ChatZone />); });
     expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
     expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the selected conversation journal visible if provider restoration fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('old_tool');
   });
 
   it('hides a selected conversation outside the active mode', async () => {

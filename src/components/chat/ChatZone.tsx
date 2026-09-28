@@ -1191,6 +1191,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages,
     selectedConversationId,
     activeContextKey,
+    selectedConversationContextKey,
     selectedConversationRuntime,
     standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
@@ -1250,6 +1251,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
     activeContextKey: state.activeContextKey,
+    selectedConversationContextKey: state.selectedConversationContextKey,
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
@@ -3896,7 +3898,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <UnresolvedToolInvocationsNotice
           conversationId={
             hydrationStatus === 'ready' &&
-            restoreStatus === 'ready' &&
+            (restoreStatus === 'ready' ||
+              (restoreStatus === 'error' &&
+                activeContextKey !== null &&
+                selectedConversationContextKey === activeContextKey)) &&
             currentConversation?.scope_mode === mode
               ? selectedConversationId : null
           }

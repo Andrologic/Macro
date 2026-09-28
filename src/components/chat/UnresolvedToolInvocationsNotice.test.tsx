@@ -6,9 +6,9 @@ import { createTranslationMock, installReactI18nextMock } from '../../test-utils
 import { TOOL_INVOCATIONS_CHANGED_EVENT } from '../../services/ipc/toolInvocations';
 import type { ConversationExecutionPhase } from '../../types';
 import type { ToolInvocation } from '../../types/generated/ipc';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 const list = mock((_conversationId: string): Promise<ToolInvocation[]> => Promise.resolve([]));
-let tauriAvailable = true;
 let Notice: typeof import('./UnresolvedToolInvocationsNotice').UnresolvedToolInvocationsNotice;
 let root: Root;
 let container: HTMLDivElement;
@@ -21,17 +21,16 @@ const invocation = (status: 'pending' | 'unknown', toolName = 'terminal_run', tu
 
 beforeAll(async () => {
   installReactI18nextMock(createTranslationMock({}));
-  mock.module('../../services/tauriIpc', () => ({
-    isTauriAvailable: () => tauriAvailable,
-    listUnresolvedToolInvocations: list,
-  }));
   ({ UnresolvedToolInvocationsNotice: Notice } = await import('./UnresolvedToolInvocationsNotice'));
 });
 
 beforeEach(() => {
-  tauriAvailable = true;
   list.mockReset();
   list.mockImplementation(async () => []);
+  installTauriRuntimeMock(async (command, payload) =>
+    command === 'db_list_unresolved_tool_invocations'
+      ? list(payload?.conversationId as string)
+      : undefined);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -40,6 +39,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  removeTauriRuntimeMock();
 });
 
 const render = async (conversationId: string | null, phase: ConversationExecutionPhase, activeTurnId: string | null = null) => {
@@ -80,6 +80,16 @@ describe('UnresolvedToolInvocationsNotice', () => {
     expect(container.textContent).toContain('Checking local tool effects');
     await act(async () => afterTurn.resolve([invocation('pending')]));
     expect(container.textContent).toContain('pending after turn ended');
+  });
+
+  it('shows a neutral read status while the first read of an active turn is pending', async () => {
+    const pendingRead = createDeferred<ToolInvocation[]>();
+    list.mockImplementationOnce(() => pendingRead.promise);
+    await render('first', 'streaming', 'turn');
+    expect(container.textContent).toContain('Checking local tool effects');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => pendingRead.resolve([invocation('pending')]));
+    expect(container.textContent).toBe('');
   });
 
   it('keeps a pending reservation hidden while the turn is persisting', async () => {
@@ -189,7 +199,7 @@ describe('UnresolvedToolInvocationsNotice', () => {
   });
 
   it('does not query SQLite in remote mode without Tauri', async () => {
-    tauriAvailable = false;
+    removeTauriRuntimeMock();
     const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
     process.env.VITE_BACKEND_TRANSPORT = 'remote';
     try {
