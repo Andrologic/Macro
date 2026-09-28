@@ -1,4 +1,4 @@
-import type { AppMode, ChatCompletionReason, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
+import type { AppMode, ChatCompletionReason, GenerationAttempt, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
 import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
 import type { WebSearchOptions } from '../webSearch';
@@ -50,16 +50,7 @@ export interface StreamCompletionResult {
   generationAttempts?: GenerationAttempt[];
 }
 
-export interface GenerationAttempt {
-  id: string;
-  status: 'completed' | 'partial' | 'abandoned';
-  /** Text emitted by this provider request, before overlap removal. */
-  rawText: string;
-  /** Portion accepted into the assistant response. */
-  acceptedText: string;
-  /** Null means the provider did not report an attributable cost. */
-  costUsd: number | null;
-}
+export type { GenerationAttempt } from '../../types';
 
 export interface LiveStreamContextSnapshot {
   version: number;
