@@ -1,6 +1,6 @@
 import { executeGoalAuditorRead, type GoalAuditorReadInput } from "../ipc/goalAudit";
 import { isTauriAvailable } from "../ipc/runtime";
-import type { GoalAuditProviderPorts } from "./providerExecutor";
+import type { GoalAuditProviderPorts, GoalAuditReadToolContext } from "./providerExecutor";
 
 type ReadToolResult = Awaited<ReturnType<GoalAuditProviderPorts["executeReadTool"]>>;
 
@@ -8,15 +8,6 @@ const NATIVE_READ_TOOLS = new Set<GoalAuditorReadInput["toolId"]>([
   "list", "read", "glob", "grep", "ast_grep",
   "git_status", "git_log", "git_branch_list", "git_diff", "git_get_tree",
 ]);
-
-interface RuntimeReadContext {
-  readonly runId: string;
-  readonly parentConversationId: string;
-  readonly childConversationId: string;
-}
-
-type GoalAuditReadToolContext = Parameters<GoalAuditProviderPorts["executeReadTool"]> extends
-  [unknown, unknown, unknown, unknown, infer T] ? T : RuntimeReadContext;
 
 const abortError = () => new DOMException("Goal audit read cancelled.", "AbortError");
 
@@ -49,7 +40,7 @@ const readUntilAbort = (input: GoalAuditorReadInput, signal: AbortSignal): Promi
     }
   });
 
-/** The runtime passes its frozen audit identity as the fifth argument. */
+/** The executor supplies audit identity separately from provider arguments. */
 export async function executeNativeGoalAuditReadTool(
   name: string,
   args: Record<string, unknown>,
@@ -58,10 +49,10 @@ export async function executeNativeGoalAuditReadTool(
   context: GoalAuditReadToolContext,
 ): Promise<ReadToolResult> {
   if (signal.aborted) throw abortError();
-  if (!context || !Object.isFrozen(context) ||
+  if (!context ||
       ![context.runId, context.parentConversationId, context.childConversationId]
         .every((value) => typeof value === "string" && value.length > 0 && value.trim() === value)) {
-    throw new Error("Goal audit read requires a frozen runtime context.");
+    throw new Error("Goal audit read requires a valid runtime context.");
   }
   if (typeof name !== "string" || !NATIVE_READ_TOOLS.has(name as GoalAuditorReadInput["toolId"])) {
     throw new Error("Invalid goal audit read tool.");

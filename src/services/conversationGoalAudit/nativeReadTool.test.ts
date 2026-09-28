@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { GoalAuditorReadInput } from "../ipc/goalAudit";
+import { createGoalAuditProviderExecutor, type GoalAuditReadToolContext } from "./providerExecutor";
+import type { GoalAuditChildInput } from "./types";
 
 const executeGoalAuditorRead = mock(async (_input: GoalAuditorReadInput): Promise<string> => "contents");
 const isTauriAvailable = mock(() => true);
@@ -54,15 +56,15 @@ describe("native goal audit read port", () => {
     ]);
   });
 
-  it("refuses missing context, forged identities, unknown tools and non-object arguments", async () => {
-    const call = (name: string, args: Record<string, unknown>, auditContext: typeof context = context) =>
+  it("refuses missing context, forged arguments, unknown tools and non-object arguments", async () => {
+    const call = (name: string, args: Record<string, unknown>, auditContext: GoalAuditReadToolContext = context) =>
       executeNativeGoalAuditReadTool(name, args, undefined, signal(), auditContext);
     await expect(executeNativeGoalAuditReadTool("read", {}, undefined, signal(), undefined as unknown as typeof context)).rejects.toThrow("context");
     await expect(call("read", { runId: "forged", path: "README.md" })).rejects.toThrow("arguments");
     await expect(call("write", {})).rejects.toThrow("tool");
     await expect(call("read_file", {})).rejects.toThrow("tool");
     await expect(call("read", [] as unknown as Record<string, unknown>)).rejects.toThrow("arguments");
-    await expect(call("read", {}, { ...context })).rejects.toThrow("context");
+    await expect(call("read", {}, { ...context, runId: " " })).rejects.toThrow("context");
     expect(executeGoalAuditorRead).not.toHaveBeenCalled();
   });
 
@@ -95,5 +97,88 @@ describe("native goal audit read port", () => {
     executeGoalAuditorRead.mockRejectedValueOnce(error);
     await expect(executeNativeGoalAuditReadTool("read", {}, undefined, signal(), context))
       .rejects.toBe(error);
+  });
+});
+
+describe("goal audit executor with native read port", () => {
+  const input: GoalAuditChildInput = {
+    profile: "goal_auditor",
+    systemPrompt: "Inspect the evidence.",
+    authorization: {
+      agentId: "goal_auditor",
+      serializedContext: "Goal and evidence",
+      childDepth: 1,
+      activeDelegationsForParent: 0,
+      policy: {
+        capabilities: ["workspace.read", "git.read"],
+        limits: { maxChildDepth: 1, maxConcurrencyPerParent: 1, maxContextBytes: 4096, maxTurns: 3 },
+      },
+    },
+  };
+  const makeExecutor = (stream: Parameters<typeof createGoalAuditProviderExecutor>[0]["stream"]) =>
+    createGoalAuditProviderExecutor({
+      resolveProvider: () => ({
+        providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model",
+      }),
+      resolveChildConversation: ({ runId, parentConversationId }) => ({
+        id: "actual-child-conversation", runId, parentConversationId,
+      }),
+      executeReadTool: executeNativeGoalAuditReadTool,
+      stream,
+    });
+
+  it("sends the three runtime identities to IPC and rejects identities in provider arguments", async () => {
+    const executor = makeExecutor(async (options) => {
+      await expect(options.onToolCall?.("read", {
+        path: "README.md", runId: "forged-run", parentConversationId: "forged-parent",
+        childConversationId: "forged-child",
+      })).rejects.toThrow("arguments");
+      expect(await options.onToolCall?.("read", { path: "README.md" }, "provider-call"))
+        .toEqual({ kind: "result", result: "contents" });
+      options.onComplete({ visibleContent: "complete", toolTraces: [] });
+    });
+
+    await expect(executor.execute({
+      childRunId: "actual-run", parentConversationId: "actual-parent", depth: 1,
+      input, signal: signal(),
+    })).resolves.toEqual({ text: "complete" });
+    expect(executeGoalAuditorRead).toHaveBeenCalledTimes(1);
+    expect(executeGoalAuditorRead).toHaveBeenCalledWith({
+      runId: "actual-run", parentConversationId: "actual-parent",
+      childConversationId: "actual-child-conversation", toolId: "read",
+      args: { path: "README.md" },
+    });
+  });
+
+  it("discards a late IPC response after cancellation", async () => {
+    const controller = new AbortController();
+    let finishRead!: (value: string) => void;
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    executeGoalAuditorRead.mockImplementationOnce(() => {
+      readStarted();
+      return new Promise<string>((resolve) => { finishRead = resolve; });
+    });
+    let delivered: unknown;
+    let finishStream!: () => void;
+    const streamFinished = new Promise<void>((resolve) => { finishStream = resolve; });
+    const executor = makeExecutor(async (options) => {
+      const pending = options.onToolCall?.("read", { path: "README.md" });
+      await started;
+      controller.abort();
+      await expect(pending).rejects.toHaveProperty("name", "AbortError");
+      finishRead("stale contents");
+      options.onComplete({ visibleContent: "stale completion", toolTraces: [] });
+      delivered = await Promise.resolve(pending).catch(() => undefined);
+      finishStream();
+    });
+
+    await expect(executor.execute({
+      childRunId: "actual-run", parentConversationId: "actual-parent", depth: 1,
+      input, signal: controller.signal,
+    })).rejects.toHaveProperty("name", "AbortError");
+    await streamFinished;
+    expect(executeGoalAuditorRead).toHaveBeenCalledTimes(1);
+    expect(delivered).toBeUndefined();
   });
 });
