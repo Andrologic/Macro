@@ -1681,6 +1681,8 @@ Le coordinateur `goal_auditor` peut être assemblé avec le transport fournisseu
 
 Le runtime attend la confirmation de `queued` avant de planifier l'enfant, celle de `running` avant son exécution et celle de la transition terminale avant tout verdict applicable. Une écriture refusée ou non confirmée échoue localement sans appliquer le verdict. Les attentes du journal sont annulables et bornées à dix secondes par défaut ; l'insertion SQLite de `queued` vérifie immédiatement la profondeur du parent. L'annulation ne peut pas annuler rétroactivement un effet IPC déjà lancé : le port doit traiter le signal et réconcilier un résultat tardif éventuel à partir de l'identifiant du run. Le port de verdict doit respecter le signal et la révision attendue pour éviter un effet tardif après annulation.
 
+Si un adaptateur asynchrone retarde `registerRun`, le coordinateur borne aussi son attente à dix secondes et l'interrompt à l'annulation. Une inscription non confirmée échoue sans créer de tour enfant ; l'adaptateur reste responsable d'un éventuel effet tardif. Le journal Tauri enregistre ce descripteur de façon synchrone.
+
 ---
 
 ## 16. Fondation expérimentale : backend distant et kernel headless

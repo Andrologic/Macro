@@ -484,7 +484,7 @@ describe("GoalAuditCoordinator", () => {
     expect(verdictPort.applications).toEqual([]);
   });
 
-  it("fails closed if the queued claim is aborted after late registration", async () => {
+  it("settles registration on timeout even if the journal never responds", async () => {
     const clock = new FakeClock();
     const journal = new DelayedRegistrationJournal();
     const executor = new ControlledGoalAuditExecutor();
@@ -499,28 +499,20 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
 
     clock.advanceBy(50);
-    let settled = false;
-    void handle.result.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-
-    expect(settled).toBe(false);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    expect(executor.requests).toEqual([]);
-
-    journal.resolveRegistration();
-
     expect(await handle.result).toMatchObject({
       status: "failed",
       runId: "audit-1",
-      error: { code: "SUBAGENT_CLAIM_FAILED" },
+      error: { code: "JOURNAL_REGISTRATION_FAILED" },
     });
+    expect(coordinator.isAuditActive("conversation-1")).toBe(false);
+    expect(clock.timers.size).toBe(0);
+    journal.resolveRegistration();
+    await Promise.resolve();
     expect(executor.requests).toEqual([]);
     expect(journal.getRun("audit-1")?.transitions).toEqual([]);
   });
 
-  it("keeps registration failure authoritative after cancellation", async () => {
+  it("settles registration on cancellation without waiting for the journal", async () => {
     const journal = new DelayedRegistrationJournal();
     const executor = new ControlledGoalAuditExecutor();
     const verdictPort = new RecordingVerdictPort();
@@ -533,18 +525,17 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request());
 
     expect(handle.cancel()).toBe(true);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    journal.rejectRegistration(new Error("journal unavailable"));
-
     expect(await handle.result).toMatchObject({
       status: "failed",
       runId: "audit-1",
       error: { code: "JOURNAL_REGISTRATION_FAILED" },
     });
+    journal.rejectRegistration(new Error("journal unavailable"));
+    await Promise.resolve();
     expect(executor.requests).toEqual([]);
   });
 
-  it("fails closed after disposal during late registration", async () => {
+  it("disposes promptly while registration remains pending", async () => {
     const journal = new DelayedRegistrationJournal();
     const executor = new ControlledGoalAuditExecutor();
     const verdictPort = new RecordingVerdictPort();
@@ -557,24 +548,52 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request());
 
     const disposal = coordinator.dispose();
-    let disposed = false;
-    void disposal.then(() => {
-      disposed = true;
-    });
-    await Promise.resolve();
-
-    expect(disposed).toBe(false);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    journal.resolveRegistration();
-
     expect(await handle.result).toMatchObject({
       status: "failed",
       runId: "audit-1",
-      error: { code: "SUBAGENT_CLAIM_FAILED" },
+      error: { code: "JOURNAL_REGISTRATION_FAILED" },
     });
     await disposal;
+    journal.resolveRegistration();
+    await Promise.resolve();
     expect(executor.requests).toEqual([]);
     expect(journal.getRun("audit-1")?.transitions).toEqual([]);
+  });
+
+  it("bounds registration without an audit deadline", async () => {
+    const clock = new FakeClock();
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal: new DelayedRegistrationJournal(),
+      clock,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+    clock.advanceBy(10_000);
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    });
+    expect(executor.requests).toEqual([]);
+    expect(clock.timers.size).toBe(0);
+  });
+
+  it("continues after an asynchronous registration is confirmed", async () => {
+    const journal = new DelayedRegistrationJournal();
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+    journal.resolveRegistration();
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    expect(await handle.result).toMatchObject({ status: "applied", runId: "audit-1" });
   });
 
   it("does not apply a late verdict after disposal", async () => {

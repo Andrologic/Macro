@@ -36,6 +36,7 @@ const GOAL_AUDITOR_CAPABILITIES = Object.freeze([
 
 const RESPONSE_FORMAT =
   'Return exactly one JSON object with these keys and no markdown: {"verdict":"continue|achieved|needs_user|cannot_progress","summary":"non-empty string","criteria":[{"criterion":"exact success criterion","status":"met|unmet|uncertain","evidence":[{"source":"non-empty source","finding":"non-empty finding"}]}],"feedback":"string","questionForUser":null,"confidence":0.0}. Return one criterion result for each success criterion, in the same order. Only needs_user may set questionForUser to a non-empty string. Achieved requires every criterion to be met.';
+const REGISTRATION_TIMEOUT_MS = 10_000;
 
 let fallbackRunSequence = 0;
 const defaultIdFactory = (): string => {
@@ -302,7 +303,7 @@ export class GoalAuditCoordinator<
   ): Promise<GoalAuditResult> {
     if (registration) {
       try {
-        await registration;
+        await this.#awaitRegistration(registration, cycle.controller.signal);
       } catch (error) {
         this.#notifyJournalError(error, this.#descriptors.get(runId));
         return {
@@ -347,6 +348,32 @@ export class GoalAuditCoordinator<
     }
 
     return this.#completeAudit(request, expectedCriteria, runtimeHandle, cycle);
+  }
+
+  #awaitRegistration(registration: Promise<void>, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutHandle: unknown;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle !== undefined) this.#clock.clearTimeout(timeoutHandle);
+        signal.removeEventListener("abort", onAbort);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const onAbort = () => finish(new Error("Goal audit registration wait aborted"));
+      void Promise.resolve(registration).then(() => finish(), finish);
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      timeoutHandle = this.#clock.setTimeout(
+        () => finish(new Error("Goal audit registration wait timed out")),
+        REGISTRATION_TIMEOUT_MS,
+      );
+    });
   }
 
   #cancellationResult(

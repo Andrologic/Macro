@@ -10,6 +10,8 @@ The executor passes the abort signal to provider resolution, child resolution, r
 
 The runtime waits for the durable `queued` claim before scheduling, for `running` before calling the child executor, and for the terminal transition before returning success to the coordinator. Journal failure or an unconfirmed write returns a local `SUBAGENT_CLAIM_FAILED` or `SUBAGENT_JOURNAL_FAILED`; it never authorizes a verdict. These waits use an abort signal and a 10-second default ceiling, configurable through `transitionTimeoutMs`. SQLite validates the parent's depth when inserting `queued`, before any child link. Cancelling a wait cannot roll back an IPC call already in flight: its port must stop or reconcile late effects, and an interrupted write may leave an indeterminate durable state requiring inspection by run id. The verdict port must likewise honor its abort signal and revision compare-and-swap; the coordinator will not report a late `applied` result after cancellation, but cannot undo an external side effect already committed by a non-cooperative port.
 
+An asynchronous `registerRun` is also bounded to 10 seconds and stopped by audit cancellation. If registration is unconfirmed, the coordinator returns `JOURNAL_REGISTRATION_FAILED` without starting a child. A late registration may still complete in its port; the port owns cleanup of that preflight state. The durable Tauri journal registers synchronously.
+
 | Runtime event | Rust repository call |
 | --- | --- |
 | `registerRun`, then `queued` sequence 0 | Insert the run with its registered id, parent conversation, `goal_auditor`, depth 1, prompt, and model metadata |
