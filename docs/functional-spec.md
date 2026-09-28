@@ -786,9 +786,11 @@ l'archivage et la fin de tâche invalident l'attente.
 Les traces d'outils distinguent un résultat terminé ou refusé, une exécution
 encore vivante dans le tour courant, une approbation restaurée qui permet une
 nouvelle demande, et une issue inconnue après interruption ou fin du tour sans
-résultat d'outil confirmé. Une trace inconnue
-n'autorise aucun rejeu automatique. La consultation du résultat d'une mutation
-distante par son identifiant durable reste propre à ce transport ; elle ne rend
+résultat d'outil confirmé. Une trace inconnue n'autorise aucun rejeu automatique.
+Un ancien marqueur `[TOOL]` sans `[TOOL_DONE]` reste d'issue inconnue après
+rechargement et ne figure pas parmi les outils terminés. La consultation du
+résultat d'une mutation distante par son identifiant durable reste propre à ce
+transport ; elle ne rend
 pas interrogeables les autres outils ni les effets externes sans journal de résultat.
 
 ### 14.4 Review humaine

@@ -996,6 +996,9 @@ une trace non résolue devient `unknown`, et seul le marqueur d'approbation
 restauré rend cette demande `replayable`. `live` exige un flux propriétaire
 encore actif. Ces états décrivent la preuve disponible pour la trace, pas une
 garantie d'exécution unique de l'effet externe.
+`streamAccumulator` laisse une trace sans résultat confirmé en `running` avec
+`recovery_state=unknown` à la fin du tour. Le rendu des anciens marqueurs
+`[TOOL]` exige `[TOOL_DONE]` pour afficher une fin confirmée.
 
 ### 10.2 Persistance locale frontend
 

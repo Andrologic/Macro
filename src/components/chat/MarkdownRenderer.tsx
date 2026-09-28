@@ -198,6 +198,7 @@ const getToolTraceGroupExecutionMode = (
 const ActiveToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }) => {
   const { t } = useTranslation();
   const allActive = tools.every((tool) => isActiveToolTraceStatus(tool.status, tool.recoveryState));
+  const allUnknown = tools.every((tool) => tool.recoveryState === 'unknown');
   const executionMode = getToolTraceGroupExecutionMode(tools);
   const executionModeLabel =
     executionMode === 'parallel'
@@ -209,7 +210,7 @@ const ActiveToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools })
   return (
     <div
       data-testid={allActive ? 'tool-traces-running' : 'tool-traces-activity'}
-      data-group-status={allActive ? 'running' : 'mixed'}
+      data-group-status={allActive ? 'running' : allUnknown ? 'unknown' : 'mixed'}
       data-testid-group="tool-trace-group"
       className="mt-3 mb-3 rounded-lg border border-border bg-card/40 px-3 py-2"
     >
@@ -392,7 +393,8 @@ const splitLegacyToolBlocks = (
       const nextTool: ToolRenderTrace = {
         toolName: startMatch[1],
         detail: startMatch[2],
-        status: isStreaming ? 'running' : 'done',
+        status: 'running',
+        recoveryState: isStreaming ? 'live' : 'unknown',
       };
       const previous = tools[tools.length - 1];
       const sameAsPrevious =
@@ -401,9 +403,7 @@ const splitLegacyToolBlocks = (
         previous.status === nextTool.status;
       if (!sameAsPrevious) {
         tools.push(nextTool);
-        if (nextTool.status === 'running') {
-          pendingToolIndexes.push(tools.length - 1);
-        }
+        pendingToolIndexes.push(tools.length - 1);
       }
       continue;
     }
@@ -426,6 +426,7 @@ const splitLegacyToolBlocks = (
         const tool = tools[toolIndex];
         if (tool) {
           tool.status = 'done';
+          tool.recoveryState = 'completed';
         }
         pendingToolIndexes.splice(pendingIndex, 1);
       }
@@ -581,8 +582,11 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
         }
 
         if (block.type === 'tool_group') {
-          const anyActiveTool = block.tools.some((tool) => isActiveToolTraceStatus(tool.status, tool.recoveryState));
-          return anyActiveTool ? (
+          const anyUnresolvedTool = block.tools.some((tool) =>
+            isActiveToolTraceStatus(tool.status, tool.recoveryState) ||
+            tool.recoveryState === 'unknown' || tool.recoveryState === 'replayable',
+          );
+          return anyUnresolvedTool ? (
             <ActiveToolTraceGroup key={`tools-${index}`} tools={block.tools} />
           ) : (
             <CompletedToolTraceGroup key={`tools-${index}`} tools={block.tools} />

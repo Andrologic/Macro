@@ -137,14 +137,41 @@ describe('MarkdownRenderer tool trace rendering', () => {
       ]} />);
       await Promise.resolve();
     });
+    const item = container?.querySelector('[data-testid="tool-trace-item"]');
+    expect(item?.getAttribute('data-recovery-state')).toBe('unknown');
+    expect(item?.textContent).toContain('outcome unknown');
+    expect(container?.querySelector('[data-testid="tool-traces-activity"]')?.getAttribute('data-group-status')).toBe('unknown');
+    expect(container?.querySelector('[data-testid="tool-traces-completed"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="tool-traces-running"]')).toBeNull();
+  });
+
+  it('keeps a legacy tool marker without a done marker unknown after reload', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+    await act(async () => {
+      root?.render(<MarkdownRenderer content={'[TOOL] read ("README.md")'} isStreaming={false} />);
+      await Promise.resolve();
+    });
+    const item = container?.querySelector('[data-testid="tool-trace-item"]');
+    expect(item?.getAttribute('data-tool-status')).toBe('running');
+    expect(item?.getAttribute('data-recovery-state')).toBe('unknown');
+    expect(item?.textContent).toContain('outcome unknown');
+    expect(container?.querySelector('[data-testid="tool-traces-activity"]')?.getAttribute('data-group-status')).toBe('unknown');
+    expect(container?.querySelector('[data-testid="tool-traces-completed"]')).toBeNull();
+  });
+
+  it('treats a legacy done marker as completion evidence after reload', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+    await act(async () => {
+      root?.render(<MarkdownRenderer content={'[TOOL] read ("README.md")\n[TOOL_DONE] read ("README.md")'} isStreaming={false} />);
+      await Promise.resolve();
+    });
     await act(async () => {
       (container?.querySelector('[data-testid="tool-traces-completed-trigger"]') as HTMLButtonElement | null)?.click();
       await Promise.resolve();
     });
     const item = container?.querySelector('[data-testid="tool-trace-item"]');
-    expect(item?.getAttribute('data-recovery-state')).toBe('unknown');
-    expect(item?.textContent).toContain('outcome unknown');
-    expect(container?.querySelector('[data-testid="tool-traces-running"]')).toBeNull();
+    expect(item?.getAttribute('data-tool-status')).toBe('done');
+    expect(item?.getAttribute('data-recovery-state')).toBe('completed');
   });
 
   it('does not move a completed tool while another tool is still running', async () => {
