@@ -110,6 +110,51 @@ fn validate_resolved_read_path(
     Ok(())
 }
 
+fn validate_git_checkout_scope(args: &Value, workspace: &std::path::Path) -> CommandResult<()> {
+    let repo_path = args.get("repo_path").and_then(Value::as_str).unwrap_or(".");
+    let requested = crate::fs::validate_path(std::path::Path::new(repo_path), workspace)
+        .map_err(|error| command_error(error.to_string()))?;
+    let repo = git2::Repository::discover(&requested)
+        .map_err(|_| command_error("Goal auditor Git repository is unavailable"))?;
+    let root = repo
+        .workdir()
+        .ok_or_else(|| command_error("Goal auditor cannot read a bare repository"))?
+        .canonicalize()
+        .map_err(|_| command_error("Goal auditor Git root is unavailable"))?;
+    if !root.starts_with(workspace) {
+        return Err(command_error(
+            "Goal auditor Git repository extends outside the project",
+        ));
+    }
+    if std::fs::symlink_metadata(root.join(".macro")).is_ok() {
+        return Err(command_error(
+            "Goal auditor cannot read a Git checkout containing Macro metadata",
+        ));
+    }
+    let index = repo
+        .index()
+        .map_err(|_| command_error("Goal auditor Git index is unavailable"))?;
+    if index
+        .iter()
+        .any(|entry| entry.path == b".macro" || entry.path.starts_with(b".macro/"))
+    {
+        return Err(command_error(
+            "Goal auditor Git index contains Macro metadata",
+        ));
+    }
+    if repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_tree().ok())
+        .is_some_and(|tree| tree.get_name(".macro").is_some())
+    {
+        return Err(command_error(
+            "Goal auditor Git tree contains Macro metadata",
+        ));
+    }
+    Ok(())
+}
+
 fn read_registry(metadata_root: &std::path::Path) -> CommandResult<WorkspaceState> {
     let bytes = std::fs::read(metadata_root.join("workspace.json"))
         .map_err(|_| command_error("Goal auditor workspace registry is unavailable"))?;
@@ -159,13 +204,10 @@ async fn auditor_workspace(
         )
         .find(|project| project.id == project_id && project.archived_at.is_none())
         .ok_or_else(|| command_error("Goal auditor project is unavailable"))?;
-    if let Some(wsl_path) = workspace::parse_wsl_unc_path(&project.path) {
-        if scope.task_id.is_some() {
-            return Err(command_error(
-                "Goal auditor task worktree is unavailable for WSL",
-            ));
-        }
-        return Ok(PathBuf::from(wsl_path.unc_path));
+    if workspace::parse_wsl_unc_path(&project.path).is_some() {
+        return Err(command_error(
+            "Goal auditor WSL project reads are unavailable",
+        ));
     }
     let path = PathBuf::from(&project.path);
     let candidate = if path.is_absolute() {
@@ -176,6 +218,14 @@ async fn auditor_workspace(
     let resolved = candidate
         .canonicalize()
         .map_err(|_| command_error("Goal auditor project path is unavailable"))?;
+    let canonical_metadata_root = metadata_root
+        .canonicalize()
+        .map_err(|_| command_error("Goal auditor metadata root is unavailable"))?;
+    if resolved.starts_with(canonical_metadata_root) {
+        return Err(command_error(
+            "Goal auditor project points into Macro metadata",
+        ));
+    }
     if !resolved.is_dir() {
         return Err(command_error(
             "Goal auditor project path is not a directory",
@@ -291,6 +341,9 @@ async fn execute_goal_auditor_read(
     let scope = scope.ok_or_else(|| command_error("Goal auditor run is not active or linked"))?;
     let scoped_workspace = auditor_workspace(&metadata_workspace, &git_state, &scope).await?;
     validate_resolved_read_path(&input.tool_id, &input.args, &scoped_workspace)?;
+    if input.tool_id.starts_with("git_") {
+        validate_git_checkout_scope(&input.args, &scoped_workspace)?;
+    }
 
     // Architect is fixed here because Chat intentionally denies workspace reads.
     // The exact native allowlist above is the authority for this command.
@@ -654,6 +707,131 @@ mod tests {
             .is_err());
         assert!(fixture
             .execute(fixture.input("read", json!({"path": ".macro/workspace.json"})))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn git_reads_stay_within_the_registered_project_repository() {
+        let fixture = Fixture::new_with_git_metadata(true).await;
+        let inside = fixture.workspace.join("nested-project");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::write(inside.join("proof.txt"), "nested project evidence").unwrap();
+        let project = workspace::create_project(
+            &fixture.workspace,
+            &fixture.metadata_root,
+            workspace::metadata::CreateProjectRequest {
+                name: "Nested project".into(),
+                description: String::new(),
+                group_id: None,
+                group_name: None,
+                path: Some(inside.display().to_string()),
+                git_flow_settings: None,
+                direct_edit: true,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE conversations SET project_id = ? WHERE id IN (?, ?)")
+            .bind(&project.id)
+            .bind(&fixture.parent_id)
+            .bind(&fixture.child_id)
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        let read = fixture
+            .execute(fixture.input("read", json!({"path": "proof.txt"})))
+            .await
+            .unwrap();
+        assert!(read.contains("nested project evidence"));
+        assert!(fixture
+            .execute(fixture.input("git_get_tree", json!({})))
+            .await
+            .is_err());
+        assert!(fixture
+            .execute(fixture.input("git_diff", json!({})))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn git_diff_refuses_untracked_macro_metadata_in_the_checkout() {
+        let fixture = Fixture::new_with_git_metadata(true).await;
+        assert!(fixture
+            .execute(fixture.input("git_status", json!({})))
+            .await
+            .is_ok());
+        let metadata = fixture.workspace.join(".macro");
+        std::fs::create_dir(&metadata).unwrap();
+        std::fs::write(metadata.join("workspace.json"), "private metadata marker").unwrap();
+        assert!(fixture
+            .execute(fixture.input("git_diff", json!({})))
+            .await
+            .is_err());
+        assert!(fixture
+            .execute(fixture.input("git_get_tree", json!({})))
+            .await
+            .is_err());
+        let repo = git2::Repository::open(&fixture.workspace).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new(".macro/workspace.json"))
+            .unwrap();
+        index.write().unwrap();
+        std::fs::remove_dir_all(&metadata).unwrap();
+        assert!(fixture
+            .execute(fixture.input("git_diff", json!({})))
+            .await
+            .is_err());
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let author = git2::Signature::now("Fixture", "fixture@example.invalid").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &author,
+            &author,
+            "Track metadata",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+        index
+            .remove_path(std::path::Path::new(".macro/workspace.json"))
+            .unwrap();
+        index.write().unwrap();
+        assert!(fixture
+            .execute(fixture.input("git_diff", json!({})))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn wsl_project_is_refused_explicitly_without_a_verified_native_root() {
+        let fixture = Fixture::new().await;
+        let registry_path = fixture.metadata_root.join("workspace.json");
+        let mut registry: Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        registry["standaloneProjects"][0]["path"] = json!(r"\\wsl.localhost\Ubuntu\home\audit");
+        std::fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        let error = fixture
+            .execute(fixture.input("read", json!({"path": "proof.txt"})))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("WSL project reads are unavailable"));
+    }
+
+    #[tokio::test]
+    async fn registered_project_cannot_point_into_macro_metadata() {
+        let fixture = Fixture::new().await;
+        let registry_path = fixture.metadata_root.join("workspace.json");
+        let mut registry: Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        registry["standaloneProjects"][0]["path"] =
+            json!(fixture.metadata_root.display().to_string());
+        std::fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        assert!(fixture
+            .execute(fixture.input("read", json!({"path": "workspace.json"})))
             .await
             .is_err());
     }
