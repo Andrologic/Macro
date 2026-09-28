@@ -592,6 +592,7 @@ export class SubagentRuntime<
   ): Promise<void> {
     let output: ChildTurnExecutionOutput<TStructuredOutput> | undefined;
     let failure: unknown;
+    let executionFailed = false;
     try {
       output = await this.#options.executor.execute({
         childRunId: record.snapshot.runId,
@@ -602,6 +603,7 @@ export class SubagentRuntime<
         onProgress: (event) => this.#handleProgress(record, event),
       });
     } catch (error) {
+      executionFailed = true;
       failure = error;
     }
 
@@ -613,7 +615,7 @@ export class SubagentRuntime<
         record.cancellationReason,
         output?.metrics ?? getMetrics(failure),
       );
-    } else if (failure !== undefined) {
+    } else if (executionFailed) {
       this.#finishFailed(
         record,
         normalizeSubagentError(failure),

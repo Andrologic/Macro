@@ -304,6 +304,22 @@ describe("SubagentRuntime", () => {
     });
   });
 
+  it("records a failed run when the executor rejects without an error value", async () => {
+    const transitions: Array<SubagentTransition<TestOutput>> = [];
+    const { executor, runtime } = makeRuntime({ transitions });
+    const handle = runtime.run({
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "undefined-rejection" },
+    });
+    await waitForExecution(executor, "undefined-rejection");
+    executor.fail("undefined-rejection", undefined);
+    expect(await handle.result).toMatchObject({
+      status: "failed", error: { code: "CHILD_EXECUTION_FAILED" },
+    });
+    expect(transitions.map(({ state }) => state)).toEqual(["queued", "running", "failed"]);
+  });
+
   it("times out a running child and waits for cooperative abort cleanup", async () => {
     const clock = new FakeClock();
     const { executor, runtime } = makeRuntime({ clock });
