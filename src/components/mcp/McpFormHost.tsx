@@ -174,7 +174,7 @@ function FormEditor({ item, host, submitting, waiting, issue }: {
 
   return (
     <Dialog title={t('mcpForm.title', 'MCP form request')} onClose={() => { if (!submitting) respond('cancel'); }}
-      backdropClassName="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4">
+      backdropClassName="fixed inset-0 z-[14000] flex items-center justify-center bg-black/70 p-4">
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[720px] flex-col overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-2xl">
         <header className="shrink-0 border-b border-border px-4 py-3">
           <div className="flex items-center justify-between gap-3">
@@ -276,7 +276,7 @@ export function McpFormHostView({ host = mcpFormHost }: { host?: McpFormHost }) 
   }, [host]);
   const active = snapshot.queue[0];
   return <>
-    {snapshot.issue && !active && <div role="alert" className="fixed bottom-12 right-4 z-[100] flex max-w-sm items-center gap-3 rounded-lg border border-border bg-card p-3 text-xs text-foreground shadow-xl">
+    {snapshot.issue && !active && <div role="alert" className="fixed bottom-12 right-4 z-[14010] flex max-w-sm items-center gap-3 rounded-lg border border-border bg-card p-3 text-xs text-foreground shadow-xl">
       <span>{issueText(snapshot.issue, t)}</span>
       {snapshot.status === 'unavailable' && <button type="button" className={buttonClass} onClick={() => void host.retry()}>
         {t('mcpForm.retry', 'Retry')}

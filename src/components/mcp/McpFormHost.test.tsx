@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { McpInteractionRequest, McpInteractionResponse } from '../../types/generated/ipc';
 import { McpFormHost, type FormHostPort } from '../../services/mcp/formHost';
+import { Dialog } from '../ui/Dialog';
 
 mock.module('react-i18next', () => ({
   useTranslation: () => ({
@@ -93,6 +94,31 @@ describe('global MCP form dialog', () => {
       answers: [{ id: 'prompt', action: 'accept', content: { name: 'Grace', role: 'writer' } }],
     }]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps an incoming form and its expiry error above an existing modal', async () => {
+    const { host, send } = setup();
+    await act(async () => {
+      root.render(<>
+        <Dialog title="Release notes" onClose={() => undefined}
+          backdropClassName="fixed inset-0 z-[12000] flex items-center justify-center">
+          <p>Release notes</p>
+        </Dialog>
+        <McpFormHostView host={host} />
+      </>);
+      await Promise.resolve();
+    });
+    await act(async () => { send({ ...request('r-over', 'alpha'), expiresAtMs: Date.now() + 25 }); });
+    const roots = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'));
+    const formRoot = roots.find((candidate) => candidate.textContent?.includes('MCP form request'));
+    const releaseRoot = roots.find((candidate) => candidate.textContent?.includes('Release notes'));
+    expect(formRoot?.style.zIndex).toBe('14000');
+    expect(formRoot?.hasAttribute('inert')).toBe(false);
+    expect(releaseRoot?.hasAttribute('inert')).toBe(true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 35)); });
+    const error = document.querySelector<HTMLElement>('[role="alert"]');
+    expect(error?.textContent).toContain('expired');
+    expect(error?.className).toContain('z-[14010]');
   });
 
   it('shows queued server identities and sends decline and cancel as separate actions', async () => {

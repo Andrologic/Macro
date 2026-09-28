@@ -746,7 +746,8 @@ chaîne ou dépassant 128 Kio est refusée sans journalisation ; un tour contena
 `inputResponses`. Aucun appel n'est relancé après une erreur de transport. Le
 runtime s'arrête après quatre continuations. L'hôte de formulaires est monté
 au niveau global de l'application Tauri, indépendamment de la conversation
-active. Il ouvre un bail unique, conserve en mémoire une file de demandes bornée
+active. Sa modale et ses erreurs prennent la priorité sur les autres modales
+de l'application. Il ouvre un bail unique, conserve en mémoire une file de demandes bornée
 par le courtier, affiche l'identité du serveur et l'opération, puis demande une
 revue explicite des valeurs avant `accept`. `decline` et `cancel` restent deux
 réponses distinctes. La fermeture de l'hôte vide la file et révoque le bail.
