@@ -1181,6 +1181,15 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('keeps an unknown native trace unknown in live context until a confirmed result', async () => {
+    const { __testables } = await loadStreamingChat();
+    const accumulator = __testables.createStreamAccumulator({ onToken: () => undefined });
+    accumulator.upsertToolTraceFromProvider({ tool_call_id: 'uncertain', tool_name: 'read', status: 'running', recovery_state: 'unknown' });
+    expect(accumulator.snapshotLiveContext().toolTraces[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    accumulator.upsertToolTraceFromProvider({ tool_call_id: 'uncertain', tool_name: 'read', status: 'done' });
+    expect(accumulator.snapshotLiveContext().toolTraces[0]).toMatchObject({ status: 'done', recovery_state: 'completed' });
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 

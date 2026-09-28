@@ -1175,6 +1175,8 @@ const assistantPersistencePayloadMatches = (
     serializeAssistantPersistenceValue(recovered.provider_input_items) &&
   serializeAssistantPersistenceValue(persisted.provider_turn_state) ===
     serializeAssistantPersistenceValue(recovered.provider_turn_state) &&
+  serializeAssistantPersistenceValue(persisted.generation_attempts) ===
+    serializeAssistantPersistenceValue(recovered.generation_attempts) &&
   persisted.completion_reason === recovered.completion_reason;
 
 const mergeRecoveredAssistantResponses = (

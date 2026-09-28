@@ -75,6 +75,9 @@ export const createStreamAccumulator = (
       tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
       detail: trace.detail ?? existingTrace?.detail,
       status,
+      recovery_state: status === 'done' || status === 'denied'
+        ? 'completed'
+        : trace.recovery_state ?? existingTrace?.recovery_state,
       visible_offset:
         existingTrace?.visible_offset ?? trace.visible_offset ?? visibleContent.length,
       execution_mode: trace.execution_mode ?? existingTrace?.execution_mode,
