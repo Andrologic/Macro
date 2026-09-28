@@ -90,7 +90,7 @@ export const createGoalAuditProviderExecutor = (
       !capabilities.includes("git.read")) {
       throw new Error("Goal auditor requires its exact read-only capability set.");
     }
-    const provider = await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
+    await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
     const childConversation = await awaitAbortable(signal, () => ports.resolveChildConversation({
       runId: request.childRunId,
       parentConversationId: request.parentConversationId,
@@ -104,6 +104,7 @@ export const createGoalAuditProviderExecutor = (
       childConversation.parentConversationId !== request.parentConversationId) {
       throw new Error("Invalid goal auditor child conversation binding.");
     }
+    const provider = await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
     const allowedToolIds = filterToolIdsForInternalAgentProfile(
       [
         ...(capabilities.includes("workspace.read") ? WORKSPACE_READ_TOOLS : []),

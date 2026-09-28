@@ -1257,7 +1257,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     try {
       if (ipcIsTauriAvailable()) {
-        const currentProviderConfigs = get().providerConfigs;
         const configs = await ipcListProviderConfigs();
         lifecycle?.assertActive();
         if (!isCurrent()) {
@@ -1271,13 +1270,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           if (requestVersion === providerConfigLoadVersion) set({ isLoading: false });
           return;
         }
-        const providerConfigs = mergeRuntimeProviderConfigState(
-          mergedProviderConfigs,
-          currentProviderConfigs
-        );
         // A failed catalog cleanup may have left rows belonging to the previous
         // endpoint. Recover both the configuration and its cache before reuse.
-        const reloadedProviderIds = providerConfigs
+        const reloadedProviderIds = mergedProviderConfigs
           .filter((provider) => providerConfigsNeedingReload.has(provider.id))
           .map((provider) => provider.id);
         for (const providerId of reloadedProviderIds) {
@@ -1289,6 +1284,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           return;
         }
         for (const providerId of reloadedProviderIds) providerConfigsNeedingReload.delete(providerId);
+        const providerConfigs = mergeRuntimeProviderConfigState(
+          mergedProviderConfigs,
+          get().providerConfigs
+        );
         const currentSelectedProviderId = get().selectedProviderId;
         const currentSelectedModelId = get().selectedModelId;
         const currentSelectedProvider = providerConfigs.find(
