@@ -1711,7 +1711,13 @@ Le socle est séparé en quatre couches :
 
 La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
 
-Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+Le coordinateur `goal_auditor` peut être assemblé avec le transport fournisseur et le journal durable par ports injectés. Le profil lecture seule est appliqué aux outils du tour enfant. Le journal IPC enregistre chaque transition et sa projection dans `agent_runs` en une transaction SQLite, avec idempotence par `(runId, sequence)`. La conversation enfant est créée ou reprise par un port, puis liée au run avant le streaming. Le choix du déclencheur UI reste ouvert.
+
+Le runtime attend la confirmation de `queued` avant de planifier l'enfant, celle de `running` avant son exécution et celle de la transition terminale avant tout verdict applicable. Une écriture refusée ou non confirmée échoue localement sans appliquer le verdict. Les attentes du journal sont annulables et bornées à dix secondes par défaut ; l'insertion SQLite de `queued` vérifie immédiatement la profondeur du parent. L'annulation ne peut pas annuler rétroactivement un effet IPC déjà lancé : le port doit traiter le signal et réconcilier un résultat tardif éventuel à partir de l'identifiant du run. Le port de verdict doit respecter le signal et la révision attendue pour éviter un effet tardif après annulation.
+
+Si l'annulation interrompt l'attente d'une écriture `queued` ou terminale non confirmée, le résultat reste un échec du journal : aucun état `cancelled` durable n'est alors garanti. L'identifiant du run permet d'inspecter l'état avant une nouvelle tentative.
+
+Si un adaptateur asynchrone retarde `registerRun`, le coordinateur borne aussi son attente à dix secondes et l'interrompt à l'annulation. Une panne ou un délai du port échoue sans créer de tour enfant ; une annulation conserve son motif. Si l'inscription aboutit après le résultat, le coordinateur rappelle `releaseRun` ; l'adaptateur asynchrone doit fournir ce nettoyage idempotent et reste responsable d'un appel qui ne se termine jamais. Le journal Tauri enregistre ce descripteur de façon synchrone. Après la fin du cycle, le coordinateur libère le run en mémoire et les données transitoires du journal durable ; SQLite conserve les transitions et leurs contrôles de rejeu.
 
 ---
 

@@ -2,17 +2,25 @@
 
 `GoalAuditCoordinator` is independent from React, provider selection, and global stores. A caller supplies a `ChildTurnExecutor<GoalAuditChildInput, unknown>` and a compare-and-swap `GoalAuditVerdictPort`. The child input contains the `goal_auditor` profile, its system prompt, the serialized compact context, depth one, and the effective read-only capabilities approved by `subagentPolicy`.
 
-The provider transport remains to be connected. Its adapter should create or resume a child conversation attached to `parentConversationId`, expose only the tools allowed by `authorization.policy.capabilities`, send `systemPrompt` plus `authorization.serializedContext`, return either JSON text or one structured value, and settle after abort. It must reuse the existing provider streaming pipeline through a narrow non-store port. It must not copy `useChatStore` or expose a delegation tool.
+`createGoalAuditProviderExecutor` uses the existing provider streaming pipeline through injected ports. Its required `resolveChildConversation` port must create or resume a durable conversation for `(runId, parentConversationId)` and return that conversation's id with the same run and parent ids. The executor checks this binding and uses the returned id for provider `conversationId`. It sends the system prompt and compact context, intersects read capabilities with the canonical `goal_auditor` tool allowlist, and rejects all other tool calls.
 
-`GoalAuditJournal` matches the ordered `SubagentTransition` lifecycle. `registerRun` runs before the queued transition and supplies the metadata required by the Rust repository. The future IPC adapter should map transitions as follows:
+The executor passes the abort signal to provider resolution, child resolution, read tools, and streaming. Its own wait settles on abort even if a port stays pending, and it ignores later progress callbacks. Each port still owns cleanup of work it started, including network requests, database writes, and tool effects. Settling the executor cannot stop a port that ignores the signal.
+
+`DurableGoalAuditJournal` records ordered `SubagentTransition` events through Tauri IPC. `registerRun` runs before the queued transition and supplies the metadata required by the Rust repository. Each transition and its `agent_runs` projection are committed in one SQLite transaction. Replaying the same `(runId, sequence)` and payload is idempotent; conflicting or skipped transitions fail. The mapping is:
+
+The runtime waits for the durable `queued` claim before scheduling, for `running` before calling the child executor, and for the terminal transition before returning success to the coordinator. Journal failure or an unconfirmed write returns a local `SUBAGENT_CLAIM_FAILED` or `SUBAGENT_JOURNAL_FAILED`; it never authorizes a verdict. These waits use an abort signal and a 10-second default ceiling, configurable through `transitionTimeoutMs`. SQLite validates the parent's depth when inserting `queued`, before any child link. Cancelling a wait cannot roll back an IPC call already in flight: its port must stop or reconcile late effects, and an interrupted write may leave an indeterminate durable state requiring inspection by run id. The verdict port must likewise honor its abort signal and revision compare-and-swap; the coordinator will not report a late `applied` result after cancellation, but cannot undo an external side effect already committed by a non-cooperative port.
+
+If cancellation interrupts a queued claim or terminal write before confirmation, the result remains a journal failure. Reporting `cancelled` would imply a durable cancellation transition that may not exist. The caller can inspect the run id before deciding whether to retry.
+
+An asynchronous `registerRun` is also bounded to 10 seconds and stopped by audit cancellation. A recorder timeout or rejection returns `JOURNAL_REGISTRATION_FAILED`; an audit cancellation returns its cancellation reason. Neither starts a child before registration is confirmed. If registration settles after the audit, the coordinator calls the journal's optional `releaseRun` again, so asynchronous adapters should implement it as an idempotent cleanup operation. A port that never settles remains responsible for its own in-flight work. The durable Tauri journal registers synchronously. After the coordinator observes the run result, it releases the runtime record and the durable journal's transient descriptors, payloads, and promises; SQLite retains the authoritative transition history and replay checks.
 
 | Runtime event | Rust repository call |
 | --- | --- |
-| `registerRun`, then `queued` sequence 0 | `create_agent_run` with the registered id, parent conversation, `goal_auditor`, depth 1, prompt, and model metadata |
-| `running` | `start_agent_run` with the optional provider child conversation id |
-| `completed` | `complete_agent_run`, using `result_json` for structured output or `result_text` for text and copying metrics into usage |
-| `failed` | `fail_agent_run` with the normalized code, message, details, and usage |
-| `cancelled` | `cancel_agent_run`, preserving `parent_cancelled`, `child_cancelled`, or `runtime_disposed` as the reason |
-| `timed_out` | `timeout_agent_run` with `deadline_exceeded` and usage |
+| `registerRun`, then `queued` sequence 0 | Insert the run with its registered id, parent conversation, `goal_auditor`, depth 1, prompt, and model metadata |
+| `running` | Start the run; the child conversation is linked after resolution and before streaming |
+| `completed` | Store structured output or text and copy metrics into usage |
+| `failed` | Store the normalized code, message, details, and usage |
+| `cancelled` | Preserve `parent_cancelled`, `child_cancelled`, or `runtime_disposed` as the reason |
+| `timed_out` | Store `deadline_exceeded` and usage |
 
-The adapter must serialize calls per run, reject a transition whose sequence is not the next expected value, and make `(runId, sequence)` idempotent at the IPC boundary. No Tauri command exposes these repository functions yet, so `InMemoryGoalAuditJournal` is the current implementation and durability is not end to end.
+`createDurableGoalAuditCoordinator` composes the journal with the provider executor. It validates the resolved child conversation and links its id to `agent_runs` before provider streaming. The resolver remains responsible for creating or resuming the conversation and for cleaning up effects started before an abort. The UI trigger is still undecided; callers can construct the coordinator explicitly.

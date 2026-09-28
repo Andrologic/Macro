@@ -294,6 +294,12 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&8) {
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&7) {
         sqlx::query("DROP TABLE tool_invocations")
             .execute(&reference)
@@ -312,10 +318,10 @@ async fn check_database(path: &Path) -> Result<()> {
         return Err("Backup database tables do not match this Macro version".into());
     }
     for table in tables {
-        if table == "tool_invocations" {
+        if table == "tool_invocations" || table == "agent_run_transitions" {
             // This table has no legacy schema variants. Compare its full DDL
-            // so a backup cannot omit status/receipt CHECK constraints while
-            // retaining the same columns, foreign key, and indexes.
+            // so a backup cannot omit its CHECK constraints while retaining
+            // the same columns, foreign key, and indexes.
             let query = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?";
             let actual: String = sqlx::query_scalar(query)
                 .bind(&table)
@@ -1183,6 +1189,10 @@ mod tests {
     }
 
     async fn remove_post_v4_schema(db: &mut SqliteConnection) {
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&mut *db)
+            .await
+            .unwrap();
         sqlx::query("DROP TABLE tool_invocations")
             .execute(&mut *db)
             .await
@@ -1360,7 +1370,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            7
+            8
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1393,7 +1403,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -1410,6 +1420,14 @@ mod tests {
         let (_temp, data, config) = profile().await;
         let database = data.join("macro.db");
         let mut db = connection(&database).await.unwrap();
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 8")
+            .execute(&mut db)
+            .await
+            .unwrap();
         sqlx::query("DROP TABLE tool_invocations")
             .execute(&mut db)
             .await
@@ -1435,6 +1453,67 @@ mod tests {
                 .await
                 .unwrap();
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn validates_v7_archive_with_tool_journal_without_migrating_source() {
+        let (_temp, data, config) = profile().await;
+        let database = data.join("macro.db");
+        let mut db = connection(&database).await.unwrap();
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 8")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let mut source = connection(&database).await.unwrap();
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(&mut source)
+            .await
+            .unwrap();
+        assert_eq!(version, 7);
+        let tool_table: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'tool_invocations'",
+        )
+        .fetch_one(&mut source)
+        .await
+        .unwrap();
+        assert_eq!(tool_table, 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_v8_archive_with_weakened_transition_constraints() {
+        let (_temp, data, _config) = profile().await;
+        let database = data.join("macro.db");
+        let mut db = connection(&database).await.unwrap();
+        let table_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_run_transitions'",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        let weakened = table_sql.replace(" CHECK (sequence >= 0)", "");
+        assert_ne!(weakened, table_sql);
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(weakened))
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert_eq!(
+            check_database(&database).await.unwrap_err(),
+            "Incompatible backup table constraints: agent_run_transitions"
+        );
     }
 
     #[tokio::test]

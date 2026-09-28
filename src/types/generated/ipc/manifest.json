@@ -917,6 +917,14 @@
     },
     {
       "families": [
+        "db"
+      ],
+      "name": "GoalAuditTransition",
+      "origin": "macro_lib::db::goal_audit_transitions::GoalAuditTransition",
+      "path": "GoalAuditTransition.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",
@@ -1392,6 +1400,14 @@
       "name": "ReconcileProjectRegistryInput",
       "origin": "macro_lib::db::models::ReconcileProjectRegistryInput",
       "path": "ReconcileProjectRegistryInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "RecordGoalAuditTransitionInput",
+      "origin": "macro_lib::db::goal_audit_transitions::RecordGoalAuditTransitionInput",
+      "path": "RecordGoalAuditTransitionInput.ts"
     },
     {
       "families": [

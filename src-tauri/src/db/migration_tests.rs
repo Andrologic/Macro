@@ -275,6 +275,14 @@ async fn tool_journal_migration_rolls_back_if_version_stamp_fails() {
     )
     .await
     .unwrap();
+    sqlx::query("DROP TABLE agent_run_transitions")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 8")
+        .execute(&mut connection)
+        .await
+        .unwrap();
     sqlx::query("DROP TABLE tool_invocations")
         .execute(&mut connection)
         .await
@@ -307,6 +315,57 @@ async fn tool_journal_migration_rolls_back_if_version_stamp_fails() {
         .await
         .unwrap()
         .contains(&7));
+}
+
+#[tokio::test]
+async fn transition_migration_rolls_back_without_losing_v7_tool_journal() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("transitions.db");
+    create_pool(&path).await.unwrap().close().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(true),
+    )
+    .await
+    .unwrap();
+    sqlx::query("DROP TABLE agent_run_transitions")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 8")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::raw_sql("CREATE TRIGGER reject_v8 BEFORE INSERT ON schema_migrations WHEN new.version = 8 BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;")
+        .execute(&mut connection).await.unwrap();
+    assert!(create_pool(&path).await.is_err());
+    assert!(
+        !table_exists(&mut connection, "agent_run_transitions".into())
+            .await
+            .unwrap()
+    );
+    assert!(table_exists(&mut connection, "tool_invocations".into())
+        .await
+        .unwrap());
+    let versions = list_applied_migrations(&mut connection).await.unwrap();
+    assert!(versions.contains(&7));
+    assert!(!versions.contains(&8));
+    sqlx::query("DROP TRIGGER reject_v8")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    let pool = create_pool(&path).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(
+        table_exists(&mut connection, "agent_run_transitions".into())
+            .await
+            .unwrap()
+    );
+    assert!(table_exists(&mut connection, "tool_invocations".into())
+        .await
+        .unwrap());
 }
 
 #[tokio::test]

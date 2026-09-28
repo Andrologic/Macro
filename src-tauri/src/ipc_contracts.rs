@@ -2,6 +2,9 @@
 //! These reexports expose data shapes, not application execution or transport authority.
 
 pub mod db {
+    pub use crate::db::goal_audit_transitions::{
+        GoalAuditTransition, RecordGoalAuditTransitionInput,
+    };
     pub use crate::db::models::{
         AgentRun, AgentRunStatus, AgentRunUsageInput, AiModel, AppSettingRecord,
         ArchitectPlanConversationSyncRecord, CancelAgentRunInput, ChatBootstrapSnapshot,

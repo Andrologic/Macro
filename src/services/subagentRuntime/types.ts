@@ -205,6 +205,8 @@ export interface SubagentRuntimeOptions<
   transitionRecorder?: SubagentTransitionRecorder<TStructuredOutput, TProgress>;
   idFactory?: () => string;
   clock?: SubagentRuntimeClock;
+  /** Maximum wait for each transition recorder acknowledgement. Defaults to 10 seconds. */
+  transitionTimeoutMs?: number;
   onTransitionError?: (
     error: unknown,
     transition: SubagentTransition<TStructuredOutput, TProgress>,
