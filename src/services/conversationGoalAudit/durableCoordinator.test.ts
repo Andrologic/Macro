@@ -45,10 +45,16 @@ describe("durable goal audit composition", () => {
         auditId: "audit", conversationId: "parent", goalId: "goal",
         expectedRevision: 1, executorTurnId: "turn",
       },
-      verdictPort: { applyVerdict: () => "applied" },
+      verdictPort: { applyVerdict: ({ verdict }) => {
+        events.push(`verdict:${verdict.summary}`);
+        return "applied";
+      } },
       journalPorts: {
         async recordTransition(input) {
           events.push(`transition:${input.transition.state}:${input.auditClaim?.executorTurnId ?? "none"}`);
+          if (input.transition.state === "completed") {
+            expect(JSON.stringify(input.transition.result)).toContain("  Criterion  met ");
+          }
           return {} as AgentRun;
         },
         async linkChildConversation(runId, parentId, childId) {
@@ -68,9 +74,9 @@ describe("durable goal audit composition", () => {
           events.push(`stream:${options.conversationId}`);
           options.onComplete({
             visibleContent: JSON.stringify({
-              verdict: "achieved", summary: "Criterion met", criteria: [{
-                criterion: "The audit is read-only", status: "met",
-                evidence: [{ source: "source", finding: "read-only tools" }],
+              verdict: "achieved", summary: "  Criterion  met ", criteria: [{
+                criterion: " The audit is read-only ", status: "met",
+                evidence: [{ source: " source ", finding: "read-only tools" }],
               }], feedback: "", questionForUser: null, confidence: 0.9,
             }),
             toolTraces: [],
@@ -86,6 +92,7 @@ describe("durable goal audit composition", () => {
       userPolicy: scope, parentPolicy: scope,
     });
     expect(result.status).toBe("applied");
+    expect(events).toContain("verdict:Criterion met");
     expect(events.slice(0, 4)).toEqual([
       "transition:queued:turn", "transition:running:none",
       "link:audit-run:parent:real-child-conversation", "stream:real-child-conversation",

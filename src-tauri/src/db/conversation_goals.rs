@@ -105,7 +105,7 @@ pub struct ConversationGoalAudit {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalVerdictKind {
     Continue,
@@ -114,7 +114,7 @@ pub enum GoalVerdictKind {
     CannotProgress,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalCriterionStatus {
     Met,
@@ -228,6 +228,81 @@ fn invalid(message: impl Into<String>) -> DbError {
 fn nonempty(value: &str, field: &str) -> DbResult<()> {
     if value.trim().is_empty() || value.trim() != value {
         return Err(invalid(format!("Invalid {field}")));
+    }
+    Ok(())
+}
+
+fn folded_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// The frontend trims and collapses whitespace in verdict text before applying it.
+// Compare that canonical text while retaining every other JSON field for exact matching.
+fn normalize_verdict_text(value: &mut serde_json::Value) {
+    fn field(value: &mut serde_json::Value, key: &str) {
+        if let Some(serde_json::Value::String(text)) = value.get_mut(key) {
+            *text = folded_text(text);
+        }
+    }
+    for key in ["summary", "feedback", "questionForUser"] {
+        field(value, key);
+    }
+    if let Some(criteria) = value
+        .get_mut("criteria")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for criterion in criteria {
+            field(criterion, "criterion");
+            if let Some(evidence) = criterion
+                .get_mut("evidence")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for item in evidence {
+                    field(item, "source");
+                    field(item, "finding");
+                }
+            }
+        }
+    }
+}
+
+fn validate_verdict_criteria(verdict: &GoalVerdict, expected: &[String]) -> DbResult<()> {
+    if folded_text(&verdict.summary).is_empty()
+        || (verdict.verdict != GoalVerdictKind::Achieved
+            && folded_text(&verdict.feedback).is_empty())
+        || match verdict.verdict {
+            GoalVerdictKind::NeedsUser => verdict
+                .question_for_user
+                .as_deref()
+                .is_none_or(|question| folded_text(question).is_empty()),
+            _ => verdict.question_for_user.is_some(),
+        }
+    {
+        return Err(invalid("Invalid goal audit verdict text or question"));
+    }
+    if verdict.criteria.len() != expected.len() {
+        return Err(invalid(
+            "Verdict criteria do not match stored goal criteria",
+        ));
+    }
+    if verdict.verdict == GoalVerdictKind::Achieved && expected.is_empty() {
+        return Err(invalid("Achieved requires at least one proven criterion"));
+    }
+    for (result, criterion) in verdict.criteria.iter().zip(expected) {
+        if folded_text(criterion).is_empty()
+            || folded_text(&result.criterion) != folded_text(criterion)
+            || result.evidence.is_empty()
+            || result.evidence.iter().any(|evidence| {
+                folded_text(&evidence.source).is_empty()
+                    || folded_text(&evidence.finding).is_empty()
+            })
+        {
+            return Err(invalid("Verdict criterion or evidence is invalid"));
+        }
+        if verdict.verdict == GoalVerdictKind::Achieved && result.status != GoalCriterionStatus::Met
+        {
+            return Err(invalid("Achieved requires every criterion to be met"));
+        }
     }
     Ok(())
 }
@@ -580,13 +655,19 @@ pub async fn apply_verdict(
     if row.get::<i64, _>("goal_revision") != input.expected_revision {
         return Ok(GoalCasOutcome::Stale);
     }
-    let current: Option<i64> = sqlx::query_scalar("SELECT revision FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
+    let current = sqlx::query("SELECT revision, success_criteria_json FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
         .bind(&input.conversation_id).bind(&input.goal_id).fetch_optional(&mut *tx).await?;
-    match current {
+    let current = match current {
         None => return Ok(GoalCasOutcome::Missing),
-        Some(revision) if revision != input.expected_revision => return Ok(GoalCasOutcome::Stale),
-        _ => {}
-    }
+        Some(row) if row.get::<i64, _>("revision") != input.expected_revision => {
+            return Ok(GoalCasOutcome::Stale)
+        }
+        Some(row) => row,
+    };
+    let criteria: Vec<String> =
+        serde_json::from_str(current.get::<&str, _>("success_criteria_json"))
+            .map_err(|error| invalid(error.to_string()))?;
+    validate_verdict_criteria(&input.verdict, &criteria)?;
     if row.get::<&str, _>("status") != "ready_for_verdict" {
         return Err(invalid("Audit run has no durable completed verdict"));
     }
@@ -609,13 +690,16 @@ pub async fn apply_verdict(
     let run_result: Option<String> = run
         .get::<Option<String>, _>("result_json")
         .or_else(|| run.get::<Option<String>, _>("result_text"));
-    let run_verdict: serde_json::Value = serde_json::from_str(
+    let mut run_verdict: serde_json::Value = serde_json::from_str(
         run_result
             .as_deref()
             .ok_or_else(|| invalid("Audit run has no verdict"))?,
     )
     .map_err(|_| invalid("Audit run verdict is invalid JSON"))?;
-    if run_verdict != verdict {
+    let mut normalized_verdict = verdict.clone();
+    normalize_verdict_text(&mut run_verdict);
+    normalize_verdict_text(&mut normalized_verdict);
+    if run_verdict != normalized_verdict {
         return Err(invalid("Verdict differs from durable run output"));
     }
     let status = match input.verdict.verdict {
@@ -677,10 +761,20 @@ mod tests {
     }
 
     async fn transition(pool: &SqlitePool, id: &str, sequence: i64, state: AgentRunStatus) {
+        transition_with_verdict(pool, id, sequence, state, None).await;
+    }
+
+    async fn transition_with_verdict(
+        pool: &SqlitePool,
+        id: &str,
+        sequence: i64,
+        state: AgentRunStatus,
+        raw_verdict: Option<serde_json::Value>,
+    ) {
         let result = (state == AgentRunStatus::Completed).then(|| {
             serde_json::json!({
                 "runId": id, "parentConversationId": "parent", "status": "completed",
-                "output": { "structured": verdict() }
+                "output": { "structured": raw_verdict.unwrap_or_else(|| serde_json::json!(verdict())) }
             })
         });
         let input = RecordGoalAuditTransitionInput {
@@ -977,6 +1071,151 @@ mod tests {
                 .await
                 .unwrap(),
             GoalCasOutcome::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn normalized_verdict_applies_against_raw_durable_provider_output() {
+        let (_temp, pool) = fixture().await;
+        activate_goal(&pool, activation()).await.unwrap();
+        run(&pool, "run-1").await;
+        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+            .await
+            .unwrap();
+        transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
+        let mut raw = serde_json::json!(verdict());
+        raw["summary"] = serde_json::json!("  Continue  ");
+        raw["feedback"] = serde_json::json!(" Run   checks ");
+        raw["criteria"][0]["criterion"] = serde_json::json!(" Checks   pass ");
+        raw["criteria"][0]["evidence"][0]["source"] = serde_json::json!(" test ");
+        transition_with_verdict(&pool, "run-1", 2, AgentRunStatus::Completed, Some(raw)).await;
+        let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
+        assert_eq!((goal.revision, goal.status), (1, GoalStatus::Auditing));
+        assert_eq!(
+            apply_verdict(&pool, application("audit-1", "turn-1", "run-1", 1))
+                .await
+                .unwrap(),
+            GoalCasOutcome::Applied
+        );
+    }
+
+    #[tokio::test]
+    async fn native_verdict_rejects_misaligned_or_unproven_criteria_and_missing_question() {
+        let mut wrong_criterion = verdict();
+        wrong_criterion.criteria[0].criterion = "Other criterion".into();
+        let mut missing_criterion = verdict();
+        missing_criterion.criteria.clear();
+        let mut missing_evidence = verdict();
+        missing_evidence.criteria[0].evidence.clear();
+        let mut empty_evidence_text = verdict();
+        empty_evidence_text.criteria[0].evidence[0].finding = "  ".into();
+        let mut unproven_achievement = verdict();
+        unproven_achievement.verdict = GoalVerdictKind::Achieved;
+        let mut missing_question = verdict();
+        missing_question.verdict = GoalVerdictKind::NeedsUser;
+        for (case, candidate) in [
+            ("wrong criterion", wrong_criterion),
+            ("missing criterion", missing_criterion),
+            ("missing evidence", missing_evidence),
+            ("empty evidence text", empty_evidence_text),
+            ("unproven achievement", unproven_achievement),
+            ("missing question", missing_question),
+        ] {
+            let (_temp, pool) = fixture().await;
+            activate_goal(&pool, activation()).await.unwrap();
+            run(&pool, "run-1").await;
+            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+                .await
+                .unwrap();
+            transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
+            transition_with_verdict(
+                &pool,
+                "run-1",
+                2,
+                AgentRunStatus::Completed,
+                Some(serde_json::json!(candidate)),
+            )
+            .await;
+            let mut application = application("audit-1", "turn-1", "run-1", 1);
+            application.verdict = candidate;
+            assert!(apply_verdict(&pool, application).await.is_err(), "{case}");
+            let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
+            assert_eq!(
+                (goal.revision, goal.status),
+                (1, GoalStatus::Auditing),
+                "{case}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_criteria_allow_continuation_but_not_achievement() {
+        for verdict_kind in [GoalVerdictKind::Achieved, GoalVerdictKind::Continue] {
+            let (_temp, pool) = fixture().await;
+            let mut goal = activation();
+            goal.success_criteria.clear();
+            activate_goal(&pool, goal).await.unwrap();
+            run(&pool, "run-1").await;
+            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+                .await
+                .unwrap();
+            transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
+            let mut candidate = verdict();
+            candidate.verdict = verdict_kind;
+            candidate.criteria.clear();
+            transition_with_verdict(
+                &pool,
+                "run-1",
+                2,
+                AgentRunStatus::Completed,
+                Some(serde_json::json!(candidate)),
+            )
+            .await;
+            let mut application = application("audit-1", "turn-1", "run-1", 1);
+            application.verdict = candidate;
+            let outcome = apply_verdict(&pool, application).await;
+            if verdict_kind == GoalVerdictKind::Achieved {
+                assert!(outcome.is_err());
+            } else {
+                assert_eq!(outcome.unwrap(), GoalCasOutcome::Applied);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn proved_achievement_applies_from_matching_durable_output() {
+        let (_temp, pool) = fixture().await;
+        activate_goal(&pool, activation()).await.unwrap();
+        run(&pool, "run-1").await;
+        claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 1))
+            .await
+            .unwrap();
+        transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
+        let mut candidate = verdict();
+        candidate.verdict = GoalVerdictKind::Achieved;
+        candidate.criteria[0].status = GoalCriterionStatus::Met;
+        candidate.feedback.clear();
+        transition_with_verdict(
+            &pool,
+            "run-1",
+            2,
+            AgentRunStatus::Completed,
+            Some(serde_json::json!(candidate)),
+        )
+        .await;
+        let mut application = application("audit-1", "turn-1", "run-1", 1);
+        application.verdict = candidate;
+        assert_eq!(
+            apply_verdict(&pool, application).await.unwrap(),
+            GoalCasOutcome::Applied
+        );
+        assert_eq!(
+            get_current_goal(&pool, "parent")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            GoalStatus::Achieved
         );
     }
 
