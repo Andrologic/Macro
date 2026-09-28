@@ -132,6 +132,12 @@ export const createGoalAuditProviderExecutor = (
     const emitProgress = (event: SubagentProgressEvent) => {
       if (!signal.aborted) onProgress?.(event);
     };
+    const assertReadToolBinding = () => {
+      if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId) ||
+        childConversation.id !== readToolContext.childConversationId) {
+        throw new Error("Invalid goal auditor child conversation binding.");
+      }
+    };
     let completion: StreamCompletionResult | undefined;
     let failure: Error | undefined;
     await awaitAbortable(signal, () => (ports.stream ?? streamChat)({
@@ -161,11 +167,10 @@ export const createGoalAuditProviderExecutor = (
           emitProgress({ kind: "tool_refused", message: name });
           return { kind: "result", result: `Tool ${name} is not allowed for goal_auditor.`, isError: true };
         }
-        if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId) ||
-          childConversation.id !== readToolContext.childConversationId) {
-          throw new Error("Invalid goal auditor child conversation binding.");
-        }
+        assertReadToolBinding();
         emitProgress({ kind: "tool_started", message: name });
+        if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
+        assertReadToolBinding();
         return ports.executeReadTool(name, args, id, signal, readToolContext);
       },
       onToolResult: (name) => emitProgress({ kind: "tool_finished", message: name }),

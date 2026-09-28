@@ -114,7 +114,7 @@ describe("goal auditor provider executor", () => {
     expect(executeReadTool).not.toHaveBeenCalled();
   });
 
-  it("refuses a read if the resolved child binding changes before the tool call", async () => {
+  it("refuses a read if progress changes the resolved child binding", async () => {
     const child = resolvedChild();
     const executeReadTool = mock(async () => "never");
     const executor = createGoalAuditProviderExecutor({
@@ -122,14 +122,41 @@ describe("goal auditor provider executor", () => {
       resolveChildConversation: () => child,
       executeReadTool,
       stream: async (options) => {
-        child.parentConversationId = "other-parent";
         await expect(options.onToolCall?.("read", { path: "file.txt" })).rejects.toThrow(
           "Invalid goal auditor child conversation binding.",
         );
         options.onComplete({ visibleContent: "{}", toolTraces: [] });
       },
     });
-    await executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: new AbortController().signal });
+    await executor.execute({
+      childRunId: "child", parentConversationId: "parent", depth: 1,
+      input: input(), signal: new AbortController().signal,
+      onProgress: (event) => {
+        if (event.kind === "tool_started") child.parentConversationId = "other-parent";
+      },
+    });
+    expect(executeReadTool).not.toHaveBeenCalled();
+  });
+
+  it("does not call the read port when progress cancels the audit", async () => {
+    const controller = new AbortController();
+    const executeReadTool = mock(async () => "never");
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveChildConversation: resolvedChild,
+      executeReadTool,
+      stream: async (options) => {
+        const result = await options.onToolCall?.("read", { path: "file.txt" });
+        expect(result).toEqual({ kind: "result", result: "Audit cancelled.", isError: true });
+      },
+    });
+    await expect(executor.execute({
+      childRunId: "child", parentConversationId: "parent", depth: 1,
+      input: input(), signal: controller.signal,
+      onProgress: (event) => {
+        if (event.kind === "tool_started") controller.abort();
+      },
+    })).rejects.toHaveProperty("name", "AbortError");
     expect(executeReadTool).not.toHaveBeenCalled();
   });
 
