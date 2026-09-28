@@ -1528,7 +1528,8 @@ identifiant dans `accepted_submission_ids` qu'après avoir résolu la réponse d
 canal. Le transport natif utilise ces identifiants à `ai:done` pour conserver
 les traces et les éléments rejouables des seuls résultats acceptés. Le
 `hidden_context` durable
-provient du même événement du bridge ; l'accusé de l'écriture IPC ne suffit pas.
+provient du même événement du bridge ; les blocs d'outils relayés émis par le
+SDK exigent aussi un reçu de remise accepté. L'accusé de l'écriture IPC ne suffit pas.
 Une fin reçue pendant une remise attend au plus cinq secondes la réponse IPC,
 puis les remises sans preuve d'acceptation restent d'issue inconnue. Cette
 classification n'implique aucune reprise exactement une fois des effets externes.

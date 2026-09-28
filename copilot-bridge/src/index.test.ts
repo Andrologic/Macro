@@ -75,6 +75,33 @@ describe('Copilot model catalogue', () => {
 });
 
 describe('copilot bridge tool registration', () => {
+  it('keeps SDK tool context only for native tools or accepted relay results', async () => {
+    const { __testables } = await loadBridge();
+    const state = __testables.createCopilotSessionEventState();
+    const toolTraces = new Map();
+    const hiddenContextBlocks: string[] = [];
+    const acceptedRelayToolCallIds = new Set(['accepted']);
+    const emit = () => undefined;
+    for (const [toolCallId, toolName] of [
+      ['rejected', 'read_file'], ['accepted', 'read_file'], ['native', 'mark_source_passage'],
+    ]) {
+      __testables.handleCopilotSessionEvent({
+        event: { type: 'tool.execution_start', data: { toolCallId, toolName, arguments: {} } },
+        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit,
+      });
+      __testables.handleCopilotSessionEvent({
+        event: { type: 'tool.execution_complete', data: {
+          toolCallId, result: { content: `${toolCallId} result` },
+        } },
+        state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit,
+      });
+    }
+
+    expect(hiddenContextBlocks.join('\n')).not.toContain('rejected result');
+    expect(hiddenContextBlocks.join('\n')).toContain('accepted result');
+    expect(hiddenContextBlocks.join('\n')).toContain('native result');
+  });
+
   it('carries Rust error metadata through the concrete channel to the SDK handler', async () => {
     const { __testables } = await loadBridge();
     const input = new PassThrough();

@@ -201,9 +201,10 @@ const handleCopilotSessionEvent = (params: {
   state: CopilotSessionEventState;
   toolTraces: Map<string, ToolTraceSnapshot>;
   hiddenContextBlocks: string[];
+  acceptedRelayToolCallIds?: ReadonlySet<string>;
   emit: (payload: JsonRecord) => void;
 }): void => {
-  const { event, state, toolTraces, hiddenContextBlocks, emit } = params;
+  const { event, state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, emit } = params;
   const data = (event.data || {}) as Record<string, unknown>;
 
   if (event.type === 'assistant.reasoning_delta') {
@@ -290,7 +291,7 @@ const handleCopilotSessionEvent = (params: {
       trace.detail,
       resultText
     );
-    if (block) {
+    if (block && existing && (!isFrontendRelayToolId(existing.tool_name) || acceptedRelayToolCallIds?.has(toolCallId))) {
       hiddenContextBlocks.push(block);
     }
     return;
@@ -1671,10 +1672,13 @@ const handleSend = async (): Promise<void> => {
     const toolTraces = new Map<string, ToolTraceSnapshot>();
     const hiddenContextBlocks: string[] = [];
     const acceptedSubmissionIds = new Set<string>();
+    const acceptedRelayToolCallIds = new Set<string>();
     const eventState = createCopilotSessionEventState();
     const relayState: { interruptResult: RelayToolResult | null } = { interruptResult: null };
-    const recordRelayResult = (_toolCallId: string, result: RelayToolResult) => {
-      if (result.submissionId) acceptedSubmissionIds.add(result.submissionId);
+    const recordRelayResult = (toolCallId: string, result: RelayToolResult) => {
+      if (!result.submissionId) return;
+      acceptedRelayToolCallIds.add(toolCallId);
+      acceptedSubmissionIds.add(result.submissionId);
       if (result.hiddenContext?.trim()) {
         hiddenContextBlocks.push(result.hiddenContext.trim());
       }
@@ -1712,6 +1716,7 @@ const handleSend = async (): Promise<void> => {
             state: eventState,
             toolTraces,
             hiddenContextBlocks,
+            acceptedRelayToolCallIds,
             emit: emitJson,
           });
         });
