@@ -3896,6 +3896,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <UnresolvedToolInvocationsNotice
           conversationId={selectedConversationId}
           phase={selectedConversationRuntime.phase}
+          activeTurnId={selectedConversationRuntime.turnId ?? null}
         />
 
         {activeConversationGoal && (

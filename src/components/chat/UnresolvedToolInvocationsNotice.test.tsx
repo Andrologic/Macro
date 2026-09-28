@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createDeferred } from '../../test-utils/deferred';
 import { createTranslationMock, installReactI18nextMock } from '../../test-utils/reactI18nextMock';
+import { TOOL_INVOCATIONS_CHANGED_EVENT } from '../../services/ipc/toolInvocations';
 import type { ConversationExecutionPhase } from '../../types';
 import type { ToolInvocation } from '../../types/generated/ipc';
 
@@ -12,8 +13,8 @@ let Notice: typeof import('./UnresolvedToolInvocationsNotice').UnresolvedToolInv
 let root: Root;
 let container: HTMLDivElement;
 
-const invocation = (status: 'pending' | 'unknown', toolName = 'terminal_run'): ToolInvocation => ({
-  conversation_id: 'first', turn_id: 'turn', message_id: 'message', call_id: toolName,
+const invocation = (status: 'pending' | 'unknown', toolName = 'terminal_run', turnId = 'turn'): ToolInvocation => ({
+  conversation_id: 'first', turn_id: turnId, message_id: 'message', call_id: toolName,
   tool_name: toolName, effect_class: 'workspace_mutation', arguments_sha256: 'secret-hash',
   remote_execution_id: null, status, receipt_id: null, created_at: '', updated_at: '',
 });
@@ -41,8 +42,8 @@ afterEach(async () => {
   container.remove();
 });
 
-const render = async (conversationId: string | null, phase: ConversationExecutionPhase) => {
-  await act(async () => root.render(<Notice conversationId={conversationId} phase={phase} />));
+const render = async (conversationId: string | null, phase: ConversationExecutionPhase, activeTurnId: string | null = null) => {
+  await act(async () => root.render(<Notice conversationId={conversationId} phase={phase} activeTurnId={activeTurnId} />));
 };
 
 describe('UnresolvedToolInvocationsNotice', () => {
@@ -60,7 +61,7 @@ describe('UnresolvedToolInvocationsNotice', () => {
     const afterTurn = createDeferred<ToolInvocation[]>();
     list.mockImplementationOnce(async () => [invocation('pending')]);
     list.mockImplementationOnce(() => afterTurn.promise);
-    await render('first', 'streaming');
+    await render('first', 'streaming', 'turn');
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await render('first', 'idle');
     expect(list).toHaveBeenCalledTimes(2);
@@ -71,11 +72,40 @@ describe('UnresolvedToolInvocationsNotice', () => {
 
   it('keeps a pending reservation hidden while the turn is persisting', async () => {
     list.mockImplementation(async () => [invocation('pending')]);
-    await render('first', 'persisting');
+    await render('first', 'persisting', 'turn');
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await render('first', 'idle');
     expect(list).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('pending after turn ended');
+  });
+
+  it('keeps an older pending invocation visible during a new turn', async () => {
+    list.mockImplementation(async () => [
+      invocation('pending', 'old_tool', 'old-turn'),
+      invocation('pending', 'current_tool', 'current-turn'),
+    ]);
+    await render('first', 'streaming', 'current-turn');
+    expect(container.textContent).toContain('old_tool');
+    expect(container.textContent).not.toContain('current_tool');
+  });
+
+  it('refreshes after a journal mutation without a phase change', async () => {
+    list.mockImplementationOnce(async () => [invocation('unknown')]);
+    list.mockImplementationOnce(async () => []);
+    await render('first', 'idle');
+    expect(container.textContent).toContain('terminal_run');
+    await act(async () => window.dispatchEvent(new CustomEvent(TOOL_INVOCATIONS_CHANGED_EVENT, {
+      detail: { conversationId: 'first' },
+    })));
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('warns when the local journal cannot be read', async () => {
+    list.mockImplementation(async () => { throw new Error('sensitive SQLite path'); });
+    await render('first', 'idle');
+    expect(container.textContent).toContain('Unable to check the local tool journal');
+    expect(container.textContent).not.toContain('sensitive SQLite path');
   });
 
   it('discards a late response from the previous conversation', async () => {

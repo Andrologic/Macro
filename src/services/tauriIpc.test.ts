@@ -100,6 +100,38 @@ describe("tauriIpc confined web fetch", () => {
   });
 });
 
+describe("tauriIpc tool invocation journal notifications", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("refreshes the owning conversation after confirmed journal mutations", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const changed: string[] = [];
+    const onChange = (event: Event) => {
+      changed.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    };
+    window.addEventListener("macro:tool-invocations-changed", onChange);
+    try {
+      await tauriIpc.completeToolInvocation({
+        conversationId: "conversation-a", turnId: "turn-a", messageId: "message-a",
+        callId: "call-a", receiptId: "receipt-a",
+      });
+      await tauriIpc.markToolInvocationUnknown({
+        conversationId: "conversation-b", turnId: "turn-b", messageId: "message-b",
+        callId: "call-b",
+      });
+      expect(changed).toEqual(["conversation-a", "conversation-b"]);
+      expect(invokeCalls.map(({ command }) => command)).toEqual([
+        "db_complete_tool_invocation", "db_mark_tool_invocation_unknown",
+      ]);
+    } finally {
+      window.removeEventListener("macro:tool-invocations-changed", onChange);
+    }
+  });
+});
+
 describe("tauriIpc executeWorkspaceTool", () => {
   beforeEach(() => {
     invokeCalls.length = 0;
