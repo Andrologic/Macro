@@ -502,8 +502,12 @@ message assistant conserve son texte brut, le texte accepté et un coût
 `null` tant qu'aucun coût par tentative n'est attribuable. Avant une écriture
 partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publie
 le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
-écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Si
-le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses
+écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Quand
+un utilisateur arrête le stream, la tentative en cours, suivie en mémoire au fil
+des tokens, rejoint le message avant sa sauvegarde partielle. Quand
+une récupération de dépassement de contexte remplace le stream sur le même
+message, ses nouvelles tentatives s'ajoutent aux précédentes par identifiant.
+Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses
 tentatives. Son échec utilise la récupération de réponse non sauvegardée, qui
 retransmet aussi les tentatives. Un crash pendant un tour fournisseur ou après un échec d'écriture
 intermédiaire peut laisser ses derniers tokens et sa tentative hors de SQLite.

@@ -147,6 +147,7 @@ export interface StreamingChatOptions {
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
   onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
   onGenerationAttemptsUpdate?: (attempts: GenerationAttempt[]) => Promise<void> | void;
+  onGenerationAttemptProgress?: (attempt: GenerationAttempt) => void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;

@@ -346,6 +346,34 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     });
   }
 
+  for (const buffered of [false, true]) {
+    test(`stop persists the active ${buffered ? "buffered" : "visible"} generation attempt`, async () => {
+      const h = setup();
+      const params = launch("a");
+      const stream = h.start(params);
+      const attempt = {
+        id: "attempt-in-flight",
+        status: buffered ? "abandoned" as const : "partial" as const,
+        rawText: "Partial answer",
+        acceptedText: buffered ? "" : "Partial answer",
+        costUsd: null,
+      };
+      if (!buffered) stream.options.onToken("Partial answer");
+      stream.options.onGenerationAttemptProgress?.(attempt);
+
+      h.owner.stop("a");
+      stream.done.resolve();
+      await h.owner.drain("a");
+
+      expect(h.partials).toHaveLength(1);
+      expect(h.partials[0]).toMatchObject({
+        id: params.assistantMessage.id,
+        content: buffered ? "" : "Partial answer",
+        generation_attempts: [attempt],
+      });
+    });
+  }
+
   test("a failed attempt checkpoint leaves the provider result and final persistence intact", async () => {
     const h = setup();
     const params = launch("a");
@@ -464,6 +492,9 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       const h = setup();
       const params = launch("a");
       const old = h.start(params);
+      const initialAttempt = { id: "before-overflow", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
+      const recoveredAttempt = { id: "after-overflow", status: "completed" as const, rawText: "Recovered answer", acceptedText: "Recovered answer", costUsd: null };
+      await old.options.onGenerationAttemptsUpdate?.([initialAttempt]);
       const preparation = deferred<Awaited<ReturnType<ChatAssistantStreamPorts["prepare"]>>>();
       h.prepare.mockImplementationOnce(async () => preparation.promise);
       old.options.onError(new Error(`maximum context length is ${contextLimit} tokens`));
@@ -504,12 +535,16 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       expect(h.owner.read("a").phase).toBe("streaming");
       expect(recovered.options.consumePendingSteers?.()).toEqual([steer]);
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
-      recovered.options.onComplete(result("Recovered answer"));
+      recovered.options.onToken("Recovered answer");
+      await recovered.options.onGenerationAttemptsUpdate?.([recoveredAttempt]);
+      expect(h.messages.get(params.assistantMessage.id)?.generation_attempts).toEqual([initialAttempt, recoveredAttempt]);
+      recovered.options.onComplete({ ...result("Recovered answer"), generationAttempts: [recoveredAttempt] });
       recovered.done.resolve();
       await drain;
       await checkpoint();
 
       expect(h.saved.get(params.assistantMessage.id)?.visibleContent).toBe("Recovered answer");
+      expect(h.saved.get(params.assistantMessage.id)?.generationAttempts).toEqual([initialAttempt, recoveredAttempt]);
       expect(h.complete).toHaveBeenCalledTimes(1);
       expect(h.settled.mock.calls).toEqual([["a"]]);
       expect(h.owner.read("a").phase).toBe("idle");

@@ -115,6 +115,7 @@ export async function runToolCallingLoop(
           onDelta: (delta) => {
             streamedContent += delta;
             if (!bufferOutput) accumulator.appendProviderDelta(delta);
+            options.onGenerationAttemptProgress?.(interruptedAttempt());
           },
         });
       } catch (error) {

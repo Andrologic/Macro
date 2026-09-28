@@ -3,7 +3,7 @@ import type { GenerationAttempt } from '../../services/ai/contracts';
 
 export function GenerationAttemptDetails({ attempts }: { attempts?: GenerationAttempt[] }) {
   const { t } = useTranslation();
-  if (!attempts?.some((attempt) => attempt.status !== 'completed' || attempt.rawText !== attempt.acceptedText)) return null;
+  if (!attempts?.length || (attempts.length === 1 && attempts[0].status === 'completed' && attempts[0].rawText === attempts[0].acceptedText)) return null;
 
   return (
     <details className="mt-2 rounded-md border border-border bg-card/40 px-2.5 py-1.5 text-xs text-muted-foreground">

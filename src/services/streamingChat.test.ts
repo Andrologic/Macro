@@ -629,6 +629,7 @@ describe('streamingChat SSE stream handling', () => {
     const emitted: string[] = [];
     const onError = mock(() => undefined);
     const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
+    const attemptProgress: Array<NonNullable<StreamCompletionResult['generationAttempts']>[number]> = [];
 
     await streamChat({
       providerId: 'provider-1',
@@ -642,12 +643,17 @@ describe('streamingChat SSE stream handling', () => {
       onComplete: () => undefined,
       onError,
       onGenerationAttemptsUpdate: (attempts: NonNullable<StreamCompletionResult['generationAttempts']>) => { attemptUpdates.push(attempts); },
+      onGenerationAttemptProgress: (attempt: NonNullable<StreamCompletionResult['generationAttempts']>[number]) => { attemptProgress.push(attempt); },
     });
 
     expect(emitted.join('')).toBe('Partial.');
     expect(attemptUpdates.at(-1)).toEqual([
       expect.objectContaining({ status: 'partial', rawText: 'Partial.', acceptedText: 'Partial.', costUsd: null }),
     ]);
+    expect(attemptProgress.at(-1)).toMatchObject({
+      id: attemptUpdates.at(-1)?.[0]?.id,
+      status: 'partial', rawText: 'Partial.', acceptedText: 'Partial.',
+    });
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'ProviderRuntimeError',

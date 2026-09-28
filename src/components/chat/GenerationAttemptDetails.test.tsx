@@ -4,6 +4,16 @@ import '../../i18n';
 import { GenerationAttemptDetails } from './GenerationAttemptDetails';
 
 describe('GenerationAttemptDetails', () => {
+  it('shows separate completed provider turns even when neither text was discarded', () => {
+    const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
+      { id: 'tool-turn', status: 'completed', rawText: 'Reading.', acceptedText: 'Reading.', costUsd: null },
+      { id: 'answer-turn', status: 'completed', rawText: 'Answer.', acceptedText: 'Answer.', costUsd: null },
+    ]} />);
+    expect(html).toContain('data-attempt-id="tool-turn"');
+    expect(html).toContain('data-attempt-id="answer-turn"');
+    expect(html.match(/data-attempt-status="completed"/g)).toHaveLength(2);
+  });
+
   it('keeps abandoned text inspectable without presenting an unknown cost as zero', () => {
     const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
       { id: 'first', status: 'abandoned', rawText: 'discarded draft', acceptedText: '', costUsd: null },

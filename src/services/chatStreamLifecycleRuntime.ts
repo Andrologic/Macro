@@ -7,6 +7,7 @@ import {
 } from "./chatErrorPresentation";
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import type { StreamCompletionResult } from "./streamingChat";
+import { mergeGenerationAttempts } from "./ai/generationAttemptState";
 import { mergeToolTracesPreservingDeniedStatus, settleToolTraceRecovery } from "./toolTraceState";
 
 export interface ChatStreamLifecycleProviderContext {
@@ -329,9 +330,16 @@ export const createChatStreamLifecycleRuntime = (params: {
       }
 
       tokenControls.flushNow();
+      const completedResult = {
+        ...result,
+        generationAttempts: mergeGenerationAttempts(
+          adapters.getAssistantMessage(stream.assistantMessageId)?.generation_attempts,
+          result.generationAttempts,
+        ),
+      };
       applyAssistantStreamCompletion({
         assistantMessageId: stream.assistantMessageId,
-        result,
+        result: completedResult,
         adapters,
       });
       adapters.markProviderReachable(
@@ -349,7 +357,7 @@ export const createChatStreamLifecycleRuntime = (params: {
           result.visibleContent,
         );
         adapters.clearLiveStreamContextEstimate(stream.conversationId);
-        const persisted = await persistAssistantStreamResultAndConsolidate(result);
+        const persisted = await persistAssistantStreamResultAndConsolidate(completedResult);
         if (!persisted) {
           tokenControls.dispose();
           return;
@@ -384,7 +392,7 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext,
       );
 
-      const persisted = await persistAssistantStreamResultAndConsolidate(result);
+      const persisted = await persistAssistantStreamResultAndConsolidate(completedResult);
       if (persisted && (adapters.isTurnCurrent?.() ?? true)) {
         void adapters.syncMacroMetadataAfterStream(
           stream.modeAtSend,
