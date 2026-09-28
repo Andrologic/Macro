@@ -233,7 +233,27 @@ fn nonempty(value: &str, field: &str) -> DbResult<()> {
 }
 
 fn folded_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Match JavaScript's \s used by validateConversationGoalVerdict.
+    fn js_space(ch: char) -> bool {
+        matches!(ch, '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}'
+            | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}'
+            | '\u{205F}' | '\u{3000}' | '\u{FEFF}')
+    }
+    text.split(js_space)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn stored_criteria(criteria: &[String]) -> DbResult<String> {
+    let normalized: Vec<String> = criteria
+        .iter()
+        .map(|criterion| folded_text(criterion))
+        .collect();
+    if normalized.iter().any(String::is_empty) {
+        return Err(invalid("Goal success criteria cannot be blank"));
+    }
+    serde_json::to_string(&normalized).map_err(|error| invalid(error.to_string()))
 }
 
 // The frontend trims and collapses whitespace in verdict text before applying it.
@@ -292,12 +312,16 @@ fn validate_verdict_criteria(verdict: &GoalVerdict, expected: &[String]) -> DbRe
         if folded_text(criterion).is_empty()
             || folded_text(&result.criterion) != folded_text(criterion)
             || result.evidence.is_empty()
-            || result.evidence.iter().any(|evidence| {
-                folded_text(&evidence.source).is_empty()
-                    || folded_text(&evidence.finding).is_empty()
-            })
         {
             return Err(invalid("Verdict criterion or evidence is invalid"));
+        }
+        let mut seen_evidence = std::collections::HashSet::new();
+        for evidence in &result.evidence {
+            let source = folded_text(&evidence.source);
+            let finding = folded_text(&evidence.finding);
+            if source.is_empty() || finding.is_empty() || !seen_evidence.insert((source, finding)) {
+                return Err(invalid("Verdict evidence is empty or duplicated"));
+            }
         }
         if verdict.verdict == GoalVerdictKind::Achieved && result.status != GoalCriterionStatus::Met
         {
@@ -390,8 +414,7 @@ pub async fn activate_goal(
     nonempty(&input.conversation_id, "conversation id")?;
     nonempty(&input.goal_id, "goal id")?;
     nonempty(&input.objective, "objective")?;
-    let criteria =
-        serde_json::to_string(&input.success_criteria).map_err(|e| invalid(e.to_string()))?;
+    let criteria = stored_criteria(&input.success_criteria)?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     match (&input.replace_goal_id, input.replace_revision) {
@@ -431,8 +454,7 @@ pub async fn update_goal(
             "Auditing and achieved require durable audit transitions",
         ));
     }
-    let criteria =
-        serde_json::to_string(&input.success_criteria).map_err(|e| invalid(e.to_string()))?;
+    let criteria = stored_criteria(&input.success_criteria)?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current_status: Option<String> = sqlx::query_scalar("SELECT status FROM conversation_goals WHERE conversation_id = ? AND goal_id = ? AND is_current = 1")
@@ -772,7 +794,7 @@ mod tests {
             conversation_id: "parent".into(),
             goal_id: "goal-1".into(),
             objective: "Ship feature".into(),
-            success_criteria: vec!["Checks pass".into()],
+            success_criteria: vec!["  Checks   pass  ".into()],
             provider_id: None,
             model_id: None,
             reasoning_effort: None,
@@ -926,7 +948,13 @@ mod tests {
     #[tokio::test]
     async fn activation_update_and_replacement_preserve_revisions_and_criteria() {
         let (_temp, pool) = fixture().await;
-        let goal = activate_goal(&pool, activation()).await.unwrap();
+        let mut blank_activation = activation();
+        blank_activation.success_criteria = vec!["\u{feff} \t ".into()];
+        assert!(activate_goal(&pool, blank_activation).await.is_err());
+        assert!(get_current_goal(&pool, "parent").await.unwrap().is_none());
+        let mut formatted_activation = activation();
+        formatted_activation.success_criteria = vec!["\u{feff}Checks\u{00a0}pass  ".into()];
+        let goal = activate_goal(&pool, formatted_activation).await.unwrap();
         assert_eq!(goal.revision, 1);
         assert_eq!(goal.success_criteria, ["Checks pass"]);
         assert!(update_goal(
@@ -949,10 +977,21 @@ mod tests {
             goal_id: "goal-1".into(),
             expected_revision: 1,
             objective: "Ship and check".into(),
-            success_criteria: vec!["Tests pass".into()],
+            success_criteria: vec![" Tests   pass ".into()],
             status: GoalStatus::ActiveReady,
             reason: None,
         };
+        let mut blank_update = update.clone();
+        blank_update.success_criteria = vec!["\n  ".into()];
+        assert!(update_goal(&pool, blank_update).await.is_err());
+        assert_eq!(
+            get_current_goal(&pool, "parent")
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            1
+        );
         assert_eq!(
             update_goal(&pool, update.clone()).await.unwrap(),
             GoalCasOutcome::Applied
@@ -1155,7 +1194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_verdict_rejects_misaligned_or_unproven_criteria_and_missing_question() {
+    async fn native_ipc_verdict_rejects_invalid_criteria_evidence_and_question() {
         let mut wrong_criterion = verdict();
         wrong_criterion.criteria[0].criterion = "Other criterion".into();
         let mut missing_criterion = verdict();
@@ -1164,6 +1203,11 @@ mod tests {
         missing_evidence.criteria[0].evidence.clear();
         let mut empty_evidence_text = verdict();
         empty_evidence_text.criteria[0].evidence[0].finding = "  ".into();
+        let mut duplicate_evidence = verdict();
+        duplicate_evidence.criteria[0].evidence.push(GoalEvidence {
+            source: " test ".into(),
+            finding: " Pending ".into(),
+        });
         let mut unproven_achievement = verdict();
         unproven_achievement.verdict = GoalVerdictKind::Achieved;
         let mut missing_question = verdict();
@@ -1173,6 +1217,7 @@ mod tests {
             ("missing criterion", missing_criterion),
             ("missing evidence", missing_evidence),
             ("empty evidence text", empty_evidence_text),
+            ("duplicate evidence", duplicate_evidence),
             ("unproven achievement", unproven_achievement),
             ("missing question", missing_question),
         ] {
@@ -1193,6 +1238,9 @@ mod tests {
             .await;
             let mut application = application("audit-1", "turn-1", "run-1", 2);
             application.verdict = candidate;
+            let wire = serde_json::to_value(&application).unwrap();
+            let application: ApplyConversationGoalVerdictInput =
+                serde_json::from_value(wire).unwrap();
             assert!(apply_verdict(&pool, application).await.is_err(), "{case}");
             let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
             assert_eq!(
