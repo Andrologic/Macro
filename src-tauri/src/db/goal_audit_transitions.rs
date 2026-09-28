@@ -235,6 +235,19 @@ pub async fn record_goal_audit_transition(
         }
 
         if transition.state == AgentRunStatus::Running {
+            // A queued run can outlive its audit at startup. Only the current
+            // queued attempt may start; older attempts remain historical links.
+            let owner = sqlx::query("SELECT audit.current_run_id, audit.status AS audit_status, audit.goal_revision, goal.revision AS current_revision, goal.status AS goal_status, goal.is_current FROM conversation_goal_audit_runs AS link JOIN conversation_goal_audits AS audit ON audit.audit_id = link.audit_id JOIN conversation_goals AS goal ON goal.conversation_id = audit.conversation_id AND goal.goal_id = audit.goal_id WHERE link.run_id = ?")
+                .bind(&transition.run_id).fetch_optional(&mut *transaction).await?;
+            if owner.as_ref().is_some_and(|row| {
+                row.get::<&str, _>("current_run_id") != transition.run_id
+                    || row.get::<&str, _>("audit_status") != "queued"
+                    || row.get::<i64, _>("goal_revision") != row.get::<i64, _>("current_revision")
+                    || row.get::<&str, _>("goal_status") != "auditing"
+                    || row.get::<i64, _>("is_current") != 1
+            }) {
+                return Err(invalid("Goal audit run no longer owns the queued audit"));
+            }
             if transition.result.is_some() {
                 return Err(invalid("Running goal audit cannot have a terminal result"));
             }
@@ -739,6 +752,13 @@ mod tests {
         let mut conflict = queued;
         conflict.transition.occurred_at += 1;
         assert!(record_goal_audit_transition(&pool, conflict).await.is_err());
+        let audit_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM conversation_goal_audit_runs WHERE run_id = 'audit-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_links, 0);
         record_goal_audit_transition(&pool, running).await.unwrap();
         let linked = crate::db::agent_runs::link_goal_audit_child_conversation(
             &pool, "audit-1", &parent, &child,

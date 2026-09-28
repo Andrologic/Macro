@@ -813,13 +813,27 @@ mod tests {
         state: AgentRunStatus,
         raw_verdict: Option<serde_json::Value>,
     ) {
+        goal_audit_transitions::record_goal_audit_transition(
+            pool,
+            transition_input(id, sequence, state, raw_verdict),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn transition_input(
+        id: &str,
+        sequence: i64,
+        state: AgentRunStatus,
+        raw_verdict: Option<serde_json::Value>,
+    ) -> RecordGoalAuditTransitionInput {
         let result = (state == AgentRunStatus::Completed).then(|| {
             serde_json::json!({
                 "runId": id, "parentConversationId": "parent", "status": "completed",
                 "output": { "structured": raw_verdict.unwrap_or_else(|| serde_json::json!(verdict())) }
             })
         });
-        let input = RecordGoalAuditTransitionInput {
+        RecordGoalAuditTransitionInput {
             descriptor: (sequence == 0).then(|| CreateAgentRunInput {
                 id: Some(id.into()),
                 parent_conversation_id: "parent".into(),
@@ -846,10 +860,7 @@ mod tests {
                 result,
             },
             usage: AgentRunUsageInput::default(),
-        };
-        goal_audit_transitions::record_goal_audit_transition(pool, input)
-            .await
-            .unwrap();
+        }
     }
 
     async fn run(pool: &SqlitePool, id: &str) {
@@ -1370,6 +1381,12 @@ mod tests {
             );
             let goal = get_current_goal(&pool, "parent").await.unwrap().unwrap();
             assert_eq!((goal.revision, goal.status), (2, GoalStatus::Paused));
+            assert!(goal_audit_transitions::record_goal_audit_transition(
+                &pool,
+                transition_input("old-run", 1, AgentRunStatus::Running, None),
+            )
+            .await
+            .is_err());
             run(&pool, "resume-run").await;
             assert!(resume_audit(
                 &pool,
@@ -1395,6 +1412,17 @@ mod tests {
             let links: Vec<String> = sqlx::query_scalar("SELECT run_id FROM conversation_goal_audit_runs WHERE audit_id = 'audit-1' ORDER BY attempt")
                 .fetch_all(&pool).await.unwrap();
             assert_eq!(links, ["old-run", "resume-run"]);
+            assert!(goal_audit_transitions::record_goal_audit_transition(
+                &pool,
+                transition_input("old-run", 1, AgentRunStatus::Running, None),
+            )
+            .await
+            .is_err());
+            transition(&pool, "resume-run", 1, AgentRunStatus::Running).await;
+            assert_eq!(
+                get_audit(&pool, "audit-1").await.unwrap().unwrap().status,
+                GoalAuditStatus::Running
+            );
             assert!(resume_audit(
                 &pool,
                 ResumeConversationGoalAuditInput {
