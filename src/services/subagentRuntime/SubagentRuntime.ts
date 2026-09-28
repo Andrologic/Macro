@@ -470,6 +470,12 @@ export class SubagentRuntime<
     return snapshot ? cloneSnapshot(snapshot) : undefined;
   }
 
+  /** Drop a settled run when its owner no longer needs an in-memory snapshot. */
+  releaseRun(runId: string): boolean {
+    const record = this.#runs.get(runId);
+    return Boolean(record?.settled && this.#runs.delete(runId));
+  }
+
   listSnapshots(
     parentConversationId?: string,
   ): Array<SubagentRunSnapshot<TProgress>> {

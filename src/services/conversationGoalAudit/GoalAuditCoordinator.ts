@@ -38,6 +38,8 @@ const RESPONSE_FORMAT =
   'Return exactly one JSON object with these keys and no markdown: {"verdict":"continue|achieved|needs_user|cannot_progress","summary":"non-empty string","criteria":[{"criterion":"exact success criterion","status":"met|unmet|uncertain","evidence":[{"source":"non-empty source","finding":"non-empty finding"}]}],"feedback":"string","questionForUser":null,"confidence":0.0}. Return one criterion result for each success criterion, in the same order. Only needs_user may set questionForUser to a non-empty string. Achieved requires every criterion to be met.';
 const REGISTRATION_TIMEOUT_MS = 10_000;
 
+class RegistrationWaitAborted extends Error {}
+
 let fallbackRunSequence = 0;
 const defaultIdFactory = (): string => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -236,6 +238,12 @@ export class GoalAuditCoordinator<
         if (this.#activeByConversation.get(request.conversationId) === cycle) {
           this.#activeByConversation.delete(request.conversationId);
         }
+        try {
+          if ("releaseRun" in this.journal) this.journal.releaseRun?.(runId);
+        } catch (error) {
+          this.#notifyJournalError(error, descriptor);
+        }
+        this.#runtime.releaseRun(runId);
         this.#descriptors.delete(runId);
       });
     cycle.result = result;
@@ -305,6 +313,9 @@ export class GoalAuditCoordinator<
       try {
         await this.#awaitRegistration(registration, cycle.controller.signal);
       } catch (error) {
+        if (error instanceof RegistrationWaitAborted && cycle.cancellationReason) {
+          return this.#cancellationResult(request, runId, cycle.cancellationReason);
+        }
         this.#notifyJournalError(error, this.#descriptors.get(runId));
         return {
           status: "failed",
@@ -362,7 +373,7 @@ export class GoalAuditCoordinator<
         if (error !== undefined) reject(error);
         else resolve();
       };
-      const onAbort = () => finish(new Error("Goal audit registration wait aborted"));
+      const onAbort = () => finish(new RegistrationWaitAborted("Goal audit registration wait aborted"));
       void Promise.resolve(registration).then(() => finish(), finish);
       if (signal.aborted) {
         onAbort();

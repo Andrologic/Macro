@@ -52,5 +52,9 @@ describe("durable goal audit composition", () => {
       "transition:queued", "transition:running",
       "link:audit-run:parent:real-child-conversation", "stream:real-child-conversation",
     ]);
+    expect(() => coordinator.journal.registerRun({
+      runId: "audit-run", parentConversationId: "parent",
+      profile: "goal_auditor", depth: 1, prompt: "New audit",
+    })).not.toThrow();
   });
 });

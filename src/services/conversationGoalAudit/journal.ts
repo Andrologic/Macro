@@ -18,6 +18,8 @@ export interface GoalAuditJournal<
   TProgress extends SubagentProgressEvent = SubagentProgressEvent,
 > extends SubagentTransitionRecorder<unknown, TProgress> {
   registerRun(descriptor: GoalAuditRunDescriptor): void | Promise<void>;
+  /** Release transient run data after the coordinator has observed its result. */
+  releaseRun?(runId: string): void;
 }
 
 export interface InMemoryGoalAuditRun<

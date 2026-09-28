@@ -499,10 +499,8 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
 
     clock.advanceBy(50);
-    expect(await handle.result).toMatchObject({
-      status: "failed",
-      runId: "audit-1",
-      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    expect(await handle.result).toEqual({
+      status: "timed_out", runId: "audit-1", timeoutMs: 50,
     });
     expect(coordinator.isAuditActive("conversation-1")).toBe(false);
     expect(clock.timers.size).toBe(0);
@@ -525,10 +523,8 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request());
 
     expect(handle.cancel()).toBe(true);
-    expect(await handle.result).toMatchObject({
-      status: "failed",
-      runId: "audit-1",
-      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    expect(await handle.result).toEqual({
+      status: "cancelled", runId: "audit-1", reason: "child_cancelled",
     });
     journal.rejectRegistration(new Error("journal unavailable"));
     await Promise.resolve();
@@ -548,10 +544,8 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request());
 
     const disposal = coordinator.dispose();
-    expect(await handle.result).toMatchObject({
-      status: "failed",
-      runId: "audit-1",
-      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    expect(await handle.result).toEqual({
+      status: "cancelled", runId: "audit-1", reason: "runtime_disposed",
     });
     await disposal;
     journal.resolveRegistration();

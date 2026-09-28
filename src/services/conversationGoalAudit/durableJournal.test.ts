@@ -77,5 +77,12 @@ describe("DurableGoalAuditJournal", () => {
       .toThrow("Conflicting goal audit transition replay");
     expect(() => journal.recordTransition(transition(4, "completed")))
       .toThrow("Expected goal audit transition 3");
+    journal.releaseRun("run-1");
+    expect(() => journal.recordTransition(transition(2, "completed")))
+      .toThrow("Goal audit run is not registered");
+    expect(() => journal.registerRun({
+      runId: "run-1", parentConversationId: "parent-1", profile: "goal_auditor",
+      depth: 1, prompt: "Audit",
+    })).not.toThrow();
   });
 });

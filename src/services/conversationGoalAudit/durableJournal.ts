@@ -43,6 +43,12 @@ export class DurableGoalAuditJournal<TProgress extends SubagentProgressEvent = S
     this.#transitions.set(descriptor.runId, new Map());
   }
 
+  releaseRun(runId: string): void {
+    this.#descriptors.delete(runId);
+    this.#transitions.delete(runId);
+    this.#tails.delete(runId);
+  }
+
   claimRun(transition: SubagentTransition<unknown, TProgress> & {
     sequence: 0; previousState: null; state: "queued";
   }): Promise<void> {

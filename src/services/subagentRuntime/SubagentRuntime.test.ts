@@ -214,6 +214,21 @@ describe("SubagentRuntime", () => {
     });
   });
 
+  it("releases a settled run only after its result is available", async () => {
+    const { executor, runtime } = makeRuntime();
+    const handle = runtime.run({
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "release" },
+    });
+    expect(runtime.releaseRun(handle.runId)).toBe(false);
+    executor.complete("release");
+    expect((await handle.result).status).toBe("completed");
+    expect(runtime.releaseRun(handle.runId)).toBe(true);
+    expect(runtime.getSnapshot(handle.runId)).toBeUndefined();
+    expect(handle.cancel()).toBe(false);
+  });
+
   it("returns a stable id, structured output, metrics, and observable progress", async () => {
     const { executor, runtime } = makeRuntime();
     const observedKinds: string[] = [];
