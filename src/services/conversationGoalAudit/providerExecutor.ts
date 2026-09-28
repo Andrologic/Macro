@@ -1,14 +1,14 @@
 import type { StreamingChatOptions, StreamCompletionResult } from "../streamingChat";
 import { streamChat } from "../streamingChat";
 import { stripThinkingBlocksForModel } from "../ai/chatCompletionsCodec";
+import { filterToolIdsForInternalAgentProfile } from "../internalAgentProfile";
 import type { ChildTurnExecutor, SubagentProgressEvent } from "../subagentRuntime";
 import type { GoalAuditChildInput } from "./types";
 
-const READ_TOOLS = [
-  "read_file", "list", "read", "glob", "grep", "ast_grep",
+const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep", "ast_grep"] as const;
+const GIT_READ_TOOLS = [
   "git_status", "git_log", "git_branch_list", "git_diff", "git_get_tree",
 ] as const;
-const WORKSPACE_TOOLS = new Set<string>(READ_TOOLS.slice(0, 6));
 
 export interface GoalAuditProvider {
   providerId: string;
@@ -19,9 +19,21 @@ export interface GoalAuditProvider {
   workspacePath?: string;
 }
 
+export interface GoalAuditChildConversation {
+  id: string;
+  runId: string;
+  parentConversationId: string;
+}
+
 export interface GoalAuditProviderPorts {
   /** Resolve the provider for this child without reading the parent chat store. */
   resolveProvider(input: GoalAuditChildInput): GoalAuditProvider | Promise<GoalAuditProvider>;
+  /** Create or resume a durable child conversation linked to this parent and run; honor abort. */
+  resolveChildConversation(input: {
+    runId: string;
+    parentConversationId: string;
+    signal: AbortSignal;
+  }): GoalAuditChildConversation | Promise<GoalAuditChildConversation>;
   stream?: (options: StreamingChatOptions) => Promise<void>;
   /** Executes only an already authorized read tool. */
   executeReadTool: NonNullable<StreamingChatOptions["onToolCall"]>;
@@ -44,15 +56,33 @@ export const createGoalAuditProviderExecutor = (
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const provider = await ports.resolveProvider(input);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    const allowedToolIds = READ_TOOLS.filter((tool) =>
-      WORKSPACE_TOOLS.has(tool) ? capabilities.includes("workspace.read") : capabilities.includes("git.read"),
+    const childConversation = await ports.resolveChildConversation({
+      runId: request.childRunId,
+      parentConversationId: request.parentConversationId,
+      signal,
+    });
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    if (!childConversation || typeof childConversation.id !== "string" ||
+      !childConversation.id.trim() || childConversation.id.trim() !== childConversation.id ||
+      childConversation.id === request.childRunId ||
+      childConversation.id === request.parentConversationId ||
+      childConversation.runId !== request.childRunId ||
+      childConversation.parentConversationId !== request.parentConversationId) {
+      throw new Error("Invalid goal auditor child conversation binding.");
+    }
+    const allowedToolIds = filterToolIdsForInternalAgentProfile(
+      [
+        ...(capabilities.includes("workspace.read") ? WORKSPACE_READ_TOOLS : []),
+        ...(capabilities.includes("git.read") ? GIT_READ_TOOLS : []),
+      ],
+      input.profile,
     );
     const allowed = new Set<string>(allowedToolIds);
     let completion: StreamCompletionResult | undefined;
     let failure: Error | undefined;
     await (ports.stream ?? streamChat)({
       sessionId: request.childRunId,
-      conversationId: request.childRunId,
+      conversationId: childConversation.id,
       internalAgentProfile: "goal_auditor",
       providerId: provider.providerId,
       providerType: provider.providerType,
