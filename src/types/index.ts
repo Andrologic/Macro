@@ -25,6 +25,16 @@ export type ChatCompletionReason =
   | 'tool_turn_limit'
   | 'post_tool_empty_fallback'
   | (string & {});
+export interface GenerationAttempt {
+  id: string;
+  status: 'completed' | 'partial' | 'abandoned';
+  /** Text emitted by this provider request, before overlap removal. */
+  rawText: string;
+  /** Portion accepted into the assistant response. */
+  acceptedText: string;
+  /** Null means the provider did not report an attributable cost. */
+  costUsd: number | null;
+}
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
@@ -1269,7 +1279,7 @@ export interface ChatMessage {
   provider_turn_state?: ProviderTurnState;
   context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
-  generation_attempts?: import('../services/ai/contracts').GenerationAttempt[];
+  generation_attempts?: GenerationAttempt[];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 }
