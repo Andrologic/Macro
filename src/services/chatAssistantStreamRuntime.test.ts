@@ -129,7 +129,7 @@ function setup() {
       completed: mock(() => undefined),
       removeEmpty: (id) => {
         const message = messages.get(id);
-        if (message && !message.content && !message.tool_traces?.length) messages.delete(id);
+        if (message && !message.content && !message.tool_traces?.length && !message.generation_attempts?.length) messages.delete(id);
       },
     },
     persistence: {
@@ -566,6 +566,26 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       expect(h.owner.read("a").phase).toBe("idle");
     });
   }
+
+  test("failed overflow preparation retains and retries persistence of the first attempt", async () => {
+    const h = setup();
+    const params = launch("a");
+    const old = h.start(params);
+    const attempt = { id: "overflow-first", status: "partial" as const, rawText: "", acceptedText: "", costUsd: null };
+    h.partial.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+    await old.options.onGenerationAttemptsUpdate?.([attempt]);
+    h.prepare.mockRejectedValueOnce(new Error("compaction failed"));
+
+    old.options.onError(new Error("maximum context length is 128000 tokens"));
+    old.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.owner.read("a")).toMatchObject({ phase: "error", assistantMessageId: params.assistantMessage.id });
+    expect(h.messages.get(params.assistantMessage.id)?.generation_attempts).toEqual([attempt]);
+    expect(h.partials.at(-1)?.generation_attempts).toEqual([attempt]);
+    expect(h.partial).toHaveBeenCalledTimes(2);
+    expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
+  });
 
   test("changing external selection keeps tool execution and metadata bound to the sending workspace", async () => {
     const h = setup();

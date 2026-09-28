@@ -497,7 +497,8 @@ de tentative distincte lors d'une récupération du même tour. Un stream rempla
 successeur et l'attente de fin suit les remplacements dus à la récupération.
 
 Cette identité de stream ne désigne pas une requête modèle. `toolCallingLoop`
-attribue un identifiant distinct à chaque tour fournisseur qu'il pilote ; le
+attribue un identifiant distinct à chaque requête fournisseur, y compris les
+renvois internes des transports HTTP et natif ; le
 message assistant conserve son texte brut, le texte accepté et un coût
 `null` tant qu'aucun coût par tentative n'est attribuable. Avant une écriture
 partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publie
@@ -505,7 +506,8 @@ le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
 écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Quand
 un utilisateur arrête le stream, la tentative en cours, suivie en mémoire au fil
 des tokens ou dès l'envoi de la requête, rejoint le message avant sa sauvegarde
-partielle. Chaque renvoi HTTP interne reçoit aussi un nouvel identifiant. Quand
+partielle. Si la préparation après un dépassement de contexte échoue, Macro
+garde les tentatives déjà enregistrées sur le message assistant. Quand
 une récupération de dépassement de contexte remplace le stream sur le même
 message, ses nouvelles tentatives s'ajoutent aux précédentes par identifiant.
 Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses

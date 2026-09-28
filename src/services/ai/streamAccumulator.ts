@@ -90,15 +90,14 @@ export const createStreamAccumulator = (
     publishToolTraces();
   };
 
-  const markRunningToolTracesDone = () => {
+  const settleRunningToolTracesUnknown = () => {
     let changed = false;
     for (const toolCallId of toolTraceOrder) {
       const trace = toolTraces.get(toolCallId);
-      if (!trace || trace.status !== 'running') continue;
+      if (!trace || trace.status !== 'running' || trace.recovery_state === 'unknown') continue;
       toolTraces.set(toolCallId, {
         ...trace,
-        status: 'done',
-        completed_at_ms: trace.completed_at_ms ?? Date.now(),
+        recovery_state: 'unknown',
       });
       changed = true;
     }
@@ -107,10 +106,10 @@ export const createStreamAccumulator = (
     }
   };
 
-  const appendVisibleChunk = (chunk: string, markToolsDone = true) => {
+  const appendVisibleChunk = (chunk: string, settleTools = true) => {
     if (!chunk) return;
-    if (markToolsDone) {
-      markRunningToolTracesDone();
+    if (settleTools) {
+      settleRunningToolTracesUnknown();
     }
     visibleContent += chunk;
     options.onToken(chunk);
@@ -127,7 +126,7 @@ export const createStreamAccumulator = (
     appendSystemChunk(chunk: string, markToolsDone = false) {
       appendVisibleChunk(chunk, markToolsDone);
     },
-    markRunningToolTracesDone,
+    settleRunningToolTracesUnknown,
     upsertToolTrace,
     upsertToolTraceFromProvider(trace: ToolTrace) {
       upsertToolTrace(trace);
@@ -213,7 +212,7 @@ export const createStreamAccumulator = (
       return buildHiddenContext(false);
     },
     buildResult(): StreamCompletionResult {
-      markRunningToolTracesDone();
+      settleRunningToolTracesUnknown();
       return {
         visibleContent,
         toolTraces: snapshotToolTraces(),

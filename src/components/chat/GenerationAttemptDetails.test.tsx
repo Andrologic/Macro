@@ -4,6 +4,16 @@ import '../../i18n';
 import { GenerationAttemptDetails } from './GenerationAttemptDetails';
 
 describe('GenerationAttemptDetails', () => {
+  it('makes a single completed attempt and its unknown cost inspectable', () => {
+    const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
+      { id: 'only-turn', status: 'completed', rawText: 'Answer.', acceptedText: 'Answer.', costUsd: null },
+    ]} />);
+    expect(html).toContain('data-attempt-id="only-turn"');
+    expect(html).toContain('Attempt text: Answer.');
+    expect(html).toContain('Text kept in response: Answer.');
+    expect(html).toContain('cost unknown');
+  });
+
   it('shows separate completed provider turns even when neither text was discarded', () => {
     const html = renderToStaticMarkup(<GenerationAttemptDetails attempts={[
       { id: 'tool-turn', status: 'completed', rawText: 'Reading.', acceptedText: 'Reading.', costUsd: null },

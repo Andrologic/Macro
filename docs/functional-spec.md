@@ -322,7 +322,7 @@ Un message accepté en file pendant un tour actif est sauvegardé localement ave
 
 Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
-Quand une réponse comporte plusieurs tentatives de génération, le chat conserve l'identité de chaque requête fournisseur suivie par sa boucle, y compris les renvois HTTP internes, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent consultables séparément. Un coût non attribuable à une tentative est affiché comme inconnu, jamais comme nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
+Pour chaque réponse, le chat rend consultable l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent consultables séparément. Un coût non attribuable à une tentative est affiché comme inconnu, jamais comme nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
@@ -785,7 +785,8 @@ l'archivage et la fin de tâche invalident l'attente.
 
 Les traces d'outils distinguent un résultat terminé ou refusé, une exécution
 encore vivante dans le tour courant, une approbation restaurée qui permet une
-nouvelle demande, et une issue inconnue après interruption. Une trace inconnue
+nouvelle demande, et une issue inconnue après interruption ou fin du tour sans
+résultat d'outil confirmé. Une trace inconnue
 n'autorise aucun rejeu automatique. La consultation du résultat d'une mutation
 distante par son identifiant durable reste propre à ce transport ; elle ne rend
 pas interrogeables les autres outils ni les effets externes sans journal de résultat.

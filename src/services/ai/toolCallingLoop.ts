@@ -260,7 +260,7 @@ export async function runToolCallingLoop(
       }
       turnCount += 1;
       if (maxTurns !== null && toolResults.length && turnCount >= maxTurns) {
-        accumulator.markRunningToolTracesDone();
+        accumulator.settleRunningToolTracesUnknown();
         return complete('tool_turn_limit');
       }
     }

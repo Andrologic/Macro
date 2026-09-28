@@ -357,14 +357,25 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         });
         await maybeMarkImplementTaskFailedAfterStreamError();
         if (ports.owner.matches(identity, "overflow_recovery")) {
-          ports.messages.removeEmpty(params.assistantMessage.id);
+          const recordedMessage = ports.messages.get(params.assistantMessage.id);
+          const hasRecordedAttempt = Boolean(recordedMessage?.generation_attempts?.length);
+          if (!hasRecordedAttempt) ports.messages.removeEmpty(params.assistantMessage.id);
           ports.owner.set(params.conversationId, {
             phase: "error", sessionId: params.sessionId, turnId: streamTurnId,
-            assistantMessageId: null, abortController: null, lastError: message,
+            assistantMessageId: hasRecordedAttempt ? params.assistantMessage.id : null,
+            abortController: null, lastError: message,
             lastErrorOrigin: "macro", lastErrorDisplayTarget: "composer",
           }, { globalLastError: message });
+          if (hasRecordedAttempt && recordedMessage) {
+            try {
+              await ports.persistence.partial(recordedMessage);
+            } catch (persistError) {
+              console.warn("Failed to persist generation attempts after overflow recovery error:", persistError);
+            }
+          } else {
+            await deleteEmptyAssistantMessageFromDb();
+          }
         }
-        await deleteEmptyAssistantMessageFromDb();
         return true;
       }
     };

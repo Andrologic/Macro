@@ -1168,6 +1168,19 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('keeps an unconfirmed tool trace unknown when the provider turn ends', async () => {
+    const { __testables } = await loadStreamingChat();
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+    });
+    accumulator.upsertToolTraceFromProvider({ tool_call_id: 'unconfirmed', tool_name: 'read', status: 'running' });
+
+    expect(accumulator.buildResult().toolTraces).toEqual([
+      expect.objectContaining({ tool_call_id: 'unconfirmed', status: 'running', recovery_state: 'unknown' }),
+    ]);
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 

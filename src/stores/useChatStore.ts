@@ -8496,7 +8496,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       !targetMessage ||
       targetMessage.role !== "assistant" ||
       targetMessage.content.trim().length > 0 ||
-      (targetMessage.tool_traces?.length ?? 0) > 0
+      (targetMessage.tool_traces?.length ?? 0) > 0 ||
+      (targetMessage.generation_attempts?.length ?? 0) > 0
     ) {
       return {};
     }
