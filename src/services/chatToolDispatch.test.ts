@@ -2,6 +2,8 @@ import { describe, expect, mock, test } from 'bun:test';
 import { createChatToolDispatch, classifyChatToolEffect, type ChatToolDispatchPorts, type ChatToolInvocationJournal } from './chatToolDispatch';
 import type { FrozenToolCallContext } from './chatStreamContracts';
 import type { ToolInvocation } from '../types/generated/ipc';
+import { chatToolInvocationJournal } from './chatToolInvocationJournal';
+import { __remoteKernelApiTestables, executeRemoteWorkspaceTool } from './remoteKernelApi';
 
 const invocation = {} as ToolInvocation;
 
@@ -14,6 +16,7 @@ function fixture() {
   } as unknown as FrozenToolCallContext;
   const recorded = new Set<string>();
   const journal: ChatToolInvocationJournal = {
+    isRemoteRuntime: () => false,
     record: mock(async (input) => {
       events.push(`record:${input.toolName}:${input.effectClass}`);
       const key = `${input.conversationId}:${input.turnId}:${input.messageId}:${input.callId}`;
@@ -137,5 +140,68 @@ describe('durable Chat tool dispatch', () => {
       toolName: tools[12].id, effectClass: 'external_effect', arguments: { key: 'value' },
     });
     expect(f.execute).toHaveBeenCalledWith(operation, tools[12].id, { key: 'value' }, 'mcp-call', expect.any(Function));
+  });
+
+  test('keeps remote reads and mutations on the existing executionId transport', async () => {
+    const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
+    const previousUrl = process.env.VITE_REMOTE_API_BASE_URL;
+    const previousFetch = globalThis.fetch;
+    const sent: Array<{ tool_id: string; execution_id: string }> = [];
+    try {
+      process.env.VITE_BACKEND_TRANSPORT = 'remote';
+      process.env.VITE_REMOTE_API_BASE_URL = 'http://127.0.0.1:8787';
+      globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url).includes('/mode-policy')) {
+          return new Response(JSON.stringify({ allowed_tool_ids: ['read', 'write'], enforce_macro_only_writes: false,
+            capabilities: ['bounded_tool_output_v1', 'content_revisions_v1', 'idempotent_tool_execution_v1'] }),
+          { headers: { 'content-type': 'application/json' } });
+        }
+        const body = JSON.parse(String(init?.body)) as { tool_id: string; execution_id: string };
+        sent.push(body);
+        return new Response(JSON.stringify({ result: `${body.tool_id} confirmed` }),
+          { headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch;
+
+      const f = fixture();
+      expect(chatToolInvocationJournal.isRemoteRuntime()).toBe(true);
+      const remoteExecute = mock<ChatToolDispatchPorts['execute']>((operation, name, args, callId) =>
+        executeRemoteWorkspaceTool({ mode: 'Implement', toolId: name, args,
+          invocationId: `${operation.conversationId}:${operation.turnId}:${callId}` }));
+      const dispatch = createChatToolDispatch(f.operation, {
+        journal: chatToolInvocationJournal, execute: remoteExecute,
+        preserve: async (_operation, _name, _callId, value) => value,
+        boundError: async (_operation, _name, _callId, error) => error,
+      }, () => true, () => {});
+      expect(await dispatch('read', { path: 'sample.txt' }, 'read-call')).toBe('read confirmed');
+      expect(await dispatch('write', { path: 'sample.txt', content: 'next' }, 'write-call')).toBe('write confirmed');
+      expect(sent.map(item => item.tool_id)).toEqual(['read', 'write']);
+      expect(sent.every(item => item.execution_id.length > 0)).toBe(true);
+      expect(await dispatch('write', { path: 'sample.txt', content: 'next' }, '')).toMatchObject({ isError: true });
+      expect(sent).toHaveLength(2);
+    } finally {
+      if (previousTransport === undefined) delete process.env.VITE_BACKEND_TRANSPORT;
+      else process.env.VITE_BACKEND_TRANSPORT = previousTransport;
+      if (previousUrl === undefined) delete process.env.VITE_REMOTE_API_BASE_URL;
+      else process.env.VITE_REMOTE_API_BASE_URL = previousUrl;
+      globalThis.fetch = previousFetch;
+      __remoteKernelApiTestables.resetDurableMutationIntents();
+    }
+  });
+
+  test('keeps the SQLite journal when Tauri IPC is present with remote services', () => {
+    const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    try {
+      process.env.VITE_BACKEND_TRANSPORT = 'remote';
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true, value: { __TAURI_INTERNALS__: { invoke: () => undefined } },
+      });
+      expect(chatToolInvocationJournal.isRemoteRuntime()).toBe(false);
+    } finally {
+      if (previousTransport === undefined) delete process.env.VITE_BACKEND_TRANSPORT;
+      else process.env.VITE_BACKEND_TRANSPORT = previousTransport;
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
   });
 });

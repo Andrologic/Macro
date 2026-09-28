@@ -1523,14 +1523,21 @@ Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
 l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin confirme la
 réponse de cet exécuteur, pas l'acceptation par le fournisseur Copilot. Une
 annulation, une exception de transport ou une réponse non confirmée laisse
-l'intention `unknown`, sans rejeu automatique. Le mode frontend-only distant ne
-dispose pas encore d'un port durable pour ce journal de conversation : le
-dispatch refuse donc les appels d'outils, y compris les lectures, avant tout
-effet. La reprise propre à `remoteKernelApi` pour les mutations déjà envoyées
-reste distincte. Le raccordement de son `execution_id` au journal de
-conversation exige un contrat distant de réservation préalable et de reçu ;
-aucune correspondance n'est déduite de l'identifiant d'appel local. L'UI des
-invocations inconnues relève d'un lot séparé.
+l'intention locale `unknown`, sans rejeu automatique. Le mode frontend-only
+distant conserve son chemin d'exécution sans écrire dans le journal SQLite
+`tool_invocations`. Pour `write`, `edit`, `delete`, `apply_patch` et les mutations
+Git prises en charge, `remoteKernelApi` utilise déjà l'`invocationId` composé
+de la conversation, du tour et de l'appel, une intention conservée dans le
+stockage du navigateur, un `execution_id` et le journal du noyau distant pour
+retrouver un résultat perdu. Cette identité ne contient pas l'identifiant du
+message et l'intention navigateur est effacée après une réponse confirmée :
+elle ne garantit donc pas l'unicité d'une invocation de conversation après une
+réussite. Les lectures et les autres outils distants ne bénéficient pas non
+plus du journal SQLite du Chat. Le raccordement de l'`execution_id` au journal
+de conversation exige un
+contrat distant de réservation préalable et de reçu ; aucune correspondance
+n'est déduite de l'identifiant d'appel local. L'UI des invocations inconnues
+relève d'un lot séparé.
 La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
 avant de migrer sa copie temporaire, ce qui accepte les archives antérieures à
 la migration du journal sans assouplir le contrôle des objets SQLite existants.

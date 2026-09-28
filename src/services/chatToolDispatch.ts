@@ -8,6 +8,8 @@ import { isMCPToolId } from './mcpToolNames';
 import type { CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult, ToolInvocation, ToolInvocationIdentity, ToolEffectClass } from '../types/generated/ipc';
 
 export interface ChatToolInvocationJournal {
+  /** The remote kernel has its own execution journal for supported mutations. */
+  isRemoteRuntime(): boolean;
   record(input: RecordToolInvocationInput): Promise<RecordToolInvocationResult>;
   complete(input: CompleteToolInvocationInput): Promise<ToolInvocation>;
   markUnknown(identity: ToolInvocationIdentity): Promise<ToolInvocation>;
@@ -86,6 +88,13 @@ export function createChatToolDispatch(
         canonicalArgs = JSON.parse(JSON.stringify(executionArgs)) as Record<string, unknown>;
       } catch {
         return journalFailure('Tool execution refused because its arguments are not valid JSON.');
+      }
+      // Remote mode has no SQLite conversation journal. Its workspace mutation
+      // transport owns the executionId, durable intent, and status recovery.
+      // Keep this path on its existing contract until a remote conversation
+      // journal can reserve the same executionId before dispatch.
+      if (ports.journal.isRemoteRuntime()) {
+        return ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
       }
       try {
         const recorded = await ports.journal.record({
