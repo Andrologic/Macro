@@ -200,4 +200,33 @@ describe('shared tool batch', () => {
     })).rejects.toMatchObject({ name: 'AbortError' });
     expect(published).toEqual(['one']);
   });
+
+  it('keeps a completed read in provider history when a later concurrent read is cancelled', async () => {
+    const controller = new AbortController();
+    let releaseSecond!: (value: string) => void;
+    const second = new Promise<string>((resolve) => { releaseSecond = resolve; });
+    let publishedFirst!: () => void;
+    const firstPublished = new Promise<void>((resolve) => { publishedFirst = resolve; });
+    const providerOrder: string[] = [];
+    const acc = accumulator();
+    const pending = runToolBatch({
+      calls: [call('read', 'one'), call('grep', 'two')], messages: [],
+      options: { ...options((_name, _args, id) => id === 'two' ? second : 'first'), signal: controller.signal },
+      accumulator: acc, allowedTools: new Set(['read', 'grep']), schemas: new Map(),
+      batchId: 'fixture', usedToolNames: new Set(),
+      onCompletedResult: (result) => {
+        providerOrder.push(result.tool_call_id);
+        if (result.tool_call_id === 'one') publishedFirst();
+      },
+    });
+    await firstPublished;
+    expect(providerOrder).toEqual(['one']);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    releaseSecond('late');
+    await Promise.resolve();
+    expect(providerOrder).toEqual(['one']);
+    expect(acc.addHiddenToolContext).toHaveBeenCalledWith('one', 'read', undefined, 'first');
+    expect(acc.addHiddenToolContext).not.toHaveBeenCalledWith('two', 'grep', expect.anything(), 'late');
+  });
 });

@@ -5,6 +5,7 @@ import type { StreamMessage, StreamingChatOptions, ToolCall, ToolCallResolution,
 import { formatToolExecutionError, normalizeToolCallResolution, throwIfToolAborted } from './toolCallResolution';
 import { formatToolTraceDetail, formatToolUsageLabel } from './toolPresentation';
 import { executeFallbackTool } from './fallbackTools';
+import { isParallelSafeReadTool, MAX_PARALLEL_READS } from './toolExecutionEffects';
 
 export function validateToolInvocation(params: {
   toolName: string;
@@ -61,14 +62,6 @@ export interface ToolBatchAccumulator {
   addHiddenContextBlock(block: string | undefined): void;
   appendSystemChunk(chunk: string, includeInHiddenContext?: boolean): void;
 }
-
-// Only built-in workspace/Git reads have an audited effect contract. Unknown,
-// interactive, remote and MCP tools retain sequential execution.
-const PARALLEL_READ_TOOL_IDS = new Set([
-  'read', 'list', 'glob', 'grep', 'ast_grep',
-  'git_status', 'git_log', 'git_diff', 'git_get_tree', 'git_branch_list',
-]);
-const MAX_PARALLEL_READS = 3;
 
 interface ToolBatchParams {
   calls: ToolCall[];
@@ -181,22 +174,28 @@ async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: num
   const toolResults: ToolResult[] = [];
   let interruptResolution: ToolInterruptResolution | null = null;
   let flushed = 0;
+  // Attach both handlers now: an unobserved sibling must not reject while an
+  // earlier read is still pending. Only the completed prefix is published.
+  const settled = perCall.map((item) => item.run.then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason }),
+  ));
   try {
-    const allSettled = Promise.allSettled(perCall.map((item) => item.run));
-    let removeAbortListener: () => void = () => undefined;
-    const settled = options.signal
-      ? await Promise.race([
-          allSettled,
-          new Promise<never>((_resolve, reject) => {
-            const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
-            options.signal!.addEventListener('abort', onAbort, { once: true });
-            removeAbortListener = () => options.signal!.removeEventListener('abort', onAbort);
-            if (options.signal!.aborted) onAbort();
-          }),
-        ]).finally(() => removeAbortListener())
-      : await allSettled;
     throwIfToolAborted(options.signal);
-    for (const [index, outcome] of settled.entries()) {
+    for (const [index, pending] of settled.entries()) {
+      let removeAbortListener: () => void = () => undefined;
+      const outcome = options.signal
+        ? await Promise.race([
+            pending,
+            new Promise<never>((_resolve, reject) => {
+              const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
+              options.signal!.addEventListener('abort', onAbort, { once: true });
+              removeAbortListener = () => options.signal!.removeEventListener('abort', onAbort);
+              if (options.signal!.aborted) onAbort();
+            }),
+          ]).finally(() => removeAbortListener())
+        : await pending;
+      throwIfToolAborted(options.signal);
       if (outcome.status === 'rejected') throw outcome.reason;
       for (const event of perCall[index].events) event();
       toolResults.push(...outcome.value.toolResults);
@@ -223,7 +222,7 @@ export async function runToolBatch(params: ToolBatchParams): Promise<ToolBatchRe
     throwIfToolAborted(params.options.signal);
     let readCount = 0;
     while (readCount < MAX_PARALLEL_READS &&
-      PARALLEL_READ_TOOL_IDS.has(params.calls[index + readCount]?.function.name ?? '')) readCount += 1;
+      isParallelSafeReadTool(params.calls[index + readCount]?.function.name ?? '')) readCount += 1;
     const count = readCount > 1 ? readCount : 1;
     const batch = { ...params, calls: params.calls.slice(index, index + count), orderOffset: index, questionCount };
     const result = count > 1
