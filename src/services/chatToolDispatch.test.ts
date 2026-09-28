@@ -28,19 +28,22 @@ function fixture() {
     markUnknown: mock(async () => { events.push('unknown'); return invocation; }),
   };
   const execute = mock<ChatToolDispatchPorts['execute']>(async () => { events.push('execute'); return 'confirmed result'; });
+  const preserve = mock<ChatToolDispatchPorts['preserve']>(async (_operation, _name, _callId, value) => {
+    events.push('preserve');
+    return value;
+  });
   const dispatch = createChatToolDispatch(operation, {
-    journal, execute,
-    preserve: async (_operation, _name, _callId, value) => { events.push('preserve'); return value; },
+    journal, execute, preserve,
     boundError: async (_operation, _name, _callId, error) => error,
   }, () => true, () => {});
-  return { operation, controller, journal, execute, dispatch, events };
+  return { operation, controller, journal, execute, preserve, dispatch, events };
 }
 
 describe('durable Chat tool dispatch', () => {
   test('records before effect, completes after executor response, and refuses a duplicate', async () => {
     const f = fixture();
     expect(await f.dispatch('write', { path: 'file.txt', content: 'text' }, 'call')).toBe('confirmed result');
-    expect(f.events).toEqual(['record:write:workspace_mutation', 'execute', 'complete', 'preserve']);
+    expect(f.events).toEqual(['record:write:workspace_mutation', 'execute', 'preserve', 'complete']);
     expect((f.journal.record as ReturnType<typeof mock>).mock.calls[0]?.[0]).toMatchObject({
       conversationId: 'conversation', turnId: 'turn', messageId: 'message', callId: 'call',
       arguments: { path: 'file.txt', content: 'text' }, remoteExecutionId: null,
@@ -103,7 +106,24 @@ describe('durable Chat tool dispatch', () => {
     const f = fixture();
     f.journal.complete = async () => { throw new Error('commit failed'); };
     expect(await f.dispatch('write', {}, 'unconfirmed')).toMatchObject({ isError: true });
-    expect(f.events).toEqual(['record:write:workspace_mutation', 'execute', 'unknown', 'preserve']);
+    expect(f.events).toEqual(['record:write:workspace_mutation', 'execute', 'preserve', 'unknown']);
+  });
+
+  test('keeps an invocation unknown if result preservation fails or is interrupted', async () => {
+    const failed = fixture();
+    failed.preserve.mockImplementation(async () => { throw new Error('artifact write failed'); });
+    await expect(failed.dispatch('write', {}, 'preserve-failed')).rejects.toThrow('artifact write failed');
+    expect(failed.events).toEqual(['record:write:workspace_mutation', 'execute', 'unknown']);
+    expect(failed.journal.complete).not.toHaveBeenCalled();
+
+    const stopped = fixture();
+    stopped.preserve.mockImplementation(async (_operation, _name, _callId, value) => {
+      stopped.controller.abort();
+      return value;
+    });
+    expect(await stopped.dispatch('write', {}, 'preserve-stopped')).toMatchObject({ errorKind: 'aborted' });
+    expect(stopped.events).toEqual(['record:write:workspace_mutation', 'execute', 'unknown']);
+    expect(stopped.journal.complete).not.toHaveBeenCalled();
   });
 
   test('keeps completed local separate from the provider acceptance receipt', async () => {
@@ -111,7 +131,7 @@ describe('durable Chat tool dispatch', () => {
     expect(await f.dispatch('read', {}, 'provider-call')).toBe('confirmed result');
     expect(f.journal.complete).toHaveBeenCalledTimes(1);
     // This dispatch has no provider submission ID or accepted-submission state.
-    expect(f.events).toEqual(['record:read:read_only', 'execute', 'complete', 'preserve']);
+    expect(f.events).toEqual(['record:read:read_only', 'execute', 'preserve', 'complete']);
   });
 
   test('classifies unknown and MCP tools as external effects', () => {

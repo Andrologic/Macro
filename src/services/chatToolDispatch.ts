@@ -73,6 +73,11 @@ export function createChatToolDispatch(
     progress();
     let normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
+    const journalState: { localIntent: ToolInvocationIdentity | null } = { localIntent: null };
+    const markUnknown = async () => {
+      if (!journalState.localIntent) return;
+      try { await ports.journal.markUnknown(journalState.localIntent); } catch { /* Pending becomes unknown on restart. */ }
+    };
     const executeJournaled = async (name: string, executionArgs: Record<string, unknown>) => {
       const identity: ToolInvocationIdentity = {
         conversationId: operation.conversationId,
@@ -104,12 +109,10 @@ export function createChatToolDispatch(
         if (!recorded.is_new) {
           return journalFailure('Tool execution refused because this invocation was already recorded. Inspect its outcome before retrying.');
         }
+        journalState.localIntent = identity;
       } catch {
         return journalFailure('Tool execution refused because its durable invocation journal is unavailable.');
       }
-      const markUnknown = async () => {
-        try { await ports.journal.markUnknown(identity); } catch { /* Pending becomes unknown on restart. */ }
-      };
       if (!isCurrent()) {
         await markUnknown();
         return ABORTED;
@@ -127,14 +130,6 @@ export function createChatToolDispatch(
         return result === undefined
           ? journalFailure('Tool execution returned no confirmed result. Inspect its outcome before retrying.')
           : ABORTED;
-      }
-      try {
-        // This receipt confirms only the executor response. Copilot's provider
-        // submission receipt remains a separate requirement for replay.
-        await ports.journal.complete({ ...identity, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
-      } catch {
-        await markUnknown();
-        return journalFailure('Tool execution returned, but its durable completion could not be confirmed. Inspect the outcome before retrying.');
       }
       return result;
     };
@@ -166,12 +161,37 @@ export function createChatToolDispatch(
       throw bounded;
     }
     if (!isCurrent()) {
+      await markUnknown();
       // Preserve explicit denial without starting a new artifact write after Stop.
       return typeof resolution === "object" && resolution?.kind === "result" && resolution.errorKind === "permission"
         ? resolution : ABORTED;
     }
-    const preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
-    if (!isCurrent()) return ABORTED;
+    let preserved: ToolCallResolution | string | void;
+    try {
+      preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
+    } catch (error) {
+      await markUnknown();
+      if (!isCurrent()) return ABORTED;
+      throw await ports.boundError(operation, normalizedName, toolCallId, error);
+    }
+    if (!isCurrent()) {
+      await markUnknown();
+      return ABORTED;
+    }
+    if (journalState.localIntent) {
+      if (preserved === undefined) {
+        await markUnknown();
+        return journalFailure('Tool result could not be preserved. Inspect the outcome before retrying.');
+      }
+      try {
+        // Confirm the executor response after optional large-result preservation.
+        // Short results are not journaled; Copilot acceptance is separate.
+        await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
+      } catch {
+        await markUnknown();
+        return journalFailure('Tool result was preserved, but its durable completion could not be confirmed. Inspect the outcome before retrying.');
+      }
+    }
     return normalizeLegacyToolExecutionResult(normalizedName, preserved);
   };
 }

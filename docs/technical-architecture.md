@@ -1520,9 +1520,15 @@ restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
 l'archive ; le futur transport doit donc vérifier son propre identifiant
 d'idempotence avant toute reprise depuis une sauvegarde.
 Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
-l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin confirme la
-réponse de cet exécuteur, pas l'acceptation par le fournisseur Copilot. Une
-annulation, une exception de transport ou une réponse non confirmée laisse
+l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin n'est écrit
+qu'après la réponse de l'exécuteur et le traitement éventuel d'un gros résultat.
+`completed` prouve cette réponse et, si l'écriture de l'artefact a réussi, sa
+conservation. L'échec de cette écriture peut produire un simple aperçu ; le
+journal v7 ne conserve aucun résultat brut et ne garantit pas la reconstruction
+d'une réponse courte. Il ne prouve pas non plus
+l'acceptation par le fournisseur Copilot ; la trace UI reste `unknown` tant que
+ce reçu fournisseur manque. Une annulation, une exception de transport ou un
+échec explicite du traitement du résultat laisse
 l'intention locale `unknown`, sans rejeu automatique. Le mode frontend-only
 distant conserve son chemin d'exécution sans écrire dans le journal SQLite
 `tool_invocations`. Pour `write`, `edit`, `delete`, `apply_patch` et les mutations
@@ -1531,11 +1537,12 @@ de la conversation, du tour et de l'appel, une intention conservée dans le
 stockage du navigateur, un `execution_id` et le journal du noyau distant pour
 retrouver un résultat perdu. Cette identité ne contient pas l'identifiant du
 message et l'intention navigateur est effacée après une réponse confirmée :
-elle ne garantit donc pas l'unicité d'une invocation de conversation après une
-réussite. Les lectures et les autres outils distants ne bénéficient pas non
-plus du journal SQLite du Chat. Le raccordement de l'`execution_id` au journal
-de conversation exige un
-contrat distant de réservation préalable et de reçu ; aucune correspondance
+un second dispatch du même appel peut obtenir un nouvel `execution_id` et
+répéter l'effet. Ce défaut préexistant n'est pas couvert par le journal local.
+Les lectures et les autres outils distants ne bénéficient pas non plus du
+journal SQLite du Chat. Le raccordement de l'`execution_id` au journal de
+conversation exige un contrat distant de réservation préalable et de reçu,
+ainsi qu'une politique de rétention ; aucune correspondance
 n'est déduite de l'identifiant d'appel local. L'UI des invocations inconnues
 relève d'un lot séparé.
 La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
