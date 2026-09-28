@@ -16,6 +16,7 @@ export interface GoalAuditProvider {
   baseUrl: string;
   apiKey?: string;
   modelId: string;
+  reasoningEffort?: string;
   workspacePath?: string;
 }
 
@@ -125,7 +126,7 @@ export const createGoalAuditProviderExecutor = (
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKey,
       modelId: input.authorization.model ?? provider.modelId,
-      reasoningEffort: input.authorization.effort,
+      reasoningEffort: provider.reasoningEffort ?? input.authorization.effort,
       workspacePath: provider.workspacePath,
       messages: [
         { role: "system", content: input.systemPrompt },

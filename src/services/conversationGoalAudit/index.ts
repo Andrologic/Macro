@@ -3,5 +3,6 @@ export * from "./durableCoordinator";
 export * from "./durableJournal";
 export * from "./journal";
 export * from "./providerExecutor";
+export * from "./providerResolver";
 export * from "./types";
 export * from "./validation";

@@ -45,13 +45,14 @@ describe("goal auditor provider executor", () => {
       return resolvedChild();
     });
     const executor = createGoalAuditProviderExecutor({
-      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model", reasoningEffort: "high" }),
       resolveChildConversation,
       executeReadTool,
       stream: async (options) => {
         expect(options.sessionId).toBe("child");
         expect(options.conversationId).toBe("conversation-child");
         expect(options.internalAgentProfile).toBe("goal_auditor");
+        expect(options.reasoningEffort).toBe("high");
         expect(options.messages).toEqual([
           { role: "system", content: "Inspect the evidence." },
           { role: "user", content: "Goal and evidence" },
