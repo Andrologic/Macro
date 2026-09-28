@@ -65,15 +65,15 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             },
             onToolCall: options.onToolCall,
             onToolResult: options.onToolResult,
-            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext, providerInputItems }) => {
+            onLiveToolResult: ({ toolName, args, toolCallId, result, providerInputItems }) => {
               const detail = formatToolTraceDetail(toolName, args);
               accumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
-              accumulator.addHiddenContextBlock(hiddenContext);
               if (providerInputItems) accumulator.setProviderContext({
                 providerInputItems: [...(previousContext.providerInputItems ?? []), ...providerInputItems],
                 providerTurnState: previousContext.providerTurnState,
               });
             },
+            onConfirmedToolContext: (hiddenContext) => accumulator.addHiddenContextBlock(hiddenContext),
           }, resources);
           break;
         } catch (error) {

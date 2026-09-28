@@ -4486,6 +4486,123 @@ describe('streamingChat transport lifetime', () => {
     expect(completed.mock.calls[0]?.[0].toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
     expect(JSON.stringify(completed.mock.calls[0]?.[0].providerInputItems)).not.toContain('unsubmitted');
   });
+
+  it('discards rejected native interrupt context after submitting an error', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    let errorSubmitted!: () => void;
+    let releaseFallback!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const fallbackDone = new Promise<void>((resolve) => { errorSubmitted = resolve; });
+    const fallbackGate = new Promise<void>((resolve) => { releaseFallback = resolve; });
+    const submissions: Array<{ result: string; hidden_context?: string; is_error?: boolean }> = [];
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; result?: string; hidden_context?: string; is_error?: boolean } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          submissions.push(params.request as typeof submissions[number]);
+          if (submissions.length === 1) throw new Error('result submission failed');
+          listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+          errorSubmitted();
+          await fallbackGate;
+        }
+      }),
+    });
+    const live: LiveStreamContextSnapshot[] = [];
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['question'],
+      onToolCall: () => ({
+        kind: 'interrupt' as const,
+        result: 'Question queued',
+        visibleContent: 'Choose',
+        hiddenContext: '<questionnaire_context>rejected result</questionnaire_context>',
+      }),
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => live.push(snapshot),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: {
+      request_id: requestId, tool_call_id: 'rejected-question', tool_name: 'question',
+      args: { intro: 'Choose', questions: [{ id: 'choice', prompt: 'Pick one', choices: ['A', 'B'] }] },
+    } });
+    await fallbackDone;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(completed).not.toHaveBeenCalled();
+    releaseFallback();
+    await run;
+
+    expect(submissions).toHaveLength(2);
+    expect(submissions[0]).toMatchObject({ hidden_context: '<questionnaire_context>rejected result</questionnaire_context>' });
+    expect(submissions[1]).toMatchObject({ is_error: true });
+    expect(submissions[1]?.hidden_context).toBeNull();
+    expect(live.some((snapshot) => snapshot.hiddenContext?.includes('Question queued'))).toBe(true);
+    expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
+    expect(live.at(-1)?.hiddenContext ?? '').not.toContain('rejected result');
+    const result = completed.mock.calls[0]?.[0];
+    expect(result?.hiddenContext ?? '').not.toContain('rejected result');
+    expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
+    expect(JSON.stringify(result?.providerInputItems)).toContain('result submission failed');
+  });
+
+  it('retains acknowledged native interrupt context when completion races submission', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let releaseSubmission!: () => void;
+    let completionEmitted!: () => void;
+    const submissionGate = new Promise<void>((resolve) => { releaseSubmission = resolve; });
+    const completionReady = new Promise<void>((resolve) => { completionEmitted = resolve; });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        const requestId = params.request!.request_id!;
+        if (command === 'ai_stream_chat') {
+          queueMicrotask(() => listeners.get('ai:tool-request')!({ payload: {
+            request_id: requestId, tool_call_id: 'accepted-question', tool_name: 'question',
+            args: { intro: 'Choose', questions: [{ id: 'choice', prompt: 'Pick one', choices: ['A', 'B'] }] },
+          } }));
+        }
+        if (command === 'ai_submit_tool_result') {
+          listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'Choose', tool_calls: [] } });
+          completionEmitted();
+          await submissionGate;
+        }
+      }),
+    });
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['question'],
+      onToolCall: () => ({
+        kind: 'interrupt' as const,
+        result: 'Question queued',
+        visibleContent: 'Choose',
+        hiddenContext: '<questionnaire_context>accepted result</questionnaire_context>',
+      }),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await completionReady;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(completed).not.toHaveBeenCalled();
+    releaseSubmission();
+    await run;
+    expect(completed.mock.calls[0]?.[0].hiddenContext).toContain('accepted result');
+  });
 });
 
 describe('streamingChat partial native listener setup', () => {

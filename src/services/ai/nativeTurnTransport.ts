@@ -71,6 +71,7 @@ export const streamNativeTurnViaTauri = async (params: {
     hiddenContext?: string;
     providerInputItems?: unknown[];
   }) => void;
+  onConfirmedToolContext?: (hiddenContext: string) => void;
 }, invocationResources?: ActiveStreamResources): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
@@ -95,6 +96,8 @@ export const streamNativeTurnViaTauri = async (params: {
     const nativeUnlisteners: UnlistenFn[] = [];
     let questionToolRequestCount = 0;
     let nativeToolRequestOrder = 0;
+    let pendingToolSubmissions = 0;
+    let deferredDonePayload: tauriIpc.AiStreamDoneEvent | undefined;
 
     const disposeListener = (unlisten: UnlistenFn) => {
       try {
@@ -120,6 +123,38 @@ export const streamNativeTurnViaTauri = async (params: {
         if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
       }
       fn();
+    };
+
+    const completeDone = (payload: tauriIpc.AiStreamDoneEvent) => {
+      if (settled) return;
+      const providerInputItems = nativeToolItems.length ? [
+        ...nativeToolItems, ...(payload.provider_input_items ?? buildAssistantProviderInputItemsFromTurn(payload.output_text || fullContent, payload.tool_calls || [])),
+      ] : payload.provider_input_items ?? undefined;
+      const providerTurnState =
+        payload.provider_turn_state ??
+        (params.providerType === 'chatgpt'
+          ? buildChatGptProviderTurnState(payload.response_id, payload.output_items)
+          : undefined);
+      const derivedOutputText =
+        extractVisibleTextFromProviderInputItems(providerInputItems) ||
+        extractVisibleTextFromProviderInputItems(payload.output_items ?? undefined);
+      finish(() => resolve({
+        content: payload.output_text || fullContent || derivedOutputText,
+        toolCalls: payload.tool_calls || [],
+        providerInputItems,
+        providerTurnState,
+        reasoningSummary: payload.reasoning_summary ?? undefined,
+        toolTraces: payload.tool_traces ?? undefined,
+        hiddenContext: payload.hidden_context ?? undefined,
+        completionReason: payload.completion_reason ?? undefined,
+      }));
+    };
+
+    const flushDeferredDone = () => {
+      if (pendingToolSubmissions !== 0 || !deferredDonePayload) return;
+      const payload = deferredDonePayload;
+      deferredDonePayload = undefined;
+      completeDone(payload);
     };
 
     const signalHandler = () => {
@@ -189,6 +224,7 @@ export const streamNativeTurnViaTauri = async (params: {
 
               let resultSubmitted = false;
               let proposedResultAdded = false;
+              let submissionPending = false;
               try {
                 let toolResult = '';
                 let blocks: ToolResultBlock[] | undefined;
@@ -236,13 +272,15 @@ export const streamNativeTurnViaTauri = async (params: {
                 }
 
                 if (settled || params.signal?.aborted) return;
+                pendingToolSubmissions += 1;
+                submissionPending = true;
                 nativeToolItems.push(
                   { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
                   buildFunctionCallOutputProviderInputItem(toolCallId, toolResult, blocks, isError),
                 );
                 proposedResultAdded = true;
                 params.onLiveToolResult?.({
-                  toolName, args, toolCallId, result: toolResult, hiddenContext,
+                  toolName, args, toolCallId, result: toolResult,
                   providerInputItems: [...nativeToolItems],
                 });
                 await tauriIpc.aiSubmitToolResult({
@@ -257,6 +295,9 @@ export const streamNativeTurnViaTauri = async (params: {
                   errorKind,
                 });
                 resultSubmitted = true;
+                if (!settled && !params.signal?.aborted && hiddenContext) {
+                  params.onConfirmedToolContext?.(hiddenContext);
+                }
                 if (settled || params.signal?.aborted) return;
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
@@ -305,48 +346,32 @@ export const streamNativeTurnViaTauri = async (params: {
                 });
                 params.onToolResult?.(toolName, toolResult);
               } finally {
-                if (!settled && !params.signal?.aborted) params.onToolTrace?.({
-                  tool_call_id: toolCallId,
-                  tool_name: toolName,
-                  detail,
-                  status: resultSubmitted ? 'done' : 'running',
-                  recovery_state: resultSubmitted ? 'completed' : 'unknown',
-                  execution_mode: 'parallel',
-                  batch_id: requestId,
-                  order,
-                  ...(resultSubmitted ? { completed_at_ms: Date.now() } : {}),
-                });
+                try {
+                  if (!settled && !params.signal?.aborted) params.onToolTrace?.({
+                    tool_call_id: toolCallId,
+                    tool_name: toolName,
+                    detail,
+                    status: resultSubmitted ? 'done' : 'running',
+                    recovery_state: resultSubmitted ? 'completed' : 'unknown',
+                    execution_mode: 'parallel',
+                    batch_id: requestId,
+                    order,
+                    ...(resultSubmitted ? { completed_at_ms: Date.now() } : {}),
+                  });
+                } finally {
+                  if (submissionPending) {
+                    pendingToolSubmissions -= 1;
+                    flushDeferredDone();
+                  }
+                }
               }
             })();
           }),
           ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            const providerInputItems = nativeToolItems.length ? [
-              ...nativeToolItems, ...(event.payload.provider_input_items ?? buildAssistantProviderInputItemsFromTurn(event.payload.output_text || fullContent, event.payload.tool_calls || [])),
-            ] : event.payload.provider_input_items ?? undefined;
-            const providerTurnState =
-              event.payload.provider_turn_state ??
-              (params.providerType === 'chatgpt'
-                ? buildChatGptProviderTurnState(
-                  event.payload.response_id,
-                  event.payload.output_items,
-                )
-                : undefined);
-            const derivedOutputText =
-              extractVisibleTextFromProviderInputItems(providerInputItems) ||
-              extractVisibleTextFromProviderInputItems(event.payload.output_items ?? undefined);
-            finish(() =>
-              resolve({
-                content: event.payload.output_text || fullContent || derivedOutputText,
-                toolCalls: event.payload.tool_calls || [],
-                providerInputItems,
-                providerTurnState,
-                reasoningSummary: event.payload.reasoning_summary ?? undefined,
-                toolTraces: event.payload.tool_traces ?? undefined,
-                hiddenContext: event.payload.hidden_context ?? undefined,
-                completionReason: event.payload.completion_reason ?? undefined,
-              })
-            );
+            // Completion may arrive before IPC confirms or rejects the proposed tool result.
+            if (pendingToolSubmissions > 0) deferredDonePayload = event.payload;
+            else completeDone(event.payload);
           }),
           ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
             if (settled || event.payload.request_id !== requestId) return;

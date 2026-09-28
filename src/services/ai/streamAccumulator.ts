@@ -21,7 +21,7 @@ export const createStreamAccumulator = (
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
   const hiddenContextBlocks: string[] = [];
-  const liveOnlyHiddenContextBlocks: string[] = [];
+  const liveOnlyHiddenContextBlocks = new Map<string, string>();
   let providerInputItems: unknown[] | undefined;
   let providerTurnState: ProviderTurnState | undefined;
   let liveContextVersion = 0;
@@ -36,7 +36,7 @@ export const createStreamAccumulator = (
 
   const buildHiddenContext = (includeLiveOnly: boolean): string | undefined => {
     const blocks = includeLiveOnly
-      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks]
+      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks.values()]
       : hiddenContextBlocks;
     const hiddenContext = blocks.join('\n\n').trim();
     return hiddenContext || undefined;
@@ -186,9 +186,11 @@ export const createStreamAccumulator = (
     addLiveOnlyHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
       const block = buildToolContextBlock(toolCallId, toolName, detail, result);
       if (block) {
-        liveOnlyHiddenContextBlocks.push(block);
-        publishLiveContext();
+        liveOnlyHiddenContextBlocks.set(toolCallId, block);
+      } else {
+        liveOnlyHiddenContextBlocks.delete(toolCallId);
       }
+      publishLiveContext();
     },
     addHiddenContextBlock(block: string | undefined) {
       const normalized = block?.trim();
