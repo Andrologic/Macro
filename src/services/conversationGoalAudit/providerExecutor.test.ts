@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { StreamingChatOptions } from "../streamingChat";
-import { createGoalAuditProviderExecutor } from "./providerExecutor";
+import { createGoalAuditProviderExecutor, type GoalAuditReadToolContext } from "./providerExecutor";
 import type { GoalAuditChildInput } from "./types";
 
 const input = (): GoalAuditChildInput => ({
@@ -35,7 +35,11 @@ const expectPromptAbort = async (pending: Promise<unknown>) => {
 describe("goal auditor provider executor", () => {
   it("streams an isolated child with read tools and progress", async () => {
     const progress: string[] = [];
-    const executeReadTool = mock(async () => "file contents");
+    const signal = new AbortController().signal;
+    const executeReadTool = mock(async (
+      _name: string, _args: Record<string, unknown>, _id: string | undefined,
+      _signal: AbortSignal, _context: GoalAuditReadToolContext,
+    ) => "file contents");
     const resolveChildConversation = mock(async ({ runId, parentConversationId, signal }: {
       runId: string; parentConversationId: string; signal: AbortSignal;
     }) => {
@@ -63,18 +67,29 @@ describe("goal auditor provider executor", () => {
         expect(options.allowedToolIds).not.toContain("write");
         expect(options.maxTurns).toBe(3);
         options.onToken("part");
-        await options.onToolCall?.("read", { path: "file.txt" }, "call");
+        await options.onToolCall?.("read", {
+          path: "file.txt", runId: "model-run", parentConversationId: "model-parent",
+          childConversationId: "model-child",
+        }, "call");
         options.onComplete({ visibleContent: '<think>Private reasoning</think>\n{"verdict":"continue"}', toolTraces: [] });
       },
     });
     const result = await executor.execute({
       childRunId: "child", parentConversationId: "parent", depth: 1,
-      input: input(), signal: new AbortController().signal,
+      input: input(), signal,
       onProgress: (event) => progress.push(event.kind),
     });
     expect(result.text).toBe('{"verdict":"continue"}');
     expect(resolveChildConversation).toHaveBeenCalledTimes(1);
     expect(executeReadTool).toHaveBeenCalledTimes(1);
+    expect(executeReadTool).toHaveBeenCalledWith(
+      "read",
+      expect.objectContaining({ path: "file.txt", runId: "model-run" }),
+      "call",
+      signal,
+      { runId: "child", parentConversationId: "parent", childConversationId: "conversation-child" },
+    );
+    expect(Object.isFrozen(executeReadTool.mock.calls[0][4])).toBe(true);
     expect(progress).toEqual(["token", "tool_started"]);
   });
 
@@ -96,6 +111,25 @@ describe("goal auditor provider executor", () => {
       expect.objectContaining({ kind: "result", isError: true }),
       expect.objectContaining({ kind: "result", isError: true }),
     ]);
+    expect(executeReadTool).not.toHaveBeenCalled();
+  });
+
+  it("refuses a read if the resolved child binding changes before the tool call", async () => {
+    const child = resolvedChild();
+    const executeReadTool = mock(async () => "never");
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveChildConversation: () => child,
+      executeReadTool,
+      stream: async (options) => {
+        child.parentConversationId = "other-parent";
+        await expect(options.onToolCall?.("read", { path: "file.txt" })).rejects.toThrow(
+          "Invalid goal auditor child conversation binding.",
+        );
+        options.onComplete({ visibleContent: "{}", toolTraces: [] });
+      },
+    });
+    await executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: new AbortController().signal });
     expect(executeReadTool).not.toHaveBeenCalled();
   });
 
