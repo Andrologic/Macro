@@ -426,8 +426,20 @@ impl FormSchema {
             .get("requestedSchema")
             .and_then(Value::as_object)
             .ok_or_else(invalid_schema)?;
-        if !only_keys(schema, &["$schema", "type", "properties", "required"])
-            || schema.get("type").and_then(Value::as_str) != Some("object")
+        if !only_keys(
+            schema,
+            &[
+                "$schema",
+                "type",
+                "properties",
+                "required",
+                "title",
+                "description",
+            ],
+        ) || schema.get("type").and_then(Value::as_str) != Some("object")
+            || ["title", "description"]
+                .iter()
+                .any(|name| schema.get(*name).is_some_and(|value| !value.is_string()))
         {
             return Err(invalid_schema());
         }
@@ -488,7 +500,7 @@ mod tests {
     #[test]
     fn primitive_constraints_and_titled_enums_validate_submitted_content() {
         let schema = FormSchema::from_prompt(&prompt(serde_json::json!({
-            "type":"object","properties":{
+            "type":"object","title":"Profile","description":"Contact details","properties":{
                 "name":{"type":"string","minLength":2,"maxLength":3},
                 "email":{"type":"string","format":"email"},
                 "site":{"type":"string","format":"uri"},
@@ -524,6 +536,24 @@ mod tests {
             assert_eq!(
                 schema.validate_content(&changed).unwrap_err().code,
                 INVALID_CONTENT
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_form_annotations_are_rejected() {
+        for annotation in [
+            serde_json::json!({"title": 42}),
+            serde_json::json!({"description": false}),
+        ] {
+            let mut schema = serde_json::json!({"type":"object","properties":{}});
+            schema
+                .as_object_mut()
+                .unwrap()
+                .extend(annotation.as_object().unwrap().clone());
+            assert_eq!(
+                FormSchema::from_prompt(&prompt(schema)).unwrap_err().code,
+                INVALID_SCHEMA
             );
         }
     }
