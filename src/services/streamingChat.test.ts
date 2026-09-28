@@ -4399,7 +4399,7 @@ describe('streamingChat partial native listener setup', () => {
 
 
 for (const ending of ['done', 'abort'] as const) {
-  it(`retains native MCP media when ${ending} races tool submission`, async () => {
+  it(`${ending === 'done' ? 'retains confirmed' : 'does not claim unconfirmed'} native MCP media when ${ending} races tool submission`, async () => {
     const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
     const { normalizeToolResultBlocks, readTypedToolResult } = await import('../shared/toolResultContent');
     const blocks = normalizeToolResultBlocks(fixture.content);
@@ -4433,8 +4433,12 @@ for (const ending of ['done', 'abort'] as const) {
     });
     expect(submitted!.blocks).toEqual(blocks);
     expect(submitted!.is_error).toBe(true);
-    const storedResult = completed!.providerInputItems!.find(item => readTypedToolResult(item));
-    expect(readTypedToolResult(storedResult)).toEqual({ version: 1, blocks, isError: true });
+    const storedResult = completed?.providerInputItems?.find(item => readTypedToolResult(item));
+    if (ending === 'done') {
+      expect(readTypedToolResult(storedResult)).toEqual({ version: 1, blocks, isError: true });
+    } else {
+      expect(storedResult).toBeUndefined();
+    }
   });
 }
 

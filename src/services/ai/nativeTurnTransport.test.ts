@@ -261,3 +261,34 @@ test('failed submission during cancellation publishes no success', async () => {
   expect(live).not.toHaveBeenCalled();
   expect(completed).not.toHaveBeenCalled();
 });
+
+test('cancellation settles promptly while native submission remains pending', async () => {
+  const controller = new AbortController();
+  const gate = deferred<void>();
+  submissionGate = () => gate.promise;
+  const live = mock(() => undefined);
+  const run = turn({ signal: controller.signal, onToolCall: async () => 'first', onLiveToolResult: live });
+  await started;
+  request('read-call', 'read', { path: 'file' });
+  await waitFor(() => submissions.length === 1);
+  controller.abort();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  expect(live).not.toHaveBeenCalled();
+  gate.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(live).not.toHaveBeenCalled();
+});
+
+test('a failing trace observer cannot strand native tool execution', async () => {
+  doneAfter = 1;
+  const run = turn({ onToolCall: async () => 'read completed', onToolTrace: () => {
+    throw new Error('trace observer failed');
+  } });
+  await started;
+  request('read-call', 'read', { path: 'file' });
+  const result = await run;
+  expect(submissions.map(item => item.toolCallId)).toEqual(['read-call']);
+  expect(result.providerInputItems).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: 'function_call_output', call_id: 'read-call' }),
+  ]));
+});

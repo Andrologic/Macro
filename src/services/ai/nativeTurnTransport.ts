@@ -42,6 +42,7 @@ import * as tauriIpc from '../tauriIpc';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
 import { MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import type { ProjectMount, ReasoningEffort, ToolTrace } from '../../types';
+import { devLogger } from '../../utils/devLogger';
 
 export const streamNativeTurnViaTauri = async (params: {
   sessionId?: string;
@@ -124,10 +125,16 @@ export const streamNativeTurnViaTauri = async (params: {
     let exclusiveActive = false;
     let publishing = false;
     let interruptObserved = false;
-    let pendingAbort = false;
     let pendingDone: tauriIpc.AiStreamDoneEvent | null = null;
 
-    const stopped = () => settled || pendingAbort || params.signal?.aborted === true;
+    const stopped = () => settled || params.signal?.aborted === true;
+    const emitToolTrace = (trace: ToolTrace) => {
+      try {
+        params.onToolTrace?.(trace);
+      } catch (error) {
+        devLogger.warn('Native tool trace observer failed', formatToolExecutionError(error));
+      }
+    };
 
     const publishReady = () => {
       if (publishing || stopped() || pendingDone) return;
@@ -144,7 +151,7 @@ export const streamNativeTurnViaTauri = async (params: {
             ...(blocks ? { blocks } : {}),
             hiddenContext, visibleContent, interrupt, isError, errorKind,
           });
-          if (settled) return;
+          if (stopped()) return;
           nativeToolItems.push(
             { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
             buildFunctionCallOutputProviderInputItem(toolCallId, result, blocks, isError),
@@ -155,14 +162,12 @@ export const streamNativeTurnViaTauri = async (params: {
           });
           params.onToolResult?.(toolName, result);
         } catch (error) {
-          if (settled) return;
-          if (!pendingAbort) void tauriIpc.aiCancelStream(requestId).catch(() => undefined);
-          finish(() => reject(pendingAbort
-            ? new DOMException('Aborted', 'AbortError')
-            : error instanceof Error ? error : new Error(String(error))));
+          if (stopped()) return;
+          void tauriIpc.aiCancelStream(requestId).catch(() => undefined);
+          finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         } finally {
           if (!settled) {
-            params.onToolTrace?.({
+            emitToolTrace({
               tool_call_id: toolCallId, tool_name: toolName, detail,
               status: 'done', execution_mode: request.safeRead ? 'parallel' : 'sequential',
               batch_id: requestId, order, completed_at_ms: Date.now(),
@@ -170,8 +175,7 @@ export const streamNativeTurnViaTauri = async (params: {
             nextToPublish += 1;
             if (!request.safeRead) exclusiveActive = false;
             publishing = false;
-            if (pendingAbort) finish(() => reject(new DOMException('Aborted', 'AbortError')));
-            else if (pendingDone) finishDone();
+            if (pendingDone) finishDone();
             else {
               publishReady();
               startReady();
@@ -243,7 +247,7 @@ export const streamNativeTurnViaTauri = async (params: {
         nextToStart += 1;
         executing += 1;
         if (!request.safeRead) exclusiveActive = true;
-        params.onToolTrace?.({
+        emitToolTrace({
           tool_call_id: request.toolCallId, tool_name: request.toolName,
           detail: request.detail, status: 'running',
           execution_mode: request.safeRead ? 'parallel' : 'sequential',
@@ -315,10 +319,6 @@ export const streamNativeTurnViaTauri = async (params: {
       void tauriIpc.aiCancelStream(requestId).catch(() => {
         // Ignore backend cancel failures
       });
-      if (publishing) {
-        pendingAbort = true;
-        return;
-      }
       finish(() => reject(new DOMException('Aborted', 'AbortError')));
     };
 
@@ -353,7 +353,7 @@ export const streamNativeTurnViaTauri = async (params: {
           }),
           ownListener<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            params.onToolTrace?.(event.payload.tool_trace);
+            emitToolTrace(event.payload.tool_trace);
           }),
           ownListener<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
