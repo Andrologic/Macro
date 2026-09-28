@@ -62,6 +62,10 @@ export function createGoalAuditProviderResolver(
     if (!current.isLocal && !isLinkedProviderType(current.providerType) && !apiKey?.trim()) {
       throw new Error("Goal auditor provider API key is unavailable.");
     }
+    if (!current.isLocal && !isLinkedProviderType(current.providerType) &&
+      current.apiKey !== apiKey) {
+      throw new Error("Goal auditor provider API key changed during resolution.");
+    }
     return {
       providerId,
       providerType: current.providerType,

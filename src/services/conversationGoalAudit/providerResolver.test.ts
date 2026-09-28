@@ -83,4 +83,19 @@ describe("goal auditor provider resolver", () => {
     await expect(changed).rejects.toThrow("configuration changed");
     expect(resolveProviderApiKey).toHaveBeenCalledTimes(2);
   });
+
+  it("rejects a key rotated while resolution is pending", async () => {
+    setup();
+    let finish!: (key: string) => void;
+    useProviderStore.setState({
+      resolveProviderApiKey: () => new Promise<string>((resolve) => { finish = resolve; }),
+    });
+    const resolve = createGoalAuditProviderResolver({ providerId: "frozen", modelId: "model" });
+    const pending = resolve(input(), new AbortController().signal);
+    useProviderStore.setState({
+      providerConfigs: [{ ...config("frozen"), apiKey: "new-key" }, config("ui")],
+    });
+    finish("frozen-key");
+    await expect(pending).rejects.toThrow("API key changed during resolution");
+  });
 });
