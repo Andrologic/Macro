@@ -515,7 +515,13 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           generation_attempts: generationAttempts,
         });
         const message = ports.messages.get(params.assistantMessage.id);
-        if (message) await ports.persistence.partial(message);
+        if (message) {
+          try {
+            await ports.persistence.partial(message);
+          } catch (error) {
+            console.warn("Failed to persist generation attempts during stream:", error);
+          }
+        }
       },
       onBeforeFollowUpRequest: async (request) => {
         const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);

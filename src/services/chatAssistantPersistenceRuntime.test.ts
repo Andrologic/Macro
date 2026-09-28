@@ -6,6 +6,7 @@ function fixture() {
   let message: ChatMessage | undefined = {
     id: "assistant-a", conversation_id: "conversation-a", task_id: "task-a", turn_id: "turn-a",
     role: "assistant", content: "Recovered answer", timestamp: "2026-01-01", persistence_state: "failed",
+    generation_attempts: [{ id: "attempt-a", status: "abandoned", rawText: "Draft", acceptedText: "", costUsd: null }],
   };
   const update = mock<AssistantPersistenceRecoveryPorts["persistence"]["ipc"]["updateMessage"]>(async () => {});
   const unexpected = async (): Promise<never> => { throw new Error("Unexpected IPC"); };
@@ -35,6 +36,7 @@ test("retries a failed response through the persistence adapter and resumes its 
   await retryAssistantPersistence("assistant-a", f.ports);
   expect(f.update).toHaveBeenCalledTimes(1);
   expect(f.update.mock.calls[0]?.[0]).toBe("assistant-a");
+  expect(f.update.mock.calls[0]?.[2]?.generationAttempts).toEqual(f.read()?.generation_attempts);
   expect(f.read()?.persistence_state).toBeUndefined();
   expect(f.clearError).toHaveBeenCalledWith("conversation-a", "assistant-a");
   expect(f.resumeQueue).toHaveBeenCalledWith("conversation-a");

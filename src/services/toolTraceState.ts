@@ -40,6 +40,14 @@ export const classifyToolTraceRecovery = (
   return 'unknown';
 };
 
+export const settleToolTraceRecovery = (traces: ToolTrace[]): ToolTrace[] =>
+  traces.map((trace) => ({
+    ...trace,
+    recovery_state: trace.recovery_state === 'replayable' && trace.status === 'pending_approval'
+      ? 'replayable'
+      : classifyToolTraceRecovery(trace),
+  }));
+
 export const parseToolTracesJson = (
   raw: string | null,
 ): ToolTrace[] | undefined => {

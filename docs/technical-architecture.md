@@ -496,6 +496,18 @@ forme le point de raccord des transports. `claimStream` attribue une identité
 de tentative distincte lors d'une récupération du même tour. Un stream remplacé ne libère pas son
 successeur et l'attente de fin suit les remplacements dus à la récupération.
 
+Cette identité de stream ne désigne pas une requête modèle. `toolCallingLoop`
+attribue un identifiant distinct à chaque tour fournisseur qu'il pilote ; le
+message assistant conserve son texte brut, le texte accepté et un coût
+`null` tant qu'aucun coût par tentative n'est attribuable. Avant une écriture
+partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publie
+le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
+écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Si
+le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses
+tentatives. Son échec utilise la récupération de réponse non sauvegardée, qui
+retransmet aussi les tentatives. Un crash pendant un tour fournisseur ou après un échec d'écriture
+intermédiaire peut laisser ses derniers tokens et sa tentative hors de SQLite.
+
 `chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
@@ -970,6 +982,14 @@ revalidation ou la clôture durable, un refus révoque l'autorisation avant le
 dispatch. Les approbations MCP exposent l'identité protocolaire et un aperçu des
 arguments, avec champs sensibles masqués et troncature signalée.
 
+La colonne `messages.generation_attempts_json` stocke les tentatives déjà
+observées par le runtime. `toolTraceState` reclasse les traces au rechargement
+et dès qu'un flux se termine ou s'interrompt : `done` et `denied` sont clos,
+une trace non résolue devient `unknown`, et seul le marqueur d'approbation
+restauré rend cette demande `replayable`. `live` exige un flux propriétaire
+encore actif. Ces états décrivent la preuve disponible pour la trace, pas une
+garantie d'exécution unique de l'effet externe.
+
 ### 10.2 Persistance locale frontend
 
 Le frontend utilise aussi de la persistance locale légère pour :
@@ -1266,6 +1286,13 @@ Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible
 Les remplacements atomiques conservent les bits de permission Unix de la cible. Un nouveau fichier commençant par un shebang reçoit les bits exécutables, conformément au comportement de l'outil `write` d'Oh My Pi. Les checkpoints enregistrent également le mode Unix et le réappliquent lors d'un replay ou d'une compensation ; une restauration ne doit donc pas transformer silencieusement un script exécutable en fichier ordinaire. Sous WSL, cette garantie est appliquée au fichier temporaire avant la dernière validation de révision et le renommage.
 
 Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
+
+L'état d'une mutation headless est interrogeable par `execution_id` via
+`/tools/executions/{execution_id}` dans ce protocole. Cette capacité existe
+pour l'invocation distante suivie par `remoteKernelApi` ; l'identifiant n'est
+pas relié au `ToolTrace` SQLite et aucune interrogation générale des outils
+desktop, MCP ou terminaux n'est déduite de `recovery_state`. Une intention
+distante encore `pending` après redémarrage reste indéterminée.
 
 ### 13.5 Sorties bornées et reprise
 

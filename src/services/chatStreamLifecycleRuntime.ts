@@ -7,7 +7,7 @@ import {
 } from "./chatErrorPresentation";
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import type { StreamCompletionResult } from "./streamingChat";
-import { mergeToolTracesPreservingDeniedStatus } from "./toolTraceState";
+import { mergeToolTracesPreservingDeniedStatus, settleToolTraceRecovery } from "./toolTraceState";
 
 export interface ChatStreamLifecycleProviderContext {
   providerId: string;
@@ -138,9 +138,11 @@ export const applyAssistantStreamCompletion = (params: {
   const existingToolTraces =
     params.adapters.getAssistantMessage(params.assistantMessageId)?.tool_traces ??
     [];
-  const mergedToolTraces = mergeToolTracesPreservingDeniedStatus(
-    params.result.toolTraces,
-    existingToolTraces,
+  const mergedToolTraces = settleToolTraceRecovery(
+    mergeToolTracesPreservingDeniedStatus(
+      params.result.toolTraces,
+      existingToolTraces,
+    ),
   );
 
   params.adapters.updateMessageFields(params.assistantMessageId, {
@@ -164,6 +166,15 @@ export const createChatStreamLifecycleRuntime = (params: {
   adapters: ChatStreamLifecycleRuntimeAdapters;
 }) => {
   const { stream, adapters } = params;
+
+  const settleInterruptedToolTraces = () => {
+    const traces = adapters.getAssistantMessage(stream.assistantMessageId)?.tool_traces;
+    if (traces?.length) {
+      adapters.updateMessageFields(stream.assistantMessageId, {
+        tool_traces: settleToolTraceRecovery(traces),
+      });
+    }
+  };
 
   const handleCompletionPersistenceFailure = (error: unknown): void => {
     const normalized = toServiceError(error);
@@ -283,6 +294,7 @@ export const createChatStreamLifecycleRuntime = (params: {
 
   const persistAbortedTurn = async (tokenControls: ChatStreamTokenControls) => {
       tokenControls.flushNow();
+      settleInterruptedToolTraces();
       const assistantMessage = adapters.getAssistantMessage(
         stream.assistantMessageId,
       );
@@ -403,6 +415,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       if (adapters.isAbortSignalAborted() || !adapters.shouldAcceptStreamUpdate()) return;
       tokenControls.flushNow();
       tokenControls.dispose();
+      settleInterruptedToolTraces();
       adapters.clearLiveStreamContextEstimate(stream.conversationId);
       await adapters.maybeMarkImplementTaskFailedAfterStreamError();
 

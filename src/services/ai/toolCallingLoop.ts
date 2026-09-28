@@ -157,13 +157,6 @@ export async function runToolCallingLoop(
         continue;
       }
       enforceGuidedRetry = false;
-      await recordAttempt({
-        id: attemptId,
-        status: incomplete ? 'partial' : 'completed',
-        rawText: content,
-        acceptedText: replayContent,
-        costUsd: null,
-      });
       if (bufferOutput) {
         if (replayContent) accumulator.appendProviderDelta(replayContent);
       } else {
@@ -171,6 +164,13 @@ export async function runToolCallingLoop(
         if (suffix) accumulator.appendProviderDelta(suffix);
       }
       accumulator.flushProviderDelta();
+      await recordAttempt({
+        id: attemptId,
+        status: incomplete ? 'partial' : 'completed',
+        rawText: content,
+        acceptedText: replayContent,
+        costUsd: null,
+      });
       const transcriptStart = transcript.length;
       const projected = turn.projectAssistant(replayContent, [], recovering, incomplete);
       const requestProjection = calls.length ? turn.projectAssistant(replayContent, calls, recovering, incomplete) : projected;

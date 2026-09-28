@@ -312,7 +312,10 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       expect(params.abortController?.signal.aborted).toBe(true);
       expect(h.cancelTransport.mock.calls).toEqual([[params.sessionId]]);
       expect(h.partial).toHaveBeenCalledTimes(1);
-      expect(h.partial.mock.calls[0][0]).toMatchObject({ content: "Partial answer", tool_traces: [trace] });
+      expect(h.partial.mock.calls[0][0]).toMatchObject({
+        content: "Partial answer",
+        tool_traces: [{ ...trace, recovery_state: "unknown" }],
+      });
       expect(h.messages.get(params.assistantMessage.id)?.content).toBe("Partial answer");
       tool.resolve("Late tool result");
       expect(await toolResult).toMatchObject({ kind: "result", isError: true, errorKind: "aborted" });
@@ -332,12 +335,53 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       await drain;
       await checkpoint();
       expect(h.partials).toHaveLength(1);
-      expect(h.partials[0]).toMatchObject({ id: params.assistantMessage.id, content: "Partial answer", tool_traces: [trace] });
+      expect(h.partials[0]).toMatchObject({
+        id: params.assistantMessage.id,
+        content: "Partial answer",
+        tool_traces: [{ ...trace, recovery_state: "unknown" }],
+      });
       expect(h.settled.mock.calls).toEqual([["a"]]);
       expect(h.sync).not.toHaveBeenCalled();
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
     });
   }
+
+  test("a failed attempt checkpoint leaves the provider result and final persistence intact", async () => {
+    const h = setup();
+    const params = launch("a");
+    const stream = h.start(params);
+    const attempts = [{ id: "attempt-1", status: "completed" as const, rawText: "Answer", acceptedText: "Answer", costUsd: null }];
+    h.partial.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+
+    stream.options.onToken("Answer");
+    await stream.options.onGenerationAttemptsUpdate?.(attempts);
+    expect(h.partial.mock.calls[0]?.[0]).toMatchObject({ content: "Answer", generation_attempts: attempts });
+    expect(h.messages.get(params.assistantMessage.id)?.content).toBe("Answer");
+
+    stream.options.onComplete({ ...result("Answer"), generationAttempts: attempts });
+    stream.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.owner.read("a").phase).toBe("idle");
+    expect(h.saved.get(params.assistantMessage.id)?.generationAttempts).toEqual(attempts);
+    expect(h.failed).not.toHaveBeenCalled();
+    expect(h.taskFailed).not.toHaveBeenCalled();
+  });
+
+  test("a provider error settles a running tool trace in the current session", async () => {
+    const h = setup();
+    const params = launch("a");
+    const stream = h.start(params);
+    stream.options.onToolTracesUpdate?.([{ tool_call_id: "tool-1", tool_name: "read", status: "running" }]);
+    stream.options.onError(new Error("provider failed"));
+    stream.done.resolve();
+    await h.owner.drain("a");
+
+    expect(h.messages.get(params.assistantMessage.id)?.tool_traces).toEqual([
+      { tool_call_id: "tool-1", tool_name: "read", status: "running", recovery_state: "unknown" },
+    ]);
+    expect(h.partials.at(-1)?.tool_traces?.[0]?.recovery_state).toBe("unknown");
+  });
 
   test("failed completion persistence retains the answer and a new turn can succeed", async () => {
     const h = setup();

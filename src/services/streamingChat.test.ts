@@ -3514,6 +3514,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
     const streamed: string[] = [];
+    const attemptSnapshots: string[] = [];
     const onComplete = mock((_result: unknown) => undefined);
     const onToolCall = mock(async () => 'must not run');
 
@@ -3528,6 +3529,7 @@ describe('streamingChat tool rendering helpers', () => {
       enableWebSearch: false,
       enableWebFetch: false,
       onToken: (token: string) => streamed.push(token),
+      onGenerationAttemptsUpdate: () => { attemptSnapshots.push(streamed.join('')); },
       onComplete,
       onToolCall,
       onError: (error: Error) => {
@@ -3541,6 +3543,7 @@ describe('streamingChat tool rendering helpers', () => {
     expect(JSON.stringify(requestBodies[1]?.messages)).toContain('Continue exactly where it stopped');
     expect(JSON.stringify(requestBodies[1]?.messages)).not.toContain('call_truncated');
     expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(attemptSnapshots).toEqual(['Alpha repeated phrase', 'Alpha repeated phrase and omega']);
     expect(onToolCall).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({
