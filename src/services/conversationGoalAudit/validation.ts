@@ -171,10 +171,13 @@ export const validateConversationGoalVerdict = (
     });
   }
 
-  if (verdict === "achieved" && criteria.some((criterion) => criterion.status !== "met")) {
+  if (
+    verdict === "achieved" &&
+    (criteria.length === 0 || criteria.some((criterion) => criterion.status !== "met"))
+  ) {
     issues.push({
       path: "$.verdict",
-      message: "An achieved verdict requires every criterion to be met.",
+      message: "An achieved verdict requires at least one criterion and every criterion to be met.",
     });
   }
   if (verdict !== "achieved" && feedback !== null && !feedback) {

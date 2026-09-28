@@ -71,6 +71,20 @@ describe("validateConversationGoalVerdict", () => {
     ).toMatchObject({ ok: false });
   });
 
+  it("rejects achieved without criteria but permits continuation without criteria", () => {
+    const achieved = validVerdict();
+    achieved.verdict = "achieved";
+    achieved.questionForUser = null;
+    achieved.criteria = [];
+    expect(validateConversationGoalVerdict(achieved, []).ok).toBe(false);
+
+    const continuation = validVerdict();
+    continuation.verdict = "continue";
+    continuation.questionForUser = null;
+    continuation.criteria = [];
+    expect(validateConversationGoalVerdict(continuation, []).ok).toBe(true);
+  });
+
   it("rejects normalized duplicate evidence but keeps distinct pairs containing NUL", () => {
     const duplicate = validVerdict();
     duplicate.criteria[0].evidence.push({
