@@ -27,9 +27,20 @@ Version 8 records ordered goal-audit transitions under `agent_runs`. The
 conflicting or out-of-order writes. The run row and transition row are changed
 in one SQLite transaction. Version 7 remains unchanged.
 
+Version 9 adds current and historical conversation goals, success criteria and
+revision counters, plus a unique audit identity per conversation/executor turn.
+Each audit keeps its current run and append-only links to earlier attempts.
+The queued run, transition, audit identity and run link commit in one transaction.
+An identical queued payload may be replayed after a lost response. The audit
+status follows durable run transitions; startup marks remaining
+queued/running audits interrupted so a caller must explicitly resume them with
+a fresh queued run. Verdict application checks the exact audit, turn, run,
+completed run output and goal revision in one transaction. It never decides
+when the UI should start an audit or which criteria are required.
+
 The supported inputs are:
 
-- An empty database, initialized with version 1 and upgraded through version 8.
+- An empty database, initialized with version 1 and upgraded through version 9.
 - An unversioned database with historical runtime tables, adopted through the
   legacy path. Missing tables and known additive columns are supplied by the
   frozen compatibility helpers. Existing extra columns, tables, indexes and
@@ -40,7 +51,8 @@ The supported inputs are:
   3 and 4 because those migrations require the runtime tables; version 5 is
   recorded only after their completion and its checks.
 - A version 7 database, upgraded to version 8 without rebuilding its tool journal.
-- A version 8 database, reopened without compatibility helpers, DDL, timestamp
+- A version 8 database, upgraded to version 9 without rebuilding its run journal.
+- A version 9 database, reopened without compatibility helpers, DDL, timestamp
   backfills or FTS rebuilds. Default provider seeding retains its existing
   startup behavior and is separate from schema migration.
 
