@@ -514,6 +514,8 @@ Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et s
 tentatives. Son échec utilise la récupération de réponse non sauvegardée, qui
 retransmet aussi les tentatives. Un crash pendant un tour fournisseur ou après un échec d'écriture
 intermédiaire peut laisser ses derniers tokens et sa tentative hors de SQLite.
+`chatPersistenceService` sérialise les écritures partielles et finales par
+message assistant : une ancienne sauvegarde ne peut pas écraser celle de Stop.
 
 `chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
@@ -999,6 +1001,8 @@ garantie d'exécution unique de l'effet externe.
 `streamAccumulator` laisse une trace sans résultat confirmé en `running` avec
 `recovery_state=unknown` à la fin du tour. Le rendu des anciens marqueurs
 `[TOOL]` exige `[TOOL_DONE]` pour afficher une fin confirmée.
+Le transport natif ne marque une trace `done` que si le backend a confirmé la
+remise du résultat, y compris lorsque la remise d'une erreur est nécessaire.
 
 ### 10.2 Persistance locale frontend
 

@@ -9,6 +9,7 @@ describe('GenerationAttemptDetails', () => {
       { id: 'only-turn', status: 'completed', rawText: 'Answer.', acceptedText: 'Answer.', costUsd: null },
     ]} />);
     expect(html).toContain('data-attempt-id="only-turn"');
+    expect(html).toContain('>only-turn</code>');
     expect(html).toContain('Attempt text: Answer.');
     expect(html).toContain('Text kept in response: Answer.');
     expect(html).toContain('cost unknown');

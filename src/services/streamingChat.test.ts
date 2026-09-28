@@ -63,7 +63,7 @@ const __testables = {
 };
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ToolTrace } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
 import { fingerprintImageSource } from './contextTokenEstimation';
 import type {
@@ -4428,6 +4428,54 @@ describe('streamingChat transport lifetime', () => {
     expect(submit).not.toHaveBeenCalled();
     expect(results).toEqual([]);
     expect(traces).toHaveLength(finishedTraceCount);
+  });
+
+  it('keeps a native tool outcome unknown when both result submissions fail', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    let submittedTwice!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const attemptsDone = new Promise<void>((resolve) => { submittedTwice = resolve; });
+    let submissions = 0;
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          submissions += 1;
+          if (submissions === 2) submittedTwice();
+          throw new Error('submit unavailable');
+        }
+      }),
+    });
+    const traces: Array<Array<{ status: string; recovery_state?: string }>> = [];
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: () => 'file contents',
+      onToolTracesUpdate: (value: ToolTrace[]) => traces.push(value),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'unsubmitted', tool_name: 'read', args: { path: 'README.md' } } });
+    await attemptsDone;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+    await run;
+
+    expect(submissions).toBe(2);
+    expect(traces.at(-1)?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    expect(completed.mock.calls[0]?.[0].toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    expect(JSON.stringify(completed.mock.calls[0]?.[0].providerInputItems)).not.toContain('unsubmitted');
   });
 });
 

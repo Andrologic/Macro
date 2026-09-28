@@ -187,6 +187,8 @@ export const streamNativeTurnViaTauri = async (params: {
                 started_at_ms: Date.now(),
               });
 
+              let resultSubmitted = false;
+              let proposedResultAdded = false;
               try {
                 let toolResult = '';
                 let blocks: ToolResultBlock[] | undefined;
@@ -238,6 +240,7 @@ export const streamNativeTurnViaTauri = async (params: {
                   { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
                   buildFunctionCallOutputProviderInputItem(toolCallId, toolResult, blocks, isError),
                 );
+                proposedResultAdded = true;
                 params.onLiveToolResult?.({
                   toolName, args, toolCallId, result: toolResult, hiddenContext,
                   providerInputItems: [...nativeToolItems],
@@ -253,27 +256,52 @@ export const streamNativeTurnViaTauri = async (params: {
                   isError,
                   errorKind,
                 });
+                resultSubmitted = true;
                 if (settled || params.signal?.aborted) return;
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
-                if (settled || params.signal?.aborted) {
+                if (settled || params.signal?.aborted || resultSubmitted) {
                   return;
+                }
+                if (proposedResultAdded) {
+                  const index = nativeToolItems.findIndex((item) => item && typeof item === 'object' &&
+                    'type' in item && item.type === 'function_call' &&
+                    'call_id' in item && item.call_id === toolCallId);
+                  if (index !== -1) nativeToolItems.splice(index, 2);
+                  try {
+                    params.onLiveToolResult?.({
+                      toolName, args, toolCallId, result: '',
+                      providerInputItems: [...nativeToolItems],
+                    });
+                  } catch {
+                    // A live-context callback must not prevent error submission.
+                  }
                 }
                 const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
                 if (settled || params.signal?.aborted) return;
-                await tauriIpc.aiSubmitToolResult({
-                  requestId,
-                  toolCallId,
-                  result: toolResult,
-                  isError: true,
-                  errorKind: 'execution',
-                }).catch(() => undefined);
+                try {
+                  await tauriIpc.aiSubmitToolResult({
+                    requestId,
+                    toolCallId,
+                    result: toolResult,
+                    isError: true,
+                    errorKind: 'execution',
+                  });
+                  resultSubmitted = true;
+                } catch {
+                  return;
+                }
                 if (settled || params.signal?.aborted) return;
+                nativeToolItems.push(
+                  { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
+                  buildFunctionCallOutputProviderInputItem(toolCallId, toolResult, undefined, true),
+                );
                 params.onLiveToolResult?.({
                   toolName,
                   args,
                   toolCallId,
                   result: toolResult,
+                  providerInputItems: [...nativeToolItems],
                 });
                 params.onToolResult?.(toolName, toolResult);
               } finally {
@@ -281,11 +309,12 @@ export const streamNativeTurnViaTauri = async (params: {
                   tool_call_id: toolCallId,
                   tool_name: toolName,
                   detail,
-                  status: 'done',
+                  status: resultSubmitted ? 'done' : 'running',
+                  recovery_state: resultSubmitted ? 'completed' : 'unknown',
                   execution_mode: 'parallel',
                   batch_id: requestId,
                   order,
-                  completed_at_ms: Date.now(),
+                  ...(resultSubmitted ? { completed_at_ms: Date.now() } : {}),
                 });
               }
             })();

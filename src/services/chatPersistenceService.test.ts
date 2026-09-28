@@ -324,6 +324,54 @@ describe("chatPersistenceService", () => {
     });
   });
 
+  it("serializes partial and final writes for one assistant message", async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const writes: Array<{ content: string; attempts?: ChatMessage["generation_attempts"] }> = [];
+    let callCount = 0;
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async (_id, content, options) => {
+      if (++callCount === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      writes.push({ content, attempts: options?.generationAttempts });
+    });
+    const persistence = { ...adapters(), ipc: baseIpc({ updateMessage }) };
+    const firstAttempt = { id: "first", status: "completed" as const, rawText: "old", acceptedText: "old", costUsd: null };
+    const stoppedAttempt = { id: "stopped", status: "partial" as const, rawText: "stop", acceptedText: "stop", costUsd: null };
+
+    const first = persistAssistantPartialResult(persistence, chatMessage({ content: "old", generation_attempts: [firstAttempt] }));
+    await started;
+    const stopped = persistAssistantPartialResult(persistence, chatMessage({ content: "stop", generation_attempts: [firstAttempt, stoppedAttempt] }));
+    const final = persistAssistantCompletionResult(persistence, {
+      assistantMessageId: "message-1",
+      persistedAssistant: chatMessage(),
+      result: { visibleContent: "final", toolTraces: [], generationAttempts: [firstAttempt, stoppedAttempt] },
+    });
+    await Promise.resolve();
+    expect(updateMessage).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([first, stopped, final]);
+    expect(writes.map((write) => write.content)).toEqual(["old", "stop", "final"]);
+    expect(writes.at(-1)?.attempts).toEqual([firstAttempt, stoppedAttempt]);
+  });
+
+  it("continues the assistant write queue after a failed checkpoint", async () => {
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async () => undefined);
+    updateMessage.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+    const persistence = { ...adapters(), ipc: baseIpc({ updateMessage }) };
+    await expect(persistAssistantPartialResult(persistence, chatMessage({ content: "partial" }))).rejects.toThrow("SQLITE_BUSY");
+    await persistAssistantCompletionResult(persistence, {
+      assistantMessageId: "message-1",
+      result: { visibleContent: "final", toolTraces: [] },
+    });
+    expect(updateMessage).toHaveBeenCalledTimes(2);
+    expect(updateMessage).toHaveBeenLastCalledWith("message-1", "final", expect.any(Object));
+  });
+
   it("delegates conversation rename and delete operations only when Tauri is available", async () => {
     const ipc = baseIpc();
     await renameConversation({ ...adapters(), ipc }, "conv-1", "Renamed");

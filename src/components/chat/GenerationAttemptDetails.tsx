@@ -22,6 +22,7 @@ export function GenerationAttemptDetails({ attempts }: { attempts?: GenerationAt
                 ? t('chat.generationAttemptCostUnknown', 'cost unknown')
                 : t('chat.generationAttemptCost', { amount: attempt.costUsd, defaultValue: '${{amount}}' })}
             </div>
+            <code className="mt-1 block break-all text-[10px] text-muted-foreground">{attempt.id}</code>
             {attempt.rawText && (
               <div className="mt-1 whitespace-pre-wrap break-words">
                 {t('chat.generationAttemptRawText', 'Attempt text')}: {attempt.rawText}

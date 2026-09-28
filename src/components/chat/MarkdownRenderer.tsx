@@ -366,13 +366,12 @@ const splitLegacyToolBlocks = (
   const textBuffer: string[] = [];
   const toolStartRegex = /^(?:\[\s*TOOL\s*\]|🔧\s*\*\*Tool:\*\*)\s*([a-zA-Z0-9_-]+)(?:\s*\((.+?)\))?\s*$/i;
   const toolDoneRegex = /^\[\s*TOOL_DONE\s*\]\s*([a-zA-Z0-9_-]+)(?:\s*\((.+?)\))?\s*$/i;
-  const pendingToolIndexes: number[] = [];
+  const pendingTools: ToolRenderTrace[] = [];
 
   const flushTools = () => {
     if (tools.length === 0) return;
-    blocks.push({ type: 'tool_group', tools: tools.map((tool) => ({ ...tool })) });
+    blocks.push({ type: 'tool_group', tools: [...tools] });
     tools.length = 0;
-    pendingToolIndexes.length = 0;
   };
 
   const flushText = () => {
@@ -403,7 +402,7 @@ const splitLegacyToolBlocks = (
         previous.status === nextTool.status;
       if (!sameAsPrevious) {
         tools.push(nextTool);
-        pendingToolIndexes.push(tools.length - 1);
+        pendingTools.push(nextTool);
       }
       continue;
     }
@@ -413,22 +412,19 @@ const splitLegacyToolBlocks = (
       flushText();
       const doneToolName = doneMatch[1];
       const doneDetail = doneMatch[2];
-      const pendingIndex = pendingToolIndexes.findIndex((toolIndex) => {
-        const tool = tools[toolIndex];
-        if (!tool) return false;
+      const pendingIndex = pendingTools.findIndex((tool) => {
         if (tool.toolName !== doneToolName || tool.status !== 'running') return false;
         if (!doneDetail) return true;
         return (tool.detail || '').normalize('NFC') === doneDetail.normalize('NFC');
       });
 
       if (pendingIndex !== -1) {
-        const toolIndex = pendingToolIndexes[pendingIndex];
-        const tool = tools[toolIndex];
+        const tool = pendingTools[pendingIndex];
         if (tool) {
           tool.status = 'done';
           tool.recoveryState = 'completed';
         }
-        pendingToolIndexes.splice(pendingIndex, 1);
+        pendingTools.splice(pendingIndex, 1);
       }
       continue;
     }

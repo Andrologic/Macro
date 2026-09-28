@@ -174,6 +174,21 @@ describe('MarkdownRenderer tool trace rendering', () => {
     expect(item?.getAttribute('data-recovery-state')).toBe('completed');
   });
 
+  it('matches a legacy done marker across intervening text', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+    await act(async () => {
+      root?.render(<MarkdownRenderer content={'[TOOL] read\nReading file...\n[TOOL_DONE] read'} isStreaming={false} />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      (container?.querySelector('[data-testid="tool-traces-completed-trigger"]') as HTMLButtonElement | null)?.click();
+      await Promise.resolve();
+    });
+    const item = container?.querySelector('[data-testid="tool-trace-item"]');
+    expect(item?.getAttribute('data-tool-status')).toBe('done');
+    expect(item?.getAttribute('data-recovery-state')).toBe('completed');
+  });
+
   it('does not move a completed tool while another tool is still running', async () => {
     const { MarkdownRenderer } = await loadMarkdownRenderer();
 
