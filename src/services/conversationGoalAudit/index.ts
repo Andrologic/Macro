@@ -4,5 +4,6 @@ export * from "./durableJournal";
 export * from "./journal";
 export * from "./providerExecutor";
 export * from "./providerResolver";
+export * from "./productRepository";
 export * from "./types";
 export * from "./validation";
