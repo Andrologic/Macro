@@ -7,6 +7,7 @@ import type { AgentCodeCheckpointFile, ChatMessage } from "../types";
 import { EMPTY_CONVERSATION_RUNTIME } from "../domains/chat/runtimeState";
 import { createChatToolExecution } from "./chatToolExecution";
 import { createChatToolDispatch } from "./chatToolDispatch";
+import { allowChatToolInvocationJournal } from "../test-utils/chatToolInvocationJournal";
 import { runToolBatch } from "./ai/toolCallRunner";
 import { buildToolChatCompletionProviderItem } from "./ai/chatCompletionsCodec";
 import { afterAll, describe, expect, it, mock } from "bun:test";
@@ -3728,6 +3729,7 @@ async function lspConversationFixture(params: {
       }},
   };
   const dispatch = createChatToolDispatch(operation, {
+    journal: allowChatToolInvocationJournal,
     execute: createChatToolExecution(ports),
     preserve: async (_operation, _name, _id, result) => result,
     boundError: async (_operation, _name, _id, error) => error,
