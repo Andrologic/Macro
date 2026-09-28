@@ -219,9 +219,12 @@ async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: num
       throwIfToolAborted(options.signal);
     }
   } finally {
-    // A cancelled or interrupted batch must not leave unread sibling traces
-    // looking live after the child operations have settled.
-    for (const item of perCall.slice(flushed)) accumulator.completeToolTrace(item.call.id);
+    // An interrupt closes unused siblings. Cancellation must not publish any
+    // further trace update; the turn's finalization owns their unresolved state.
+    for (const item of perCall.slice(flushed)) {
+      if (options.signal?.aborted) break;
+      accumulator.completeToolTrace(item.call.id);
+    }
   }
   return { toolResults, interruptResolution };
 }

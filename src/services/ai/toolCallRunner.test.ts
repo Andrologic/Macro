@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { StreamingChatOptions, ToolCall } from './contracts';
 import { runToolBatch, validateToolInvocation, type ToolBatchAccumulator } from './toolCallRunner';
+import { createStreamAccumulator } from './streamAccumulator';
 
 const call = (name: string, id = name): ToolCall => ({ id, type: 'function', function: { name, arguments: '{}' } });
 const accumulator = (): ToolBatchAccumulator => ({
@@ -299,5 +300,27 @@ describe('shared tool batch', () => {
     expect(acc.beginToolTrace).toHaveBeenCalledTimes(1);
     expect(acc.completeToolTrace).not.toHaveBeenCalled();
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('does not emit trace or context updates after cancelling pending reads', async () => {
+    const controller = new AbortController();
+    const releases: Array<(value: string) => void> = [];
+    const late: string[] = [];
+    const acc = createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => { if (controller.signal.aborted) late.push('traces'); },
+      onLiveContextUpdate: () => { if (controller.signal.aborted) late.push('context'); },
+    });
+    const pending = run([call('read', 'one'), call('grep', 'two')], {
+      ...options(() => new Promise<string>(resolve => releases.push(resolve))),
+      signal: controller.signal,
+    }, acc);
+    await Promise.resolve();
+    expect(releases).toHaveLength(2);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    releases.forEach((release, index) => release(String(index)));
+    await Promise.resolve();
+    expect(late).toEqual([]);
   });
 });
