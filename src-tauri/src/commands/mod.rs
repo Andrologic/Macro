@@ -7,6 +7,7 @@ pub mod repository_instructions;
 pub mod skills;
 pub mod speech;
 pub mod terminal;
+pub mod tool_invocations;
 pub mod web_search;
 pub mod workspace;
 pub mod workspace_tools;

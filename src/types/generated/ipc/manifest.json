@@ -309,6 +309,14 @@
       "families": [
         "db"
       ],
+      "name": "CompleteToolInvocationInput",
+      "origin": "macro_lib::db::tool_invocations::CompleteToolInvocationInput",
+      "path": "CompleteToolInvocationInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "Conversation",
       "origin": "macro_lib::db::models::Conversation",
       "path": "Conversation.ts"
@@ -935,6 +943,7 @@
       "families": [
         "chat",
         "copilot",
+        "db",
         "mcp",
         "state",
         "workspace"
@@ -1346,6 +1355,22 @@
     },
     {
       "families": [
+        "db"
+      ],
+      "name": "RecordToolInvocationInput",
+      "origin": "macro_lib::db::tool_invocations::RecordToolInvocationInput",
+      "path": "RecordToolInvocationInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "RecordToolInvocationResult",
+      "origin": "macro_lib::db::tool_invocations::RecordToolInvocationResult",
+      "path": "RecordToolInvocationResult.ts"
+    },
+    {
+      "families": [
         "instructions"
       ],
       "name": "RepositoryInstructionIssue",
@@ -1575,6 +1600,38 @@
       "name": "TimeOutAgentRunInput",
       "origin": "macro_lib::db::models::TimeOutAgentRunInput",
       "path": "TimeOutAgentRunInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolEffectClass",
+      "origin": "macro_lib::db::tool_invocations::ToolEffectClass",
+      "path": "ToolEffectClass.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolInvocation",
+      "origin": "macro_lib::db::tool_invocations::ToolInvocation",
+      "path": "ToolInvocation.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolInvocationIdentity",
+      "origin": "macro_lib::db::tool_invocations::ToolInvocationIdentity",
+      "path": "ToolInvocationIdentity.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolInvocationStatus",
+      "origin": "macro_lib::db::tool_invocations::ToolInvocationStatus",
+      "path": "ToolInvocationStatus.ts"
     },
     {
       "families": [
