@@ -9731,6 +9731,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     set((current) => ({
       selectedConversationId: conversationId,
+      selectedConversationContextKey: current.activeContextKey,
       selectedConversationIdsByMode: {
         ...current.selectedConversationIdsByMode,
         [mode]: conversationId,
@@ -12230,7 +12231,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!applied) {
         return false;
       }
-      set({ selectedConversationContextKey: get().activeContextKey });
       persistSelectionForConversationSwitch(
         mode,
         previousConversationId,

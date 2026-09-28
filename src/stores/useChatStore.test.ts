@@ -2991,6 +2991,22 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
+  it('associates a newly selected conversation with its resolved context', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      ...createIdleChatStoreState(),
+      activeContextKey: 'Chat::none::none::none',
+    });
+
+    const conversation = await useChatStore.getState().createConversation('Journal', null, null);
+
+    expect(useChatStore.getState().selectedConversationId).toBe(conversation.id);
+    expect(useChatStore.getState().selectedConversationContextKey).toBe('Chat::none::none::none');
+  });
+
   it('stops hydration before replay recovery or publication after a delayed snapshot', async () => {
     const { useChatStore } = await loadChatStore();
     tauriAvailable = true;
