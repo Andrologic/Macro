@@ -14,6 +14,7 @@ import type {
 import { GoalAuditCoordinator } from "./GoalAuditCoordinator";
 import {
   InMemoryGoalAuditJournal,
+  type GoalAuditJournal,
   type GoalAuditRunDescriptor,
 } from "./journal";
 import type {
@@ -484,6 +485,25 @@ describe("GoalAuditCoordinator", () => {
     expect(verdictPort.applications).toEqual([]);
   });
 
+  it("does not start an audit when registration rejects without an error value", async () => {
+    class RejectingJournal extends InMemoryGoalAuditJournal {
+      override registerRun(): Promise<void> {
+        return Promise.reject(undefined);
+      }
+    }
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal: new RejectingJournal(),
+      idFactory: () => "audit-1",
+    });
+    expect(await coordinator.audit(request())).toMatchObject({
+      status: "failed", error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    });
+    expect(executor.requests).toEqual([]);
+  });
+
   it("settles registration on timeout even if the journal never responds", async () => {
     const clock = new FakeClock();
     const journal = new DelayedRegistrationJournal();
@@ -572,6 +592,47 @@ describe("GoalAuditCoordinator", () => {
     });
     expect(executor.requests).toEqual([]);
     expect(clock.timers.size).toBe(0);
+  });
+
+  it("releases a registration that completes after the audit timed out", async () => {
+    const clock = new FakeClock();
+    const registered = new Set<string>();
+    let releaseRegistration!: () => void;
+    let releases = 0;
+    const journal: GoalAuditJournal = {
+      registerRun(descriptor) {
+        return new Promise<void>((resolve) => {
+          releaseRegistration = () => {
+            registered.add(descriptor.runId);
+            resolve();
+          };
+        });
+      },
+      releaseRun(runId) {
+        releases += 1;
+        registered.delete(runId);
+      },
+      recordTransition() {
+        throw new Error("No transition should be recorded");
+      },
+    };
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal,
+      clock,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
+    clock.advanceBy(50);
+    expect(await handle.result).toMatchObject({ status: "timed_out" });
+    expect(releases).toBe(1);
+    releaseRegistration();
+    await Promise.resolve();
+    expect(registered.size).toBe(0);
+    expect(releases).toBe(2);
+    expect(executor.requests).toEqual([]);
   });
 
   it("continues after an asynchronous registration is confirmed", async () => {

@@ -224,6 +224,7 @@ export class GoalAuditCoordinator<
       request,
       contextResult.context.successCriteria,
       runId,
+      descriptor,
       systemPrompt,
       preflight.value,
       registration,
@@ -238,11 +239,7 @@ export class GoalAuditCoordinator<
         if (this.#activeByConversation.get(request.conversationId) === cycle) {
           this.#activeByConversation.delete(request.conversationId);
         }
-        try {
-          if ("releaseRun" in this.journal) this.journal.releaseRun?.(runId);
-        } catch (error) {
-          this.#notifyJournalError(error, descriptor);
-        }
+        this.#releaseJournalRun(descriptor);
         this.#runtime.releaseRun(runId);
         this.#descriptors.delete(runId);
       });
@@ -304,6 +301,7 @@ export class GoalAuditCoordinator<
     request: GoalAuditRequest,
     expectedCriteria: readonly string[],
     runId: string,
+    descriptor: GoalAuditRunDescriptor,
     systemPrompt: string,
     authorization: DelegationAuthorization,
     registration: void | Promise<void>,
@@ -311,12 +309,12 @@ export class GoalAuditCoordinator<
   ): Promise<GoalAuditResult> {
     if (registration) {
       try {
-        await this.#awaitRegistration(registration, cycle.controller.signal);
+        await this.#awaitRegistration(registration, cycle.controller.signal, descriptor);
       } catch (error) {
         if (error instanceof RegistrationWaitAborted && cycle.cancellationReason) {
           return this.#cancellationResult(request, runId, cycle.cancellationReason);
         }
-        this.#notifyJournalError(error, this.#descriptors.get(runId));
+        this.#notifyJournalError(error, descriptor);
         return {
           status: "failed",
           runId,
@@ -361,27 +359,51 @@ export class GoalAuditCoordinator<
     return this.#completeAudit(request, expectedCriteria, runtimeHandle, cycle);
   }
 
-  #awaitRegistration(registration: Promise<void>, signal: AbortSignal): Promise<void> {
+  #releaseJournalRun(descriptor: GoalAuditRunDescriptor): void {
+    try {
+      if ("releaseRun" in this.journal) this.journal.releaseRun?.(descriptor.runId);
+    } catch (error) {
+      this.#notifyJournalError(error, descriptor);
+    }
+  }
+
+  #awaitRegistration(
+    registration: Promise<void>,
+    signal: AbortSignal,
+    descriptor: GoalAuditRunDescriptor,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
+      let abandoned = false;
       let timeoutHandle: unknown;
-      const finish = (error?: unknown) => {
+      const finish = (succeeded: boolean, error?: unknown) => {
         if (settled) return;
         settled = true;
         if (timeoutHandle !== undefined) this.#clock.clearTimeout(timeoutHandle);
         signal.removeEventListener("abort", onAbort);
-        if (error !== undefined) reject(error);
-        else resolve();
+        if (succeeded) resolve();
+        else reject(error);
       };
-      const onAbort = () => finish(new RegistrationWaitAborted("Goal audit registration wait aborted"));
-      void Promise.resolve(registration).then(() => finish(), finish);
+      const abandon = (error: Error) => {
+        abandoned = true;
+        finish(false, error);
+      };
+      const onAbort = () => abandon(new RegistrationWaitAborted("Goal audit registration wait aborted"));
+      const onRegistrationSettled = (succeeded: boolean, error?: unknown) => {
+        if (abandoned) this.#releaseJournalRun(descriptor);
+        else finish(succeeded, error);
+      };
+      void Promise.resolve(registration).then(
+        () => onRegistrationSettled(true),
+        (error) => onRegistrationSettled(false, error),
+      );
       if (signal.aborted) {
         onAbort();
         return;
       }
       signal.addEventListener("abort", onAbort, { once: true });
       timeoutHandle = this.#clock.setTimeout(
-        () => finish(new Error("Goal audit registration wait timed out")),
+        () => abandon(new Error("Goal audit registration wait timed out")),
         REGISTRATION_TIMEOUT_MS,
       );
     });
@@ -580,21 +602,24 @@ export class GoalAuditCoordinator<
         return;
       }
       let done = false;
-      const finish = (error: unknown, value?: T) => {
+      const finish = (succeeded: boolean, value?: T, error?: unknown) => {
         if (done) return;
         done = true;
         signal.removeEventListener("abort", onAbort);
-        if (error !== undefined) reject(error);
-        else resolve(value as T);
+        if (succeeded) resolve(value as T);
+        else reject(error);
       };
-      const onAbort = () => finish(new Error("Goal audit cancelled during verdict application"));
+      const onAbort = () => finish(false, undefined, new Error("Goal audit cancelled during verdict application"));
       signal.addEventListener("abort", onAbort, { once: true });
       void Promise.resolve()
         .then(() => {
           if (signal.aborted) throw new Error("Goal audit cancelled before verdict application");
           return start();
         })
-        .then((value) => finish(undefined, value), finish);
+        .then(
+          (value) => finish(true, value),
+          (error) => finish(false, undefined, error),
+        );
     });
   }
 

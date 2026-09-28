@@ -952,30 +952,33 @@ export class SubagentRuntime<
     return new Promise((resolve, reject) => {
       let done = false;
       let timer: unknown;
-      const finish = (error?: unknown) => {
+      const finish = (succeeded: boolean, error?: unknown) => {
         if (done) return;
         done = true;
         if (timer !== undefined) this.#clock.clearTimeout(timer);
         signal?.removeEventListener("abort", onAbort);
-        if (error !== undefined) reject(error);
-        else resolve();
+        if (succeeded) resolve();
+        else reject(error);
       };
-      const onAbort = () => finish(new Error("Subagent transition wait aborted"));
+      const onAbort = () => finish(false, new Error("Subagent transition wait aborted"));
       if (signal?.aborted) {
         onAbort();
         return;
       }
       signal?.addEventListener("abort", onAbort, { once: true });
       timer = this.#clock.setTimeout(
-        () => finish(new Error("Subagent transition wait timed out")),
+        () => finish(false, new Error("Subagent transition wait timed out")),
         this.#options.transitionTimeoutMs ?? DEFAULT_TRANSITION_TIMEOUT_MS,
       );
       try {
         const operation = start();
-        if (operation === undefined) finish();
-        else void Promise.resolve(operation).then(() => finish(), finish);
+        if (operation === undefined) finish(true);
+        else void Promise.resolve(operation).then(
+          () => finish(true),
+          (error) => finish(false, error),
+        );
       } catch (error) {
-        finish(error);
+        finish(false, error);
       }
     });
   }

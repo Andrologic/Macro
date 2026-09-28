@@ -733,6 +733,26 @@ describe("SubagentRuntime", () => {
     expect(failedStates).toEqual(["running"]);
   });
 
+  it("does not run a child when the running write rejects without an error value", async () => {
+    const executor = new ControlledExecutor();
+    const runtime = new SubagentRuntime<TestInput, TestOutput>({
+      executor,
+      transitionRecorder: {
+        recordTransition: (transition) => transition.state === "running"
+          ? Promise.reject(undefined) : undefined,
+      },
+    });
+    const handle = runtime.run({
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "never-execute" },
+    });
+    expect(await handle.result).toMatchObject({
+      status: "failed", error: { code: "SUBAGENT_JOURNAL_FAILED" },
+    });
+    expect(executor.started).toEqual([]);
+  });
+
   it("settles a never-resolving queued claim on cancel, timeout, dispose or recorder deadline", async () => {
     for (const reason of ["cancel", "timeout", "dispose", "ceiling"] as const) {
       const executor = new ControlledExecutor();
