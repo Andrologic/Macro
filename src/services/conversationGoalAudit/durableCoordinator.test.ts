@@ -3,14 +3,52 @@ import type { AgentRun } from "../../types/generated/ipc";
 import { createDurableGoalAuditCoordinator } from "./durableCoordinator";
 
 describe("durable goal audit composition", () => {
+  it("confirms the native turn claim before running and stops when that claim is rejected", async () => {
+    const events: string[] = [];
+    const coordinator = createDurableGoalAuditCoordinator({
+      idFactory: () => "audit-run",
+      goalClaim: {
+        auditId: "audit", conversationId: "parent", goalId: "goal",
+        expectedRevision: 1, executorTurnId: "turn",
+      },
+      verdictPort: { applyVerdict: () => { throw new Error("verdict must not apply"); } },
+      journalPorts: {
+        async recordTransition(input) {
+          events.push(`transition:${input.transition.state}:${input.auditClaim?.executorTurnId ?? "none"}`);
+          throw new Error("duplicate audited turn");
+        },
+        async linkChildConversation() { throw new Error("child must not be linked"); },
+      },
+      providerPorts: {
+        resolveProvider: () => { throw new Error("provider must not resolve"); },
+        resolveChildConversation: () => { throw new Error("child must not resolve"); },
+        executeReadTool: async () => "unused",
+        stream: async () => { throw new Error("stream must not start"); },
+      },
+    });
+    const scope = { capabilities: ["workspace.read", "git.read", "delegate"] as const };
+    const result = await coordinator.audit({
+      conversationId: "parent", goalId: "goal", goalRevision: 1,
+      objective: "Audit the goal", successCriteria: ["Check"],
+      lastExecutorTurn: { turnId: "turn", summary: "Implementation done" },
+      userPolicy: scope, parentPolicy: scope,
+    });
+    expect(result.status).toBe("failed");
+    expect(events).toEqual(["transition:queued:turn"]);
+  });
+
   it("links a real child conversation after the running transition and before provider streaming", async () => {
     const events: string[] = [];
     const coordinator = createDurableGoalAuditCoordinator({
       idFactory: () => "audit-run",
+      goalClaim: {
+        auditId: "audit", conversationId: "parent", goalId: "goal",
+        expectedRevision: 1, executorTurnId: "turn",
+      },
       verdictPort: { applyVerdict: () => "applied" },
       journalPorts: {
         async recordTransition(input) {
-          events.push(`transition:${input.transition.state}`);
+          events.push(`transition:${input.transition.state}:${input.auditClaim?.executorTurnId ?? "none"}`);
           return {} as AgentRun;
         },
         async linkChildConversation(runId, parentId, childId) {
@@ -49,7 +87,7 @@ describe("durable goal audit composition", () => {
     });
     expect(result.status).toBe("applied");
     expect(events.slice(0, 4)).toEqual([
-      "transition:queued", "transition:running",
+      "transition:queued:turn", "transition:running:none",
       "link:audit-run:parent:real-child-conversation", "stream:real-child-conversation",
     ]);
     expect(() => coordinator.journal.registerRun({

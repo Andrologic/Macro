@@ -1,4 +1,4 @@
-import type { AgentRun, RecordGoalAuditTransitionInput } from "../../types/generated/ipc";
+import type { AgentRun, ClaimConversationGoalAuditInput, RecordGoalAuditTransitionInput, ResumeConversationGoalAuditInput } from "../../types/generated/ipc";
 import { linkGoalAuditChildConversation, recordGoalAuditTransition } from "../tauriIpc";
 import type { SubagentProgressEvent, SubagentTransition } from "../subagentRuntime";
 import type { GoalAuditJournal, GoalAuditRunDescriptor } from "./journal";
@@ -30,9 +30,18 @@ export class DurableGoalAuditJournal<TProgress extends SubagentProgressEvent = S
   readonly #descriptors = new Map<string, GoalAuditRunDescriptor>();
   readonly #transitions = new Map<string, Map<number, PendingTransition>>();
   readonly #tails = new Map<string, Promise<void>>();
+  readonly #goalClaim?: Omit<ClaimConversationGoalAuditInput, "runId">;
+  readonly #goalResume?: Omit<ResumeConversationGoalAuditInput, "newRunId">;
 
-  constructor(ports: GoalAuditJournalPorts = tauriPorts) {
+  constructor(
+    ports: GoalAuditJournalPorts = tauriPorts,
+    goalClaim?: Omit<ClaimConversationGoalAuditInput, "runId">,
+    goalResume?: Omit<ResumeConversationGoalAuditInput, "newRunId">,
+  ) {
+    if (goalClaim && goalResume) throw new Error("Goal audit cannot claim and resume in the same run.");
     this.#ports = ports;
+    this.#goalClaim = goalClaim;
+    this.#goalResume = goalResume;
   }
 
   registerRun(descriptor: GoalAuditRunDescriptor): void {
@@ -63,6 +72,12 @@ export class DurableGoalAuditJournal<TProgress extends SubagentProgressEvent = S
     }
     const metrics = transition.result?.metrics ?? transition.snapshot.metrics;
     const input: RecordGoalAuditTransitionInput = {
+      ...(transition.sequence === 0 && this.#goalClaim ? {
+        auditClaim: { ...this.#goalClaim, runId: transition.runId },
+      } : {}),
+      ...(transition.sequence === 0 && this.#goalResume ? {
+        auditResume: { ...this.#goalResume, newRunId: transition.runId },
+      } : {}),
       descriptor: transition.sequence === 0 ? {
         id: descriptor.runId,
         parent_conversation_id: descriptor.parentConversationId,

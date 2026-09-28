@@ -1,5 +1,6 @@
 import { GoalAuditCoordinator } from "./GoalAuditCoordinator";
 import { DurableGoalAuditJournal, type GoalAuditJournalPorts } from "./durableJournal";
+import type { ClaimConversationGoalAuditInput, ResumeConversationGoalAuditInput } from "../../types/generated/ipc";
 import { createGoalAuditProviderExecutor, type GoalAuditProviderPorts } from "./providerExecutor";
 import type { GoalAuditCoordinatorOptions } from "./types";
 
@@ -7,11 +8,13 @@ export interface DurableGoalAuditCoordinatorOptions
   extends Omit<GoalAuditCoordinatorOptions, "executor" | "journal"> {
   providerPorts: GoalAuditProviderPorts;
   journalPorts?: GoalAuditJournalPorts;
+  goalClaim?: Omit<ClaimConversationGoalAuditInput, "runId">;
+  goalResume?: Omit<ResumeConversationGoalAuditInput, "newRunId">;
 }
 
 /** Assemble the durable journal and provider turn without choosing a UI trigger. */
 export function createDurableGoalAuditCoordinator(options: DurableGoalAuditCoordinatorOptions): GoalAuditCoordinator {
-  const journal = new DurableGoalAuditJournal(options.journalPorts);
+  const journal = new DurableGoalAuditJournal(options.journalPorts, options.goalClaim, options.goalResume);
   const executor = createGoalAuditProviderExecutor({
     ...options.providerPorts,
     async resolveChildConversation(request) {
