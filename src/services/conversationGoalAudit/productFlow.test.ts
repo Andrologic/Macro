@@ -40,7 +40,7 @@ const harness = (result: GoalAuditResult | Promise<GoalAuditResult> | ((turnId: 
   let queuedTurnIds: string[] = [];
   let attemptedTurnIds: string[] = [];
   let listener: (() => void) | null = null;
-  const saved: Array<{ auditId: string; turnId: string; result: GoalAuditResult }> = [];
+  const saved: Array<{ auditId: string; turnId: string; goal: PersistedConversationGoalRecord; result: GoalAuditResult }> = [];
   const artifactFailures: string[] = [];
   const flowFailures: string[] = [];
   const flowRetries: Array<() => Promise<void>> = [];
@@ -431,7 +431,31 @@ describe('Goal product flow', () => {
     await settle();
     expect(h.goal).toBeNull();
     expect(h.sent).toHaveLength(0);
+    expect(h.saved).toMatchObject([{ goal: { goalId: 'goal' }, result: { status: 'stale' } }]);
   });
+
+  for (const action of ['stop', 'replace'] as const) {
+    it(`keeps a cancelled review artifact with its original owner after ${action}`, async () => {
+      let resolve!: (value: GoalAuditResult) => void;
+      const h = harness(new Promise<GoalAuditResult>((done) => { resolve = done; }));
+      h.flow.track('conversation', 'turn', 'assistant', 'goal');
+      await settle();
+      if (action === 'stop') await h.flow.stop('conversation');
+      else {
+        h.repository.replaceGoal = async () => {
+          h.goal = { ...initialGoal(), goalId: 'replacement', status: 'active_ready' };
+          return h.goal;
+        };
+        await h.flow.activate('conversation', 'New objective', 'provider', 'model', null, h.goal!);
+      }
+      resolve({ status: 'cancelled', runId: 'run', reason: 'child_cancelled' });
+      await settle();
+      expect(h.saved).toMatchObject([{ goal: { goalId: 'goal' }, turnId: 'turn', result: { status: 'cancelled' } }]);
+      expect(h.sent).toHaveLength(0);
+      if (action === 'stop') expect(h.goal).toBeNull();
+      else expect(h.goal).toMatchObject({ goalId: 'replacement', status: 'active_ready', revision: 1 });
+    });
+  }
 
   it('retries Stop when a verdict wins its first native CAS', async () => {
     const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });

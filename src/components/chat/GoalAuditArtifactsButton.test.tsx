@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
+import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 import { createRoot, type Root } from 'react-dom/client';
 import type { GoalAuditArtifact } from '../../composition/goalArtifactComposition';
 
@@ -34,9 +35,10 @@ describe('Goal audit artifact navigation', () => {
     document.body.innerHTML = '';
     list = async () => [];
     read = async () => '{}';
+    useConversationGoalStore.setState({ artifactRevisionByConversationId: {} });
   });
 
-  const mount = async (projectId: string, conversationId: string, goalId: string, refreshKey = 1) => {
+  const mount = async (projectId: string, conversationId: string, goalId: string | undefined, refreshKey = 1) => {
     if (!root) { container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); }
     await act(async () => { root!.render(<GoalAuditArtifactsButton projectId={projectId} conversationId={conversationId} goalId={goalId} refreshKey={refreshKey} />); await flush(); });
   };
@@ -66,6 +68,23 @@ describe('Goal audit artifact navigation', () => {
     expect(document.body.textContent).toContain('Verified Goal verdict');
     await act(async () => { selected!.click(); await flush(); });
     expect(document.body.textContent).toContain('Verified Goal verdict');
+  });
+
+  it('shows a review saved after Stop without requiring a goal or reload', async () => {
+    let saved = false;
+    const cancelled = { ...artifact('project-1', 'conversation-1', 'old-goal'), review: { status: 'cancelled' as const, verdict: null } };
+    list = async () => saved ? [cancelled] : [];
+    read = async () => 'Cancelled review of the original goal';
+    await mount('project-1', 'conversation-1', undefined);
+    expect(container!.querySelector('button')).toBeNull();
+    saved = true;
+    await act(async () => {
+      useConversationGoalStore.getState().markArtifactSaved('conversation-1');
+      await flush();
+    });
+    expect(container!.textContent).toContain('Goal reviews 1');
+    await act(async () => { container!.querySelector('button')!.click(); await flush(); });
+    expect(document.body.textContent).toContain('Cancelled review of the original goal');
   });
 
   it('shows index errors and retries a failed content read', async () => {

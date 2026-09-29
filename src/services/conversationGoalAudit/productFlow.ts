@@ -468,7 +468,7 @@ export class ConversationGoalProductFlow {
       this.audits.set(conversationId, audit);
       const result = await audit.result;
       const latest = await this.refresh(conversationId);
-      if (result.runId && auditId && latest?.goalId === turn.goalId) {
+      if (result.runId && auditId) {
         try {
           await this.ports.saveArtifact({ auditId, runId: result.runId, goal: pending, turnId: turn.turnId, messageId: message.id, result });
         } catch (error) {
@@ -476,7 +476,7 @@ export class ConversationGoalProductFlow {
             const message = `Goal review artifact was not saved: ${error instanceof Error ? error.message : String(error)}`;
             this.ports.onArtifactFailure(message);
             if (ownGeneration === (this.generations.get(conversationId) ?? 0) &&
-                latest.status === 'continuation_pending') await this.status(conversationId, 'error', message, latest);
+                latest?.goalId === turn.goalId && latest.status === 'continuation_pending') await this.status(conversationId, 'error', message, latest);
           }
           return;
         }

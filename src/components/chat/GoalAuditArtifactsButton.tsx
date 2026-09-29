@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 import { Icon } from '../ui/Icon';
 import { Dialog } from '../ui/Dialog';
 import { DiffMergeView } from '../ui/DiffMergeView';
@@ -9,6 +10,7 @@ interface Props { projectId: string; conversationId: string; goalId?: string | n
 
 export const GoalAuditArtifactsButton: React.FC<Props> = ({ projectId, conversationId, goalId, refreshKey }) => {
   const { t } = useTranslation();
+  const artifactRevision = useConversationGoalStore((state) => state.artifactRevisionByConversationId[conversationId] ?? 0);
   const [artifacts, setArtifacts] = useState<GoalAuditArtifact[]>([]);
   const [selected, setSelected] = useState<GoalAuditArtifact | null>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -29,7 +31,7 @@ export const GoalAuditArtifactsButton: React.FC<Props> = ({ projectId, conversat
       if (active) { setArtifacts([]); setIndexError(cause instanceof Error ? cause.message : String(cause)); }
     });
     return () => { active = false; };
-  }, [projectId, conversationId, goalId, refreshKey, retryKey]);
+  }, [projectId, conversationId, goalId, refreshKey, retryKey, artifactRevision]);
 
   useEffect(() => {
     if (!selected) return;
