@@ -57,6 +57,17 @@ describe('Goal audit artifact navigation', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('keeps the loaded content when selecting the current artifact again', async () => {
+    list = async (projectId, conversationId, goalId) => [artifact(projectId, conversationId, goalId)];
+    read = async () => 'Verified Goal verdict';
+    await mount('project-1', 'conversation-1', 'goal-1');
+    await act(async () => { container!.querySelector('button')!.click(); await flush(); });
+    const selected = document.querySelector<HTMLButtonElement>('[role="dialog"] nav button');
+    expect(document.body.textContent).toContain('Verified Goal verdict');
+    await act(async () => { selected!.click(); await flush(); });
+    expect(document.body.textContent).toContain('Verified Goal verdict');
+  });
+
   it('shows index errors and retries a failed content read', async () => {
     list = async () => { throw new Error('Index unavailable'); };
     await mount('project-1', 'conversation-1', 'goal-1');
