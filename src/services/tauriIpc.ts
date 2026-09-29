@@ -54,6 +54,7 @@ export type {
 export {
   getCurrentConversationGoal, activateConversationGoal, updateConversationGoal, deactivateConversationGoal,
   getConversationGoalAudit,
+  listConversationGoalAudits,
   listRecoverableConversationGoalAudits,
   applyConversationGoalVerdict, createNativeGoalAuditVerdictPort,
 } from "./ipc/conversationGoals";

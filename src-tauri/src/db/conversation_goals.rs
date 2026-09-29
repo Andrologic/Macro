@@ -402,6 +402,20 @@ pub async fn get_audit(
         .transpose()
 }
 
+pub async fn list_conversation_audits(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Vec<ConversationGoalAudit>> {
+    nonempty(conversation_id, "conversation id")?;
+    sqlx::query("SELECT * FROM conversation_goal_audits WHERE conversation_id = ? ORDER BY created_at, audit_id")
+        .bind(conversation_id)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(audit_from_row)
+        .collect()
+}
+
 pub async fn list_recoverable_audits(pool: &SqlitePool) -> DbResult<Vec<ConversationGoalAudit>> {
     sqlx::query("SELECT * FROM conversation_goal_audits WHERE status IN ('queued', 'running', 'ready_for_verdict', 'interrupted') ORDER BY updated_at, audit_id")
         .fetch_all(pool).await?.into_iter().map(audit_from_row).collect()
@@ -417,6 +431,11 @@ pub async fn activate_goal(
     let criteria = stored_criteria(&input.success_criteria)?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let project_id: Option<Option<String>> = sqlx::query_scalar("SELECT project_id FROM conversations WHERE id = ?")
+        .bind(&input.conversation_id).fetch_optional(&mut *tx).await?;
+    if project_id.flatten().is_none_or(|id| id.trim().is_empty()) {
+        return Err(invalid("Goal requires a conversation attached to a project"));
+    }
     match (&input.replace_goal_id, input.replace_revision) {
         (None, None) => {
             let current: Option<String> = sqlx::query_scalar("SELECT goal_id FROM conversation_goals WHERE conversation_id = ? AND is_current = 1")
@@ -780,7 +799,7 @@ mod tests {
         let pool = crate::db::create_pool(&temp.path().join("goals.db"))
             .await
             .unwrap();
-        sqlx::query("INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('parent', 'Parent', '2026-01-01', '2026-01-01')")
+        sqlx::query("INSERT INTO conversations (id, title, project_id, created_at, updated_at) VALUES ('parent', 'Parent', 'project', '2026-01-01', '2026-01-01')")
             .execute(&pool).await.unwrap();
         for (id, turn) in [("message-1", "turn-1"), ("message-2", "turn-2")] {
             sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES (?, 'parent', ?, 'assistant', 'Done', '2026-01-01')")
@@ -801,6 +820,15 @@ mod tests {
             replace_goal_id: None,
             replace_revision: None,
         }
+    }
+
+    #[tokio::test]
+    async fn activation_requires_a_project_conversation() {
+        let (_temp, pool) = fixture().await;
+        sqlx::query("UPDATE conversations SET project_id = NULL WHERE id = 'parent'")
+            .execute(&pool).await.unwrap();
+        assert!(activate_goal(&pool, activation()).await.unwrap_err().to_string().contains("project"));
+        assert!(get_current_goal(&pool, "parent").await.unwrap().is_none());
     }
 
     async fn activate_pending(pool: &SqlitePool, input: ActivateConversationGoalInput) {

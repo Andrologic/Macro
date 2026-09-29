@@ -2533,6 +2533,22 @@
     "loggedOut": "Logged out"
   },
   "goal": {
+    "artifacts": "Revisiones del objetivo",
+    "artifactSaveFailed": "No se pudo guardar el artefacto de revisión del objetivo",
+    "artifactTitle": "Revisión del objetivo",
+    "queueTrackingFailed": "No se pudo seguir el turno del objetivo en cola",
+    "artifactStatus": { "achieved": "Logrado", "continue": "Continuar", "needs_user": "Necesita tu respuesta", "cannot_progress": "No puede avanzar", "applied": "Aplicado", "failed": "Fallido", "cancelled": "Cancelado", "stale": "Desactualizado", "timed_out": "Tiempo agotado" },
+    "reason": {
+      "reviewInterrupted": "La revisión anterior se interrumpió. Reanuda para iniciar otro turno del agente.",
+      "executorInterrupted": "El turno anterior del agente se interrumpió. Reanuda para continuar.",
+      "noProgress": "Dos revisiones detectaron el mismo trabajo pendiente sin pruebas nuevas. Cambia el enfoque antes de reanudar."
+    },
+    "loadFailed": "No se pudo cargar el objetivo",
+    "projectRequired": "El objetivo requiere una conversación vinculada a un proyecto",
+    "saveFailed": "No se pudo guardar el objetivo",
+    "pauseFailed": "No se pudo pausar el objetivo",
+    "resumeFailed": "No se pudo reanudar el objetivo",
+    "stopFailed": "No se pudo detener el objetivo",
     "bannerLabel": "Objetivo de la conversación",
     "shortLabel": "Goal",
     "edit": "Editar objetivo",

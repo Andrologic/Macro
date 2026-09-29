@@ -2528,6 +2528,22 @@
     "loggedOut": "Logged out"
   },
   "goal": {
+    "artifacts": "目標の確認結果",
+    "artifactSaveFailed": "目標の確認結果を保存できませんでした",
+    "artifactTitle": "目標の確認",
+    "queueTrackingFailed": "キュー内の目標ターンを追跡できませんでした",
+    "artifactStatus": { "achieved": "達成", "continue": "続行", "needs_user": "回答が必要", "cannot_progress": "続行不可", "applied": "適用済み", "failed": "失敗", "cancelled": "キャンセル", "stale": "期限切れ", "timed_out": "時間切れ" },
+    "reason": {
+      "reviewInterrupted": "前回の確認は中断されました。再開すると新しいエージェントのターンが始まります。",
+      "executorInterrupted": "前回のエージェントのターンは中断されました。再開して続行してください。",
+      "noProgress": "2回の確認で新しい証拠がなく同じ未完了作業が見つかりました。方法を変えてから再開してください。"
+    },
+    "loadFailed": "目標を読み込めませんでした",
+    "projectRequired": "目標にはプロジェクトに紐づく会話が必要です",
+    "saveFailed": "目標を保存できませんでした",
+    "pauseFailed": "目標を一時停止できませんでした",
+    "resumeFailed": "目標を再開できませんでした",
+    "stopFailed": "目標を終了できませんでした",
     "bannerLabel": "会話の目標",
     "shortLabel": "Goal",
     "edit": "目標を編集",
