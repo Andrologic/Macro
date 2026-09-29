@@ -770,7 +770,9 @@ Le chemin HTTP moderne utilise la même boucle de continuation que stdio,
 avec le contexte d'opération fourni par le runtime et le même courtier IPC.
 Les réponses restent liées au serveur, aux projets, à la génération et à
 l'opération. Chaque continuation transmet les arguments initiaux, l'état opaque
-et les réponses validées. Une erreur HTTP ou d'authentification arrête l'appel.
+et les réponses validées. La boucle vérifie aussi l'annulation avant de rendre
+un résultat final, même si le transport vient de recevoir sa réponse.
+Une erreur HTTP ou d'authentification arrête l'appel.
 Les redirections de `tools/call`, même de même origine, sont refusées pour éviter
 le rejeu d'une mutation potentiellement acceptée. La récupération automatique
 de session du SDK est désactivée pour le client HTTP moderne ; le runtime peut

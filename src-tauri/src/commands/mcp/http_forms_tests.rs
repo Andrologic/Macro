@@ -465,3 +465,31 @@ async fn http_forms_failed_continuations_are_sent_once_and_never_restart_the_too
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn modern_final_response_loses_to_cancellation_on_initial_or_continuation_round() {
+    for cancel_on_round in [0, 1] {
+        let broker = McpInteractionBroker::default();
+        let cancellation = context(&broker, "cancel-final");
+        let mut sent = 0;
+        let result = run_modern_tool_call(cancellation.clone(), |_, _| {
+            let outcome = if sent == cancel_on_round {
+                // Deterministically model both the final response and cancellation
+                // being ready when the transport hands its result to the runtime.
+                cancellation.cancel();
+                McpModernToolCallOutcome::Complete(normalize_tool_call_result(json!({
+                    "content":[{"type":"text","text":"must not publish"}]
+                })))
+            } else {
+                McpModernToolCallOutcome::InputRequired {
+                    raw_result: json!({"resultType":"input_required","requestState":"opaque"}),
+                }
+            };
+            sent += 1;
+            std::future::ready(Ok(outcome))
+        })
+        .await;
+        assert_eq!(result.unwrap_err().code, "MCP_RUNTIME_OPERATION_CANCELLED");
+        assert_eq!(sent, cancel_on_round + 1);
+    }
+}

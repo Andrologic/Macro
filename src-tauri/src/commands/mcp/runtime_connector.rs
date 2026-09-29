@@ -1084,6 +1084,14 @@ where
         .await
         .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))?;
     for round in 0..=4 {
+        // A transport may deliver its response as cancellation becomes ready.
+        // Do not publish that result or start another interaction round.
+        if cancellation.is_cancelled() {
+            return Err(runtime_error(
+                "MCP_RUNTIME_OPERATION_CANCELLED",
+                "MCP tool call was cancelled.",
+            ));
+        }
         match outcome {
             McpModernToolCallOutcome::Complete(result) => return Ok(result),
             McpModernToolCallOutcome::Task { raw_result } => {
