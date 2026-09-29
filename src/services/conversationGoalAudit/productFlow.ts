@@ -20,7 +20,7 @@ export interface GoalProductFlowPorts {
   subscribe(listener: () => void): () => void;
   publish(conversationId: string, goal: PersistedConversationGoalRecord | null): void;
   onArtifactFailure(message: string): void;
-  onFlowFailure(message: string): void;
+  onFlowFailure(conversationId: string, message: string, retry: () => Promise<void>): void;
 }
 
 interface TrackedTurn { turnId: string; assistantMessageId: string; goalId: string; started: boolean }
@@ -37,6 +37,7 @@ export class ConversationGoalProductFlow {
   private readonly continuationPending = new Set<string>();
   private readonly queuedTurns = new Map<string, Set<string>>();
   private readonly queuedAdmissions = new Set<string>();
+  private readonly queuedTracked = new Map<string, string>();
   private readonly suspended = new Set<string>();
   private readonly lastContinueEvidence = new Map<string, { goalId: string; fingerprint: string }>();
   private unsubscribe: (() => void) | null = null;
@@ -114,15 +115,25 @@ export class ConversationGoalProductFlow {
   async stop(conversationId: string): Promise<void> {
     this.cancel(conversationId);
     this.lastContinueEvidence.delete(conversationId);
-    const goal = await this.ports.repository.loadCurrentGoal(conversationId);
-    if (!goal) { this.publish(conversationId, null); return; }
-    const outcome = await this.ports.repository.stopGoal(goal);
-    if (outcome === 'applied') this.bump(conversationId);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const goal = await this.ports.repository.loadCurrentGoal(conversationId);
+      if (!goal) { this.publish(conversationId, null); return; }
+      if (goal.status === 'achieved') throw new Error('An achieved goal cannot be stopped.');
+      const outcome = await this.ports.repository.stopGoal(goal);
+      if (outcome === 'applied' || outcome === 'missing') {
+        this.bump(conversationId);
+        await this.refresh(conversationId);
+        return;
+      }
+    }
     await this.refresh(conversationId);
+    throw new Error('Goal changed repeatedly while stopping. Retry Stop.');
   }
 
   async pause(conversationId: string): Promise<void> {
     const queued = [...this.queuedTurns.get(conversationId) ?? []];
+    const admitted = this.queuedTracked.get(conversationId);
+    if (admitted) queued.push(admitted);
     this.cancel(conversationId);
     this.suspended.add(conversationId);
     if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
@@ -131,7 +142,8 @@ export class ConversationGoalProductFlow {
 
   async resume(conversationId: string): Promise<void> {
     const goal = await this.ports.repository.loadCurrentGoal(conversationId);
-    if (!goal || !['paused', 'error', 'awaiting_user', 'active_ready'].includes(goal.status)) return;
+    if (!goal || (!this.suspended.has(conversationId) &&
+        !['paused', 'error', 'awaiting_user', 'active_ready'].includes(goal.status))) return;
     const queued = [...this.queuedTurns.get(conversationId) ?? []];
     this.cancel(conversationId);
     this.lastContinueEvidence.delete(conversationId);
@@ -258,6 +270,7 @@ export class ConversationGoalProductFlow {
     this.bump(conversationId);
     this.continuationPending.delete(conversationId);
     this.queuedTurns.delete(conversationId);
+    this.queuedTracked.delete(conversationId);
     this.suspended.delete(conversationId);
     this.tracked.delete(conversationId);
     this.audits.get(conversationId)?.cancel();
@@ -272,29 +285,36 @@ export class ConversationGoalProductFlow {
   private async admitQueuedTurn(conversationId: string, turnId: string): Promise<void> {
     try {
       if (this.suspended.has(conversationId)) return;
-      let goal = await this.ports.repository.loadCurrentGoal(conversationId);
-      if (!goal || ['paused', 'error', 'achieved'].includes(goal.status)) {
-        this.queuedTurns.get(conversationId)?.delete(turnId);
-        return;
+      let goal: PersistedConversationGoalRecord | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        goal = await this.ports.repository.loadCurrentGoal(conversationId);
+        if (!goal || goal.status === 'achieved') {
+          this.queuedTurns.get(conversationId)?.delete(turnId);
+          return;
+        }
+        if (goal.status === 'paused' || goal.status === 'error') return;
+        if (['audit_pending', 'auditing'].includes(goal.status)) {
+          this.bump(conversationId);
+          this.audits.get(conversationId)?.cancel();
+          this.audits.delete(conversationId);
+          goal = await this.status(conversationId, 'active_ready', null, goal);
+          if (!goal) continue;
+        } else if (goal.status === 'executor_running' && this.tracked.get(conversationId)?.turnId !== turnId) {
+          this.tracked.delete(conversationId);
+          this.bump(conversationId);
+          goal = await this.status(conversationId, 'active_ready', null, goal);
+          if (!goal) continue;
+        }
+        if (goal.status !== 'executor_running') goal = await this.status(conversationId, 'executor_running', null, goal);
+        if (goal) break;
       }
-      if (['audit_pending', 'auditing'].includes(goal.status)) {
-        this.bump(conversationId);
-        this.audits.get(conversationId)?.cancel();
-        this.audits.delete(conversationId);
-        goal = await this.status(conversationId, 'active_ready', null, goal);
-      } else if (goal.status === 'executor_running' && this.tracked.get(conversationId)?.turnId !== turnId) {
-        this.tracked.delete(conversationId);
-        this.bump(conversationId);
-        goal = await this.status(conversationId, 'active_ready', null, goal);
-      }
-      if (!goal) return;
-      if (goal.status !== 'executor_running') goal = await this.status(conversationId, 'executor_running', null, goal);
-      if (!goal) return;
+      if (!goal) throw new Error('Goal changed repeatedly while admitting a queued turn.');
       const messages = this.ports.readMessages(conversationId);
       const assistant = messages.find((item) => item.role === 'assistant' && item.turn_id === turnId);
       if (assistant) {
         this.queuedTurns.get(conversationId)?.delete(turnId);
         if (this.queuedTurns.get(conversationId)?.size === 0) this.queuedTurns.delete(conversationId);
+        this.queuedTracked.set(conversationId, turnId);
         this.track(conversationId, turnId, assistant.id, goal.goalId);
       } else if (this.ports.readRuntime(conversationId).phase === 'idle' &&
           !this.ports.readQueuedTurnIds(conversationId).includes(turnId) &&
@@ -311,7 +331,7 @@ export class ConversationGoalProductFlow {
       if (current && !['paused', 'achieved'].includes(current.status)) {
         await this.status(conversationId, 'error', message, current).catch(() => undefined);
       }
-      this.ports.onFlowFailure(message);
+      this.ports.onFlowFailure(conversationId, message, () => this.resume(conversationId));
     } finally {
       this.queuedAdmissions.delete(conversationId);
       this.releaseSubscriptionIfIdle();
@@ -360,6 +380,7 @@ export class ConversationGoalProductFlow {
           !message.content.trim() && !message.tool_traces?.length) {
         turn.started = true;
         if (this.tracked.get(conversationId) === turn) this.tracked.delete(conversationId);
+        if (this.queuedTracked.get(conversationId) === turn.turnId) this.queuedTracked.delete(conversationId);
         this.releaseSubscriptionIfIdle();
         const current = await this.ports.repository.loadCurrentGoal(conversationId);
         if (current?.goalId === turn.goalId && current.status === 'executor_running') {
@@ -427,6 +448,7 @@ export class ConversationGoalProductFlow {
       }
     } finally {
       if (this.tracked.get(conversationId) === turn) this.tracked.delete(conversationId);
+      if (this.queuedTracked.get(conversationId) === turn.turnId) this.queuedTracked.delete(conversationId);
       if (auditHandle && this.audits.get(conversationId) === auditHandle) this.audits.delete(conversationId);
       this.releaseSubscriptionIfIdle();
     }
