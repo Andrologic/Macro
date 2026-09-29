@@ -55,7 +55,7 @@ export const GoalAuditArtifactsButton: React.FC<Props> = ({ projectId, conversat
         </header>
         <div className="flex min-h-0 flex-1">
           <nav className="w-52 shrink-0 overflow-y-auto border-r border-border p-2">
-            {artifacts.map((artifact) => <button key={artifact.id} type="button" className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-accent" onClick={() => { setSelected(artifact); setContent(''); }}>
+            {artifacts.map((artifact) => <button key={artifact.id} type="button" className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-accent" onClick={() => setSelected(artifact)}>
               {t('goal.artifactTitle', 'Goal review')} · {t(`goal.artifactStatus.${artifact.review.verdict ?? artifact.review.status}`, artifact.review.verdict ?? artifact.review.status)}
             </button>)}
           </nav>
