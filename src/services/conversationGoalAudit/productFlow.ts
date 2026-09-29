@@ -68,6 +68,19 @@ export class ConversationGoalProductFlow {
   async hydrate(conversationId: string): Promise<void> {
     const goal = await this.refresh(conversationId);
     if (!goal) return;
+    if (goal.status === 'continuation_pending' && !this.audits.has(conversationId) &&
+        !this.tracked.has(conversationId) && !this.admissions.has(conversationId) &&
+        !this.continuationPending.has(conversationId) && !this.userAdmissions.has(conversationId) &&
+        !this.queuedTurns.get(conversationId)?.size) {
+      const latest = await this.ports.repository.loadCurrentGoal(conversationId);
+      if (latest?.goalId === goal.goalId && latest.revision === goal.revision &&
+          !this.audits.has(conversationId) && !this.tracked.has(conversationId) &&
+          !this.admissions.has(conversationId) && !this.continuationPending.has(conversationId) &&
+          !this.userAdmissions.has(conversationId) && !this.queuedTurns.get(conversationId)?.size) {
+        await this.status(conversationId, 'paused', null, goal);
+      }
+      return;
+    }
     if (this.queuedTurns.get(conversationId)?.size &&
         ['executor_running', 'audit_pending', 'auditing'].includes(goal.status) &&
         !this.tracked.has(conversationId) && !this.audits.has(conversationId)) {
@@ -141,7 +154,8 @@ export class ConversationGoalProductFlow {
   async pause(conversationId: string): Promise<void> {
     const queued = [...this.queuedTurns.get(conversationId) ?? []];
     const admitted = this.queuedTracked.get(conversationId);
-    if (admitted) queued.push(admitted);
+    const tracked = this.tracked.get(conversationId);
+    if (admitted && tracked?.turnId === admitted && !tracked.started) queued.push(admitted);
     this.cancel(conversationId);
     this.suspended.add(conversationId);
     if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));

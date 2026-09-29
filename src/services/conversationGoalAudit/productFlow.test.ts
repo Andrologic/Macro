@@ -730,4 +730,40 @@ describe('Goal product flow', () => {
     expect(h.audited).toHaveLength(0);
   });
 
+
+  it('does not claim an already audited queued turn again after Pause and Resume', async () => {
+    let resolve!: (value: GoalAuditResult) => void;
+    const pending = new Promise<GoalAuditResult>((done) => { resolve = done; });
+    const h = harness(pending);
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    h.queuedTurnIds = [];
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    await h.flow.pause('conversation');
+    await h.flow.resume('conversation');
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    expect(h.sent).toHaveLength(1);
+    expect(h.goal?.status).toBe('executor_running');
+    resolve({ status: 'cancelled', runId: 'run', reason: 'parent_cancelled' });
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    h.flow.cancel('conversation');
+  });
+
+  it('pauses a continuation committed before restart so Resume can send the next turn', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending', latestVerdict: verdict('continue') };
+    await h.flow.hydrate('conversation');
+    expect(h.goal?.status).toBe('paused');
+    expect(h.sent).toHaveLength(0);
+    await h.flow.resume('conversation');
+    expect(h.sent).toHaveLength(1);
+    expect(h.goal?.status).toBe('executor_running');
+    h.flow.cancel('conversation');
+  });
+
 });
