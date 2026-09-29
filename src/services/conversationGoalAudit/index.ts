@@ -2,6 +2,7 @@ export * from "./GoalAuditCoordinator";
 export * from "./durableCoordinator";
 export * from "./durableJournal";
 export * from "./journal";
+export * from "./nativeReadTool";
 export * from "./providerExecutor";
 export * from "./providerResolver";
 export * from "./productRepository";
