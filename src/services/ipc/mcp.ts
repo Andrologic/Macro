@@ -13,7 +13,7 @@ import type {
   MCPRuntimeServerSnapshot,
   MCPRuntimeSnapshotDto,
 } from "../contracts/serviceProvider";
-import { invoke } from "../tauriRuntimeBridge";
+import { invoke, isBrowserRuntimeBridgeEnabled } from "../tauriRuntimeBridge";
 import type {
   MCPCallToolResponseDto,
   MCPDiscoverToolsResponseDto,
@@ -125,12 +125,20 @@ export async function mcpRuntimeCallTool(params: {
 export async function mcpRuntimeOpenInteractionPort(
   onRequest: (request: McpInteractionRequest) => void,
 ): Promise<string> {
+  if (isBrowserRuntimeBridgeEnabled()) {
+    const { openBrowserRuntimeMcpInteractionPort } = await import('../browserRuntimeTransport');
+    return openBrowserRuntimeMcpInteractionPort(onRequest);
+  }
   const channel = new Channel<McpInteractionRequest>();
   channel.onmessage = onRequest;
   return invoke<string>("mcp_runtime_open_interaction_port", { channel });
 }
 
 export async function mcpRuntimeCloseInteractionPort(leaseId: string): Promise<void> {
+  if (isBrowserRuntimeBridgeEnabled()) {
+    const { closeBrowserRuntimeMcpInteractionPort } = await import('../browserRuntimeTransport');
+    return closeBrowserRuntimeMcpInteractionPort(leaseId);
+  }
   return invoke("mcp_runtime_close_interaction_port", { leaseId });
 }
 
