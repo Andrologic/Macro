@@ -1151,6 +1151,16 @@ const listMessagesMock = mock(async (conversationId: string) =>
 const getConversationMock = mock(async (id: string) =>
   chatSnapshotConversations.find((conversation) => conversation.id === id) ?? null
 );
+const getConversationSourceSnapshotMock = mock(async (targetId: string, sourceId: string) => {
+  const target = chatSnapshotConversations.find((conversation) => conversation.id === targetId);
+  const source = chatSnapshotConversations.find((conversation) => conversation.id === sourceId);
+  if (!target || !source || target.project_id !== source.project_id) return null;
+  return {
+    target_project_id: target.project_id,
+    conversation: source,
+    messages: chatSnapshotMessages.filter((message) => message.conversation_id === sourceId),
+  };
+});
 const dbGetArchitectPlanConversationSyncMock = mock(
   async (conversationId: string) =>
     architectPlanConversationSyncRecords.get(conversationId) ?? null
@@ -1915,6 +1925,7 @@ const registerUseChatStoreMocks = async () => {
     importMessages: importMessagesMock,
     listMessages: listMessagesMock,
     getConversation: getConversationMock,
+    getConversationSourceSnapshot: getConversationSourceSnapshotMock,
     dbGetArchitectPlanConversationSync: dbGetArchitectPlanConversationSyncMock,
     dbGetArchitectPlanConversationSyncForPlan:
       dbGetArchitectPlanConversationSyncForPlanMock,
@@ -2910,6 +2921,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getChatSnapshotMock.mockClear();
     getChatBootstrapSnapshotMock.mockClear();
     listMessagesMock.mockClear();
+    getConversationSourceSnapshotMock.mockClear();
     dbGetArchitectPlanConversationSyncMock.mockClear();
     dbGetArchitectPlanConversationSyncForPlanMock.mockClear();
     dbUpsertArchitectPlanConversationSyncMock.mockClear();
