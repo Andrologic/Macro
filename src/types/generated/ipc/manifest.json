@@ -1589,6 +1589,14 @@
       "families": [
         "db"
       ],
+      "name": "ReserveGoalAuditChildSelection",
+      "origin": "macro_lib::db::goal_audit_children::ReserveGoalAuditChildSelection",
+      "path": "ReserveGoalAuditChildSelection.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ResumeConversationGoalAuditInput",
       "origin": "macro_lib::db::conversation_goals::ResumeConversationGoalAuditInput",
       "path": "ResumeConversationGoalAuditInput.ts"

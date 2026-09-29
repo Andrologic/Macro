@@ -301,6 +301,9 @@ pub async fn authorize_goal_auditor_read(
           AND run.attempt_count > 0
           AND run.started_at IS NOT NULL
           AND run.finished_at IS NULL
+          AND child.provider_id = json_extract(run.model_metadata_json, '$.auditSelection.providerId')
+          AND child.model_id = json_extract(run.model_metadata_json, '$.auditSelection.modelId')
+          AND child.reasoning_effort IS json_extract(run.model_metadata_json, '$.auditSelection.reasoningEffort')
         "#,
     )
     .bind(run_id)

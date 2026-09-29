@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { StreamingChatOptions } from "../streamingChat";
-import { createGoalAuditProviderExecutor, type GoalAuditReadToolContext } from "./providerExecutor";
+import { createGoalAuditProviderExecutor, type GoalAuditEffectiveSelection, type GoalAuditReadToolContext } from "./providerExecutor";
 import type { GoalAuditChildInput } from "./types";
 
 const input = (): GoalAuditChildInput => ({
@@ -18,7 +18,8 @@ const input = (): GoalAuditChildInput => ({
   },
 });
 
-const resolvedChild = () => ({ id: "conversation-child", runId: "child", parentConversationId: "parent" });
+const selection = { providerId: "provider", modelId: "model", reasoningEffort: undefined };
+const resolvedChild = () => ({ id: "conversation-child", runId: "child", parentConversationId: "parent", selection });
 
 const expectPromptAbort = async (pending: Promise<unknown>) => {
   let deadline: ReturnType<typeof setTimeout>;
@@ -40,16 +41,17 @@ describe("goal auditor provider executor", () => {
       _name: string, _args: Record<string, unknown>, _id: string | undefined,
       _signal: AbortSignal, _context: GoalAuditReadToolContext,
     ) => "file contents");
-    const resolveChildConversation = mock(async ({ runId, parentConversationId, signal }: {
-      runId: string; parentConversationId: string; signal: AbortSignal;
+    const resolveChildConversation = mock(async ({ runId, parentConversationId, selection, signal }: {
+      runId: string; parentConversationId: string; selection: GoalAuditEffectiveSelection; signal: AbortSignal;
     }) => {
       expect(runId).toBe("child");
       expect(parentConversationId).toBe("parent");
       expect(signal.aborted).toBe(false);
-      return resolvedChild();
+      expect(selection).toEqual({ providerId: "provider", modelId: "model", reasoningEffort: "high" });
+      return { ...resolvedChild(), selection };
     });
     const executor = createGoalAuditProviderExecutor({
-      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model", reasoningEffort: "high" }),
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", apiKey: "secret", modelId: "model", reasoningEffort: "high" }),
       resolveChildConversation,
       executeReadTool,
       stream: async (options) => {
@@ -57,6 +59,7 @@ describe("goal auditor provider executor", () => {
         expect(options.conversationId).toBe("conversation-child");
         expect(options.internalAgentProfile).toBe("goal_auditor");
         expect(options.reasoningEffort).toBe("high");
+        expect(options.apiKey).toBe("secret");
         expect(options.messages).toEqual([
           { role: "system", content: "Inspect the evidence." },
           { role: "user", content: "Goal and evidence" },
@@ -180,6 +183,50 @@ describe("goal auditor provider executor", () => {
       input: input(), signal: new AbortController().signal,
     })).rejects.toThrow("Provider changed during child creation.");
     expect(resolveProvider).toHaveBeenCalledTimes(2);
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed provider after reservation before streaming", async () => {
+    let calls = 0;
+    const stream = mock(async () => {});
+    const resolveChildConversation = mock(({ runId, parentConversationId, selection }: {
+      runId: string; parentConversationId: string; selection: GoalAuditEffectiveSelection;
+    }) => ({ id: "conversation-child", runId, parentConversationId, selection }));
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({
+        providerId: ++calls === 1 ? "provider-a" : "provider-b",
+        providerType: "openai", baseUrl: "https://example.invalid", modelId: "model",
+      }),
+      resolveChildConversation,
+      executeReadTool: async () => "unused",
+      stream,
+    });
+    await expect(executor.execute({
+      childRunId: "child", parentConversationId: "parent", depth: 1,
+      input: input(), signal: new AbortController().signal,
+    })).rejects.toThrow("provider changed after child reservation");
+    expect(resolveChildConversation.mock.calls[0][0].selection.providerId).toBe("provider-a");
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mutated provider object reused by the second resolution", async () => {
+    const provider = {
+      providerId: "provider", providerType: "openai", baseUrl: "https://first.invalid", modelId: "model",
+    };
+    const stream = mock(async () => {});
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => provider,
+      resolveChildConversation: ({ runId, parentConversationId, selection }) => {
+        provider.baseUrl = "https://second.invalid";
+        return { id: "conversation-child", runId, parentConversationId, selection };
+      },
+      executeReadTool: async () => "unused",
+      stream,
+    });
+    await expect(executor.execute({
+      childRunId: "child", parentConversationId: "parent", depth: 1,
+      input: input(), signal: new AbortController().signal,
+    })).rejects.toThrow("provider changed after child reservation");
     expect(stream).not.toHaveBeenCalled();
   });
 

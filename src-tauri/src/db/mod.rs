@@ -4,6 +4,7 @@
 #[allow(dead_code)]
 pub mod agent_runs;
 pub mod conversation_goals;
+pub mod goal_audit_children;
 pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;

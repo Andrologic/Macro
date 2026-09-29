@@ -22,7 +22,10 @@ export function createDurableGoalAuditCoordinator(options: DurableGoalAuditCoord
       if (!child || typeof child.id !== "string" || !child.id.trim() ||
         child.id.trim() !== child.id || child.id === request.runId ||
         child.id === request.parentConversationId || child.runId !== request.runId ||
-        child.parentConversationId !== request.parentConversationId) {
+        child.parentConversationId !== request.parentConversationId ||
+        child.selection?.providerId !== request.selection.providerId ||
+        child.selection?.modelId !== request.selection.modelId ||
+        child.selection?.reasoningEffort !== request.selection.reasoningEffort) {
         throw new Error("Invalid goal auditor child conversation binding.");
       }
       if (request.signal.aborted) throw new DOMException("Aborted", "AbortError");

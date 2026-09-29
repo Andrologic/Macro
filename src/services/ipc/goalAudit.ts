@@ -1,4 +1,6 @@
 import { invoke } from "../tauriRuntimeBridge";
+import type { ReserveGoalAuditChildSelection } from "../../types/generated/ipc";
+import type { GoalAuditEffectiveSelection } from "../conversationGoalAudit/providerExecutor";
 import type {
   AgentRun,
   GoalAuditorReadInput as NativeGoalAuditorReadInput,
@@ -30,5 +32,20 @@ export function linkGoalAuditChildConversation(
 ): Promise<AgentRun> {
   return invoke<AgentRun>("db_link_goal_audit_child_conversation", {
     runId, parentConversationId, childConversationId,
+  });
+}
+
+export function reserveGoalAuditChildConversation(
+  runId: string,
+  parentConversationId: string,
+  selection: GoalAuditEffectiveSelection,
+): Promise<string> {
+  const nativeSelection: ReserveGoalAuditChildSelection = {
+    providerId: selection.providerId,
+    modelId: selection.modelId,
+    reasoningEffort: selection.reasoningEffort ?? null,
+  };
+  return invoke<string>("db_reserve_goal_audit_child_conversation", {
+    runId, parentConversationId, selection: nativeSelection,
   });
 }

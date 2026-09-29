@@ -54,6 +54,7 @@ export type { ReconcileProjectRegistryInput } from '../ReconcileProjectRegistryI
 export type { RecordGoalAuditTransitionInput } from '../RecordGoalAuditTransitionInput';
 export type { RecordToolInvocationInput } from '../RecordToolInvocationInput';
 export type { RecordToolInvocationResult } from '../RecordToolInvocationResult';
+export type { ReserveGoalAuditChildSelection } from '../ReserveGoalAuditChildSelection';
 export type { ResumeConversationGoalAuditInput } from '../ResumeConversationGoalAuditInput';
 export type { SessionContextStateRecord } from '../SessionContextStateRecord';
 export type { SpeechProviderConfig } from '../SpeechProviderConfig';

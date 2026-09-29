@@ -120,8 +120,8 @@ describe("goal audit executor with native read port", () => {
       resolveProvider: () => ({
         providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model",
       }),
-      resolveChildConversation: ({ runId, parentConversationId }) => ({
-        id: "actual-child-conversation", runId, parentConversationId,
+      resolveChildConversation: ({ runId, parentConversationId, selection }) => ({
+        id: "actual-child-conversation", runId, parentConversationId, selection,
       }),
       executeReadTool: executeNativeGoalAuditReadTool,
       stream,

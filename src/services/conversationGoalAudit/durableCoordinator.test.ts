@@ -66,8 +66,8 @@ describe("durable goal audit composition", () => {
         resolveProvider: () => ({
           providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model",
         }),
-        resolveChildConversation: ({ runId, parentConversationId }) => ({
-          id: "real-child-conversation", runId, parentConversationId,
+        resolveChildConversation: ({ runId, parentConversationId, selection }) => ({
+          id: "real-child-conversation", runId, parentConversationId, selection,
         }),
         executeReadTool: async () => "unused",
         stream: async (options) => {

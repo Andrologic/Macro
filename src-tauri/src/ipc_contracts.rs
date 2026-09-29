@@ -10,6 +10,7 @@ pub mod db {
         GoalCriterionStatus, GoalEvidence, GoalStatus, GoalVerdict, GoalVerdictKind,
         ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
     };
+    pub use crate::db::goal_audit_children::ReserveGoalAuditChildSelection;
     pub use crate::db::goal_audit_transitions::{
         GoalAuditTransition, RecordGoalAuditTransitionInput,
     };

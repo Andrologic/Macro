@@ -41,6 +41,7 @@ export type { GoalAuditorReadInput } from "./ipc/goalAudit";
 export {
   recordGoalAuditTransition,
   linkGoalAuditChildConversation,
+  reserveGoalAuditChildConversation,
   executeGoalAuditorRead,
 } from "./ipc/goalAudit";
 export type {

@@ -497,6 +497,11 @@ mod tests {
                 .execute(&pool)
                 .await
                 .expect("bound parent project");
+            sqlx::query("UPDATE conversations SET provider_id = 'auditor-provider', model_id = 'auditor-model' WHERE id = ?")
+                .bind(&child_id)
+                .execute(&pool)
+                .await
+                .expect("bound auditor selection");
             let run_id = "audit-run".to_owned();
             agent_runs::create_agent_run(
                 &pool,
@@ -507,7 +512,7 @@ mod tests {
                     agent_profile: "goal_auditor".into(),
                     depth: 1,
                     prompt: "Verify the goal".into(),
-                    model_metadata_json: None,
+                    model_metadata_json: Some(r#"{"auditSelection":{"providerId":"auditor-provider","modelId":"auditor-model","reasoningEffort":null}}"#.into()),
                 },
             )
             .await
@@ -963,6 +968,59 @@ mod tests {
             .execute(fixture.input("read", json!({"path": "proof.txt"})))
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_parent_lineage_changes_after_child_link() {
+        let fixture = Fixture::new().await;
+        let input = fixture.input("read", json!({"path": "proof.txt"}));
+        fixture.execute(input.clone()).await.unwrap();
+        for (column, select, update, changed) in [
+            (
+                "scope_mode",
+                "SELECT scope_mode FROM conversations WHERE id = ?",
+                "UPDATE conversations SET scope_mode = ? WHERE id = ?",
+                "Architect",
+            ),
+            (
+                "project_id",
+                "SELECT project_id FROM conversations WHERE id = ?",
+                "UPDATE conversations SET project_id = ? WHERE id = ?",
+                "another-project",
+            ),
+            (
+                "task_id",
+                "SELECT task_id FROM conversations WHERE id = ?",
+                "UPDATE conversations SET task_id = ? WHERE id = ?",
+                "another-task",
+            ),
+            (
+                "group_id",
+                "SELECT group_id FROM conversations WHERE id = ?",
+                "UPDATE conversations SET group_id = ? WHERE id = ?",
+                "another-group",
+            ),
+        ] {
+            let previous: Option<String> = sqlx::query_scalar(select)
+                .bind(&fixture.parent_id)
+                .fetch_one(&fixture.pool)
+                .await
+                .unwrap();
+            sqlx::query(update)
+                .bind(changed)
+                .bind(&fixture.parent_id)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            assert!(fixture.execute(input.clone()).await.is_err(), "{column}");
+            sqlx::query(update)
+                .bind(previous)
+                .bind(&fixture.parent_id)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            fixture.execute(input.clone()).await.unwrap();
+        }
     }
 
     #[tokio::test]
