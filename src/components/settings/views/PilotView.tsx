@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Monitor, Smartphone, RefreshCw } from 'lucide-react';
 import { PilotActions } from './PilotActions';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../../../services/externalUrlOpener';
 import type { PilotRuntimeStatus } from '../../../services/macroPilot/runtime';
@@ -212,154 +213,158 @@ export const PilotView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <section className="space-y-3 border-b border-border pb-5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="min-w-0 truncate text-sm font-medium">{store.account && store.deviceSession ? `@${store.account.identity.login}` : t('settings.pilot.connection', 'Connection')}</span>
-          <div className="flex shrink-0 items-center gap-2">
-          <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
-            {statusLabel}
-          </span>
-          {store.deviceSession && <PilotActions label={t('settings.pilot.accountMenu', 'Account options')}>
-            <button type="button" disabled={store.busy && !store.reading} onClick={logout}>{t('settings.pilot.signOut', 'Sign out')}</button>
-            <button type="button" disabled={!currentIdentity || store.busy} onClick={() => setManageAccountOpen(true)}>{t('settings.pilot.manageAccount', 'Manage account')}</button>
-          </PilotActions>}
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+      <section className="space-y-4">
+        <SettingsSectionHeader title={t('settings.pilot.connection', 'Connection')} />
+        <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <span className="min-w-0 truncate text-sm font-medium">{store.account && store.deviceSession ? `@${store.account.identity.login}` : t('settings.pilot.connection', 'Connection')}</span>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                {statusLabel}
+              </span>
+              {store.deviceSession && <PilotActions label={t('settings.pilot.accountMenu', 'Account options')}>
+                <button type="button" disabled={store.busy && !store.reading} onClick={logout}>{t('settings.pilot.signOut', 'Sign out')}</button>
+                <button type="button" disabled={!currentIdentity || store.busy} onClick={() => setManageAccountOpen(true)}>{t('settings.pilot.manageAccount', 'Manage account')}</button>
+              </PilotActions>}
+            </div>
           </div>
-        </div>
 
-        {legacyRelayOrigin && (
-          <p role="alert" className="break-words rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-            {t(
-              'settings.pilot.legacyRelay',
-              'This session still uses the previously configured relay: {{origin}}. Sign out, then connect with GitHub again to use the Macro relay.',
-              { origin: legacyRelayOrigin },
-            )}
-          </p>
-        )}
-
-        {store.lastError && !vaultRecoveryStatus && (store.lastError !== 'offline' || Boolean(store.relayOrigin)) && (
-          <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {t(`settings.pilot.errors.${store.lastError}`, errorFallbacks[store.lastError] || store.lastError)}
-          </div>
-        )}
-
-        {store.status === 'vault_unavailable' && vaultRecoveryStatus && (
-          <div
-            role={vaultRecoveryActive ? 'status' : 'alert'}
-            aria-live="polite"
-            className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-2"
-          >
-            <p className="font-medium">{t('settings.pilot.vaultRecovery.title', 'Pilot data is paused')}</p>
-            <p className="text-muted-foreground">
-              {vaultRecoveryActive
-                ? t('settings.pilot.vaultRecovery.waiting', 'Waiting for access to the system credential vault. You can keep using Macro or sign out.')
-                : t(
-                  `settings.pilot.vaultRecovery.${vaultRecoveryStatus}`,
-                  vaultRecoveryFallbacks[vaultRecoveryStatus],
-                )}
+          {legacyRelayOrigin && (
+            <p role="alert" className="break-words rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+              {t(
+                'settings.pilot.legacyRelay',
+                'This session still uses the previously configured relay: {{origin}}. Sign out, then connect with GitHub again to use the Macro relay.',
+                { origin: legacyRelayOrigin },
+              )}
             </p>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={vaultRecoveryBusy || store.busy}
-              onClick={() => { void resumeVaultAccess(); }}
+          )}
+
+          {store.lastError && !vaultRecoveryStatus && (store.lastError !== 'offline' || Boolean(store.relayOrigin)) && (
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {t(`settings.pilot.errors.${store.lastError}`, errorFallbacks[store.lastError] || store.lastError)}
+            </div>
+          )}
+
+          {store.status === 'vault_unavailable' && vaultRecoveryStatus && (
+            <div
+              role={vaultRecoveryActive ? 'status' : 'alert'}
+              aria-live="polite"
+              className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-2"
             >
-              {vaultRecoveryActive
-                ? t('settings.pilot.vaultRecovery.resuming', 'Resuming access…')
-                : t('settings.pilot.vaultRecovery.resume', 'Resume vault access')}
-            </Button>
-          </div>
-        )}
-
-        {!store.deviceSession && !store.attempt && (
-          <Button disabled={store.busy} onClick={startConnection}>
-            {t('settings.pilot.signIn', 'Connect with GitHub')}
-          </Button>
-        )}
-
-        {store.attempt && !store.attempt.identifiedAccount && (
-          <div className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              {t('settings.pilot.deviceCodeHelp', 'Enter this code only in the GitHub page opened by this Macro window.')}
-            </p>
-            <div className="flex flex-wrap items-center gap-3">
-              <code className="rounded-md border border-border bg-background px-3 py-2 text-lg tracking-[0.18em]">
-                {store.attempt.userCode}
-              </code>
-              <Button variant="secondary" onClick={() => openExternalUrl(store.attempt!.verificationUri)}>
-                {t('settings.pilot.openGitHub', 'Open GitHub')}
-              </Button>
-              <Button variant="ghost" disabled={store.busy} onClick={() => run(async () => { await store.pollAuth(); })}>
-                {t('settings.pilot.check', 'Check now')}
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {store.attempt?.identifiedAccount && (
-          <div className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-3">
-            <div>
-              <p className="text-sm font-medium">
-                {store.attempt.identifiedAccount.identity.display_name || store.attempt.identifiedAccount.identity.login}
+              <p className="font-medium">{t('settings.pilot.vaultRecovery.title', 'Pilot data is paused')}</p>
+              <p className="text-muted-foreground">
+                {vaultRecoveryActive
+                  ? t('settings.pilot.vaultRecovery.waiting', 'Waiting for access to the system credential vault. You can keep using Macro or sign out.')
+                  : t(
+                    `settings.pilot.vaultRecovery.${vaultRecoveryStatus}`,
+                    vaultRecoveryFallbacks[vaultRecoveryStatus],
+                  )}
               </p>
-              <p className="text-xs text-muted-foreground">@{store.attempt.identifiedAccount.identity.login}</p>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={vaultRecoveryBusy || store.busy}
+                onClick={() => { void resumeVaultAccess(); }}
+              >
+                {vaultRecoveryActive
+                  ? t('settings.pilot.vaultRecovery.resuming', 'Resuming access…')
+                  : t('settings.pilot.vaultRecovery.resume', 'Resume vault access')}
+              </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              {t('settings.pilot.confirmIdentity', 'Confirm that this is the GitHub account you intended to connect.')}
-            </p>
-            <Button disabled={store.busy} onClick={confirmAccount}>
-              {t('settings.pilot.confirmAccount', 'Confirm this account')}
-            </Button>
-          </div>
-        )}
+          )}
 
+          {!store.deviceSession && !store.attempt && (
+            <Button disabled={store.busy} onClick={startConnection}>
+              {t('settings.pilot.signIn', 'Connect with GitHub')}
+            </Button>
+          )}
+
+          {store.attempt && !store.attempt.identifiedAccount && (
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                {t('settings.pilot.deviceCodeHelp', 'Enter this code only in the GitHub page opened by this Macro window.')}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <code className="rounded-md border border-border bg-background px-3 py-2 text-lg tracking-[0.18em]">
+                  {store.attempt.userCode}
+                </code>
+                <Button variant="secondary" onClick={() => openExternalUrl(store.attempt!.verificationUri)}>
+                  {t('settings.pilot.openGitHub', 'Open GitHub')}
+                </Button>
+                <Button variant="ghost" disabled={store.busy} onClick={() => run(async () => { await store.pollAuth(); })}>
+                  {t('settings.pilot.check', 'Check now')}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {store.attempt?.identifiedAccount && (
+            <div className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+              <div>
+                <p className="text-sm font-medium">
+                  {store.attempt.identifiedAccount.identity.display_name || store.attempt.identifiedAccount.identity.login}
+                </p>
+                <p className="text-xs text-muted-foreground">@{store.attempt.identifiedAccount.identity.login}</p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.pilot.confirmIdentity', 'Confirm that this is the GitHub account you intended to connect.')}
+              </p>
+              <Button disabled={store.busy} onClick={confirmAccount}>
+                {t('settings.pilot.confirmAccount', 'Confirm this account')}
+              </Button>
+            </div>
+          )}
+        </div>
       </section>
 
       {store.deviceSession && (
-        <section aria-label={t('settings.pilot.devicesTitle', 'Devices')} className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <h4 className="text-sm font-medium">{t('settings.pilot.devicesTitle', 'Devices')} {accountCatalog && <span className="ml-1 text-xs text-muted-foreground">{activeSessions.length}</span>}</h4>
-            <Button size="sm" variant="ghost" aria-label={t('common.refresh', 'Refresh')} title={t('common.refresh', 'Refresh')} disabled={store.busy} onClick={() => run(store.refreshAccount)}>
+        <section aria-label={t('settings.pilot.devicesTitle', 'Devices')} className="space-y-4">
+          <SettingsSectionHeader
+            title={<>{t('settings.pilot.devicesTitle', 'Devices')} {accountCatalog && <span className="ml-1 text-xs text-muted-foreground">{activeSessions.length}</span>}</>}
+            description={t('settings.pilot.automaticDevices', 'Devices signed in to the same Macro Connect account are connected automatically.')}
+            action={<Button size="sm" variant="ghost" aria-label={t('common.refresh', 'Refresh')} title={t('common.refresh', 'Refresh')} disabled={store.busy} onClick={() => run(store.refreshAccount)}>
               <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
-            </Button>
+            </Button>}
+          />
+          <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
+            <div className="divide-y divide-border/50">
+              {activeSessions.map(session => {
+                const current = session.session_id === store.deviceSession?.ref.session_id;
+                const label = current && store.instance ? store.instance.label : session.label;
+                const DeviceIcon = session.client_kind === 'mobile' ? Smartphone : Monitor;
+                return <div key={session.session_id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                  <DeviceIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-sm font-medium">{label}</p>
+                    <p className="text-xs text-muted-foreground">{current ? t('settings.pilot.currentComputer', 'This computer') : t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}
+                      {current && store.status === 'connected' && store.instance?.connection_state === 'reachable' && <> · {t('settings.pilot.online', 'Online')}</>}
+                    </p>
+                  </div>
+                  <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: label })}>
+                    <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
+                    <button type="button" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>{t('settings.pilot.disconnectDevice', 'Disconnect this device')}</button>
+                  </PilotActions>
+                </div>;
+              })}
+            </div>
+            {!accountCatalog && <p role="status" className="text-xs text-muted-foreground">{store.busy ? t('common.loading', 'Loading…') : t('settings.pilot.accountNotLoaded', 'Account details have not been loaded. Refresh to try again.')}</p>}
+            {!store.instance && <div role="status" className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span>{t('settings.pilot.preparingDevice', 'Setting up this device…')}</span>
+              {!store.busy && <Button size="sm" variant="ghost" onClick={() => run(store.ensureDesktopInstance)}>{t('common.retry', 'Retry')}</Button>}
+            </div>}
+            {store.instance && (store.instanceAccess?.state !== 'granted' || !PERMISSIONS.every(permission => store.instanceAccess?.permissions.includes(permission))) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/30 p-3 text-xs">
+              <span>{t('settings.pilot.limitedAccess', 'Access to this computer needs to be restored.')}</span>
+              <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Restore access')}</Button>
+            </div>}
           </div>
-          <p className="text-xs text-muted-foreground">{t('settings.pilot.automaticDevices', 'Devices signed in to the same Macro Connect account are connected automatically.')}</p>
-          <div className="divide-y divide-border">
-            {activeSessions.map(session => {
-              const current = session.session_id === store.deviceSession?.ref.session_id;
-              const label = current && store.instance ? store.instance.label : session.label;
-              const DeviceIcon = session.client_kind === 'mobile' ? Smartphone : Monitor;
-              return <div key={session.session_id} className="flex items-center gap-3 py-3">
-                <DeviceIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <p className="break-words text-sm font-medium">{label}</p>
-                  <p className="text-xs text-muted-foreground">{current ? t('settings.pilot.currentComputer', 'This computer') : t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}
-                    {current && store.status === 'connected' && store.instance?.connection_state === 'reachable' && <> · {t('settings.pilot.online', 'Online')}</>}
-                  </p>
-                </div>
-                <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: label })}>
-                  <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
-                  <button type="button" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>{t('settings.pilot.disconnectDevice', 'Disconnect this device')}</button>
-                </PilotActions>
-              </div>;
-            })}
-          </div>
-          {!accountCatalog && <p role="status" className="text-xs text-muted-foreground">{store.busy ? t('common.loading', 'Loading…') : t('settings.pilot.accountNotLoaded', 'Account details have not been loaded. Refresh to try again.')}</p>}
-          {!store.instance && <div role="status" className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-            <span>{t('settings.pilot.preparingDevice', 'Setting up this device…')}</span>
-            {!store.busy && <Button size="sm" variant="ghost" onClick={() => run(store.ensureDesktopInstance)}>{t('common.retry', 'Retry')}</Button>}
-          </div>}
-          {store.instance && (store.instanceAccess?.state !== 'granted' || !PERMISSIONS.every(permission => store.instanceAccess?.permissions.includes(permission))) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/30 p-3 text-xs">
-            <span>{t('settings.pilot.limitedAccess', 'Access to this computer needs to be restored.')}</span>
-            <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Restore access')}</Button>
-          </div>}
         </section>
       )}
 
       {store.instance && store.deviceSession && (
-        <details className="group text-xs">
-          <summary className="cursor-pointer text-muted-foreground hover:text-foreground focus-visible:outline-primary">{t('settings.pilot.troubleshoot', 'Resolve a connection problem')}</summary>
-          <div className="mt-3 space-y-3 border-l border-border pl-3">
+        <details className="group rounded-xl border border-border/50 bg-card/40 p-4 text-xs">
+          <summary className="cursor-pointer text-sm font-medium text-foreground focus-visible:outline-primary">{t('settings.pilot.troubleshoot', 'Resolve a connection problem')}</summary>
+          <div className="mt-4 space-y-3 border-t border-border/50 pt-4">
             <div className="flex items-center justify-between gap-3">
               <span>{t('settings.pilot.accessTitle', 'Device access')}</span>
               <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>
