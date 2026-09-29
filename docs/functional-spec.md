@@ -1121,6 +1121,8 @@ La review distante donne accès au catalogue du diff et à ses fragments pour le
 
 Les réglages desktop permettent de consulter le compte et ses sessions, de révoquer une session ou toutes les sessions, de se déconnecter et de confirmer la suppression du compte du relais. Ces opérations conservent les projets et conversations locaux. Recréer un compte ne restaure pas ses anciennes associations.
 
+La section Macro Connect présente le compte et la liste des appareils actifs, dont cet ordinateur. Les détails et la déconnexion de chaque appareil sont accessibles dans son menu. La déconnexion globale et la suppression du compte sont regroupées dans « Gérer le compte » et nécessitent une confirmation. Le dépannage reste replié ; les actions à vérifier ne sont affichées que lorsqu’une intervention est nécessaire.
+
 La disponibilité du contenu est négociée séparément de la gestion du compte et de la supervision existante. Le raccordement de contenu actuel n'est pas annoncé sous Windows ou WSL ; une fonction absente doit rester présentée comme indisponible. Le [contrat public de contenu et de compte](macro-pilot/content-contract-v2.md) précise les échanges. La présence de cette implémentation ne constitue pas une validation d'une installation de relais ou d'un appareil mobile particulier.
 
 ### 19.3 Périmètre des notifications

@@ -10,6 +10,7 @@ const reconcileNotExecutedMock = mock(async (_key: string) => undefined);
 const notifySuccessMock = mock(() => undefined);
 const notifyWarningMock = mock((_message: string) => undefined);
 let runtimeStatus = 'running';
+let runtimeListener: (() => void) | undefined;
 let indeterminate = [{
   key: '["session:phone","reply:01"]',
   commandId: 'command:reply:01',
@@ -84,7 +85,7 @@ mock.module('../../../services/externalUrlOpener', () => ({ openExternalUrl: asy
 mock.module('../../../composition/macroPilotDesktop', () => ({
   macroPilotRuntime: {
     getStatus: () => runtimeStatus,
-    subscribe: () => () => undefined,
+    subscribe: (listener: () => void) => { runtimeListener = listener; return () => { runtimeListener = undefined; }; },
     retry: async () => undefined,
     getIndeterminate: () => indeterminate,
     reconcileNotExecuted: reconcileNotExecutedMock,
@@ -95,6 +96,7 @@ mock.module('../../ui/toastService', () => ({
 }));
 
 const { PilotView } = await import('./PilotView');
+const { Dialog } = await import('../../ui/Dialog');
 
 describe('PilotView', () => {
   let container: HTMLDivElement;
@@ -158,8 +160,7 @@ describe('PilotView', () => {
   it('shows unavailable supervision instead of an empty reconciliation result', async () => {
     runtimeStatus = 'unavailable';
     indeterminate = [];
-    const refresh = [...container.querySelectorAll('button')].filter(button => button.textContent === 'Refresh').at(-1);
-    await act(async () => { refresh!.click(); await Promise.resolve(); });
+    await act(async () => { runtimeListener?.(); await Promise.resolve(); });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Desktop supervision is unavailable');
     expect(container.textContent).not.toContain('No command requires local reconciliation.');
   });
@@ -174,6 +175,10 @@ describe('PilotView', () => {
       provider: 'github', login: 'example', subject: '1234', revision: 1 }, revision: 1,
       sessions: [{ session_id: 'session:one', device_id: 'device:one', label: 'Example desktop',
         client_kind: 'desktop', state: 'active', created_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-01T00:00:00Z' }] };
+    pilotState.instanceAccess = { contract_version: '1.0', type: 'instance_access',
+      ref: { type: 'instance_access', account_id: 'account:one', session_id: 'session:one', instance_id: 'instance:studio' },
+      state: 'granted', permissions: ['supervise', 'respond', 'approve_tools', 'review'],
+      granted_at: '2026-09-01T00:00:00Z', revision: 1 };
     await act(async () => root.render(<PilotView />));
   };
   const button = (label: string) => [...document.body.querySelectorAll('button')].find(item => item.textContent === label)!;
@@ -188,7 +193,7 @@ describe('PilotView', () => {
     expect(container.textContent).not.toContain('Device label');
     expect(container.textContent).not.toContain('Create instance');
     expect(container.querySelector('input[placeholder^="https://"]')).toBeNull();
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent ?? null).toBeNull();
     await act(async () => button('Connect with GitHub').click());
     expect(pilotState.connect).toHaveBeenCalledWith('https://macro.andrologic.ai');
   });
@@ -206,7 +211,7 @@ describe('PilotView', () => {
     expect(button('Create instance')).toBeUndefined();
     expect(button('Reattach')).toBeUndefined();
     expect(container.querySelector('input')).toBeNull();
-    const recovery = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Device access recovery'));
+    const recovery = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'));
     expect(recovery?.open).toBe(false);
   });
 
@@ -258,9 +263,10 @@ describe('PilotView', () => {
   );
 
   it('does not resume on mount, refresh, or reopening settings', async () => {
+    await showAccount();
     await showVaultStatus('cancelled');
     expect(resumeVaultAccessMock).not.toHaveBeenCalled();
-    await act(async () => button('Refresh').click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!.click());
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => {
@@ -300,7 +306,7 @@ describe('PilotView', () => {
     });
     await act(async () => root.render(<PilotView />));
     expect(container.textContent).toContain('@example');
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent ?? null).toBeNull();
   });
 
   it('locks out double clicks while keeping sign out available during recovery', async () => {
@@ -343,10 +349,9 @@ describe('PilotView', () => {
       await showAccount();
       expect(container.textContent).toContain('@example');
       expect(container.textContent).toContain('Example desktop');
-      expect(container.querySelector('details')?.open).toBe(false);
-      await act(async () => container.querySelector('summary')!.click());
-      expect(container.querySelector('details')?.open).toBe(true);
-      expect(button('Revoke all sessions')).toBeDefined();
+      expect(container.querySelector('section[aria-label="Devices"]')?.textContent).toContain('Example desktop');
+      await act(async () => button('Manage account').click());
+      expect(button('Disconnect all devices')).toBeDefined();
       await act(async () => button('Delete relay account').click());
       expect(pilotState.deleteAccount).not.toHaveBeenCalled();
       const dialog = document.body.querySelector('[role="dialog"]');
@@ -360,6 +365,7 @@ describe('PilotView', () => {
 
   it('removes deletion confirmation if the identity changes while the dialog is open', async () => {
     await showAccount();
+    await act(async () => button('Manage account').click());
     await act(async () => button('Delete relay account').click());
     pilotState.accountCatalog = { ...pilotState.accountCatalog!, identity: { ...pilotState.accountCatalog!.identity, login: 'renamed' } };
     await act(async () => root.render(<PilotView />));
@@ -377,8 +383,8 @@ describe('PilotView', () => {
       device_label: 'Example phone', expires_at: '2026-10-01T00:00:00Z' }];
     await act(async () => root.render(<PilotView />));
     expect(container.querySelectorAll('input[type="checkbox"]').length).toBe(0);
-    expect(container.textContent).toContain('This existing association has limited permissions.');
-    await act(async () => button('Associate device').click());
+    expect(container.textContent).toContain('Access to this computer needs to be restored.');
+    await act(async () => button('Allow access').click());
     expect(pilotState.resolveAccess).toHaveBeenCalledWith('request:phone', 'grant');
   });
 
@@ -392,19 +398,71 @@ describe('PilotView', () => {
     await act(async () => root.render(<PilotView />));
     expect(container.textContent).not.toContain('Revoked phone');
     expect(container.textContent).not.toContain('Expired phone');
-    expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Revoke session')).toHaveLength(1);
-    const summary = container.querySelector('details summary')!;
-    expect(summary.textContent).toEndWith('1');
+    expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Disconnect this device')).toHaveLength(1);
+    expect(container.querySelector('section[aria-label="Devices"] h4')?.textContent).toEndWith('1');
   });
 
   it('routes individual and global revocation and explains an unconfirmed self response', async () => {
     await showAccount();
-    await act(async () => button('Revoke session').click());
+    await act(async () => button('Disconnect this device').click());
     expect(pilotState.revokeSession).toHaveBeenCalledWith('session:one');
     pilotState.revokeAllSessions.mockImplementationOnce(async () => false);
-    await act(async () => button('Revoke all sessions').click());
+    await act(async () => button('Manage account').click());
+    await act(async () => button('Disconnect all devices').click());
+    expect(pilotState.revokeAllSessions).not.toHaveBeenCalled();
+    await act(async () => button('Disconnect all devices').click());
     expect(pilotState.revokeAllSessions).toHaveBeenCalledTimes(1);
     expect(notifyWarningMock).toHaveBeenCalledWith('Signed out locally. Server revocation could not be confirmed. Sign in again to check your account.');
+  });
+
+  it('hides empty diagnostics and requires opening the account menu for secondary actions', async () => {
+    indeterminate = [];
+    await showAccount();
+    expect(container.textContent).not.toContain('Commands requiring reconciliation');
+    expect(container.textContent).not.toContain('No command requires');
+    expect(container.querySelector('section[aria-label="Devices"]')).not.toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    const trigger = container.querySelector<HTMLElement>('summary[aria-label="Account options"]')!;
+    await act(async () => trigger.click());
+    expect(trigger.closest('details')!.open).toBe(true);
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(trigger.closest('details')!.open).toBe(false);
+  });
+
+  it('keeps the global disconnect confirmation open when the request fails', async () => {
+    await showAccount();
+    pilotState.revokeAllSessions.mockImplementationOnce(async () => { throw new Error('offline'); });
+    await act(async () => button('Manage account').click());
+    await act(async () => button('Disconnect all devices').click());
+    await act(async () => button('Disconnect all devices').click());
+    expect(pilotState.revokeAllSessions).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Every device, including this computer');
+    expect(notifySuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('closes the actions menu with Escape without closing settings', async () => {
+    await showAccount();
+    const close = mock(() => undefined);
+    await act(async () => root.render(<Dialog title="Settings" onClose={close}><PilotView /></Dialog>));
+    const trigger = document.querySelector<HTMLElement>('summary[aria-label="Account options"]')!;
+    await act(async () => trigger.click());
+    expect(trigger.closest('details')!.open).toBe(true);
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(trigger.closest('details')!.open).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(document.activeElement === trigger).toBe(true);
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('prevents disconnecting all devices after the identity changes', async () => {
+    await showAccount();
+    await act(async () => button('Manage account').click());
+    await act(async () => button('Disconnect all devices').click());
+    pilotState.accountCatalog = { ...pilotState.accountCatalog!, identity: { ...pilotState.accountCatalog!.identity, session_id: 'session:new' } };
+    await act(async () => root.render(<PilotView />));
+    expect(button('Disconnect all devices')).toBeUndefined();
+    expect(pilotState.revokeAllSessions).not.toHaveBeenCalled();
   });
 
   it('keeps sign out available during reads but disables it during mutations', async () => {
@@ -412,7 +470,7 @@ describe('PilotView', () => {
     pilotState.busy = true; pilotState.reading = true;
     await act(async () => root.render(<PilotView />));
     expect(button('Sign out').disabled).toBe(false);
-    expect(button('Revoke all sessions').disabled).toBe(true);
+    expect(button('Manage account').disabled).toBe(true);
     pilotState.reading = false;
     await act(async () => root.render(<PilotView />));
     expect(button('Sign out').disabled).toBe(true);

@@ -64,7 +64,7 @@ settingsRegistry.register({
 });
 settingsRegistry.register({
   id: 'pilot', owner: 'shell.settings', order: 5.5, icon: 'cloud',
-  labelKey: 'settings.pilot.label', label: 'Pilot',
+  labelKey: 'settings.pilot.label', label: 'Macro Connect',
   descriptionKey: 'settings.pilot.description',
   load: () => import('../../components/settings/views/PilotView').then((module) => ({ default: module.PilotView })),
 });

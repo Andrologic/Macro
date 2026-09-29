@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { Monitor, Smartphone, RefreshCw } from 'lucide-react';
+import { PilotActions } from './PilotActions';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../../../services/externalUrlOpener';
 import type { PilotRuntimeStatus } from '../../../services/macroPilot/runtime';
@@ -8,7 +9,6 @@ import { usePilotStore } from '../../../stores/usePilotStore';
 import { Button } from '../../ui/Button';
 import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
 import { notify } from '../../ui/toastService';
-import { SettingsSectionHeader } from '../SettingsSectionHeader';
 
 const PERMISSIONS: PilotPermission[] = ['supervise', 'respond', 'approve_tools', 'review'];
 const PILOT_RELAY_ORIGIN = 'https://macro.andrologic.ai';
@@ -63,6 +63,9 @@ export const PilotView: React.FC = () => {
   const busy = store.busy;
   const { deviceSession, accountCatalog, lastError, refreshAccount } = store;
   const [deleteTarget, setDeleteTarget] = useState<{ identity: PilotAccountConfirmation; origin: string } | null>(null);
+  const [manageAccountOpen, setManageAccountOpen] = useState(false);
+  const [allTarget, setAllTarget] = useState<typeof deleteTarget>(null);
+  const refreshedScope = useRef<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<PilotRuntimeStatus>('inactive');
   const [indeterminateCommands, setIndeterminateCommands] = useState<IndeterminateCommand[]>([]);
   const [reconciliationTarget, setReconciliationTarget] = useState<IndeterminateCommand | null>(null);
@@ -100,21 +103,27 @@ export const PilotView: React.FC = () => {
   }, [authStatus, authAttempt, busy, pollAuth]);
 
   useEffect(() => {
-    if (deviceSession && !busy && !accountCatalog && !lastError) {
+    const scope = deviceSession ? `${store.relayOrigin}:${deviceSession.ref.session_id}` : null;
+    if (!scope) { refreshedScope.current = null; return; }
+    if (authStatus === 'connected' && !busy && !lastError && (refreshedScope.current !== scope || !accountCatalog)) {
+      refreshedScope.current = scope;
       void refreshAccount().catch(() => undefined);
     }
-  }, [deviceSession, busy, accountCatalog, lastError, refreshAccount]);
+  }, [deviceSession, store.relayOrigin, authStatus, busy, accountCatalog, lastError, refreshAccount]);
 
   const currentIdentity = store.accountCatalog?.identity;
   const activeSessions = store.accountCatalog?.sessions.filter(session => session.state === 'active') ?? [];
-  const deleteTargetCurrent = Boolean(deleteTarget && currentIdentity
-    && deleteTarget.origin === store.relayOrigin
-    && deleteTarget.identity.account_id === store.account?.account_id
-    && deleteTarget.identity.session_id === store.deviceSession?.ref.session_id
-    && deleteTarget.identity.account_id === currentIdentity.account_id
-    && deleteTarget.identity.session_id === currentIdentity.session_id
-    && deleteTarget.identity.subject === currentIdentity.subject
-    && deleteTarget.identity.login === currentIdentity.login);
+  const targetCurrent = (target: typeof deleteTarget) => Boolean(target && currentIdentity
+    && target.origin === store.relayOrigin
+    && target.identity.account_id === store.account?.account_id
+    && target.identity.session_id === store.deviceSession?.ref.session_id
+    && target.identity.account_id === currentIdentity.account_id
+    && target.identity.session_id === currentIdentity.session_id
+    && target.identity.subject === currentIdentity.subject
+    && target.identity.login === currentIdentity.login);
+
+  const deleteTargetCurrent = targetCurrent(deleteTarget);
+  const allTargetCurrent = targetCurrent(allTarget);
 
   const statusLabel = useMemo(
     () => t(`settings.pilot.status.${store.status}`, store.status.replaceAll('_', ' ')),
@@ -180,6 +189,7 @@ export const PilotView: React.FC = () => {
   const accountMutation = (work: () => Promise<boolean>) => run(async () => {
     const confirmed = await work();
     setDeleteTarget(null);
+    setAllTarget(null);
     notify[confirmed ? 'success' : 'warning'](confirmed
       ? t('settings.pilot.accountUpdated', 'Account access updated.')
       : t('settings.pilot.logoutOffline', 'Signed out locally. Server revocation could not be confirmed. Sign in again to check your account.'));
@@ -202,13 +212,19 @@ export const PilotView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
-      <section className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
+    <div className="space-y-6">
+      <section className="space-y-3 border-b border-border pb-5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium">{t('settings.pilot.connection', 'Connection')}</span>
+          <span className="min-w-0 truncate text-sm font-medium">{store.account && store.deviceSession ? `@${store.account.identity.login}` : t('settings.pilot.connection', 'Connection')}</span>
+          <div className="flex shrink-0 items-center gap-2">
           <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
             {statusLabel}
           </span>
+          {store.deviceSession && <PilotActions label={t('settings.pilot.accountMenu', 'Account options')}>
+            <button type="button" disabled={store.busy && !store.reading} onClick={logout}>{t('settings.pilot.signOut', 'Sign out')}</button>
+            <button type="button" disabled={!currentIdentity || store.busy} onClick={() => setManageAccountOpen(true)}>{t('settings.pilot.manageAccount', 'Manage account')}</button>
+          </PilotActions>}
+          </div>
         </div>
 
         {legacyRelayOrigin && (
@@ -297,119 +313,67 @@ export const PilotView: React.FC = () => {
           </div>
         )}
 
-        {store.account && store.deviceSession && (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium">{store.account.identity.display_name || store.account.identity.login}</p>
-              <p className="text-xs text-muted-foreground">@{store.account.identity.login}</p>
-            </div>
-            <Button variant="secondary" disabled={store.busy && !store.reading} onClick={logout}>
-              {t('settings.pilot.signOut', 'Sign out')}
-            </Button>
-          </div>
-        )}
       </section>
 
       {store.deviceSession && (
-        <details className="group rounded-lg border border-border bg-card/40 p-4">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 marker:hidden">
-            <span className="min-w-0 space-y-1">
-              <span className="block text-sm font-medium uppercase tracking-wider text-primary">
-                {t('settings.pilot.accountTitle', 'GitHub account and devices')}
-              </span>
-              <span className="block text-xs text-muted-foreground">
-                {t('settings.pilot.accountDescription', 'Manage relay sessions even without a connected desktop instance.')}
-              </span>
-            </span>
-            <span className="flex shrink-0 items-center gap-2">
-              {store.accountCatalog && <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{activeSessions.length}</span>}
-              <ChevronDown aria-hidden="true" className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
-            </span>
-          </summary>
-          <div className="mt-4 space-y-3 border-t border-border pt-4">
-            <div className="flex justify-end">
-              <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => run(store.refreshAccount)}>{t('common.refresh', 'Refresh')}</Button>
-            </div>
-            {currentIdentity ? <>
-              {activeSessions.map(session => (
-                <div key={session.session_id} className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
-                  <div className="min-w-0 text-xs">
-                    <p className="break-words font-medium">{session.label}{session.session_id === currentIdentity.session_id && <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-primary">{t('settings.pilot.currentDevice', 'This device')}</span>}</p>
-                    <p className="text-muted-foreground">{t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)} · {t(`settings.pilot.sessionState.${session.state}`, session.state)}</p>
-                    <p className="text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
-                  </div>
-                  <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>
-                    {t('settings.pilot.revokeSession', 'Revoke session')}
-                  </Button>
-                </div>
-              ))}
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-                <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => accountMutation(store.revokeAllSessions)}>{t('settings.pilot.revokeAll', 'Revoke all sessions')}</Button>
-                <Button size="sm" variant="error" disabled={store.busy} onClick={() => setDeleteTarget({ identity: { account_id: currentIdentity.account_id, session_id: currentIdentity.session_id, login: currentIdentity.login, subject: currentIdentity.subject }, origin: store.relayOrigin! })}>{t('settings.pilot.deleteAccount', 'Delete relay account')}</Button>
-              </div>
-            </> : <p className="text-xs text-muted-foreground">{t('settings.pilot.accountNotLoaded', 'Account details have not been loaded. Refresh to try again.')}</p>}
+        <section aria-label={t('settings.pilot.devicesTitle', 'Devices')} className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-sm font-medium">{t('settings.pilot.devicesTitle', 'Devices')} {accountCatalog && <span className="ml-1 text-xs text-muted-foreground">{activeSessions.length}</span>}</h4>
+            <Button size="sm" variant="ghost" aria-label={t('common.refresh', 'Refresh')} title={t('common.refresh', 'Refresh')} disabled={store.busy} onClick={() => run(store.refreshAccount)}>
+              <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
+            </Button>
           </div>
-        </details>
-      )}
-
-      {store.deviceSession && (
-        <section className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
-          <SettingsSectionHeader
-            title={t('settings.pilot.instanceTitle', 'Desktop instance')}
-            description={t('settings.pilot.instanceDescription', 'The instance key stays in the operating system credential vault.')}
-          />
           <p className="text-xs text-muted-foreground">{t('settings.pilot.automaticDevices', 'Devices signed in to the same Macro Connect account are connected automatically.')}</p>
-          {!store.instance && (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm">{t('settings.pilot.preparingDevice', 'Setting up this device…')}</p>
-              {!store.busy && <Button size="sm" variant="secondary" onClick={() => run(store.ensureDesktopInstance)}>{t('common.retry', 'Retry')}</Button>}
-            </div>
-          )}
-          {store.instance && (store.instanceAccess?.state !== 'granted' || !PERMISSIONS.every(permission => store.instanceAccess?.permissions.includes(permission))) && (
-            <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Reattach')}</Button>
-          )}
-          {store.instanceAccess?.state === 'granted' && !PERMISSIONS.every(permission => store.instanceAccess!.permissions.includes(permission)) && (
-            <p role="alert" className="text-xs text-amber-600">{t('settings.pilot.limitedAccess', 'This existing association has limited permissions. Reattach explicitly to enable full access to this instance.')}</p>
-          )}
-          {store.instance && (
-            <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 text-xs">
-              <span>{store.instance.label}</span>
-              <span className="text-muted-foreground">{store.instance.connection_state}</span>
-            </div>
-          )}
+          <div className="divide-y divide-border">
+            {activeSessions.map(session => {
+              const current = session.session_id === store.deviceSession?.ref.session_id;
+              const label = current && store.instance ? store.instance.label : session.label;
+              const DeviceIcon = session.client_kind === 'mobile' ? Smartphone : Monitor;
+              return <div key={session.session_id} className="flex items-center gap-3 py-3">
+                <DeviceIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <p className="break-words text-sm font-medium">{label}</p>
+                  <p className="text-xs text-muted-foreground">{current ? t('settings.pilot.currentComputer', 'This computer') : t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}
+                    {current && store.status === 'connected' && store.instance?.connection_state === 'reachable' && <> · {t('settings.pilot.online', 'Online')}</>}
+                  </p>
+                </div>
+                <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: label })}>
+                  <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
+                  <button type="button" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>{t('settings.pilot.disconnectDevice', 'Disconnect this device')}</button>
+                </PilotActions>
+              </div>;
+            })}
+          </div>
+          {!accountCatalog && <p role="status" className="text-xs text-muted-foreground">{store.busy ? t('common.loading', 'Loading…') : t('settings.pilot.accountNotLoaded', 'Account details have not been loaded. Refresh to try again.')}</p>}
+          {!store.instance && <div role="status" className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span>{t('settings.pilot.preparingDevice', 'Setting up this device…')}</span>
+            {!store.busy && <Button size="sm" variant="ghost" onClick={() => run(store.ensureDesktopInstance)}>{t('common.retry', 'Retry')}</Button>}
+          </div>}
+          {store.instance && (store.instanceAccess?.state !== 'granted' || !PERMISSIONS.every(permission => store.instanceAccess?.permissions.includes(permission))) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/30 p-3 text-xs">
+            <span>{t('settings.pilot.limitedAccess', 'Access to this computer needs to be restored.')}</span>
+            <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Restore access')}</Button>
+          </div>}
         </section>
       )}
 
-      {store.instance && (
-        <details className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
-          <summary className="cursor-pointer text-sm text-muted-foreground">{t('settings.pilot.accessRecovery', 'Device access recovery')}</summary>
-          <SettingsSectionHeader
-            title={t('settings.pilot.accessTitle', 'Device access')}
-            description={t('settings.pilot.accessDescription', 'Associate only devices you trust. Associated devices can access all projects and use the available Pilot actions.')}
-            action={<Button size="sm" variant="secondary" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>}
-          />
-          {!store.accessRequestsLoaded ? (
-            <p className="text-xs text-muted-foreground">{t('settings.pilot.accessNotLoaded', 'Refresh to load pending access requests.')}</p>
-          ) : store.accessRequests.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{t('settings.pilot.noAccessRequests', 'No pending access requests.')}</p>
-          ) : store.accessRequests.map((request) => {
-            return (
-              <div key={request.access_request_id} className="space-y-3 rounded-md border border-border bg-background/50 p-3">
-                <div>
-                  <p className="text-sm font-medium">{request.device_label}</p>
-                  <p className="text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(request.expires_at).toLocaleString() })}</p>
-                </div>
+      {store.instance && store.deviceSession && (
+        <details className="group text-xs">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground focus-visible:outline-primary">{t('settings.pilot.troubleshoot', 'Resolve a connection problem')}</summary>
+          <div className="mt-3 space-y-3 border-l border-border pl-3">
+            <div className="flex items-center justify-between gap-3">
+              <span>{t('settings.pilot.accessTitle', 'Device access')}</span>
+              <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>
+            </div>
+            {!store.accessRequestsLoaded ? <p className="text-muted-foreground">{t('settings.pilot.accessNotLoaded', 'Refresh to load pending access requests.')}</p>
+              : store.accessRequests.length === 0 ? <p className="text-muted-foreground">{t('settings.pilot.noAccessRequests', 'No pending access requests.')}</p>
+              : store.accessRequests.map(request => <div key={request.access_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                <span className="break-words">{request.device_label}</span>
                 <div className="flex gap-2">
-                  <Button size="sm" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'grant'))}>
-                    {t('settings.pilot.grant', 'Associate device')}
-                  </Button>
-                  <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'deny'))}>
-                    {t('settings.pilot.deny', 'Deny')}
-                  </Button>
+                  <Button size="sm" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'grant'))}>{t('settings.pilot.grant', 'Allow access')}</Button>
+                  <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'deny'))}>{t('settings.pilot.deny', 'Deny')}</Button>
                 </div>
-              </div>
-            );
-          })}
+              </div>)}
+          </div>
         </details>
       )}
 
@@ -422,26 +386,12 @@ export const PilotView: React.FC = () => {
         </div>
       )}
 
-      {store.instance && (
-        <section className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
-          <SettingsSectionHeader
-            title={t('settings.pilot.indeterminateTitle', 'Commands requiring reconciliation')}
-            description={t(
-              'settings.pilot.indeterminateDescription',
-              'Macro will never replay a command when it cannot determine whether its local effect occurred.',
-            )}
-            action={
-              <Button size="sm" variant="secondary" onClick={() => void refreshIndeterminate()}>
-                {t('common.refresh', 'Refresh')}
-              </Button>
-            }
-          />
-          {runtimeStatus === 'unavailable' ? null : indeterminateCommands.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {t('settings.pilot.noIndeterminate', 'No command requires local reconciliation.')}
-            </p>
-          ) : (
-            indeterminateCommands.map((command) => (
+      {store.instance && runtimeStatus !== 'unavailable' && indeterminateCommands.length > 0 && (
+        <details className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+          <summary className="cursor-pointer font-medium">{t('settings.pilot.actionsNeedReview', 'Actions to verify')} · {indeterminateCommands.length}</summary>
+          <p className="my-3 text-muted-foreground">{t('settings.pilot.indeterminateDescription', 'Check whether these actions took effect before continuing.')}</p>
+          <div className="space-y-2">
+            {indeterminateCommands.map((command) => (
               <div key={command.key} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{command.commandId}</p>
@@ -455,10 +405,43 @@ export const PilotView: React.FC = () => {
                   {t('settings.pilot.reconcile', 'Reconcile locally')}
                 </Button>
               </div>
-            ))
-          )}
-        </section>
+            ))}
+          </div>
+        </details>
       )}
+
+      <ConfirmPromptModal
+        isOpen={manageAccountOpen && Boolean(currentIdentity)}
+        title={t('settings.pilot.manageAccount', 'Manage account')}
+        showConfirmButton={false}
+        cancelLabel={t('common.close', 'Close')}
+        onCancel={() => setManageAccountOpen(false)} onConfirm={() => undefined}
+      >
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-xs text-muted-foreground">@{currentIdentity?.login}</p>
+          <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => {
+            if (!currentIdentity || !store.relayOrigin) return;
+            setManageAccountOpen(false); setAllTarget({ identity: { ...currentIdentity }, origin: store.relayOrigin });
+          }}>{t('settings.pilot.revokeAll', 'Disconnect all devices')}</Button>
+          <Button size="sm" variant="ghost" className="text-destructive" disabled={store.busy} onClick={() => {
+            if (!currentIdentity || !store.relayOrigin) return;
+            setManageAccountOpen(false); setDeleteTarget({ identity: { account_id: currentIdentity.account_id, session_id: currentIdentity.session_id, subject: currentIdentity.subject, login: currentIdentity.login }, origin: store.relayOrigin });
+          }}>{t('settings.pilot.deleteAccount', 'Delete relay account')}</Button>
+        </div>
+      </ConfirmPromptModal>
+
+      <ConfirmPromptModal
+        isOpen={Boolean(allTarget)} title={t('settings.pilot.revokeAll', 'Disconnect all devices')}
+        description={t('settings.pilot.disconnectAllDescription', 'Every device, including this computer, will need to sign in again. Local projects and conversations are preserved.')}
+        confirmLabel={t('settings.pilot.revokeAll', 'Disconnect all devices')} cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="error" isSubmitting={store.busy} showConfirmButton={allTargetCurrent}
+        onCancel={() => setAllTarget(null)} onConfirm={() => {
+          if (allTargetCurrent) void accountMutation(store.revokeAllSessions);
+        }}
+      >
+        <p className="text-sm">@{allTarget?.identity.login}</p>
+        {!allTargetCurrent && <p role="alert" className="text-xs text-destructive">{t('settings.pilot.errors.context_changed', errorFallbacks.context_changed)}</p>}
+      </ConfirmPromptModal>
 
       <ConfirmPromptModal
         isOpen={Boolean(deleteTarget)}
