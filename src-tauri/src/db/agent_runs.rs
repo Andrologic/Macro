@@ -245,6 +245,82 @@ pub async fn get_agent_run(pool: &SqlitePool, id: &str) -> DbResult<Option<Agent
     .transpose()
 }
 
+/// Authorize a single read against the durable, currently running audit child.
+/// The caller's claimed profile or mode is never part of this decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalAuditorReadScope {
+    pub project_id: Option<String>,
+    pub task_id: Option<String>,
+    audit_id: String,
+    goal_id: String,
+    goal_revision: i64,
+}
+
+pub async fn authorize_goal_auditor_read(
+    pool: &SqlitePool,
+    run_id: &str,
+    parent_conversation_id: &str,
+    child_conversation_id: &str,
+) -> DbResult<Option<GoalAuditorReadScope>> {
+    if [run_id, parent_conversation_id, child_conversation_id]
+        .iter()
+        .any(|value| value.is_empty() || value.trim() != *value)
+        || parent_conversation_id == child_conversation_id
+    {
+        return Ok(None);
+    }
+
+    let authorized = sqlx::query_as::<_, (Option<String>, Option<String>, String, String, i64)>(
+        r#"
+        SELECT parent.project_id, parent.task_id, audit.audit_id, goal.goal_id, goal.revision
+        FROM agent_runs AS run
+        JOIN conversations AS parent ON parent.id = run.parent_conversation_id
+        JOIN conversations AS child ON child.id = run.child_conversation_id
+          AND child.project_id IS parent.project_id
+          AND child.task_id IS parent.task_id
+          AND child.group_id IS parent.group_id
+          AND child.scope_mode = parent.scope_mode
+        JOIN conversation_goal_audit_runs AS audit_run ON audit_run.run_id = run.id
+        JOIN conversation_goal_audits AS audit
+          ON audit.audit_id = audit_run.audit_id
+         AND audit.current_run_id = run.id
+         AND audit.conversation_id = parent.id
+         AND audit.status = 'running'
+        JOIN conversation_goals AS goal
+          ON goal.conversation_id = parent.id
+         AND goal.goal_id = audit.goal_id
+         AND goal.revision = audit.goal_revision
+         AND goal.is_current = 1
+         AND goal.status = 'auditing'
+        WHERE run.id = ?
+          AND run.parent_conversation_id = ?
+          AND run.child_conversation_id = ?
+          AND run.agent_profile = 'goal_auditor'
+          AND run.depth = 1
+          AND run.status = 'running'
+          AND run.attempt_count > 0
+          AND run.started_at IS NOT NULL
+          AND run.finished_at IS NULL
+        "#,
+    )
+    .bind(run_id)
+    .bind(parent_conversation_id)
+    .bind(child_conversation_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(
+        authorized.map(|(project_id, task_id, audit_id, goal_id, goal_revision)| {
+            GoalAuditorReadScope {
+                project_id,
+                task_id,
+                audit_id,
+                goal_id,
+                goal_revision,
+            }
+        }),
+    )
+}
+
 pub async fn list_agent_runs_by_parent(
     pool: &SqlitePool,
     parent_conversation_id: &str,

@@ -983,6 +983,14 @@
       "families": [
         "db"
       ],
+      "name": "GoalAuditorReadInput",
+      "origin": "macro_lib::commands::goal_auditor_read::GoalAuditorReadInput",
+      "path": "GoalAuditorReadInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "GoalCasOutcome",
       "origin": "macro_lib::db::conversation_goals::GoalCasOutcome",
       "path": "GoalCasOutcome.ts"

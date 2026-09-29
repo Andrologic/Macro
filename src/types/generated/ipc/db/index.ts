@@ -30,6 +30,7 @@ export type { GitRepositoryRecord } from '../GitRepositoryRecord';
 export type { GitWorktreeRecord } from '../GitWorktreeRecord';
 export type { GoalAuditStatus } from '../GoalAuditStatus';
 export type { GoalAuditTransition } from '../GoalAuditTransition';
+export type { GoalAuditorReadInput } from '../GoalAuditorReadInput';
 export type { GoalCasOutcome } from '../GoalCasOutcome';
 export type { GoalCriterionResult } from '../GoalCriterionResult';
 export type { GoalCriterionStatus } from '../GoalCriterionStatus';

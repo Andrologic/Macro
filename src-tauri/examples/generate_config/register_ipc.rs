@@ -21,6 +21,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::AgentRun>("db")?;
     registry.add::<ipc_contracts::db::GoalAuditTransition>("db")?;
     registry.add::<ipc_contracts::db::RecordGoalAuditTransitionInput>("db")?;
+    registry.add::<ipc_contracts::db::GoalAuditorReadInput>("db")?;
     registry.add::<ipc_contracts::db::CreateAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::AgentRunUsageInput>("db")?;
     registry.add::<ipc_contracts::db::CompleteAgentRunInput>("db")?;

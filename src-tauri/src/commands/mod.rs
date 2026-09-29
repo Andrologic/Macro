@@ -3,6 +3,7 @@ mod external_apps;
 pub mod fs;
 pub mod git;
 pub mod goal_audit;
+pub mod goal_auditor_read;
 pub mod mcp;
 pub mod repository_instructions;
 pub mod skills;
