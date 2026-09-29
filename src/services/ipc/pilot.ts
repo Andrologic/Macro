@@ -1,6 +1,10 @@
 import { invoke, isBrowserRuntimeBridgeEnabled } from '../tauriRuntimeBridge';
 import type { ReviewCaptureRequest, ReviewCaptureInfo, ReviewCapturePage, ReviewCaptureFragment } from '../macroPilot/reviewCapture';
 
+export async function pilotDeviceName(): Promise<string> {
+  return invoke('pilot_device_name');
+}
+
 export type PilotSecretKind = 'session_token' | 'instance_key' | 'claim_secret' | 'poll_secret';
 export interface PilotSecretScope {
   configuration_id: string;

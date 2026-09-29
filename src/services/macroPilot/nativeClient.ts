@@ -5,6 +5,7 @@ import { validateContentMessage, validateContentResponse } from './contentProtoc
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
 import {
+  pilotDeviceName,
   pilotSecretDelete,
   pilotSecretRead,
   pilotSecretWrite,
@@ -168,6 +169,7 @@ export interface PilotClientDependencies {
   randomBytes: (size: number) => Uint8Array;
   sha256: (value: Uint8Array) => Promise<Uint8Array>;
   now: () => Date;
+  deviceName?: () => Promise<string>;
 }
 
 const base64Url = (bytes: Uint8Array): string => {
@@ -184,6 +186,7 @@ const randomBytes = (size: number): Uint8Array => {
 
 const defaultDependencies: PilotClientDependencies = {
   fetch: tauriFetch,
+  deviceName: pilotDeviceName,
   getStateSnapshot: stateGetSnapshot,
   setStateValue: stateSetValue,
   secretRead: pilotSecretRead,
@@ -635,6 +638,7 @@ export class MacroPilotNativeClient {
       await this.persist({ account: response.data!.account, deviceSession: response.data!.device_session });
       this.checkContext(context);
       this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
+      if (this.dependencies.deviceName) await this.ensureDesktopInstance();
     } catch (error) {
       if (epoch !== this.epoch) throw new PilotClientError('context_changed');
       if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
@@ -807,7 +811,8 @@ export class MacroPilotNativeClient {
     return { status: response.status, data: data as T | null, requestId: responseRequestId };
   }
 
-  async connect(relayOrigin: string, deviceLabel: string): Promise<PilotAuthAttempt> {
+  async connect(relayOrigin: string, deviceLabel?: string): Promise<PilotAuthAttempt> {
+    deviceLabel ??= await this.deviceName();
     if (!this.persisted) await this.initialize();
     this.scheduleCleanup();
     const origin = normalizeOrigin(relayOrigin.trim());
@@ -945,10 +950,34 @@ export class MacroPilotNativeClient {
       status: 'connected',
       lastError: null,
     });
+    if (this.dependencies.deviceName) await this.ensureDesktopInstance();
     return data.device_session;
   }
 
+  private provisioning: { context: string; promise: Promise<PilotInstance> } | null = null;
+
+  private async deviceName(): Promise<string> {
+    const name = await this.dependencies.deviceName?.();
+    return name?.trim().slice(0, 120) || 'Macro desktop';
+  }
+
+  /** One idempotent creation per local profile. Existing or revoked grants are never upgraded here. */
+  ensureDesktopInstance(): Promise<PilotInstance> {
+    if (this.persisted?.instance) return Promise.resolve(this.persisted.instance);
+    const context = this.contextKey();
+    if (this.provisioning?.context === context) return this.provisioning.promise;
+    const work = (async () => {
+      const label = await this.deviceName();
+      this.checkContext(context);
+      return this.createOrAttachInstance({ label });
+    })();
+    this.provisioning = { context, promise: work };
+    void work.finally(() => { if (this.provisioning?.promise === work) this.provisioning = null; }).catch(() => undefined);
+    return work;
+  }
+
   async createOrAttachInstance(input: { label?: string; instanceId?: string } = {}): Promise<PilotInstance> {
+    const context = this.contextKey();
     if (!this.persisted?.deviceSession) throw new PilotClientError('unauthorized');
     const existingId = input.instanceId || this.persisted.instance?.ref.instance_id;
     if (existingId && this.persisted.instanceCreationId) {
@@ -956,7 +985,9 @@ export class MacroPilotNativeClient {
         'POST', `/instances/${encodeURIComponent(existingId)}/attach`,
         { transport_version: TRANSPORT_VERSION }, { authenticated: true, producer: true },
       );
+      this.checkContext(context);
       await this.persist({ instance: response.data!.instance, instanceAccess: response.data!.instance_access });
+      this.checkContext(context);
       this.publish({ instance: response.data!.instance, instanceAccess: response.data!.instance_access });
       return response.data!.instance;
     }
@@ -967,16 +998,21 @@ export class MacroPilotNativeClient {
       ? await this.readSecret('instance_key', creationId)
       : createSecret(this.dependencies);
     const instanceKeyHash = base64Url(await this.dependencies.sha256(new TextEncoder().encode(instanceKey)));
+    this.checkContext(context);
     if (!this.persisted.instanceCreationId) {
       await this.writeSecret(this.secretScope('instance_key', creationId), instanceKey);
+      this.checkContext(context);
       try {
         await this.persist({ instanceCreationId: creationId, pendingInstanceLabel: label });
       } catch (error) {
+        this.checkContext(context);
         await this.invalidateVault();
+        this.checkContext(context);
         void this.deleteSecret(this.secretScope('instance_key', creationId)).catch(() => undefined);
         throw error;
       }
     }
+    this.checkContext(context);
     const response = await this.request<{ instance: PilotInstance; instance_access: PilotInstanceAccess }>(
       'POST', '/instances', {
         transport_version: TRANSPORT_VERSION,
@@ -985,11 +1021,13 @@ export class MacroPilotNativeClient {
         instance_key_hash: instanceKeyHash,
       }, { authenticated: true },
     );
+    this.checkContext(context);
     await this.persist({
       instance: response.data!.instance,
       instanceAccess: response.data!.instance_access,
       pendingInstanceLabel: null,
     });
+    this.checkContext(context);
     this.publish({ instance: response.data!.instance, instanceAccess: response.data!.instance_access });
     return response.data!.instance;
   }

@@ -691,6 +691,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::pilot_device::pilot_device_name,
             commands::pilot_secrets::pilot_vault_activate,
             commands::pilot_secrets::pilot_vault_invalidate,
             commands::pilot_secrets::pilot_vault_resume,

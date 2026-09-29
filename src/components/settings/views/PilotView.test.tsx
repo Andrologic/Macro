@@ -50,6 +50,7 @@ const pilotState = {
   connect: mock(async () => undefined),
   pollAuth: mock(async () => false),
   confirmAccount: mock(async () => undefined),
+  ensureDesktopInstance: mock(async () => undefined),
   createOrAttachInstance: mock(async () => undefined),
   refreshAccessRequests: mock(async () => undefined),
   resolveAccess: mock(async () => undefined),
@@ -184,10 +185,29 @@ describe('PilotView', () => {
     await act(async () => root.render(<PilotView />));
 
     expect(container.textContent).not.toContain('Relay HTTPS origin');
+    expect(container.textContent).not.toContain('Device label');
+    expect(container.textContent).not.toContain('Create instance');
     expect(container.querySelector('input[placeholder^="https://"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await act(async () => button('Connect with GitHub').click());
-    expect(pilotState.connect).toHaveBeenCalledWith('https://macro.andrologic.ai', 'Macro desktop');
+    expect(pilotState.connect).toHaveBeenCalledWith('https://macro.andrologic.ai');
+  });
+
+  it('shows the connected computer without name fields or pairing setup', async () => {
+    pilotState.instanceAccess = {
+      contract_version: '1.0', type: 'instance_access',
+      ref: { type: 'instance_access', account_id: 'account:one', session_id: 'session:one', instance_id: 'instance:studio' },
+      state: 'granted', permissions: ['supervise', 'respond', 'approve_tools', 'review'],
+      granted_at: '2026-09-01T00:00:00Z', revision: 1,
+    };
+    await showAccount();
+    expect(container.textContent).toContain('Studio Mac');
+    expect(container.textContent).toContain('connected automatically');
+    expect(button('Create instance')).toBeUndefined();
+    expect(button('Reattach')).toBeUndefined();
+    expect(container.querySelector('input')).toBeNull();
+    const recovery = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Device access recovery'));
+    expect(recovery?.open).toBe(false);
   });
 
   it('identifies a persisted session on a previous relay without moving it automatically', async () => {

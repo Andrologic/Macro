@@ -15,10 +15,11 @@ interface PilotStore extends PilotPublicState {
   accessRequests: PilotAccessRequest[];
   accessRequestsLoaded: boolean;
   initialize: () => Promise<void>;
-  connect: (relayOrigin: string, deviceLabel: string) => Promise<void>;
+  connect: (relayOrigin: string, deviceLabel?: string) => Promise<void>;
   pollAuth: () => Promise<boolean>;
   confirmAccount: () => Promise<void>;
-  createOrAttachInstance: (label: string) => Promise<void>;
+  createOrAttachInstance: (label?: string) => Promise<void>;
+  ensureDesktopInstance: () => Promise<void>;
   refreshAccount: () => Promise<void>;
   /** The UI must invoke this only from its explicit resume-access action. */
   resumeVaultAccess: () => Promise<void>;
@@ -110,6 +111,7 @@ export const usePilotStore = create<PilotStore>((set, get) => {
       if (!accountId) throw new PilotClientError('context_changed');
       await client.confirmAccount(accountId); sync();
     }),
+    ensureDesktopInstance: () => action(async () => { await client.ensureDesktopInstance(); sync(); }),
     createOrAttachInstance: (label) => action(async () => { await client.createOrAttachInstance({ label }); sync(); }),
     refreshAccount: () => action(readAccount, 'read'),
     resumeVaultAccess: () => action(async signal => {

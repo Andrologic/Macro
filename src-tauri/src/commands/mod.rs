@@ -5,6 +5,7 @@ pub mod git;
 pub mod mcp;
 pub mod pilot_secrets;
 pub mod pilot_tools;
+pub mod pilot_device;
 pub mod repository_instructions;
 pub mod skills;
 pub mod speech;

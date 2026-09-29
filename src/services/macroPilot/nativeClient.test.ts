@@ -79,6 +79,67 @@ const createHarness = (responses: Array<Response | Error>) => {
 };
 
 describe('MacroPilotNativeClient', () => {
+  it('provisions the restored desktop once using its system name and preserves an existing revoked grant', async () => {
+    const instance = { contract_version: '1.0', type: 'instance', ref: { type: 'instance', instance_id: 'instance:auto' }, label: 'Studio device', connection_state: 'unreachable', supported_contract_versions: ['1.0'], revision: 1 };
+    const access = { contract_version: '1.0', type: 'instance_access', ref: { type: 'instance_access', account_id: account.account_id, session_id: session.ref.session_id, instance_id: 'instance:auto' }, state: 'granted', permissions: ['supervise', 'respond', 'approve_tools', 'review'], granted_at: '2026-09-06T10:00:00Z', revision: 1 };
+    const h = createHarness([
+      jsonResponse({ account, device_session: session }),
+      jsonResponse({ transport_version: '1.0', instance, instance_access: access }, 201),
+      jsonResponse({ account, device_session: session }),
+    ]);
+    h.dependencies.deviceName = async () => 'Studio device';
+    h.values.macro_pilot_native_v1 = { configurationId: 'config:test', relayOrigin: 'https://pilot.example.com', account, deviceSession: session };
+    h.secrets.set(`session_token:${session.ref.session_id}`, validSecret(8));
+    await h.client.initialize();
+    await Promise.all([h.client.ensureDesktopInstance(), h.client.ensureDesktopInstance()]);
+    expect(h.client.getState().instance?.label).toBe('Studio device');
+    const creations = h.requests.filter(r => r.url.endsWith('/instances'));
+    expect(creations).toHaveLength(1);
+    expect(JSON.parse(String(creations[0].init.body)).label).toBe('Studio device');
+    const saved = h.values.macro_pilot_native_v1 as Record<string, unknown>;
+    saved.instanceAccess = { ...access, state: 'revoked', revision: 2 };
+    const restored = new MacroPilotNativeClient(h.dependencies);
+    await restored.initialize();
+    expect(restored.getState().instanceAccess?.state).toBe('revoked');
+    expect(h.requests.filter(r => r.url.endsWith('/attach'))).toHaveLength(0);
+    expect(h.requests.filter(r => r.url.endsWith('/instances'))).toHaveLength(1);
+  });
+
+  it('retries an interrupted automatic creation with the same identity and coalesces concurrent retries', async () => {
+    const h = createHarness([jsonResponse({ account, device_session: session }), new Error('network offline')]);
+    h.dependencies.deviceName = async () => 'Studio device';
+    h.values.macro_pilot_native_v1 = { configurationId: 'config:test', relayOrigin: 'https://pilot.example.com', account, deviceSession: session };
+    h.secrets.set(`session_token:${session.ref.session_id}`, validSecret(8));
+    await h.client.initialize();
+    const first = h.requests.find(r => r.url.endsWith('/instances'))!;
+    h.dependencies.deviceName = async () => 'Renamed device';
+    let retried: unknown;
+    h.dependencies.fetch = (async (_input, init) => { retried = JSON.parse(String(init?.body)); throw new Error('offline'); }) as PilotClientDependencies['fetch'];
+    const one = h.client.ensureDesktopInstance(), two = h.client.ensureDesktopInstance();
+    expect(one).toBe(two);
+    await Promise.allSettled([one, two]);
+    expect(retried).toEqual(JSON.parse(String(first.init.body)));
+  });
+
+  it('does not create a desktop after logout while its key hash is pending', async () => {
+    const h = createHarness([jsonResponse({ account, device_session: session })]);
+    h.values.macro_pilot_native_v1 = { configurationId: 'config:test', relayOrigin: 'https://pilot.example.com', account, deviceSession: session };
+    h.secrets.set(`session_token:${session.ref.session_id}`, validSecret(8));
+    await h.client.initialize();
+    let release!: (value: Uint8Array) => void;
+    let started!: () => void;
+    const hashing = new Promise<void>(resolve => { started = resolve; });
+    h.dependencies.sha256 = () => { started(); return new Promise(resolve => { release = resolve; }); };
+    const creating = h.client.ensureDesktopInstance();
+    await hashing;
+    await h.client.logout();
+    release(new Uint8Array(32));
+    await expect(creating).rejects.toMatchObject({ code: 'context_changed' });
+    expect(h.requests.some(r => r.url.endsWith('/instances'))).toBe(false);
+    expect(h.events).not.toContain('secret:instance_key');
+    expect(h.client.getState().deviceSession).toBeNull();
+  });
+
   it('écrit le secret de claim avant de créer la tentative et ne persiste aucun secret', async () => {
     const pollSecret = validSecret(7);
     const harness = createHarness([

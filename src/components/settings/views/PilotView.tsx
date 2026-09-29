@@ -7,7 +7,6 @@ import type { PilotAccountConfirmation, PilotPermission } from '../../../service
 import { usePilotStore } from '../../../stores/usePilotStore';
 import { Button } from '../../ui/Button';
 import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
-import { Input } from '../../ui/Input';
 import { notify } from '../../ui/toastService';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 
@@ -63,8 +62,6 @@ export const PilotView: React.FC = () => {
   const authAttempt = store.attempt;
   const busy = store.busy;
   const { deviceSession, accountCatalog, lastError, refreshAccount } = store;
-  const [deviceLabel, setDeviceLabel] = useState('Macro desktop');
-  const [instanceLabel, setInstanceLabel] = useState('Macro desktop');
   const [deleteTarget, setDeleteTarget] = useState<{ identity: PilotAccountConfirmation; origin: string } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<PilotRuntimeStatus>('inactive');
   const [indeterminateCommands, setIndeterminateCommands] = useState<IndeterminateCommand[]>([]);
@@ -93,10 +90,6 @@ export const PilotView: React.FC = () => {
     });
     return () => { cancelled = true; unsubscribe?.(); };
   }, [refreshIndeterminate, store.instance?.ref.instance_id]);
-
-  useEffect(() => {
-    if (store.instance?.label) setInstanceLabel(store.instance.label);
-  }, [store.instance?.label]);
 
   useEffect(() => {
     if (authStatus !== 'authorizing' || !authAttempt || busy) return;
@@ -137,7 +130,7 @@ export const PilotView: React.FC = () => {
   };
 
   const startConnection = () => run(async () => {
-    await store.connect(PILOT_RELAY_ORIGIN, deviceLabel);
+    await store.connect(PILOT_RELAY_ORIGIN);
     const verificationUri = usePilotStore.getState().attempt?.verificationUri;
     if (verificationUri) await openExternalUrl(verificationUri);
   });
@@ -148,7 +141,7 @@ export const PilotView: React.FC = () => {
   );
 
   const connectInstance = () => run(
-    () => store.createOrAttachInstance(instanceLabel),
+    () => store.createOrAttachInstance(),
     t('settings.pilot.instanceConnected', 'This Macro instance is connected.'),
   );
 
@@ -262,17 +255,9 @@ export const PilotView: React.FC = () => {
         )}
 
         {!store.deviceSession && !store.attempt && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1">
-              <span className="text-xs text-muted-foreground">{t('settings.pilot.deviceLabel', 'Device label')}</span>
-              <Input value={deviceLabel} maxLength={120} onChange={(event) => setDeviceLabel(event.target.value)} />
-            </label>
-            <div className="flex items-end">
-              <Button className="w-full" disabled={store.busy || !deviceLabel.trim()} onClick={startConnection}>
-                {t('settings.pilot.signIn', 'Connect with GitHub')}
-              </Button>
-            </div>
-          </div>
+          <Button disabled={store.busy} onClick={startConnection}>
+            {t('settings.pilot.signIn', 'Connect with GitHub')}
+          </Button>
         )}
 
         {store.attempt && !store.attempt.identifiedAccount && (
@@ -372,14 +357,16 @@ export const PilotView: React.FC = () => {
             title={t('settings.pilot.instanceTitle', 'Desktop instance')}
             description={t('settings.pilot.instanceDescription', 'The instance key stays in the operating system credential vault.')}
           />
-          <div className="flex flex-wrap gap-2 sm:flex-nowrap">
-            <Input className="min-w-0 flex-1" value={instanceLabel} maxLength={120} disabled={Boolean(store.instance)} onChange={(event) => setInstanceLabel(event.target.value)} />
-            <Button className="shrink-0 whitespace-nowrap" disabled={store.busy} onClick={connectInstance}>
-              {store.instance
-                ? t('settings.pilot.reattach', 'Reattach')
-                : t('settings.pilot.createInstance', 'Create instance')}
-            </Button>
-          </div>
+          <p className="text-xs text-muted-foreground">{t('settings.pilot.automaticDevices', 'Devices signed in to the same Macro Connect account are connected automatically.')}</p>
+          {!store.instance && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm">{t('settings.pilot.preparingDevice', 'Setting up this device…')}</p>
+              {!store.busy && <Button size="sm" variant="secondary" onClick={() => run(store.ensureDesktopInstance)}>{t('common.retry', 'Retry')}</Button>}
+            </div>
+          )}
+          {store.instance && (store.instanceAccess?.state !== 'granted' || !PERMISSIONS.every(permission => store.instanceAccess?.permissions.includes(permission))) && (
+            <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Reattach')}</Button>
+          )}
           {store.instanceAccess?.state === 'granted' && !PERMISSIONS.every(permission => store.instanceAccess!.permissions.includes(permission)) && (
             <p role="alert" className="text-xs text-amber-600">{t('settings.pilot.limitedAccess', 'This existing association has limited permissions. Reattach explicitly to enable full access to this instance.')}</p>
           )}
@@ -393,7 +380,8 @@ export const PilotView: React.FC = () => {
       )}
 
       {store.instance && (
-        <section className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
+        <details className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
+          <summary className="cursor-pointer text-sm text-muted-foreground">{t('settings.pilot.accessRecovery', 'Device access recovery')}</summary>
           <SettingsSectionHeader
             title={t('settings.pilot.accessTitle', 'Device access')}
             description={t('settings.pilot.accessDescription', 'Associate only devices you trust. Associated devices can access all projects and use the available Pilot actions.')}
@@ -421,7 +409,7 @@ export const PilotView: React.FC = () => {
               </div>
             );
           })}
-        </section>
+        </details>
       )}
 
       {store.instance && runtimeStatus === 'unavailable' && (

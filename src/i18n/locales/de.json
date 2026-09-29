@@ -969,6 +969,9 @@
       "configuration": "Strikte JSON-Konfiguration von Macro bearbeiten, prüfen und untersuchen"
     },
     "pilot": {
+      "automaticDevices": "Geräte mit demselben Macro Connect-Konto werden automatisch verbunden.",
+      "preparingDevice": "Dieses Gerät wird eingerichtet…",
+      "accessRecovery": "Gerätezugriff wiederherstellen",
       "label": "Pilot",
       "title": "Macro Pilot",
       "description": "Connect your GitHub account to use Macro Pilot on your phone. Macro remains available locally without an account.",
