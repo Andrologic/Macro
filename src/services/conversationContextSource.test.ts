@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { PersistedContextReference } from '../types';
-import type { DbConversation, DbMessage } from './ipc/conversations.types';
+import type { DbConversation, DbConversationSourceSnapshot, DbMessage } from './ipc/conversations.types';
 import {
   resolveConversationContextSources,
   selectConversationPassages,
@@ -21,6 +21,13 @@ const message = (
 const sourceRef: PersistedContextReference = {
   id: 'source', conversationId: 'source', kind: 'conversation', title: 'Old title',
 };
+
+const snapshot = (
+  messages: DbMessage[], sourceProjectId: string | null = 'project-1', targetProjectId: string | null = 'project-1',
+): DbConversationSourceSnapshot => ({
+  target_project_id: targetProjectId,
+  conversation: conversation('source', sourceProjectId), messages,
+});
 
 describe('conversation context sources', () => {
   it('selects relevant completed passages with stable message citations and a bounded excerpt', () => {
@@ -46,11 +53,26 @@ describe('conversation context sources', () => {
     expect(selected).not.toContain('message_id=noise-');
   });
 
+  it('centers the excerpt on a whole word, not a substring in an earlier word', () => {
+    const selected = selectConversationPassages([
+      message('match', `prerelease ${'x'.repeat(900)} release approved`),
+    ], 'release');
+    expect(selected).toContain('release approved');
+    expect(selected).not.toContain('prerelease');
+  });
+
+  it('does not count a word cut at the search boundary as a complete match', () => {
+    const selected = selectConversationPassages([
+      message('boundary', `${'a'.repeat(3992)} releaseX`),
+    ], 'release');
+    expect(selected).toContain('recent_fallback=true');
+  });
+
   it('uses the current transcript and freezes its cited text on the reference', async () => {
     const transcript = [message('first', 'The current deployment decision is to review releases.')];
     const ports = {
       getConversation: async (id: string) => conversation(id),
-      listMessages: async () => transcript,
+      getConversationSourceSnapshot: async () => snapshot(transcript),
       isSourceActive: () => false,
     };
     const resolved = await resolveConversationContextSources({
@@ -72,8 +94,8 @@ describe('conversation context sources', () => {
 
   it('rejects a source outside the destination project and an active source', async () => {
     const ports = {
-      getConversation: async (id: string) => conversation(id, id === 'source' ? 'other-project' : 'project-1'),
-      listMessages: async () => [message('first', 'Relevant text')],
+      getConversation: async (id: string) => conversation(id),
+      getConversationSourceSnapshot: async () => snapshot([message('first', 'Relevant text')], 'other-project'),
       isSourceActive: () => false,
     };
     await expect(resolveConversationContextSources({
@@ -81,33 +103,42 @@ describe('conversation context sources', () => {
     })).rejects.toThrow('outside this project');
     await expect(resolveConversationContextSources({
       targetConversationId: 'target', request: 'Relevant', refs: [sourceRef],
-      ports: { ...ports, getConversation: async (id) => conversation(id), isSourceActive: () => true },
+      ports: { ...ports, isSourceActive: () => true },
     })).rejects.toThrow('unavailable');
+  });
+
+  it('compares source and destination projects from the same native snapshot', async () => {
+    await expect(resolveConversationContextSources({
+      targetConversationId: 'target', request: 'Relevant', refs: [sourceRef],
+      ports: {
+        getConversation: async (id) => conversation(id),
+        getConversationSourceSnapshot: async () => snapshot([message('first', 'Relevant text')], 'project-1', 'project-2'),
+        isSourceActive: () => false,
+      },
+    })).rejects.toThrow('outside this project');
   });
 
   it('rejects a deleted source instead of silently dropping the reference', async () => {
     await expect(resolveConversationContextSources({
       targetConversationId: 'target', request: 'Relevant', refs: [sourceRef],
       ports: {
-        getConversation: async (id) => id === 'source' ? null : conversation(id),
-        listMessages: async () => [message('first', 'Relevant text')],
+        getConversation: async (id) => conversation(id),
+        getConversationSourceSnapshot: async () => null,
         isSourceActive: () => false,
       },
     })).rejects.toThrow('unavailable');
   });
 
-  it('refuses to cite a transcript that changes during selection', async () => {
-    let reads = 0;
-    await expect(resolveConversationContextSources({
+  it('uses the native snapshot even when the conversation timestamp is unchanged after an edit', async () => {
+    const resolved = await resolveConversationContextSources({
       targetConversationId: 'target', request: 'Relevant', refs: [sourceRef],
       ports: {
-        getConversation: async (id) => ({
-          ...conversation(id),
-          updated_at: id === 'source' && ++reads > 1 ? '2026-09-28T12:01:00Z' : '2026-09-28T12:00:00Z',
-        }),
-        listMessages: async () => [message('first', 'Relevant text')],
+        getConversation: async (id) => conversation(id),
+        getConversationSourceSnapshot: async () => snapshot([message('first', 'Relevant edited text')]),
         isSourceActive: () => false,
       },
-    })).rejects.toThrow('changed while selecting');
+    });
+    expect(resolved?.[0]?.sourceUpdatedAt).toBe('2026-09-28T12:00:00Z');
+    expect(resolved?.[0]?.snippet).toContain('Relevant edited text');
   });
 });

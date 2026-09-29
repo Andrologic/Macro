@@ -8388,7 +8388,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     refs,
     ports: {
       getConversation: tauriIpc.getConversation,
-      listMessages: tauriIpc.listMessages,
+      getConversationSourceSnapshot: tauriIpc.getConversationSourceSnapshot,
       isSourceActive: (id) => isConversationRuntimeActive(
         getConversationRuntimeSnapshot(get().conversationRuntimeById, id),
       ),

@@ -406,6 +406,18 @@ pub async fn db_list_messages(
 }
 
 #[tauri::command]
+pub async fn db_get_conversation_source_snapshot(
+    pool: State<'_, DbPool>,
+    target_id: String,
+    source_id: String,
+) -> CommandResult<Option<ConversationSourceSnapshot>> {
+    let pool = get_pool(&pool).await?;
+    repository::get_conversation_source_snapshot(&pool, &target_id, &source_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_search_messages(
     pool: State<'_, DbPool>,
     query: String,

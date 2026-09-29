@@ -35,6 +35,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::MessageSearchPage>("db")?;
     registry.add::<ipc_contracts::db::ConversationCompactionStateRecord>("db")?;
     registry.add::<ipc_contracts::db::ChatSnapshot>("db")?;
+    registry.add::<ipc_contracts::db::ConversationSourceSnapshot>("db")?;
     registry.add::<ipc_contracts::db::ChatBootstrapSnapshot>("db")?;
     registry.add::<ipc_contracts::db::ConversationCitation>("db")?;
     registry.add::<ipc_contracts::db::ConversationToolboxStateRecord>("db")?;
