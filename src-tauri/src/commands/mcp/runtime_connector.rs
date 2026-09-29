@@ -688,10 +688,17 @@ impl McpSession for ModernHttpSession {
                     format!("MCP tool '{tool_name}' is disabled."),
                 ));
             }
-            self.client()?
-                .call_tool_complete(tool_name, arguments, cancellation)
-                .await
-                .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))
+            let client = self.client()?;
+            run_modern_tool_call(cancellation.clone(), |state, answers| {
+                client.call_tool_round(
+                    tool_name,
+                    arguments.clone(),
+                    state,
+                    answers,
+                    cancellation.clone(),
+                )
+            })
+            .await
         })
     }
 
@@ -1036,74 +1043,16 @@ impl McpSession for ModernRmcpSession {
                 ));
             }
             let client = self.client()?;
-            let mut outcome = client
-                .call_tool(tool_name, arguments.clone(), cancellation.clone())
-                .await
-                .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))?;
-            for round in 0..=4 {
-                match outcome {
-                    McpModernToolCallOutcome::Complete(result) => return Ok(result),
-                    McpModernToolCallOutcome::Task { raw_result } => {
-                        drop(raw_result);
-                        return Err(runtime_error(
-                            "MCP_RUNTIME_TASK_RESULT_UNSUPPORTED",
-                            "The MCP tool returned an unsupported task result.",
-                        ));
-                    }
-                    McpModernToolCallOutcome::InputRequired { raw_result } => {
-                        if round == 4 {
-                            return Err(runtime_error(
-                                "MCP_INTERACTION_ROUND_LIMIT",
-                                "The MCP tool exceeded four interaction continuations.",
-                            ));
-                        }
-                        let context = cancellation.interaction().ok_or_else(|| {
-                            runtime_error(
-                                "MCP_INTERACTION_NO_HOST",
-                                "No MCP interaction context is attached to this operation.",
-                            )
-                        })?;
-                        let (request_state, prompts) = parse_form_input_required(&raw_result)?;
-                        let answers = if prompts.is_empty() {
-                            None
-                        } else {
-                            Some(
-                                context
-                                    .broker
-                                    .request(
-                                        context.key,
-                                        context.operation_id,
-                                        prompts,
-                                        cancellation.clone(),
-                                    )
-                                    .await?,
-                            )
-                        };
-                        if cancellation.is_cancelled() {
-                            return Err(runtime_error(
-                                "MCP_RUNTIME_OPERATION_CANCELLED",
-                                "MCP tool call was cancelled.",
-                            ));
-                        }
-                        outcome = client
-                            .continue_tool(
-                                tool_name,
-                                arguments.clone(),
-                                request_state,
-                                answers,
-                                cancellation.clone(),
-                            )
-                            .await
-                            .map_err(|error| {
-                                runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message)
-                            })?;
-                    }
-                }
-            }
-            Err(runtime_error(
-                "MCP_INTERACTION_ROUND_LIMIT",
-                "The MCP tool exceeded four interaction rounds.",
-            ))
+            run_modern_tool_call(cancellation.clone(), |state, answers| {
+                client.continue_tool(
+                    tool_name,
+                    arguments.clone(),
+                    state,
+                    answers,
+                    cancellation.clone(),
+                )
+            })
+            .await
         })
     }
 
@@ -1120,6 +1069,75 @@ impl McpSession for ModernRmcpSession {
             close_modern_client(client).await
         })
     }
+}
+
+// Both modern transports use the same bounded broker and opaque continuation state.
+pub(super) async fn run_modern_tool_call<F, Fut>(
+    cancellation: Arc<McpOperationCancellation>,
+    mut send_round: F,
+) -> Result<McpCallToolResponse, McpRuntimeError>
+where
+    F: FnMut(Option<String>, Option<BTreeMap<String, Value>>) -> Fut,
+    Fut: Future<Output = crate::commands::CommandResult<McpModernToolCallOutcome>>,
+{
+    let mut outcome = send_round(None, None)
+        .await
+        .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))?;
+    for round in 0..=4 {
+        match outcome {
+            McpModernToolCallOutcome::Complete(result) => return Ok(result),
+            McpModernToolCallOutcome::Task { raw_result } => {
+                drop(raw_result);
+                return Err(runtime_error(
+                    "MCP_RUNTIME_TASK_RESULT_UNSUPPORTED",
+                    "The MCP tool returned an unsupported task result.",
+                ));
+            }
+            McpModernToolCallOutcome::InputRequired { raw_result } => {
+                if round == 4 {
+                    return Err(runtime_error(
+                        "MCP_INTERACTION_ROUND_LIMIT",
+                        "The MCP tool exceeded four interaction continuations.",
+                    ));
+                }
+                let context = cancellation.interaction().ok_or_else(|| {
+                    runtime_error(
+                        "MCP_INTERACTION_NO_HOST",
+                        "No MCP interaction context is attached to this operation.",
+                    )
+                })?;
+                let (request_state, prompts) = parse_form_input_required(&raw_result)?;
+                let answers = if prompts.is_empty() {
+                    None
+                } else {
+                    Some(
+                        context
+                            .broker
+                            .request(
+                                context.key,
+                                context.operation_id,
+                                prompts,
+                                cancellation.clone(),
+                            )
+                            .await?,
+                    )
+                };
+                if cancellation.is_cancelled() {
+                    return Err(runtime_error(
+                        "MCP_RUNTIME_OPERATION_CANCELLED",
+                        "MCP tool call was cancelled.",
+                    ));
+                }
+                outcome = send_round(request_state, answers).await.map_err(|error| {
+                    runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message)
+                })?;
+            }
+        }
+    }
+    Err(runtime_error(
+        "MCP_INTERACTION_ROUND_LIMIT",
+        "The MCP tool exceeded four interaction rounds.",
+    ))
 }
 
 async fn close_modern_client(

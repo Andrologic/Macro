@@ -1008,7 +1008,7 @@ Les résultats MCP conservent des blocs typés dans l’historique. Le
 [contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
 modèle, les replis explicites et le retour à une ancienne version.
 
-Pour les serveurs MCP stdio modernes, une demande de formulaire pendant un appel
+Pour les serveurs MCP modernes stdio et HTTP, une demande de formulaire pendant un appel
 d'outil apparaît dans un hôte global, y compris si l'utilisateur change de
 conversation. L'hôte indique le serveur, l'opération, le message et les champs,
 avec leurs valeurs par défaut et contraintes. L'utilisateur peut modifier les
@@ -1016,7 +1016,8 @@ valeurs, les revoir puis les accepter, refuser le formulaire ou annuler la
 demande. Les demandes suivantes attendent dans une file et expirent après leur
 délai ; une annulation de l'appel les retire. Macro ne demande pas de secrets
 dans ces formulaires et ne conserve ni réponse ni état opaque dans l'historique.
-Les formulaires URL et les transports HTTP ne font pas partie de ce comportement.
+Les demandes URL et les formulaires des serveurs legacy restent explicitement
+refusés.
 
 Lorsque le catalogue MCP autorisé dépasse douze outils ou 16 000 caractères de schémas, Macro présente au modèle une recherche et un appel ciblé plutôt que tous les schémas. La recherche retourne au plus cinq outils autorisés dans une réponse de 24 Ko. Un outil doit avoir été trouvé pendant le tour avant son appel ; il garde ses propres contrôles de permissions, de validation, d'approbation et de génération du serveur. Les petits catalogues restent présentés directement. La découverte ne demande aucune interaction supplémentaire à l'utilisateur.
 

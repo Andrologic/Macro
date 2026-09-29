@@ -735,9 +735,9 @@ et l'arrêt du runtime retirent les demandes en attente. Les réponses `accept`,
 `decline` et `cancel` ont un contrat typé ; `cancel` est transmis au serveur
 dans `inputResponses`, tandis que l'annulation externe interrompt l'appel.
 
-Le chemin stdio moderne traite `input_required` lorsque toutes les demandes sont
-des formulaires `elicitation/create`. Il conserve `requestState` en mémoire dans
-le backend et le retransmet tel quel avec `inputResponses` au tour MCP suivant.
+Les chemins stdio et HTTP modernes traitent `input_required` lorsque toutes les
+demandes sont des formulaires `elicitation/create`. Ils conservent `requestState`
+en mémoire dans le backend et le retransmettent tel quel avec `inputResponses` au tour MCP suivant.
 Le schéma de formulaire plat est vérifié avant remise au port et conservé avec
 la demande en attente ; chaque `accept`, y compris depuis un IPC hostile, est
 validé contre ses champs, obligations, choix et contraintes avant continuation.
@@ -759,15 +759,36 @@ un secret n'affichent aucun champ et ne proposent pas `accept` ; l'interface
 rappelle aussi de ne jamais saisir de secret. Une détection textuelle ne peut
 pas établir à elle seule qu'une saisie arbitraire n'est pas sensible.
 
-Chaque `tools/call` stdio moderne ajoute `elicitation: {form: {}}` à
+Chaque `tools/call` moderne stdio ou HTTP ajoute `elicitation: {form: {}}` à
 `_meta.io.modelcontextprotocol/clientCapabilities` uniquement si le courtier
 a un port vivant. rmcp fusionne ces capacités avec les métadonnées de découverte
 existantes, dont la version du protocole et l'identité du client. Aucun mode URL
 n'est annoncé. Le validateur Rust accepte les formats MCP usuels ; pour `email`,
-il applique un sous-ensemble ASCII conservateur. Les demandes URL, le chemin
-HTTP moderne et le chemin legacy restent fermés. En particulier, les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
-raccorder demandera d'associer les requêtes serveur au bon appel et à sa durée
-de vie. Le point 21 reste donc incomplet.
+il applique un sous-ensemble ASCII conservateur.
+
+Le chemin HTTP moderne utilise la même boucle de continuation que stdio,
+avec le contexte d'opération fourni par le runtime et le même courtier IPC.
+Les réponses restent liées au serveur, aux projets, à la génération et à
+l'opération. Chaque continuation transmet les arguments initiaux, l'état opaque
+et les réponses validées. Une erreur HTTP ou d'authentification arrête l'appel.
+Les redirections de `tools/call`, même de même origine, sont refusées pour éviter
+le rejeu d'une mutation potentiellement acceptée. La récupération automatique
+de session du SDK est désactivée pour le client HTTP moderne ; le runtime peut
+reconnecter une session, mais ne rejoue pas l'appel interrompu.
+
+Le SDK rmcp expose les paramètres URL, mais le courtier et l'hôte de Macro
+valident seulement des formulaires. Un parcours URL demanderait un contrat
+séparé d'ouverture, de confirmation et d'annulation, ainsi qu'une politique
+pour les destinations et les flux d'authentification. Il reste reporté : aucune
+capacité URL n'est annoncée et toute demande URL échoue explicitement.
+Les handlers legacy répondent encore `-32601` à `elicitation/create`.
+Leurs requêtes serveur ne suivent pas la continuation `input_required` moderne ;
+leur prise en charge exige d'abord une corrélation avec l'appel et sa durée de vie.
+Ce lot couvre donc les formulaires HTTP modernes, sans activer URL ni legacy.
+
+Les mécanismes du client rmcp de Codex ont servi de référence pour la liaison
+à la requête, l'annulation et la séparation entre reprise de connexion et reprise
+d'un appel. Aucun code de ce client n'est incorporé.
 
 ### 7.5 Boucle d'outils et compatibilité des providers
 
