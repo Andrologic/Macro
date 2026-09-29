@@ -402,6 +402,20 @@ pub async fn get_audit(
         .transpose()
 }
 
+pub async fn list_conversation_audits(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Vec<ConversationGoalAudit>> {
+    nonempty(conversation_id, "conversation id")?;
+    sqlx::query("SELECT * FROM conversation_goal_audits WHERE conversation_id = ? ORDER BY created_at, audit_id")
+        .bind(conversation_id)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(audit_from_row)
+        .collect()
+}
+
 pub async fn list_recoverable_audits(pool: &SqlitePool) -> DbResult<Vec<ConversationGoalAudit>> {
     sqlx::query("SELECT * FROM conversation_goal_audits WHERE status IN ('queued', 'running', 'ready_for_verdict', 'interrupted') ORDER BY updated_at, audit_id")
         .fetch_all(pool).await?.into_iter().map(audit_from_row).collect()

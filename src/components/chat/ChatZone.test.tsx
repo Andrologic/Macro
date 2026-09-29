@@ -444,6 +444,34 @@ const loadChatZoneModule = async () => {
         provider.authStatus === 'authenticated'),
   }));
 
+  mock.module('../../composition/goalProductComposition', () => ({
+    conversationGoalProductFlow: {
+      hydrate: async () => undefined,
+      loadCurrent: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      reserveUserTurn: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      releaseUserTurn: () => undefined,
+      activate: async (id: string, objective: string, providerId: string | null, modelId: string | null,
+        reasoningEffort: import('../../types').ReasoningEffort | null) =>
+        useConversationGoalStore.getState().activateGoal({ conversationId: id, objective, providerId, modelId, reasoningEffort }),
+      status: async (id: string, status: import('../../types').ConversationGoalOperationalStatus, reason: string | null = null,
+        expected?: { goalId: string; revision: number }) => {
+        const current = useConversationGoalStore.getState().goalsByConversationId[id];
+        if (!current || (expected && (current.goalId !== expected.goalId || current.revision !== expected.revision))) return null;
+        useConversationGoalStore.getState().setOperationalStatus(id, status, reason);
+        return useConversationGoalStore.getState().goalsByConversationId[id];
+      },
+      pause: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'paused'),
+      resume: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'active_ready'),
+      stop: async (id: string) => useConversationGoalStore.getState().clearGoal(id),
+      track: () => undefined,
+    },
+  }));
+  mock.module('../../composition/goalArtifactComposition', () => ({
+    listConversationGoalAuditArtifacts: async () => [],
+    readGoalAuditArtifact: async () => '',
+    saveGoalAuditArtifact: async () => null,
+  }));
+
   mock.module('../../stores/useShortcutsStore', () => ({
     useShortcutsStore,
   }));
@@ -667,7 +695,7 @@ const buildConversation = (): MockConversation => ({
   title: 'New Conversation',
   scope_mode: 'Chat',
   task_id: null,
-  project_id: null,
+  project_id: 'project-1',
   group_id: null,
 });
 
@@ -829,7 +857,7 @@ const resetState = () => {
     toolApprovalRecoveryError: null,
     dismissToolApprovalRecoveryError: mock(() => undefined),
     stopStreaming: mock(() => undefined),
-    sendMessage: mock(async () => ({ status: 'sent' })),
+    sendMessage: mock(async () => ({ status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' })),
     submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
@@ -2090,11 +2118,44 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Finish the authentication migration',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
     expect(
       requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
     ).toContain('Finish the authentication migration');
+  });
+
+  it('shows an explicit Goal error when send returns no assistant response', async () => {
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'sent' as const, turnId: 'turn-without-response', assistantMessageId: null })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']).toMatchObject({
+      status: 'error',
+      lastError: 'The executor turn did not return a saved assistant response.',
+    });
+  });
+
+  it('keeps a Goal paused when its original send finishes after Pause', async () => {
+    const sending = createDeferred<{ status: 'sent'; turnId: string; assistantMessageId: string }>();
+    chatState = { ...chatState, sendMessage: mock(() => sending.promise) };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    await act(async () => {
+      requireContainer().querySelector<HTMLButtonElement>('button[aria-label="Pause"]')?.click();
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
+    await act(async () => {
+      sending.resolve({ status: 'sent', turnId: 'turn-late', assistantMessageId: 'assistant-late' });
+      await sending.promise;
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
   });
 
   it('keeps the Goal control outside the composer and removes the command', async () => {
@@ -2466,7 +2527,7 @@ describe('ChatZone', () => {
       providerId: 'provider-1',
       modelId: 'model-1',
       reasoningEffort: 'high',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2518,7 +2579,7 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Ship the CSV export end to end',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 

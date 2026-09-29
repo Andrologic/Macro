@@ -110,6 +110,9 @@ import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation
 import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
+import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
+import { isTauriAvailable } from '../../services/ipc/runtime';
+import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
@@ -1324,20 +1327,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const {
     activeConversationGoal,
-    activateConversationGoal,
-    beginConversationGoalEdit,
-    settleConversationGoalEdit,
-    setConversationGoalStatus,
-    clearConversationGoal,
+    hydrateConversationGoal,
   } = useConversationGoalStore(useShallow((state) => ({
     activeConversationGoal: selectedConversationId
       ? state.goalsByConversationId[selectedConversationId] ?? null
       : null,
-    activateConversationGoal: state.activateGoal,
-    beginConversationGoalEdit: state.beginGoalEdit,
-    settleConversationGoalEdit: state.settleGoalEdit,
-    setConversationGoalStatus: state.setOperationalStatus,
-    clearConversationGoal: state.clearGoal,
+    hydrateConversationGoal: state.hydrateGoal,
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
@@ -2009,6 +2004,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
+  useEffect(() => {
+    if (!selectedConversationId || !isTauriAvailable()) return;
+    let active = true;
+    void conversationGoalProductFlow.hydrate(selectedConversationId).catch((error) => {
+      if (active) notify.error(t('goal.loadFailed', 'Could not load Goal'), { description: toServiceError(error).message });
+    });
+    return () => { active = false; };
+  }, [selectedConversationId, hydrateConversationGoal, t]);
+
   const selectedTaskTodoState = useMemo(
     () => (selectedTask ? getPlanNodeTodoState(selectedTask) : null),
     [selectedTask]
@@ -2613,7 +2617,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
-    let goalActivated = false;
+    let activatedGoal: Awaited<ReturnType<typeof conversationGoalProductFlow.activate>> | null = null;
 
     try {
       conversationId = await ensureConversation();
@@ -2632,14 +2636,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
 
       if (params?.goalObjective) {
-        activateConversationGoal({
-          conversationId,
-          objective: params.goalObjective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-        });
-        goalActivated = true;
+        if (!useChatStore.getState().conversations.find((item) => item.id === conversationId)?.project_id) {
+          throw new Error('Goal requires a conversation attached to a project.');
+        }
+        activatedGoal = await conversationGoalProductFlow.activate(conversationId, params.goalObjective,
+          selectedProviderId, selectedModelId, selectedReasoningEffort);
       }
 
       const content = buildImplementKickoffPrompt({
@@ -2671,11 +2672,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: selectedTask.id,
       });
-      if (goalActivated) {
-        setConversationGoalStatus(
-          conversationId,
-          result.status === 'sent' ? 'executor_running' : 'paused',
-        );
+      if (activatedGoal) {
+        if (result.status === 'sent' && result.assistantMessageId) {
+          const goal = await conversationGoalProductFlow.status(conversationId, 'executor_running', null, activatedGoal);
+          if (goal) conversationGoalProductFlow.track(conversationId, result.turnId, result.assistantMessageId, goal.goalId);
+        } else await conversationGoalProductFlow.status(conversationId, 'paused', null, activatedGoal);
       }
       if (result.status !== 'sent') {
         delete executionKickoffByConversationRef.current[conversationId];
@@ -2716,12 +2717,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch (error) {
       if (conversationId) {
         delete executionKickoffByConversationRef.current[conversationId];
-        if (goalActivated) {
-          setConversationGoalStatus(
-            conversationId,
-            'error',
-            toServiceError(error).message,
-          );
+        if (activatedGoal) {
+          await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, activatedGoal);
         }
       }
       throw error;
@@ -2730,7 +2727,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     ensureConversation,
-    activateConversationGoal,
     clearComposerDraftForContext,
     clearComposerContextRefs,
     composerDraftContextKey,
@@ -2748,7 +2744,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     sendMessage,
     saveComposerDraftForContext,
     setComposerImages,
-    setConversationGoalStatus,
     startTask,
     resetPromptHistoryNavigation,
     runtimeCapabilities.implementExecution,
@@ -3136,31 +3131,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const imagesForMessage = [...composerImages];
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
-    let tracksGoalTurn = false;
-    let goalEditTransactionId: string | null = null;
+    let trackedGoal: import('../../types').ConversationGoalRecord | null = null;
+    let pendingGoalEdit: import('../../types').ConversationGoalRecord | null = null;
+    let userTurnReserved = false;
 
     if (goalCommand?.kind === 'activate') {
-      if (goalComposerEditSession) {
-        const transaction = beginConversationGoalEdit({
-          conversationId,
-          objective: goalCommand.objective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-          expectedGoalId: goalComposerEditSession.goalId,
-        });
-        if (!transaction) return;
-        goalEditTransactionId = transaction.transactionId;
-      } else {
-        activateConversationGoal({
-          conversationId,
-          objective: goalCommand.objective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-        });
+      if (!useChatStore.getState().conversations.find((item) => item.id === conversationId)?.project_id) {
+        notify.warning(t('goal.projectRequired', 'Goal requires a project conversation'));
+        return;
       }
-      tracksGoalTurn = true;
+      try {
+        const previous = await conversationGoalProductFlow.loadCurrent(conversationId);
+        if (goalComposerEditSession && previous?.goalId !== goalComposerEditSession.goalId) return;
+        if (goalComposerEditSession && previous) pendingGoalEdit = previous;
+        else trackedGoal = await conversationGoalProductFlow.activate(conversationId, goalCommand.objective,
+          selectedProviderId, selectedModelId, selectedReasoningEffort, previous ?? undefined);
+      } catch (error) {
+        notify.error(t('goal.saveFailed', 'Could not save Goal'), { description: toServiceError(error).message });
+        return;
+      }
     } else {
       const currentGoal = useConversationGoalStore.getState()
         .goalsByConversationId[conversationId];
@@ -3170,7 +3159,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         currentGoal.status !== 'achieved' &&
         currentGoal.status !== 'error'
       ) {
-        tracksGoalTurn = true;
+        trackedGoal = currentGoal;
       }
     }
 
@@ -3231,6 +3220,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
 
     try {
+      if (trackedGoal || pendingGoalEdit) {
+        const current = await conversationGoalProductFlow.reserveUserTurn(conversationId);
+        userTurnReserved = true;
+        if (trackedGoal && (current?.goalId !== trackedGoal.goalId ||
+            ['paused', 'error', 'achieved'].includes(current.status))) trackedGoal = null;
+        else if (trackedGoal) trackedGoal = current;
+        if (pendingGoalEdit && current?.goalId !== pendingGoalEdit.goalId) pendingGoalEdit = null;
+        else if (pendingGoalEdit) pendingGoalEdit = current;
+      }
+      if (goalComposerEditSession && !pendingGoalEdit) return;
       const sendPromise = sendMessage({
         conversationId,
         content,
@@ -3255,12 +3254,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
       const result = await sendPromise;
       if (result.status === 'sent') {
-        if (goalEditTransactionId) {
-          if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
-            setConversationGoalStatus(conversationId, 'executor_running');
+        if (pendingGoalEdit && goalCommand?.kind === 'activate') {
+          try {
+            trackedGoal = await conversationGoalProductFlow.activate(conversationId, goalCommand.objective,
+              selectedProviderId, selectedModelId, selectedReasoningEffort, pendingGoalEdit);
+          } catch (error) {
+            notify.error(t('goal.saveFailed', 'Could not save Goal'), { description: toServiceError(error).message });
           }
-        } else if (tracksGoalTurn) {
-          setConversationGoalStatus(conversationId, 'executor_running');
+        }
+        if (trackedGoal) {
+          if (result.assistantMessageId) {
+            const goal = await conversationGoalProductFlow.status(conversationId, 'executor_running', null, trackedGoal);
+            if (goal) conversationGoalProductFlow.track(conversationId, result.turnId, result.assistantMessageId, goal.goalId);
+          } else {
+            await conversationGoalProductFlow.status(conversationId, 'error',
+              'The executor turn did not return a saved assistant response.', trackedGoal);
+          }
         }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(conversationId);
@@ -3282,39 +3291,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           finishPendingDraft(true);
         }
         resetPromptHistoryNavigation();
-      } else if (goalEditTransactionId) {
-        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
-      } else if (tracksGoalTurn) {
-        setConversationGoalStatus(conversationId, 'paused');
+      } else if (trackedGoal) {
+        await conversationGoalProductFlow.status(conversationId, 'paused', null, trackedGoal);
         if (clearsComposerImmediately) restoreSentDraft();
       } else if (clearsComposerImmediately) {
         restoreSentDraft();
       }
     } catch (error) {
-      if (goalEditTransactionId) {
-        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
-      } else if (tracksGoalTurn) {
-        setConversationGoalStatus(
-          conversationId,
-          'error',
-          toServiceError(error).message,
-        );
+      if (trackedGoal) {
+        await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, trackedGoal);
       }
       if (clearsComposerImmediately) restoreSentDraft();
       // Keep the draft intact. The visible error feedback comes from the chat store.
+    } finally {
+      if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
   };
 
   const handlePauseGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
-    setConversationGoalStatus(selectedConversationId, 'paused');
-  }, [isBusySending, selectedConversationId, setConversationGoalStatus, stopStreaming]);
+    void conversationGoalProductFlow.pause(selectedConversationId).catch((error) =>
+      notify.error(t('goal.pauseFailed', 'Could not pause Goal'), { description: toServiceError(error).message }));
+  }, [isBusySending, selectedConversationId, stopStreaming, t]);
 
   const handleResumeGoal = useCallback(() => {
     if (!selectedConversationId) return;
-    setConversationGoalStatus(selectedConversationId, 'active_ready');
-  }, [selectedConversationId, setConversationGoalStatus]);
+    void conversationGoalProductFlow.resume(selectedConversationId).catch((error) =>
+      notify.error(t('goal.resumeFailed', 'Could not resume Goal'), { description: toServiceError(error).message }));
+  }, [selectedConversationId, t]);
 
   const handleEditGoal = useCallback(() => {
     if (
@@ -3369,54 +3374,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const handleStopGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
-    clearConversationGoal(selectedConversationId);
-  }, [clearConversationGoal, isBusySending, selectedConversationId, stopStreaming]);
+    void conversationGoalProductFlow.stop(selectedConversationId).catch((error) =>
+      notify.error(t('goal.stopFailed', 'Could not stop Goal'), { description: toServiceError(error).message }));
+  }, [isBusySending, selectedConversationId, stopStreaming, t]);
 
   const handleStopStreaming = useCallback(() => {
     if (
       selectedConversationId &&
       activeConversationGoal?.status === 'executor_running'
     ) {
-      setConversationGoalStatus(selectedConversationId, 'paused');
+      void conversationGoalProductFlow.pause(selectedConversationId);
     }
     stopStreaming();
   }, [
     activeConversationGoal?.status,
     selectedConversationId,
-    setConversationGoalStatus,
     stopStreaming,
-  ]);
-
-  useEffect(() => {
-    if (
-      !selectedConversationId ||
-      activeConversationGoal?.status !== 'executor_running' ||
-      isTranscriptActivityActive
-    ) {
-      return;
-    }
-
-    if (selectedConversationRuntime.phase === 'error') {
-      setConversationGoalStatus(
-        selectedConversationId,
-        'error',
-        selectedConversationRuntime.lastError ?? t(
-          'goal.executionFailed',
-          'The executor turn failed.',
-        ),
-      );
-      return;
-    }
-
-    setConversationGoalStatus(selectedConversationId, 'audit_pending');
-  }, [
-    activeConversationGoal?.status,
-    isTranscriptActivityActive,
-    selectedConversationId,
-    selectedConversationRuntime.lastError,
-    selectedConversationRuntime.phase,
-    setConversationGoalStatus,
-    t,
   ]);
 
   const speechDictation = useSpeechDictation({
@@ -3874,6 +3847,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
           <div className="flex items-center gap-2">
             {mode === 'Implement' && <TaskArtifactsButton />}
+            {currentConversation?.project_id && (
+              <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
+                projectId={currentConversation.project_id}
+                conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
+                refreshKey={activeConversationGoal?.revision ?? 0} />
+            )}
             {shouldShowContextIndicator && selectedConversationId && (
               <Suspense fallback={null}>
                 <ContextWindowIndicator

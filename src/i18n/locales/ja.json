@@ -2528,6 +2528,13 @@
     "loggedOut": "Logged out"
   },
   "goal": {
+    "artifacts": "目標の確認結果",
+    "loadFailed": "目標を読み込めませんでした",
+    "projectRequired": "目標にはプロジェクトに紐づく会話が必要です",
+    "saveFailed": "目標を保存できませんでした",
+    "pauseFailed": "目標を一時停止できませんでした",
+    "resumeFailed": "目標を再開できませんでした",
+    "stopFailed": "目標を終了できませんでした",
     "bannerLabel": "会話の目標",
     "shortLabel": "Goal",
     "edit": "目標を編集",

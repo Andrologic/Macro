@@ -2602,6 +2602,13 @@
     "loggedOut": "Logged out"
   },
   "goal": {
+    "artifacts": "Goal reviews",
+    "loadFailed": "Could not load Goal",
+    "projectRequired": "Goal requires a project conversation",
+    "saveFailed": "Could not save Goal",
+    "pauseFailed": "Could not pause Goal",
+    "resumeFailed": "Could not resume Goal",
+    "stopFailed": "Could not stop Goal",
     "bannerLabel": "Conversation goal",
     "shortLabel": "Goal",
     "edit": "Edit goal",

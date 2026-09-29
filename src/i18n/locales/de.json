@@ -2529,6 +2529,13 @@
     "loggedOut": "Logged out"
   },
   "goal": {
+    "artifacts": "Zielüberprüfungen",
+    "loadFailed": "Ziel konnte nicht geladen werden",
+    "projectRequired": "Das Ziel benötigt eine projektgebundene Konversation",
+    "saveFailed": "Ziel konnte nicht gespeichert werden",
+    "pauseFailed": "Ziel konnte nicht pausiert werden",
+    "resumeFailed": "Ziel konnte nicht fortgesetzt werden",
+    "stopFailed": "Ziel konnte nicht beendet werden",
     "bannerLabel": "Konversationsziel",
     "shortLabel": "Goal",
     "edit": "Ziel bearbeiten",

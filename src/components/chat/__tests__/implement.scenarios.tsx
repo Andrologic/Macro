@@ -672,7 +672,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
       providerId: 'provider-1',
       modelId: 'model-1',
       reasoningEffort: 'high',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 

@@ -31,6 +31,7 @@ interface PendingConversationGoalEdit {
 
 interface ConversationGoalState {
   goalsByConversationId: Record<string, ConversationGoalRecord>;
+  hydrateGoal: (conversationId: string, goal: ConversationGoalRecord | null) => void;
   activateGoal: (input: ActivateConversationGoalInput) => ConversationGoalRecord;
   beginGoalEdit: (
     input: BeginConversationGoalEditInput,
@@ -125,6 +126,13 @@ const applyVerdictToGoal = (
 
 export const useConversationGoalStore = create<ConversationGoalState>((set) => ({
   goalsByConversationId: {},
+
+  hydrateGoal: (conversationId, goal) => set((state) => {
+    const goalsByConversationId = { ...state.goalsByConversationId };
+    if (goal) goalsByConversationId[conversationId] = goal;
+    else delete goalsByConversationId[conversationId];
+    return { goalsByConversationId };
+  }),
 
   activateGoal: (input) => {
     const goal = createGoal(input);

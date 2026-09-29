@@ -2556,6 +2556,13 @@
     "loggedOut": "Déconnecté"
   },
   "goal": {
+    "artifacts": "Vérifications de l’objectif",
+    "loadFailed": "Impossible de charger l’objectif",
+    "projectRequired": "L’objectif nécessite une conversation liée à un projet",
+    "saveFailed": "Impossible d’enregistrer l’objectif",
+    "pauseFailed": "Impossible de suspendre l’objectif",
+    "resumeFailed": "Impossible de reprendre l’objectif",
+    "stopFailed": "Impossible d’arrêter l’objectif",
     "bannerLabel": "Objectif de la conversation",
     "shortLabel": "Objectif",
     "edit": "Modifier l’objectif",

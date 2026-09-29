@@ -25,6 +25,9 @@ export const deactivateConversationGoal = (input: DeactivateConversationGoalInpu
 export const getConversationGoalAudit = (auditId: string): Promise<ConversationGoalAudit | null> =>
   invoke("db_get_conversation_goal_audit", { auditId });
 
+export const listConversationGoalAudits = (conversationId: string): Promise<ConversationGoalAudit[]> =>
+  invoke("db_list_conversation_goal_audits", { conversationId });
+
 export const listRecoverableConversationGoalAudits = (): Promise<ConversationGoalAudit[]> =>
   invoke("db_list_recoverable_conversation_goal_audits");
 

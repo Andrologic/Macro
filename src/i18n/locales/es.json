@@ -2533,6 +2533,13 @@
     "loggedOut": "Logged out"
   },
   "goal": {
+    "artifacts": "Revisiones del objetivo",
+    "loadFailed": "No se pudo cargar el objetivo",
+    "projectRequired": "El objetivo requiere una conversación vinculada a un proyecto",
+    "saveFailed": "No se pudo guardar el objetivo",
+    "pauseFailed": "No se pudo pausar el objetivo",
+    "resumeFailed": "No se pudo reanudar el objetivo",
+    "stopFailed": "No se pudo detener el objetivo",
     "bannerLabel": "Objetivo de la conversación",
     "shortLabel": "Goal",
     "edit": "Editar objetivo",
