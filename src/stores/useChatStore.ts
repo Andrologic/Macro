@@ -1027,6 +1027,8 @@ interface ChatStore {
   editQueuedSubmission: (id: string, content: string) => Promise<void>;
   removeQueuedSubmission: (id: string) => Promise<void>;
   queuedSubmissionPreviews: QueuedSubmissionPreview[];
+  pendingQueuedSubmissions: Array<{ id: string; conversationId: string }>;
+  attemptedQueuedSubmissions: Array<{ id: string; conversationId: string }>;
   queuedSubmissionRecoveryByConversationId: Record<string, { count: number; error?: string }>;
   clearConversationRuntimeError: (conversationId: string) => void;
   retryAssistantPersistence: (messageId: string) => Promise<void>;
@@ -1382,6 +1384,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
       recovery: value => set({ queuedSubmissionRecoveryByConversationId: value }),
       previews: value => set({ queuedSubmissionPreviews: value }),
+      pending: value => set({ pendingQueuedSubmissions: value }),
+      attempted: value => set({ attemptedQueuedSubmissions: value }),
     });
     return queueRuntime;
   });
@@ -13657,6 +13661,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     queuedSubmissionRecoveryByConversationId: {},
     queuedSubmissionPreviews: [],
+    pendingQueuedSubmissions: [],
+    attemptedQueuedSubmissions: [],
 
     retryQueuedSubmissions: async (conversationId) => {
       const queue = await getQueueRuntime();

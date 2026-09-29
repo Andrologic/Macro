@@ -2530,6 +2530,12 @@
   },
   "goal": {
     "artifacts": "Zielüberprüfungen",
+    "artifactSaveFailed": "Das Artefakt der Zielüberprüfung konnte nicht gespeichert werden",
+    "reason": {
+      "reviewInterrupted": "Die vorherige Überprüfung wurde unterbrochen. Setzen Sie fort, um einen neuen Agentendurchlauf zu starten.",
+      "executorInterrupted": "Der vorherige Agentendurchlauf wurde unterbrochen. Setzen Sie fort, um weiterzuarbeiten.",
+      "noProgress": "Zwei Überprüfungen fanden dieselbe offene Arbeit ohne neue Belege. Ändern Sie den Ansatz vor dem Fortsetzen."
+    },
     "loadFailed": "Ziel konnte nicht geladen werden",
     "projectRequired": "Das Ziel benötigt eine projektgebundene Konversation",
     "saveFailed": "Ziel konnte nicht gespeichert werden",

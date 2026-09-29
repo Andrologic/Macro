@@ -2007,6 +2007,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   useEffect(() => {
     if (!selectedConversationId || !isTauriAvailable()) return;
     let active = true;
+    conversationGoalProductFlow.reconcileQueuedTurns(selectedConversationId);
     void conversationGoalProductFlow.hydrate(selectedConversationId).catch((error) => {
       if (active) notify.error(t('goal.loadFailed', 'Could not load Goal'), { description: toServiceError(error).message });
     });
@@ -3029,11 +3030,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           `conversation:${submittedConversationId}`,
         ]),
       ];
+      const queueGoal = useConversationGoalStore.getState().goalsByConversationId[submittedConversationId];
+      const queueForGoal = (activeBehaviorOverride ?? activeTurnSendBehavior) === 'queue' &&
+        queueGoal && !['paused', 'error', 'achieved'].includes(queueGoal.status);
+      let goalTurnReserved = false;
       try {
+        if (queueForGoal) {
+          await conversationGoalProductFlow.reserveUserTurn(submittedConversationId);
+          goalTurnReserved = true;
+        }
         const internalAgentProfile = getConflictAssistantInternalAgentProfile(
           submittedConversationId,
         );
-        await submitDuringActiveTurn(
+        const submission = await submitDuringActiveTurn(
           {
             conversationId: submittedConversationId,
             content: text,
@@ -3044,6 +3053,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
+        if (submission === 'queued' && queueForGoal) {
+          conversationGoalProductFlow.reconcileQueuedTurns(submittedConversationId);
+        }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
@@ -3076,6 +3088,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           description: toServiceError(error).message,
         });
       } finally {
+        if (goalTurnReserved) conversationGoalProductFlow.releaseUserTurn(submittedConversationId);
         activeTurnSubmissionInFlightRef.current = false;
       }
       return;

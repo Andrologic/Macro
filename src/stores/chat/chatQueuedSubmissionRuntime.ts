@@ -15,6 +15,8 @@ interface QueuePorts {
   saveImages(messageId: string, images: SendImage[]): boolean;
   recovery(value: QueuedSubmissionRecoveries): void;
   previews(value: QueuedSubmissionPreview[]): void;
+  pending(value: Array<{ id: string; conversationId: string }>): void;
+  attempted(value: Array<{ id: string; conversationId: string }>): void;
 }
 
 /** Owns deferred submissions only; the chat runtime still owns active turns. */
@@ -22,13 +24,17 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   let entries = loadQueuedSubmissions();
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
+  const attempted = new Map<string, string>();
   let recoveries: QueuedSubmissionRecoveries = {};
   const publishRecovery = () => {
     ports.recovery(recoveries);
+    ports.pending(entries.map(entry => ({ id: entry.id, conversationId: entry.input.conversationId })));
+    ports.attempted(Array.from(attempted, ([id, conversationId]) => ({ id, conversationId })));
     ports.previews(entries.filter(entry => paused.has(entry.input.conversationId)).map(entry => ({
       id: entry.id, conversationId: entry.input.conversationId, content: entry.input.content,
     })));
   };
+  publishRecovery();
   const mutating = new Set<string>();
   const pendingEntry = async (id: string): Promise<QueuedSubmission> => {
     const entry = entries.find(candidate => candidate.id === id);
@@ -92,6 +98,8 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
         ports.publish(saved);
         acknowledge(next, saved);
       } else {
+        attempted.set(next.id, id);
+        publishRecovery();
         const result = await ports.send(next);
         if (result.status === 'cancelled') throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
       }
@@ -99,6 +107,8 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     } catch (error) {
       pause(id, toServiceError(error).message);
     } finally {
+      attempted.delete(next.id);
+      publishRecovery();
       draining.delete(id);
       if (continueQueue) queueMicrotask(() => void drain(id));
     }

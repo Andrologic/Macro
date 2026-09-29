@@ -2557,6 +2557,12 @@
   },
   "goal": {
     "artifacts": "Vérifications de l’objectif",
+    "artifactSaveFailed": "Impossible d’enregistrer l’artefact de vérification de l’objectif",
+    "reason": {
+      "reviewInterrupted": "La vérification précédente a été interrompue. Reprenez pour lancer un nouveau tour de l’agent.",
+      "executorInterrupted": "Le tour précédent de l’agent a été interrompu. Reprenez pour continuer.",
+      "noProgress": "Deux vérifications ont relevé le même travail restant sans nouvelle preuve. Changez d’approche avant de reprendre."
+    },
     "loadFailed": "Impossible de charger l’objectif",
     "projectRequired": "L’objectif nécessite une conversation liée à un projet",
     "saveFailed": "Impossible d’enregistrer l’objectif",

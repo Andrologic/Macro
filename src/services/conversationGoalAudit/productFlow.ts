@@ -11,6 +11,8 @@ export interface GoalProductFlowPorts {
   readRuntime(conversationId: string): { phase: string; turnId?: string | null };
   readMessages(conversationId: string): ChatMessage[];
   readQueuedCount(conversationId: string): number;
+  readQueuedTurnIds(conversationId: string): string[];
+  readQueuedAttemptedTurnIds(conversationId: string): string[];
   sendContinuation(conversationId: string, content: string): Promise<{ status: string; turnId: string; assistantMessageId: string | null }>;
   audit(goal: PersistedConversationGoalRecord, turnId: string, summary: string): GoalAuditHandle;
   saveArtifact(input: { auditId: string; runId: string; goal: PersistedConversationGoalRecord; turnId: string; messageId: string; result: GoalAuditResult }): Promise<void>;
@@ -32,6 +34,8 @@ export class ConversationGoalProductFlow {
   private readonly userAdmissions = new Map<string, number>();
   private readonly admissionWaiters = new Map<string, Array<() => void>>();
   private readonly continuationPending = new Set<string>();
+  private readonly queuedTurns = new Map<string, Set<string>>();
+  private readonly queuedAdmissions = new Set<string>();
   private readonly lastContinueEvidence = new Map<string, { goalId: string; fingerprint: string }>();
   private unsubscribe: (() => void) | null = null;
 
@@ -61,6 +65,12 @@ export class ConversationGoalProductFlow {
   async hydrate(conversationId: string): Promise<void> {
     const goal = await this.refresh(conversationId);
     if (!goal) return;
+    if (this.queuedTurns.get(conversationId)?.size &&
+        ['executor_running', 'audit_pending', 'auditing'].includes(goal.status) &&
+        !this.tracked.has(conversationId) && !this.audits.has(conversationId)) {
+      await this.status(conversationId, 'active_ready', null, goal);
+      return;
+    }
     if (['executor_running', 'audit_pending', 'auditing'].includes(goal.status) &&
         !this.tracked.has(conversationId) && !this.audits.has(conversationId) && !this.admissions.has(conversationId)) {
       const audits = await this.ports.listRecoverable();
@@ -120,8 +130,12 @@ export class ConversationGoalProductFlow {
     this.cancel(conversationId);
     this.lastContinueEvidence.delete(conversationId);
     const ready = goal.status === 'active_ready' ? goal : await this.status(conversationId, 'active_ready', null, goal);
-    if (ready) await this.startExecutorTurn(conversationId, ready,
-      `Continue the current goal: ${ready.objective}\nReview the current conversation and work before acting. Ask the user if their input is needed.`);
+    if (ready) {
+      this.reconcileQueuedTurns(conversationId);
+      if (this.queuedTurns.get(conversationId)?.size) return;
+      await this.startExecutorTurn(conversationId, ready,
+        `Continue the current goal: ${ready.objective}\nReview the current conversation and work before acting. Ask the user if their input is needed.`);
+    }
   }
 
   /** Give a user-initiated send priority over an automatic continuation. */
@@ -136,7 +150,14 @@ export class ConversationGoalProductFlow {
           this.admissionWaiters.set(conversationId, waiters);
         });
       }
-      return await this.ports.repository.loadCurrentGoal(conversationId);
+      const current = await this.ports.repository.loadCurrentGoal(conversationId);
+      if (current && ['audit_pending', 'auditing'].includes(current.status)) {
+        this.bump(conversationId);
+        this.audits.get(conversationId)?.cancel();
+        this.audits.delete(conversationId);
+        return this.status(conversationId, 'active_ready', null, current);
+      }
+      return current;
     } catch (error) {
       this.releaseUserTurn(conversationId);
       throw error;
@@ -159,7 +180,8 @@ export class ConversationGoalProductFlow {
       const current = await this.ports.repository.loadCurrentGoal(conversationId);
       if (!current || current.goalId !== expected.goalId || current.revision !== expected.revision ||
           !['active_ready', 'continuation_pending'].includes(current.status)) return;
-      if (this.userAdmissions.has(conversationId) || this.ports.readQueuedCount(conversationId) > 0 || this.ports.readRuntime(conversationId).phase !== 'idle') {
+      if (this.userAdmissions.has(conversationId) || this.queuedTurns.get(conversationId)?.size ||
+          this.ports.readQueuedCount(conversationId) > 0 || this.ports.readRuntime(conversationId).phase !== 'idle') {
         this.continuationPending.add(conversationId);
         this.unsubscribe ??= this.ports.subscribe(() => void this.check());
         return;
@@ -168,7 +190,8 @@ export class ConversationGoalProductFlow {
       const running = await this.status(conversationId, 'executor_running', null, current);
       if (!running || running.status !== 'executor_running') return;
       if ((this.generations.get(conversationId) ?? 0) !== generation + 1 ||
-          this.userAdmissions.has(conversationId) || this.ports.readQueuedCount(conversationId) > 0 ||
+          this.userAdmissions.has(conversationId) || this.queuedTurns.get(conversationId)?.size ||
+          this.ports.readQueuedCount(conversationId) > 0 ||
           this.ports.readRuntime(conversationId).phase !== 'idle') {
         await this.status(conversationId, 'active_ready', null, running);
         this.continuationPending.add(conversationId);
@@ -199,9 +222,24 @@ export class ConversationGoalProductFlow {
     void this.check();
   }
 
+  watchQueuedTurns(conversationId: string, turnIds: string[]): void {
+    if (!turnIds.length) return;
+    const pending = this.queuedTurns.get(conversationId) ?? new Set<string>();
+    turnIds.forEach((id) => pending.add(id));
+    this.queuedTurns.set(conversationId, pending);
+    this.bump(conversationId);
+    this.unsubscribe ??= this.ports.subscribe(() => void this.check());
+    void this.check();
+  }
+
+  reconcileQueuedTurns(conversationId: string): void {
+    this.watchQueuedTurns(conversationId, this.ports.readQueuedTurnIds(conversationId));
+  }
+
   cancel(conversationId: string): void {
     this.bump(conversationId);
     this.continuationPending.delete(conversationId);
+    this.queuedTurns.delete(conversationId);
     this.tracked.delete(conversationId);
     this.audits.get(conversationId)?.cancel();
     this.audits.delete(conversationId);
@@ -209,12 +247,74 @@ export class ConversationGoalProductFlow {
   }
 
   private releaseSubscriptionIfIdle(): void {
-    if (this.tracked.size === 0 && this.continuationPending.size === 0 && this.unsubscribe) { this.unsubscribe(); this.unsubscribe = null; }
+    if (this.tracked.size === 0 && this.continuationPending.size === 0 && this.queuedTurns.size === 0 && this.unsubscribe) { this.unsubscribe(); this.unsubscribe = null; }
+  }
+
+  private async admitQueuedTurn(conversationId: string, turnId: string): Promise<void> {
+    try {
+      let goal = await this.ports.repository.loadCurrentGoal(conversationId);
+      if (!goal || ['paused', 'error', 'achieved'].includes(goal.status)) {
+        this.queuedTurns.get(conversationId)?.delete(turnId);
+        return;
+      }
+      if (['audit_pending', 'auditing'].includes(goal.status)) {
+        this.bump(conversationId);
+        this.audits.get(conversationId)?.cancel();
+        this.audits.delete(conversationId);
+        goal = await this.status(conversationId, 'active_ready', null, goal);
+      } else if (goal.status === 'executor_running' && this.tracked.get(conversationId)?.turnId !== turnId) {
+        this.tracked.delete(conversationId);
+        this.bump(conversationId);
+        goal = await this.status(conversationId, 'active_ready', null, goal);
+      }
+      if (!goal) return;
+      if (goal.status !== 'executor_running') goal = await this.status(conversationId, 'executor_running', null, goal);
+      if (!goal) return;
+      const messages = this.ports.readMessages(conversationId);
+      const assistant = messages.find((item) => item.role === 'assistant' && item.turn_id === turnId);
+      if (assistant) {
+        this.queuedTurns.get(conversationId)?.delete(turnId);
+        if (this.queuedTurns.get(conversationId)?.size === 0) this.queuedTurns.delete(conversationId);
+        this.track(conversationId, turnId, assistant.id, goal.goalId);
+      } else if (this.ports.readRuntime(conversationId).phase === 'idle' &&
+          !this.ports.readQueuedTurnIds(conversationId).includes(turnId) &&
+          !this.ports.readQueuedAttemptedTurnIds(conversationId).includes(turnId) &&
+          messages.some((item) => item.role === 'user' && item.turn_id === turnId)) {
+        this.queuedTurns.get(conversationId)?.delete(turnId);
+        if (this.queuedTurns.get(conversationId)?.size === 0) this.queuedTurns.delete(conversationId);
+        await this.status(conversationId, 'error', 'The queued executor turn did not return a saved assistant response.', goal);
+      }
+    } finally {
+      this.queuedAdmissions.delete(conversationId);
+      this.releaseSubscriptionIfIdle();
+    }
   }
 
   private async check(): Promise<void> {
+    for (const [conversationId, turnIds] of this.queuedTurns) {
+      const queued = new Set(this.ports.readQueuedTurnIds(conversationId));
+      const attempted = new Set(this.ports.readQueuedAttemptedTurnIds(conversationId));
+      const messages = this.ports.readMessages(conversationId);
+      const runtime = this.ports.readRuntime(conversationId);
+      for (const turnId of turnIds) {
+        const hasMessage = messages.some((item) => item.turn_id === turnId);
+        if (!queued.has(turnId) && !attempted.has(turnId) && !hasMessage) {
+          turnIds.delete(turnId);
+          continue;
+        }
+        if (!messages.some((item) => item.role === 'assistant' && item.turn_id === turnId) &&
+            !(messages.some((item) => item.role === 'user' && item.turn_id === turnId) &&
+              !queued.has(turnId) && !attempted.has(turnId) && runtime.phase === 'idle')) continue;
+        if (this.queuedAdmissions.has(conversationId)) break;
+        this.queuedAdmissions.add(conversationId);
+        void this.admitQueuedTurn(conversationId, turnId);
+        break;
+      }
+      if (turnIds.size === 0) this.queuedTurns.delete(conversationId);
+    }
     for (const conversationId of this.continuationPending) {
-      if (this.userAdmissions.has(conversationId) || this.ports.readQueuedCount(conversationId) || this.ports.readRuntime(conversationId).phase !== 'idle') continue;
+      if (this.userAdmissions.has(conversationId) || this.queuedTurns.get(conversationId)?.size ||
+          this.ports.readQueuedCount(conversationId) || this.ports.readRuntime(conversationId).phase !== 'idle') continue;
       const current = await this.ports.repository.loadCurrentGoal(conversationId);
       if (!current || !['active_ready', 'continuation_pending'].includes(current.status)) { this.continuationPending.delete(conversationId); continue; }
       const feedback = current.latestVerdict?.feedback || current.latestVerdict?.summary || current.objective;

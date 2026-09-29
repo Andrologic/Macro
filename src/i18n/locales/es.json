@@ -2534,6 +2534,12 @@
   },
   "goal": {
     "artifacts": "Revisiones del objetivo",
+    "artifactSaveFailed": "No se pudo guardar el artefacto de revisión del objetivo",
+    "reason": {
+      "reviewInterrupted": "La revisión anterior se interrumpió. Reanuda para iniciar otro turno del agente.",
+      "executorInterrupted": "El turno anterior del agente se interrumpió. Reanuda para continuar.",
+      "noProgress": "Dos revisiones detectaron el mismo trabajo pendiente sin pruebas nuevas. Cambia el enfoque antes de reanudar."
+    },
     "loadFailed": "No se pudo cargar el objetivo",
     "projectRequired": "El objetivo requiere una conversación vinculada a un proyecto",
     "saveFailed": "No se pudo guardar el objetivo",

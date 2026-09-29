@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from '../types';
+import i18n from '../i18n';
 import { useChatStore } from '../stores/useChatStore';
 import { useConversationGoalStore } from '../stores/useConversationGoalStore';
 import { isProviderTransportUnavailable, useProviderStore } from '../stores/useProviderStore';
@@ -19,12 +20,14 @@ const nativePorts = (): GoalProductFlowPorts => ({
   repository: new ConversationGoalProductRepository(),
   readRuntime: (id) => useChatStore.getState().getConversationRuntime(id),
   readMessages: (id) => useChatStore.getState().getConversationMessages(id),
-  readQueuedCount: (id) => useChatStore.getState().queuedSubmissionPreviews.filter((entry) => entry.conversationId === id).length,
+  readQueuedCount: (id) => useChatStore.getState().pendingQueuedSubmissions.filter((entry) => entry.conversationId === id).length,
+  readQueuedTurnIds: (id) => useChatStore.getState().pendingQueuedSubmissions.filter((entry) => entry.conversationId === id).map((entry) => entry.id),
+  readQueuedAttemptedTurnIds: (id) => useChatStore.getState().attemptedQueuedSubmissions.filter((entry) => entry.conversationId === id).map((entry) => entry.id),
   sendContinuation: (id, content) => useChatStore.getState().sendMessage({ conversationId: id, content }),
   listRecoverable: listRecoverableConversationGoalAudits,
   subscribe: (listener) => useChatStore.subscribe(listener),
   publish: (id, goal) => useConversationGoalStore.getState().hydrateGoal(id, goal),
-  onArtifactFailure: (message) => notify.error('Goal review artifact was not saved', { description: message }),
+  onArtifactFailure: (message) => notify.error(i18n.t('goal.artifactSaveFailed', 'Could not save the Goal review artifact'), { description: message }),
   audit: (goal, turnId, summary) => {
     const auditId = crypto.randomUUID();
     const provider = useProviderStore.getState();

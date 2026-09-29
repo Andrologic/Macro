@@ -91,4 +91,14 @@ describe('Goal artifacts in the shared metadata transaction system', () => {
     expect(item.review).toEqual({ status: 'applied', verdict: 'achieved' });
     expect(await readGoalAuditArtifact(item, environment)).toContain('Objective verified');
   });
+
+  it('recreates a missing result file when its index survived', async () => {
+    const applied = audit('audit-one', 'goal-one');
+    audits = [applied];
+    const [before] = await listConversationGoalAuditArtifacts('project', 'conversation', null, environment);
+    files.delete(`${workspacePath}::${before.path}`);
+    const [recovered] = await listConversationGoalAuditArtifacts('project', 'conversation', null, environment);
+    expect(recovered.id).toBe(before.id);
+    expect(await readGoalAuditArtifact(recovered, environment)).toContain('Objective verified');
+  });
 });

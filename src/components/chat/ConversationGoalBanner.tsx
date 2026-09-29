@@ -84,8 +84,14 @@ export const ConversationGoalBanner: React.FC<ConversationGoalBannerProps> = ({
   const canResume = goal.status === 'paused' || goal.status === 'error';
   const canPause = goal.status !== 'paused' && goal.status !== 'achieved' && goal.status !== 'error';
   const hasAuditDetails = Boolean(goal.latestVerdict);
+  const persistedStatusText: Record<string, string> = {
+    'The previous goal review was interrupted. Resume to start a new agent turn.': t('goal.reason.reviewInterrupted', 'The previous review was interrupted. Resume to start another agent turn.'),
+    'The previous agent turn was interrupted. Resume to continue.': t('goal.reason.executorInterrupted', 'The previous agent turn was interrupted. Resume to continue.'),
+    'Two reviews found the same remaining work without new evidence. Resume after changing the approach.': t('goal.reason.noProgress', 'Two reviews found the same remaining work without new evidence. Resume after changing the approach.'),
+  };
+  const lastError = goal.lastError ? persistedStatusText[goal.lastError] ?? goal.lastError : null;
   const statusDetail = goal.status === 'error'
-    ? goal.lastError || presentation.description
+    ? lastError || presentation.description
     : goal.status === 'awaiting_user'
       ? goal.latestVerdict?.questionForUser || presentation.description
       : goal.status === 'paused'

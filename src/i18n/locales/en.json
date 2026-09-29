@@ -2603,6 +2603,12 @@
   },
   "goal": {
     "artifacts": "Goal reviews",
+    "artifactSaveFailed": "Could not save the Goal review artifact",
+    "reason": {
+      "reviewInterrupted": "The previous review was interrupted. Resume to start another agent turn.",
+      "executorInterrupted": "The previous agent turn was interrupted. Resume to continue.",
+      "noProgress": "Two reviews found the same remaining work without new evidence. Resume after changing the approach."
+    },
     "loadFailed": "Could not load Goal",
     "projectRequired": "Goal requires a project conversation",
     "saveFailed": "Could not save Goal",

@@ -37,6 +37,8 @@ const harness = (result: GoalAuditResult | Promise<GoalAuditResult> | ((turnId: 
   let runtime: { phase: string; turnId?: string | null } = { phase: 'idle' };
   let messages = [assistant];
   let queued = 0;
+  let queuedTurnIds: string[] = [];
+  let attemptedTurnIds: string[] = [];
   let listener: (() => void) | null = null;
   const saved: Array<{ auditId: string; turnId: string; result: GoalAuditResult }> = [];
   const artifactFailures: string[] = [];
@@ -64,6 +66,8 @@ const harness = (result: GoalAuditResult | Promise<GoalAuditResult> | ((turnId: 
     readRuntime: () => runtime,
     readMessages: () => messages,
     readQueuedCount: () => queued,
+    readQueuedTurnIds: () => queuedTurnIds,
+    readQueuedAttemptedTurnIds: () => attemptedTurnIds,
     sendContinuation: async (_id, content) => {
       sent.push(content);
       runtime = { phase: 'streaming', turnId: 'next-turn' };
@@ -95,6 +99,8 @@ const harness = (result: GoalAuditResult | Promise<GoalAuditResult> | ((turnId: 
     set runtime(value: typeof runtime) { runtime = value; listener?.(); },
     set messages(value: ChatMessage[]) { messages = value; listener?.(); },
     set queued(value: number) { queued = value; },
+    set queuedTurnIds(value: string[]) { queuedTurnIds = value; listener?.(); },
+    set attemptedTurnIds(value: string[]) { attemptedTurnIds = value; listener?.(); },
   };
 };
 
@@ -207,6 +213,84 @@ describe('Goal product flow', () => {
     await settle();
     expect(h.sent).toHaveLength(1);
     h.flow.cancel('conversation');
+  });
+
+  it('invalidates an audit before admitting a new user turn', async () => {
+    let resolve!: (value: GoalAuditResult) => void;
+    const pending = new Promise<GoalAuditResult>((done) => { resolve = done; });
+    const h = harness(pending);
+    h.flow.track('conversation', 'turn', 'assistant', 'goal');
+    await settle();
+    const admitted = await h.flow.reserveUserTurn('conversation');
+    expect(admitted?.status).toBe('active_ready');
+    const running = await h.flow.status('conversation', 'executor_running', null, admitted!);
+    expect(running?.status).toBe('executor_running');
+    h.runtime = { phase: 'streaming', turnId: 'user-turn' };
+    h.flow.track('conversation', 'user-turn', 'user-assistant', 'goal');
+    h.flow.releaseUserTurn('conversation');
+    resolve({ status: 'stale', runId: 'run', reason: 'revision_changed', verdict: verdict('continue') });
+    await settle();
+    expect(h.goal?.status).toBe('executor_running');
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('tracks a queued user turn when its assistant response appears', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    h.queuedTurnIds = ['queued-turn'];
+    h.queued = 1;
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-user', role: 'user', turn_id: 'queued-turn', content: 'Next request' },
+      { ...assistant, id: 'queued-assistant', turn_id: 'queued-turn', content: 'Done' }];
+    h.queuedTurnIds = [];
+    h.queued = 0;
+    h.runtime = { phase: 'idle' };
+    await settle();
+    expect(h.audited).toContain('queued-turn');
+    expect(h.goal?.status).toBe('achieved');
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('waits for the queued assistant placeholder and does not churn native revisions', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    h.queuedTurnIds = ['queued-turn'];
+    h.queued = 1;
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.runtime = { phase: 'streaming', turnId: 'queued-turn' };
+    h.messages = [{ ...assistant, id: 'queued-user', role: 'user', turn_id: 'queued-turn' }];
+    await settle();
+    expect(h.goal?.status).toBe('continuation_pending');
+    const revision = h.goal?.revision;
+    h.notify();
+    await settle();
+    expect(h.goal?.revision).toBe(revision);
+    h.messages = [{ ...assistant, id: 'queued-user', role: 'user', turn_id: 'queued-turn' },
+      { ...assistant, id: 'queued-assistant', turn_id: 'queued-turn', content: '' }];
+    await settle();
+    expect(h.goal?.status).toBe('executor_running');
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn', content: 'Completed' }];
+    h.queuedTurnIds = [];
+    h.queued = 0;
+    h.runtime = { phase: 'idle' };
+    await settle();
+    expect(h.goal?.status).toBe('achieved');
+  });
+
+  it('resumes into an existing user queue without sending an extra turn', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'paused' };
+    h.queuedTurnIds = ['queued-turn'];
+    h.queued = 1;
+    await h.flow.resume('conversation');
+    expect(h.goal?.status).toBe('active_ready');
+    expect(h.sent).toHaveLength(0);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn', content: 'Completed' }];
+    h.queuedTurnIds = [];
+    h.queued = 0;
+    h.runtime = { phase: 'idle' };
+    await settle();
+    expect(h.goal?.status).toBe('achieved');
   });
 
   it('Stop prevents a late audit from restarting the goal', async () => {

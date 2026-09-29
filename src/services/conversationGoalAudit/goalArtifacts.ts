@@ -111,8 +111,11 @@ export const listConversationGoalAuditArtifacts = async (
     if (audit.status !== 'applied' || !audit.verdict) continue;
     const existing = byGoal.get(audit.goalId)?.find((item) => item.id === audit.auditId);
     if (existing?.review.status === 'applied') {
-      await readGoalAuditArtifact(existing, environment);
-      continue;
+      const file = await readArtifactFileSnapshot({ ...targetFor(projectId, environment), path: existing.path });
+      if (file.content !== null) {
+        await readGoalAuditArtifact(existing, environment);
+        continue;
+      }
     }
     const message = environment.readMessages(conversationId)
       .find((item) => item.role === 'assistant' && item.turn_id === audit.executorTurnId);
@@ -169,7 +172,13 @@ export const saveGoalAuditArtifact = async (input: {
     const existing = index.artifacts.find((item) => item.id === id);
     if (existing) {
       if (existing.runId !== input.runId || existing.executorTurnId !== input.executorTurnId) throw new Error('Goal artifact identity conflict.');
-      if (existing.review.status === 'applied' || input.result.status !== 'applied') return existing;
+      if (existing.review.status === 'applied' || input.result.status !== 'applied') {
+        const file = await readArtifactFileSnapshot({ ...target, path });
+        if (file.content !== null) {
+          await readGoalAuditArtifactUnlocked(existing, environment);
+          return existing;
+        }
+      }
     }
     const artifact: GoalAuditArtifact = {
       id, conversationId: input.conversationId, goalId: input.goalId,
@@ -183,7 +192,7 @@ export const saveGoalAuditArtifact = async (input: {
     };
     const content = `${JSON.stringify({ artifact, result: input.result }, null, 2)}\n`;
     const beforeContent = await readArtifactFileSnapshot({ ...target, path });
-    if (existing) await readGoalAuditArtifactUnlocked(existing, environment);
+    if (existing && beforeContent.content !== null) await readGoalAuditArtifactUnlocked(existing, environment);
     else if (beforeContent.content !== null) throw new Error('Goal artifact file already exists without an index entry.');
     const nextIndex: GoalArtifactIndex = { ...index, artifacts: existing
       ? index.artifacts.map((item) => item.id === id ? artifact : item) : [...index.artifacts, artifact] };

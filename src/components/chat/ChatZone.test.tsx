@@ -450,6 +450,7 @@ const loadChatZoneModule = async () => {
       loadCurrent: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
       reserveUserTurn: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
       releaseUserTurn: () => undefined,
+      reconcileQueuedTurns: () => undefined,
       activate: async (id: string, objective: string, providerId: string | null, modelId: string | null,
         reasoningEffort: import('../../types').ReasoningEffort | null) =>
         useConversationGoalStore.getState().activateGoal({ conversationId: id, objective, providerId, modelId, reasoningEffort }),
