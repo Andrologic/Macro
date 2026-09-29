@@ -766,4 +766,58 @@ describe('Goal product flow', () => {
     h.flow.cancel('conversation');
   });
 
+
+  it('keeps a queued response when Pause interrupts review preparation before dispatch', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    const load = h.repository.loadCurrentGoal;
+    let runningReads = 0;
+    let releaseRead!: () => void;
+    const blocked = new Promise<void>((resolve) => { releaseRead = resolve; });
+    h.repository.loadCurrentGoal = async (...args) => {
+      const current = await load(...args);
+      if (current?.status === 'executor_running' && ++runningReads === 2) await blocked;
+      return current;
+    };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    h.queuedTurnIds = [];
+    await settle();
+    expect(runningReads).toBe(2);
+    expect(h.audited).toEqual([]);
+    await h.flow.pause('conversation');
+    await h.flow.resume('conversation');
+    await settle();
+    releaseRead();
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    expect(h.sent).toEqual([]);
+    expect(h.goal?.status).toBe('achieved');
+  });
+
+  it('retries Resume after an older automatic admission settles without overriding user priority', async () => {
+    let resolveSend!: (value: { status: string; turnId: string; assistantMessageId: string | null }) => void;
+    const sending = new Promise<{ status: string; turnId: string; assistantMessageId: string | null }>((resolve) => { resolveSend = resolve; });
+    let sendCount = 0;
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') }, () =>
+      ++sendCount === 1 ? sending : Promise.resolve({ status: 'sent', turnId: 'next-turn', assistantMessageId: 'next-assistant' }));
+    h.flow.track('conversation', 'turn', 'assistant', 'goal');
+    await settle();
+    expect(h.sent).toHaveLength(1);
+    await h.flow.pause('conversation');
+    await h.flow.resume('conversation');
+    const reservation = h.flow.reserveUserTurn('conversation');
+    h.runtime = { phase: 'idle' };
+    resolveSend({ status: 'sent', turnId: 'old-turn', assistantMessageId: 'old-assistant' });
+    await reservation;
+    await settle();
+    expect(h.sent).toHaveLength(1);
+    h.flow.releaseUserTurn('conversation');
+    await settle();
+    expect(h.sent).toHaveLength(2);
+    expect(h.goal?.status).toBe('executor_running');
+    h.flow.cancel('conversation');
+  });
+
 });

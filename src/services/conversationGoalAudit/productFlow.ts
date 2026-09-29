@@ -23,7 +23,7 @@ export interface GoalProductFlowPorts {
   onFlowFailure(conversationId: string, message: string, retry: () => Promise<void>): void;
 }
 
-interface TrackedTurn { turnId: string; assistantMessageId: string; goalId: string; started: boolean }
+interface TrackedTurn { turnId: string; assistantMessageId: string; goalId: string; started: boolean; auditDispatched: boolean }
 
 /** Native revisions own the cycle; this service only schedules work after a persisted assistant turn. */
 export class ConversationGoalProductFlow {
@@ -155,7 +155,7 @@ export class ConversationGoalProductFlow {
     const queued = [...this.queuedTurns.get(conversationId) ?? []];
     const admitted = this.queuedTracked.get(conversationId);
     const tracked = this.tracked.get(conversationId);
-    if (admitted && tracked?.turnId === admitted && !tracked.started) queued.push(admitted);
+    if (admitted && tracked?.turnId === admitted && !tracked.auditDispatched) queued.push(admitted);
     this.cancel(conversationId);
     this.suspended.add(conversationId);
     if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
@@ -237,7 +237,11 @@ export class ConversationGoalProductFlow {
 
   /** Serialize admission so competing callers cannot start two automatic turns. */
   private async startExecutorTurn(conversationId: string, expected: PersistedConversationGoalRecord, content: string): Promise<void> {
-    if (this.admissions.has(conversationId)) return;
+    if (this.admissions.has(conversationId)) {
+      this.continuationPending.add(conversationId);
+      this.unsubscribe ??= this.ports.subscribe(() => void this.check());
+      return;
+    }
     this.admissions.add(conversationId);
     const generation = this.generations.get(conversationId) ?? 0;
     try {
@@ -276,12 +280,13 @@ export class ConversationGoalProductFlow {
       this.admissions.delete(conversationId);
       this.admissionWaiters.get(conversationId)?.forEach((resolve) => resolve());
       this.admissionWaiters.delete(conversationId);
+      if (this.continuationPending.has(conversationId)) void this.check();
     }
   }
 
   track(conversationId: string, turnId: string, assistantMessageId: string, goalId: string): void {
     if (!turnId || !assistantMessageId) return;
-    this.tracked.set(conversationId, { turnId, assistantMessageId, goalId, started: false });
+    this.tracked.set(conversationId, { turnId, assistantMessageId, goalId, started: false, auditDispatched: false });
     this.unsubscribe ??= this.ports.subscribe(() => void this.check());
     void this.check();
   }
@@ -411,7 +416,7 @@ export class ConversationGoalProductFlow {
       if (turnIds.size === 0) this.queuedTurns.delete(conversationId);
     }
     for (const conversationId of this.continuationPending) {
-      if (this.userAdmissions.has(conversationId) || this.queuedTurns.get(conversationId)?.size ||
+      if (this.admissions.has(conversationId) || this.userAdmissions.has(conversationId) || this.queuedTurns.get(conversationId)?.size ||
           this.ports.readQueuedCount(conversationId) || this.ports.readRuntime(conversationId).phase !== 'idle') continue;
       const current = await this.ports.repository.loadCurrentGoal(conversationId);
       if (!current || !['active_ready', 'continuation_pending'].includes(current.status)) { this.continuationPending.delete(conversationId); continue; }
@@ -454,6 +459,7 @@ export class ConversationGoalProductFlow {
       if (!pending || pending.goalId !== turn.goalId || pending.status !== 'audit_pending' ||
           this.tracked.get(conversationId) !== turn) return;
       ownGeneration = this.generations.get(conversationId) ?? 0;
+      turn.auditDispatched = true;
       const audit = this.ports.audit(pending, turn.turnId, message.content.slice(0, 4_000) || 'The executor completed a tool turn.');
       auditHandle = audit;
       auditId = (audit as GoalAuditHandle & { auditId?: string }).auditId ?? audit.runId;
