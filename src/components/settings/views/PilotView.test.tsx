@@ -440,6 +440,17 @@ describe('PilotView', () => {
     expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
+  it('keeps the menu open when WebKit moves focus to the settings panel before the click', async () => {
+    await showAccount();
+    const trigger = container.querySelector<HTMLElement>('summary[aria-label="Account options"]')!;
+    await act(async () => trigger.click());
+    await act(async () => trigger.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: container })));
+    expect(trigger.closest('details')!.open).toBe(true);
+    await act(async () => button('Manage account').click());
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Manage account');
+    expect(trigger.closest('details')!.open).toBe(false);
+  });
+
   it('closes the actions menu with Escape without closing settings', async () => {
     await showAccount();
     const close = mock(() => undefined);

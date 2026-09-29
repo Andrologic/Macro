@@ -19,9 +19,12 @@ export function PilotActions({ label, children }: { label: string; children: Rea
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, []);
-  return <details ref={ref} className="relative shrink-0" onBlur={event => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false;
-  }} onKeyDown={event => {
+  return <details ref={ref} className="relative shrink-0" onKeyDown={event => {
+    if (event.key === 'Tab') {
+      requestAnimationFrame(() => {
+        if (ref.current && !ref.current.contains(document.activeElement)) ref.current.open = false;
+      });
+    }
     if (event.key === 'Escape' && event.currentTarget.open) {
       event.stopPropagation(); event.preventDefault(); event.currentTarget.open = false;
       event.currentTarget.querySelector('summary')?.focus();
