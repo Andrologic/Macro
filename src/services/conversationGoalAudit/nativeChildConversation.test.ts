@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
-const reserve = mock((_runId: string, _parentConversationId: string): Promise<string> =>
+const reserve = mock((_runId: string, _parentConversationId: string, _selection: object): Promise<string> =>
   Promise.resolve("child-1"));
 const available = mock(() => true);
 mock.module("../ipc/goalAudit", () => ({ reserveGoalAuditChildConversation: reserve }));
@@ -8,7 +8,8 @@ mock.module("../ipc/runtime", () => ({ isTauriAvailable: available }));
 
 const { resolveNativeGoalAuditChildConversation: resolveChild } = await import("./nativeChildConversation");
 const request = (signal = new AbortController().signal) => ({
-  runId: "run-1", parentConversationId: "parent-1", signal,
+  runId: "run-1", parentConversationId: "parent-1",
+  selection: { providerId: "auditor-provider", modelId: "auditor-model", reasoningEffort: "high" }, signal,
 });
 
 afterEach(() => {
@@ -21,9 +22,9 @@ afterEach(() => {
 describe("native goal audit child conversation resolver", () => {
   it("returns the reserved conversation with its run and parent binding", async () => {
     expect(await resolveChild(request())).toEqual({
-      id: "child-1", runId: "run-1", parentConversationId: "parent-1",
+      id: "child-1", runId: "run-1", parentConversationId: "parent-1", selection: request().selection,
     });
-    expect(reserve).toHaveBeenCalledWith("run-1", "parent-1");
+    expect(reserve).toHaveBeenCalledWith("run-1", "parent-1", request().selection);
   });
 
   it("fails closed outside the Tauri runtime", async () => {

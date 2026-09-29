@@ -195,6 +195,7 @@ export type { RepositoryInstructionLoadInput } from './RepositoryInstructionLoad
 export type { RepositoryInstructionLoadResult } from './RepositoryInstructionLoadResult';
 export type { RepositoryInstructionProjectInput } from './RepositoryInstructionProjectInput';
 export type { RepositoryInstructionSource } from './RepositoryInstructionSource';
+export type { ReserveGoalAuditChildSelection } from './ReserveGoalAuditChildSelection';
 export type { ResumeConversationGoalAuditInput } from './ResumeConversationGoalAuditInput';
 export type { SessionContextStateRecord } from './SessionContextStateRecord';
 export type { SkillDetailResponse } from './SkillDetailResponse';

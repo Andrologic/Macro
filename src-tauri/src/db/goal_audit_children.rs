@@ -1,6 +1,15 @@
 use super::{DbError, DbResult};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReserveGoalAuditChildSelection {
+    pub provider_id: String,
+    pub model_id: String,
+    pub reasoning_effort: Option<String>,
+}
 
 fn invalid(message: &str) -> DbError {
     DbError::Validation(message.to_owned())
@@ -12,6 +21,7 @@ pub async fn reserve_goal_audit_child_conversation(
     pool: &SqlitePool,
     run_id: &str,
     parent_conversation_id: &str,
+    selection: &ReserveGoalAuditChildSelection,
 ) -> DbResult<String> {
     if [run_id, parent_conversation_id]
         .iter()
@@ -19,13 +29,23 @@ pub async fn reserve_goal_audit_child_conversation(
     {
         return Err(invalid("Invalid goal audit run or parent conversation"));
     }
+    if [&selection.provider_id, &selection.model_id]
+        .into_iter()
+        .any(|value| value.is_empty() || value.trim() != value)
+        || selection
+            .reasoning_effort
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.trim() != value)
+    {
+        return Err(invalid("Invalid goal audit provider selection"));
+    }
 
     let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     let row = sqlx::query(
         r#"
-        SELECT run.child_conversation_id, parent.scope_mode, parent.task_id,
-               parent.group_id, parent.project_id, parent.provider_id,
-               parent.model_id, parent.reasoning_effort
+        SELECT run.child_conversation_id, run.model_metadata_json,
+               parent.scope_mode, parent.task_id,
+               parent.group_id, parent.project_id
         FROM agent_runs AS run
         JOIN conversations AS parent ON parent.id = run.parent_conversation_id
         JOIN conversation_goal_audit_runs AS link ON link.run_id = run.id
@@ -56,17 +76,23 @@ pub async fn reserve_goal_audit_child_conversation(
     let task: Option<String> = row.get("task_id");
     let group: Option<String> = row.get("group_id");
     let project: Option<String> = row.get("project_id");
-    let provider: Option<String> = row.get("provider_id");
-    let model: Option<String> = row.get("model_id");
-    let effort: Option<String> = row.get("reasoning_effort");
+    let mut metadata: serde_json::Value = row
+        .get::<Option<String>, _>("model_metadata_json")
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map_err(|_| invalid("Invalid goal audit run metadata"))?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let metadata_object = metadata
+        .as_object_mut()
+        .ok_or_else(|| invalid("Invalid goal audit run metadata"))?;
+    let selected = serde_json::to_value(selection)
+        .map_err(|_| invalid("Invalid goal audit provider selection"))?;
     let valid_reference = |value: &Option<String>| {
         value
             .as_ref()
             .is_none_or(|value| !value.is_empty() && value.trim() == value)
     };
-    if ![&task, &group, &project, &provider, &model, &effort]
-        .into_iter()
-        .all(valid_reference)
+    if ![&task, &group, &project].into_iter().all(valid_reference)
         || !matches!(scope.as_str(), "Chat" | "Architect" | "Implement")
         || project.is_none()
         || scope == "Implement" && task.is_none()
@@ -86,6 +112,9 @@ pub async fn reserve_goal_audit_child_conversation(
         ));
     }
     if let Some(existing) = row.get::<Option<String>, _>("child_conversation_id") {
+        if metadata_object.get("auditSelection") != Some(&selected) {
+            return Err(invalid("Goal audit run selection changed on replay"));
+        }
         if existing != child_id {
             return Err(invalid("Goal audit run already has another child"));
         }
@@ -100,9 +129,10 @@ pub async fn reserve_goal_audit_child_conversation(
             || child.get::<Option<String>, _>("task_id") != task
             || child.get::<Option<String>, _>("group_id") != group
             || child.get::<Option<String>, _>("project_id") != project
-            || child.get::<Option<String>, _>("provider_id") != provider
-            || child.get::<Option<String>, _>("model_id") != model
-            || child.get::<Option<String>, _>("reasoning_effort") != effort
+            || child.get::<Option<String>, _>("provider_id").as_deref()
+                != Some(&selection.provider_id)
+            || child.get::<Option<String>, _>("model_id").as_deref() != Some(&selection.model_id)
+            || child.get::<Option<String>, _>("reasoning_effort") != selection.reasoning_effort
         {
             return Err(invalid("Goal audit child reservation is inconsistent"));
         }
@@ -116,6 +146,11 @@ pub async fn reserve_goal_audit_child_conversation(
         transaction.commit().await?;
         return Ok(child_id);
     }
+
+    if metadata_object.contains_key("auditSelection") {
+        return Err(invalid("Goal audit run selection was already recorded"));
+    }
+    metadata_object.insert("auditSelection".into(), selected);
 
     // A pre-existing deterministic ID cannot be adopted: its origin is unknown.
     let now = chrono::Utc::now().to_rfc3339();
@@ -131,9 +166,9 @@ pub async fn reserve_goal_audit_child_conversation(
     .bind(&task)
     .bind(&group)
     .bind(&project)
-    .bind(&provider)
-    .bind(&model)
-    .bind(&effort)
+    .bind(&selection.provider_id)
+    .bind(&selection.model_id)
+    .bind(&selection.reasoning_effort)
     .bind(&now)
     .bind(&now)
     .execute(&mut *transaction)
@@ -156,6 +191,11 @@ pub async fn reserve_goal_audit_child_conversation(
     if updated.rows_affected() != 1 {
         return Err(invalid("Goal audit child link changed during reservation"));
     }
+    sqlx::query("UPDATE agent_runs SET model_metadata_json = ? WHERE id = ?")
+        .bind(metadata.to_string())
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?;
     transaction.commit().await?;
     Ok(child_id)
 }
@@ -165,6 +205,14 @@ mod tests {
     use super::*;
     use crate::db::models::CreateConversationInput;
     use crate::db::repository::create_conversation;
+
+    fn selection() -> ReserveGoalAuditChildSelection {
+        ReserveGoalAuditChildSelection {
+            provider_id: "provider-2".into(),
+            model_id: "model-2".into(),
+            reasoning_effort: Some("medium".into()),
+        }
+    }
 
     async fn fixture(
         pool: &SqlitePool,
@@ -215,12 +263,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserves_once_under_concurrent_replay_and_inherits_parent() {
+    async fn reserves_once_under_concurrent_replay_with_effective_selection() {
         let (_temp, pool) = pool().await;
         let parent = fixture(&pool, "Implement", Some("project-1"), Some("task-1")).await;
+        let selected = selection();
         let (first, second) = tokio::join!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent),
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selected),
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selected)
         );
         let child = first.unwrap();
         assert_eq!(second.unwrap(), child);
@@ -231,9 +280,9 @@ mod tests {
             ("task_id", "task-1"),
             ("group_id", "group-1"),
             ("project_id", "project-1"),
-            ("provider_id", "provider-1"),
-            ("model_id", "model-1"),
-            ("reasoning_effort", "high"),
+            ("provider_id", "provider-2"),
+            ("model_id", "model-2"),
+            ("reasoning_effort", "medium"),
         ] {
             assert_eq!(row.get::<&str, _>(field), expected);
         }
@@ -244,13 +293,37 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(linked, child);
+        let run_metadata: String =
+            sqlx::query_scalar("SELECT model_metadata_json FROM agent_runs WHERE id = 'run-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!run_metadata.contains("apiKey"));
+        assert!(!run_metadata.contains("secret"));
+        assert!(super::super::agent_runs::authorize_goal_auditor_read(
+            &pool, "run-1", &parent, &child,
+        )
+        .await
+        .unwrap()
+        .is_some());
+        sqlx::query("UPDATE conversations SET provider_id = 'changed' WHERE id = ?")
+            .bind(&child)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(super::super::agent_runs::authorize_goal_auditor_read(
+            &pool, "run-1", &parent, &child,
+        )
+        .await
+        .unwrap()
+        .is_none());
     }
 
     #[tokio::test]
     async fn reuses_child_after_its_title_is_edited() {
         let (_temp, pool) = pool().await;
         let parent = fixture(&pool, "Chat", Some("project-1"), None).await;
-        let child = reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+        let child = reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
             .await
             .unwrap();
         sqlx::query("UPDATE conversations SET title = 'Renamed audit' WHERE id = ?")
@@ -260,7 +333,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .unwrap(),
             child
@@ -287,10 +360,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_replay_after_parent_selection_changes() {
+    async fn rejects_replay_after_parent_lineage_changes() {
         let (_temp, pool) = pool().await;
         let parent = fixture(&pool, "Chat", Some("project-1"), None).await;
-        reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+        reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
             .await
             .unwrap();
         for (column, change_query, reset_query, changed) in [
@@ -320,7 +393,7 @@ mod tests {
                 .await
                 .unwrap();
             assert!(
-                reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+                reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                     .await
                     .is_err(),
                 "{column}"
@@ -331,6 +404,46 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_replay_with_different_effective_selection_without_mutating_child() {
+        let (_temp, pool) = pool().await;
+        let parent = fixture(&pool, "Chat", Some("project-1"), None).await;
+        let child = reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
+            .await
+            .unwrap();
+        for changed in [
+            ReserveGoalAuditChildSelection {
+                provider_id: "other".into(),
+                ..selection()
+            },
+            ReserveGoalAuditChildSelection {
+                model_id: "other".into(),
+                ..selection()
+            },
+            ReserveGoalAuditChildSelection {
+                reasoning_effort: None,
+                ..selection()
+            },
+        ] {
+            assert!(
+                reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &changed)
+                    .await
+                    .is_err()
+            );
+        }
+        let row = sqlx::query(
+            "SELECT provider_id, model_id, reasoning_effort FROM conversations WHERE id = ?",
+        )
+        .bind(&child)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<&str, _>("provider_id"), "provider-2");
+        assert_eq!(row.get::<&str, _>("model_id"), "model-2");
+        assert_eq!(row.get::<&str, _>("reasoning_effort"), "medium");
+        assert_eq!(child_count(&pool).await, 1);
     }
 
     #[tokio::test]
@@ -356,7 +469,7 @@ mod tests {
         sqlx::query("INSERT INTO agent_runs (id, parent_conversation_id, child_conversation_id, agent_profile, depth, status, prompt, created_at, updated_at) VALUES ('ancestor', ?, ?, 'worker', 1, 'queued', 'Work', 'now', 'now')")
             .bind(ancestor).bind(&parent).execute(&pool).await.unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );
@@ -378,7 +491,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );
@@ -392,7 +505,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );
@@ -407,7 +520,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );
@@ -416,7 +529,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let child = reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+        let child = reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
             .await
             .unwrap();
         sqlx::query(
@@ -426,7 +539,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );
@@ -445,7 +558,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );
@@ -456,11 +569,14 @@ mod tests {
     async fn rejects_wrong_parent_and_prelinked_child() {
         let (_temp, pool) = pool().await;
         let parent = fixture(&pool, "Chat", Some("project-1"), None).await;
-        assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", "other-parent")
-                .await
-                .is_err()
-        );
+        assert!(reserve_goal_audit_child_conversation(
+            &pool,
+            "run-1",
+            "other-parent",
+            &selection()
+        )
+        .await
+        .is_err());
         let other = create_conversation(
             &pool,
             CreateConversationInput {
@@ -483,7 +599,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            reserve_goal_audit_child_conversation(&pool, "run-1", &parent)
+            reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
                 .await
                 .is_err()
         );

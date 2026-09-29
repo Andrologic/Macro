@@ -113,11 +113,13 @@ pub async fn db_reserve_goal_audit_child_conversation(
     pool: State<'_, DbPool>,
     run_id: String,
     parent_conversation_id: String,
+    selection: goal_audit_children::ReserveGoalAuditChildSelection,
 ) -> CommandResult<String> {
     goal_audit_children::reserve_goal_audit_child_conversation(
         &get_pool(&pool).await?,
         &run_id,
         &parent_conversation_id,
+        &selection,
     )
     .await
     .map_err(Into::into)

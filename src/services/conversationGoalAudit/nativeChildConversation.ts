@@ -4,10 +4,10 @@ import type { GoalAuditProviderPorts } from "./providerExecutor";
 
 /** Resolve only the durable child reserved for this running native goal audit. */
 export const resolveNativeGoalAuditChildConversation: GoalAuditProviderPorts["resolveChildConversation"] =
-  async ({ runId, parentConversationId, signal }) => {
+  async ({ runId, parentConversationId, selection, signal }) => {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     if (!isTauriAvailable()) throw new Error("Native goal audit child reservation requires Tauri.");
-    const id = await reserveGoalAuditChildConversation(runId, parentConversationId);
+    const id = await reserveGoalAuditChildConversation(runId, parentConversationId, selection);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    return { id, runId, parentConversationId };
+    return { id, runId, parentConversationId, selection };
   };

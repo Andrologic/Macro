@@ -497,6 +497,11 @@ mod tests {
                 .execute(&pool)
                 .await
                 .expect("bound parent project");
+            sqlx::query("UPDATE conversations SET provider_id = 'auditor-provider', model_id = 'auditor-model' WHERE id = ?")
+                .bind(&child_id)
+                .execute(&pool)
+                .await
+                .expect("bound auditor selection");
             let run_id = "audit-run".to_owned();
             agent_runs::create_agent_run(
                 &pool,
@@ -507,7 +512,7 @@ mod tests {
                     agent_profile: "goal_auditor".into(),
                     depth: 1,
                     prompt: "Verify the goal".into(),
-                    model_metadata_json: None,
+                    model_metadata_json: Some(r#"{"auditSelection":{"providerId":"auditor-provider","modelId":"auditor-model","reasoningEffort":null}}"#.into()),
                 },
             )
             .await
@@ -966,7 +971,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_parent_selection_changes_after_child_link() {
+    async fn rejects_parent_lineage_changes_after_child_link() {
         let fixture = Fixture::new().await;
         let input = fixture.input("read", json!({"path": "proof.txt"}));
         fixture.execute(input.clone()).await.unwrap();
@@ -994,24 +999,6 @@ mod tests {
                 "SELECT group_id FROM conversations WHERE id = ?",
                 "UPDATE conversations SET group_id = ? WHERE id = ?",
                 "another-group",
-            ),
-            (
-                "provider_id",
-                "SELECT provider_id FROM conversations WHERE id = ?",
-                "UPDATE conversations SET provider_id = ? WHERE id = ?",
-                "another-provider",
-            ),
-            (
-                "model_id",
-                "SELECT model_id FROM conversations WHERE id = ?",
-                "UPDATE conversations SET model_id = ? WHERE id = ?",
-                "another-model",
-            ),
-            (
-                "reasoning_effort",
-                "SELECT reasoning_effort FROM conversations WHERE id = ?",
-                "UPDATE conversations SET reasoning_effort = ? WHERE id = ?",
-                "high",
             ),
         ] {
             let previous: Option<String> = sqlx::query_scalar(select)

@@ -20,10 +20,17 @@ export interface GoalAuditProvider {
   workspacePath?: string;
 }
 
+export interface GoalAuditEffectiveSelection {
+  providerId: string;
+  modelId: string;
+  reasoningEffort?: string;
+}
+
 export interface GoalAuditChildConversation {
   id: string;
   runId: string;
   parentConversationId: string;
+  selection: GoalAuditEffectiveSelection;
 }
 
 export interface GoalAuditReadToolContext {
@@ -39,6 +46,7 @@ export interface GoalAuditProviderPorts {
   resolveChildConversation(input: {
     runId: string;
     parentConversationId: string;
+    selection: GoalAuditEffectiveSelection;
     signal: AbortSignal;
   }): GoalAuditChildConversation | Promise<GoalAuditChildConversation>;
   stream?: (options: StreamingChatOptions) => Promise<void>;
@@ -56,10 +64,14 @@ const hasValidChildBinding = (
   child: GoalAuditChildConversation,
   runId: string,
   parentConversationId: string,
+  selection: GoalAuditEffectiveSelection,
 ): boolean => !!child && typeof child.id === "string" && !!child.id.trim() &&
   child.id.trim() === child.id && child.id !== runId &&
   child.id !== parentConversationId && child.runId === runId &&
-  child.parentConversationId === parentConversationId;
+  child.parentConversationId === parentConversationId &&
+  child.selection?.providerId === selection.providerId &&
+  child.selection?.modelId === selection.modelId &&
+  child.selection?.reasoningEffort === selection.reasoningEffort;
 
 const abortError = (): DOMException => new DOMException("Aborted", "AbortError");
 
@@ -106,13 +118,23 @@ export const createGoalAuditProviderExecutor = (
       !capabilities.includes("git.read")) {
       throw new Error("Goal auditor requires its exact read-only capability set.");
     }
-    await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
+    const initialProvider = { ...await awaitAbortable(signal, () => ports.resolveProvider(input, signal)) };
+    const selection: GoalAuditEffectiveSelection = Object.freeze({
+      providerId: initialProvider.providerId,
+      modelId: input.authorization.model ?? initialProvider.modelId,
+      reasoningEffort: initialProvider.reasoningEffort ?? input.authorization.effort,
+    });
+    if (!selection.providerId?.trim() || !selection.modelId?.trim() ||
+      (selection.reasoningEffort !== undefined && !selection.reasoningEffort.trim())) {
+      throw new Error("Invalid goal auditor provider selection.");
+    }
     const childConversation = await awaitAbortable(signal, () => ports.resolveChildConversation({
       runId: request.childRunId,
       parentConversationId: request.parentConversationId,
+      selection,
       signal,
     }));
-    if (!hasValidChildBinding(childConversation, request.childRunId, request.parentConversationId)) {
+    if (!hasValidChildBinding(childConversation, request.childRunId, request.parentConversationId, selection)) {
       throw new Error("Invalid goal auditor child conversation binding.");
     }
     const readToolContext: GoalAuditReadToolContext = Object.freeze({
@@ -121,6 +143,14 @@ export const createGoalAuditProviderExecutor = (
       childConversationId: childConversation.id,
     });
     const provider = await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
+    if (provider.providerId !== selection.providerId ||
+      (input.authorization.model ?? provider.modelId) !== selection.modelId ||
+      (provider.reasoningEffort ?? input.authorization.effort) !== selection.reasoningEffort ||
+      provider.providerType !== initialProvider.providerType || provider.baseUrl !== initialProvider.baseUrl ||
+      provider.apiKey !== initialProvider.apiKey ||
+      provider.workspacePath !== initialProvider.workspacePath) {
+      throw new Error("Goal auditor provider changed after child reservation.");
+    }
     const allowedToolIds = filterToolIdsForInternalAgentProfile(
       [
         ...(capabilities.includes("workspace.read") ? WORKSPACE_READ_TOOLS : []),
@@ -133,7 +163,7 @@ export const createGoalAuditProviderExecutor = (
       if (!signal.aborted) onProgress?.(event);
     };
     const assertReadToolBinding = () => {
-      if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId) ||
+      if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId, selection) ||
         childConversation.id !== readToolContext.childConversationId) {
         throw new Error("Invalid goal auditor child conversation binding.");
       }
@@ -148,8 +178,8 @@ export const createGoalAuditProviderExecutor = (
       providerType: provider.providerType,
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKey,
-      modelId: input.authorization.model ?? provider.modelId,
-      reasoningEffort: provider.reasoningEffort ?? input.authorization.effort,
+      modelId: selection.modelId,
+      reasoningEffort: selection.reasoningEffort,
       workspacePath: provider.workspacePath,
       messages: [
         { role: "system", content: input.systemPrompt },
