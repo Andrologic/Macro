@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Monitor, Smartphone, RefreshCw } from 'lucide-react';
+import { Monitor, Smartphone, RefreshCw, ChevronRight } from 'lucide-react';
 import { PilotActions } from './PilotActions';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { useTranslation } from 'react-i18next';
@@ -357,29 +357,31 @@ export const PilotView: React.FC = () => {
               <span>{t('settings.pilot.limitedAccess', 'Access to this computer needs to be restored.')}</span>
               <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Restore access')}</Button>
             </div>}
+            {store.instance && (
+              <details className="group/troubleshoot border-t border-border/50 pt-3 text-xs">
+                <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
+                  <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 transition-transform group-open/troubleshoot:rotate-90 motion-reduce:transition-none" />
+                  {t('settings.pilot.troubleshoot', 'Resolve a connection problem')}
+                </summary>
+                <div className="mt-3 space-y-3 pl-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>{t('settings.pilot.accessTitle', 'Device access')}</span>
+                    <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>
+                  </div>
+                  {!store.accessRequestsLoaded ? <p className="text-muted-foreground">{t('settings.pilot.accessNotLoaded', 'Refresh to load pending access requests.')}</p>
+                    : store.accessRequests.length === 0 ? <p className="text-muted-foreground">{t('settings.pilot.noAccessRequests', 'No pending access requests.')}</p>
+                    : store.accessRequests.map(request => <div key={request.access_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                      <span className="break-words">{request.device_label}</span>
+                      <div className="flex gap-2">
+                        <Button size="sm" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'grant'))}>{t('settings.pilot.grant', 'Allow access')}</Button>
+                        <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'deny'))}>{t('settings.pilot.deny', 'Deny')}</Button>
+                      </div>
+                    </div>)}
+                </div>
+              </details>
+            )}
           </div>
         </section>
-      )}
-
-      {store.instance && store.deviceSession && (
-        <details className="group rounded-xl border border-border/50 bg-card/40 p-4 text-xs">
-          <summary className="cursor-pointer text-sm font-medium text-foreground focus-visible:outline-primary">{t('settings.pilot.troubleshoot', 'Resolve a connection problem')}</summary>
-          <div className="mt-4 space-y-3 border-t border-border/50 pt-4">
-            <div className="flex items-center justify-between gap-3">
-              <span>{t('settings.pilot.accessTitle', 'Device access')}</span>
-              <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>
-            </div>
-            {!store.accessRequestsLoaded ? <p className="text-muted-foreground">{t('settings.pilot.accessNotLoaded', 'Refresh to load pending access requests.')}</p>
-              : store.accessRequests.length === 0 ? <p className="text-muted-foreground">{t('settings.pilot.noAccessRequests', 'No pending access requests.')}</p>
-              : store.accessRequests.map(request => <div key={request.access_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
-                <span className="break-words">{request.device_label}</span>
-                <div className="flex gap-2">
-                  <Button size="sm" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'grant'))}>{t('settings.pilot.grant', 'Allow access')}</Button>
-                  <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'deny'))}>{t('settings.pilot.deny', 'Deny')}</Button>
-                </div>
-              </div>)}
-          </div>
-        </details>
       )}
 
       {store.instance && runtimeStatus === 'unavailable' && (
