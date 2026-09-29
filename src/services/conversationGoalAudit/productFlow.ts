@@ -99,7 +99,9 @@ export class ConversationGoalProductFlow {
   }
 
   async status(conversationId: string, status: 'active_ready' | 'executor_running' | 'audit_pending' | 'paused' | 'error', reason: string | null = null, expected?: Pick<ConversationGoalRecord, 'goalId' | 'revision'>): Promise<PersistedConversationGoalRecord | null> {
+    const generation = this.generations.get(conversationId) ?? 0;
     const goal = await this.ports.repository.loadCurrentGoal(conversationId);
+    if (generation !== (this.generations.get(conversationId) ?? 0)) return null;
     if (!goal || goal.status === 'achieved' ||
         (expected && (goal.goalId !== expected.goalId || goal.revision !== expected.revision))) {
       await this.refresh(conversationId);
@@ -108,16 +110,22 @@ export class ConversationGoalProductFlow {
     if (status === 'executor_running' && !['active_ready', 'continuation_pending', 'awaiting_user'].includes(goal.status)) return null;
     const outcome = await this.ports.repository.updateGoalStatus(goal, status, reason);
     if (outcome !== 'applied') { await this.refresh(conversationId); return null; }
+    if (generation !== (this.generations.get(conversationId) ?? 0)) return null;
     this.bump(conversationId);
-    return this.refresh(conversationId);
+    const latest = await this.refresh(conversationId);
+    return latest?.goalId === goal.goalId && latest.revision === goal.revision + 1 && latest.status === status
+      ? latest : null;
   }
 
   async stop(conversationId: string): Promise<void> {
     this.cancel(conversationId);
     this.lastContinueEvidence.delete(conversationId);
+    let goalId: string | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const goal = await this.ports.repository.loadCurrentGoal(conversationId);
       if (!goal) { this.publish(conversationId, null); return; }
+      if (goalId && goal.goalId !== goalId) { await this.refresh(conversationId); return; }
+      goalId = goal.goalId;
       if (goal.status === 'achieved') throw new Error('An achieved goal cannot be stopped.');
       const outcome = await this.ports.repository.stopGoal(goal);
       if (outcome === 'applied' || outcome === 'missing') {
@@ -137,7 +145,18 @@ export class ConversationGoalProductFlow {
     this.cancel(conversationId);
     this.suspended.add(conversationId);
     if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
-    await this.status(conversationId, 'paused');
+    let goalId: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await this.ports.repository.loadCurrentGoal(conversationId);
+      if (!current || current.status === 'achieved' || (goalId && current.goalId !== goalId)) {
+        await this.refresh(conversationId);
+        return;
+      }
+      goalId = current.goalId;
+      if (current.status === 'paused' || await this.status(conversationId, 'paused', null, current)) return;
+    }
+    await this.refresh(conversationId);
+    throw new Error('Goal changed repeatedly while pausing. Retry Pause.');
   }
 
   async resume(conversationId: string): Promise<void> {
@@ -146,11 +165,12 @@ export class ConversationGoalProductFlow {
         !['paused', 'error', 'awaiting_user', 'active_ready'].includes(goal.status))) return;
     const queued = [...this.queuedTurns.get(conversationId) ?? []];
     this.cancel(conversationId);
+    this.suspended.add(conversationId);
+    if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
     this.lastContinueEvidence.delete(conversationId);
     const ready = goal.status === 'active_ready' ? goal : await this.status(conversationId, 'active_ready', null, goal);
     if (ready) {
       this.suspended.delete(conversationId);
-      if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
       this.reconcileQueuedTurns(conversationId);
       if (this.queuedTurns.get(conversationId)?.size) {
         this.unsubscribe ??= this.ports.subscribe(() => void this.check());
@@ -283,11 +303,17 @@ export class ConversationGoalProductFlow {
   }
 
   private async admitQueuedTurn(conversationId: string, turnId: string): Promise<void> {
+    const pendingTurns = this.queuedTurns.get(conversationId);
+    const ownsTurn = () => this.queuedTurns.get(conversationId) === pendingTurns &&
+      pendingTurns?.has(turnId) && !this.suspended.has(conversationId);
+    let goalId: string | null = null;
     try {
       if (this.suspended.has(conversationId)) return;
       let goal: PersistedConversationGoalRecord | null = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         goal = await this.ports.repository.loadCurrentGoal(conversationId);
+        if (!ownsTurn() || (goalId && goal?.goalId !== goalId)) return;
+        goalId = goal?.goalId ?? null;
         if (!goal || goal.status === 'achieved') {
           this.queuedTurns.get(conversationId)?.delete(turnId);
           return;
@@ -298,14 +324,17 @@ export class ConversationGoalProductFlow {
           this.audits.get(conversationId)?.cancel();
           this.audits.delete(conversationId);
           goal = await this.status(conversationId, 'active_ready', null, goal);
+          if (!ownsTurn()) return;
           if (!goal) continue;
         } else if (goal.status === 'executor_running' && this.tracked.get(conversationId)?.turnId !== turnId) {
           this.tracked.delete(conversationId);
           this.bump(conversationId);
           goal = await this.status(conversationId, 'active_ready', null, goal);
+          if (!ownsTurn()) return;
           if (!goal) continue;
         }
         if (goal.status !== 'executor_running') goal = await this.status(conversationId, 'executor_running', null, goal);
+        if (!ownsTurn()) return;
         if (goal) break;
       }
       if (!goal) throw new Error('Goal changed repeatedly while admitting a queued turn.');
@@ -320,20 +349,26 @@ export class ConversationGoalProductFlow {
           !this.ports.readQueuedTurnIds(conversationId).includes(turnId) &&
           !this.ports.readQueuedAttemptedTurnIds(conversationId).includes(turnId) &&
           messages.some((item) => item.role === 'user' && item.turn_id === turnId)) {
+        const failed = await this.status(conversationId, 'error', 'The queued executor turn did not return a saved assistant response.', goal);
+        if (!ownsTurn()) return;
+        if (!failed) throw new Error('Goal changed while recording a failed queued turn.');
         this.queuedTurns.get(conversationId)?.delete(turnId);
         if (this.queuedTurns.get(conversationId)?.size === 0) this.queuedTurns.delete(conversationId);
-        await this.status(conversationId, 'error', 'The queued executor turn did not return a saved assistant response.', goal);
       }
     } catch (error) {
+      if (!ownsTurn()) return;
       const message = error instanceof Error ? error.message : String(error);
       this.suspended.add(conversationId);
       const current = await this.ports.repository.loadCurrentGoal(conversationId).catch(() => null);
-      if (current && !['paused', 'achieved'].includes(current.status)) {
+      if (this.queuedTurns.get(conversationId) !== pendingTurns) return;
+      if (current && (!goalId || current.goalId === goalId) && !['paused', 'achieved'].includes(current.status)) {
         await this.status(conversationId, 'error', message, current).catch(() => undefined);
       }
       this.ports.onFlowFailure(conversationId, message, () => this.resume(conversationId));
     } finally {
       this.queuedAdmissions.delete(conversationId);
+      if (this.queuedTurns.get(conversationId) !== pendingTurns &&
+          this.queuedTurns.get(conversationId)?.size && !this.suspended.has(conversationId)) void this.check();
       this.releaseSubscriptionIfIdle();
     }
   }
@@ -402,7 +437,8 @@ export class ConversationGoalProductFlow {
       const current = await this.ports.repository.loadCurrentGoal(conversationId);
       if (!current || current.goalId !== turn.goalId || current.status !== 'executor_running' || generation !== (this.generations.get(conversationId) ?? 0)) return;
       const pending = await this.status(conversationId, 'audit_pending', null, current);
-      if (!pending || pending.goalId !== turn.goalId || pending.status !== 'audit_pending') return;
+      if (!pending || pending.goalId !== turn.goalId || pending.status !== 'audit_pending' ||
+          this.tracked.get(conversationId) !== turn) return;
       ownGeneration = this.generations.get(conversationId) ?? 0;
       const audit = this.ports.audit(pending, turn.turnId, message.content.slice(0, 4_000) || 'The executor completed a tool turn.');
       auditHandle = audit;
@@ -417,7 +453,8 @@ export class ConversationGoalProductFlow {
           if (result.status === 'applied') {
             const message = `Goal review artifact was not saved: ${error instanceof Error ? error.message : String(error)}`;
             this.ports.onArtifactFailure(message);
-            if (latest.status === 'continuation_pending') await this.status(conversationId, 'error', message, latest);
+            if (ownGeneration === (this.generations.get(conversationId) ?? 0) &&
+                latest.status === 'continuation_pending') await this.status(conversationId, 'error', message, latest);
           }
           return;
         }

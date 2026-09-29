@@ -516,4 +516,218 @@ describe('Goal product flow', () => {
     expect(h.goal?.lastError).toContain('INVALID_AUDITOR_VERDICT');
     expect(h.sent).toHaveLength(0);
   });
+
+  it('does not return a replacement as the result of an earlier status write', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'active_ready' };
+    const update = h.repository.updateGoalStatus;
+    h.repository.updateGoalStatus = async (...args) => {
+      const outcome = await update(...args);
+      h.goal = { ...initialGoal(), goalId: 'replacement', status: 'active_ready' };
+      return outcome;
+    };
+    expect(await h.flow.status('conversation', 'executor_running')).toBeNull();
+    expect(h.goal?.goalId).toBe('replacement');
+  });
+
+  it('does not stop a replacement after a stale Stop result', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });
+    let calls = 0;
+    h.repository.stopGoal = async () => {
+      calls += 1;
+      h.goal = { ...initialGoal(), goalId: 'replacement', status: 'active_ready' };
+      return 'stale';
+    };
+    await h.flow.stop('conversation');
+    expect(calls).toBe(1);
+    expect(h.goal?.goalId).toBe('replacement');
+  });
+
+  for (const action of ['stop', 'pause'] as const) {
+    it(`discards a queued admission read that resolves after ${action}`, async () => {
+      const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+      h.goal = { ...initialGoal(), status: 'continuation_pending' };
+      const snapshot = h.goal;
+      const load = h.repository.loadCurrentGoal;
+      let resolve!: (goal: PersistedConversationGoalRecord | null) => void;
+      const reading = new Promise<PersistedConversationGoalRecord | null>((done) => { resolve = done; });
+      let first = true;
+      h.repository.loadCurrentGoal = (...args) => {
+        if (first) { first = false; return reading; }
+        return load(...args);
+      };
+      h.queuedTurnIds = ['queued-turn'];
+      h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+      h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+      await h.flow[action]('conversation');
+      resolve(snapshot);
+      await settle();
+      expect(h.audited).toHaveLength(0);
+      expect(h.flowFailures).toHaveLength(0);
+      if (action === 'pause') {
+        expect(h.goal?.status).toBe('paused');
+        await h.flow.resume('conversation');
+        await settle();
+        expect(h.audited).toEqual(['queued-turn']);
+      } else expect(h.goal).toBeNull();
+    });
+  }
+
+  it('rechecks the resumed queue when an older admission releases its lock', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    const snapshot = h.goal;
+    const load = h.repository.loadCurrentGoal;
+    let resolve!: (goal: PersistedConversationGoalRecord | null) => void;
+    const reading = new Promise<PersistedConversationGoalRecord | null>((done) => { resolve = done; });
+    let first = true;
+    h.repository.loadCurrentGoal = (...args) => {
+      if (first) { first = false; return reading; }
+      return load(...args);
+    };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    await h.flow.pause('conversation');
+    await h.flow.resume('conversation');
+    resolve(snapshot);
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('does not let an old applied audit artifact failure stop newer work', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });
+    let resolve!: (result: GoalAuditResult) => void;
+    const result = new Promise<GoalAuditResult>((done) => { resolve = done; });
+    h.ports.audit = () => ({ runId: 'old-run', cancel: () => true, result });
+    h.ports.saveArtifact = async () => { throw new Error('disk unavailable'); };
+    h.flow.track('conversation', 'turn', 'assistant', 'goal');
+    await settle();
+    await h.flow.reserveUserTurn('conversation');
+    // The old native verdict committed before cancellation, but its IPC reply is delayed.
+    // A newer user turn has since finished and received its own continue verdict.
+    h.goal = { ...h.goal!, revision: h.goal!.revision + 3, status: 'continuation_pending' };
+    resolve({ status: 'applied', runId: 'old-run', verdict: verdict('continue') });
+    await settle();
+    expect(h.artifactFailures).toHaveLength(1);
+    expect(h.goal?.status).toBe('continuation_pending');
+    expect(h.sent).toHaveLength(0);
+    h.flow.releaseUserTurn('conversation');
+  });
+
+
+  it('retries Pause when a verdict wins the native CAS', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });
+    const update = h.repository.updateGoalStatus;
+    let raced = false;
+    h.repository.updateGoalStatus = async (...args) => {
+      if (!raced) {
+        raced = true;
+        h.goal = { ...h.goal!, revision: h.goal!.revision + 1, status: 'continuation_pending' };
+        return 'stale';
+      }
+      return update(...args);
+    };
+    await h.flow.pause('conversation');
+    expect(h.goal?.status).toBe('paused');
+  });
+
+  it('reports repeated Pause conflicts after a bounded number of attempts', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });
+    let calls = 0;
+    h.repository.updateGoalStatus = async () => { calls += 1; return 'stale'; };
+    await expect(h.flow.pause('conversation')).rejects.toThrow('Retry Pause');
+    expect(calls).toBe(3);
+  });
+
+  it('retains an accepted queued response when Resume loses its status CAS', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    await h.flow.pause('conversation');
+    h.queuedTurnIds = [];
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    const update = h.repository.updateGoalStatus;
+    let raced = false;
+    h.repository.updateGoalStatus = async (...args) => {
+      if (!raced) {
+        raced = true;
+        h.goal = { ...h.goal!, revision: h.goal!.revision + 1 };
+        return 'stale';
+      }
+      return update(...args);
+    };
+    await h.flow.resume('conversation');
+    expect(h.audited).toHaveLength(0);
+    await h.flow.resume('conversation');
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    expect(h.sent).toHaveLength(0);
+  });
+
+
+  it('does not attach an in-flight queued admission to a replacement goal', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    const snapshot = h.goal!;
+    const load = h.repository.loadCurrentGoal;
+    let resolve!: (goal: PersistedConversationGoalRecord | null) => void;
+    const reading = new Promise<PersistedConversationGoalRecord | null>((done) => { resolve = done; });
+    let first = true;
+    h.repository.loadCurrentGoal = (...args) => {
+      if (first) { first = false; return reading; }
+      return load(...args);
+    };
+    h.repository.replaceGoal = async () => {
+      h.goal = { ...initialGoal(), goalId: 'replacement', status: 'active_ready' };
+      return h.goal;
+    };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    await h.flow.activate('conversation', 'New objective', 'provider', 'model', null, snapshot);
+    resolve(snapshot);
+    await settle();
+    expect(h.goal?.goalId).toBe('replacement');
+    expect(h.goal?.status).toBe('active_ready');
+    expect(h.audited).toHaveLength(0);
+    expect(h.flowFailures).toHaveLength(0);
+  });
+
+  it('retains an attempted queued turn before its messages arrive', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.attemptedTurnIds = ['queued-turn'];
+    h.queuedTurnIds = [];
+    h.notify();
+    await settle();
+    expect(h.goal?.status).toBe('continuation_pending');
+    expect(h.audited).toHaveLength(0);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    h.attemptedTurnIds = [];
+    await settle();
+    expect(h.audited).toEqual(['queued-turn']);
+    expect(h.sent).toHaveLength(0);
+  });
+
+
+  it('reports a write failure while recording a queued turn with no assistant response', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    const update = h.repository.updateGoalStatus;
+    h.repository.updateGoalStatus = async (...args) => {
+      if (args[1] === 'error') throw new Error('error write unavailable');
+      return update(...args);
+    };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-user', role: 'user', turn_id: 'queued-turn' }];
+    h.queuedTurnIds = [];
+    await settle();
+    expect(h.flowFailures).toEqual(['error write unavailable']);
+    expect(h.flowRetries).toHaveLength(1);
+    expect(h.audited).toHaveLength(0);
+  });
+
 });
