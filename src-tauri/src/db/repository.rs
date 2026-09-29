@@ -255,15 +255,31 @@ fn serialize_reasoning_efforts(efforts: Option<&Vec<String>>) -> Option<String> 
 // ============ CONVERSATIONS ============
 
 pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
+    list_conversations_with_internal(pool, true).await
+}
+
+pub async fn list_user_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
+    list_conversations_with_internal(pool, false).await
+}
+
+async fn list_conversations_with_internal(
+    pool: &SqlitePool,
+    include_internal: bool,
+) -> DbResult<Vec<Conversation>> {
     let rows = sqlx::query(
         r#"
         SELECT id, title, description, scope_mode, task_id, group_id, project_id,
                provider_id, model_id, reasoning_effort,
                created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
+        WHERE ? OR NOT EXISTS (
+            SELECT 1 FROM agent_runs
+            WHERE child_conversation_id = conversations.id AND agent_profile = 'goal_auditor'
+        )
         ORDER BY is_pinned DESC, updated_at DESC, id ASC
         "#,
     )
+    .bind(include_internal)
     .fetch_all(pool)
     .await?;
 
@@ -541,10 +557,24 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
         return Ok(());
     }
 
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let original_placeholders = vec!["?"; ids.len()].join(", ");
+    let child_query = format!(
+        "SELECT child_conversation_id FROM agent_runs WHERE agent_profile = 'goal_auditor' AND child_conversation_id IS NOT NULL AND parent_conversation_id IN ({})",
+        original_placeholders
+    );
+    let mut children = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(child_query));
+    for id in ids {
+        children = children.bind(id);
+    }
+    let mut owned_ids = ids.to_vec();
+    owned_ids.extend(children.fetch_all(&mut *tx).await?);
+    owned_ids.sort();
+    owned_ids.dedup();
+    let ids = &owned_ids;
     let placeholders = vec!["?"; ids.len()].join(", ");
     let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
 
-    let mut tx = pool.begin().await?;
     // Checkpoints are intentionally stored as app settings so older databases
     // can replay them. They have no foreign key, therefore delete them in the
     // same transaction as their owning conversations.
@@ -873,6 +903,10 @@ pub async fn get_chat_bootstrap_snapshot(
                provider_id, model_id, reasoning_effort,
                created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
+        WHERE NOT EXISTS (
+            SELECT 1 FROM agent_runs
+            WHERE child_conversation_id = conversations.id AND agent_profile = 'goal_auditor'
+        )
         ORDER BY is_pinned DESC, updated_at DESC, id ASC
         "#,
     )
@@ -900,11 +934,12 @@ pub async fn get_chat_bootstrap_snapshot(
         })
         .collect::<Vec<_>>();
 
+    let visible_ids: HashSet<&str> = conversations.iter().map(|item| item.id.as_str()).collect();
     let mut unique_preload_ids = Vec::new();
     let mut seen_preload_ids = HashSet::new();
     for conversation_id in preload_conversation_ids {
         let trimmed = conversation_id.trim();
-        if !trimmed.is_empty() && seen_preload_ids.insert(trimmed.to_string()) {
+        if visible_ids.contains(trimmed) && seen_preload_ids.insert(trimmed.to_string()) {
             unique_preload_ids.push(trimmed.to_string());
         }
     }
