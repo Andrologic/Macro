@@ -18,6 +18,7 @@ export type { ConversationCitation } from '../ConversationCitation';
 export type { ConversationCompactionStateRecord } from '../ConversationCompactionStateRecord';
 export type { ConversationGoal } from '../ConversationGoal';
 export type { ConversationGoalAudit } from '../ConversationGoalAudit';
+export type { ConversationSourceSnapshot } from '../ConversationSourceSnapshot';
 export type { ConversationToolboxStateRecord } from '../ConversationToolboxStateRecord';
 export type { CreateAgentRunInput } from '../CreateAgentRunInput';
 export type { CreateConversationInput } from '../CreateConversationInput';

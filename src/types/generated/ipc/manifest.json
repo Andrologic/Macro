@@ -381,6 +381,14 @@
       "families": [
         "db"
       ],
+      "name": "ConversationSourceSnapshot",
+      "origin": "macro_lib::db::models::ConversationSourceSnapshot",
+      "path": "ConversationSourceSnapshot.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ConversationToolboxStateRecord",
       "origin": "macro_lib::db::models::ConversationToolboxStateRecord",
       "path": "ConversationToolboxStateRecord.ts"

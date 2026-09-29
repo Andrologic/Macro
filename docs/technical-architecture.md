@@ -475,7 +475,7 @@ ni mock de store. L'adaptateur capture les sélections UI avant la première
 attente ; le runtime reçoit ensuite ce snapshot, ses dépendances et les
 opérations de projection séparément.
 
-Une référence de conversation conserve l'identifiant de la source dans le brouillon ou la file. Juste avant la persistance du message utilisateur, `conversationContextSource` vérifie l'existence et le projet des deux conversations, refuse une source encore active, lit le transcript courant et sélectionne des extraits bornés. L'identifiant des messages, leur rôle, leur date et la date de mise à jour de la conversation accompagnent les extraits figés dans `context_refs_json`. La préparation de requête ne recherche pas de nouveaux passages : elle injecte ces extraits en les marquant comme matériau non fiable. La modification d'une source pendant la lecture interrompt la sélection. Le filtrage du transcript repose sur `db_list_messages`, qui ne retourne plus les messages supprimés lors d'un retour en arrière.
+Une référence de conversation conserve l'identifiant de la source dans le brouillon ou la file. Juste avant la persistance du message utilisateur, `conversationContextSource` refuse une source encore active et lit un snapshot natif cohérent : la cible, la source et les messages sont lus dans la même transaction SQLite, avec vérification du projet commun avant le retour des messages. La sélection retient au plus trois passages de 850 caractères par source ; elle cherche les mots entiers dans les 4 000 premiers caractères et les 500 premiers mots d'au moins trois caractères de chaque message candidat. L'identifiant des messages, leur rôle, leur date et la date de mise à jour de la conversation accompagnent les extraits figés dans `context_refs_json`. Une édition concurrente peut être retenue avant ou après sa validation, mais ne mélange pas deux états du transcript. La préparation de requête ne recherche pas de nouveaux passages : elle injecte ces extraits en les marquant comme matériau non fiable. Une soumission en file relit et revalide la source à son départ. Le snapshot ne contient que les messages encore présents après un retour en arrière.
 
 Les soumissions différées utilisent le stockage local de récupération du chat.
 Leur runtime, la revalidation de contexte, les instructions du plan Architect et
@@ -735,9 +735,9 @@ et l'arrêt du runtime retirent les demandes en attente. Les réponses `accept`,
 `decline` et `cancel` ont un contrat typé ; `cancel` est transmis au serveur
 dans `inputResponses`, tandis que l'annulation externe interrompt l'appel.
 
-Le chemin stdio moderne traite `input_required` lorsque toutes les demandes sont
-des formulaires `elicitation/create`. Il conserve `requestState` en mémoire dans
-le backend et le retransmet tel quel avec `inputResponses` au tour MCP suivant.
+Les chemins stdio et HTTP modernes traitent `input_required` lorsque toutes les
+demandes sont des formulaires `elicitation/create`. Ils conservent `requestState`
+en mémoire dans le backend et le retransmettent tel quel avec `inputResponses` au tour MCP suivant.
 Le schéma de formulaire plat est vérifié avant remise au port et conservé avec
 la demande en attente ; chaque `accept`, y compris depuis un IPC hostile, est
 validé contre ses champs, obligations, choix et contraintes avant continuation.
@@ -759,15 +759,38 @@ un secret n'affichent aucun champ et ne proposent pas `accept` ; l'interface
 rappelle aussi de ne jamais saisir de secret. Une détection textuelle ne peut
 pas établir à elle seule qu'une saisie arbitraire n'est pas sensible.
 
-Chaque `tools/call` stdio moderne ajoute `elicitation: {form: {}}` à
+Chaque `tools/call` moderne stdio ou HTTP ajoute `elicitation: {form: {}}` à
 `_meta.io.modelcontextprotocol/clientCapabilities` uniquement si le courtier
 a un port vivant. rmcp fusionne ces capacités avec les métadonnées de découverte
 existantes, dont la version du protocole et l'identité du client. Aucun mode URL
 n'est annoncé. Le validateur Rust accepte les formats MCP usuels ; pour `email`,
-il applique un sous-ensemble ASCII conservateur. Les demandes URL, le chemin
-HTTP moderne et le chemin legacy restent fermés. En particulier, les handlers legacy répondent encore `-32601` à `elicitation/create` ; les
-raccorder demandera d'associer les requêtes serveur au bon appel et à sa durée
-de vie. Le point 21 reste donc incomplet.
+il applique un sous-ensemble ASCII conservateur.
+
+Le chemin HTTP moderne utilise la même boucle de continuation que stdio,
+avec le contexte d'opération fourni par le runtime et le même courtier IPC.
+Les réponses restent liées au serveur, aux projets, à la génération et à
+l'opération. Chaque continuation transmet les arguments initiaux, l'état opaque
+et les réponses validées. La boucle vérifie aussi l'annulation avant de rendre
+un résultat final, même si le transport vient de recevoir sa réponse.
+Une erreur HTTP ou d'authentification arrête l'appel.
+Les redirections de `tools/call`, même de même origine, sont refusées pour éviter
+le rejeu d'une mutation potentiellement acceptée. La récupération automatique
+de session du SDK est désactivée pour le client HTTP moderne ; le runtime peut
+reconnecter une session, mais ne rejoue pas l'appel interrompu.
+
+Le SDK rmcp expose les paramètres URL, mais le courtier et l'hôte de Macro
+valident seulement des formulaires. Un parcours URL demanderait un contrat
+séparé d'ouverture, de confirmation et d'annulation, ainsi qu'une politique
+pour les destinations et les flux d'authentification. Il reste reporté : aucune
+capacité URL n'est annoncée et toute demande URL échoue explicitement.
+Les handlers legacy répondent encore `-32601` à `elicitation/create`.
+Leurs requêtes serveur ne suivent pas la continuation `input_required` moderne ;
+leur prise en charge exige d'abord une corrélation avec l'appel et sa durée de vie.
+Ce lot couvre donc les formulaires HTTP modernes, sans activer URL ni legacy.
+
+Les mécanismes du client rmcp de Codex ont servi de référence pour la liaison
+à la requête, l'annulation et la séparation entre reprise de connexion et reprise
+d'un appel. Aucun code de ce client n'est incorporé.
 
 ### 7.5 Boucle d'outils et compatibilité des providers
 

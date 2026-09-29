@@ -336,6 +336,7 @@ export {
   deleteConversations,
   togglePinConversation,
   listMessages,
+  getConversationSourceSnapshot,
   searchMessages,
   dbGetArchitectPlanConversationSync,
   dbGetArchitectPlanConversationSyncForPlan,

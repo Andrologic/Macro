@@ -133,6 +133,92 @@ test('authentifie les invocations et rétablit la connexion des écouteurs', asy
   unlisten();
 }, 10_000);
 
+test('transporte les formulaires MCP dans l’ordre et ferme leur canal avec le bail', async () => {
+  const transport = await import('./browserRuntimeTransport');
+  const received: string[] = [];
+  const opening = transport.openBrowserRuntimeMcpInteractionPort((request) => {
+    received.push(request.requestId);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const activeSocket = FakeWebSocket.instances.at(-1)!;
+  const openRequest = JSON.parse(activeSocket.sent.at(-1)!) as { id: number; cmd: string; args?: unknown };
+  expect(openRequest).toMatchObject({ cmd: 'mcp_runtime_open_interaction_port' });
+  expect(openRequest.args).toBeUndefined();
+
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 1, message: { requestId: 'second' } },
+  }) });
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 0, message: { requestId: 'first' } },
+  }) });
+  expect(received).toEqual(['first', 'second']);
+
+  activeSocket.emit('message', { data: JSON.stringify({
+    id: openRequest.id,
+    payload: JSON.stringify({ status: 'success', payload: 'lease-1' }),
+  }) });
+  await expect(opening).resolves.toBe('lease-1');
+
+  const closing = transport.closeBrowserRuntimeMcpInteractionPort('lease-1');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const closeRequest = JSON.parse(activeSocket.sent.at(-1)!) as { id: number; cmd: string; args: unknown };
+  expect(closeRequest).toMatchObject({ cmd: 'mcp_runtime_close_interaction_port', args: { leaseId: 'lease-1' } });
+  activeSocket.emit('message', { data: JSON.stringify({
+    id: closeRequest.id, payload: JSON.stringify({ status: 'success', payload: null }),
+  }) });
+  await closing;
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 2, message: { requestId: 'late' } },
+  }) });
+  expect(received).toEqual(['first', 'second']);
+});
+
+test('attend les index antérieurs à end puis invalide le canal MCP', async () => {
+  const transport = await import('./browserRuntimeTransport');
+  const received: string[] = [];
+  let disconnects = 0;
+  const unlisten = transport.onBrowserRuntimeMcpDisconnect(() => { disconnects += 1; });
+  const opening = transport.openBrowserRuntimeMcpInteractionPort((request) => {
+    received.push(request.requestId);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const activeSocket = FakeWebSocket.instances.at(-1)!;
+  const openRequest = JSON.parse(activeSocket.sent.at(-1)!) as { id: number };
+  activeSocket.emit('message', { data: JSON.stringify({
+    id: openRequest.id, payload: JSON.stringify({ status: 'success', payload: 'lease-2' }),
+  }) });
+  await opening;
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 1, end: true },
+  }) });
+  expect(disconnects).toBe(0);
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 0, message: { requestId: 'first' } },
+  }) });
+  expect(received).toEqual(['first']);
+  expect(disconnects).toBe(1);
+  activeSocket.close();
+  expect(disconnects).toBe(1);
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 0, message: { requestId: 'stale' } },
+  }) });
+  expect(received).toEqual(['first']);
+  unlisten();
+});
+
+test('borne le tampon du canal MCP si un index manque', async () => {
+  const transport = await import('./browserRuntimeTransport');
+  const opening = transport.openBrowserRuntimeMcpInteractionPort(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const activeSocket = FakeWebSocket.instances.at(-1)!;
+  const openRequest = JSON.parse(activeSocket.sent.at(-1)!) as { id: number };
+  activeSocket.emit('message', { data: JSON.stringify({
+    mcpChannelId: openRequest.id, frame: { index: 32, message: { requestId: 'too-far' } },
+  }) });
+  await expect(opening).rejects.toThrow('Macro could not connect to the desktop runtime');
+  expect(activeSocket.readyState).toBe(3);
+});
+
 test('arrête définitivement la reconnexion quand un autre onglet prend la session', async () => {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;

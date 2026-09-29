@@ -231,6 +231,13 @@ pub struct ChatSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationSourceSnapshot {
+    pub target_project_id: Option<String>,
+    pub conversation: Conversation,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ChatBootstrapSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages_by_conversation_id: HashMap<String, Vec<Message>>,

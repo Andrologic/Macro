@@ -305,6 +305,7 @@ impl RmcpModernStdioClient {
 
     /// Sends exactly one modern tool round. MRTR continuation is intentionally
     /// left to Macro's interaction broker so `requestState` remains opaque.
+    #[cfg(test)]
     pub(crate) async fn call_tool(
         &self,
         tool_name: &str,
@@ -495,7 +496,7 @@ impl RmcpModernStdioClient {
     }
 }
 
-fn form_request_options(cancellation: &McpOperationCancellation) -> PeerRequestOptions {
+pub(super) fn form_request_options(cancellation: &McpOperationCancellation) -> PeerRequestOptions {
     if !cancellation
         .interaction()
         .is_some_and(|context| context.broker.has_host())

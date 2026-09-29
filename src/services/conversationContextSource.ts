@@ -1,5 +1,5 @@
 import type { PersistedContextReference } from '../types';
-import type { DbConversation, DbMessage } from './ipc/conversations.types';
+import type { DbConversation, DbConversationSourceSnapshot, DbMessage } from './ipc/conversations.types';
 
 const MAX_SOURCES = 3;
 const MAX_CANDIDATE_LENGTH = 4_000;
@@ -10,13 +10,21 @@ type Passage = Pick<DbMessage, 'id' | 'role' | 'content' | 'created_at' | 'compl
 
 export interface ConversationContextSourcePorts {
   getConversation(id: string): Promise<DbConversation | null>;
-  listMessages(id: string): Promise<DbMessage[]>;
+  getConversationSourceSnapshot(targetId: string, sourceId: string): Promise<DbConversationSourceSnapshot | null>;
   isSourceActive(id: string): boolean;
 }
 
-const terms = (value: string, limit = 500): Set<string> => new Set(
-  (value.slice(0, MAX_CANDIDATE_LENGTH).toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).slice(0, limit),
-);
+const wordMatches = (value: string, limit = 500): { term: string; index: number }[] => {
+  const prefix = value.slice(0, MAX_CANDIDATE_LENGTH);
+  return [...prefix.matchAll(/[\p{L}\p{N}]{3,}/gu)]
+    .filter((match) => match.index + match[0].length < prefix.length ||
+      !/[\p{L}\p{N}]/u.test(value[prefix.length] ?? ''))
+    .slice(0, limit)
+    .map((match) => ({ term: match[0].toLocaleLowerCase(), index: match.index }));
+};
+
+const terms = (value: string, limit = 500): Set<string> =>
+  new Set(wordMatches(value, limit).map((match) => match.term));
 
 const isUsablePassage = (message: Passage): boolean => {
   if (!message.content.trim()) return false;
@@ -36,20 +44,19 @@ export function selectConversationPassages(messages: readonly Passage[], query: 
     .filter(isUsablePassage)
     .map((message, index) => {
       const content = message.content.slice(0, MAX_CANDIDATE_LENGTH);
-      const passageTerms = terms(content);
+      const matches = wordMatches(message.content);
+      const passageTerms = new Set(matches.map((match) => match.term));
       const score = [...queryTerms].reduce((sum, term) => sum + Number(passageTerms.has(term)), 0);
-      return { message, content, index, score };
+      const firstHit = matches.find((match) => queryTerms.has(match.term))?.index;
+      return { message, content, index, score, firstHit };
     });
   const matching = candidates.filter((candidate) => candidate.score > 0);
   const selected = (matching.length ? matching : candidates.slice(-1))
     .sort((left, right) => right.score - left.score || right.index - left.index)
     .slice(0, MAX_PASSAGES)
     .sort((left, right) => left.index - right.index);
-  return selected.map(({ message, content }) => {
-    const lower = content.toLocaleLowerCase();
-    const firstHit = [...queryTerms].map((term) => lower.indexOf(term)).filter((index) => index >= 0)
-      .reduce((minimum, index) => Math.min(minimum, index), Infinity);
-    const start = Number.isFinite(firstHit) ? Math.max(0, firstHit - 120) : 0;
+  return selected.map(({ message, content, firstHit }) => {
+    const start = firstHit === undefined ? 0 : Math.max(0, firstHit - 120);
     const excerpt = content.slice(start, start + MAX_PASSAGE_LENGTH).trim();
     return `[message_id=${message.id}; role=${message.role}; at=${message.created_at}${matching.length ? '' : '; recent_fallback=true'}]\n` +
       `${start > 0 ? '…' : ''}${excerpt}${start + MAX_PASSAGE_LENGTH < message.content.length ? '…' : ''}`;
@@ -78,23 +85,23 @@ export async function resolveConversationContextSources(params: {
     if (!sourceId || sourceId !== ref.id || sourceId === params.targetConversationId) {
       throw new Error('The conversation source is invalid. Remove it and select it again.');
     }
-    const source = await params.ports.getConversation(sourceId);
-    if (!source || source.project_id !== target.project_id || params.ports.isSourceActive(sourceId)) {
+    if (params.ports.isSourceActive(sourceId)) {
       throw new Error('The conversation source is unavailable or outside this project.');
     }
-    const transcript = await params.ports.listMessages(sourceId);
-    const current = await params.ports.getConversation(sourceId);
-    if (!current || current.project_id !== target.project_id ||
-      current.updated_at !== source.updated_at || params.ports.isSourceActive(sourceId)) {
+    const snapshot = await params.ports.getConversationSourceSnapshot(params.targetConversationId, sourceId);
+    if (!snapshot || snapshot.conversation.project_id !== snapshot.target_project_id) {
+      throw new Error('The conversation source is unavailable or outside this project.');
+    }
+    if (params.ports.isSourceActive(sourceId)) {
       throw new Error('The conversation source changed while selecting passages. Try sending again.');
     }
-    const passage = selectConversationPassages(transcript, params.request);
+    const passage = selectConversationPassages(snapshot.messages, params.request);
     if (!passage) throw new Error('The selected conversation has no completed text to cite.');
     resolved.push({
       ...ref,
-      title: current.title,
+      title: snapshot.conversation.title,
       snippet: passage,
-      sourceUpdatedAt: current.updated_at,
+      sourceUpdatedAt: snapshot.conversation.updated_at,
     });
   }
   return resolved;

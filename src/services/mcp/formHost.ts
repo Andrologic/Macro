@@ -4,6 +4,8 @@ import type {
   McpInteractionResponse,
 } from '../../types/generated/ipc';
 import { toServiceError } from '../contracts/errors';
+import { onBrowserRuntimeMcpDisconnect } from '../browserRuntimeTransport';
+import { isBrowserRuntimeBridgeEnabled } from '../tauriRuntimeBridge';
 import {
   mcpRuntimeCloseInteractionPort,
   mcpRuntimeListPendingInteractions,
@@ -28,6 +30,7 @@ export type FormHostPort = {
   close: (leaseId: string) => Promise<void>;
   pending: (leaseId: string) => Promise<string[]>;
   respond: (leaseId: string, response: McpInteractionResponse) => Promise<void>;
+  onDisconnected?: (listener: () => void) => () => void;
 };
 
 const nativePort: FormHostPort = {
@@ -35,6 +38,10 @@ const nativePort: FormHostPort = {
   close: mcpRuntimeCloseInteractionPort,
   pending: mcpRuntimeListPendingInteractions,
   respond: mcpRuntimeRespondToInteraction,
+  onDisconnected: (listener) => {
+    if (!isBrowserRuntimeBridgeEnabled()) return () => undefined;
+    return onBrowserRuntimeMcpDisconnect(listener);
+  },
 };
 
 /** Keeps only active requests in memory. Rust owns correlation and expiry. */
@@ -52,6 +59,7 @@ export class McpFormHost {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
   private generation = 0;
+  private disconnectUnlisten: (() => void) | null = null;
 
   constructor(private readonly port: FormHostPort = nativePort) {}
 
@@ -76,11 +84,30 @@ export class McpFormHost {
   /** Deferred teardown survives React StrictMode's immediate effect replay. */
   mount(): () => void {
     this.mounted += 1;
-    if (this.mounted === 1) void this.start();
+    if (this.mounted === 1) {
+      this.disconnectUnlisten = this.port.onDisconnected?.(() => this.losePort()) ?? null;
+      void this.start();
+    }
     return () => {
       this.mounted -= 1;
+      if (this.mounted === 0) {
+        this.disconnectUnlisten?.();
+        this.disconnectUnlisten = null;
+      }
       queueMicrotask(() => { if (this.mounted === 0) void this.stop(); });
     };
+  }
+
+  private losePort(): void {
+    if (!this.leaseId) return;
+    this.active = false;
+    this.generation += 1;
+    this.leaseId = null;
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
+    this.update({ status: 'unavailable', queue: [], submittingId: null, issue: 'hostUnavailable' });
   }
 
   async start(): Promise<void> {

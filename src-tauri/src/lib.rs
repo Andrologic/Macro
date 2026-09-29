@@ -771,6 +771,7 @@ pub fn run() {
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::db_get_conversation_source_snapshot,
             commands::db_search_messages,
             commands::db_create_message,
             commands::db_import_messages,

@@ -292,6 +292,14 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
 }
 
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Conversation>> {
+    let mut connection = pool.acquire().await?;
+    get_conversation_with_connection(&mut connection, id).await
+}
+
+async fn get_conversation_with_connection(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> DbResult<Option<Conversation>> {
     let row = sqlx::query(
         r#"
         SELECT id, title, description, scope_mode, task_id, group_id, project_id,
@@ -302,7 +310,7 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
         "#,
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?;
 
     Ok(row.map(|row| Conversation {
@@ -783,6 +791,14 @@ pub async fn update_git_worktree_project_access(
 // ============ MESSAGES ============
 
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
+    let mut connection = pool.acquire().await?;
+    list_messages_with_connection(&mut connection, conversation_id).await
+}
+
+async fn list_messages_with_connection(
+    connection: &mut SqliteConnection,
+    conversation_id: &str,
+) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
         SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason, generation_attempts_json
@@ -792,7 +808,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
         "#,
     )
     .bind(conversation_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await?;
 
     let messages = rows
@@ -816,6 +832,32 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
         .collect();
 
     Ok(messages)
+}
+
+pub async fn get_conversation_source_snapshot(
+    pool: &SqlitePool,
+    target_id: &str,
+    source_id: &str,
+) -> DbResult<Option<ConversationSourceSnapshot>> {
+    let mut transaction = pool.begin().await?;
+    let target = get_conversation_with_connection(&mut transaction, target_id).await?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let conversation = get_conversation_with_connection(&mut transaction, source_id).await?;
+    let Some(conversation) = conversation else {
+        return Ok(None);
+    };
+    if conversation.project_id != target.project_id {
+        return Ok(None);
+    }
+    let messages = list_messages_with_connection(&mut transaction, source_id).await?;
+    transaction.commit().await?;
+    Ok(Some(ConversationSourceSnapshot {
+        target_project_id: target.project_id,
+        conversation,
+        messages,
+    }))
 }
 
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
@@ -3534,6 +3576,144 @@ mod tests {
             Some(attempts)
         );
         assert_eq!(loaded[0].content, "answer");
+    }
+
+    #[tokio::test]
+    async fn conversation_source_snapshot_reads_edited_last_message_with_unchanged_timestamp() {
+        let (_dir, pool) = test_pool().await;
+        let target = create_test_conversation(&pool, "Target").await;
+        let conversation = create_test_conversation(&pool, "Source").await;
+        let message = create_message(
+            &pool,
+            CreateMessageInput {
+                id: Some("source-last".to_string()),
+                conversation_id: conversation.id.clone(),
+                turn_id: None,
+                role: "user".to_string(),
+                content: "release pending".to_string(),
+                token_count: None,
+                tool_traces_json: None,
+                hidden_context: None,
+                provider_input_items_json: None,
+                provider_turn_state_json: None,
+                context_refs_json: None,
+                completion_reason: None,
+                generation_attempts_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let before = get_conversation_source_snapshot(&pool, &target.id, &conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        update_message_content(
+            &pool,
+            UpdateMessageContentInput {
+                id: &message.id,
+                turn_id: None,
+                content: "release approved",
+                token_count: None,
+                tool_traces_json: None,
+                hidden_context: None,
+                provider_input_items_json: None,
+                provider_turn_state_json: None,
+                context_refs_json: None,
+                completion_reason: None,
+                generation_attempts_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let after = get_conversation_source_snapshot(&pool, &target.id, &conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.conversation.updated_at,
+            before.conversation.updated_at
+        );
+        assert_eq!(before.messages[0].content, "release pending");
+        assert_eq!(after.messages[0].content, "release approved");
+    }
+
+    #[tokio::test]
+    async fn conversation_source_read_transaction_does_not_mix_message_revisions() {
+        let (_dir, pool) = test_pool().await;
+        let target = create_test_conversation(&pool, "Target").await;
+        let conversation = create_test_conversation(&pool, "Source").await;
+        sqlx::query(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('source-message', ?, 'user', 'before edit', '2026-09-28T10:00:00Z')",
+        )
+        .bind(&conversation.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+        let source = get_conversation_with_connection(&mut transaction, &conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query("UPDATE messages SET content = 'after edit' WHERE id = 'source-message'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let messages = list_messages_with_connection(&mut transaction, &conversation.id)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(source.id, conversation.id);
+        assert_eq!(messages[0].content, "before edit");
+        let current = get_conversation_source_snapshot(&pool, &target.id, &conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.messages[0].content, "after edit");
+    }
+
+    #[tokio::test]
+    async fn conversation_source_snapshot_rejects_moved_or_deleted_target_before_messages() {
+        let (_dir, pool) = test_pool().await;
+        let target = create_test_conversation(&pool, "Target").await;
+        let source = create_test_conversation(&pool, "Source").await;
+        sqlx::query("UPDATE conversations SET project_id = 'project-a' WHERE id IN (?, ?)")
+            .bind(&target.id)
+            .bind(&source.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            get_conversation_source_snapshot(&pool, &target.id, &source.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        sqlx::query("UPDATE conversations SET project_id = 'project-b' WHERE id = ?")
+            .bind(&target.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            get_conversation_source_snapshot(&pool, &target.id, &source.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        sqlx::query("DELETE FROM conversations WHERE id = ?")
+            .bind(&target.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            get_conversation_source_snapshot(&pool, &target.id, &source.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     async fn seed_search_conversation(pool: &SqlitePool, id: &str, title: &str) {
