@@ -61,6 +61,16 @@ pub async fn db_get_conversation_goal_audit(
 }
 
 #[tauri::command]
+pub async fn db_list_conversation_goal_audits(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Vec<ConversationGoalAudit>> {
+    conversation_goals::list_conversation_audits(&get_pool(&pool).await?, &conversation_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_list_recoverable_conversation_goal_audits(
     pool: State<'_, DbPool>,
 ) -> CommandResult<Vec<ConversationGoalAudit>> {

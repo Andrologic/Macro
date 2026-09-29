@@ -263,6 +263,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_selection_excludes_auditors_but_snapshots_and_direct_lookup_retain_them() {
+        for scope in ["Implement", "Architect", "Chat"] {
+            let (_temp, pool) = pool().await;
+            let task = (scope == "Implement").then_some("task-1");
+            let parent = fixture(&pool, scope, Some("project-1"), task).await;
+            let child =
+                reserve_goal_audit_child_conversation(&pool, "run-1", &parent, &selection())
+                    .await
+                    .unwrap();
+            sqlx::query("UPDATE conversations SET updated_at = '2050-01-01' WHERE id = ?")
+                .bind(&child)
+                .execute(&pool)
+                .await
+                .unwrap();
+            for (id, conversation) in [("parent-message", &parent), ("child-message", &child)] {
+                sqlx::query("INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, 'assistant', 'Synthetic result', 'now')")
+                    .bind(id).bind(conversation).execute(&pool).await.unwrap();
+            }
+            let visible = super::super::repository::list_user_conversations(&pool)
+                .await
+                .unwrap();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible[0].id, parent);
+            let bootstrap = super::super::repository::get_chat_bootstrap_snapshot(
+                &pool,
+                &[child.clone(), parent.clone()],
+            )
+            .await
+            .unwrap();
+            assert_eq!(bootstrap.conversations.len(), 1);
+            assert_eq!(bootstrap.conversations[0].id, parent);
+            assert!(bootstrap.messages_by_conversation_id.contains_key(&parent));
+            assert!(!bootstrap.messages_by_conversation_id.contains_key(&child));
+            assert!(super::super::repository::get_conversation(&pool, &child)
+                .await
+                .unwrap()
+                .is_some());
+            let complete = super::super::repository::get_chat_snapshot(&pool)
+                .await
+                .unwrap();
+            assert_eq!(complete.conversations.len(), 2);
+            assert_eq!(complete.messages.len(), 2);
+            super::super::repository::delete_conversation(&pool, &parent)
+                .await
+                .unwrap();
+            assert!(super::super::repository::get_conversation(&pool, &child)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(super::super::repository::list_user_conversations(&pool)
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(super::super::repository::get_chat_snapshot(&pool)
+                .await
+                .unwrap()
+                .messages
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn reserves_once_under_concurrent_replay_with_effective_selection() {
         let (_temp, pool) = pool().await;
         let parent = fixture(&pool, "Implement", Some("project-1"), Some("task-1")).await;

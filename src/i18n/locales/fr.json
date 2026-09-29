@@ -2556,6 +2556,22 @@
     "loggedOut": "Déconnecté"
   },
   "goal": {
+    "artifacts": "Vérifications de l’objectif",
+    "artifactSaveFailed": "Impossible d’enregistrer l’artefact de vérification de l’objectif",
+    "artifactTitle": "Vérification de l’objectif",
+    "queueTrackingFailed": "Impossible de suivre le tour de l’objectif en file d’attente",
+    "artifactStatus": { "achieved": "Atteint", "continue": "À poursuivre", "needs_user": "Réponse nécessaire", "cannot_progress": "Progression impossible", "applied": "Appliqué", "failed": "Échec", "cancelled": "Annulé", "stale": "Périmé", "timed_out": "Délai dépassé" },
+    "reason": {
+      "reviewInterrupted": "La vérification précédente a été interrompue. Reprenez pour lancer un nouveau tour de l’agent.",
+      "executorInterrupted": "Le tour précédent de l’agent a été interrompu. Reprenez pour continuer.",
+      "noProgress": "Deux vérifications ont relevé le même travail restant sans nouvelle preuve. Changez d’approche avant de reprendre."
+    },
+    "loadFailed": "Impossible de charger l’objectif",
+    "projectRequired": "L’objectif nécessite une conversation liée à un projet",
+    "saveFailed": "Impossible d’enregistrer l’objectif",
+    "pauseFailed": "Impossible de suspendre l’objectif",
+    "resumeFailed": "Impossible de reprendre l’objectif",
+    "stopFailed": "Impossible d’arrêter l’objectif",
     "bannerLabel": "Objectif de la conversation",
     "shortLabel": "Objectif",
     "edit": "Modifier l’objectif",

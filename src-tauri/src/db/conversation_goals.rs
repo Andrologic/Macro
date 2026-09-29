@@ -257,8 +257,14 @@ fn stored_criteria(criteria: &[String]) -> DbResult<String> {
 }
 
 // The frontend trims and collapses whitespace in verdict text before applying it.
-// Compare that canonical text while retaining every other JSON field for exact matching.
-fn normalize_verdict_text(value: &mut serde_json::Value) {
+// JSON integers and Rust f64 encode confidence differently at 0 and 1.
+// Canonicalize that number and text while retaining every other field for exact matching.
+fn normalize_verdict_for_comparison(value: &mut serde_json::Value) {
+    if let Some(confidence) = value.get("confidence").and_then(serde_json::Value::as_f64) {
+        if let Some(number) = serde_json::Number::from_f64(confidence) {
+            value["confidence"] = serde_json::Value::Number(number);
+        }
+    }
     fn field(value: &mut serde_json::Value, key: &str) {
         if let Some(serde_json::Value::String(text)) = value.get_mut(key) {
             *text = folded_text(text);
@@ -402,6 +408,20 @@ pub async fn get_audit(
         .transpose()
 }
 
+pub async fn list_conversation_audits(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Vec<ConversationGoalAudit>> {
+    nonempty(conversation_id, "conversation id")?;
+    sqlx::query("SELECT * FROM conversation_goal_audits WHERE conversation_id = ? ORDER BY created_at, audit_id")
+        .bind(conversation_id)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(audit_from_row)
+        .collect()
+}
+
 pub async fn list_recoverable_audits(pool: &SqlitePool) -> DbResult<Vec<ConversationGoalAudit>> {
     sqlx::query("SELECT * FROM conversation_goal_audits WHERE status IN ('queued', 'running', 'ready_for_verdict', 'interrupted') ORDER BY updated_at, audit_id")
         .fetch_all(pool).await?.into_iter().map(audit_from_row).collect()
@@ -417,6 +437,16 @@ pub async fn activate_goal(
     let criteria = stored_criteria(&input.success_criteria)?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let project_id: Option<Option<String>> =
+        sqlx::query_scalar("SELECT project_id FROM conversations WHERE id = ?")
+            .bind(&input.conversation_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if project_id.flatten().is_none_or(|id| id.trim().is_empty()) {
+        return Err(invalid(
+            "Goal requires a conversation attached to a project",
+        ));
+    }
     match (&input.replace_goal_id, input.replace_revision) {
         (None, None) => {
             let current: Option<String> = sqlx::query_scalar("SELECT goal_id FROM conversation_goals WHERE conversation_id = ? AND is_current = 1")
@@ -740,8 +770,8 @@ pub async fn apply_verdict(
     )
     .map_err(|_| invalid("Audit run verdict is invalid JSON"))?;
     let mut normalized_verdict = verdict.clone();
-    normalize_verdict_text(&mut run_verdict);
-    normalize_verdict_text(&mut normalized_verdict);
+    normalize_verdict_for_comparison(&mut run_verdict);
+    normalize_verdict_for_comparison(&mut normalized_verdict);
     if run_verdict != normalized_verdict {
         return Err(invalid("Verdict differs from durable run output"));
     }
@@ -780,7 +810,7 @@ mod tests {
         let pool = crate::db::create_pool(&temp.path().join("goals.db"))
             .await
             .unwrap();
-        sqlx::query("INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('parent', 'Parent', '2026-01-01', '2026-01-01')")
+        sqlx::query("INSERT INTO conversations (id, title, project_id, created_at, updated_at) VALUES ('parent', 'Parent', 'project', '2026-01-01', '2026-01-01')")
             .execute(&pool).await.unwrap();
         for (id, turn) in [("message-1", "turn-1"), ("message-2", "turn-2")] {
             sqlx::query("INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at) VALUES (?, 'parent', ?, 'assistant', 'Done', '2026-01-01')")
@@ -801,6 +831,21 @@ mod tests {
             replace_goal_id: None,
             replace_revision: None,
         }
+    }
+
+    #[tokio::test]
+    async fn activation_requires_a_project_conversation() {
+        let (_temp, pool) = fixture().await;
+        sqlx::query("UPDATE conversations SET project_id = NULL WHERE id = 'parent'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(activate_goal(&pool, activation())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("project"));
+        assert!(get_current_goal(&pool, "parent").await.unwrap().is_none());
     }
 
     async fn activate_pending(pool: &SqlitePool, input: ActivateConversationGoalInput) {
@@ -1199,6 +1244,35 @@ mod tests {
                 .unwrap(),
             GoalCasOutcome::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn integer_confidence_endpoints_match_without_accepting_a_changed_score() {
+        for confidence in [0, 1] {
+            let (_temp, pool) = fixture().await;
+            activate_pending(&pool, activation()).await;
+            run(&pool, "run-1").await;
+            claim_audit(&pool, claim("audit-1", "turn-1", "run-1", 2))
+                .await
+                .unwrap();
+            transition(&pool, "run-1", 1, AgentRunStatus::Running).await;
+            let mut raw = serde_json::json!(verdict());
+            raw["confidence"] = serde_json::json!(confidence);
+            transition_with_verdict(&pool, "run-1", 2, AgentRunStatus::Completed, Some(raw)).await;
+            let mut changed = application("audit-1", "turn-1", "run-1", 2);
+            changed.verdict.confidence = 0.5;
+            assert!(apply_verdict(&pool, changed)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("differs from durable run output"));
+            let mut matching = application("audit-1", "turn-1", "run-1", 2);
+            matching.verdict.confidence = f64::from(confidence);
+            assert_eq!(
+                apply_verdict(&pool, matching).await.unwrap(),
+                GoalCasOutcome::Applied
+            );
+        }
     }
 
     #[tokio::test]

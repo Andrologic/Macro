@@ -767,6 +767,7 @@ pub fn run() {
             commands::goal_audit::db_update_conversation_goal,
             commands::goal_audit::db_deactivate_conversation_goal,
             commands::goal_audit::db_get_conversation_goal_audit,
+            commands::goal_audit::db_list_conversation_goal_audits,
             commands::goal_audit::db_list_recoverable_conversation_goal_audits,
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,

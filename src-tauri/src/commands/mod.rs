@@ -194,7 +194,7 @@ pub fn tool_cancel_workspace(execution_id: String) -> bool {
 pub async fn db_list_conversations(pool: State<'_, DbPool>) -> CommandResult<Vec<Conversation>> {
     let pool = get_pool(&pool).await?;
 
-    repository::list_conversations(&pool)
+    repository::list_user_conversations(&pool)
         .await
         .map_err(Into::into)
 }
