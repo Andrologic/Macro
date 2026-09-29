@@ -820,4 +820,76 @@ describe('Goal product flow', () => {
     h.flow.cancel('conversation');
   });
 
+  it('does not dispatch an old pending continuation for a replacement Goal', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });
+    h.queued = 1;
+    h.flow.track('conversation', 'turn', 'assistant', 'goal');
+    await settle();
+    expect(h.goal?.status).toBe('continuation_pending');
+    const load = h.repository.loadCurrentGoal;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let first = true;
+    h.repository.loadCurrentGoal = async (...args) => {
+      if (first) { first = false; await gate; }
+      return load(...args);
+    };
+    h.queued = 0;
+    h.notify();
+    h.repository.replaceGoal = async () => {
+      h.goal = { ...initialGoal(), goalId: 'replacement', objective: 'New objective', status: 'active_ready' };
+      return h.goal;
+    };
+    await h.flow.activate('conversation', 'New objective', 'provider', 'model', null, h.goal!);
+    release();
+    await settle();
+    h.flow.cancel('conversation');
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('retains a readmitted queued turn when older review preparation settles', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    const load = h.repository.loadCurrentGoal;
+    let runningReads = 0;
+    let releaseOld!: () => void;
+    let releaseNew!: () => void;
+    const oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
+    const newGate = new Promise<void>(resolve => { releaseNew = resolve; });
+    h.repository.loadCurrentGoal = async (...args) => {
+      const current = await load(...args);
+      if (current?.status === 'executor_running') {
+        runningReads++;
+        if (runningReads === 2) await oldGate;
+      }
+      return current;
+    };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    h.queuedTurnIds = [];
+    await settle();
+    expect(runningReads).toBe(2);
+    await h.flow.pause('conversation');
+    // Pause reads executor_running twice before committing paused.
+    const baseline = runningReads;
+    h.repository.loadCurrentGoal = async (...args) => {
+      const current = await load(...args);
+      if (current?.status === 'executor_running' && ++runningReads === baseline + 2) await newGate;
+      return current;
+    };
+    await h.flow.resume('conversation');
+    await settle();
+    expect(h.audited).toEqual([]);
+    releaseOld();
+    await settle();
+    await h.flow.pause('conversation');
+    await h.flow.resume('conversation');
+    releaseNew();
+    await settle();
+    h.flow.cancel('conversation');
+    expect(h.audited).toEqual(['queued-turn']);
+    expect(h.sent).toHaveLength(0);
+  });
+
 });

@@ -418,7 +418,9 @@ export class ConversationGoalProductFlow {
     for (const conversationId of this.continuationPending) {
       if (this.admissions.has(conversationId) || this.userAdmissions.has(conversationId) || this.queuedTurns.get(conversationId)?.size ||
           this.ports.readQueuedCount(conversationId) || this.ports.readRuntime(conversationId).phase !== 'idle') continue;
+      const generation = this.generations.get(conversationId) ?? 0;
       const current = await this.ports.repository.loadCurrentGoal(conversationId);
+      if (!this.continuationPending.has(conversationId) || generation !== (this.generations.get(conversationId) ?? 0)) continue;
       if (!current || !['active_ready', 'continuation_pending'].includes(current.status)) { this.continuationPending.delete(conversationId); continue; }
       const feedback = current.latestVerdict?.feedback || current.latestVerdict?.summary || current.objective;
       await this.startExecutorTurn(conversationId, current, `Continue the current goal. Independent review: ${feedback.slice(0, MAX_FEEDBACK_LENGTH)}`);
@@ -504,8 +506,10 @@ export class ConversationGoalProductFlow {
         await this.status(conversationId, 'error', error instanceof Error ? error.message : 'Goal review failed.', current).catch(() => undefined);
       }
     } finally {
-      if (this.tracked.get(conversationId) === turn) this.tracked.delete(conversationId);
-      if (this.queuedTracked.get(conversationId) === turn.turnId) this.queuedTracked.delete(conversationId);
+      if (this.tracked.get(conversationId) === turn) {
+        this.tracked.delete(conversationId);
+        if (this.queuedTracked.get(conversationId) === turn.turnId) this.queuedTracked.delete(conversationId);
+      }
       if (auditHandle && this.audits.get(conversationId) === auditHandle) this.audits.delete(conversationId);
       this.releaseSubscriptionIfIdle();
     }
