@@ -26,6 +26,12 @@ export interface GoalAuditChildConversation {
   parentConversationId: string;
 }
 
+export interface GoalAuditReadToolContext {
+  readonly runId: string;
+  readonly parentConversationId: string;
+  readonly childConversationId: string;
+}
+
 export interface GoalAuditProviderPorts {
   /** Resolve the provider for this child without reading the parent chat store. */
   resolveProvider(input: GoalAuditChildInput, signal: AbortSignal): GoalAuditProvider | Promise<GoalAuditProvider>;
@@ -42,8 +48,18 @@ export interface GoalAuditProviderPorts {
     args: Record<string, unknown>,
     id: string | undefined,
     signal: AbortSignal,
+    context: GoalAuditReadToolContext,
   ): ReturnType<NonNullable<StreamingChatOptions["onToolCall"]>>;
 }
+
+const hasValidChildBinding = (
+  child: GoalAuditChildConversation,
+  runId: string,
+  parentConversationId: string,
+): boolean => !!child && typeof child.id === "string" && !!child.id.trim() &&
+  child.id.trim() === child.id && child.id !== runId &&
+  child.id !== parentConversationId && child.runId === runId &&
+  child.parentConversationId === parentConversationId;
 
 const abortError = (): DOMException => new DOMException("Aborted", "AbortError");
 
@@ -90,20 +106,21 @@ export const createGoalAuditProviderExecutor = (
       !capabilities.includes("git.read")) {
       throw new Error("Goal auditor requires its exact read-only capability set.");
     }
-    const provider = await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
+    await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
     const childConversation = await awaitAbortable(signal, () => ports.resolveChildConversation({
       runId: request.childRunId,
       parentConversationId: request.parentConversationId,
       signal,
     }));
-    if (!childConversation || typeof childConversation.id !== "string" ||
-      !childConversation.id.trim() || childConversation.id.trim() !== childConversation.id ||
-      childConversation.id === request.childRunId ||
-      childConversation.id === request.parentConversationId ||
-      childConversation.runId !== request.childRunId ||
-      childConversation.parentConversationId !== request.parentConversationId) {
+    if (!hasValidChildBinding(childConversation, request.childRunId, request.parentConversationId)) {
       throw new Error("Invalid goal auditor child conversation binding.");
     }
+    const readToolContext: GoalAuditReadToolContext = Object.freeze({
+      runId: request.childRunId,
+      parentConversationId: request.parentConversationId,
+      childConversationId: childConversation.id,
+    });
+    const provider = await awaitAbortable(signal, () => ports.resolveProvider(input, signal));
     const allowedToolIds = filterToolIdsForInternalAgentProfile(
       [
         ...(capabilities.includes("workspace.read") ? WORKSPACE_READ_TOOLS : []),
@@ -115,11 +132,17 @@ export const createGoalAuditProviderExecutor = (
     const emitProgress = (event: SubagentProgressEvent) => {
       if (!signal.aborted) onProgress?.(event);
     };
+    const assertReadToolBinding = () => {
+      if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId) ||
+        childConversation.id !== readToolContext.childConversationId) {
+        throw new Error("Invalid goal auditor child conversation binding.");
+      }
+    };
     let completion: StreamCompletionResult | undefined;
     let failure: Error | undefined;
     await awaitAbortable(signal, () => (ports.stream ?? streamChat)({
       sessionId: request.childRunId,
-      conversationId: childConversation.id,
+      conversationId: readToolContext.childConversationId,
       internalAgentProfile: "goal_auditor",
       providerId: provider.providerId,
       providerType: provider.providerType,
@@ -144,8 +167,11 @@ export const createGoalAuditProviderExecutor = (
           emitProgress({ kind: "tool_refused", message: name });
           return { kind: "result", result: `Tool ${name} is not allowed for goal_auditor.`, isError: true };
         }
+        assertReadToolBinding();
         emitProgress({ kind: "tool_started", message: name });
-        return ports.executeReadTool(name, args, id, signal);
+        if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
+        assertReadToolBinding();
+        return ports.executeReadTool(name, args, id, signal, readToolContext);
       },
       onToolResult: (name) => emitProgress({ kind: "tool_finished", message: name }),
       onComplete: (result) => { if (!signal.aborted) completion = result; },

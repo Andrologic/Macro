@@ -1063,6 +1063,34 @@ describe('useProviderStore secret resolution', () => {
     expect(useProviderStore.getState().providerReachabilityById['provider-openai']?.status).not.toBe('reachable');
   });
 
+  it('exposes an in-flight provider key rotation before the config snapshot changes', async () => {
+    const { useProviderStore, isProviderTransportUnavailable } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    await useProviderStore.getState().resolveProviderApiKey('provider-openai');
+    let finishUpdate!: () => void;
+    updateProviderConfigMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finishUpdate = resolve; }));
+    const update = useProviderStore.getState().updateProviderConfig('provider-openai', { apiKey: 'replacement-key' });
+    await flushAsyncWork();
+    expect(useProviderStore.getState().providerConfigs[0].apiKey).toBe('test-api-key');
+    expect(isProviderTransportUnavailable('provider-openai')).toBe(true);
+    finishUpdate();
+    await update;
+    expect(isProviderTransportUnavailable('provider-openai')).toBe(false);
+  });
+
+  it('preserves a key loaded while provider configurations reload', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const configs = await listProviderConfigsMock();
+    let finishReload!: (value: typeof configs) => void;
+    listProviderConfigsMock.mockImplementationOnce(() => new Promise((resolve) => { finishReload = resolve; }));
+    const reload = useProviderStore.getState().loadProviderConfigs();
+    expect(await useProviderStore.getState().resolveProviderApiKey('provider-openai')).toBe('test-api-key');
+    finishReload(configs);
+    await reload;
+    expect(useProviderStore.getState().providerConfigs[0].apiKey).toBe('test-api-key');
+  });
+
   it('keeps the catalog intact when saving the new endpoint fails', async () => {
     const { useProviderStore } = await loadProviderStore();
     await useProviderStore.getState().loadProviderConfigs();
