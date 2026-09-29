@@ -38,6 +38,34 @@ function setup() {
 }
 
 describe('global MCP form host', () => {
+  it('libère l’état du formulaire quand la session navigateur se ferme', async () => {
+    let disconnect: (() => void) | undefined;
+    let onRequest: ((request: McpInteractionRequest) => void) | undefined;
+    let opens = 0;
+    const close = mock(async (_leaseId: string) => undefined);
+    const port: FormHostPort = {
+      open: async (callback) => { onRequest = callback; return `lease-${++opens}`; },
+      close,
+      pending: async () => [],
+      respond: async () => undefined,
+      onDisconnected: (listener) => { disconnect = listener; return () => { disconnect = undefined; }; },
+    };
+    const host = new McpFormHost(port);
+    const release = host.mount();
+    await tick();
+    onRequest?.(request('alpha', 'pending'));
+    expect(host.snapshot().queue).toHaveLength(1);
+    disconnect?.();
+    expect(host.snapshot()).toMatchObject({ status: 'unavailable', issue: 'hostUnavailable', queue: [] });
+    expect(close).not.toHaveBeenCalled();
+    await host.retry();
+    expect(host.snapshot().status).toBe('ready');
+    expect(opens).toBe(2);
+    release();
+    await tick();
+    expect(close).toHaveBeenCalledWith('lease-2');
+  });
+
   it('keeps a single lease across StrictMode effect replay and closes it on final unmount', async () => {
     const { host, open, close } = setup();
     const first = host.mount();

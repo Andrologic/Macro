@@ -41,6 +41,7 @@ pub fn init() -> TauriPlugin<Wry> {
         ])
         .setup(|app, api| {
             app.manage(remote_ui::plugin_ext::PendingRpcs::default());
+            app.manage(remote_ui::plugin_ext::McpChannelPorts::default());
             let remote_ui = remote_ui::init(app, api)?;
             app.manage(remote_ui);
             Ok(())

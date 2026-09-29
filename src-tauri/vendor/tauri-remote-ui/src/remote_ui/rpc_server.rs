@@ -1402,6 +1402,9 @@ async fn ws_handle(
                 app_handle
                     .state::<super::plugin_ext::PendingRpcs>()
                     .remove_recipient(&replaced_ws);
+                app_handle
+                    .state::<super::plugin_ext::McpChannelPorts>()
+                    .cleanup_recipient(&app_handle, &primary_label, &replaced_ws);
                 tokio::spawn(close_replaced_ws(replaced_ws));
             }
             let mut session_error = None;
@@ -1511,6 +1514,9 @@ async fn ws_handle(
             app_handle
                 .state::<super::plugin_ext::PendingRpcs>()
                 .remove_session(session_id);
+            app_handle
+                .state::<super::plugin_ext::McpChannelPorts>()
+                .cleanup_session(&app_handle, &primary_label, session_id);
             match session_error {
                 Some(err) => Err(err),
                 None => Ok(()),
