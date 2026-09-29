@@ -2535,6 +2535,9 @@
   "goal": {
     "artifacts": "Revisiones del objetivo",
     "artifactSaveFailed": "No se pudo guardar el artefacto de revisión del objetivo",
+    "artifactTitle": "Revisión del objetivo",
+    "queueTrackingFailed": "No se pudo seguir el turno del objetivo en cola",
+    "artifactStatus": { "achieved": "Logrado", "continue": "Continuar", "needs_user": "Necesita tu respuesta", "cannot_progress": "No puede avanzar", "applied": "Aplicado", "failed": "Fallido", "cancelled": "Cancelado", "stale": "Desactualizado", "timed_out": "Tiempo agotado" },
     "reason": {
       "reviewInterrupted": "La revisión anterior se interrumpió. Reanuda para iniciar otro turno del agente.",
       "executorInterrupted": "El turno anterior del agente se interrumpió. Reanuda para continuar.",

@@ -42,6 +42,7 @@ const harness = (result: GoalAuditResult | Promise<GoalAuditResult> | ((turnId: 
   let listener: (() => void) | null = null;
   const saved: Array<{ auditId: string; turnId: string; result: GoalAuditResult }> = [];
   const artifactFailures: string[] = [];
+  const flowFailures: string[] = [];
   const sent: string[] = [];
   const audited: string[] = [];
   const repository: GoalProductFlowPorts['repository'] = {
@@ -92,9 +93,10 @@ const harness = (result: GoalAuditResult | Promise<GoalAuditResult> | ((turnId: 
     subscribe: (next) => { listener = next; return () => { listener = null; }; },
     publish: (id, value) => useConversationGoalStore.getState().hydrateGoal(id, value),
     onArtifactFailure: (message) => { artifactFailures.push(message); },
+    onFlowFailure: (message) => { flowFailures.push(message); },
   };
   const flow = new ConversationGoalProductFlow(ports);
-  return { flow, saved, sent, audited, repository, ports, artifactFailures, notify: () => listener?.(),
+  return { flow, saved, sent, audited, repository, ports, artifactFailures, flowFailures, notify: () => listener?.(),
     get goal() { return goal; }, set goal(value: PersistedConversationGoalRecord | null) { goal = value; },
     set runtime(value: typeof runtime) { runtime = value; listener?.(); },
     set messages(value: ChatMessage[]) { messages = value; listener?.(); },
@@ -234,6 +236,26 @@ describe('Goal product flow', () => {
     expect(h.sent).toHaveLength(0);
   });
 
+  it('rechecks the Goal when a verdict wins the admission CAS', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('continue') });
+    h.goal = { ...initialGoal(), status: 'auditing' };
+    const update = h.repository.updateGoalStatus;
+    let raced = false;
+    h.repository.updateGoalStatus = async (...args) => {
+      if (!raced) {
+        raced = true;
+        h.goal = { ...h.goal!, revision: h.goal!.revision + 1, status: 'continuation_pending' };
+        return 'stale';
+      }
+      return update(...args);
+    };
+    const admitted = await h.flow.reserveUserTurn('conversation');
+    expect(admitted?.status).toBe('continuation_pending');
+    const running = await h.flow.status('conversation', 'executor_running', null, admitted!);
+    expect(running?.status).toBe('executor_running');
+    h.flow.releaseUserTurn('conversation');
+  });
+
   it('tracks a queued user turn when its assistant response appears', async () => {
     const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
     h.goal = { ...initialGoal(), status: 'continuation_pending' };
@@ -291,6 +313,43 @@ describe('Goal product flow', () => {
     h.runtime = { phase: 'idle' };
     await settle();
     expect(h.goal?.status).toBe('achieved');
+  });
+
+  it('keeps an accepted queued response for audit across Pause and Resume', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.queuedTurnIds = ['queued-turn'];
+    h.queued = 1;
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    await h.flow.pause('conversation');
+    h.queuedTurnIds = [];
+    h.queued = 0;
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn', content: 'Completed' }];
+    h.runtime = { phase: 'idle' };
+    await settle();
+    expect(h.goal?.status).toBe('paused');
+    await h.flow.resume('conversation');
+    await settle();
+    expect(h.audited).toContain('queued-turn');
+    expect(h.goal?.status).toBe('achieved');
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('surfaces a repository failure while admitting a queued turn', async () => {
+    const h = harness({ status: 'applied', runId: 'run', verdict: verdict('achieved') });
+    h.goal = { ...initialGoal(), status: 'continuation_pending' };
+    const load = h.repository.loadCurrentGoal;
+    let failed = false;
+    h.repository.loadCurrentGoal = async (...args) => {
+      if (!failed) { failed = true; throw new Error('repository unavailable'); }
+      return load(...args);
+    };
+    h.queuedTurnIds = ['queued-turn'];
+    h.flow.watchQueuedTurns('conversation', ['queued-turn']);
+    h.messages = [{ ...assistant, id: 'queued-assistant', turn_id: 'queued-turn' }];
+    await settle();
+    expect(h.flowFailures).toEqual(['repository unavailable']);
+    expect(h.goal?.status).toBe('error');
+    expect(h.audited).toHaveLength(0);
   });
 
   it('Stop prevents a late audit from restarting the goal', async () => {

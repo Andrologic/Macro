@@ -2604,6 +2604,9 @@
   "goal": {
     "artifacts": "Goal reviews",
     "artifactSaveFailed": "Could not save the Goal review artifact",
+    "artifactTitle": "Goal review",
+    "queueTrackingFailed": "Could not track the queued Goal turn",
+    "artifactStatus": { "achieved": "Achieved", "continue": "Continue", "needs_user": "Needs your response", "cannot_progress": "Cannot progress", "applied": "Applied", "failed": "Failed", "cancelled": "Cancelled", "stale": "Outdated", "timed_out": "Timed out" },
     "reason": {
       "reviewInterrupted": "The previous review was interrupted. Resume to start another agent turn.",
       "executorInterrupted": "The previous agent turn was interrupted. Resume to continue.",

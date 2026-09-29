@@ -20,6 +20,7 @@ export interface GoalProductFlowPorts {
   subscribe(listener: () => void): () => void;
   publish(conversationId: string, goal: PersistedConversationGoalRecord | null): void;
   onArtifactFailure(message: string): void;
+  onFlowFailure(message: string): void;
 }
 
 interface TrackedTurn { turnId: string; assistantMessageId: string; goalId: string; started: boolean }
@@ -36,6 +37,7 @@ export class ConversationGoalProductFlow {
   private readonly continuationPending = new Set<string>();
   private readonly queuedTurns = new Map<string, Set<string>>();
   private readonly queuedAdmissions = new Set<string>();
+  private readonly suspended = new Set<string>();
   private readonly lastContinueEvidence = new Map<string, { goalId: string; fingerprint: string }>();
   private unsubscribe: (() => void) | null = null;
 
@@ -120,18 +122,28 @@ export class ConversationGoalProductFlow {
   }
 
   async pause(conversationId: string): Promise<void> {
+    const queued = [...this.queuedTurns.get(conversationId) ?? []];
     this.cancel(conversationId);
+    this.suspended.add(conversationId);
+    if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
     await this.status(conversationId, 'paused');
   }
 
   async resume(conversationId: string): Promise<void> {
     const goal = await this.ports.repository.loadCurrentGoal(conversationId);
     if (!goal || !['paused', 'error', 'awaiting_user', 'active_ready'].includes(goal.status)) return;
+    const queued = [...this.queuedTurns.get(conversationId) ?? []];
     this.cancel(conversationId);
     this.lastContinueEvidence.delete(conversationId);
     const ready = goal.status === 'active_ready' ? goal : await this.status(conversationId, 'active_ready', null, goal);
     if (ready) {
+      this.suspended.delete(conversationId);
+      if (queued.length) this.queuedTurns.set(conversationId, new Set(queued));
       this.reconcileQueuedTurns(conversationId);
+      if (this.queuedTurns.get(conversationId)?.size) {
+        this.unsubscribe ??= this.ports.subscribe(() => void this.check());
+        void this.check();
+      }
       if (this.queuedTurns.get(conversationId)?.size) return;
       await this.startExecutorTurn(conversationId, ready,
         `Continue the current goal: ${ready.objective}\nReview the current conversation and work before acting. Ask the user if their input is needed.`);
@@ -150,14 +162,20 @@ export class ConversationGoalProductFlow {
           this.admissionWaiters.set(conversationId, waiters);
         });
       }
-      const current = await this.ports.repository.loadCurrentGoal(conversationId);
-      if (current && ['audit_pending', 'auditing'].includes(current.status)) {
-        this.bump(conversationId);
-        this.audits.get(conversationId)?.cancel();
-        this.audits.delete(conversationId);
-        return this.status(conversationId, 'active_ready', null, current);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const current = await this.ports.repository.loadCurrentGoal(conversationId);
+        if (!current || ['paused', 'error', 'achieved'].includes(current.status)) return current;
+        if (['audit_pending', 'auditing'].includes(current.status)) {
+          this.bump(conversationId);
+          this.audits.get(conversationId)?.cancel();
+          this.audits.delete(conversationId);
+          const ready = await this.status(conversationId, 'active_ready', null, current);
+          if (ready) return ready;
+          continue;
+        }
+        return current;
       }
-      return current;
+      throw new Error('Goal changed repeatedly while admitting a user turn.');
     } catch (error) {
       this.releaseUserTurn(conversationId);
       throw error;
@@ -240,6 +258,7 @@ export class ConversationGoalProductFlow {
     this.bump(conversationId);
     this.continuationPending.delete(conversationId);
     this.queuedTurns.delete(conversationId);
+    this.suspended.delete(conversationId);
     this.tracked.delete(conversationId);
     this.audits.get(conversationId)?.cancel();
     this.audits.delete(conversationId);
@@ -252,6 +271,7 @@ export class ConversationGoalProductFlow {
 
   private async admitQueuedTurn(conversationId: string, turnId: string): Promise<void> {
     try {
+      if (this.suspended.has(conversationId)) return;
       let goal = await this.ports.repository.loadCurrentGoal(conversationId);
       if (!goal || ['paused', 'error', 'achieved'].includes(goal.status)) {
         this.queuedTurns.get(conversationId)?.delete(turnId);
@@ -284,6 +304,14 @@ export class ConversationGoalProductFlow {
         if (this.queuedTurns.get(conversationId)?.size === 0) this.queuedTurns.delete(conversationId);
         await this.status(conversationId, 'error', 'The queued executor turn did not return a saved assistant response.', goal);
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.suspended.add(conversationId);
+      const current = await this.ports.repository.loadCurrentGoal(conversationId).catch(() => null);
+      if (current && !['paused', 'achieved'].includes(current.status)) {
+        await this.status(conversationId, 'error', message, current).catch(() => undefined);
+      }
+      this.ports.onFlowFailure(message);
     } finally {
       this.queuedAdmissions.delete(conversationId);
       this.releaseSubscriptionIfIdle();
@@ -292,6 +320,7 @@ export class ConversationGoalProductFlow {
 
   private async check(): Promise<void> {
     for (const [conversationId, turnIds] of this.queuedTurns) {
+      if (this.suspended.has(conversationId)) continue;
       const queued = new Set(this.ports.readQueuedTurnIds(conversationId));
       const attempted = new Set(this.ports.readQueuedAttemptedTurnIds(conversationId));
       const messages = this.ports.readMessages(conversationId);

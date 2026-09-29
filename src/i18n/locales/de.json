@@ -2531,6 +2531,9 @@
   "goal": {
     "artifacts": "Zielüberprüfungen",
     "artifactSaveFailed": "Das Artefakt der Zielüberprüfung konnte nicht gespeichert werden",
+    "artifactTitle": "Zielüberprüfung",
+    "queueTrackingFailed": "Der Ziel-Durchlauf aus der Warteschlange konnte nicht verfolgt werden",
+    "artifactStatus": { "achieved": "Erreicht", "continue": "Fortsetzen", "needs_user": "Antwort erforderlich", "cannot_progress": "Kein Fortschritt möglich", "applied": "Angewendet", "failed": "Fehlgeschlagen", "cancelled": "Abgebrochen", "stale": "Veraltet", "timed_out": "Zeitüberschreitung" },
     "reason": {
       "reviewInterrupted": "Die vorherige Überprüfung wurde unterbrochen. Setzen Sie fort, um einen neuen Agentendurchlauf zu starten.",
       "executorInterrupted": "Der vorherige Agentendurchlauf wurde unterbrochen. Setzen Sie fort, um weiterzuarbeiten.",

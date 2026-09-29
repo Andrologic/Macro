@@ -2530,6 +2530,9 @@
   "goal": {
     "artifacts": "목표 검토 결과",
     "artifactSaveFailed": "목표 검토 결과 아티팩트를 저장할 수 없습니다",
+    "artifactTitle": "목표 검토",
+    "queueTrackingFailed": "대기열의 목표 작업을 추적할 수 없습니다",
+    "artifactStatus": { "achieved": "달성", "continue": "계속", "needs_user": "답변 필요", "cannot_progress": "진행 불가", "applied": "적용됨", "failed": "실패", "cancelled": "취소됨", "stale": "오래됨", "timed_out": "시간 초과" },
     "reason": {
       "reviewInterrupted": "이전 검토가 중단되었습니다. 다시 시작하면 새 에이전트 작업이 시작됩니다.",
       "executorInterrupted": "이전 에이전트 작업이 중단되었습니다. 다시 시작하여 계속하세요.",

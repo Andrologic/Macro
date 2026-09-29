@@ -28,6 +28,7 @@ const nativePorts = (): GoalProductFlowPorts => ({
   subscribe: (listener) => useChatStore.subscribe(listener),
   publish: (id, goal) => useConversationGoalStore.getState().hydrateGoal(id, goal),
   onArtifactFailure: (message) => notify.error(i18n.t('goal.artifactSaveFailed', 'Could not save the Goal review artifact'), { description: message }),
+  onFlowFailure: (message) => notify.error(i18n.t('goal.queueTrackingFailed', 'Could not track the queued Goal turn'), { description: message }),
   audit: (goal, turnId, summary) => {
     const auditId = crypto.randomUUID();
     const provider = useProviderStore.getState();
