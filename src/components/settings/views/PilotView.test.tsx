@@ -382,6 +382,21 @@ describe('PilotView', () => {
     expect(pilotState.resolveAccess).toHaveBeenCalledWith('request:phone', 'grant');
   });
 
+  it('hides revoked and expired sessions and counts only active devices', async () => {
+    await showAccount();
+    const active = pilotState.accountCatalog!.sessions[0];
+    pilotState.accountCatalog!.sessions.push(
+      { ...active, session_id: 'session:revoked', label: 'Revoked phone', state: 'revoked' },
+      { ...active, session_id: 'session:expired', label: 'Expired phone', state: 'expired' },
+    );
+    await act(async () => root.render(<PilotView />));
+    expect(container.textContent).not.toContain('Revoked phone');
+    expect(container.textContent).not.toContain('Expired phone');
+    expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Revoke session')).toHaveLength(1);
+    const summary = container.querySelector('details summary')!;
+    expect(summary.textContent).toEndWith('1');
+  });
+
   it('routes individual and global revocation and explains an unconfirmed self response', async () => {
     await showAccount();
     await act(async () => button('Revoke session').click());

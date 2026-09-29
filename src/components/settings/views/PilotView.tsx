@@ -106,6 +106,7 @@ export const PilotView: React.FC = () => {
   }, [deviceSession, busy, accountCatalog, lastError, refreshAccount]);
 
   const currentIdentity = store.accountCatalog?.identity;
+  const activeSessions = store.accountCatalog?.sessions.filter(session => session.state === 'active') ?? [];
   const deleteTargetCurrent = Boolean(deleteTarget && currentIdentity
     && deleteTarget.origin === store.relayOrigin
     && deleteTarget.identity.account_id === store.account?.account_id
@@ -321,7 +322,7 @@ export const PilotView: React.FC = () => {
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-2">
-              {store.accountCatalog && <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{store.accountCatalog.sessions.length}</span>}
+              {store.accountCatalog && <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{activeSessions.length}</span>}
               <ChevronDown aria-hidden="true" className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
             </span>
           </summary>
@@ -330,14 +331,14 @@ export const PilotView: React.FC = () => {
               <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => run(store.refreshAccount)}>{t('common.refresh', 'Refresh')}</Button>
             </div>
             {currentIdentity ? <>
-              {store.accountCatalog!.sessions.map(session => (
+              {activeSessions.map(session => (
                 <div key={session.session_id} className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
                   <div className="min-w-0 text-xs">
                     <p className="break-words font-medium">{session.label}{session.session_id === currentIdentity.session_id && <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-primary">{t('settings.pilot.currentDevice', 'This device')}</span>}</p>
                     <p className="text-muted-foreground">{t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)} · {t(`settings.pilot.sessionState.${session.state}`, session.state)}</p>
                     <p className="text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
                   </div>
-                  <Button size="sm" variant="secondary" disabled={store.busy || session.state !== 'active'} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>
+                  <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>
                     {t('settings.pilot.revokeSession', 'Revoke session')}
                   </Button>
                 </div>

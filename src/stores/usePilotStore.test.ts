@@ -97,6 +97,48 @@ describe('Pilot account store', () => {
     expect(usePilotStore.getState().instance).toBeNull();
   });
 
+  it('keeps the list during revocation and refresh, removing only the confirmed session', async () => {
+    const sessions: PilotAccountCatalog['sessions'] = ['one', 'other'].map(id => ({
+      session_id: `session:${id}`, device_id: `device:${id}`, label: id,
+      client_kind: 'desktop', state: 'active', created_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-01T00:00:00Z',
+    }));
+    const before = { ...catalog, sessions };
+    usePilotStore.setState({ accountCatalog: before });
+    const pendingMutation = deferred<{ revocationConfirmed: boolean }>();
+    const pendingRefresh = deferred<PilotAccountCatalog>();
+    revokeSession.mockImplementation(() => pendingMutation.promise);
+    getAccountCatalog.mockImplementation(() => pendingRefresh.promise);
+    const mutation = usePilotStore.getState().revokeSession('session:other');
+    expect(usePilotStore.getState().accountCatalog).toEqual(before);
+    pendingMutation.resolve({ revocationConfirmed: true });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(usePilotStore.getState().accountCatalog?.sessions).toEqual([sessions[0]]);
+    expect(usePilotStore.getState().busy).toBe(true);
+    pendingRefresh.resolve({ ...catalog, sessions: [sessions[0]], revision: 2 });
+    await expect(mutation).resolves.toBe(true);
+    expect(usePilotStore.getState().accountCatalog?.revision).toBe(2);
+  });
+
+  it('keeps a session visible if revocation fails', async () => {
+    const before: PilotAccountCatalog = { ...catalog, sessions: [{
+      session_id: 'session:other', device_id: 'device:other', label: 'Phone', client_kind: 'mobile',
+      state: 'active', created_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-01T00:00:00Z',
+    }] };
+    usePilotStore.setState({ accountCatalog: before });
+    revokeSession.mockImplementation(async () => { throw new native.PilotClientError('offline'); });
+    await expect(usePilotStore.getState().revokeSession('session:other')).rejects.toThrow('offline');
+    expect(usePilotStore.getState().accountCatalog).toEqual(before);
+    expect(getAccountCatalog).not.toHaveBeenCalled();
+  });
+
+  it('does not reload the catalog after self-revocation', async () => {
+    usePilotStore.setState({ accountCatalog: catalog });
+    revokeSession.mockImplementation(signOut);
+    await usePilotStore.getState().revokeSession('session:one');
+    expect(usePilotStore.getState().accountCatalog).toBeNull();
+    expect(getAccountCatalog).not.toHaveBeenCalled();
+  });
+
   it('locks synchronously against duplicate mutations and existing actions', async () => {
     const pending = deferred<{ revocationConfirmed: boolean }>();
     revokeSession.mockImplementation(() => pending.promise);
@@ -110,8 +152,10 @@ describe('Pilot account store', () => {
   });
 
   it.each(['origin', 'account', 'session'] as const)('discards account results after %s scope changes', async (field) => {
+    usePilotStore.setState({ accountCatalog: catalog });
     const pending = deferred<PilotAccountCatalog>(); getAccountCatalog.mockImplementation(() => pending.promise);
     const read = usePilotStore.getState().refreshAccount();
+    expect(usePilotStore.getState().accountCatalog).toEqual(catalog);
     if (field === 'origin') state = { ...state, relayOrigin: 'https://other.example.com' };
     if (field === 'account') state = { ...state, account: { ...state.account!, account_id: 'account:two' } };
     if (field === 'session') state = { ...state, deviceSession: { ...state.deviceSession!, ref: { ...state.deviceSession!.ref, session_id: 'session:two' } } };

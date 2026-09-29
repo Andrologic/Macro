@@ -84,7 +84,8 @@ export const usePilotStore = create<PilotStore>((set, get) => {
   };
   const readAccount = async (signal: AbortSignal) => {
     const started = generation;
-    set({ accountCatalog: null });
+    // Keep the displayed catalog stable until the replacement is ready.
+    // sync() still clears it immediately when the account/session changes.
     const catalog = await client.getAccountCatalog(signal);
     if (signal.aborted || started !== generation) throw new PilotClientError('context_changed');
     set({ accountCatalog: catalog });
@@ -135,7 +136,20 @@ export const usePilotStore = create<PilotStore>((set, get) => {
       if (started !== generation || target !== instanceId) throw new PilotClientError('context_changed');
       set({ accessRequests: get().accessRequests.filter(request => request.access_request_id !== id) });
     }),
-    revokeSession: (id) => action(() => finishMutation(() => client.revokeSession(id))),
+    revokeSession: (id) => action(async signal => {
+      const started = generation;
+      const result = await client.revokeSession(id);
+      sync();
+      // Self-revocation clears the session through sync(); never restore its data.
+      if (started === generation && result.revocationConfirmed) {
+        const catalog = get().accountCatalog;
+        if (catalog) set({ accountCatalog: {
+          ...catalog, sessions: catalog.sessions.filter(session => session.session_id !== id),
+        } });
+        await readAccount(signal);
+      }
+      return result.revocationConfirmed;
+    }),
     revokeAllSessions: () => action(() => finishMutation(() => client.revokeAllSessions())),
     deleteAccount: (confirmation, origin) => action(async () => {
       const current = get();
