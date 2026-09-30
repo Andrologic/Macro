@@ -1,18 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Monitor, Smartphone, RefreshCw, ChevronRight } from 'lucide-react';
 import { PilotActions } from './PilotActions';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../../../services/externalUrlOpener';
 import type { PilotRuntimeStatus } from '../../../services/macroPilot/runtime';
-import type { PilotAccountConfirmation, PilotPermission } from '../../../services/macroPilot/nativeClient';
+import type { PilotAccountConfirmation, PilotPermission, PilotPublicState } from '../../../services/macroPilot/nativeClient';
 import { usePilotStore } from '../../../stores/usePilotStore';
 import { Button } from '../../ui/Button';
 import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
 import { notify } from '../../ui/toastService';
+import { accountConnectionStatus, computerAvailability, computerAvailabilityMessages, getVaultRecoveryStatus, sessionVerificationStatus, vaultRecoveryMessages } from '../../../services/macroPilot/connectionPresentation';
 
 const PERMISSIONS: PilotPermission[] = ['supervise', 'respond', 'approve_tools', 'review'];
 const PILOT_RELAY_ORIGIN = 'https://macro.andrologic.ai';
+const accessScopeOf = (state: PilotPublicState) => state.deviceSession && state.instance
+  ? JSON.stringify([state.configurationId, state.relayOrigin, state.account?.account_id, state.deviceSession.ref.session_id, state.instance.ref.instance_id])
+  : null;
 
 interface IndeterminateCommand {
   key: string;
@@ -25,33 +29,19 @@ const errorFallbacks: Record<string, string> = {
   invalid_response: 'The relay returned an invalid response.',
   response_too_large: 'The relay response exceeded the 1 MB limit.',
   redirect_refused: 'The relay tried to redirect the request.',
-  unauthorized: 'The connection has expired. Sign in again.',
-  session_revoked: 'This device session was revoked.',
+  unauthorized: 'Your Macro Connect session has expired. Connect with GitHub again. Your local projects and conversations remain available.',
+  session_revoked: 'Access for this device was revoked. Connect with GitHub again to restore it. Your local projects and conversations remain available.',
   forbidden: 'This account cannot perform that action.',
-  not_found: 'The requested Pilot resource no longer exists.',
-  conflict: 'The request conflicts with the current Pilot state.',
+  not_found: 'The requested Macro Connect item no longer exists.',
+  conflict: 'The connection changed. Refresh and try again.',
   stale_revision: 'The request changed before it could be applied.',
-  unavailable: 'Pilot is temporarily unavailable.',
-  vault_unavailable: 'The operating system credential vault is unavailable.',
+  unavailable: 'Macro Connect is temporarily unavailable.',
+  vault_unavailable: 'Saved credentials are inaccessible. Restore the connection.',
   extension_unavailable: 'This relay does not support account management yet.',
   snapshot_expired: 'This list expired. Refresh it before continuing.',
   resource_limit: 'The relay cannot return this list within its resource limits.',
   context_changed: 'The connected account changed. Refresh and try again.',
   offline: 'The relay cannot be reached. Local Macro features remain available.',
-};
-
-const vaultErrorStatus: Record<string, 'intervention_required' | 'cancelled' | 'suspended' | 'vault_unavailable'> = {
-  vault_intervention_required: 'intervention_required',
-  vault_cancelled: 'cancelled',
-  vault_suspended: 'suspended',
-  vault_unavailable: 'vault_unavailable',
-};
-
-const vaultRecoveryFallbacks: Record<'intervention_required' | 'cancelled' | 'suspended' | 'vault_unavailable', string> = {
-  intervention_required: 'Macro needs attention to access the system credential vault and restore Pilot data.',
-  cancelled: 'Credential vault access was cancelled. You can try again when you are ready.',
-  suspended: 'Access to Pilot credentials is suspended. Resume access to restore Pilot data.',
-  vault_unavailable: 'Macro could not access the system credential vault. You can try to resume access.',
 };
 
 export const PilotView: React.FC = () => {
@@ -73,6 +63,38 @@ export const PilotView: React.FC = () => {
   const [reconciliationBusy, setReconciliationBusy] = useState(false);
   const [vaultRecoveryBusy, setVaultRecoveryBusy] = useState(false);
   const vaultRecoveryLock = useRef(false);
+  const [troubleshootOpen, setTroubleshootOpen] = useState(false);
+  const accessScope = accessScopeOf(store);
+  const accessAttempt = useRef({ scope: accessScope, attempted: false, generation: 0 });
+  const [accessFailure, setAccessFailure] = useState<string | null>(null);
+  const [accessLoading, setAccessLoading] = useState<string | null>(null);
+  const refreshAccessRequests = store.refreshAccessRequests;
+
+  const loadAccessRequests = useCallback(async () => {
+    if (!accessScope || usePilotStore.getState().busy || accessScopeOf(usePilotStore.getState()) !== accessScope) return;
+    const attempt = accessAttempt.current;
+    if (attempt.scope !== accessScope) return;
+    attempt.attempted = true;
+    const generation = ++attempt.generation;
+    setAccessFailure(null);
+    setAccessLoading(accessScope);
+    try {
+      await refreshAccessRequests();
+    } catch {
+      if (accessAttempt.current.generation === generation && accessScopeOf(usePilotStore.getState()) === accessScope) setAccessFailure(accessScope);
+    } finally {
+      if (accessAttempt.current.generation === generation) setAccessLoading(null);
+    }
+  }, [accessScope, refreshAccessRequests]);
+
+  useEffect(() => {
+    if (accessAttempt.current.scope !== accessScope) {
+      accessAttempt.current = { scope: accessScope, attempted: false, generation: accessAttempt.current.generation + 1 };
+      setAccessFailure(null);
+      setAccessLoading(null);
+    }
+    if (troubleshootOpen && accessScope && !busy && !store.accessRequestsLoaded && !accessAttempt.current.attempted) void loadAccessRequests();
+  }, [accessScope, busy, troubleshootOpen, store.accessRequestsLoaded, loadAccessRequests]);
 
   const refreshIndeterminate = useCallback(async () => {
     const { macroPilotRuntime } = await import('../../../composition/macroPilotDesktop');
@@ -126,10 +148,8 @@ export const PilotView: React.FC = () => {
   const deleteTargetCurrent = targetCurrent(deleteTarget);
   const allTargetCurrent = targetCurrent(allTarget);
 
-  const statusLabel = useMemo(
-    () => t(`settings.pilot.status.${store.status}`, store.status.replaceAll('_', ' ')),
-    [store.status, t],
-  );
+  const accountStatus = accountConnectionStatus(store);
+  const statusLabel = t(`settings.pilot.status.${accountStatus}`, accountStatus.replaceAll('_', ' '));
 
   const run = async (work: () => Promise<void>, success?: string) => {
     try {
@@ -148,12 +168,12 @@ export const PilotView: React.FC = () => {
 
   const confirmAccount = () => run(
     () => store.confirmAccount(),
-    t('settings.pilot.connected', 'Pilot account connected.'),
+    t('settings.pilot.connected', 'Macro Connect account connected.'),
   );
 
   const connectInstance = () => run(
     () => store.createOrAttachInstance(),
-    t('settings.pilot.instanceConnected', 'This Macro instance is connected.'),
+    t('settings.pilot.instanceConnected', 'This computer is connected to Macro Connect.'),
   );
 
   const logout = () => run(async () => {
@@ -179,9 +199,10 @@ export const PilotView: React.FC = () => {
     }
   };
 
-  const vaultRecoveryStatus = store.vaultStatus && store.vaultStatus !== 'ready'
-    ? store.vaultStatus
-    : vaultErrorStatus[store.lastError ?? ''];
+  const vaultRecoveryStatus = getVaultRecoveryStatus(store);
+  const availability = computerAvailability(store, runtimeStatus);
+  const verificationStatus = sessionVerificationStatus(store);
+  const connectionError = store.sessionEndReason ?? store.lastError;
   const vaultRecoveryActive = vaultRecoveryBusy;
   const legacyRelayOrigin = store.deviceSession && store.relayOrigin !== PILOT_RELAY_ORIGIN
     ? store.relayOrigin
@@ -240,25 +261,34 @@ export const PilotView: React.FC = () => {
             </p>
           )}
 
-          {store.lastError && !vaultRecoveryStatus && (store.lastError !== 'offline' || Boolean(store.relayOrigin)) && (
+          {connectionError && !vaultRecoveryStatus && !verificationStatus && (connectionError !== 'offline' || Boolean(store.relayOrigin)) && (
             <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {t(`settings.pilot.errors.${store.lastError}`, errorFallbacks[store.lastError] || store.lastError)}
+              {t(`settings.pilot.errors.${connectionError}`, errorFallbacks[connectionError] || connectionError)}
             </div>
           )}
 
-          {store.status === 'vault_unavailable' && vaultRecoveryStatus && (
+          {verificationStatus && <div role="status" aria-live="polite" className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-2">
+            <p className="text-muted-foreground">{verificationStatus === 'verifying'
+              ? t('settings.pilot.sessionVerification.pending', 'Checking your Macro Connect session before reconnecting this computer. Your local projects and conversations remain available.')
+              : t('settings.pilot.sessionVerification.failed', 'Your saved credentials are available, but Macro Connect could not check your session. Check your internet connection and try again. Your local projects and conversations remain available.')}</p>
+            {verificationStatus === 'retry' && <Button size="sm" variant="secondary" disabled={store.busy} onClick={() => void initialize()}>
+              {t('settings.pilot.sessionVerification.retry', 'Retry connection')}
+            </Button>}
+          </div>}
+
+          {vaultRecoveryStatus && (
             <div
-              role={vaultRecoveryActive ? 'status' : 'alert'}
+              role={vaultRecoveryActive || vaultRecoveryStatus === 'suspended' ? 'status' : 'alert'}
               aria-live="polite"
               className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-2"
             >
-              <p className="font-medium">{t('settings.pilot.vaultRecovery.title', 'Pilot data is paused')}</p>
+              <p className="font-medium">{t('settings.pilot.vaultRecovery.title', 'Macro Connect connection paused')}</p>
               <p className="text-muted-foreground">
                 {vaultRecoveryActive
-                  ? t('settings.pilot.vaultRecovery.waiting', 'Waiting for access to the system credential vault. You can keep using Macro or sign out.')
+                  ? t('settings.pilot.vaultRecovery.waiting', 'Waiting for permission to read the saved credentials. You can keep using Macro or sign out.')
                   : t(
                     `settings.pilot.vaultRecovery.${vaultRecoveryStatus}`,
-                    vaultRecoveryFallbacks[vaultRecoveryStatus],
+                    vaultRecoveryMessages[vaultRecoveryStatus],
                   )}
               </p>
               <Button
@@ -268,15 +298,21 @@ export const PilotView: React.FC = () => {
                 onClick={() => { void resumeVaultAccess(); }}
               >
                 {vaultRecoveryActive
-                  ? t('settings.pilot.vaultRecovery.resuming', 'Resuming access…')
-                  : t('settings.pilot.vaultRecovery.resume', 'Resume vault access')}
+                  ? t('settings.pilot.vaultRecovery.resuming', 'Restoring connection…')
+                  : t('settings.pilot.vaultRecovery.resume', 'Restore connection')}
               </Button>
             </div>
           )}
 
-          {!store.deviceSession && !store.attempt && (
+          {!store.deviceSession && !store.attempt && !vaultRecoveryStatus && (
             <Button disabled={store.busy} onClick={startConnection}>
               {t('settings.pilot.signIn', 'Connect with GitHub')}
+            </Button>
+          )}
+
+          {store.deviceSession && (accountStatus === 'expired' || accountStatus === 'revoked') && !vaultRecoveryStatus && (
+            <Button size="sm" variant="secondary" disabled={store.busy && !store.reading} onClick={logout}>
+              {t('settings.pilot.clearExpiredSession', 'Sign out before reconnecting')}
             </Button>
           )}
 
@@ -329,6 +365,13 @@ export const PilotView: React.FC = () => {
           />
           <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
             <div className="divide-y divide-border/50">
+              {!accountCatalog && store.instance && <div className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                <Monitor aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <p className="break-words text-sm font-medium">{store.instance.label}</p>
+                  <p className="text-xs text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')} · <span role="status">{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</span></p>
+                </div>
+              </div>}
               {activeSessions.map(session => {
                 const current = session.session_id === store.deviceSession?.ref.session_id;
                 const label = current && store.instance ? store.instance.label : session.label;
@@ -338,7 +381,7 @@ export const PilotView: React.FC = () => {
                   <div className="min-w-0 flex-1">
                     <p className="break-words text-sm font-medium">{label}</p>
                     <p className="text-xs text-muted-foreground">{current ? t('settings.pilot.currentComputer', 'This computer') : t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}
-                      {current && store.status === 'connected' && store.instance?.connection_state === 'reachable' && <> · {t('settings.pilot.online', 'Online')}</>}
+                      {current && <> · <span role="status">{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</span></>}
                     </p>
                   </div>
                   <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: label })}>
@@ -358,25 +401,40 @@ export const PilotView: React.FC = () => {
               <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Restore access')}</Button>
             </div>}
             {store.instance && (
-              <details className="group/troubleshoot border-t border-border/50 pt-3 text-xs">
+              <details open={troubleshootOpen} className="group/troubleshoot border-t border-border/50 pt-3 text-xs" onToggle={event => setTroubleshootOpen(event.currentTarget.open)}>
                 <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
                   <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 transition-transform group-open/troubleshoot:rotate-90 motion-reduce:transition-none" />
                   {t('settings.pilot.troubleshoot', 'Resolve a connection problem')}
                 </summary>
                 <div className="mt-3 space-y-3 pl-5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span>{t('settings.pilot.accessTitle', 'Device access')}</span>
-                    <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>
-                  </div>
-                  {!store.accessRequestsLoaded ? <p className="text-muted-foreground">{t('settings.pilot.accessNotLoaded', 'Refresh to load pending access requests.')}</p>
-                    : store.accessRequests.length === 0 ? <p className="text-muted-foreground">{t('settings.pilot.noAccessRequests', 'No pending access requests.')}</p>
-                    : store.accessRequests.map(request => <div key={request.access_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                  <p className="text-muted-foreground">{t('settings.pilot.connectionHelp', 'Keep Macro open and check your internet connection so Macro Pilot can reach this computer.')}</p>
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+                    <dt className="text-muted-foreground">{t('settings.pilot.accountSession', 'Account session')}</dt>
+                    <dd>{statusLabel}</dd>
+                    <dt className="text-muted-foreground">{t('settings.pilot.savedCredentials', 'Saved credentials')}</dt>
+                    <dd>{vaultRecoveryStatus
+                      ? t(`settings.pilot.availability.${vaultRecoveryStatus === 'suspended' ? 'paused' : vaultRecoveryStatus}`, computerAvailabilityMessages[vaultRecoveryStatus === 'suspended' ? 'paused' : vaultRecoveryStatus])
+                      : t('settings.pilot.credentialsReady', 'Available')}</dd>
+                    <dt className="text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')}</dt>
+                    <dd>{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</dd>
+                  </dl>
+                  {accessFailure === accessScope && accessScope && <div role="status" className="flex items-center justify-between gap-3 text-muted-foreground">
+                    <span>{t('settings.pilot.accessRequestsFailed', 'Access requests from older devices could not be loaded.')}</span>
+                    <Button size="sm" variant="ghost" disabled={store.busy || accessLoading === accessScope} onClick={() => void loadAccessRequests()}>{t('common.retry', 'Retry')}</Button>
+                  </div>}
+                  {store.accessRequests.length > 0 && <div className="space-y-3 border-t border-border/50 pt-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span>{t('settings.pilot.legacyAccessTitle', 'Access requests from older devices')}</span>
+                      <Button size="sm" variant="ghost" disabled={store.busy || accessLoading === accessScope} onClick={() => void loadAccessRequests()}>{t('common.refresh', 'Refresh')}</Button>
+                    </div>
+                    {store.accessRequests.map(request => <div key={request.access_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
                       <span className="break-words">{request.device_label}</span>
                       <div className="flex gap-2">
                         <Button size="sm" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'grant'))}>{t('settings.pilot.grant', 'Allow access')}</Button>
                         <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(() => store.resolveAccess(request.access_request_id, 'deny'))}>{t('settings.pilot.deny', 'Deny')}</Button>
                       </div>
                     </div>)}
+                  </div>}
                 </div>
               </details>
             )}
@@ -386,7 +444,7 @@ export const PilotView: React.FC = () => {
 
       {store.instance && runtimeStatus === 'unavailable' && (
         <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs space-y-2">
-          <p>{t('settings.pilot.runtimeUnavailable', 'Desktop supervision is unavailable. Its journal could not be loaded or the relay could not be reached. Local commands are not replayed.')}</p>
+          <p>{t('settings.pilot.runtimeUnavailable', 'This computer is currently unavailable in Macro Pilot. Retry the connection. Your local projects and conversations remain available.')}</p>
           <Button size="sm" variant="secondary" onClick={() => void import('../../../composition/macroPilotDesktop').then(({ macroPilotRuntime }) => macroPilotRuntime.retry())}>
             {t('common.retry', 'Retry')}
           </Button>

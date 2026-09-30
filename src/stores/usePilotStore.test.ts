@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { sessionVerificationStatus, accountConnectionStatus } from '../services/macroPilot/connectionPresentation';
 import type { PilotAccountCatalog, PilotPublicState } from '../services/macroPilot/nativeClient';
 
 const native = await import('../services/macroPilot/nativeClient');
@@ -89,6 +90,31 @@ describe('Pilot account store', () => {
     expect(usePilotStore.getState()).toMatchObject({
       status: 'connected', vaultStatus: 'ready', accountCatalog: catalog, busy: false, reading: false,
     });
+  });
+
+  it('keeps the session verification failure across secondary reads and their busy/error updates', async () => {
+    state = { ...state, vaultStatus: 'ready', status: 'vault_unavailable', sessionVerification: 'failed', lastError: 'offline' }; subscriber();
+    const pending = deferred<PilotAccountCatalog>(); getAccountCatalog.mockImplementationOnce(() => pending.promise);
+    const reading = usePilotStore.getState().refreshAccount();
+    expect(usePilotStore.getState()).toMatchObject({ busy: true, lastError: null, sessionVerification: 'failed' });
+    expect(sessionVerificationStatus(usePilotStore.getState())).toBe('retry');
+    state = { ...state, lastError: null }; subscriber();
+    pending.resolve(catalog); await reading;
+    expect(sessionVerificationStatus(usePilotStore.getState())).toBe('retry');
+    listAccessRequests.mockImplementationOnce(async () => { throw new native.PilotClientError('offline'); });
+    await expect(usePilotStore.getState().refreshAccessRequests()).rejects.toThrow('offline');
+    expect(sessionVerificationStatus(usePilotStore.getState())).toBe('retry');
+    await usePilotStore.getState().refreshAccessRequests();
+    expect(sessionVerificationStatus(usePilotStore.getState())).toBe('retry');
+  });
+
+  it.each(['unauthorized', 'session_revoked'] as const)('keeps the client session end reason %s across mount and read errors', async reason => {
+    state = { ...state, account: null, deviceSession: null, status: 'signed_out', sessionEndReason: reason }; subscriber();
+    await usePilotStore.getState().initialize();
+    getAccountCatalog.mockImplementationOnce(async () => { throw new native.PilotClientError('unauthorized'); });
+    await expect(usePilotStore.getState().refreshAccount()).rejects.toThrow('unauthorized');
+    expect(usePilotStore.getState().sessionEndReason).toBe(reason);
+    expect(accountConnectionStatus(usePilotStore.getState())).toBe(reason === 'unauthorized' ? 'expired' : 'revoked');
   });
 
   it('loads account management without an instance', async () => {

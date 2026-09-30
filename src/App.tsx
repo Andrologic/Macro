@@ -63,6 +63,12 @@ const WorkflowAttentionNotifications = lazy(() =>
   ),
 );
 
+const ConnectAttentionNotifications = lazy(() =>
+  import("./components/notifications/ConnectAttentionNotifications").then(
+    (module) => ({ default: module.ConnectAttentionNotifications }),
+  ),
+);
+
 const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
   phase: "idle",
   critical: false,
@@ -590,6 +596,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
       <Toaster />
       <Suspense fallback={null}>
         <WorkflowAttentionNotifications />
+        <ConnectAttentionNotifications />
       </Suspense>
 
       <Suspense fallback={null}>

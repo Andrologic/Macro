@@ -22,7 +22,7 @@ export interface AccountTransport {
   id: () => string;
   now: () => number;
   send: (path: string, body: unknown, requestId: string, signal: AbortSignal) => Promise<unknown>;
-  clear: () => Promise<void>;
+  clear: (reason?: 'unauthorized' | 'session_revoked') => Promise<void>;
 }
 
 /** Account-only negotiation and transient catalogs. No instance or local project data. */
@@ -65,7 +65,7 @@ export class PilotAccountClient {
         if (context) {
           this.check(context, signal);
           this.reset();
-          await this.transport.clear();
+          await this.transport.clear(error.code as 'unauthorized' | 'session_revoked');
         }
       }
       throw error;
