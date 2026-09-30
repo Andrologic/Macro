@@ -212,6 +212,7 @@ async fn measure_case(
             provider_turn_state_json: None,
             context_refs_json: None,
             completion_reason: None,
+            generation_attempts_json: None,
         };
         let start = Instant::now();
         let message = repository::create_message(pool, input).await?;

@@ -27,6 +27,9 @@ const SUSPICIOUS_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
 const TECHNICAL_LITERAL_ALLOWLIST = new Set([
   'skip-dom-selection',
   'skip-selection-focus',
+  // These exact English provider errors do not contain French accent omissions.
+  'Goal auditor provider selection conflicts with its authorization.',
+  'Invalid goal auditor provider selection.',
 ]);
 
 // A kind comparison uses a tagged union identifier rather than user-facing copy.
