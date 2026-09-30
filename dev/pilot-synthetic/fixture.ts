@@ -116,6 +116,7 @@ export function syntheticFixture() {
   return { dependencies, values, secrets, requests, results, failures,
     enqueue(delivery: ContentDelivery) { queue.push(delivery); wake?.(); },
     block(next: Exclude<PilotVaultLease['status'], 'ready'>) { status = next; generation++; listeners.forEach(listener => listener(lease())); },
+    recoverSilently() { status = 'ready'; listeners.forEach(listener => listener(lease())); },
     onAuthorize(hook?: () => void) { authorizeHook = hook; },
     retainSecrets() { keepSecrets = true; },
     get resumes() { return resumes; }, get reads() { return reads; },

@@ -9,6 +9,8 @@ use tauri::Emitter;
 mod lifecycle;
 mod manager;
 mod native;
+#[cfg(any(target_os = "macos", test))]
+mod session;
 #[cfg(test)]
 mod tests;
 
@@ -142,6 +144,8 @@ pub fn setup(app: &tauri::AppHandle) {
     // The namespace is native configuration, never an IPC argument. There is no
     // fallback to production credentials from another application identity.
     let service = native::service_for_identifier(&app.config().identifier);
+    tracing::info!(identifier = %app.config().identifier, version = env!("CARGO_PKG_VERSION"),
+        debug_build = cfg!(debug_assertions), "Macro Connect credential build identity");
     let _ = APP.set(app.clone());
     let _ = MANAGER.set(Arc::new(Manager::new(SystemVault::new(service))));
     #[cfg(target_os = "macos")]
@@ -161,9 +165,9 @@ pub(super) fn emit(lease: &VaultLease) {
     }
 }
 
-pub fn suspend() {
+pub fn suspend(reason: &'static str) {
     if let Some(manager) = MANAGER.get() {
-        manager.suspend();
+        manager.suspend_for(reason, false);
     }
 }
 
@@ -194,7 +198,13 @@ pub async fn pilot_vault_resume(
     generation: String,
 ) -> Result<VaultLease, PilotSecretError> {
     let manager = manager()?;
-    blocking(move || manager.resume(&scopes, &generation)).await
+    blocking(move || {
+        let result = manager.resume(&scopes, &generation);
+        tracing::info!(mode = "explicit", result = ?result.as_ref().map(|lease| lease.status),
+            "Macro Connect credential recovery");
+        result
+    })
+    .await
 }
 
 #[tauri::command]

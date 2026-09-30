@@ -1039,7 +1039,7 @@ pub fn run() {
             event: tauri::WindowEvent::Destroyed,
             ..
         } => {
-            commands::pilot_secrets::suspend();
+            commands::pilot_secrets::suspend("window_destroyed");
         }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
             api.prevent_exit();
@@ -1050,7 +1050,7 @@ pub fn run() {
             }
         }
         tauri::RunEvent::ExitRequested { .. } => {
-            commands::pilot_secrets::suspend();
+            commands::pilot_secrets::suspend("exit_requested");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
@@ -1058,7 +1058,7 @@ pub fn run() {
             fs::watcher::shutdown_watcher(app_handle);
         }
         tauri::RunEvent::Exit => {
-            commands::pilot_secrets::suspend();
+            commands::pilot_secrets::suspend("process_exit");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();

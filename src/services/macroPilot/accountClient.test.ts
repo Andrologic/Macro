@@ -552,3 +552,97 @@ describe('native account v2 over the HTTP boundary', () => {
   });
 
 });
+
+describe('silent native recovery', () => {
+  it('rechecks the session once for the matching suspended generation without explicit resume', async () => {
+    const h = harness();
+    let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+    h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+    h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+    h.deps.vaultResume = async () => { throw Error('Interactive recovery must not be called'); };
+    await h.client.initialize();
+    notify({ generation: '3', status: 'suspended' });
+    notify({ generation: '2', status: 'ready' });
+    expect(h.client.getState().vaultStatus).toBe('suspended');
+    notify({ generation: '3', status: 'ready' });
+    notify({ generation: '3', status: 'ready' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.client.getState()).toMatchObject({ status: 'connected', vaultStatus: 'ready', lastError: null });
+    expect(h.requests.filter(request => request.url.endsWith('/me'))).toHaveLength(2);
+  });
+
+  it.each(['logout', 'cancelled', 'intervention_required'] as const)('ignores ready after %s', async transition => {
+    const h = harness();
+    let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+    h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+    h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+    h.deps.vaultInvalidate = async () => ({ generation: '4', status: 'suspended' });
+    await h.client.initialize();
+    notify({ generation: '3', status: 'suspended' });
+    if (transition === 'logout') await h.client.logout();
+    else notify({ generation: '3', status: transition });
+    notify({ generation: '3', status: 'ready' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.client.getState().status).not.toBe('connected');
+    expect(h.requests.filter(request => request.url.endsWith('/me'))).toHaveLength(1);
+  });
+});
+
+it.each(['silent', 'explicit'] as const)('keeps pre-lock persistence behind fresh %s verification', async mode => {
+  const h = harness();
+  let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+  h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+  h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+  h.deps.vaultResume = async () => ({ generation: '3', status: 'ready' });
+  const entered = deferred<void>();
+  const pending = deferred<void>();
+  const fresh = deferred<Response>();
+  const write = h.deps.setStateValue;
+  let once = true;
+  h.deps.setStateValue = async (key, value) => {
+    if (once) { once = false; entered.resolve(); await pending.promise; }
+    return write(key, value);
+  };
+  let me = 0;
+  h.intercept((_body, url) => { if (url.endsWith('/me') && ++me === 2) return fresh.promise; });
+  const observations: string[] = [];
+  h.client.subscribe(() => observations.push(h.client.getState().status));
+  const restoring = h.client.initialize();
+  await entered.promise;
+  notify({ generation: '3', status: 'suspended' });
+  observations.length = 0;
+  let recovery: Promise<void> | undefined;
+  if (mode === 'silent') notify({ generation: '3', status: 'ready' });
+  else recovery = h.client.resumeVaultAccess();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  pending.resolve();
+  await restoring;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(me).toBe(2);
+  expect(observations).not.toContain('connected');
+  expect(observations).not.toContain('offline');
+  expect(h.client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: 'ready' });
+  fresh.resolve(json({ account, device_session: session }));
+  await recovery;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.client.getState().status).toBe('connected');
+});
+
+it('requires fresh verification when startup discovers an already suspended native lease', async () => {
+  const h = harness();
+  let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+  h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+  h.deps.vaultActivate = async () => ({ generation: '3', status: 'suspended' });
+  const fresh = deferred<Response>();
+  h.intercept((_body, url) => url.endsWith('/me') ? fresh.promise : undefined);
+  await h.client.initialize();
+  notify({ generation: '3', status: 'ready' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.requests.filter(request => request.url.endsWith('/me'))).toHaveLength(1);
+  expect(h.client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: 'ready' });
+  await expect(h.client.request('POST', '/instances/instance-demo/deliveries/poll', {},
+    { authenticated: true, producer: true })).rejects.toMatchObject({ code: 'vault_suspended' });
+  fresh.resolve(json({ account, device_session: session }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.client.getState().status).toBe('connected');
+});
