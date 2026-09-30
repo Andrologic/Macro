@@ -1036,7 +1036,7 @@
         "title": "Connexion Macro Connect en pause",
         "intervention_required": "Macro a besoin de votre autorisation pour lire les identifiants enregistrés. Rétablissez la connexion pour continuer à utiliser Macro Pilot. Vos projets et conversations locaux restent disponibles.",
         "cancelled": "Vous avez annulé l’autorisation. Rétablissez la connexion lorsque vous le souhaitez. Vos projets et conversations locaux restent disponibles.",
-        "suspended": "La connexion est en pause pendant que votre session est verrouillée ou inactive. Macro réessaiera à votre retour. Vos projets et conversations locaux restent disponibles.",
+        "suspended": "La connexion est en pause. Si elle ne reprend pas après le déverrouillage de votre session, rétablissez-la ici. Vos projets et conversations locaux restent disponibles.",
         "vault_unavailable": "Les identifiants enregistrés sont inaccessibles. Vérifiez que le stockage des identifiants du système est déverrouillé, puis rétablissez la connexion. Vos projets et conversations locaux restent disponibles.",
         "waiting": "En attente de votre autorisation pour lire les identifiants enregistrés. Vous pouvez continuer à utiliser Macro ou vous déconnecter.",
         "resume": "Rétablir la connexion",

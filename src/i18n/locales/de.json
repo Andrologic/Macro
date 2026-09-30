@@ -1009,7 +1009,7 @@
         "title": "Macro Connect-Verbindung pausiert",
         "intervention_required": "Macro benötigt Ihre Erlaubnis, um die gespeicherten Zugangsdaten zu lesen. Stellen Sie die Verbindung wieder her, um Macro Pilot weiter zu nutzen. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
         "cancelled": "Die Berechtigung wurde abgebrochen. Stellen Sie die Verbindung wieder her, wenn Sie bereit sind. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
-        "suspended": "Die Verbindung pausiert, während Ihre Sitzung gesperrt oder inaktiv ist. Macro versucht es erneut, sobald Sie zurückkehren. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
+        "suspended": "Die Verbindung pausiert. Wenn sie nach dem Entsperren Ihrer Sitzung nicht wiederhergestellt wird, stellen Sie sie hier wieder her. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
         "vault_unavailable": "Gespeicherte Zugangsdaten sind nicht zugänglich. Entsperren Sie den Zugangsdaten-Speicher Ihres Systems und stellen Sie dann die Verbindung wieder her. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
         "waiting": "Warten auf Ihre Erlaubnis zum Lesen gespeicherter Zugangsdaten. Sie können Macro weiter nutzen oder sich abmelden.",
         "resume": "Verbindung wiederherstellen",

@@ -1013,7 +1013,7 @@
         "title": "Conexión de Macro Connect en pausa",
         "intervention_required": "Macro necesita tu autorización para leer las credenciales guardadas. Restablece la conexión para seguir usando Macro Pilot. Tus proyectos y conversaciones locales siguen disponibles.",
         "cancelled": "Se canceló la autorización. Restablece la conexión cuando quieras. Tus proyectos y conversaciones locales siguen disponibles.",
-        "suspended": "La conexión está en pausa mientras tu sesión está bloqueada o inactiva. Macro volverá a intentarlo cuando regreses. Tus proyectos y conversaciones locales siguen disponibles.",
+        "suspended": "La conexión está en pausa. Si no se reanuda después de desbloquear tu sesión, restablécela aquí. Tus proyectos y conversaciones locales siguen disponibles.",
         "vault_unavailable": "No se puede acceder a las credenciales guardadas. Comprueba que el almacenamiento de credenciales del sistema está desbloqueado y restablece la conexión. Tus proyectos y conversaciones locales siguen disponibles.",
         "waiting": "Esperando tu autorización para leer las credenciales guardadas. Puedes seguir usando Macro o cerrar sesión.",
         "resume": "Restablecer conexión",

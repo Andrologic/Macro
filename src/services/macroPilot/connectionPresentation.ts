@@ -4,7 +4,7 @@ import type { PilotRuntimeStatus } from './runtime';
 export const vaultRecoveryMessages = {
   intervention_required: 'Macro needs your permission to read the saved credentials. Restore the connection to continue using Macro Pilot. Your local projects and conversations remain available.',
   cancelled: 'Permission was cancelled. Restore the connection when you are ready. Your local projects and conversations remain available.',
-  suspended: 'The connection is paused while your session is locked or inactive. Macro will try again when you return. Your local projects and conversations remain available.',
+  suspended: 'The connection is paused. If it does not resume after you unlock your session, restore it here. Your local projects and conversations remain available.',
   vault_unavailable: 'Saved credentials are inaccessible. Check that your system credential storage is unlocked, then restore the connection. Your local projects and conversations remain available.',
 } as const;
 

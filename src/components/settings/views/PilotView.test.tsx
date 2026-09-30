@@ -338,7 +338,7 @@ describe('PilotView', () => {
       const explanations: Record<Exclude<PilotVaultStatus, 'ready'>, string> = {
         intervention_required: 'Macro needs your permission to read the saved credentials.',
         cancelled: 'Permission was cancelled.',
-        suspended: 'The connection is paused while your session is locked or inactive.',
+        suspended: 'If it does not resume after you unlock your session, restore it here.',
         vault_unavailable: 'Saved credentials are inaccessible.',
       };
       expect(recovery?.textContent).toContain(explanations[status]);
