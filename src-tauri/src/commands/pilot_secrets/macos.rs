@@ -144,6 +144,7 @@ fn access<T>(
     TEST_STATUS.with(|slot| slot.set(Some(system_status)));
     tracing::info!(
         operation,
+        mode = if interactive { "explicit" } else { "silent" },
         ?kind,
         duration_ms = start.elapsed().as_millis() as u64,
         system_status,

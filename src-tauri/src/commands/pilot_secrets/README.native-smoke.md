@@ -73,3 +73,39 @@ la livraison des hooks de veille/verrouillage, ni les plateformes Windows/Linux.
 - [Apple, SecKeychainCreate](https://developer.apple.com/documentation/security/seckeychaincreate(_:_:_:_:_:_:)) : mot de passe explicite et contrôle du dialogue.
 - [Apple, SecKeychainDelete](https://developer.apple.com/documentation/security/seckeychaindelete(_:)) : retrait ciblé de la liste et suppression du fichier.
 - [Apple Security, StorageManager.cpp](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/StorageManager.cpp) : `shouldAddToSearchList` et `created` montrent que les chemins login/System ont des effets particuliers, dont un choix de défaut si aucun n'existe. Le test refuse ces formes de chemin et ne dépend pas d'une absence universelle d'ajout à la liste.
+
+
+## Reprise après interruption de session
+
+L'extinction de l'écran seule conserve la session Macro Connect. Le verrouillage,
+la veille système et la désactivation de la session purgent les secrets en cache
+et changent la génération native pour invalider les opérations en vol.
+
+Une notification de déverrouillage et les propriétés publiques Core Graphics
+`kCGSessionOnConsoleKey` et `kCGSessionLoginDoneKey` autorisent une tentative
+silencieuse après le réveil. L'ordre des notifications de retour est indifférent.
+La reprise relit au plus huit références du contexte courant, sans appel à
+`SecKeychainUnlock` et avec l'interaction système désactivée. Le client vérifie
+la génération du résultat puis relit la session auprès du relais avant de
+rétablir son état connecté. Le runtime reprend depuis cet état.
+
+Les notifications distribuées `com.apple.screenIsLocked` et
+`com.apple.screenIsUnlocked` utilisées par l'observateur ne constituent pas une
+API publique stable. Sans notification de déverrouillage, un simple réveil ou
+retour sur la console ne prouve pas le déverrouillage. La reprise reste alors
+manuelle. Elle reste également manuelle si aucune référence n'est connue ou si
+une autre opération native occupe encore le coffre lors de l'unique tentative.
+La borne porte sur le nombre de lectures, pas sur la durée d'un appel système.
+Un refus, une annulation ou un échec du coffre reste soumis à une action
+explicite, y compris après de nouvelles notifications de session.
+
+Les diagnostics distinguent le motif exact de suspension, le retour de session,
+le mode silencieux ou explicite et le résultat. Le démarrage consigne
+l'identifiant d'application, la version et le profil debug du build. Les traces
+ne contiennent ni valeur de secret, ni nom de compte, ni nom de référence.
+
+Les tests simulés couvrent générations, refus, annulation, changement de compte,
+déconnexion, nouveau verrouillage pendant une reprise et redémarrage du runtime.
+Ils ne valident pas la livraison effective des notifications macOS. Le contrôle
+de ce parcours exige une application native signée et une session de test
+explicitement autorisée.

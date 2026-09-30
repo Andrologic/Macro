@@ -552,3 +552,38 @@ describe('native account v2 over the HTTP boundary', () => {
   });
 
 });
+
+describe('silent native recovery', () => {
+  it('rechecks the session once for the matching suspended generation without explicit resume', async () => {
+    const h = harness();
+    let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+    h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+    h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+    h.deps.vaultResume = async () => { throw Error('Interactive recovery must not be called'); };
+    await h.client.initialize();
+    notify({ generation: '3', status: 'suspended' });
+    notify({ generation: '2', status: 'ready' });
+    expect(h.client.getState().vaultStatus).toBe('suspended');
+    notify({ generation: '3', status: 'ready' });
+    notify({ generation: '3', status: 'ready' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.client.getState()).toMatchObject({ status: 'connected', vaultStatus: 'ready', lastError: null });
+    expect(h.requests.filter(request => request.url.endsWith('/me'))).toHaveLength(2);
+  });
+
+  it.each(['logout', 'cancelled', 'intervention_required'] as const)('ignores ready after %s', async transition => {
+    const h = harness();
+    let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+    h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+    h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+    h.deps.vaultInvalidate = async () => ({ generation: '4', status: 'suspended' });
+    await h.client.initialize();
+    notify({ generation: '3', status: 'suspended' });
+    if (transition === 'logout') await h.client.logout();
+    else notify({ generation: '3', status: transition });
+    notify({ generation: '3', status: 'ready' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.client.getState().status).not.toBe('connected');
+    expect(h.requests.filter(request => request.url.endsWith('/me'))).toHaveLength(1);
+  });
+});

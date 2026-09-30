@@ -665,3 +665,98 @@ fn second_resume_with_current_inflight_generation_never_queues() {
     assert_eq!(fake.resumes.load(Ordering::SeqCst), 1);
     assert_eq!(fake.interactive.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn silent_recovery_is_one_batch_without_unlock_or_interactive_reads() {
+    let (manager, fake, generation) = setup();
+    manager.write(&scope(), &generation, &secret()).unwrap();
+    manager.suspend_for("screen_locked", true);
+    let (scopes, generation) = manager.take_recovery().unwrap();
+    assert!(manager.take_recovery().is_none());
+    let lease = manager.recover_silently(&scopes, &generation).unwrap();
+    assert_eq!(lease.status, VaultStatus::Ready);
+    assert_eq!(lease.generation, generation);
+    assert_eq!(manager.read(&scope(), &generation), Ok(Some(secret())));
+    assert_eq!(fake.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.interactive.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.resumes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn lifecycle_never_rearms_a_refusal_or_failed_silent_attempt() {
+    for failure in [
+        PilotSecretError::Cancelled,
+        PilotSecretError::InterventionRequired,
+        PilotSecretError::VaultUnavailable,
+    ] {
+        let (manager, fake, generation) = setup();
+        manager.write(&scope(), &generation, &secret()).unwrap();
+        manager.suspend_for("system_sleep", true);
+        let (scopes, generation) = manager.take_recovery().unwrap();
+        fake.failures.lock().unwrap().insert(1, failure);
+        assert!(
+            matches!(manager.recover_silently(&scopes, &generation), Err(error) if error == failure)
+        );
+        manager.suspend_for("screen_locked", true);
+        assert!(manager.take_recovery().is_none());
+        let lease = manager.activate(context(), None).unwrap();
+        assert_eq!(manager.read(&scope(), &lease.generation), Err(failure));
+        assert_eq!(fake.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.interactive.load(Ordering::SeqCst), 0);
+        assert_eq!(fake.resumes.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn logout_owner_change_and_relock_reject_inflight_silent_recovery() {
+    for transition in ["logout", "owner_change", "relock"] {
+        let (manager, fake, generation) = setup();
+        manager.write(&scope(), &generation, &secret()).unwrap();
+        manager.suspend_for("screen_locked", true);
+        let (scopes, generation) = manager.take_recovery().unwrap();
+        let (started, release) = gate(&fake);
+        let task = {
+            let manager = manager.clone();
+            let generation = generation.clone();
+            thread::spawn(move || manager.recover_silently(&scopes, &generation))
+        };
+        started.recv().unwrap();
+        match transition {
+            "logout" => {
+                manager.invalidate(Some(&generation)).unwrap();
+            }
+            "owner_change" => {
+                let mut owner = context();
+                owner.owner_id = "owner:other-01".into();
+                manager.activate(owner, Some(&generation)).unwrap();
+            }
+            _ => manager.suspend_for("screen_locked", true),
+        }
+        release.send(()).unwrap();
+        assert!(matches!(
+            task.join().unwrap(),
+            Err(PilotSecretError::ContextChanged)
+        ));
+        assert_eq!(fake.interactive.load(Ordering::SeqCst), 0);
+        if transition == "relock" {
+            let (scopes, next) = manager.take_recovery().unwrap();
+            assert_eq!(
+                manager.recover_silently(&scopes, &next).unwrap().status,
+                VaultStatus::Ready
+            );
+        } else {
+            assert!(manager.take_recovery().is_none());
+        }
+    }
+}
+
+#[test]
+fn shutdown_cancels_recovery_and_deleted_scopes_are_not_restored() {
+    let (manager, _, generation) = setup();
+    manager.write(&scope(), &generation, &secret()).unwrap();
+    manager.delete(&scope(), &generation).unwrap();
+    manager.suspend_for("screen_locked", true);
+    assert!(manager.take_recovery().is_none());
+    manager.suspend();
+    assert!(manager.take_recovery().is_none());
+}

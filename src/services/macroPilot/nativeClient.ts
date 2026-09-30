@@ -488,7 +488,24 @@ export class MacroPilotNativeClient {
   private async subscribeVault(): Promise<void> {
     if (this.vaultUnsubscribe || !this.dependencies.vaultSubscribe) return;
     this.vaultUnsubscribe = await this.dependencies.vaultSubscribe(lease => {
-      if (lease.status === 'ready') return;
+      if (lease.status === 'ready') {
+        // Native silent recovery keeps the suspended generation. Explicit
+        // recovery owns its result separately, and stale owners cannot revive.
+        if (this.vaultRecovering || !this.vaultOwner || this.vaultLease?.status !== 'suspended' ||
+          this.vaultLease.generation !== lease.generation) return;
+        const context = this.contextKey();
+        const fence = this.vaultFence;
+        this.vaultLease = lease;
+        this.publish({ vaultStatus: 'ready', lastError: null });
+        void (async () => {
+          // A suspended startup request may still be unwinding. Start a fresh
+          // authentication check after it settles, rather than coalescing it.
+          await this.initializationPromise?.catch(() => undefined);
+          if (context !== this.contextKey() || fence !== this.vaultFence || this.vaultLease !== lease) return;
+          await this.initialize();
+        })().catch(() => undefined);
+        return;
+      }
       if (lease.status === 'suspended') this.vaultFence++;
       this.vaultLease = lease;
       this.scopeController.abort();

@@ -219,3 +219,22 @@ it('discards a late explicit recovery after logout and cannot restart the produc
     assertIsolated(h);
   } finally { release(); await recovery; await runtime.stop(); }
 });
+
+
+it('restarts the runtime after native silent recovery without interactive access', async () => {
+  const h = syntheticFixture();
+  const client = new MacroPilotNativeClient(h.dependencies);
+  const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+  try {
+    await connect(client);
+    await runtime.start();
+    await deliver(h, 'task.cards.list', { instance_id: instanceId });
+    h.block('suspended');
+    await until(() => runtime.getStatus() === 'inactive');
+    h.recoverSilently();
+    await until(() => client.getState().status === 'connected' && runtime.getStatus() === 'running');
+    expect(JSON.stringify(await deliver(h, 'conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }))).toContain('Synthetic hello');
+    expect(h.resumes).toBe(0);
+    assertIsolated(h);
+  } finally { await runtime.stop(); }
+});
