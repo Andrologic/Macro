@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Macro Pilot QA",
+  "productName": "Macro Connect QA",
   "identifier": "com.macro.desktop.qa.pilot",
   "app": {
     "windows": [
       {
-        "title": "Macro Pilot QA",
+        "title": "Macro Connect QA",
         "width": 1200,
         "height": 800,
         "decorations": true,

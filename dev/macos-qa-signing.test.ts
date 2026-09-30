@@ -58,7 +58,7 @@ function fakeTools({
   };
 }
 
-describe('macOS Pilot QA signing', () => {
+describe('macOS Macro Connect QA signing', () => {
   afterAll(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
   test('requires an explicit valid SHA-1 identity and rejects ad hoc signing', () => {
@@ -125,7 +125,7 @@ describe('macOS Pilot QA signing', () => {
     expect(config.bundle.createUpdaterArtifacts).toBe(false);
     expect(config.bundle.targets).toEqual(['app']);
     expect(config.plugins.updater.endpoints).toEqual([]);
-    expect(config.productName).toBe('Macro Pilot QA');
-    expect(config.app.windows[0].title).toBe('Macro Pilot QA');
+    expect(config.productName).toBe('Macro Connect QA');
+    expect(config.app.windows[0].title).toBe('Macro Connect QA');
   });
 });

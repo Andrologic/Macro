@@ -159,7 +159,7 @@ function build(outputDirectory, identity, runCommand = run, spawn = spawnSync) {
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Tauri QA build failed with status ${result.status ?? 'unknown'}.`);
 
-  const appPath = resolve(root, 'src-tauri', 'target', target, 'release', 'bundle', 'macos', 'Macro Pilot QA.app');
+  const appPath = resolve(root, 'src-tauri', 'target', target, 'release', 'bundle', 'macos', 'Macro Connect QA.app');
   if (!existsSync(appPath)) throw new Error(`Tauri did not produce the expected bundle: ${appPath}`);
   mkdirSync(dirname(destination), { recursive: true });
   assertOutsideRepository(destination);

@@ -105,6 +105,9 @@ describe('PilotView', () => {
   beforeEach(async () => {
     pilotState.busy = false; pilotState.reading = false;
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
+    pilotState.instance.connection_state = 'reachable';
+    pilotState.accessRequestsLoaded = true;
+    pilotState.refreshAccessRequests.mockClear();
     pilotState.relayOrigin = 'https://macro.andrologic.ai';
     pilotState.account = null; pilotState.deviceSession = null; pilotState.accountCatalog = null;
     pilotState.instanceAccess = null; pilotState.accessRequests = [];
@@ -213,6 +216,81 @@ describe('PilotView', () => {
     expect(container.querySelector('input')).toBeNull();
     const recovery = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'));
     expect(recovery?.open).toBe(false);
+    expect(container.textContent).toContain('Account session');
+    expect(container.textContent).toContain('Saved credentials');
+    expect(container.textContent).not.toContain('No pending access requests');
+    expect(container.textContent).not.toContain('Refresh to load pending access requests');
+  });
+
+  it.each(['inactive', 'unavailable'] as const)('keeps the account connected but never marks an %s runtime online', async status => {
+    runtimeStatus = status;
+    pilotState.instanceAccess = { contract_version: '1.0', type: 'instance_access', ref: { type: 'instance_access', account_id: 'account:one', session_id: 'session:one', instance_id: 'instance:studio' }, state: 'granted', permissions: ['supervise', 'respond', 'approve_tools', 'review'], granted_at: '2026-09-01T00:00:00Z', revision: 1 };
+    await showAccount();
+    await act(async () => { runtimeListener?.(); await Promise.resolve(); });
+    expect(container.textContent).not.toContain('Online');
+    expect(container.textContent).toContain(status === 'inactive' ? 'Connecting…' : 'Unavailable');
+    expect(container.textContent).toContain('@example');
+  });
+
+  it('updates availability as the runtime changes', async () => {
+    pilotState.instanceAccess = {
+      contract_version: '1.0', type: 'instance_access',
+      ref: { type: 'instance_access', account_id: 'account:one', session_id: 'session:one', instance_id: 'instance:studio' },
+      state: 'granted', permissions: ['supervise', 'respond', 'approve_tools', 'review'],
+      granted_at: '2026-09-01T00:00:00Z', revision: 1,
+    };
+    await showAccount();
+    expect(container.textContent).toContain('Online');
+    runtimeStatus = 'unavailable';
+    await act(async () => { runtimeListener?.(); await Promise.resolve(); });
+    expect(container.textContent).not.toContain('Online');
+    expect(container.textContent).toContain('Unavailable');
+    runtimeStatus = 'running';
+    await act(async () => { runtimeListener?.(); await Promise.resolve(); });
+    expect(container.textContent).toContain('Online');
+    pilotState.status = 'offline';
+    await act(async () => root.render(<PilotView />));
+    expect(container.textContent).not.toContain('Online');
+    expect(container.textContent).toContain('Offline');
+  });
+
+  it('offers local recovery without GitHub sign-in when saved credentials are inaccessible', async () => {
+    await showVaultStatus('intervention_required');
+    expect(button('Restore connection')).toBeDefined();
+    expect(button('Connect with GitHub')).toBeUndefined();
+    expect(pilotState.connect).not.toHaveBeenCalled();
+  });
+
+  it('offers sign out before reconnecting when an expired account session is still retained', async () => {
+    await showAccount();
+    pilotState.lastError = 'unauthorized';
+    await act(async () => root.render(<PilotView />));
+    expect(button('Connect with GitHub')).toBeUndefined();
+    expect(button('Sign out before reconnecting')).toBeDefined();
+    expect(pilotState.connect).not.toHaveBeenCalled();
+    await act(async () => button('Sign out before reconnecting').click());
+    expect(pilotState.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the saved computer availability when the account catalog cannot load', async () => {
+    await showAccount();
+    pilotState.accountCatalog = null;
+    await showVaultStatus('cancelled');
+    expect(container.textContent).toContain('Studio Mac');
+    expect(container.textContent).toContain('This computer');
+    expect(container.textContent).toContain('Permission cancelled');
+    expect(container.textContent).not.toContain('Online');
+  });
+
+  it('loads legacy requests only after opening troubleshooting and hides an empty result', async () => {
+    pilotState.accessRequestsLoaded = false;
+    await showAccount();
+    expect(pilotState.refreshAccessRequests).not.toHaveBeenCalled();
+    const details = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'))!;
+    await act(async () => { details.open = true; });
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain('Access requests from older devices');
+    expect(container.textContent).not.toContain('No pending access requests');
   });
 
   it('identifies a persisted session on a previous relay without moving it automatically', async () => {
@@ -243,19 +321,19 @@ describe('PilotView', () => {
   it.each(['intervention_required', 'cancelled', 'suspended', 'vault_unavailable'] as const)(
     'explains the %s vault state and offers one explicit recovery action', async (status) => {
       await showVaultStatus(status);
-      const recovery = container.querySelector('[role="alert"]');
-      expect(recovery?.textContent).toContain('Pilot data is paused');
+      const recovery = container.querySelector(status === 'suspended' ? '[aria-live="polite"]' : '[role="alert"]');
+      expect(recovery?.textContent).toContain('Macro Connect connection paused');
       const explanations: Record<Exclude<PilotVaultStatus, 'ready'>, string> = {
-        intervention_required: 'Macro needs attention to access the system credential vault and restore Pilot data.',
-        cancelled: 'Credential vault access was cancelled. You can try again when you are ready.',
-        suspended: 'Access to Pilot credentials is suspended. Resume access to restore Pilot data.',
-        vault_unavailable: 'Macro could not access the system credential vault. You can try to resume access.',
+        intervention_required: 'Macro needs your permission to read the saved credentials.',
+        cancelled: 'Permission was cancelled.',
+        suspended: 'The connection is paused while your session is locked or inactive.',
+        vault_unavailable: 'Saved credentials are inaccessible.',
       };
       expect(recovery?.textContent).toContain(explanations[status]);
-      expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Resume vault access')).toHaveLength(1);
+      expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Restore connection')).toHaveLength(1);
       expect(resumeVaultAccessMock).not.toHaveBeenCalled();
       await act(async () => {
-        button('Resume vault access').click();
+        button('Restore connection').click();
         await Promise.resolve();
       });
       expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
@@ -284,12 +362,12 @@ describe('PilotView', () => {
       throw new Error('cancelled');
     });
     await act(async () => {
-      button('Resume vault access').click();
+      button('Restore connection').click();
       await Promise.resolve();
     });
     await act(async () => root.render(<PilotView />));
-    expect(container.textContent).toContain('Credential vault access was cancelled. You can try again when you are ready.');
-    expect(button('Resume vault access')).toBeDefined();
+    expect(container.textContent).toContain('Permission was cancelled. Restore the connection when you are ready.');
+    expect(button('Restore connection')).toBeDefined();
 
     await showAccount();
     pilotState.status = 'vault_unavailable';
@@ -301,7 +379,7 @@ describe('PilotView', () => {
       pilotState.lastError = null;
     });
     await act(async () => {
-      button('Resume vault access').click();
+      button('Restore connection').click();
       await Promise.resolve();
     });
     await act(async () => root.render(<PilotView />));
@@ -320,18 +398,18 @@ describe('PilotView', () => {
       await recoveryPending;
     });
     await act(async () => {
-      button('Resume vault access').click();
-      button('Resume vault access').click();
+      button('Restore connection').click();
+      button('Restore connection').click();
       await Promise.resolve();
     });
     await act(async () => root.render(<PilotView />));
     expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
     expect(pilotState.busy).toBe(true);
     expect(pilotState.reading).toBe(true);
-    expect(container.textContent).toContain('Waiting for access to the system credential vault.');
-    expect(button('Resuming access…').disabled).toBe(true);
+    expect(container.textContent).toContain('Waiting for permission to read the saved credentials.');
+    expect(button('Restoring connection…').disabled).toBe(true);
     expect(button('Sign out').disabled).toBe(false);
-    await act(async () => button('Resuming access…').click());
+    await act(async () => button('Restoring connection…').click());
     expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
     await act(async () => {
       button('Sign out').click();
