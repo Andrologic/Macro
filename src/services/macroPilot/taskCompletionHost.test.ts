@@ -158,3 +158,28 @@ test.each([false, true])('retains receipt conflicts on retries with policy chang
   expect(retry.response).toMatchObject({ type: 'error', code: 'conflict', retryable: false });
   expect(s.calls()).toBe(1);
 });
+
+test.each(['deadline', 'policy'] as const)('tool reads retain the final %s check after authorization', async boundary => {
+  const s = setup(); let clock = 0; let authorized = false; let changedPolicy = false; let hostJournal: string | null = null;
+  s.deps.source.load = async () => {
+    expect(authorized).toBe(true);
+    if (boundary === 'deadline') clock = 5000;
+    else changedPolicy = true;
+    return { fingerprint: 1, items: [] };
+  };
+  const host = new ContentHost({ accountId: 'account:demo', instanceId: ref.instance_id, signal: new AbortController().signal,
+    conversations: { clear: () => {} } as never, reviews: {} as never,
+    storage: { load: async () => hostJournal, compareAndSwap: async (old, next) => { if (old !== hostJournal) return false; hostJournal = next; return true; } },
+    commitReview: async () => false, reviewRefs: async () => [], resolveReview: async () => { throw new Error('unused'); },
+    policy: async () => ({ revision: 'visible-1', secrets: changedPolicy ? ['new-policy-secret'] : [] }),
+    taskCompletion: { source: s.deps.source, storage: s.deps.storage }, now: () => clock,
+  });
+  await host.initialize();
+  const result = host.handle({ transport_version: '2.0', type: 'delivery', request_id: 'request:demo',
+    instance_id: ref.instance_id, account_id: 'account:demo', source_session_id: 'session:demo', expires_at: '2030-01-01T00:00:00Z',
+    request: { contract_version: '2.0', type: 'request', request_id: 'request:demo', account_id: 'account:demo', operation: 'conversation.tools.list',
+      body: { ref: { instance_id: ref.instance_id, kind: 'conversation', conversation_id: 'conversation:demo' } } },
+  }, async () => { authorized = true; return new Date(5000).toISOString(); });
+  if (boundary === 'deadline') await expect(result).rejects.toThrow('unavailable');
+  else expect((await result).response).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+});

@@ -295,9 +295,13 @@ export class ContentHost {
         let result: unknown;
         if (TASK_COMPLETION_OPERATIONS.has(request.operation)) {
           if (!this.taskCompletion) failure('content_unavailable');
+          const toolRead = request.operation === 'conversation.tools.list' || request.operation === 'conversation.tool.read';
+          // Validate visibility and captures after the network authorization wait.
+          // The final guard still bounds the complete read by this authorization.
+          if (toolRead) await authorizeNow();
           result = await this.taskCompletion!.handle(delivery, await this.policy(), async () => { await authorizeNow(); await this.policy(); guard(); if (readingPolicy !== this.policyKey) failure('snapshot_expired'); });
           completedTaskAction = request.operation === 'task.action';
-          await authorizeNow();
+          if (!toolRead) await authorizeNow();
         } else if (request.operation === 'review.verdict') {
           const { ref, snapshot_id, idempotency_key, expected_revision, verdict } = request.body;
           const receiptKey = await hash([delivery.account_id, delivery.source_session_id, idempotency_key]);

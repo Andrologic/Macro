@@ -635,3 +635,43 @@ it('requires negotiated Architect visibility for tool lists, continuations and d
     expect(await h.deliver(request('conversation.tool.read', { ...detail, snapshot_id: legacy.result.page.snapshot_id }))).toMatchObject({ type: 'error', code: 'not_found' });
   } finally { await h.runtime.stop(); }
 });
+
+it('legacy tool list rechecks Chat to Architect during final authorization', async () => {
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify([{ tool_call_id: 'tool:0', tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' }]);
+  const h = harness();
+  const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  try {
+    await h.runtime.start();
+    h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
+    const result = await h.deliver(request('conversation.tools.list', { ref: target }));
+    expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+it('legacy tool detail rechecks Chat to Architect during final authorization', async () => {
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify([{ tool_call_id: 'tool:0', tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' }]);
+  const h = harness();
+  const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  try {
+    await h.runtime.start();
+    const first = await h.deliver(request('conversation.tools.list', { ref: target }));
+    if (first.type !== 'response' || first.operation !== 'conversation.tools.list') throw Error('list failed');
+    h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
+    const result = await h.deliver(request('conversation.tool.read', { ref: target, snapshot_id: first.result.page.snapshot_id, item_id: first.result.items[0].trace_id, offset_bytes: 0 }));
+    expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+it('legacy continuation rechecks mode during final authorization', async () => {
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify(Array.from({ length: 51 }, (_, i) => ({ tool_call_id: `tool:${i}`, tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' })));
+  const h = harness(); const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  try {
+    await h.runtime.start();
+    const first = await h.deliver(request('conversation.tools.list', { ref: target }));
+    if (first.type !== 'response' || first.operation !== 'conversation.tools.list') throw Error('list failed');
+    h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
+    const result = await h.deliver(request('conversation.tools.list', { ref: target, continuation: { snapshot_id: first.result.page.snapshot_id, cursor: first.result.page.next_cursor } }));
+    expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
