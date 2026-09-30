@@ -54,10 +54,12 @@ of harness overhead is applied.
 | --- | --- | --- |
 | Chat history list | `src/components/chat/transcriptItems.ts::buildChatTranscriptItems` | 100/1,000/10,000 messages, 256 ASCII bytes each, alternating user/assistant, one completed compaction event per 100 messages. Includes item allocation and event grouping; excludes React, layout, markdown and virtualizer. |
 | Terminal history search | `src/services/terminalSearch.ts::findTerminalSearchMatches`, called by `terminalRuntime` | 100/1,000/10,000 synthetic rows, 120 ASCII columns, one case-insensitive match per row. Buffer adapter supplies strings; excludes xterm rendering, ANSI parsing and real buffer extraction. These sizes are stress inputs, not a claim about configured scrollback. |
-| SQLite read | First literal SQL in `src-tauri/src/db/repository.rs::list_messages`, extracted at run time | Canonical `001_initial.sql`, one conversation, 100/1,000/10,000 messages of 256 ASCII bytes, identical timestamps with distinct ordered IDs. Reads all rows via Bun SQLite. |
+| SQLite read | First literal SQL in `src-tauri/src/db/repository.rs::list_messages`, extracted at run time | Canonical `001_initial.sql` at the recorded baseline, one conversation, 100/1,000/10,000 messages of 256 ASCII bytes, identical timestamps with distinct ordered IDs. Reads all rows via Bun SQLite. |
 | SQLite insert | First literal SQL in `repository.rs::create_message`, extracted at run time | One new message, BEGIN/INSERT/ROLLBACK per sample to keep size fixed. Includes transaction overhead. Excludes conversation metadata refresh, Rust/SQLx conversion, pool contention, disk sync, later migrations and IPC. This is **not** a durable write or the complete `create_message` operation. |
 | Architect instrumentation disabled | `createArchitectSwitchPerfRuntime({ enabled: false }).measureSwitchPhase` | 10,000 callback calls per batch, compared with direct calls. Injected clock/logger/mark throw if used; callback result and empty report list checked. |
 | Performance hook disabled | Real `usePerformanceMonitor` rendered with React SSR | Compared with an empty SSR component. Bun has no Vite DEV flag, so mark/measure take the disabled path. Includes hook allocation, React and assertions; effects do not run. Does not prove browser mount overhead. |
+
+The current statement runner also applies `006_generation_attempts.sql` before executing the current message queries. Its schema fingerprint includes both SQL files. The earlier measurements below retain their recorded schema; this maintenance change does not supply new performance measurements.
 
 The SQL extractor fails when a named function or literal is absent. Hashes expose
 query/schema drift; this is not a parser for arbitrary Rust. The focused tests
@@ -489,3 +491,36 @@ the timing values are not measurements of first-send module loading. That latenc
 requires a browser measurement. Focused transport tests cover delayed loading,
 cancellation without an external signal, reentrant and same-session successors,
 reasoning capture, retry after module failure, HTTP readers and native listeners.
+
+
+## Bundle budgets for the 0.1.8 feature set
+
+A clean production build of `473a5caece81e805fe46fe47d7b29001a471cd46`
+used Bun 1.3.14 and the locked dependencies with
+`NODE_ENV=production bun dev/performance/build-bundles.mjs`.
+The existing guard rejected the deferred ChatZone chunk and three locale chunks.
+The emitted measurements are:
+
+| Chunk | Emitted bytes | Gzip bytes, level 9 | Budget bytes |
+| --- | ---: | ---: | ---: |
+| Application entry | 1,460,181 | 383,142 | 1,465,000, unchanged |
+| ChatZone | 198,707 | 57,550 | 201,000 |
+| French locale | 136,396 | 40,607 | 138,500 |
+| Korean locale | 136,978 | 40,891 | 138,500 |
+| Japanese locale | 151,451 | 42,633 | 153,000 |
+
+The ChatZone graph now includes the Goal product flow, its evaluator coordinator,
+provider executor, review artifacts and subagent runtime, alongside conversation
+sources and recovery controls. These are application modules in the deferred
+chat chunk. Its growth is accepted for these features; it is not a measured
+performance improvement. The entry, vendor, task-queue and rich-markdown caps
+remain fixed. The adjusted caps leave approximately 1% above the measured chat
+and largest locale outputs.
+
+The emitted static entry closure contains 1,808,736 bytes, or 490,648 gzip bytes.
+ChatZone remains outside that closure. The guard found no forbidden deferred
+transport, tool handler, Mermaid or xterm module in startup, and all 12 emitted
+locale objects matched their source JSON. These checks cover emitted imports
+and data, not first-open latency, WebView rendering or a native startup timing.
+The earlier performance series in this document remain tied to their recorded
+commits and are not re-measured by this build.
