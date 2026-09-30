@@ -116,6 +116,10 @@ export interface PilotAuthAttempt {
 export interface PilotPublicState {
   /** Native access state, separate from relay connectivity; never contains credentials. */
   vaultStatus?: PilotVaultStatus;
+  /** Fresh /me check, independent of unrelated read errors and store activity. */
+  sessionVerification?: 'pending' | 'failed' | null;
+  /** Redacted reason retained after credentials and session references are cleared. */
+  sessionEndReason?: 'unauthorized' | 'session_revoked' | null;
   status: PilotConnectionState;
   configurationId: string | null;
   relayOrigin: string | null;
@@ -351,7 +355,7 @@ export class MacroPilotNativeClient {
   private lastVaultScope: PilotSecretScope | null = null;
   private vaultRecovering = false;
   // Restored credentials alone cannot restart a producer until a fresh /me succeeds.
-  private sessionVerification: { generation: string; fence: number } | null = null;
+  private sessionVerification: { generation: string; fence: number; phase: 'pending' | 'failed' } | null = null;
   private readonly accountClient = new PilotAccountClient({
     context: () => {
       const state = this.persisted;
@@ -361,7 +365,7 @@ export class MacroPilotNativeClient {
     id: () => createOpaqueId('request', this.dependencies),
     now: () => this.dependencies.now().getTime(),
     send: async (path, body, requestId, signal) => (await this.sendRequest('POST', path, body, { authenticated: true, signal }, true, requestId)).data,
-    clear: () => this.clearSession(),
+    clear: reason => this.clearSession(reason),
   });
 
   private contextKey(): string {
@@ -399,7 +403,7 @@ export class MacroPilotNativeClient {
   private publish(patch: Partial<PilotPublicState>): void {
     const status = patch.status ?? this.publicState.status;
     if (status === 'connected' || status === 'offline') patch = { ...patch, ...this.blockedVaultState() };
-    this.publicState = { ...this.publicState, ...patch };
+    this.publicState = { ...this.publicState, ...patch, sessionVerification: this.sessionVerification?.phase ?? null };
     for (const listener of this.listeners) listener();
   }
 
@@ -502,7 +506,7 @@ export class MacroPilotNativeClient {
         const fence = this.vaultFence;
         this.vaultLease = lease;
         if (this.persisted?.deviceSession) {
-          this.sessionVerification = { generation: lease.generation, fence };
+          this.sessionVerification = { generation: lease.generation, fence, phase: 'pending' };
         }
         this.publish({ vaultStatus: 'ready', lastError: null });
         void (async () => {
@@ -517,7 +521,7 @@ export class MacroPilotNativeClient {
       if (lease.status === 'suspended') {
         this.vaultFence++;
         if (this.persisted?.deviceSession) {
-          this.sessionVerification = { generation: lease.generation, fence: this.vaultFence };
+          this.sessionVerification = { generation: lease.generation, fence: this.vaultFence, phase: 'pending' };
         }
       }
       this.vaultLease = lease;
@@ -558,7 +562,7 @@ export class MacroPilotNativeClient {
       this.vaultLease = resumed;
       if (resumed.status !== 'ready') throw this.vaultFailure(resumed.status);
       if (this.persisted?.deviceSession) {
-        this.sessionVerification = { generation: resumed.generation, fence: this.vaultFence };
+        this.sessionVerification = { generation: resumed.generation, fence: this.vaultFence, phase: 'pending' };
       }
       this.publish({ vaultStatus: 'ready', lastError: null });
       await this.initializationPromise?.catch(() => undefined);
@@ -665,13 +669,17 @@ export class MacroPilotNativeClient {
     });
     if (!this.persisted.deviceSession) { this.scheduleCleanup(); return this.publicState; }
     if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+    const context = this.contextKey();
+    const fence = this.vaultFence;
+    const verification = this.sessionVerification;
+    const verificationIsCurrent = () => fence === this.vaultFence && verification === this.sessionVerification &&
+      (!verification || (verification.generation === this.vaultLease?.generation &&
+        verification.fence === this.vaultFence && this.vaultLease.status === 'ready'));
     try {
-      const context = this.contextKey();
-      const fence = this.vaultFence;
-      const verification = this.sessionVerification;
-      const verificationIsCurrent = () => fence === this.vaultFence && verification === this.sessionVerification &&
-        (!verification || (verification.generation === this.vaultLease?.generation &&
-          verification.fence === this.vaultFence && this.vaultLease.status === 'ready'));
+      if (verification && this.vaultLease?.status === 'ready') {
+        verification.phase = 'pending';
+        this.publish({});
+      }
       const response = await this.request<{ account: PilotAccount; device_session: PilotDeviceSession }>(
         'GET', '/me', undefined, { authenticated: true },
       );
@@ -689,10 +697,11 @@ export class MacroPilotNativeClient {
       if (epoch !== this.epoch) throw new PilotClientError('context_changed');
       if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
       if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'session_revoked')) {
-        await this.clearSession();
+        await this.clearSession(error.code as 'unauthorized' | 'session_revoked');
       } else if (error instanceof PilotClientError && error.code.startsWith('vault_')) {
         // readSecret already published the precise state.
       } else {
+        if (verification && verificationIsCurrent()) verification.phase = 'failed';
         this.publish({ status: 'offline', lastError: 'offline' });
       }
     }
@@ -849,7 +858,7 @@ export class MacroPilotNativeClient {
         (code === 'unauthorized' || code === 'session_revoked')
       ) {
         // The account mutation caller handles self-revocation acknowledgement loss.
-        if (!extension || extension === 'producer') await this.clearSession();
+        if (!extension || extension === 'producer') await this.clearSession(code as 'unauthorized' | 'session_revoked');
       }
       throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
     }
@@ -876,7 +885,7 @@ export class MacroPilotNativeClient {
     this.accountClient.reset();
     await this.invalidateVault();
     await this.persist({ relayOrigin: origin });
-    this.publish({ relayOrigin: origin, status: 'authorizing', lastError: null });
+    this.publish({ relayOrigin: origin, status: 'authorizing', lastError: null, sessionEndReason: null });
     const attemptKey = createOpaqueId('attempt', this.dependencies);
     const claimSecret = createSecret(this.dependencies);
     const challenge = base64Url(await this.dependencies.sha256(new TextEncoder().encode(claimSecret)));
@@ -1164,7 +1173,7 @@ export class MacroPilotNativeClient {
     }
   }
 
-  private async clearSession(): Promise<void> {
+  private async clearSession(reason: PilotPublicState['sessionEndReason'] = null): Promise<void> {
     this.epoch += 1;
     this.scopeController.abort();
     this.scopeController = new AbortController();
@@ -1181,8 +1190,8 @@ export class MacroPilotNativeClient {
       instance: null, instanceCreationId: null, pendingInstanceLabel: null, pendingSecretCleanup: pending };
     // Stop new credential consumers before waiting for durable metadata or IPC.
     if (this.persisted) this.persisted = { ...this.persisted, ...cleared };
-    this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, instance: null, status: 'signed_out' });
     const invalidating = this.invalidateVault();
+    this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, instance: null, status: 'signed_out', lastError: reason, sessionEndReason: reason });
     // The durable tombstone precedes cleanup. A deferred delete cannot restore this session.
     try {
       await this.persist(cleared);

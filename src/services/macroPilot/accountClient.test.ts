@@ -347,6 +347,9 @@ describe('native account v2 over the HTTP boundary', () => {
     expect(h.client.getState().deviceSession).not.toBeNull();
     h.intercept(request => request.operation === 'account.get' ? json({ code: 'session_revoked' }, 401) : undefined);
     await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'session_revoked' });
+    expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null, sessionEndReason: 'session_revoked' });
+    await h.client.initialize();
+    expect(h.client.getState().sessionEndReason).toBe('session_revoked');
     await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.size).toBe(0);
   });

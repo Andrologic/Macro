@@ -23,12 +23,13 @@ export function getVaultRecoveryStatus(state: PilotPublicState) {
 }
 
 /** A ready credential store still needs the fresh session check that fences the producer. */
-export function sessionVerificationStatus(state: PilotPublicState & { busy?: boolean }) {
-  if (state.vaultStatus !== 'ready' || state.status !== 'vault_unavailable' || state.deviceSession?.state !== 'active') return null;
-  return state.lastError === 'offline' && !state.busy ? 'retry' : 'verifying';
+export function sessionVerificationStatus(state: PilotPublicState) {
+  if (state.vaultStatus !== 'ready' || state.deviceSession?.state !== 'active') return null;
+  return state.sessionVerification === 'failed' ? 'retry' : state.sessionVerification === 'pending' ? 'verifying' : null;
 }
 
 export function accountConnectionStatus(state: PilotPublicState) {
+  if (state.sessionEndReason) return state.sessionEndReason === 'unauthorized' ? 'expired' : 'revoked';
   if (state.lastError === 'unauthorized' || state.deviceSession?.state === 'expired') return 'expired';
   if (state.lastError === 'session_revoked' || state.deviceSession?.state === 'revoked') return 'revoked';
   if (state.account && state.deviceSession?.state === 'active') return 'connected';

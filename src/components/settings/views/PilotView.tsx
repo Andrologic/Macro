@@ -202,6 +202,7 @@ export const PilotView: React.FC = () => {
   const vaultRecoveryStatus = getVaultRecoveryStatus(store);
   const availability = computerAvailability(store, runtimeStatus);
   const verificationStatus = sessionVerificationStatus(store);
+  const connectionError = store.sessionEndReason ?? store.lastError;
   const vaultRecoveryActive = vaultRecoveryBusy;
   const legacyRelayOrigin = store.deviceSession && store.relayOrigin !== PILOT_RELAY_ORIGIN
     ? store.relayOrigin
@@ -260,9 +261,9 @@ export const PilotView: React.FC = () => {
             </p>
           )}
 
-          {store.lastError && !vaultRecoveryStatus && !verificationStatus && (store.lastError !== 'offline' || Boolean(store.relayOrigin)) && (
+          {connectionError && !vaultRecoveryStatus && !verificationStatus && (connectionError !== 'offline' || Boolean(store.relayOrigin)) && (
             <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {t(`settings.pilot.errors.${store.lastError}`, errorFallbacks[store.lastError] || store.lastError)}
+              {t(`settings.pilot.errors.${connectionError}`, errorFallbacks[connectionError] || connectionError)}
             </div>
           )}
 

@@ -20,6 +20,8 @@ let indeterminate = [{
 const pilotState = {
   status: 'connected',
   vaultStatus: 'ready' as PilotVaultStatus,
+  sessionVerification: null as PilotPublicState['sessionVerification'],
+  sessionEndReason: null as PilotPublicState['sessionEndReason'],
   configurationId: 'config:desktop',
   relayOrigin: 'https://macro.andrologic.ai' as string | null,
   account: null as PilotPublicState['account'],
@@ -106,6 +108,7 @@ describe('PilotView', () => {
     initializeMock.mockReset(); initializeMock.mockImplementation(async () => undefined);
     pilotState.busy = false; pilotState.reading = false;
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
+    pilotState.sessionVerification = null; pilotState.sessionEndReason = null;
     pilotState.instance.connection_state = 'reachable';
     pilotState.accessRequestsLoaded = true;
     pilotState.refreshAccessRequests.mockReset();
@@ -298,7 +301,7 @@ describe('PilotView', () => {
 
   it('shows a fresh session check in progress while saved credentials are ready', async () => {
     await showAccount();
-    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
+    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null; pilotState.sessionVerification = 'pending';
     runtimeStatus = 'inactive';
     await act(async () => { root.render(<PilotView />); runtimeListener?.(); await Promise.resolve(); });
     expect(container.textContent).toContain('Checking your Macro Connect session before reconnecting this computer.');
@@ -312,7 +315,7 @@ describe('PilotView', () => {
 
   it('retries a failed fresh session check through initialize without requesting credential permission', async () => {
     await showAccount();
-    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = 'offline';
+    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = 'offline'; pilotState.sessionVerification = 'failed';
     runtimeStatus = 'inactive';
     await act(async () => { root.render(<PilotView />); runtimeListener?.(); await Promise.resolve(); });
     initializeMock.mockClear();
@@ -322,9 +325,9 @@ describe('PilotView', () => {
     expect(button('Connect with GitHub')).toBeUndefined();
     let finish!: () => void;
     initializeMock.mockImplementationOnce(async () => {
-      pilotState.busy = true; pilotState.reading = true; pilotState.lastError = null;
+      pilotState.busy = true; pilotState.reading = true; pilotState.lastError = null; pilotState.sessionVerification = 'pending';
       await new Promise<void>(resolve => { finish = resolve; });
-      pilotState.busy = false; pilotState.reading = false; pilotState.status = 'connected';
+      pilotState.busy = false; pilotState.reading = false; pilotState.status = 'connected'; pilotState.sessionVerification = null;
     });
     await act(async () => { button('Retry connection').click(); await Promise.resolve(); root.render(<PilotView />); });
     expect(initializeMock).toHaveBeenCalledTimes(1);
@@ -340,6 +343,35 @@ describe('PilotView', () => {
     expect(container.textContent).toContain('Online');
     expect(container.textContent).not.toContain('Checking your Macro Connect session');
     expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps session retry after secondary reads clear the shared error', async () => {
+    await showAccount();
+    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = 'offline'; pilotState.sessionVerification = 'failed';
+    await act(async () => root.render(<PilotView />));
+    initializeMock.mockClear();
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!;
+    pilotState.refreshAccount.mockImplementationOnce(async () => {
+      pilotState.busy = true; pilotState.reading = true; pilotState.lastError = null;
+    });
+    await act(async () => { refresh.click(); root.render(<PilotView />); });
+    expect(button('Retry connection')).toBeDefined();
+    expect(button('Retry connection').disabled).toBe(true);
+    expect(container.textContent).not.toContain('Checking your Macro Connect session');
+    pilotState.busy = false; pilotState.reading = false;
+    await act(async () => root.render(<PilotView />));
+    expect(button('Retry connection').disabled).toBe(false);
+    expect(container.textContent).toContain('Your saved credentials are available');
+    expect(initializeMock).not.toHaveBeenCalled();
+    expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['unauthorized', 'session_revoked'] as const)('explains %s after session references and the shared error are cleared', async reason => {
+    pilotState.status = 'signed_out'; pilotState.sessionEndReason = reason; pilotState.lastError = null;
+    await act(async () => root.render(<PilotView />));
+    expect(container.textContent).toContain(reason === 'unauthorized' ? 'Your Macro Connect session has expired.' : 'Access for this device was revoked.');
+    expect(button('Connect with GitHub')).toBeDefined();
+    expect(button('Restore connection')).toBeUndefined();
   });
 
   it('loads legacy requests only after opening troubleshooting and hides an empty result', async () => {

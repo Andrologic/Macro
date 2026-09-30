@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, expect, it, mock, spyOn } from 'bun:test';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 import type { ContentDelivery, ContentRequest } from './contentProtocol';
-import { computerAvailability, sessionVerificationStatus } from './connectionPresentation';
+import { createConnectionAttentionObserver } from './connectionAttention';
+import { accountConnectionStatus, connectionIntervention, computerAvailability, sessionVerificationStatus } from './connectionPresentation';
 import { account, instanceId, origin, syntheticFixture } from '../../../dev/pilot-synthetic/fixture';
 
 // Fail closed at the native boundary, including credentials and native HTTP.
@@ -240,11 +241,14 @@ it('restarts the runtime after native silent recovery without interactive access
   } finally { await runtime.stop(); }
 });
 
-it.each(['success', 'revoked', 'network', 'relock'] as const)(
+it.each(['success', 'revoked', 'expired', 'network', 'relock'] as const)(
   'keeps the producer stopped until fresh session verification: %s', async outcome => {
     const h = syntheticFixture();
     const client = new MacroPilotNativeClient(h.dependencies);
     const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+    const observe = createConnectionAttentionObserver();
+    const attention: string[] = [];
+    const stopObserving = client.subscribe(() => observe(client.getState(), reason => attention.push(reason), () => undefined));
     let settle!: () => void;
     const pending = new Promise<void>(resolve => { settle = resolve; });
     try {
@@ -263,7 +267,7 @@ it.each(['success', 'revoked', 'network', 'relock'] as const)(
           await pending;
           settled = true;
           if (outcome === 'network') throw Error('Synthetic network failure');
-          if (outcome === 'revoked') return new Response(JSON.stringify({ code: 'session_revoked' }), { status: 401 });
+          if (outcome === 'revoked' || outcome === 'expired') return new Response(JSON.stringify({ code: outcome === 'revoked' ? 'session_revoked' : 'unauthorized' }), { status: 401 });
         }
         return fetch(url, init);
       };
@@ -290,11 +294,43 @@ it.each(['success', 'revoked', 'network', 'relock'] as const)(
         expect(runtime.getStatus()).toBe('inactive');
         expect(client.getState().status).not.toBe('connected');
         expect(h.requests.slice(before).filter(request => !request.path.endsWith('/me'))).toEqual([]);
-        if (outcome === 'revoked') expect(client.getState().deviceSession).toBeNull();
+        if (outcome === 'revoked' || outcome === 'expired') {
+          const reason = outcome === 'revoked' ? 'session_revoked' : 'unauthorized';
+          const label = outcome === 'revoked' ? 'revoked' : 'expired';
+          expect(client.getState()).toMatchObject({ deviceSession: null, status: 'signed_out', sessionEndReason: reason, sessionVerification: null });
+          expect(accountConnectionStatus(client.getState())).toBe(label);
+          expect(connectionIntervention(client.getState())).toBe(label);
+          expect(attention).toEqual([label]);
+          await client.initialize();
+          await expect(client.getAccountCatalog()).rejects.toMatchObject({ code: 'unauthorized' });
+          expect(client.getState().sessionEndReason).toBe(reason);
+          expect(accountConnectionStatus(client.getState())).toBe(label);
+          observe(client.getState(), reason => attention.push(reason), () => undefined);
+          expect(attention).toEqual([label]);
+          expect(runtime.getStatus()).toBe('inactive');
+          expect((h.values.macro_pilot_native_v1 as { deviceSession: unknown }).deviceSession).toBeNull();
+          h.dependencies.fetch = fetch;
+          await client.connect(origin, 'Synthetic desktop');
+          expect(client.getState().sessionEndReason).toBeNull();
+          expect(connectionIntervention(client.getState())).toBeNull();
+        }
         if (outcome === 'network') {
           expect(client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: 'ready', lastError: 'offline' });
           expect(sessionVerificationStatus(client.getState())).toBe('retry');
           const meBefore = h.requests.filter(request => request.path.endsWith('/me')).length;
+          h.dependencies.fetch = fetch;
+          await client.getAccountCatalog();
+          expect(client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: 'ready', lastError: null, sessionVerification: 'failed' });
+          expect(sessionVerificationStatus(client.getState())).toBe('retry');
+          expect(runtime.getStatus()).toBe('inactive');
+          expect(h.requests.filter(request => request.path.endsWith('/me'))).toHaveLength(meBefore);
+          h.dependencies.fetch = async (url, init) => {
+            if (String(url).includes('/pilot/v2/account/')) throw Error('Synthetic secondary read failure');
+            return fetch(url, init);
+          };
+          await expect(client.getAccountCatalog()).rejects.toMatchObject({ code: 'offline' });
+          expect(sessionVerificationStatus(client.getState())).toBe('retry');
+          expect(runtime.getStatus()).toBe('inactive');
           let retryEntered = false;
           let releaseRetry!: () => void;
           const retryWait = new Promise<void>(resolve => { releaseRetry = resolve; });
@@ -321,7 +357,7 @@ it.each(['success', 'revoked', 'network', 'relock'] as const)(
       }
       expect(h.resumes).toBe(0);
       assertIsolated(h);
-    } finally { settle(); await runtime.stop(); }
+    } finally { settle(); stopObserving(); await runtime.stop(); }
   },
 );
 
