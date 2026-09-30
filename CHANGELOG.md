@@ -6,6 +6,26 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.8 - 2026-09-30
+
+### Added
+
+- Added automatic Goal execution in project conversations, with a separate read-only evaluator, durable review artifacts, and pause, resume, edit, and stop controls.
+- Added explicitly selected conversation sources from the same project, with bounded automatic passage selection and preserved citations.
+- Added recovery controls for queued messages and retained their context and model selection across interruptions and restarts.
+- Added visible unresolved tool outcomes and preserved partial responses and generation attempts for inspection.
+- Added bounded parallel workspace and Git reads, on-demand discovery for large MCP tool catalogs, and reviewable forms from modern stdio and HTTP MCP servers.
+- Preserved typed MCP results in conversation history and added optional language diagnostics to local desktop file edits.
+
+### Changed
+
+- Deferred loading of several frontend components and execution modules to reduce startup work.
+
+### Fixed
+
+- Preserved drafts, attachments, artifact mutations, tool results, and current workspace context during recovery and navigation.
+- Strengthened task-creation recovery, provider and model selection, scoped skill execution, and command-process cleanup.
+
 ## 0.1.7 - 2026-09-25
 
 ### Fixed
