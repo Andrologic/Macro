@@ -124,6 +124,7 @@ function harness() {
   const requests: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
   let wake: (() => void) | undefined;
   let loseResult = false;
+  let lostResultDelay = 0;
   let loseEvent = false;
   let revoked = false;
   let eventWait: Promise<void> | undefined;
@@ -163,7 +164,7 @@ function harness() {
       }
       if (path.endsWith('/result')) {
         results.push(structuredClone(body) as unknown as ContentDeliveryResult);
-        if (loseResult) { loseResult = false; throw Error('lost response'); }
+        if (loseResult) { loseResult = false; await sleep(lostResultDelay); throw Error('lost response'); }
         return new Response(null, { status: 204 });
       }
       if (path.endsWith('/events')) {
@@ -187,7 +188,7 @@ function harness() {
   return { client, runtime, deliver, results, events, requests, values,
     waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
     waitEvents: (wait: Promise<void>) => { eventWait = wait; },
-    loseResult: () => { loseResult = true; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
+    loseResult: (delay = 0) => { loseResult = true; lostResultDelay = delay; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
     authorize: (callback: () => void) => { onAuthorize = callback; } };
 }
 beforeEach(() => {
@@ -566,3 +567,19 @@ it('serves cards and public tool details through authenticated deliveries withou
     expect(h.requests.some(item => item.body.type === 'poll' && (item.body.capabilities as string[] | undefined)?.includes('task-details-1'))).toBe(true);
   } finally { await h.runtime.stop(); }
 });
+
+
+it('retries an identical result after its execution lease expires without executing again', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    h.loseResult(5100);
+    const input = request('conversations.list', { instance_id: instanceId, kind: 'conversation' });
+    const response = await h.deliver(input);
+    expect(response.type).toBe('response');
+    await until(() => h.results.filter(result => result.request_id === input.request_id).length === 2);
+    const replies = h.results.filter(result => result.request_id === input.request_id);
+    expect(replies[1]).toEqual(replies[0]);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
+}, 12000);

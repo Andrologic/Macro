@@ -211,7 +211,7 @@ export class PilotRuntime {
         const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES] } : {}) }, signal);
         if (signal.aborted) break;
         if (response.status === 204) { failures = 0; await pause(25, signal); continue; }
-        let executeBefore = 0;
+        const deliveryExpiresAt = Date.parse((response.data as ContentDelivery).expires_at);
         const result = await host.handle(response.data, async (delivery: ContentDelivery) => {
           if (signal.aborted) throw new PilotError('unavailable');
           const requiredPermissions = taskActionPermissions(delivery.request);
@@ -220,14 +220,15 @@ export class PilotRuntime {
           const data = object(authorization.data);
           if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
           assertTaskActionPermissions(requiredPermissions, data);
-          executeBefore = Date.parse(data.execute_before);
           return data.execute_before;
         });
         for (let attempt = 0; attempt < 3 && !signal.aborted; attempt++) {
           try {
             // The native transport checks account/session/instance again at emission;
             // D validates the delivery authorization before accepting this result.
-            if (signal.aborted || Date.now() >= executeBefore) throw new PilotError('unavailable');
+            // The host guards execution with execute_before. Delivery retries
+            // use the longer exchange lifetime, including a lost acknowledgement.
+            if (signal.aborted || !Number.isFinite(deliveryExpiresAt) || Date.now() >= deliveryExpiresAt) throw new PilotError('unavailable');
             await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal); break;
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
