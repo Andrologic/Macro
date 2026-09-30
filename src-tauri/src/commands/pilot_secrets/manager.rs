@@ -38,6 +38,9 @@ struct State {
     resume_parent_generation: Option<String>,
     status: VaultStatus,
     cache: Cache,
+    recovery_scopes: Vec<PilotSecretScope>,
+    automatic_recovery: bool,
+    recovery_inflight: bool,
 }
 
 /// `operations` covers the entire backend call. `state` is never held across
@@ -60,6 +63,9 @@ impl<B: Vault> Manager<B> {
                 resume_parent_generation: None,
                 status: VaultStatus::Ready,
                 cache: Cache::default(),
+                recovery_scopes: Vec::new(),
+                automatic_recovery: false,
+                recovery_inflight: false,
             }),
         }
     }
@@ -140,6 +146,9 @@ impl<B: Vault> Manager<B> {
             }
             self.advance(&mut state);
             state.context = Some(context);
+            state.recovery_scopes.clear();
+            state.automatic_recovery = false;
+            state.recovery_inflight = false;
         }
         Ok(self.lease(&state))
     }
@@ -154,18 +163,105 @@ impl<B: Vault> Manager<B> {
         }) {
             self.advance(&mut state);
             state.context = None;
+            state.recovery_scopes.clear();
+            state.automatic_recovery = false;
+            state.recovery_inflight = false;
         }
         Ok(self.lease(&state))
     }
 
+    #[cfg(test)]
     pub(super) fn suspend(&self) {
+        self.suspend_for("application_shutdown", false);
+    }
+
+    pub(super) fn suspend_for(&self, reason: &'static str, recoverable: bool) {
         if let Ok(mut state) = self.state() {
+            // A lifecycle transition cannot turn a real refusal into a retry.
+            state.automatic_recovery = recoverable
+                && (state.status == VaultStatus::Ready
+                    || state.automatic_recovery
+                    || state.recovery_inflight);
+            state.recovery_inflight = false;
             self.advance(&mut state);
-            state.status = VaultStatus::Suspended;
-            // Emit while holding the short state lock: transitions cannot be
-            // published out of order by concurrent lifecycle callbacks.
+            if state.status == VaultStatus::Ready {
+                state.status = VaultStatus::Suspended;
+            }
+            tracing::info!(reason, status = ?state.status, automatic_recovery = state.automatic_recovery,
+                "Macro Connect credentials suspended");
             emit(&self.lease(&state));
         }
+    }
+
+    fn remember(state: &mut State, scope: &PilotSecretScope) {
+        let key = entry_name(scope).expect("validated scope");
+        state
+            .recovery_scopes
+            .retain(|known| entry_name(known).ok().as_ref() != Some(&key));
+        if state.recovery_scopes.len() == MAX_CACHED_SCOPES {
+            state.recovery_scopes.remove(0);
+        }
+        state.recovery_scopes.push(scope.clone());
+    }
+
+    /// Reserve one batch per suspension. No keychain call runs on the main thread.
+    pub(super) fn take_recovery(&self) -> Option<(Vec<PilotSecretScope>, String)> {
+        let mut state = self.state().ok()?;
+        if !state.automatic_recovery
+            || state.status != VaultStatus::Suspended
+            || state.context.is_none()
+            || state.recovery_scopes.is_empty()
+        {
+            return None;
+        }
+        state.automatic_recovery = false;
+        state.recovery_inflight = true;
+        Some((state.recovery_scopes.clone(), self.lease(&state).generation))
+    }
+
+    pub(super) fn recover_silently(
+        &self,
+        scopes: &[PilotSecretScope],
+        generation: &str,
+    ) -> Result<VaultLease, PilotSecretError> {
+        // A busy vault does not create an automatic queue or prompt loop.
+        let _operation = self
+            .operations
+            .try_lock()
+            .map_err(|_| PilotSecretError::Suspended)?;
+        let mut cache = Vec::new();
+        for scope in scopes {
+            {
+                let state = self.state()?;
+                self.current(generation)?;
+                Self::active(&state, scope)?;
+                if state.status != VaultStatus::Suspended {
+                    return Err(PilotSecretError::ContextChanged);
+                }
+            }
+            let key = entry_name(scope)?;
+            let result = self
+                .backend
+                .read(&key, scope.kind, false)
+                .and_then(|value| {
+                    if let Some(secret) = &value {
+                        validate_secret(secret)?;
+                    }
+                    Ok(value)
+                });
+            let value = self.finish(generation, result, |_, _| {})?;
+            cache.push((key, value));
+        }
+        let mut state = self.state()?;
+        self.current(generation)?;
+        for (key, value) in cache {
+            state.cache.insert(key, value);
+        }
+        state.recovery_inflight = false;
+        state.status = VaultStatus::Ready;
+        let lease = self.lease(&state);
+        emit(&lease);
+        Ok(lease)
     }
 
     fn finish<T>(
@@ -194,6 +290,8 @@ impl<B: Vault> Manager<B> {
                 };
                 if let Some(status) = status {
                     state.status = status;
+                    state.automatic_recovery = false;
+                    state.recovery_inflight = false;
                     state.cache.clear();
                     emit(&self.lease(&state));
                 }
@@ -232,6 +330,7 @@ impl<B: Vault> Manager<B> {
             });
         self.finish(generation, result, |state, value| {
             state.cache.insert(key, value.clone());
+            Self::remember(state, scope);
         })
     }
 
@@ -256,6 +355,7 @@ impl<B: Vault> Manager<B> {
         let result = self.backend.write(&key, scope.kind, secret);
         self.finish(generation, result, |state, _| {
             state.cache.insert(key, Some(secret.to_owned()));
+            Self::remember(state, scope);
         })
     }
 
@@ -275,6 +375,9 @@ impl<B: Vault> Manager<B> {
             Self::ready(&state)?;
             // Forget even if native deletion fails. Never populate from cleanup.
             state.cache.remove(&key);
+            state
+                .recovery_scopes
+                .retain(|known| entry_name(known).ok().as_ref() != Some(&key));
         }
         self.finish(generation, self.backend.delete(&key, scope.kind), |_, _| {})
     }
@@ -319,6 +422,8 @@ impl<B: Vault> Manager<B> {
                 Self::active(&state, scope)?;
             }
             self.advance(&mut state);
+            state.automatic_recovery = false;
+            state.recovery_inflight = false;
             state.resume_parent_generation = Some(generation.to_owned());
             state.status = VaultStatus::Suspended;
             self.lease(&state)
@@ -356,6 +461,11 @@ impl<B: Vault> Manager<B> {
         for (key, value) in cache {
             state.cache.insert(key, value);
         }
+        state.recovery_scopes.clear();
+        for scope in scopes {
+            Self::remember(&mut state, scope);
+        }
+        state.recovery_inflight = false;
         state.status = VaultStatus::Ready;
         let lease = self.lease(&state);
         emit(&lease);

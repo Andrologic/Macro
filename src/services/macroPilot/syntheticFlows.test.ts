@@ -219,3 +219,104 @@ it('discards a late explicit recovery after logout and cannot restart the produc
     assertIsolated(h);
   } finally { release(); await recovery; await runtime.stop(); }
 });
+
+
+it('restarts the runtime after native silent recovery without interactive access', async () => {
+  const h = syntheticFixture();
+  const client = new MacroPilotNativeClient(h.dependencies);
+  const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+  try {
+    await connect(client);
+    await runtime.start();
+    await deliver(h, 'task.cards.list', { instance_id: instanceId });
+    h.block('suspended');
+    await until(() => runtime.getStatus() === 'inactive');
+    h.recoverSilently();
+    await until(() => client.getState().status === 'connected' && runtime.getStatus() === 'running');
+    expect(JSON.stringify(await deliver(h, 'conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }))).toContain('Synthetic hello');
+    expect(h.resumes).toBe(0);
+    assertIsolated(h);
+  } finally { await runtime.stop(); }
+});
+
+it.each(['success', 'revoked', 'network', 'relock'] as const)(
+  'keeps the producer stopped until fresh session verification: %s', async outcome => {
+    const h = syntheticFixture();
+    const client = new MacroPilotNativeClient(h.dependencies);
+    const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+    let settle!: () => void;
+    const pending = new Promise<void>(resolve => { settle = resolve; });
+    try {
+      await connect(client);
+      await runtime.start();
+      await until(() => runtime.getStatus() === 'running');
+      h.block('suspended');
+      await until(() => runtime.getStatus() === 'inactive');
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const fetch = h.dependencies.fetch;
+      let held = false;
+      let settled = false;
+      h.dependencies.fetch = async (url, init) => {
+        if (String(url).endsWith('/me')) {
+          held = true;
+          await pending;
+          settled = true;
+          if (outcome === 'network') throw Error('Synthetic network failure');
+          if (outcome === 'revoked') return new Response(JSON.stringify({ code: 'session_revoked' }), { status: 401 });
+        }
+        return fetch(url, init);
+      };
+      const before = h.requests.length;
+      h.recoverSilently();
+      await until(() => held);
+      await runtime.retry();
+      // Calling the producer directly must also be fenced at the transport boundary.
+      await expect(client.request('POST', `/instances/${encodeURIComponent(instanceId)}/deliveries/poll`, {},
+        { authenticated: true, producer: true })).rejects.toMatchObject({ code: 'vault_suspended' });
+      expect(runtime.getStatus()).toBe('inactive');
+      expect(client.getState().status).toBe('vault_unavailable');
+      expect(h.requests.slice(before)).toEqual([]);
+      if (outcome === 'relock') h.block('suspended');
+      settle();
+      await until(() => settled);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      if (outcome === 'success') {
+        await until(() => client.getState().status === 'connected' && runtime.getStatus() === 'running');
+        await deliver(h, 'task.cards.list', { instance_id: instanceId });
+      } else {
+        expect(runtime.getStatus()).toBe('inactive');
+        expect(client.getState().status).not.toBe('connected');
+        expect(h.requests.slice(before).filter(request => !request.path.endsWith('/me'))).toEqual([]);
+        if (outcome === 'revoked') expect(client.getState().deviceSession).toBeNull();
+        if (outcome === 'network') {
+          // A later successful /me can release the barrier, but offline alone cannot.
+          h.dependencies.fetch = fetch;
+          await client.initialize();
+          await until(() => runtime.getStatus() === 'running');
+        }
+      }
+      expect(h.resumes).toBe(0);
+      assertIsolated(h);
+    } finally { settle(); await runtime.stop(); }
+  },
+);
+
+it('retains normal offline producer behavior without a credential suspension', async () => {
+  const h = syntheticFixture();
+  const client = new MacroPilotNativeClient(h.dependencies);
+  const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
+  try {
+    await connect(client);
+    const fetch = h.dependencies.fetch;
+    h.dependencies.fetch = async (url, init) => {
+      if (String(url).endsWith('/me')) throw Error('Synthetic network failure');
+      return fetch(url, init);
+    };
+    await client.initialize();
+    expect(client.getState().status).toBe('offline');
+    await runtime.start();
+    await until(() => runtime.getStatus() === 'running');
+    await deliver(h, 'task.cards.list', { instance_id: instanceId });
+    assertIsolated(h);
+  } finally { await runtime.stop(); }
+});
