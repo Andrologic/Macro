@@ -973,6 +973,11 @@
       "configuration": "Editar, validar e inspeccionar la configuración JSON estricta de Macro"
     },
     "pilot": {
+      "sessionVerification": {
+        "pending": "Comprobando tu sesión de Macro Connect antes de volver a conectar este ordenador. Tus proyectos y conversaciones locales siguen disponibles.",
+        "failed": "Tus credenciales guardadas están disponibles, pero Macro Connect no pudo comprobar tu sesión. Comprueba tu conexión a Internet y vuelve a intentarlo. Tus proyectos y conversaciones locales siguen disponibles.",
+        "retry": "Reintentar conexión"
+      },
       "accessRequestsFailed": "No se pudieron cargar las solicitudes de acceso de dispositivos antiguos.",
       "clearExpiredSession": "Cerrar sesión antes de volver a conectar",
       "availability": {

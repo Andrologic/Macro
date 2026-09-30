@@ -969,6 +969,11 @@
       "configuration": "Strikte JSON-Konfiguration von Macro bearbeiten, prüfen und untersuchen"
     },
     "pilot": {
+      "sessionVerification": {
+        "pending": "Ihre Macro Connect-Sitzung wird geprüft, bevor dieser Computer erneut verbunden wird. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
+        "failed": "Ihre gespeicherten Zugangsdaten sind verfügbar, aber Macro Connect konnte Ihre Sitzung nicht prüfen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
+        "retry": "Verbindung erneut versuchen"
+      },
       "accessRequestsFailed": "Zugriffsanfragen älterer Geräte konnten nicht geladen werden.",
       "clearExpiredSession": "Vor dem erneuten Verbinden abmelden",
       "availability": {

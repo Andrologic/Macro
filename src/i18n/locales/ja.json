@@ -968,6 +968,11 @@
       "configuration": "Macro の厳密な JSON 設定を編集、検証、確認する"
     },
     "pilot": {
+      "sessionVerification": {
+        "pending": "このコンピューターを再接続する前に Macro Connect のセッションを確認しています。ローカルのプロジェクトと会話は引き続き利用できます。",
+        "failed": "保存された認証情報は利用可能ですが、Macro Connect のセッションを確認できませんでした。インターネット接続を確認して再試行してください。ローカルのプロジェクトと会話は引き続き利用できます。",
+        "retry": "接続を再試行"
+      },
       "accessRequestsFailed": "旧バージョンのデバイスからのアクセス要求を読み込めませんでした。",
       "clearExpiredSession": "再接続する前にサインアウト",
       "availability": {

@@ -22,6 +22,12 @@ export function getVaultRecoveryStatus(state: PilotPublicState) {
   return vaultErrors[state.lastError as keyof typeof vaultErrors];
 }
 
+/** A ready credential store still needs the fresh session check that fences the producer. */
+export function sessionVerificationStatus(state: PilotPublicState & { busy?: boolean }) {
+  if (state.vaultStatus !== 'ready' || state.status !== 'vault_unavailable' || state.deviceSession?.state !== 'active') return null;
+  return state.lastError === 'offline' && !state.busy ? 'retry' : 'verifying';
+}
+
 export function accountConnectionStatus(state: PilotPublicState) {
   if (state.lastError === 'unauthorized' || state.deviceSession?.state === 'expired') return 'expired';
   if (state.lastError === 'session_revoked' || state.deviceSession?.state === 'revoked') return 'revoked';
@@ -44,6 +50,8 @@ export const computerAvailabilityMessages = {
 export function computerAvailability(state: PilotPublicState, runtime: PilotRuntimeStatus) {
   const vault = getVaultRecoveryStatus(state);
   if (vault) return vault === 'suspended' ? 'paused' : vault;
+  const verification = sessionVerificationStatus(state);
+  if (verification) return verification === 'verifying' ? 'resuming' : 'offline';
   const account = accountConnectionStatus(state);
   if (account === 'expired' || account === 'revoked' || state.status !== 'connected' || state.deviceSession?.state !== 'active') return 'offline';
   if (state.instance && (state.instanceAccess?.state !== 'granted' ||

@@ -103,6 +103,7 @@ describe('PilotView', () => {
   let root: Root;
 
   beforeEach(async () => {
+    initializeMock.mockReset(); initializeMock.mockImplementation(async () => undefined);
     pilotState.busy = false; pilotState.reading = false;
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
     pilotState.instance.connection_state = 'reachable';
@@ -293,6 +294,52 @@ describe('PilotView', () => {
     expect(container.textContent).toContain('This computer');
     expect(container.textContent).toContain('Permission cancelled');
     expect(container.textContent).not.toContain('Online');
+  });
+
+  it('shows a fresh session check in progress while saved credentials are ready', async () => {
+    await showAccount();
+    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
+    runtimeStatus = 'inactive';
+    await act(async () => { root.render(<PilotView />); runtimeListener?.(); await Promise.resolve(); });
+    expect(container.textContent).toContain('Checking your Macro Connect session before reconnecting this computer.');
+    expect(container.textContent).toContain('Connecting…');
+    expect(container.textContent).not.toContain('Offline');
+    expect(container.textContent).not.toContain('Online');
+    expect(button('Restore connection')).toBeUndefined();
+    expect(button('Connect with GitHub')).toBeUndefined();
+    expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed fresh session check through initialize without requesting credential permission', async () => {
+    await showAccount();
+    pilotState.status = 'vault_unavailable'; pilotState.vaultStatus = 'ready'; pilotState.lastError = 'offline';
+    runtimeStatus = 'inactive';
+    await act(async () => { root.render(<PilotView />); runtimeListener?.(); await Promise.resolve(); });
+    initializeMock.mockClear();
+    expect(container.textContent).toContain('Your saved credentials are available, but Macro Connect could not check your session.');
+    expect(button('Retry connection')).toBeDefined();
+    expect(button('Restore connection')).toBeUndefined();
+    expect(button('Connect with GitHub')).toBeUndefined();
+    let finish!: () => void;
+    initializeMock.mockImplementationOnce(async () => {
+      pilotState.busy = true; pilotState.reading = true; pilotState.lastError = null;
+      await new Promise<void>(resolve => { finish = resolve; });
+      pilotState.busy = false; pilotState.reading = false; pilotState.status = 'connected';
+    });
+    await act(async () => { button('Retry connection').click(); await Promise.resolve(); root.render(<PilotView />); });
+    expect(initializeMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Checking your Macro Connect session before reconnecting this computer.');
+    expect(container.textContent).toContain('Connecting…');
+    expect(container.textContent).not.toContain('Offline');
+    expect(container.textContent).not.toContain('Online');
+    expect(button('Retry connection')).toBeUndefined();
+    expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+    await act(async () => { finish(); await Promise.resolve(); root.render(<PilotView />); });
+    runtimeStatus = 'running';
+    await act(async () => { runtimeListener?.(); await Promise.resolve(); });
+    expect(container.textContent).toContain('Online');
+    expect(container.textContent).not.toContain('Checking your Macro Connect session');
+    expect(resumeVaultAccessMock).not.toHaveBeenCalled();
   });
 
   it('loads legacy requests only after opening troubleshooting and hides an empty result', async () => {

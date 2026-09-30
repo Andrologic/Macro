@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, expect, it, mock, spyOn } from 'bun:test';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 import type { ContentDelivery, ContentRequest } from './contentProtocol';
+import { computerAvailability, sessionVerificationStatus } from './connectionPresentation';
 import { account, instanceId, origin, syntheticFixture } from '../../../dev/pilot-synthetic/fixture';
 
 // Fail closed at the native boundary, including credentials and native HTTP.
@@ -275,6 +276,8 @@ it.each(['success', 'revoked', 'network', 'relock'] as const)(
         { authenticated: true, producer: true })).rejects.toMatchObject({ code: 'vault_suspended' });
       expect(runtime.getStatus()).toBe('inactive');
       expect(client.getState().status).toBe('vault_unavailable');
+      expect(sessionVerificationStatus(client.getState())).toBe('verifying');
+      expect(computerAvailability(client.getState(), runtime.getStatus())).toBe('resuming');
       expect(h.requests.slice(before)).toEqual([]);
       if (outcome === 'relock') h.block('suspended');
       settle();
@@ -289,10 +292,31 @@ it.each(['success', 'revoked', 'network', 'relock'] as const)(
         expect(h.requests.slice(before).filter(request => !request.path.endsWith('/me'))).toEqual([]);
         if (outcome === 'revoked') expect(client.getState().deviceSession).toBeNull();
         if (outcome === 'network') {
-          // A later successful /me can release the barrier, but offline alone cannot.
-          h.dependencies.fetch = fetch;
-          await client.initialize();
+          expect(client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: 'ready', lastError: 'offline' });
+          expect(sessionVerificationStatus(client.getState())).toBe('retry');
+          const meBefore = h.requests.filter(request => request.path.endsWith('/me')).length;
+          let retryEntered = false;
+          let releaseRetry!: () => void;
+          const retryWait = new Promise<void>(resolve => { releaseRetry = resolve; });
+          h.dependencies.fetch = async (url, init) => {
+            if (String(url).endsWith('/me')) { retryEntered = true; await retryWait; }
+            return fetch(url, init);
+          };
+          // This is the initialization operation used by the explicit UI retry.
+          const retry = client.initialize();
+          try {
+            await until(() => retryEntered);
+            expect(sessionVerificationStatus(client.getState())).toBe('verifying');
+            expect(computerAvailability(client.getState(), runtime.getStatus())).toBe('resuming');
+            expect(runtime.getStatus()).toBe('inactive');
+            await expect(client.request('POST', `/instances/${encodeURIComponent(instanceId)}/deliveries/poll`, {},
+              { authenticated: true, producer: true })).rejects.toMatchObject({ code: 'vault_suspended' });
+            expect(h.requests.filter(request => request.path.endsWith('/me'))).toHaveLength(meBefore);
+          } finally { releaseRetry(); await retry; }
           await until(() => runtime.getStatus() === 'running');
+          expect(h.requests.filter(request => request.path.endsWith('/me'))).toHaveLength(meBefore + 1);
+          expect(sessionVerificationStatus(client.getState())).toBeNull();
+          expect(client.getState().status).toBe('connected');
         }
       }
       expect(h.resumes).toBe(0);

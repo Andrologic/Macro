@@ -996,6 +996,11 @@
       "configuration": "Modifier, valider et inspecter la configuration JSON stricte de Macro"
     },
     "pilot": {
+      "sessionVerification": {
+        "pending": "Vérification de votre session Macro Connect avant de reconnecter cet ordinateur. Vos projets et conversations locaux restent disponibles.",
+        "failed": "Vos identifiants enregistrés sont disponibles, mais Macro Connect n’a pas pu vérifier votre session. Vérifiez votre connexion Internet et réessayez. Vos projets et conversations locaux restent disponibles.",
+        "retry": "Réessayer la connexion"
+      },
       "accessRequestsFailed": "Les demandes d’accès d’anciens appareils n’ont pas pu être chargées.",
       "clearExpiredSession": "Se déconnecter avant de se reconnecter",
       "availability": {

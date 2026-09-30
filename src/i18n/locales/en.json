@@ -998,6 +998,11 @@
       "configuration": "Edit, validate, and inspect Macro's strict JSON configuration"
     },
     "pilot": {
+      "sessionVerification": {
+        "pending": "Checking your Macro Connect session before reconnecting this computer. Your local projects and conversations remain available.",
+        "failed": "Your saved credentials are available, but Macro Connect could not check your session. Check your internet connection and try again. Your local projects and conversations remain available.",
+        "retry": "Retry connection"
+      },
       "accessRequestsFailed": "Access requests from older devices could not be loaded.",
       "clearExpiredSession": "Sign out before reconnecting",
       "availability": {
