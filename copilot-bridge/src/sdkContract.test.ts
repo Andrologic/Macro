@@ -159,7 +159,7 @@ describe('installed Copilot SDK contract', () => {
     for (const tool of tools) {
       requestTool.mockClear();
       const result = await tool.handler({}, invocation(tool.name));
-      if (__testables.isFrontendRelayToolId(tool.name)) {
+      if (__testables.isFrontendRelayToolId(tool.name, true)) {
         expect(result).toBe('relayed');
         expect(requestTool).toHaveBeenCalledTimes(1);
         expect(requestTool).toHaveBeenCalledWith(expect.objectContaining({ toolName: tool.name, args: {} }));
