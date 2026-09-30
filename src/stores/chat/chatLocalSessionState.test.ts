@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
+  PersistedContextReference,
 } from "../../types";
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
@@ -12,6 +13,7 @@ import {
   clearUnsavedAssistantResponsesForConversations,
   clearQuestionnaireDraftsForConversations,
   loadComposerDraftsFromStorage,
+  parseComposerDraft,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
   loadUnsavedAssistantResponsesFromStorage,
@@ -23,6 +25,7 @@ import {
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
   type MessageImageAttachment,
+  type PersistedComposerDraft,
 } from "./chatLocalSessionState";
 
 class MemoryLocalStorage {
@@ -217,6 +220,7 @@ describe("chatLocalSessionState", () => {
       timestamp: "2026-08-30T08:00:00.000Z",
       hidden_context: "contexte ".repeat(600),
       tool_traces: [],
+      generation_attempts: [{ id: "attempt-1", status: "abandoned", rawText: "Brouillon", acceptedText: "", costUsd: null }],
       persistence_state: "failed",
       persistence_error: "SQLite indisponible",
     };
@@ -339,6 +343,96 @@ describe("chatLocalSessionState", () => {
         })],
       },
     });
+  });
+
+  it("validates composer draft pieces without mutating the caller content", () => {
+    const image: MessageImageAttachment = {
+      id: "image-1",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AQID",
+      createdAt: "2026-08-29T09:00:00.000Z",
+    };
+    const reference: PersistedContextReference = {
+      id: "file:README.md",
+      kind: "file",
+      title: "README.md",
+      path: "README.md",
+    };
+
+    expect(parseComposerDraft({ text: "draft", images: [image], contextRefs: [reference] }))
+      .toEqual({ text: "draft", images: [image], contextRefs: [reference] });
+    expect(parseComposerDraft({ text: "x".repeat(200_001), images: [], contextRefs: [] }))
+      .toBeNull();
+    expect(parseComposerDraft({ text: "draft", images: [{ ...image, mimeType: "text/plain" }], contextRefs: [] }))
+      .toBeNull();
+    expect(parseComposerDraft({ text: "draft", images: [], contextRefs: [{ ...reference, kind: "unknown" }] }))
+      .toBeNull();
+  });
+
+  it("rejects every composer draft writer limit and keeps the previous storage", () => {
+    const image: MessageImageAttachment = {
+      id: "image-1",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AQID",
+      createdAt: "2026-08-29T09:00:00.000Z",
+    };
+    const reference: PersistedContextReference = {
+      id: "file:README.md",
+      kind: "file",
+      title: "README.md",
+      path: "README.md",
+    };
+    const previous = {
+      "conversation:previous": { text: "previous", images: [], contextRefs: [] },
+    };
+    expect(saveComposerDraftsToStorage(previous)).toBe(true);
+    const previousRaw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    const overLimitCases: Array<Record<string, PersistedComposerDraft>> = [
+      Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+        `conversation:${index}`,
+        { text: "draft", images: [], contextRefs: [] },
+      ])),
+      { "conversation:text": { text: "x".repeat(200_001), images: [], contextRefs: [] } },
+      { "conversation:images": { text: "draft", images: Array.from({ length: 11 }, () => image), contextRefs: [] } },
+      { "conversation:refs": { text: "draft", images: [], contextRefs: Array.from({ length: 51 }, () => reference) } },
+    ];
+
+    for (const candidate of overLimitCases) {
+      expect(saveComposerDraftsToStorage(candidate)).toBe(false);
+      expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(previousRaw);
+      expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toBeDefined();
+    }
+  });
+
+  it("recovers valid drafts beyond the old reader limit and reports recoverable loss", () => {
+    const drafts = Object.fromEntries(Array.from({ length: 51 }, (_, index) => [
+      `conversation:${index}`,
+      { text: `draft-${index}`, images: [], contextRefs: [] },
+    ]));
+    const raw = JSON.stringify(drafts);
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, raw);
+
+    const restored = loadComposerDraftsFromStorage();
+
+    expect(Object.keys(restored)).toHaveLength(50);
+    expect(restored["conversation:0"]?.text).toBe("draft-0");
+    expect(restored["conversation:50"]).toBeUndefined();
+    expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
+    expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("recovered");
+  });
+
+  it("recovers valid drafts beside invalid content and preserves the original value", () => {
+    const raw = JSON.stringify({
+      "conversation:valid": { text: "kept", images: [], contextRefs: [] },
+      "conversation:invalid": { text: "x".repeat(200_001), images: [], contextRefs: [] },
+    });
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, raw);
+
+    expect(loadComposerDraftsFromStorage()).toEqual({
+      "conversation:valid": { text: "kept", images: [], contextRefs: [] },
+    });
+    expect(window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(raw);
+    expect(usePersistenceHealth.getState().issues[COMPOSER_DRAFTS_STORAGE_KEY]).toContain("original data");
   });
 
   it("ignores invalid composer draft storage without throwing", () => {

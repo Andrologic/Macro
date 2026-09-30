@@ -1,0 +1,161 @@
+/** mcp IPC wrappers and frontend adapters. */
+
+import { Channel } from "@tauri-apps/api/core";
+import type {
+  McpInteractionRequest,
+  McpInteractionResponse,
+} from "../../types/generated/ipc";
+import type { MCPServer } from "../../types";
+import type {
+  MCPCatalogDto,
+  MCPRuntimeKey,
+  MCPRuntimeSelector,
+  MCPRuntimeServerSnapshot,
+  MCPRuntimeSnapshotDto,
+} from "../contracts/serviceProvider";
+import { invoke, isBrowserRuntimeBridgeEnabled } from "../tauriRuntimeBridge";
+import type {
+  MCPCallToolResponseDto,
+  MCPDiscoverToolsResponseDto,
+} from "./mcp.types";
+
+export async function mcpDiscoverTools(params: {
+  server: MCPServer;
+}): Promise<MCPDiscoverToolsResponseDto> {
+  return invoke<MCPDiscoverToolsResponseDto>("mcp_discover_tools", {
+    server: params.server,
+  });
+}
+
+export async function mcpCallTool(params: {
+  server: MCPServer;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  timeoutMs?: number | null;
+}): Promise<MCPCallToolResponseDto> {
+  return invoke<MCPCallToolResponseDto>("mcp_call_tool", {
+    server: params.server,
+    toolName: params.toolName,
+    arguments: params.arguments,
+    timeoutMs: params.timeoutMs ?? null,
+  });
+}
+
+export async function mcpStoreEnvSecret(params: {
+  serverId: string;
+  key: string;
+  value: string;
+}): Promise<string> {
+  return invoke<string>("mcp_store_env_secret", {
+    serverId: params.serverId,
+    key: params.key,
+    value: params.value,
+  });
+}
+
+export async function mcpDeleteEnvSecret(params: {
+  serverId: string;
+  key: string;
+}): Promise<void> {
+  return invoke("mcp_delete_env_secret", {
+    serverId: params.serverId,
+    key: params.key,
+  });
+}
+
+export async function mcpStoreOAuthClientSecret(params: {
+  serverId: string;
+  value: string;
+}): Promise<string> {
+  return invoke<string>('mcp_store_oauth_client_secret', params);
+}
+
+export async function mcpDeleteOAuthClientSecret(serverId: string): Promise<void> {
+  return invoke('mcp_delete_oauth_client_secret', { serverId });
+}
+
+export async function mcpOAuthAuthorize(selector: MCPRuntimeSelector): Promise<void> {
+  return invoke('mcp_oauth_authorize', { selector });
+}
+
+export async function mcpOAuthLogout(selector: MCPRuntimeSelector): Promise<void> {
+  return invoke('mcp_oauth_logout', { selector });
+}
+
+// Tauri commands for the persistent MCP runtime. The event channel remains
+// reserved for status/catalog push notifications added with the UI migration.
+
+export const MCP_RUNTIME_EVENT_NAME = "mcp:runtime";
+
+export async function mcpRuntimeGetSnapshot(): Promise<MCPRuntimeSnapshotDto> {
+  return invoke<MCPRuntimeSnapshotDto>("mcp_runtime_get_snapshot");
+}
+
+export async function mcpRuntimeConnect(
+  selector: MCPRuntimeSelector,
+): Promise<MCPRuntimeServerSnapshot> {
+  return invoke<MCPRuntimeServerSnapshot>("mcp_runtime_connect", { selector });
+}
+
+export async function mcpRuntimeDisconnect(key: MCPRuntimeKey): Promise<void> {
+  return invoke("mcp_runtime_disconnect", { key });
+}
+
+export async function mcpRuntimeRefreshCatalog(
+  key: MCPRuntimeKey,
+): Promise<MCPCatalogDto> {
+  return invoke<MCPCatalogDto>("mcp_runtime_refresh_catalog", { key });
+}
+
+export async function mcpRuntimeCallTool(params: {
+  key: MCPRuntimeKey;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  operationId: string;
+}): Promise<MCPCallToolResponseDto> {
+  return invoke<MCPCallToolResponseDto>("mcp_runtime_call_tool", {
+    key: params.key,
+    toolName: params.toolName,
+    arguments: params.arguments,
+    operationId: params.operationId,
+  });
+}
+
+/** Opens the explicit interaction host port. Closing its lease rejects pending requests. */
+export async function mcpRuntimeOpenInteractionPort(
+  onRequest: (request: McpInteractionRequest) => void,
+): Promise<string> {
+  if (isBrowserRuntimeBridgeEnabled()) {
+    const { openBrowserRuntimeMcpInteractionPort } = await import('../browserRuntimeTransport');
+    return openBrowserRuntimeMcpInteractionPort(onRequest);
+  }
+  const channel = new Channel<McpInteractionRequest>();
+  channel.onmessage = onRequest;
+  return invoke<string>("mcp_runtime_open_interaction_port", { channel });
+}
+
+export async function mcpRuntimeCloseInteractionPort(leaseId: string): Promise<void> {
+  if (isBrowserRuntimeBridgeEnabled()) {
+    const { closeBrowserRuntimeMcpInteractionPort } = await import('../browserRuntimeTransport');
+    return closeBrowserRuntimeMcpInteractionPort(leaseId);
+  }
+  return invoke("mcp_runtime_close_interaction_port", { leaseId });
+}
+
+/** Lists opaque pending IDs for the active form host lease. */
+export async function mcpRuntimeListPendingInteractions(leaseId: string): Promise<string[]> {
+  return invoke<string[]>("mcp_runtime_list_pending_interactions", { leaseId });
+}
+
+export async function mcpRuntimeRespondToInteraction(
+  leaseId: string,
+  response: McpInteractionResponse,
+): Promise<void> {
+  return invoke("mcp_runtime_respond_to_interaction", { leaseId, response });
+}
+
+export async function mcpRuntimeCancelOperation(
+  operationId: string,
+): Promise<boolean> {
+  return invoke<boolean>("mcp_runtime_cancel_operation", { operationId });
+}

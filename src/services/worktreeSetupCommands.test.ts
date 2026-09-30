@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { useTerminalStore, type TerminalTab } from '../stores/useTerminalStore';
-import { runWorktreeSetupCommand } from './worktreeSetupCommands';
+import type { ProjectCommandSession as TerminalTab } from './ProjectCommandRunner';
+import { createProjectCommandComposition, type TaskCommandTerminalAdapter } from '../composition/taskCommandComposition';
 
-type TerminalState = ReturnType<typeof useTerminalStore.getState>;
+type TerminalState = TaskCommandTerminalAdapter;
 type StartParams = Parameters<TerminalState['startWorktreeSetupCommandTab']>[0];
 
 const startWaiters: Array<() => void> = [];
@@ -10,7 +10,21 @@ let nextTabNumber = 1;
 let nextTaskNumber = 1;
 let activeTaskId = '';
 
-const originalTerminalState = useTerminalStore.getState();
+type TestTerminalState = TerminalState & { tabOrder: string[]; activeTabId: string | null; panelOpen: boolean };
+const listeners = new Set<() => void>();
+let terminalState: TestTerminalState;
+const terminalBackend = {
+  getState: () => terminalState,
+  setState: (update: Partial<TestTerminalState> | ((state: TestTerminalState) => Partial<TestTerminalState>)) => {
+    terminalState = { ...terminalState, ...(typeof update === 'function' ? update(terminalState) : update) };
+    for (const listener of listeners) listener();
+  },
+};
+const { runner, runWorktreeSetupCommand } = createProjectCommandComposition({
+  terminal: terminalBackend.getState,
+  subscribeTerminal: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+  projectLabel: () => undefined,
+});
 const startWorktreeSetupCommandTab = mock<
   (_params: StartParams) => Promise<TerminalTab>
 >();
@@ -21,26 +35,9 @@ const closeTab = mock<(_tabId: string) => Promise<void>>();
 function buildTab(id: string, patch: Partial<TerminalTab> = {}): TerminalTab {
   return {
     id,
-    kind: 'task',
-    purpose: 'worktree_setup',
-    taskId: activeTaskId,
-    projectId: 'project-1',
-    projectName: 'Macro',
-    mountName: 'macro',
-    workspacePath: 'C:/repos/macro/.macro/worktrees/task-1',
-    cwd: 'C:/repos/macro/.macro/worktrees/task-1',
-    title: 'Setup - Macro',
     status: 'running',
-    snapshot: '',
-    lastCommand: 'bun install',
     lastExitCode: null,
     hasLiveSession: true,
-    isRestored: false,
-    outputSequence: 0,
-    generation: 0,
-    hasUnreadOutput: false,
-    createdAt: '2026-08-23T10:00:00.000Z',
-    updatedAt: '2026-08-23T10:00:00.000Z',
     ...patch,
   };
 }
@@ -61,7 +58,7 @@ const waitForNextStart = (): Promise<void> =>
   });
 
 const publishTab = (tabId: string, patch: Partial<TerminalTab>) => {
-  useTerminalStore.setState((state) => ({
+  terminalBackend.setState((state) => ({
     tabs: {
       ...state.tabs,
       [tabId]: {
@@ -85,24 +82,25 @@ describe('runWorktreeSetupCommand', () => {
 
     startWorktreeSetupCommandTab.mockImplementation(async () => {
       const tab = buildTab(`setup-tab-${nextTabNumber++}`);
-      useTerminalStore.setState((state) => ({
+      terminalBackend.setState((state) => ({
         tabs: { ...state.tabs, [tab.id]: tab },
       }));
       startWaiters.shift()?.();
       return tab;
     });
     closeTab.mockImplementation(async (tabId: string) => {
-      useTerminalStore.setState((state) => {
+      terminalBackend.setState((state) => {
         const tabs = { ...state.tabs };
         delete tabs[tabId];
         return { tabs };
       });
     });
-    useTerminalStore.setState({
+    terminalBackend.setState({
       tabs: {},
       tabOrder: [],
       activeTabId: null,
       panelOpen: false,
+      startTaskCommandTab: mock(async () => buildTab('task-tab')),
       startWorktreeSetupCommandTab,
       activateTab,
       setPanelOpen,
@@ -111,7 +109,22 @@ describe('runWorktreeSetupCommand', () => {
   });
 
   afterEach(() => {
-    useTerminalStore.setState(originalTerminalState, true);
+    expect(listeners.size).toBe(0);
+    listeners.clear();
+  });
+
+  it('adapts a task PTY command with its display metadata and reveal preference', async () => {
+    await runner.start({
+      purpose: 'task', taskId: activeTaskId, taskTitle: 'Refactor compiler',
+      projectId: 'project-1', projectName: 'Macro', cwd: '/worktrees/task',
+      command: 'bun dev', reveal: false,
+    });
+    expect(terminalState.startTaskCommandTab).toHaveBeenCalledWith({
+      taskId: activeTaskId, projectId: 'project-1', cwd: '/worktrees/task',
+      command: 'bun dev', reveal: false, title: 'Macro - Refactor compiler',
+      promptContext: { projectLabel: 'Macro', taskLabel: 'Refactor compiler', branchLabel: null },
+    });
+    expect(startWorktreeSetupCommandTab).not.toHaveBeenCalled();
   });
 
   it('ignores an empty setup command', async () => {
@@ -164,7 +177,7 @@ describe('runWorktreeSetupCommand', () => {
         status: 'idle',
         hasLiveSession: false,
       });
-      useTerminalStore.setState((state) => ({
+      terminalBackend.setState((state) => ({
         tabs: { ...state.tabs, [tab.id]: tab },
       }));
       return tab;
@@ -225,7 +238,7 @@ describe('runWorktreeSetupCommand', () => {
     const resultPromise = runWorktreeSetupCommand(commandParams('bun install'));
     await started;
 
-    useTerminalStore.setState((state) => {
+    terminalBackend.setState((state) => {
       const tabs = { ...state.tabs };
       delete tabs['setup-tab-1'];
       return { tabs };

@@ -1631,6 +1631,37 @@ mod tests {
         repo
     }
 
+    #[test]
+    fn lifecycle_repo_eviction_preserves_borrowers_and_replacement_handles() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        init_repo(first.path());
+        init_repo(second.path());
+        let state = GitState::new();
+        let borrowed = state.open_repo(first.path()).unwrap();
+        let unrelated = state.open_repo(second.path()).unwrap();
+        state
+            .invalidate_repo_if_same(first.path(), &borrowed)
+            .unwrap();
+        assert!(
+            borrowed.lock().unwrap().head().is_ok(),
+            "admitted borrower remains valid"
+        );
+        let replacement = state.open_repo(first.path()).unwrap();
+        assert!(!Arc::ptr_eq(&borrowed, &replacement));
+        state
+            .invalidate_repo_if_same(first.path(), &borrowed)
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &state.open_repo(first.path()).unwrap(),
+            &replacement
+        ));
+        assert!(Arc::ptr_eq(
+            &state.open_repo(second.path()).unwrap(),
+            &unrelated
+        ));
+    }
+
     fn checkout_branch(repo: &Repository, branch_name: &str) {
         let head_commit = repo
             .head()
@@ -1875,8 +1906,8 @@ mod tests {
     #[test]
     fn test_ensure_macro_metadata_worktree_repairs_after_project_rename() {
         let temp = TempDir::new().expect("temp dir");
-        let original_path = temp.path().join("lplr-app");
-        let renamed_path = temp.path().join("octan_sales");
+        let original_path = temp.path().join("sample-app");
+        let renamed_path = temp.path().join("sample_sales");
         fs::create_dir(&original_path).expect("create original project dir");
 
         {
@@ -1906,7 +1937,7 @@ mod tests {
         );
         let gitfile =
             fs::read_to_string(ensured.worktree_path.join(".git")).expect("read repaired gitfile");
-        assert!(!gitfile.contains("lplr-app"));
+        assert!(!gitfile.contains("sample-app"));
         assert!(!gitfile.contains(&original_path.to_string_lossy().to_string()));
     }
 
@@ -1966,8 +1997,8 @@ mod tests {
     #[test]
     fn test_find_existing_macro_metadata_worktree_from_linked_worktree() {
         let temp = TempDir::new().expect("temp dir");
-        let primary_path = temp.path().join("octan_sales");
-        let linked_path = temp.path().join("octan_sales-linked");
+        let primary_path = temp.path().join("sample_sales");
+        let linked_path = temp.path().join("sample_sales-linked");
         fs::create_dir(&primary_path).expect("create primary project dir");
 
         let repo = init_repo(&primary_path);
@@ -1977,7 +2008,7 @@ mod tests {
             .expect("metadata worktree");
         fs::write(metadata_root.join("plan.txt"), "metadata from common repo")
             .expect("write metadata file");
-        repo.worktree("octan_sales-linked", &linked_path, None)
+        repo.worktree("sample_sales-linked", &linked_path, None)
             .expect("create linked worktree");
 
         let found = find_existing_macro_metadata_worktree_root(&linked_path)
@@ -2037,8 +2068,8 @@ mod tests {
     #[test]
     fn test_ensure_task_worktree_repairs_git_pointers_after_project_rename() {
         let temp = TempDir::new().expect("temp dir");
-        let original_path = temp.path().join("lplr-app");
-        let renamed_path = temp.path().join("octan_sales");
+        let original_path = temp.path().join("sample-app");
+        let renamed_path = temp.path().join("sample_sales");
         fs::create_dir(&original_path).expect("create original project dir");
 
         {
@@ -2070,7 +2101,7 @@ mod tests {
         );
         let gitfile =
             fs::read_to_string(ensured.worktree_path.join(".git")).expect("read repaired gitfile");
-        assert!(!gitfile.contains("lplr-app"));
+        assert!(!gitfile.contains("sample-app"));
         assert!(!gitfile.contains(&original_path.to_string_lossy().to_string()));
     }
 
@@ -3680,3 +3711,5 @@ mod tests {
         assert!(GitRepository::init(&repo_path).is_err());
     }
 }
+
+pub mod operations;

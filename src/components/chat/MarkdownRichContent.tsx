@@ -264,6 +264,7 @@ const normalizeContextKind = (kind: string): ContextRefKind => {
   if (
     normalized === 'file' ||
     normalized === 'source' ||
+    normalized === 'conversation' ||
     normalized === 'plan-node' ||
     normalized === 'predicted-branch'
   ) {

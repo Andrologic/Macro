@@ -9,7 +9,8 @@ export interface ArchitectPlanMutationJournalEntry<TPayload = unknown> {
   workspaceKey: string;
   branchName: string;
   planId: string;
-  operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair' | 'bind' | 'activate' | 'chat' | 'auto_heal' | 'orphan_cleanup';
+  goalArtifactScope?: { conversationId: string; goalId: string };
+  operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair' | 'bind' | 'activate' | 'chat' | 'auto_heal' | 'orphan_cleanup' | 'artifacts';
   phase: 'prepared' | 'applying' | 'files_applied' | 'committing';
   payload: TPayload;
   createdAt: string;
@@ -21,7 +22,11 @@ const isEntry = (value: unknown): value is ArchitectPlanMutationJournalEntry => 
   const entry = value as Partial<ArchitectPlanMutationJournalEntry>;
   return !!entry && typeof entry.id === 'string' && typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0 && typeof entry.branchName === 'string' &&
     typeof entry.planId === 'string' &&
-    ['create', 'update', 'archive', 'restore', 'delete', 'repair', 'bind', 'activate', 'chat', 'auto_heal', 'orphan_cleanup'].includes(entry.operation || '') &&
+    (entry.goalArtifactScope === undefined || (entry.goalArtifactScope !== null &&
+      entry.operation === 'artifacts' &&
+      typeof entry.goalArtifactScope.conversationId === 'string' &&
+      typeof entry.goalArtifactScope.goalId === 'string')) &&
+    ['create', 'update', 'archive', 'restore', 'delete', 'repair', 'bind', 'activate', 'chat', 'auto_heal', 'orphan_cleanup', 'artifacts'].includes(entry.operation || '') &&
     ['prepared', 'applying', 'files_applied', 'committing'].includes(entry.phase || '') &&
     typeof entry.createdAt === 'string' && typeof entry.updatedAt === 'string' &&
     entry.payload !== undefined;
@@ -80,6 +85,19 @@ const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanM
     const values = parseArray(expectedValueJson);
     const valid = values.filter(isEntry);
     const invalid = values.filter((entry) => !isEntry(entry));
+    if (values.some((value) => {
+      if (value === null || typeof value !== 'object') return false;
+      const entry = value as { operation?: unknown; id?: unknown; payload?: unknown };
+      const artifactIntent = entry.operation === 'artifacts' ||
+        (typeof entry.id === 'string' && /^plan:v1:[^:]+:[^:]+:artifacts:/.test(entry.id)) ||
+        (entry.payload !== null && typeof entry.payload === 'object' &&
+          Object.prototype.hasOwnProperty.call(entry.payload, 'files'));
+      return artifactIntent && (!isEntry(value) || value.operation !== 'artifacts');
+    })) {
+      // Preserve the blocking intent and its before-images even when the envelope
+      // cannot be parsed. Quarantine alone would allow partially applied reviews.
+      throw new Error('Invalid artifact recovery journal envelope.');
+    }
     if (invalid.length === 0) return valid;
 
     await appendQuarantine(
@@ -97,8 +115,12 @@ const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanM
   throw new Error('Conflit persistant lors de la normalisation du journal des mutations de plans.');
 };
 
-export const createArchitectPlanMutationId = (entry: Pick<ArchitectPlanMutationJournalEntry, 'branchName' | 'planId' | 'operation'>): string =>
-  `${toPlanLocatorKey(entry)}:${entry.operation}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+export const createArchitectPlanMutationId = (entry: Pick<ArchitectPlanMutationJournalEntry, 'branchName' | 'planId' | 'operation' | 'goalArtifactScope'>): string => {
+  const owner = entry.goalArtifactScope
+    ? `goal:v1:${encodeURIComponent(entry.branchName)}:${encodeURIComponent(entry.goalArtifactScope.conversationId)}:${encodeURIComponent(entry.goalArtifactScope.goalId)}`
+    : toPlanLocatorKey(entry);
+  return `${owner}:${entry.operation}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+};
 
 export const loadArchitectPlanMutationJournal = async (transport: JournalTransport = tauriIpc): Promise<ArchitectPlanMutationJournalEntry[]> =>
   locked(() => loadUnlocked(transport));

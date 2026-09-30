@@ -3,9 +3,13 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+pub mod conversation_goals;
+pub mod goal_audit_children;
+pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;
 pub mod repository;
+pub mod tool_invocations;
 
 use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
@@ -42,6 +46,14 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9];
+const MIGRATION_005_VERSION: i64 = 5;
+const MIGRATION_005_NAME: &str = "005_runtime_schema";
+const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
+const MIGRATION_006_SQL: &str = include_str!("migrations/006_generation_attempts.sql");
+const MIGRATION_007_SQL: &str = include_str!("migrations/007_tool_invocations.sql");
+const MIGRATION_008_SQL: &str = include_str!("migrations/008_agent_run_transitions.sql");
+const MIGRATION_009_SQL: &str = include_str!("migrations/009_conversation_goals.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -61,6 +73,8 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 
     let pool = create_pool(&db_path).await?;
     agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
+    conversation_goals::reconcile_audits_after_restart(&pool).await?;
+    tool_invocations::reconcile_pending_after_restart(&pool).await?;
 
     Ok(pool)
 }
@@ -121,10 +135,13 @@ async fn run_migrations_local(pool: SqlitePool) -> DbResult<()> {
 }
 
 async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbResult<()> {
-    ensure_schema_migrations_table(connection).await?;
+    if !table_exists(connection, "schema_migrations".to_string()).await? {
+        ensure_schema_migrations_table(connection).await?;
+    }
 
     let user_tables = list_user_tables(connection).await?;
     let applied_migrations = list_applied_migrations(connection).await?;
+    validate_migration_history(&applied_migrations)?;
     let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
 
     if user_tables.is_empty() {
@@ -147,11 +164,12 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
-    // Baseline migration stamping is not enough for additive, idempotent schema updates.
-    // Re-run the legacy ensure helpers on every startup so older runtime databases pick up
-    // newly added columns and indexes even when schema_migrations is already populated.
-    if !is_legacy_database {
-        upgrade_legacy_schema_to_baseline(connection).await?;
+    // Older stamped databases can still lack runtime columns. Reconcile them once,
+    // before migrations 3/4 which depend on those tables, then stamp 5 only after
+    // the entire transition has succeeded in the surrounding transaction.
+    let needs_runtime_schema = !applied_migrations.contains(&MIGRATION_005_VERSION);
+    if needs_runtime_schema && !is_legacy_database {
+        reconcile_runtime_schema_v5(connection).await?;
     }
 
     if !list_applied_migrations(connection)
@@ -180,10 +198,103 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
+    if needs_runtime_schema {
+        sqlx::raw_sql(MIGRATION_005_CHECK_SQL)
+            .execute(&mut *connection)
+            .await?;
+        if sqlx::query("PRAGMA foreign_key_check")
+            .fetch_optional(&mut *connection)
+            .await?
+            .is_some()
+        {
+            return Err(DbError::Migration(
+                "Foreign key violations prevent runtime schema migration".to_string(),
+            ));
+        }
+        let search_triggers = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM sqlite_master
+               WHERE type = 'trigger' AND tbl_name = 'messages'
+                 AND name IN ('messages_search_insert', 'messages_search_delete', 'messages_search_update')"#,
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        if search_triggers != 3 {
+            return Err(DbError::Migration(
+                "Incomplete message search migration".to_string(),
+            ));
+        }
+        stamp_migration(
+            connection,
+            MIGRATION_005_VERSION,
+            MIGRATION_005_NAME.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&6) {
+        apply_migration(
+            connection,
+            6,
+            "006_generation_attempts".to_string(),
+            MIGRATION_006_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&7) {
+        apply_migration(
+            connection,
+            7,
+            "007_tool_invocations".to_string(),
+            MIGRATION_007_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&8) {
+        apply_migration(
+            connection,
+            8,
+            "008_agent_run_transitions".to_string(),
+            MIGRATION_008_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&9) {
+        apply_migration(
+            connection,
+            9,
+            "009_conversation_goals".to_string(),
+            MIGRATION_009_SQL.to_string(),
+        )
+        .await?;
+    }
+
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
     insert_default_speech_provider(connection).await?;
 
+    Ok(())
+}
+
+// Version 2 is optional: it was a shipped data migration, not a schema dependency.
+fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
+    if applied
+        .iter()
+        .any(|version| !SUPPORTED_MIGRATION_VERSIONS.contains(version))
+        || (!applied.is_empty() && !applied.contains(&1))
+        || (applied.contains(&4) && !applied.contains(&3))
+        || (applied.contains(&5) && !applied.contains(&4))
+        || (applied.contains(&6) && !applied.contains(&5))
+        || (applied.contains(&7) && !applied.contains(&6))
+        || (applied.contains(&8) && !applied.contains(&7))
+        || (applied.contains(&9) && !applied.contains(&8))
+    {
+        return Err(DbError::Migration(
+            "Unsupported or inconsistent migration history; database left unchanged".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -300,6 +411,12 @@ async fn table_exists(connection: &mut SqliteConnection, table: String) -> DbRes
 }
 
 async fn upgrade_legacy_schema_to_baseline(connection: &mut SqliteConnection) -> DbResult<()> {
+    reconcile_runtime_schema_v5(connection).await
+}
+
+// Frozen compatibility transition for version 5 and unversioned legacy adoption.
+// Keep these helpers stable. Future schema changes belong to a new migration.
+async fn reconcile_runtime_schema_v5(connection: &mut SqliteConnection) -> DbResult<()> {
     ensure_legacy_conversations(&mut *connection).await?;
     ensure_legacy_messages(&mut *connection).await?;
     ensure_conversation_compactions(&mut *connection).await?;
@@ -1571,6 +1688,9 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
 }
 
 #[cfg(test)]
+mod migration_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         app_db_path, apply_migration, create_pool, ensure_schema_migrations_table, stamp_migration,
@@ -1793,6 +1913,7 @@ mod tests {
               AND name IN (
                 'architect_plan_conversation_sync',
                 'agent_runs',
+                'agent_run_transitions',
                 'conversation_citations',
                 'conversation_toolbox_state',
                 'schema_migrations',
@@ -1823,6 +1944,7 @@ mod tests {
         assert_eq!(
             table_names,
             vec![
+                "agent_run_transitions".to_string(),
                 "agent_runs".to_string(),
                 "ai_models".to_string(),
                 "app_settings".to_string(),
@@ -2228,6 +2350,28 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        // Reproduce the historical agent-run schema before the later, non-idempotent
+        // additive migrations. The missing metadata belongs to that schema.
+        for statement in [
+            "DROP TRIGGER conversation_goal_audit_run_status",
+            "DROP TABLE conversation_goal_audit_runs",
+            "DROP TABLE conversation_goal_audits",
+            "DROP TABLE conversation_goals",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&pool)
+            .await
+            .expect("drop transition journal");
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&pool)
+            .await
+            .expect("drop tool journal");
+        sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
+            .execute(&pool)
+            .await
+            .expect("drop generation attempt column");
         sqlx::query("DROP TABLE schema_migrations")
             .execute(&pool)
             .await

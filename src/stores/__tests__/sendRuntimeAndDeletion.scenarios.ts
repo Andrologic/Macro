@@ -43,6 +43,35 @@ export const registerSendRuntimeAndDeletionScenarios = (
   } = context;
 
   describe('useChatStore send runtime and deletion', () => {
+    it('freezes cited conversation passages in the normal user message before streaming', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('target', { project_id: null, scope_mode: 'Chat' }),
+        createChatSnapshotConversation('source', { project_id: null, scope_mode: 'Chat' }),
+      ];
+      context.chatSnapshotMessages = [{
+        id: 'source-message', conversation_id: 'source', role: 'user',
+        content: 'The deployment decision requires review.',
+        created_at: '2026-09-28T10:00:00Z',
+      }];
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('target', ''), createConversation('source', '')],
+        selectedConversationId: 'target', selectedConversationIdsByMode: { Chat: 'target' },
+        composerContextRefs: [{
+          id: 'source', kind: 'conversation', title: 'Prior work', data: { conversationId: 'source' },
+        }],
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'target', content: 'What was the deployment decision?' });
+      const saved = createMessageMock.mock.calls.find((call) => call[1] === 'user');
+      expect(saved?.[3]?.contextRefs).toMatchObject([{
+        conversationId: 'source', sourceUpdatedAt: '2026-03-19T00:00:00.000Z',
+      }]);
+      expect(JSON.stringify(saved?.[3]?.contextRefs)).toContain('message_id=source-message');
+      expect(streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects sends without a selected provider or model before committing any message', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
@@ -449,6 +478,38 @@ export const registerSendRuntimeAndDeletionScenarios = (
       ).rejects.toThrow(
         'Save or delete the unsaved assistant response before sending another message.',
       );
+    });
+
+    it('keeps an unsaved attempt when SQLite has the same answer text', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('chat-conv', { message_count: 1 }),
+      ];
+      context.chatSnapshotMessages = [{
+        id: 'assistant-1', conversation_id: 'chat-conv', role: 'assistant',
+        content: 'Réponse commune', created_at: '2026-08-30T08:01:00.000Z',
+      }];
+      const attempt = { id: 'unsaved-attempt', status: 'abandoned' as const, rawText: 'brouillon', acceptedText: '', costUsd: null };
+      window.localStorage.setItem(
+        'macro_chat_unsaved_assistant_responses_v1',
+        JSON.stringify({
+          'assistant-1': {
+            id: 'assistant-1', turn_id: 'turn-1', task_id: '',
+            conversation_id: 'chat-conv', role: 'assistant', content: 'Réponse commune',
+            timestamp: '2026-08-30T08:01:00.000Z', generation_attempts: [attempt],
+            persistence_state: 'failed', persistence_error: 'SQLite unavailable',
+          },
+        }),
+      );
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initializeCritical();
+
+      expect(useChatStore.getState().getConversationMessages('chat-conv')).toContainEqual(
+        expect.objectContaining({ id: 'assistant-1', generation_attempts: [attempt], persistence_state: 'failed' }),
+      );
+      expect(window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1')).toContain('unsaved-attempt');
     });
 
     it('deletes an unsaved assistant turn with later steering messages and unblocks the conversation', async () => {

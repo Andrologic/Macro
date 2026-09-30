@@ -1,6 +1,4 @@
-use super::types::{
-    CodexVersionFile, ModelsCacheEntry, ModelsCacheFile, DEFAULT_CODEX_CLIENT_VERSION,
-};
+use super::types::{CodexVersionFile, ModelsCacheFile, DEFAULT_CODEX_CLIENT_VERSION};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -10,11 +8,6 @@ fn read_models_cache_file() -> Result<ModelsCacheFile, String> {
         .map_err(|error| format!("Failed to read {}: {}", path.display(), error))?;
     serde_json::from_str(&content)
         .map_err(|error| format!("Failed to parse {}: {}", path.display(), error))
-}
-
-pub(super) fn load_cached_model_entries() -> Result<Vec<ModelsCacheEntry>, String> {
-    let cache = read_models_cache_file()?;
-    Ok(cache.models)
 }
 
 fn read_codex_version_file() -> Result<CodexVersionFile, String> {

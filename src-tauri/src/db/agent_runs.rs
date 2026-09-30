@@ -81,7 +81,7 @@ async fn begin_immediate(pool: &SqlitePool) -> DbResult<sqlx::Transaction<'stati
     Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
 }
 
-async fn validate_lineage(
+pub(super) async fn validate_lineage(
     connection: &mut sqlx::SqliteConnection,
     parent_conversation_id: &str,
     child_conversation_id: Option<&str>,
@@ -245,6 +245,85 @@ pub async fn get_agent_run(pool: &SqlitePool, id: &str) -> DbResult<Option<Agent
     .transpose()
 }
 
+/// Authorize a single read against the durable, currently running audit child.
+/// The caller's claimed profile or mode is never part of this decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalAuditorReadScope {
+    pub project_id: Option<String>,
+    pub task_id: Option<String>,
+    audit_id: String,
+    goal_id: String,
+    goal_revision: i64,
+}
+
+pub async fn authorize_goal_auditor_read(
+    pool: &SqlitePool,
+    run_id: &str,
+    parent_conversation_id: &str,
+    child_conversation_id: &str,
+) -> DbResult<Option<GoalAuditorReadScope>> {
+    if [run_id, parent_conversation_id, child_conversation_id]
+        .iter()
+        .any(|value| value.is_empty() || value.trim() != *value)
+        || parent_conversation_id == child_conversation_id
+    {
+        return Ok(None);
+    }
+
+    let authorized = sqlx::query_as::<_, (Option<String>, Option<String>, String, String, i64)>(
+        r#"
+        SELECT parent.project_id, parent.task_id, audit.audit_id, goal.goal_id, goal.revision
+        FROM agent_runs AS run
+        JOIN conversations AS parent ON parent.id = run.parent_conversation_id
+        JOIN conversations AS child ON child.id = run.child_conversation_id
+          AND child.project_id IS parent.project_id
+          AND child.task_id IS parent.task_id
+          AND child.group_id IS parent.group_id
+          AND child.scope_mode = parent.scope_mode
+        JOIN conversation_goal_audit_runs AS audit_run ON audit_run.run_id = run.id
+        JOIN conversation_goal_audits AS audit
+          ON audit.audit_id = audit_run.audit_id
+         AND audit.current_run_id = run.id
+         AND audit.conversation_id = parent.id
+         AND audit.status = 'running'
+        JOIN conversation_goals AS goal
+          ON goal.conversation_id = parent.id
+         AND goal.goal_id = audit.goal_id
+         AND goal.revision = audit.goal_revision
+         AND goal.is_current = 1
+         AND goal.status = 'auditing'
+        WHERE run.id = ?
+          AND run.parent_conversation_id = ?
+          AND run.child_conversation_id = ?
+          AND run.agent_profile = 'goal_auditor'
+          AND run.depth = 1
+          AND run.status = 'running'
+          AND run.attempt_count > 0
+          AND run.started_at IS NOT NULL
+          AND run.finished_at IS NULL
+          AND child.provider_id = json_extract(run.model_metadata_json, '$.auditSelection.providerId')
+          AND child.model_id = json_extract(run.model_metadata_json, '$.auditSelection.modelId')
+          AND child.reasoning_effort IS json_extract(run.model_metadata_json, '$.auditSelection.reasoningEffort')
+        "#,
+    )
+    .bind(run_id)
+    .bind(parent_conversation_id)
+    .bind(child_conversation_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(
+        authorized.map(|(project_id, task_id, audit_id, goal_id, goal_revision)| {
+            GoalAuditorReadScope {
+                project_id,
+                task_id,
+                audit_id,
+                goal_id,
+                goal_revision,
+            }
+        }),
+    )
+}
+
 pub async fn list_agent_runs_by_parent(
     pool: &SqlitePool,
     parent_conversation_id: &str,
@@ -338,6 +417,80 @@ pub async fn start_agent_run(
     let run = map_agent_run(row)?;
     transaction.commit().await?;
     Ok(run)
+}
+
+pub async fn link_goal_audit_child_conversation(
+    pool: &SqlitePool,
+    run_id: &str,
+    parent_conversation_id: &str,
+    child_conversation_id: &str,
+) -> DbResult<AgentRun> {
+    if child_conversation_id.trim().is_empty() || child_conversation_id == parent_conversation_id {
+        return Err(DbError::Validation(
+            "Invalid goal audit child conversation".to_string(),
+        ));
+    }
+    let mut transaction = begin_immediate(pool).await?;
+    let current = sqlx::query(
+        "SELECT parent_conversation_id, child_conversation_id, agent_profile, depth, status FROM agent_runs WHERE id = ?",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| DbError::Validation(format!("Agent run not found: {run_id}")))?;
+    if current.get::<String, _>("parent_conversation_id") != parent_conversation_id
+        || current.get::<String, _>("agent_profile") != "goal_auditor"
+        || current.get::<i32, _>("depth") != 1
+    {
+        return Err(DbError::Validation(
+            "Goal audit child lineage mismatch".to_string(),
+        ));
+    }
+    if let Some(existing) = current.get::<Option<String>, _>("child_conversation_id") {
+        if existing != child_conversation_id {
+            return Err(DbError::Validation(
+                "Goal audit child conversation already linked".to_string(),
+            ));
+        }
+        transaction.commit().await?;
+        return get_agent_run(pool, run_id)
+            .await?
+            .ok_or_else(|| DbError::Validation(format!("Agent run not found: {run_id}")));
+    }
+    if current.get::<String, _>("status") != "running" {
+        return Err(DbError::Validation(
+            "Goal audit child can only be linked while running".to_string(),
+        ));
+    }
+    validate_lineage(
+        &mut transaction,
+        parent_conversation_id,
+        Some(child_conversation_id),
+        1,
+    )
+    .await?;
+    let owner: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM agent_runs WHERE child_conversation_id = ? AND id <> ? LIMIT 1",
+    )
+    .bind(child_conversation_id)
+    .bind(run_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if owner.is_some() {
+        return Err(DbError::Validation(
+            "Goal audit child conversation belongs to another run".to_string(),
+        ));
+    }
+    sqlx::query("UPDATE agent_runs SET child_conversation_id = ?, updated_at = ? WHERE id = ? AND status = 'running'")
+        .bind(child_conversation_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    get_agent_run(pool, run_id)
+        .await?
+        .ok_or_else(|| DbError::Validation(format!("Agent run not found: {run_id}")))
 }
 
 pub async fn complete_agent_run(

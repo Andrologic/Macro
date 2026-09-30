@@ -137,6 +137,7 @@ export function useVirtualMessages<T>(
 ) {
   const result = useVirtualList({
     items: messages,
+    getItemKey: options.getItemKey,
     parentRef: options.parentRef,
     estimateSize: options.estimateSize ?? 100,
     overscan: options.overscan ?? 5,

@@ -33,7 +33,7 @@ pub fn direct_checkpoint_id(task_id: &str, project_path: &Path) -> String {
     format!("{}-{:016x}", task, hash)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceState {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -81,7 +81,7 @@ const fn default_version() -> u32 {
     4
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceBootstrapDto {
     pub plan: Option<PlanDto>,
     #[serde(rename = "standaloneProjects")]
@@ -94,14 +94,14 @@ pub struct WorkspaceBootstrapDto {
     pub predicted_branches: Vec<PredictedBranchDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceMetadataDto {
     pub workspace_path: String,
     pub metadata_path: String,
     pub project_count: usize,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceMetadataRecoveryHintDto {
     #[serde(default, rename = "projectId")]
     pub project_id: String,
@@ -113,7 +113,7 @@ pub struct WorkspaceMetadataRecoveryHintDto {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceRecoverMissingMetadataRequestDto {
     #[serde(default, rename = "attemptPull")]
     pub attempt_pull: bool,
@@ -121,13 +121,13 @@ pub struct WorkspaceRecoverMissingMetadataRequestDto {
     pub projects: Vec<WorkspaceMetadataRecoveryHintDto>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceReconcileProjectRegistryFromHintsRequestDto {
     #[serde(default)]
     pub projects: Vec<WorkspaceMetadataRecoveryHintDto>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
     #[serde(default, rename = "maxChildrenPerRoot")]
     pub max_children_per_root: Option<usize>,
@@ -135,6 +135,7 @@ pub struct WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceProjectRegistryReconcileSkippedDto {
     pub project_id: Option<String>,
     pub path: String,
@@ -143,6 +144,7 @@ pub struct WorkspaceProjectRegistryReconcileSkippedDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceProjectRegistryReconcileReportDto {
     pub status: String,
     #[serde(default)]
@@ -153,7 +155,7 @@ pub struct WorkspaceProjectRegistryReconcileReportDto {
     pub invalid_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceMetadataRecoveryReportDto {
     pub status: String,
     #[serde(default, rename = "restoredCommit")]
@@ -166,7 +168,7 @@ pub struct WorkspaceMetadataRecoveryReportDto {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct DebugResetProjectReportDto {
     #[serde(rename = "projectId")]
     pub project_id: String,
@@ -184,7 +186,7 @@ pub struct DebugResetProjectReportDto {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceTaskPlanSummaryDto {
     pub id: String,
     pub title: String,
@@ -205,7 +207,7 @@ pub struct WorkspaceTaskPlanSummaryDto {
     pub ready_for_validation: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceTaskCatalogDto {
     pub tasks: Vec<Value>,
     pub plans: Vec<WorkspaceTaskPlanSummaryDto>,
@@ -216,6 +218,7 @@ pub struct WorkspaceTaskCatalogDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanReplicaDto {
     pub scope_key: String,
     pub project_id: Option<String>,
@@ -228,6 +231,7 @@ pub struct WorkspaceArchitectPlanReplicaDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanSummaryDto {
     pub id: String,
     pub slug: String,
@@ -263,6 +267,7 @@ pub struct WorkspaceArchitectPlanSummaryDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanRecordDto {
     pub id: String,
     pub slug: String,
@@ -297,6 +302,7 @@ pub struct WorkspaceArchitectPlanRecordDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectChatMessageDto {
     pub id: String,
     pub role: String,
@@ -306,6 +312,7 @@ pub struct WorkspaceArchitectChatMessageDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanRuntimeStatusDto {
     pub branch_name: String,
     pub branch_generation: u64,
@@ -317,6 +324,7 @@ pub struct WorkspaceArchitectPlanRuntimeStatusDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanListDto {
     pub active_plan_id: Option<String>,
     pub plans: Vec<WorkspaceArchitectPlanSummaryDto>,
@@ -325,6 +333,7 @@ pub struct WorkspaceArchitectPlanListDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanActivationHeadDto {
     pub plan: WorkspaceArchitectPlanRecordDto,
     pub conversation_id: Option<String>,
@@ -339,6 +348,7 @@ pub struct WorkspaceArchitectPlanActivationHeadDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectPlanTranscriptDto {
     pub plan_id: String,
     pub target_branch: String,
@@ -351,6 +361,7 @@ pub struct WorkspaceArchitectPlanTranscriptDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectListPlansRequestDto {
     pub request_id: Option<String>,
     pub branch_name: String,
@@ -361,6 +372,7 @@ pub struct WorkspaceArchitectListPlansRequestDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectActivatePlanHeadRequestDto {
     pub branch_name: String,
     pub plan_id: String,
@@ -370,6 +382,7 @@ pub struct WorkspaceArchitectActivatePlanHeadRequestDto {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WorkspaceArchitectActivatePlanChatRequestDto {
     pub branch_name: String,
     pub plan_id: String,
@@ -379,7 +392,7 @@ pub struct WorkspaceArchitectActivatePlanChatRequestDto {
     pub expected_message_count: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceTaskExecutionTargetDto {
     #[serde(rename = "projectId")]
     pub project_id: String,
@@ -401,7 +414,7 @@ pub struct WorkspaceTaskExecutionTargetDto {
     pub repo_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ManualFeatureMergeWorkflowDirtyFileDto {
     pub path: String,
     pub status: String,
@@ -410,6 +423,7 @@ pub struct ManualFeatureMergeWorkflowDirtyFileDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct ManualFeatureMergeWorkflowGitSessionDto {
     pub session_id: String,
     pub task_id: String,
@@ -422,19 +436,21 @@ pub struct ManualFeatureMergeWorkflowGitSessionDto {
     pub output: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ManualFeatureMergeWorkflowRepositoryDto {
     #[serde(
         default,
         rename = "workflowSession",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub workflow_session: Option<ManualFeatureMergeWorkflowGitSessionDto>,
     #[serde(
         default,
         rename = "repositoryRootPath",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub repository_root_path: Option<String>,
     #[serde(default, rename = "integrationWorktreePath")]
     pub integration_worktree_path: Option<String>,
@@ -476,7 +492,7 @@ pub struct ManualFeatureMergeWorkflowRepositoryDto {
     pub available_actions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ManualFeatureMergeWorkflowDto {
     pub kind: String,
     pub phase: String,
@@ -494,7 +510,7 @@ pub struct ManualFeatureMergeWorkflowDto {
     pub repositories: Vec<ManualFeatureMergeWorkflowRepositoryDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ManualFeatureDto {
     pub id: String,
     #[serde(rename = "conversationId")]
@@ -536,7 +552,7 @@ fn default_manual_feature_base_branch() -> String {
     "main".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectGroupDto {
     pub id: String,
     pub name: String,
@@ -545,7 +561,7 @@ pub struct ProjectGroupDto {
     pub projects: Vec<ProjectDto>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectGitFlowSettingsDto {
     #[serde(default = "default_project_git_base_branch", rename = "baseBranch")]
     pub base_branch: String,
@@ -588,7 +604,7 @@ pub struct ProjectGitFlowSettingsDto {
     pub bugfix_branch_template: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectGitFlowDetectionDto {
     #[serde(rename = "repoDetected")]
     pub repo_detected: bool,
@@ -627,13 +643,13 @@ pub struct ProjectGitFlowDetectionDto {
     pub recommended_action_sequence: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectGitSetupCommitResultDto {
     pub project: ProjectDto,
     pub detection: ProjectGitFlowDetectionDto,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectAccessMigrationItemDto {
     #[serde(default)]
     pub count: usize,
@@ -641,7 +657,7 @@ pub struct ProjectAccessMigrationItemDto {
     pub labels: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectAccessMigrationSummaryDto {
     #[serde(default)]
     pub plans: ProjectAccessMigrationItemDto,
@@ -659,7 +675,7 @@ pub struct ProjectAccessMigrationSummaryDto {
     pub execution_targets: ProjectAccessMigrationItemDto,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectAccessChangePreviewDto {
     #[serde(rename = "projectId")]
     pub project_id: String,
@@ -740,7 +756,7 @@ fn is_default_project_path_kind(value: &String) -> bool {
     value == "windows"
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectDto {
     pub id: String,
     pub name: String,
@@ -754,30 +770,35 @@ pub struct ProjectDto {
         rename = "archivedAt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub archived_at: Option<String>,
     #[serde(
         default,
         rename = "archivedFromStatus",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub archived_from_status: Option<String>,
     #[serde(
         default,
         rename = "groupArchivePreviousStatus",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub group_archive_previous_status: Option<String>,
     #[serde(
         default,
         rename = "groupArchivePreviousArchivedAt",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub group_archive_previous_archived_at: Option<String>,
     #[serde(
         default,
         rename = "groupArchivePreviousArchivedFromStatus",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub group_archive_previous_archived_from_status: Option<String>,
     #[serde(default, rename = "gitFlowSettings")]
     pub git_flow_settings: ProjectGitFlowSettingsDto,
@@ -798,17 +819,19 @@ pub struct ProjectDto {
     )]
     pub path_kind: String,
     #[serde(default, rename = "wslDistro", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub wsl_distro: Option<String>,
     #[serde(
         default,
         rename = "wslLinuxPath",
         skip_serializing_if = "Option::is_none"
     )]
+    #[ts(optional)]
     pub wsl_linux_path: Option<String>,
     pub metadata: ProjectMetadataDto,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectMetadataDto {
     pub description: String,
     pub tags: Vec<String>,
@@ -817,7 +840,7 @@ pub struct ProjectMetadataDto {
     pub dependencies: Vec<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct PlanDto {
     pub id: String,
     pub description: String,
@@ -833,7 +856,7 @@ pub struct PlanDto {
     pub predicted_git_trees: HashMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct PlanNodeDto {
     pub id: String,
     pub title: String,
@@ -852,7 +875,7 @@ pub struct PlanNodeDto {
     pub estimated_time: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct PredictedBranchDto {
     pub id: String,
     pub name: String,
@@ -866,7 +889,7 @@ pub struct PredictedBranchDto {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub description: String,
@@ -878,7 +901,7 @@ pub struct CreateProjectRequest {
     pub direct_edit: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateNewProjectRepoRequest {
     pub repo_name: String,
     pub parent_path: String,
@@ -888,7 +911,7 @@ pub struct CreateNewProjectRepoRequest {
     pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ImportGitRepoRequest {
     pub git_url: String,
     pub project_name: String,
@@ -899,7 +922,7 @@ pub struct ImportGitRepoRequest {
     pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectRegistryRepairReportDto {
     pub duplicate_paths_removed: usize,
     pub empty_groups_removed: usize,
@@ -968,7 +991,7 @@ fn default_project_git_detection_setup_state() -> String {
     "not_git".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectRegistryDiagnosticsDto {
     #[serde(default, rename = "rawStandaloneProjects")]
     pub raw_standalone_projects: Vec<ProjectDto>,

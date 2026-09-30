@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
@@ -144,7 +145,9 @@ const gitBranchDeleteMock = mock(async (
 const gitWorkflowCleanupMock = mock(async (
   _params?: Parameters<typeof actualTauriIpc.gitWorkflowCleanup>[0],
 ) => undefined);
-const directCheckpointEnsureMock = mock(async () => 'checkpoint-head');
+const directCheckpointEnsureMock = mock(async (
+  _input: Parameters<typeof actualTauriIpc.directCheckpointEnsure>[0],
+) => 'checkpoint-head');
 const bindManualCheckpointMock = mock(async () => ({} as never));
 const setActiveRootMock = mock(async () => undefined);
 const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
@@ -745,6 +748,29 @@ describe('getPlanActivationCandidateTask', () => {
 });
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('does not continue catalog recovery after the bootstrap owner stops', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const list = spyOn(services, 'listTasks').mockImplementationOnce(async () => {
+      entered();
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { tasks: [], plans: [], hasStandaloneTasks: false, source: 'workspace' } as never;
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const scope = createLifecycleScope();
+    const loading = useTaskStore.getState().initializeCritical(scope).catch((error: unknown) => error);
+    await reading;
+    const previousSettingsReads = dbGetAppSettingMock.mock.calls.length;
+    scope.stop();
+    release();
+    expect((await loading).name).toBe('LifecycleStoppedError');
+    expect(dbGetAppSettingMock.mock.calls.length).toBe(previousSettingsReads);
+    expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toBeNull();
+    await useTaskStore.getState().drainAppSync();
+    list.mockRestore();
+  });
+
   it('keeps the newest refresh and selection when an older context resolves last', async () => {
     const originalListTasks = services.listTasks;
     const resolvers: Array<(catalog: Awaited<ReturnType<typeof services.listTasks>>) => void> = [];
@@ -2600,7 +2626,9 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
-  it('finishes an interrupted direct return to draft before removing its checkpoint', async () => {
+  for (const interruption of ['none', 'stop', 'failure-after-stop'] as const) {
+  it(`finishes or journals an admitted draft recovery: ${interruption}`, async () => {
+    const scope = createLifecycleScope();
     const task = buildStandaloneTask({
       id: 'manual-task-direct-revert-recovery',
       task_source: 'standalone',
@@ -2644,8 +2672,10 @@ describe('useTaskStore merge workflow review loading', () => {
       }]),
     );
     const recoveryOrder: string[] = [];
-    workspaceRevertManualFeatureToDraftMock.mockImplementation(async () => {
+    workspaceRevertManualFeatureToDraftMock.mockImplementationOnce(async () => {
       recoveryOrder.push('task');
+      if (interruption !== 'none') scope.stop();
+      if (interruption === 'failure-after-stop') throw new Error('admitted revert failed');
       return {} as never;
     });
     directCheckpointRemoveMock.mockImplementation(async () => {
@@ -2662,15 +2692,21 @@ describe('useTaskStore merge workflow review loading', () => {
 
     try {
       const { useTaskStore } = await loadIsolatedTaskStore();
-      await useTaskStore.getState().refreshFromPlan({
+      const recovery = scope.track(useTaskStore.getState().refreshFromPlan({
+        lifecycle: scope,
         restoreSelection: false,
         activateSelectedTask: false,
-      });
+      }));
+      if (interruption === 'none') await recovery;
+      else await expect(recovery).rejects.toThrow('The resource owner has stopped.');
+      await scope.drain();
+      expect(services.listTasks).toHaveBeenCalledTimes(interruption === 'none' ? 2 : 1);
     } finally {
       services.listTasks = originalListTasks;
     }
 
-    expect(recoveryOrder).toEqual(['task', 'checkpoint']);
+    expect(recoveryOrder).toEqual(interruption === 'failure-after-stop' ? ['task'] : ['task', 'checkpoint']);
+    expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalled();
     expect(workspaceRevertManualFeatureToDraftMock).toHaveBeenCalledWith({
       taskId: task.id,
       conversationId: task.conversation_id,
@@ -2679,8 +2715,15 @@ describe('useTaskStore merge workflow review loading', () => {
       taskLifecycleLeaseId: 'task-lifecycle-lease',
     });
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
-    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+    const journal = JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]');
+    if (interruption === 'failure-after-stop') {
+      expect(journal).toHaveLength(1);
+      expect(journal[0].lastError).toBe('admitted revert failed');
+      expect(journal[0].phase).toBe('draft_reverting');
+    } else expect(journal).toEqual([]);
   });
+
+  }
 
   it('publishes the catalog reloaded after recovering a task-deleting saga', async () => {
     const task = buildStandaloneTask({
@@ -5133,31 +5176,31 @@ describe('useTaskStore task command terminal lifecycle', () => {
 
   it('uses the current registry repo path instead of stale task target snapshots when launching commands', async () => {
     appStoreState.selectedGroupId = null;
-    appStoreState.selectedProjectId = 'project-lplr-app-1780329499166';
+    appStoreState.selectedProjectId = 'project-sample-app-1780329499166';
     appStoreState.projectGroups = [];
     appStoreState.standaloneProjects = [
       {
-        id: 'project-lplr-app-1780329499166',
-        name: 'octan_sales',
-        path: '/repos/octan_sales',
+        id: 'project-sample-app-1780329499166',
+        name: 'sample_sales',
+        path: '/repos/sample_sales',
         gitSetupState: 'ready',
         directEdit: false,
       },
     ];
     appStoreState.getProjectById = (_projectId: string) => ({
-      id: 'project-lplr-app-1780329499166',
-      name: 'octan_sales',
-      path: '/repos/octan_sales',
+      id: 'project-sample-app-1780329499166',
+      name: 'sample_sales',
+      path: '/repos/sample_sales',
       gitSetupState: 'ready',
       directEdit: false,
     });
     taskProjectCommandRegistryMock = {
       version: 3,
       commandsByProjectPath: {
-        '/repos/octan_sales': {
-          projectId: 'project-lplr-app-1780329499166',
-          projectName: 'octan_sales',
-          projectPath: '/repos/octan_sales',
+        '/repos/sample_sales': {
+          projectId: 'project-sample-app-1780329499166',
+          projectName: 'sample_sales',
+          projectPath: '/repos/sample_sales',
           command: 'npm test',
           worktreeSetupCommand: 'bun install',
           openTerminalOnRun: true,
@@ -5174,22 +5217,22 @@ describe('useTaskStore task command terminal lifecycle', () => {
           title: 'Run renamed app',
           status: 'InProgress',
           draft: false,
-          project_id: 'project-lplr-app-1780329499166',
-          project_ids: ['project-lplr-app-1780329499166'],
+          project_id: 'project-sample-app-1780329499166',
+          project_ids: ['project-sample-app-1780329499166'],
           execution_targets: [
             {
-              projectId: 'project-lplr-app-1780329499166',
+              projectId: 'project-sample-app-1780329499166',
               branchName: 'feature/run-app',
-              worktreeKey: 'branch-project-lplr-app-feature-run-app',
-              repoPath: '/repos/lplr-app',
+              worktreeKey: 'branch-project-sample-app-feature-run-app',
+              repoPath: '/repos/sample-app',
               executionMode: 'git',
             },
           ],
         }),
       ],
       branchWorktrees: {
-        'project-lplr-app-1780329499166::feature/run-app':
-          '/repos/octan_sales/.macro/worktrees/task-1',
+        'project-sample-app-1780329499166::feature/run-app':
+          '/repos/sample_sales/.macro/worktrees/task-1',
       },
       taskCommandRuns: {},
       lastError: null,
@@ -5204,17 +5247,18 @@ describe('useTaskStore task command terminal lifecycle', () => {
     });
     expect(runWorktreeSetupCommandMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: 'project-lplr-app-1780329499166',
-        repoPath: '/repos/octan_sales',
-        worktreePath: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        projectId: 'project-sample-app-1780329499166',
+        repoPath: '/repos/sample_sales',
+        worktreePath: expect.stringContaining('/repos/sample_sales/.macro/worktrees/'),
         command: 'bun install',
-      })
+      }),
+      expect.anything(),
     );
     expect(startTaskCommandTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
         taskId: 'task-1',
-        projectId: 'project-lplr-app-1780329499166',
-        cwd: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        projectId: 'project-sample-app-1780329499166',
+        cwd: expect.stringContaining('/repos/sample_sales/.macro/worktrees/'),
         command: 'npm test',
       })
     );
@@ -5275,7 +5319,8 @@ describe('useTaskStore task command terminal lifecycle', () => {
         repoPath: '/repos/web',
         worktreePath: '/repos/web/.macro/worktrees/project-1::feature/run-app',
         command: 'bun install',
-      })
+      }),
+      expect.anything(),
     );
     expect(startTaskCommandTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5578,56 +5623,115 @@ describe('task startup lifecycle races', () => {
     services.listTasks = mock(async () => ({ tasks: [], plans: [], hasStandaloneTasks: false, source: 'empty' as const }));
   });
   afterEach(() => { services.listTasks = originalListTasks; });
-  it.each([false, true])('starts a real Architect direct target with durable binding; binding fails: %s', async (failBinding) => {
+  it.each([false, true])('starts a direct task through real Plans persistence; binding write fails: %s', async (failBinding) => {
     const plans = await import('../services/architectPlanService');
+    const { installArchitectPlanPorts } = await import('../services/architectPlanReadContext');
     const { deriveImplementTasksFromStrategy } = await import('../services/implementTaskDerivation');
-    const plan = { id: 'plan-direct', slug: 'direct', title: 'Direct', description: '', status: 'validated',
-      targetBranch: 'develop', projectId: 'project-1', projectIds: ['project-1'],
-      createdAt: '', updatedAt: '', predictedBranches: [],
-      nodes: [{ id: 'direct-task', title: 'Edit', type: 'task', status: 'pending', dependencies: [],
-        projectId: 'project-1', projectIds: ['project-1'], executionModesByProjectId: { 'project-1': 'direct' } }],
-    } as import('../services/architectPlanService').ArchitectPlanRecord;
-    const derived = deriveImplementTasksFromStrategy({ planId: plan.id, planSlug: plan.slug,
-      nodes: plan.nodes, predictedBranches: [] }).tasks[0];
-    const task = buildTask({ ...derived, task_source: 'architect', plan_id: plan.id, plan_storage_branch: 'develop' });
-    expect(task.execution_targets[0].executionMode).toBe('direct');
-    expect(task.execution_targets[0].checkpointId).toBeUndefined();
-    const getPlan = spyOn(plans, 'getArchitectPlan').mockImplementation(async () => plan);
-    let bound = false;
-    const updatePlan = spyOn(plans, 'updateArchitectPlan').mockImplementation(async (input) => {
-      if (input.directCheckpointBinding) {
-        if (failBinding) throw new Error('binding failed');
-        bound = true;
-        plan.nodes[0].directCheckpointIdsByProjectId = { 'project-1': input.directCheckpointBinding.checkpointId };
-      }
-      if (input.nodes) plan.nodes = input.nodes;
-      if (input.status) plan.status = input.status;
-      return plan;
+    const values = new Map<string, string>();
+    let rejectWrites = false;
+    let rejectedWrites = 0;
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (rejectWrites) {
+          rejectedWrites += 1;
+          throw new Error('Binding storage unavailable');
+        }
+        values.set(key, value);
+      },
+      removeItem: (key: string) => { values.delete(key); },
+      clear: () => values.clear(),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; },
+    };
+    const releasePlans = installArchitectPlanPorts({ localStorage: storage });
+    const project = {
+      id: 'project-1', name: 'Direct', mountName: 'direct', path: '/direct',
+      gitSetupState: 'not_git' as const, directEdit: true, status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+      metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+    };
+    const service = plans.createArchitectPlanService({
+      tauri: { ...actualTauriIpc, isTauriAvailable: () => false },
+      getAppState: () => ({ standaloneProjects: [project], projectGroups: [], selectedGroupId: null, selectedProjectId: project.id }),
+      loadRegistrySnapshot: async () => ({
+        selectedGroupId: null, selectedProjectId: project.id,
+        scopedProjectIds: [project.id], actionableProjectIds: [project.id], readOnlyProjectIds: [],
+        actionableProjectIdSet: new Set([project.id]), readOnlyProjectIdSet: new Set<string>(),
+        validProjectIds: [project.id], validProjectIdSet: new Set([project.id]),
+        repoPathByProjectId: new Map([[project.id, project.path]]),
+        workspacePathByProjectId: new Map([[project.id, project.path]]),
+        gitFlowSettingsByProjectId: new Map(),
+        executionModeByProjectId: new Map([[project.id, 'direct' as const]]),
+        hasRegisteredProjects: true,
+      }),
     });
-    directCheckpointEnsureMock.mockClear();
-    directCheckpointEnsureMock.mockImplementation(async () => { expect(bound).toBe(true); return 'head'; });
-    bindManualCheckpointMock.mockClear();
+    const getPlan = spyOn(plans, 'getArchitectPlan').mockImplementation(service.getArchitectPlan);
+    const updatePlan = spyOn(plans, 'updateArchitectPlan').mockImplementation(service.updateArchitectPlan);
+    const mutatePlan = spyOn(plans, 'mutateArchitectPlanTaskStatus').mockImplementation(service.mutateArchitectPlanTaskStatus);
+    const originalGetProject = appStoreState.getProjectById;
     try {
+      const plan = await service.createArchitectPlan({
+        branchName: 'develop', planId: 'startup-direct', title: 'Direct startup', status: 'validated',
+        projectIds: [project.id],
+        nodes: [{ id: 'direct-task', title: 'Edit', type: 'task', status: 'pending', dependencies: [],
+          projectId: project.id, projectIds: [project.id], executionModesByProjectId: { [project.id]: 'direct' } }],
+      });
+      const readTasks = async () => {
+        // Discard the frontend cache so admission observes the storage port.
+        plans.clearArchitectPlanFrontendCaches();
+        const persisted = await service.getArchitectPlan('develop', plan.id);
+        if (!persisted) throw new Error('Persisted startup plan missing');
+        return deriveImplementTasksFromStrategy({ planId: persisted.id, planSlug: persisted.slug,
+          nodes: persisted.nodes, predictedBranches: persisted.predictedBranches }).tasks.map((derived) =>
+          buildTask({ ...derived, task_source: 'architect', plan_id: plan.id, plan_storage_branch: 'develop' }));
+      };
+      const [task] = await readTasks();
+      expect(task.execution_targets[0].executionMode).toBe('direct');
+      expect(task.execution_targets[0].checkpointId).toBeUndefined();
+      directCheckpointEnsureMock.mockClear();
+      let ensuredCheckpointId: string | undefined;
+      directCheckpointEnsureMock.mockImplementation(async (input: { checkpointId?: string }) => {
+        const [persistedTask] = await readTasks();
+        ensuredCheckpointId = input.checkpointId;
+        expect(input.checkpointId).toBeTruthy();
+        expect(persistedTask.execution_targets[0].checkpointId).toBe(input.checkpointId);
+        expect(persistedTask.status).toBe('Pending');
+        return 'head';
+      });
+      bindManualCheckpointMock.mockClear();
       const { useTaskStore } = await loadIsolatedTaskStore();
       appStoreState.selectedTaskId = task.id;
-      appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Direct', path: '/direct',
-        gitSetupState: 'not_git', directEdit: true });
-      services.listTasks = mock(async () => ({ tasks: [task], plans: [], hasStandaloneTasks: false, source: 'architect' as const }));
+      appStoreState.getProjectById = () => project;
+      services.listTasks = mock(async () => ({ tasks: await readTasks(), plans: [], hasStandaloneTasks: false, source: 'architect' as const }));
       useTaskStore.setState({ tasks: [task], refreshFromPlan: async () => undefined });
+      rejectWrites = failBinding;
       await useTaskStore.getState().startTask(task.id);
+      const [persistedTask] = await readTasks();
       expect(bindManualCheckpointMock).not.toHaveBeenCalled();
+      expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalledTimes(1);
+      expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalledWith('task-lifecycle-lease');
       if (failBinding) {
+        expect(rejectedWrites).toBeGreaterThan(0);
         expect(directCheckpointEnsureMock).not.toHaveBeenCalled();
-        expect(useTaskStore.getState().lastError).toContain('binding failed');
+        expect(useTaskStore.getState().lastError).toContain('Binding storage unavailable');
+        expect(persistedTask.status).toBe('Pending');
+        expect(persistedTask.execution_targets[0].checkpointId).toBeUndefined();
+        expect(useTaskStore.getState().getTaskById(task.id)?.status).toBe('Pending');
       } else {
         expect(directCheckpointEnsureMock).toHaveBeenCalledTimes(1);
+        expect(useTaskStore.getState().lastError).toBeNull();
         expect(useTaskStore.getState().getTaskById(task.id)?.status).toBe('InProgress');
-        expect(plan.nodes[0].directCheckpointIdsByProjectId).toBeDefined();
+        expect(persistedTask.status).toBe('InProgress');
+        expect(persistedTask.execution_targets[0].checkpointId).toBe(ensuredCheckpointId);
       }
     } finally {
       getPlan.mockRestore();
       updatePlan.mockRestore();
+      mutatePlan.mockRestore();
       directCheckpointEnsureMock.mockImplementation(async () => 'head');
+      appStoreState.getProjectById = originalGetProject;
+      releasePlans();
     }
   });
 
@@ -5767,4 +5871,155 @@ describe('task startup lifecycle races', () => {
     updateStandaloneTaskStatusImpl = null;
   });
 
+});
+
+
+describe('durable Architect task transitions', () => {
+  it.each(['AwaitingResponse', 'InReview'] as const)('preserves missing-plan handling for %s', async (status) => {
+    const plans = await import('../services/architectPlanService');
+    const { createPlanMetadataMissingError } = await import('../services/contracts/errors');
+    const mutation = spyOn(plans, 'mutateArchitectPlanTaskStatus').mockRejectedValue(
+      createPlanMetadataMissingError({ planId: 'plan-1', branchName: 'develop' }),
+    );
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      useTaskStore.setState({ tasks: [buildTask({ status: 'InProgress' })], lastError: null });
+      await useTaskStore.getState().setTaskStatus('task-1', status);
+      expect(useTaskStore.getState().getTaskById('task-1')?.status)
+        .toBe(status === 'AwaitingResponse' ? 'AwaitingResponse' : 'InProgress');
+      if (status === 'AwaitingResponse') expect(useTaskStore.getState().lastError).toBeNull();
+      else expect(useTaskStore.getState().lastError).toContain('Cannot update plan metadata');
+    } finally {
+      mutation.mockRestore();
+    }
+  });
+
+  it.each([false, true])('restores an optimistic Architect status only while current; newer transition: %s', async (newerTransition) => {
+    const plans = await import('../services/architectPlanService');
+    let rejectPersistence!: (error: Error) => void;
+    const mutation = spyOn(plans, 'mutateArchitectPlanTaskStatus')
+      .mockImplementationOnce(async () => new Promise((_resolve, reject) => { rejectPersistence = reject; }))
+      .mockImplementationOnce(async () => ({
+        id: 'plan-1', slug: 'plan-1', title: 'Plan 1', description: '', targetBranch: 'develop',
+        createdAt: '', updatedAt: '', nodes: [], predictedBranches: [], status: 'in_progress',
+      }));
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      useTaskStore.setState({
+        tasks: [buildTask({ status: 'InProgress' })],
+        refreshFromPlan: async () => {
+          useTaskStore.setState({ tasks: [buildTask({ status: 'InReview' })] });
+        },
+        lastError: null,
+      });
+      const pending = useTaskStore.getState().setTaskStatus('task-1', 'AwaitingResponse');
+      expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('AwaitingResponse');
+      if (newerTransition) await useTaskStore.getState().setTaskStatus('task-1', 'InReview');
+      rejectPersistence(new Error('Persistence failed'));
+      await pending;
+      expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(newerTransition ? 'InReview' : 'InProgress');
+      if (!newerTransition) expect(useTaskStore.getState().lastError).toBe('Persistence failed');
+    } finally {
+      mutation.mockRestore();
+    }
+  });
+
+  it.each(['direct', 'git'] as const)('preserves simultaneous task statuses and parallel plan metadata in %s mode', async (executionMode) => {
+    const plans = await import('../services/architectPlanService');
+    const { deriveImplementTasksFromStrategy } = await import('../services/implementTaskDerivation');
+    const values = new Map<string, string>();
+    const previousStorage = globalThis.localStorage;
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+      clear: () => values.clear(),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; },
+    };
+    globalThis.localStorage = storage;
+    const isolatedPlans: typeof plans = await import(`../services/architectPlanService.ts?concurrent=${Date.now()}`);
+    isolatedPlans.clearArchitectPlanFrontendCaches();
+    const service = isolatedPlans.createArchitectPlanService({
+      tauri: { ...actualTauriIpc, isTauriAvailable: () => false },
+      getAppState: () => ({ standaloneProjects: [], projectGroups: [], selectedGroupId: null, selectedProjectId: null }),
+      loadRegistrySnapshot: async () => ({
+        selectedGroupId: null,
+        selectedProjectId: 'project-1',
+        scopedProjectIds: ['project-1'],
+        actionableProjectIds: ['project-1'],
+        readOnlyProjectIds: [],
+        actionableProjectIdSet: new Set(['project-1']),
+        readOnlyProjectIdSet: new Set<string>(),
+        validProjectIds: ['project-1'],
+        validProjectIdSet: new Set(['project-1']),
+        repoPathByProjectId: new Map([['project-1', '/repos/web']]),
+        workspacePathByProjectId: new Map([['project-1', '/repos/web']]),
+        gitFlowSettingsByProjectId: new Map(),
+        executionModeByProjectId: new Map([['project-1', 'git' as const]]),
+        hasRegisteredProjects: true,
+      }),
+    });
+    const created = await service.createArchitectPlan({
+      branchName: 'develop', planId: 'concurrent-transitions', status: 'validated',
+      projectIds: ['project-1'],
+      nodes: ['a', 'b'].map((id) => ({
+        id, title: id, type: 'task' as const, status: 'in-progress' as const,
+        executionStatus: 'InProgress' as const, dependencies: [],
+        projectId: 'project-1', projectIds: ['project-1'],
+        executionModesByProjectId: { 'project-1': executionMode },
+        assignedBranch: executionMode === 'git' ? `feature/concurrent/${id}` : undefined,
+      })),
+    });
+    const activePlan = await service.createArchitectPlan({
+      branchName: 'develop', planId: 'other-active-plan', projectIds: ['project-1'],
+    });
+    const getPlan = spyOn(plans, 'getArchitectPlan').mockImplementation(service.getArchitectPlan);
+    const updatePlan = spyOn(plans, 'updateArchitectPlan').mockImplementation(service.updateArchitectPlan);
+    const mutatePlan = 'mutateArchitectPlanTaskStatus' in plans
+      ? spyOn(plans, 'mutateArchitectPlanTaskStatus').mockImplementation(service.mutateArchitectPlanTaskStatus)
+      : null;
+    try {
+      const tasks = deriveImplementTasksFromStrategy({ planId: created.id, planSlug: created.slug,
+        nodes: created.nodes, predictedBranches: created.predictedBranches }).tasks.map((task) =>
+        buildTask({ ...task, plan_storage_branch: 'develop' }));
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      useTaskStore.setState({ tasks, refreshFromPlan: async () => undefined, lastError: null });
+      await Promise.all([
+        service.updateArchitectPlan({ branchName: 'develop', planId: created.id, setActive: false,
+          nodes: created.nodes.map((node) => node.id === 'b' ? { ...node, title: 'Parallel task title' } : node) }),
+        useTaskStore.getState().setTaskStatus(tasks[0].id, 'InReview'),
+        service.updateArchitectPlan({ branchName: 'develop', planId: created.id,
+          description: 'Concurrent metadata', setActive: false,
+          directCheckpointBinding: executionMode === 'direct'
+            ? { taskId: 'a', projectId: 'project-1', checkpointId: 'checkpoint-a' } : undefined }),
+        useTaskStore.getState().setTaskStatus(tasks[1].id, 'AwaitingResponse'),
+      ]);
+      expect(useTaskStore.getState().lastError).toBeNull();
+      const persisted = await service.getArchitectPlan('develop', created.id);
+      expect(persisted?.nodes.map((node) => node.executionStatus)).toEqual(['InReview', 'AwaitingResponse']);
+      if (executionMode === 'direct') {
+        expect(persisted?.nodes[0].directCheckpointIdsByProjectId).toEqual({ 'project-1': 'checkpoint-a' });
+      }
+      expect(persisted?.description).toBe('Concurrent metadata');
+      expect(persisted?.nodes[1].title).toBe('Parallel task title');
+      expect((await service.listArchitectPlans('develop')).activePlanId).toBe(activePlan.id);
+      expect(persisted?.status).toBe('in_progress');
+      expect(persisted?.revision).toBe((created.revision ?? 1) + 4);
+      if (executionMode === 'git') {
+        expect(persisted?.predictedBranches).toHaveLength(2);
+        expect(persisted?.predictedBranches[0].status).toBe('active');
+        await Promise.all(tasks.map((task) => useTaskStore.getState().setTaskStatus(task.id, 'Completed')));
+        expect(useTaskStore.getState().lastError).toBeNull();
+        const completed = await service.getArchitectPlan('develop', created.id);
+        expect(completed?.nodes.map((node) => node.executionStatus)).toEqual(['Completed', 'Completed']);
+        expect(completed?.predictedBranches.map((branch) => branch.status)).toEqual(['merged', 'merged']);
+      }
+    } finally {
+      getPlan.mockRestore();
+      updatePlan.mockRestore();
+      mutatePlan?.mockRestore();
+      globalThis.localStorage = previousStorage;
+    }
+  });
 });

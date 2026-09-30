@@ -1,4 +1,5 @@
-import { shortcutDefinitionsById, type ShortcutDefinition, type ShortcutId } from './catalog';
+import { ContributionRegistry, type Contribution } from '../domains/shell/contributionRegistry';
+import { shortcutDefinitions, shortcutDefinitionsById, type ShortcutDefinition, type ShortcutId } from './catalog';
 import type { PromptHistoryNavigationMode } from '../stores/useShortcutsStore';
 import type { AppMode } from '../types';
 
@@ -51,9 +52,12 @@ export interface ShortcutHandlerContext {
   providerState: ShortcutProviderState;
   document: Document;
   window: Window;
+  availability?: ShortcutAvailabilityContext;
+  onStreamStopped?: (conversationId: string) => void;
 }
 
 export type ShortcutUnavailableReason =
+  | 'unavailableContribution'
   | 'disabledInEditable'
   | 'settingsClosed'
   | 'settingsOpen'
@@ -112,7 +116,7 @@ const createRuntimeDefinition = (
   ...runtime,
 });
 
-export const shortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefinition> = {
+const builtinShortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefinition> = {
   'app.openSettings': createRuntimeDefinition('app.openSettings', {
     constraints: {},
     contextHints: [],
@@ -197,12 +201,14 @@ export const shortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefin
   'chat.stopStreaming': createRuntimeDefinition('chat.stopStreaming', {
     constraints: { isStreaming: true },
     contextHints: ['streaming'],
-    handler: ({ chatState }) => {
+    handler: ({ chatState, onStreamStopped }) => {
       if (!chatState.selectedConversationId) return false;
       if (chatState.getConversationRuntime(chatState.selectedConversationId).phase !== 'streaming') {
         return false;
       }
+      const conversationId = chatState.selectedConversationId;
       chatState.stopStreaming();
+      onStreamStopped?.(conversationId);
       return true;
     },
   }),
@@ -246,12 +252,36 @@ export const shortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefin
   }),
 };
 
+export interface CommandContribution extends Contribution<ShortcutAvailabilityContext>, Omit<ShortcutRuntimeDefinition, 'definition'> {
+  readonly definition: Omit<ShortcutDefinition, 'id'>;
+}
+
+export const commandRegistry = new ContributionRegistry<CommandContribution, ShortcutAvailabilityContext>();
+for (const [order, definition] of shortcutDefinitions.entries()) {
+  const { id, ...metadata } = definition;
+  commandRegistry.register({
+    id,
+    owner: 'shell.shortcuts',
+    order,
+    ...builtinShortcutRuntimeDefinitions[id],
+    definition: metadata,
+  });
+}
+
+// Legacy metadata exports remain compatible; execution always consults the registry.
+export const shortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefinition> = Object.fromEntries(
+  Object.entries(builtinShortcutRuntimeDefinitions).map(([id, runtime]) => [id, {
+    ...runtime,
+    handler: (context: ShortcutHandlerContext) => executeShortcut(id, context),
+  }])
+) as Record<ShortcutId, ShortcutRuntimeDefinition>;
+
 export const shortcutHandlers: Record<ShortcutId, ShortcutHandler> = Object.fromEntries(
   Object.entries(shortcutRuntimeDefinitions).map(([id, runtime]) => [id, runtime.handler])
 ) as Record<ShortcutId, ShortcutHandler>;
 
 const getEffectiveShortcutConstraints = (
-  runtime: ShortcutRuntimeDefinition,
+  runtime: Pick<CommandContribution, 'definition' | 'constraints'>,
   options: { includeImpliedEditable?: boolean } = {}
 ): ShortcutActivationConstraints => {
   const constraints = { ...runtime.constraints };
@@ -301,7 +331,8 @@ export const getShortcutAvailability = (
   shortcutId: ShortcutId,
   context: ShortcutAvailabilityContext
 ): ShortcutAvailabilityResult => {
-  const runtime = shortcutRuntimeDefinitions[shortcutId];
+  const runtime = commandRegistry.get(shortcutId, context);
+  if (!runtime) return unavailableResult('unavailableContribution');
   const constraints = getEffectiveShortcutConstraints(runtime);
 
   for (const key of availabilityConstraintOrder) {
@@ -318,10 +349,13 @@ export const isShortcutAvailable = (
 ): boolean => getShortcutAvailability(definition.id, context).available;
 
 export const shortcutsCanConflict = (leftId: ShortcutId, rightId: ShortcutId): boolean => {
-  const leftConstraints = getEffectiveShortcutConstraints(shortcutRuntimeDefinitions[leftId], {
+  const left = commandRegistry.all().find((entry) => entry.id === leftId);
+  const right = commandRegistry.all().find((entry) => entry.id === rightId);
+  if (!left || !right) return false;
+  const leftConstraints = getEffectiveShortcutConstraints(left, {
     includeImpliedEditable: true,
   });
-  const rightConstraints = getEffectiveShortcutConstraints(shortcutRuntimeDefinitions[rightId], {
+  const rightConstraints = getEffectiveShortcutConstraints(right, {
     includeImpliedEditable: true,
   });
 
@@ -339,4 +373,16 @@ export const shortcutsCanConflict = (leftId: ShortcutId, rightId: ShortcutId): b
 export const executeShortcut = (
   shortcutId: ShortcutId,
   context: ShortcutHandlerContext
-): boolean => shortcutHandlers[shortcutId](context);
+): boolean => {
+  const focused = context.document.activeElement;
+  const availability = context.availability ?? {
+    editable: focused instanceof HTMLElement && (focused.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused.tagName)),
+    isChatInputFocused: focused instanceof HTMLElement && focused.matches(CHAT_INPUT_SELECTOR),
+    isStreaming: Boolean(context.chatState.selectedConversationId && context.chatState.getConversationRuntime(context.chatState.selectedConversationId).phase === 'streaming'),
+    mode: context.appState.mode,
+    settingsOpen: context.appState.settingsOpen,
+    promptHistoryNavigationMode: 'contextual_arrows',
+  };
+  if (!getShortcutAvailability(shortcutId, availability).available) return false;
+  return commandRegistry.get(shortcutId, availability)?.handler(context) ?? false;
+};

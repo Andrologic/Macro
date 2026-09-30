@@ -1,8 +1,7 @@
-import {
-  streamChat,
-  type StreamCompletionResult,
-  type StreamingChatOptions,
-} from "./streamingChat";
+import type {
+  StreamCompletionResult,
+  StreamingChatOptions,
+} from "./ai/contracts";
 
 type FrameHandle = number | ReturnType<typeof setTimeout>;
 
@@ -125,12 +124,12 @@ export interface ChatStreamLifecycleCallbacks {
 export interface RunAssistantStreamParams
   extends Omit<StreamingChatOptions, "onToken" | "onComplete" | "onError"> {
   lifecycle: ChatStreamLifecycleCallbacks;
-  streamChatImpl?: ChatStreamTransport;
+  streamChatImpl: ChatStreamTransport;
 }
 
 export const runAssistantStream = async ({
   lifecycle,
-  streamChatImpl = streamChat,
+  streamChatImpl,
   ...streamOptions
 }: RunAssistantStreamParams): Promise<void> => {
   const tokenBatcher = createChatStreamTokenBatcher(lifecycle.appendTokenChunk);
@@ -144,8 +143,8 @@ export const runAssistantStream = async ({
   let abortPromise: Promise<void> | null = null;
   let completionPromise: Promise<void> | null = null;
   let errorPromise: Promise<void> | null = null;
-  const handleErrorOnce = async (error: Error): Promise<void> => {
-    if (handledError) {
+  const handleErrorOnce = async (error: Error, completionFailure = false): Promise<void> => {
+    if (handledError || handledAbort || (handledComplete && !completionFailure)) {
       return;
     }
     handledError = true;
@@ -163,12 +162,12 @@ export const runAssistantStream = async ({
     } catch (error) {
       const normalized =
         error instanceof Error ? error : new Error(String(error));
-      await handleErrorOnce(normalized);
+      await handleErrorOnce(normalized, true);
     }
   };
 
   const handleAbort = () => {
-    if (handledAbort) {
+    if (handledAbort || handledComplete || handledError) {
       return;
     }
     handledAbort = true;
@@ -183,12 +182,18 @@ export const runAssistantStream = async ({
     await streamChatImpl({
       ...streamOptions,
       onToken: (token) => {
-        tokenBatcher.push(token);
+        if (!handledComplete && !handledError && !handledAbort) tokenBatcher.push(token);
+      },
+      onGenerationAttemptsUpdate: async (attempts) => {
+        tokenBatcher.flushNow();
+        await streamOptions.onGenerationAttemptsUpdate?.(attempts);
       },
       onComplete: (result) => {
+        if (handledComplete || handledError || handledAbort) return;
         completionPromise = handleCompleteOnce(result);
       },
       onError: (error) => {
+        if (handledComplete || handledError || handledAbort) return;
         errorPromise = handleErrorOnce(error);
       },
     });
@@ -210,9 +215,11 @@ export const runAssistantStream = async ({
       error instanceof Error ? error : new Error(String(error));
     await handleErrorOnce(normalized);
   } finally {
-    if (abortPromise) {
-      await abortPromise;
+    try {
+      if (errorPromise) await errorPromise;
+      if (abortPromise) await abortPromise;
+    } finally {
+      streamOptions.signal?.removeEventListener("abort", handleAbort);
     }
-    streamOptions.signal?.removeEventListener("abort", handleAbort);
   }
 };

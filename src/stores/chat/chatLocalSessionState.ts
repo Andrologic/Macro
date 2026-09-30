@@ -95,6 +95,7 @@ const CONTEXT_REF_KINDS = new Set([
   "skill",
   "file",
   "source",
+  "conversation",
 ]);
 
 const isSkillLocation = (value: unknown): boolean =>
@@ -132,7 +133,11 @@ const isPersistedContextReference = (
     !isOptionalNullableBoundedString(value.projectName) ||
     !isOptionalBoundedString(value.snippet) ||
     !isOptionalBoundedString(value.sourceLabel) ||
-    !isOptionalBoundedString(value.url)
+    !isOptionalBoundedString(value.url) ||
+    !isOptionalBoundedString(value.conversationId) ||
+    !isOptionalBoundedString(value.sourceUpdatedAt) ||
+    (value.kind === "conversation" &&
+      (value.conversationId !== value.id || value.snippet !== undefined))
   ) {
     return false;
   }
@@ -260,7 +265,7 @@ export const clearUnsavedAssistantResponsesForConversations = (
   );
 };
 
-const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
+export const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
   if (!isRecord(value)) return null;
   if (
     !isBoundedString(value.text, MAX_COMPOSER_DRAFT_TEXT_LENGTH) ||
@@ -280,6 +285,66 @@ const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
   };
 };
 
+class ComposerDraftValidationError extends Error {}
+
+function validateComposerDrafts(
+  value: unknown,
+): asserts value is Record<string, PersistedComposerDraft> {
+  if (!isRecord(value)) {
+    throw new ComposerDraftValidationError(
+      "Invalid composer draft storage. Original data preserved.",
+    );
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length > MAX_COMPOSER_DRAFTS) {
+    throw new ComposerDraftValidationError(
+      `Too many composer drafts. The limit is ${MAX_COMPOSER_DRAFTS}. Original data preserved.`,
+    );
+  }
+
+  for (const [contextKey, draft] of entries) {
+    if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) {
+      throw new ComposerDraftValidationError(
+        `Invalid composer draft context key. Original data preserved.`,
+      );
+    }
+    if (!parseComposerDraft(draft)) {
+      throw new ComposerDraftValidationError(
+        `Composer draft "${contextKey}" exceeds a storage limit or has invalid content. Original data preserved.`,
+      );
+    }
+  }
+}
+
+const parseComposerDraftsJson = (
+  raw: string,
+): { drafts: Record<string, PersistedComposerDraft>; damaged: boolean } => {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!isRecord(parsed)) {
+    throw new ComposerDraftValidationError(
+      "Invalid composer draft storage. Original data preserved.",
+    );
+  }
+
+  const entries = Object.entries(parsed);
+  const damaged = entries.length > MAX_COMPOSER_DRAFTS;
+  const drafts: Array<[string, PersistedComposerDraft]> = [];
+  for (const [contextKey, value] of entries.slice(0, MAX_COMPOSER_DRAFTS)) {
+    const draft = contextKey && contextKey.length <= MAX_SHORT_FIELD_LENGTH
+      ? parseComposerDraft(value)
+      : null;
+    if (!draft) continue;
+    drafts.push([contextKey, draft]);
+  }
+
+  return {
+    drafts: Object.fromEntries(drafts),
+    damaged:
+      damaged || drafts.length !== Math.min(entries.length, MAX_COMPOSER_DRAFTS),
+  };
+};
+
 export const loadComposerDraftsFromStorage = (): Record<
   string,
   PersistedComposerDraft
@@ -287,34 +352,68 @@ export const loadComposerDraftsFromStorage = (): Record<
   if (!hasLocalStorage()) return {};
   try {
     const raw = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return {};
-    const drafts: Array<[string, PersistedComposerDraft]> = [];
-    for (const [contextKey, value] of Object.entries(parsed)) {
-      if (drafts.length >= MAX_COMPOSER_DRAFTS) break;
-      if (!contextKey || contextKey.length > MAX_SHORT_FIELD_LENGTH) continue;
-      const draft = parseComposerDraft(value);
-      if (draft) drafts.push([contextKey, draft]);
+    if (!raw) {
+      clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
+      return {};
     }
-    return Object.fromEntries(drafts);
-  } catch {
+
+    const parsed = parseComposerDraftsJson(raw);
+    if (parsed.damaged) {
+      reportPersistenceIssue(
+        COMPOSER_DRAFTS_STORAGE_KEY,
+        "Some stored composer drafts could not be restored. Valid drafts were recovered; the original data was preserved.",
+      );
+    } else {
+      clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
+    }
+    return parsed.drafts;
+  } catch (error) {
+    reportPersistenceIssue(
+      COMPOSER_DRAFTS_STORAGE_KEY,
+      error instanceof Error
+        ? error.message
+        : "The composer drafts could not be restored. The original data was preserved.",
+    );
     return {};
   }
 };
 
 export const saveComposerDraftsToStorage = (
   draftsByContextKey: Record<string, PersistedComposerDraft>,
-): void => {
-  if (!hasLocalStorage()) return;
+): boolean => {
+  if (!hasLocalStorage()) {
+    reportPersistenceIssue(
+      COMPOSER_DRAFTS_STORAGE_KEY,
+      "The composer draft could not be saved. Keep this session open.",
+    );
+    return false;
+  }
   try {
+    validateComposerDrafts(draftsByContextKey);
+    const previous = window.localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    if (previous !== null) {
+      validateComposerDrafts(JSON.parse(previous) as unknown);
+    }
+    const serialized = JSON.stringify(draftsByContextKey);
+    if (typeof serialized !== "string") {
+      throw new ComposerDraftValidationError(
+        "The composer drafts could not be serialized. Original data preserved.",
+      );
+    }
     window.localStorage.setItem(
       COMPOSER_DRAFTS_STORAGE_KEY,
-      JSON.stringify(draftsByContextKey),
+      serialized,
     );
     clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
-  } catch {
-    reportPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY, "The composer draft could not be saved. Keep this session open.");
+    return true;
+  } catch (error) {
+    reportPersistenceIssue(
+      COMPOSER_DRAFTS_STORAGE_KEY,
+      error instanceof ComposerDraftValidationError
+        ? error.message
+        : "The composer draft could not be saved. Keep this session open.",
+    );
+    return false;
   }
 };
 

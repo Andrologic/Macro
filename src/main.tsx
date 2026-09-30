@@ -1,5 +1,12 @@
+import { startGitCacheComposition } from './composition/gitCacheComposition';
+import { getPageLifecycleSignal } from './utils/pageLifecycle';
+import { createApplicationStartup, type ApplicationStartup } from './services/applicationStartup';
+import { createTerminalComposition } from './composition/terminalComposition';
+import { createLifecycleScope, type LifecycleScope } from './services/lifecycleScope';
+import { startNotificationComposition } from './composition/notificationComposition';
+import { startPlansComposition } from './composition/plansComposition';
+import { providers, tools } from './composition/domainAdapters';
 import { BackupStartupRecovery } from './components/settings/views/BackupRecoveryStatus';
-import { PersistenceHealthNotifications } from "./components/notifications/PersistenceHealthNotifications";
 import { restoreBackupBrowserState } from "./services/localBackup";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -13,11 +20,13 @@ import { registerAppStateGetter } from "./services/appStateRuntime";
 import { refreshWebSearchSettings } from "./services/webSearchSettings";
 import { installConfigRuntimeEffects } from "./services/configRuntimeEffects";
 import { useAppStore } from "./stores/useAppStore";
-import { initializeConfigRuntime } from "./stores/useConfigStore";
+import { initializeConfigRuntime, stopConfigRuntime } from "./stores/useConfigStore";
 import { isDevelopmentBuild } from "./utils/devLogger";
 import "xterm/css/xterm.css";
 import "./index.css";
 import "./styles/highlight.css";
+
+const PersistenceHealthNotifications = React.lazy(() => import("./components/notifications/PersistenceHealthNotifications").then(module => ({ default: module.PersistenceHealthNotifications })));
 
 const installBenignTauriReloadWarningFilter = (): void => {
   if (!import.meta.env.DEV || typeof window === "undefined") {
@@ -61,14 +70,6 @@ const PerformanceMonitor: React.FC<{ children: React.ReactNode }> = ({ children 
   return <>{children}</>;
 };
 
-const appTree = isDevelopmentBuild ? (
-  <PerformanceMonitor>
-    <App />
-  </PerformanceMonitor>
-) : (
-  <App />
-);
-
 // =============================================================================
 // APP RENDER
 // =============================================================================
@@ -77,6 +78,8 @@ const rootElement = document.getElementById("root") as HTMLElement;
 
 type MacroRootWindow = Window & {
   __MACRO_REACT_ROOT__?: Root;
+  __MACRO_APPLICATION__?: ApplicationStartup;
+  __MACRO_APPLICATION_GENERATION__?: number;
 };
 
 // Mark React render start
@@ -85,42 +88,74 @@ if (typeof performance !== 'undefined' && performance.mark) {
 }
 
 installBenignTauriReloadWarningFilter();
-installFrontendDiagnostics();
-registerAppStateGetter(() => useAppStore.getState());
-
-const renderApp = (): void => {
+const renderApp = (application: LifecycleScope): void => {
+  const appTree = isDevelopmentBuild
+    ? <PerformanceMonitor><App application={application} /></PerformanceMonitor>
+    : <App application={application} />;
   const macroWindow = window as MacroRootWindow;
   const root = macroWindow.__MACRO_REACT_ROOT__ ?? ReactDOM.createRoot(rootElement);
   macroWindow.__MACRO_REACT_ROOT__ = root;
   root.render(
-    <React.StrictMode>
+    <React.StrictMode key={generation}>
       <ThemeProvider>
-        <PersistenceHealthNotifications />
+        <React.Suspense fallback={null}><PersistenceHealthNotifications /></React.Suspense>
         {appTree}
       </ThemeProvider>
     </React.StrictMode>,
   );
 };
 
-void restoreBackupBrowserState()
-  .then((restored) => {
-    // Stores can read localStorage while their modules are imported. Reload once
-    // after durable acknowledgement so every store starts from restored values.
-    if (restored) {
-      window.location.reload();
-      return;
+const macroWindow = window as MacroRootWindow;
+const previousRetirement = macroWindow.__MACRO_APPLICATION__?.stop() ?? Promise.resolve();
+const generation = (macroWindow.__MACRO_APPLICATION_GENERATION__ ?? 0) + 1;
+macroWindow.__MACRO_APPLICATION_GENERATION__ = generation;
+const application = createApplicationStartup({
+  install: (owner) => {
+    owner.own(installFrontendDiagnostics());
+    const ports = createLifecycleScope();
+    try {
+      ports.own(registerAppStateGetter(() => useAppStore.getState()));
+      ports.own(startPlansComposition());
+      owner.own(startNotificationComposition());
+      owner.own(startGitCacheComposition());
+      const terminal = createTerminalComposition();
+      owner.own(() => { void owner.track(terminal.stop()); });
+      owner.own(() => { void owner.track(stopConfigRuntime()); });
+      owner.own(() => macroWindow.__MACRO_REACT_ROOT__?.render(null));
+      const stopOnPageHide = () => {
+        void application.stop().catch((error) => console.error('Application cleanup failed:', error));
+      };
+      const shutdown = getPageLifecycleSignal();
+      shutdown.addEventListener('abort', stopOnPageHide, { once: true });
+      owner.own(() => shutdown.removeEventListener('abort', stopOnPageHide));
+      if (shutdown.aborted) stopOnPageHide();
+      return () => ports.stop();
+    } catch (error) {
+      ports.stop();
+      throw error;
     }
-    return initializeConfigRuntime()
-      .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
-      .then(() => { installConfigRuntimeEffects(); })
-      .catch((error) => { console.error("Failed to initialize Macro runtime:", error); })
-      .finally(renderApp);
-  })
-  .catch(async (error) => {
-    // Do not hydrate Chat against a partially restored profile.
-    await initializeI18n().catch((languageError) => console.error('Recovery language initialization failed:', languageError));
-    const macroWindow = window as MacroRootWindow;
+  },
+  restore: restoreBackupBrowserState,
+  initializeConfiguration: initializeConfigRuntime,
+  initializeLanguage: initializeI18n,
+  initializeSearch: refreshWebSearchSettings,
+  installEffects: (owner) => {
+    const stop = installConfigRuntimeEffects({ providers, tools }, owner);
+    return () => { void owner.track(stop()); };
+  },
+  render: renderApp,
+  renderRecovery: (error) => {
     const root = macroWindow.__MACRO_REACT_ROOT__ ?? ReactDOM.createRoot(rootElement);
     macroWindow.__MACRO_REACT_ROOT__ = root;
     root.render(<BackupStartupRecovery error={error} />);
+  },
+  reload: () => window.location.reload(),
+  report: (error) => console.error('Failed to initialize Macro runtime:', error),
+});
+macroWindow.__MACRO_APPLICATION__ = application;
+void application.start(previousRetirement).catch((error) => console.error('Application startup failed:', error));
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    void application.stop().catch((error) => console.error('Application cleanup failed:', error));
   });
+}

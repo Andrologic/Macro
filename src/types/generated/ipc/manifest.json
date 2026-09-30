@@ -1,0 +1,2190 @@
+{
+  "types": [
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ActivateConversationGoalInput",
+      "origin": "macro_lib::db::conversation_goals::ActivateConversationGoalInput",
+      "path": "ActivateConversationGoalInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "AgentRun",
+      "origin": "macro_lib::db::models::AgentRun",
+      "path": "AgentRun.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "AgentRunStatus",
+      "origin": "macro_lib::db::models::AgentRunStatus",
+      "path": "AgentRunStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "AgentRunUsageInput",
+      "origin": "macro_lib::db::models::AgentRunUsageInput",
+      "path": "AgentRunUsageInput.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiAuthCancelledEvent",
+      "origin": "macro_lib::ai::types::AiAuthCancelledEvent",
+      "path": "AiAuthCancelledEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiAuthErrorEvent",
+      "origin": "macro_lib::ai::types::AiAuthErrorEvent",
+      "path": "AiAuthErrorEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiAuthStartedEvent",
+      "origin": "macro_lib::ai::types::AiAuthStartedEvent",
+      "path": "AiAuthStartedEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiAuthSuccessEvent",
+      "origin": "macro_lib::ai::types::AiAuthSuccessEvent",
+      "path": "AiAuthSuccessEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiChatImageUrl",
+      "origin": "macro_lib::ai::types::AiChatImageUrl",
+      "path": "AiChatImageUrl.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiChatMessage",
+      "origin": "macro_lib::ai::types::AiChatMessage",
+      "path": "AiChatMessage.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiChatMessageContent",
+      "origin": "macro_lib::ai::types::AiChatMessageContent",
+      "path": "AiChatMessageContent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiChatMessagePart",
+      "origin": "macro_lib::ai::types::AiChatMessagePart",
+      "path": "AiChatMessagePart.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiChatRequest",
+      "origin": "macro_lib::ai::types::AiChatRequest",
+      "path": "AiChatRequest.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "AiModel",
+      "origin": "macro_lib::db::models::AiModel",
+      "path": "AiModel.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiProjectMount",
+      "origin": "macro_lib::ai::types::AiProjectMount",
+      "path": "AiProjectMount.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiStreamChunkEvent",
+      "origin": "macro_lib::ai::types::AiStreamChunkEvent",
+      "path": "AiStreamChunkEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiStreamDoneEvent",
+      "origin": "macro_lib::ai::types::AiStreamDoneEvent",
+      "path": "AiStreamDoneEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiStreamErrorEvent",
+      "origin": "macro_lib::ai::types::AiStreamErrorEvent",
+      "path": "AiStreamErrorEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiStreamTimelineEvent",
+      "origin": "macro_lib::ai::types::AiStreamTimelineEvent",
+      "path": "AiStreamTimelineEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiStreamToolTraceEvent",
+      "origin": "macro_lib::ai::types::AiStreamToolTraceEvent",
+      "path": "AiStreamToolTraceEvent.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiToolCall",
+      "origin": "macro_lib::ai::types::AiToolCall",
+      "path": "AiToolCall.ts"
+    },
+    {
+      "families": [
+        "chat"
+      ],
+      "name": "AiToolCallFunction",
+      "origin": "macro_lib::ai::types::AiToolCallFunction",
+      "path": "AiToolCallFunction.ts"
+    },
+    {
+      "families": [
+        "chat",
+        "copilot"
+      ],
+      "name": "AiToolTrace",
+      "origin": "macro_lib::ai::types::AiToolTrace",
+      "path": "AiToolTrace.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "AppSettingRecord",
+      "origin": "macro_lib::db::models::AppSettingRecord",
+      "path": "AppSettingRecord.ts"
+    },
+    {
+      "families": [
+        "updates"
+      ],
+      "name": "AppUpdateSnapshot",
+      "origin": "macro_lib::app_updates::AppUpdateSnapshot",
+      "path": "AppUpdateSnapshot.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ApplyConversationGoalVerdictInput",
+      "origin": "macro_lib::db::conversation_goals::ApplyConversationGoalVerdictInput",
+      "path": "ApplyConversationGoalVerdictInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ArchitectPlanConversationSyncRecord",
+      "origin": "macro_lib::db::models::ArchitectPlanConversationSyncRecord",
+      "path": "ArchitectPlanConversationSyncRecord.ts"
+    },
+    {
+      "families": [
+        "backup"
+      ],
+      "name": "BackupStatus",
+      "origin": "macro_lib::local_backup::BackupStatus",
+      "path": "BackupStatus.ts"
+    },
+    {
+      "families": [
+        "backup"
+      ],
+      "name": "BackupStatusCode",
+      "origin": "macro_lib::local_backup::BackupStatusCode",
+      "path": "BackupStatusCode.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeHealthResult",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeHealthResult",
+      "path": "BridgeHealthResult.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeModelRecord",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeModelRecord",
+      "path": "BridgeModelRecord.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeModelsResponse",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeModelsResponse",
+      "path": "BridgeModelsResponse.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeSendEvent",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeSendEvent",
+      "path": "BridgeSendEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeToolResultMessage",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeToolResultMessage",
+      "path": "BridgeToolResultMessage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CancelAgentRunInput",
+      "origin": "macro_lib::db::models::CancelAgentRunInput",
+      "path": "CancelAgentRunInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ChatBootstrapSnapshot",
+      "origin": "macro_lib::db::models::ChatBootstrapSnapshot",
+      "path": "ChatBootstrapSnapshot.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ChatSnapshot",
+      "origin": "macro_lib::db::models::ChatSnapshot",
+      "path": "ChatSnapshot.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ClaimConversationGoalAuditInput",
+      "origin": "macro_lib::db::conversation_goals::ClaimConversationGoalAuditInput",
+      "path": "ClaimConversationGoalAuditInput.ts"
+    },
+    {
+      "families": [
+        "errors"
+      ],
+      "name": "CommandErrorPayload",
+      "origin": "macro_lib::core::command_error::CommandErrorPayload<'_>",
+      "path": "CommandErrorPayload.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CompareAndSwapAppSettingResult",
+      "origin": "macro_lib::db::models::CompareAndSwapAppSettingResult",
+      "path": "CompareAndSwapAppSettingResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CompleteAgentRunInput",
+      "origin": "macro_lib::db::models::CompleteAgentRunInput",
+      "path": "CompleteAgentRunInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CompleteToolInvocationInput",
+      "origin": "macro_lib::db::tool_invocations::CompleteToolInvocationInput",
+      "path": "CompleteToolInvocationInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "Conversation",
+      "origin": "macro_lib::db::models::Conversation",
+      "path": "Conversation.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCitation",
+      "origin": "macro_lib::db::models::ConversationCitation",
+      "path": "ConversationCitation.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationCompactionStateRecord",
+      "origin": "macro_lib::db::models::ConversationCompactionStateRecord",
+      "path": "ConversationCompactionStateRecord.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationGoal",
+      "origin": "macro_lib::db::conversation_goals::ConversationGoal",
+      "path": "ConversationGoal.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationGoalAudit",
+      "origin": "macro_lib::db::conversation_goals::ConversationGoalAudit",
+      "path": "ConversationGoalAudit.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationSourceSnapshot",
+      "origin": "macro_lib::db::models::ConversationSourceSnapshot",
+      "path": "ConversationSourceSnapshot.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationToolboxStateRecord",
+      "origin": "macro_lib::db::models::ConversationToolboxStateRecord",
+      "path": "ConversationToolboxStateRecord.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotAuthCancelledEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthCancelledEvent",
+      "path": "CopilotAuthCancelledEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotAuthCompleteEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthCompleteEvent",
+      "path": "CopilotAuthCompleteEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotAuthErrorEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthErrorEvent",
+      "path": "CopilotAuthErrorEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotAuthProgressEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthProgressEvent",
+      "path": "CopilotAuthProgressEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotDownloadCompleteEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotDownloadCompleteEvent",
+      "path": "CopilotDownloadCompleteEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotDownloadErrorEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotDownloadErrorEvent",
+      "path": "CopilotDownloadErrorEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotDownloadProgressEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotDownloadProgressEvent",
+      "path": "CopilotDownloadProgressEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotStatus",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotStatus",
+      "path": "CopilotStatus.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotToolRequestEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotToolRequestEvent",
+      "path": "CopilotToolRequestEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "CopilotToolResultRequest",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotToolResultRequest",
+      "path": "CopilotToolResultRequest.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CreateAgentRunInput",
+      "origin": "macro_lib::db::models::CreateAgentRunInput",
+      "path": "CreateAgentRunInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CreateConversationInput",
+      "origin": "macro_lib::db::models::CreateConversationInput",
+      "path": "CreateConversationInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CreateGitRepositoryInput",
+      "origin": "macro_lib::db::models::CreateGitRepositoryInput",
+      "path": "CreateGitRepositoryInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CreateGitWorktreeInput",
+      "origin": "macro_lib::db::models::CreateGitWorktreeInput",
+      "path": "CreateGitWorktreeInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "CreateMessageInput",
+      "origin": "macro_lib::db::models::CreateMessageInput",
+      "path": "CreateMessageInput.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "CreateNewProjectRepoRequest",
+      "origin": "macro_lib::workspace::metadata::CreateNewProjectRepoRequest",
+      "path": "CreateNewProjectRepoRequest.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "CreateProjectRequest",
+      "origin": "macro_lib::workspace::metadata::CreateProjectRequest",
+      "path": "CreateProjectRequest.ts"
+    },
+    {
+      "families": [
+        "command_inputs"
+      ],
+      "name": "DbCreateMessageParams",
+      "origin": "macro_lib::commands::DbCreateMessageParams",
+      "path": "DbCreateMessageParams.ts"
+    },
+    {
+      "families": [
+        "command_inputs"
+      ],
+      "name": "DbInitializationStatusDto",
+      "origin": "macro_lib::commands::DbInitializationStatusDto",
+      "path": "DbInitializationStatusDto.ts"
+    },
+    {
+      "families": [
+        "command_inputs"
+      ],
+      "name": "DbPrepareConversationReplayParams",
+      "origin": "macro_lib::commands::DbPrepareConversationReplayParams",
+      "path": "DbPrepareConversationReplayParams.ts"
+    },
+    {
+      "families": [
+        "command_inputs"
+      ],
+      "name": "DbUpdateMessageParams",
+      "origin": "macro_lib::commands::DbUpdateMessageParams",
+      "path": "DbUpdateMessageParams.ts"
+    },
+    {
+      "families": [
+        "command_inputs"
+      ],
+      "name": "DbUpdateProviderConfigParams",
+      "origin": "macro_lib::commands::DbUpdateProviderConfigParams",
+      "path": "DbUpdateProviderConfigParams.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "DeactivateConversationGoalInput",
+      "origin": "macro_lib::db::conversation_goals::DeactivateConversationGoalInput",
+      "path": "DeactivateConversationGoalInput.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "DebugResetProjectReportDto",
+      "origin": "macro_lib::workspace::metadata::DebugResetProjectReportDto",
+      "path": "DebugResetProjectReportDto.ts"
+    },
+    {
+      "families": [
+        "config_extra"
+      ],
+      "name": "DeleteOrphanSecretRequest",
+      "origin": "macro_lib::config::commands::DeleteOrphanSecretRequest",
+      "path": "DeleteOrphanSecretRequest.ts"
+    },
+    {
+      "families": [
+        "development"
+      ],
+      "name": "DevProviderOverrideConfig",
+      "origin": "macro_lib::dev_overrides::DevProviderOverrideConfig",
+      "path": "DevProviderOverrideConfig.ts"
+    },
+    {
+      "families": [
+        "development"
+      ],
+      "name": "DevProviderOverridesFile",
+      "origin": "macro_lib::dev_overrides::DevProviderOverridesFile",
+      "path": "DevProviderOverridesFile.ts"
+    },
+    {
+      "families": [
+        "diagnostics"
+      ],
+      "name": "DiagnosticReportPreview",
+      "origin": "macro_lib::diagnostics::DiagnosticReportPreview",
+      "path": "DiagnosticReportPreview.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "DirEntryDto",
+      "origin": "macro_lib::fs::dto::DirEntryDto",
+      "path": "DirEntryDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "DirectReviewSnapshotDto",
+      "origin": "macro_lib::commands::git::DirectReviewSnapshotDto",
+      "path": "DirectReviewSnapshotDto.ts"
+    },
+    {
+      "families": [
+        "external"
+      ],
+      "name": "ExternalAppCatalogDto",
+      "origin": "macro_lib::commands::external_apps::ExternalAppCatalogDto",
+      "path": "ExternalAppCatalogDto.ts"
+    },
+    {
+      "families": [
+        "external"
+      ],
+      "name": "ExternalAppOptionDto",
+      "origin": "macro_lib::commands::external_apps::ExternalAppOptionDto",
+      "path": "ExternalAppOptionDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "FailAgentRunInput",
+      "origin": "macro_lib::db::models::FailAgentRunInput",
+      "path": "FailAgentRunInput.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "FileContentDto",
+      "origin": "macro_lib::fs::dto::FileContentDto",
+      "path": "FileContentDto.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "FileStatsDto",
+      "origin": "macro_lib::fs::dto::FileStatsDto",
+      "path": "FileStatsDto.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "FsEventDto",
+      "origin": "macro_lib::fs::dto::FsEventDto",
+      "path": "FsEventDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitAvailableTaskBranchDto",
+      "origin": "macro_lib::commands::git::GitAvailableTaskBranchDto",
+      "path": "GitAvailableTaskBranchDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitAvailableWorktreeDto",
+      "origin": "macro_lib::commands::git::GitAvailableWorktreeDto",
+      "path": "GitAvailableWorktreeDto.ts"
+    },
+    {
+      "families": [
+        "git",
+        "git_commands"
+      ],
+      "name": "GitBranch",
+      "origin": "macro_lib::git::operations::GitBranch",
+      "path": "GitBranch.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitBranchWorktreeEnsureDto",
+      "origin": "macro_lib::commands::git::GitBranchWorktreeEnsureDto",
+      "path": "GitBranchWorktreeEnsureDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitBranchWorktreeInspectionDto",
+      "origin": "macro_lib::commands::git::GitBranchWorktreeInspectionDto",
+      "path": "GitBranchWorktreeInspectionDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitBranchWorktreeRemoveDto",
+      "origin": "macro_lib::commands::git::GitBranchWorktreeRemoveDto",
+      "path": "GitBranchWorktreeRemoveDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitBranchesDto",
+      "origin": "macro_lib::commands::git::GitBranchesDto",
+      "path": "GitBranchesDto.ts"
+    },
+    {
+      "families": [
+        "git",
+        "git_commands"
+      ],
+      "name": "GitCommitDto",
+      "origin": "macro_lib::git::operations::GitCommitDto",
+      "path": "GitCommitDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitConflictFileDto",
+      "origin": "macro_lib::commands::git::GitConflictFileDto",
+      "path": "GitConflictFileDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitConflictFileSideDto",
+      "origin": "macro_lib::commands::git::GitConflictFileSideDto",
+      "path": "GitConflictFileSideDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "GitFilePairDto",
+      "origin": "macro_lib::git::operations::GitFilePairDto",
+      "path": "GitFilePairDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "GitFileStatus",
+      "origin": "macro_lib::git::operations::GitFileStatus",
+      "path": "GitFileStatus.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitGuardedMergeStateDto",
+      "origin": "macro_lib::commands::git::GitGuardedMergeStateDto",
+      "path": "GitGuardedMergeStateDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitLogPageDto",
+      "origin": "macro_lib::commands::git::GitLogPageDto",
+      "path": "GitLogPageDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "GitMergeCheckDto",
+      "origin": "macro_lib::git::operations::GitMergeCheckDto",
+      "path": "GitMergeCheckDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "GitNode",
+      "origin": "macro_lib::git::operations::GitNode",
+      "path": "GitNode.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitPreparedBranchSyncDto",
+      "origin": "macro_lib::commands::git::GitPreparedBranchSyncDto",
+      "path": "GitPreparedBranchSyncDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitRebaseCheckDto",
+      "origin": "macro_lib::commands::git::GitRebaseCheckDto",
+      "path": "GitRebaseCheckDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitRemoteDto",
+      "origin": "macro_lib::commands::git::GitRemoteDto",
+      "path": "GitRemoteDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GitRepositoryRecord",
+      "origin": "macro_lib::db::models::GitRepositoryRecord",
+      "path": "GitRepositoryRecord.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitReviewChangeDto",
+      "origin": "macro_lib::commands::git::GitReviewChangeDto",
+      "path": "GitReviewChangeDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitReviewDiffHunkDto",
+      "origin": "macro_lib::commands::git::GitReviewDiffHunkDto",
+      "path": "GitReviewDiffHunkDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitReviewDiffLineDto",
+      "origin": "macro_lib::commands::git::GitReviewDiffLineDto",
+      "path": "GitReviewDiffLineDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitReviewFileDto",
+      "origin": "macro_lib::commands::git::GitReviewFileDto",
+      "path": "GitReviewFileDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitReviewParsedDiffDto",
+      "origin": "macro_lib::commands::git::GitReviewParsedDiffDto",
+      "path": "GitReviewParsedDiffDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitReviewSnapshotDto",
+      "origin": "macro_lib::commands::git::GitReviewSnapshotDto",
+      "path": "GitReviewSnapshotDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "GitStartMergeResolutionDto",
+      "origin": "macro_lib::git::operations::GitStartMergeResolutionDto",
+      "path": "GitStartMergeResolutionDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "GitStatusDto",
+      "origin": "macro_lib::git::operations::GitStatusDto",
+      "path": "GitStatusDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitSyncDto",
+      "origin": "macro_lib::commands::git::GitSyncDto",
+      "path": "GitSyncDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitTaskStartPointsDto",
+      "origin": "macro_lib::commands::git::GitTaskStartPointsDto",
+      "path": "GitTaskStartPointsDto.ts"
+    },
+    {
+      "families": [
+        "workflow"
+      ],
+      "name": "GitWorkflowSessionDto",
+      "origin": "macro_lib::git::operations::workflow::GitWorkflowSessionDto",
+      "path": "GitWorkflowSessionDto.ts"
+    },
+    {
+      "families": [
+        "workflow"
+      ],
+      "name": "GitWorkflowSessionIdentity",
+      "origin": "macro_lib::git::operations::workflow::GitWorkflowSessionIdentity",
+      "path": "GitWorkflowSessionIdentity.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitWorktreeEnsureDto",
+      "origin": "macro_lib::commands::git::GitWorktreeEnsureDto",
+      "path": "GitWorktreeEnsureDto.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitWorktreeInspectionDto",
+      "origin": "macro_lib::commands::git::GitWorktreeInspectionDto",
+      "path": "GitWorktreeInspectionDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GitWorktreeRecord",
+      "origin": "macro_lib::db::models::GitWorktreeRecord",
+      "path": "GitWorktreeRecord.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "GitWorktreeRemoveDto",
+      "origin": "macro_lib::commands::git::GitWorktreeRemoveDto",
+      "path": "GitWorktreeRemoveDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalAuditStatus",
+      "origin": "macro_lib::db::conversation_goals::GoalAuditStatus",
+      "path": "GoalAuditStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalAuditTransition",
+      "origin": "macro_lib::db::goal_audit_transitions::GoalAuditTransition",
+      "path": "GoalAuditTransition.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalAuditorReadInput",
+      "origin": "macro_lib::commands::goal_auditor_read::GoalAuditorReadInput",
+      "path": "GoalAuditorReadInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalCasOutcome",
+      "origin": "macro_lib::db::conversation_goals::GoalCasOutcome",
+      "path": "GoalCasOutcome.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalCriterionResult",
+      "origin": "macro_lib::db::conversation_goals::GoalCriterionResult",
+      "path": "GoalCriterionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalCriterionStatus",
+      "origin": "macro_lib::db::conversation_goals::GoalCriterionStatus",
+      "path": "GoalCriterionStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalEvidence",
+      "origin": "macro_lib::db::conversation_goals::GoalEvidence",
+      "path": "GoalEvidence.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalStatus",
+      "origin": "macro_lib::db::conversation_goals::GoalStatus",
+      "path": "GoalStatus.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalVerdict",
+      "origin": "macro_lib::db::conversation_goals::GoalVerdict",
+      "path": "GoalVerdict.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "GoalVerdictKind",
+      "origin": "macro_lib::db::conversation_goals::GoalVerdictKind",
+      "path": "GoalVerdictKind.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ImportGitRepoRequest",
+      "origin": "macro_lib::workspace::metadata::ImportGitRepoRequest",
+      "path": "ImportGitRepoRequest.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ImportMessageInput",
+      "origin": "macro_lib::db::models::ImportMessageInput",
+      "path": "ImportMessageInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "InsertConversationCompactionEventInput",
+      "origin": "macro_lib::db::models::InsertConversationCompactionEventInput",
+      "path": "InsertConversationCompactionEventInput.ts"
+    },
+    {
+      "families": [
+        "chat",
+        "copilot",
+        "db",
+        "mcp",
+        "state",
+        "workspace"
+      ],
+      "name": "JsonValue",
+      "origin": "ts_rs::serde_json::TsJsonValue",
+      "path": "serde_json/JsonValue.ts"
+    },
+    {
+      "families": [
+        "provider"
+      ],
+      "name": "MacroAiProvisioningStatus",
+      "origin": "macro_lib::ai::macro_ai::MacroAiProvisioningStatus",
+      "path": "MacroAiProvisioningStatus.ts"
+    },
+    {
+      "families": [
+        "git_commands"
+      ],
+      "name": "MacroBranchSyncDto",
+      "origin": "macro_lib::commands::git::MacroBranchSyncDto",
+      "path": "MacroBranchSyncDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ManualFeatureDto",
+      "origin": "macro_lib::workspace::metadata::ManualFeatureDto",
+      "path": "ManualFeatureDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ManualFeatureMergeWorkflowDirtyFileDto",
+      "origin": "macro_lib::workspace::metadata::ManualFeatureMergeWorkflowDirtyFileDto",
+      "path": "ManualFeatureMergeWorkflowDirtyFileDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ManualFeatureMergeWorkflowDto",
+      "origin": "macro_lib::workspace::metadata::ManualFeatureMergeWorkflowDto",
+      "path": "ManualFeatureMergeWorkflowDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ManualFeatureMergeWorkflowGitSessionDto",
+      "origin": "macro_lib::workspace::metadata::ManualFeatureMergeWorkflowGitSessionDto",
+      "path": "ManualFeatureMergeWorkflowGitSessionDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ManualFeatureMergeWorkflowRepositoryDto",
+      "origin": "macro_lib::workspace::metadata::ManualFeatureMergeWorkflowRepositoryDto",
+      "path": "ManualFeatureMergeWorkflowRepositoryDto.ts"
+    },
+    {
+      "families": [
+        "command_inputs"
+      ],
+      "name": "ManualModelReasoningInput",
+      "origin": "macro_lib::commands::ManualModelReasoningInput",
+      "path": "ManualModelReasoningInput.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpCallToolResponse",
+      "origin": "macro_lib::commands::mcp::types::McpCallToolResponse",
+      "path": "McpCallToolResponse.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpCatalogDto",
+      "origin": "macro_lib::commands::mcp::types::McpCatalogDto",
+      "path": "McpCatalogDto.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpDiscoverToolsResponse",
+      "origin": "macro_lib::commands::mcp::types::McpDiscoverToolsResponse",
+      "path": "McpDiscoverToolsResponse.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpElicitationAction",
+      "origin": "macro_lib::commands::mcp::interaction::McpElicitationAction",
+      "path": "McpElicitationAction.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpElicitationAnswer",
+      "origin": "macro_lib::commands::mcp::interaction::McpElicitationAnswer",
+      "path": "McpElicitationAnswer.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpElicitationPrompt",
+      "origin": "macro_lib::commands::mcp::interaction::McpElicitationPrompt",
+      "path": "McpElicitationPrompt.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpInteractionRequest",
+      "origin": "macro_lib::commands::mcp::interaction::McpInteractionRequest",
+      "path": "McpInteractionRequest.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpInteractionResponse",
+      "origin": "macro_lib::commands::mcp::interaction::McpInteractionResponse",
+      "path": "McpInteractionResponse.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpProtocolEra",
+      "origin": "macro_lib::commands::mcp::types::McpProtocolEra",
+      "path": "McpProtocolEra.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpProtocolMode",
+      "origin": "macro_lib::commands::mcp::types::McpProtocolMode",
+      "path": "McpProtocolMode.ts"
+    },
+    {
+      "families": [
+        "copilot",
+        "mcp"
+      ],
+      "name": "McpResultBlock",
+      "origin": "macro_lib::commands::mcp::types::McpResultBlock",
+      "path": "McpResultBlock.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpRuntimeKey",
+      "origin": "macro_lib::commands::mcp::types::McpRuntimeKey",
+      "path": "McpRuntimeKey.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpRuntimeSelector",
+      "origin": "macro_lib::commands::mcp::types::McpRuntimeSelector",
+      "path": "McpRuntimeSelector.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpRuntimeServerSnapshot",
+      "origin": "macro_lib::commands::mcp::types::McpRuntimeServerSnapshot",
+      "path": "McpRuntimeServerSnapshot.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpRuntimeSnapshotDto",
+      "origin": "macro_lib::commands::mcp::types::McpRuntimeSnapshotDto",
+      "path": "McpRuntimeSnapshotDto.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpRuntimeStatus",
+      "origin": "macro_lib::commands::mcp::types::McpRuntimeStatus",
+      "path": "McpRuntimeStatus.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpServerDto",
+      "origin": "macro_lib::commands::mcp::types::McpServerDto",
+      "path": "McpServerDto.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpToolDto",
+      "origin": "macro_lib::commands::mcp::types::McpToolDto",
+      "path": "McpToolDto.ts"
+    },
+    {
+      "families": [
+        "mcp"
+      ],
+      "name": "McpTransportDto",
+      "origin": "macro_lib::commands::mcp::types::McpTransportDto",
+      "path": "McpTransportDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "Message",
+      "origin": "macro_lib::db::models::Message",
+      "path": "Message.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "MessageSearchPage",
+      "origin": "macro_lib::db::models::MessageSearchPage",
+      "path": "MessageSearchPage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "MessageSearchResult",
+      "origin": "macro_lib::db::models::MessageSearchResult",
+      "path": "MessageSearchResult.ts"
+    },
+    {
+      "families": [
+        "config_extra"
+      ],
+      "name": "OrphanSecretDto",
+      "origin": "macro_lib::config::commands::OrphanSecretDto",
+      "path": "OrphanSecretDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "PlanDto",
+      "origin": "macro_lib::workspace::metadata::PlanDto",
+      "path": "PlanDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "PlanNodeDto",
+      "origin": "macro_lib::workspace::metadata::PlanNodeDto",
+      "path": "PlanNodeDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "PredictedBranchDto",
+      "origin": "macro_lib::workspace::metadata::PredictedBranchDto",
+      "path": "PredictedBranchDto.ts"
+    },
+    {
+      "families": [
+        "git"
+      ],
+      "name": "PredictedGitTreeDto",
+      "origin": "macro_lib::git::operations::PredictedGitTreeDto",
+      "path": "PredictedGitTreeDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectAccessChangePreviewDto",
+      "origin": "macro_lib::workspace::metadata::ProjectAccessChangePreviewDto",
+      "path": "ProjectAccessChangePreviewDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectAccessMigrationItemDto",
+      "origin": "macro_lib::workspace::metadata::ProjectAccessMigrationItemDto",
+      "path": "ProjectAccessMigrationItemDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectAccessMigrationSummaryDto",
+      "origin": "macro_lib::workspace::metadata::ProjectAccessMigrationSummaryDto",
+      "path": "ProjectAccessMigrationSummaryDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ProjectContextStateRecord",
+      "origin": "macro_lib::db::models::ProjectContextStateRecord",
+      "path": "ProjectContextStateRecord.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectDto",
+      "origin": "macro_lib::workspace::metadata::ProjectDto",
+      "path": "ProjectDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectGitFlowDetectionDto",
+      "origin": "macro_lib::workspace::metadata::ProjectGitFlowDetectionDto",
+      "path": "ProjectGitFlowDetectionDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectGitFlowSettingsDto",
+      "origin": "macro_lib::workspace::metadata::ProjectGitFlowSettingsDto",
+      "path": "ProjectGitFlowSettingsDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectGitSetupCommitResultDto",
+      "origin": "macro_lib::workspace::metadata::ProjectGitSetupCommitResultDto",
+      "path": "ProjectGitSetupCommitResultDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectGroupDto",
+      "origin": "macro_lib::workspace::metadata::ProjectGroupDto",
+      "path": "ProjectGroupDto.ts"
+    },
+    {
+      "families": [
+        "icons"
+      ],
+      "name": "ProjectIconDto",
+      "origin": "macro_lib::project_icon::ProjectIconDto",
+      "path": "ProjectIconDto.ts"
+    },
+    {
+      "families": [
+        "icons"
+      ],
+      "name": "ProjectIconResolutionDto",
+      "origin": "macro_lib::project_icon::ProjectIconResolutionDto",
+      "path": "ProjectIconResolutionDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectMetadataDto",
+      "origin": "macro_lib::workspace::metadata::ProjectMetadataDto",
+      "path": "ProjectMetadataDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ProjectRegistryDbRepairReport",
+      "origin": "macro_lib::db::models::ProjectRegistryDbRepairReport",
+      "path": "ProjectRegistryDbRepairReport.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectRegistryDiagnosticsDto",
+      "origin": "macro_lib::workspace::metadata::ProjectRegistryDiagnosticsDto",
+      "path": "ProjectRegistryDiagnosticsDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "ProjectRegistryRepairReportDto",
+      "origin": "macro_lib::workspace::metadata::ProjectRegistryRepairReportDto",
+      "path": "ProjectRegistryRepairReportDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ProviderAuthMetadata",
+      "origin": "macro_lib::db::models::ProviderAuthMetadata",
+      "path": "ProviderAuthMetadata.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ProviderConfig",
+      "origin": "macro_lib::db::models::ProviderConfig",
+      "path": "ProviderConfig.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ProviderModelInput",
+      "origin": "macro_lib::db::models::ProviderModelInput",
+      "path": "ProviderModelInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ProviderSettings",
+      "origin": "macro_lib::db::models::ProviderSettings",
+      "path": "ProviderSettings.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ReconcileProjectRegistryInput",
+      "origin": "macro_lib::db::models::ReconcileProjectRegistryInput",
+      "path": "ReconcileProjectRegistryInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "RecordGoalAuditTransitionInput",
+      "origin": "macro_lib::db::goal_audit_transitions::RecordGoalAuditTransitionInput",
+      "path": "RecordGoalAuditTransitionInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "RecordToolInvocationInput",
+      "origin": "macro_lib::db::tool_invocations::RecordToolInvocationInput",
+      "path": "RecordToolInvocationInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "RecordToolInvocationResult",
+      "origin": "macro_lib::db::tool_invocations::RecordToolInvocationResult",
+      "path": "RecordToolInvocationResult.ts"
+    },
+    {
+      "families": [
+        "instructions"
+      ],
+      "name": "RepositoryInstructionIssue",
+      "origin": "macro_lib::commands::repository_instructions::RepositoryInstructionIssue",
+      "path": "RepositoryInstructionIssue.ts"
+    },
+    {
+      "families": [
+        "instructions"
+      ],
+      "name": "RepositoryInstructionLoadInput",
+      "origin": "macro_lib::commands::repository_instructions::RepositoryInstructionLoadInput",
+      "path": "RepositoryInstructionLoadInput.ts"
+    },
+    {
+      "families": [
+        "instructions"
+      ],
+      "name": "RepositoryInstructionLoadResult",
+      "origin": "macro_lib::commands::repository_instructions::RepositoryInstructionLoadResult",
+      "path": "RepositoryInstructionLoadResult.ts"
+    },
+    {
+      "families": [
+        "instructions"
+      ],
+      "name": "RepositoryInstructionProjectInput",
+      "origin": "macro_lib::commands::repository_instructions::RepositoryInstructionProjectInput",
+      "path": "RepositoryInstructionProjectInput.ts"
+    },
+    {
+      "families": [
+        "instructions"
+      ],
+      "name": "RepositoryInstructionSource",
+      "origin": "macro_lib::commands::repository_instructions::RepositoryInstructionSource",
+      "path": "RepositoryInstructionSource.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ReserveGoalAuditChildSelection",
+      "origin": "macro_lib::db::goal_audit_children::ReserveGoalAuditChildSelection",
+      "path": "ReserveGoalAuditChildSelection.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ResumeConversationGoalAuditInput",
+      "origin": "macro_lib::db::conversation_goals::ResumeConversationGoalAuditInput",
+      "path": "ResumeConversationGoalAuditInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "SessionContextStateRecord",
+      "origin": "macro_lib::db::models::SessionContextStateRecord",
+      "path": "SessionContextStateRecord.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillDetailResponse",
+      "origin": "macro_lib::commands::skills::types::SkillDetailResponse",
+      "path": "SkillDetailResponse.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillDiagnosticDto",
+      "origin": "macro_lib::commands::skills::types::SkillDiagnosticDto",
+      "path": "SkillDiagnosticDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillListResponse",
+      "origin": "macro_lib::commands::skills::types::SkillListResponse",
+      "path": "SkillListResponse.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillLocationDto",
+      "origin": "macro_lib::commands::skills::types::SkillLocationDto",
+      "path": "SkillLocationDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillManifestDto",
+      "origin": "macro_lib::commands::skills::types::SkillManifestDto",
+      "path": "SkillManifestDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillProjectRootDto",
+      "origin": "macro_lib::commands::skills::types::SkillProjectRootDto",
+      "path": "SkillProjectRootDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillResourceDto",
+      "origin": "macro_lib::commands::skills::types::SkillResourceDto",
+      "path": "SkillResourceDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillResourceReadResponse",
+      "origin": "macro_lib::commands::skills::types::SkillResourceReadResponse",
+      "path": "SkillResourceReadResponse.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillScriptRunResponse",
+      "origin": "macro_lib::commands::skills::types::SkillScriptRunResponse",
+      "path": "SkillScriptRunResponse.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillScriptWorkspaceDto",
+      "origin": "macro_lib::commands::skills::types::SkillScriptWorkspaceDto",
+      "path": "SkillScriptWorkspaceDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillSourceDto",
+      "origin": "macro_lib::commands::skills::types::SkillSourceDto",
+      "path": "SkillSourceDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillTemplateCreateRequest",
+      "origin": "macro_lib::commands::skills::types::SkillTemplateCreateRequest",
+      "path": "SkillTemplateCreateRequest.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
+      "name": "SkillTemplateCreateResponse",
+      "origin": "macro_lib::commands::skills::types::SkillTemplateCreateResponse",
+      "path": "SkillTemplateCreateResponse.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "SpeechProviderConfig",
+      "origin": "macro_lib::db::models::SpeechProviderConfig",
+      "path": "SpeechProviderConfig.ts"
+    },
+    {
+      "families": [
+        "updates"
+      ],
+      "name": "StagedUpdateManifest",
+      "origin": "macro_lib::app_updates::StagedUpdateManifest",
+      "path": "StagedUpdateManifest.ts"
+    },
+    {
+      "families": [
+        "updates"
+      ],
+      "name": "StagedUpdatePhase",
+      "origin": "macro_lib::app_updates::StagedUpdatePhase",
+      "path": "StagedUpdatePhase.ts"
+    },
+    {
+      "families": [
+        "state"
+      ],
+      "name": "StateSnapshot",
+      "origin": "macro_lib::state_manager::StateSnapshot",
+      "path": "StateSnapshot.ts"
+    },
+    {
+      "families": [
+        "terminal"
+      ],
+      "name": "TerminalOutputEvent",
+      "origin": "macro_lib::commands::terminal::TerminalOutputEvent",
+      "path": "TerminalOutputEvent.ts"
+    },
+    {
+      "families": [
+        "terminal"
+      ],
+      "name": "TerminalPromptContext",
+      "origin": "macro_lib::commands::terminal::TerminalPromptContext",
+      "path": "TerminalPromptContext.ts"
+    },
+    {
+      "families": [
+        "terminal"
+      ],
+      "name": "TerminalSessionDto",
+      "origin": "macro_lib::commands::terminal::TerminalSessionDto",
+      "path": "TerminalSessionDto.ts"
+    },
+    {
+      "families": [
+        "terminal"
+      ],
+      "name": "TerminalTabDto",
+      "origin": "macro_lib::commands::terminal::TerminalTabDto",
+      "path": "TerminalTabDto.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "TerminalTabRecord",
+      "origin": "macro_lib::db::models::TerminalTabRecord",
+      "path": "TerminalTabRecord.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "TimeOutAgentRunInput",
+      "origin": "macro_lib::db::models::TimeOutAgentRunInput",
+      "path": "TimeOutAgentRunInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolEffectClass",
+      "origin": "macro_lib::db::tool_invocations::ToolEffectClass",
+      "path": "ToolEffectClass.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolInvocation",
+      "origin": "macro_lib::db::tool_invocations::ToolInvocation",
+      "path": "ToolInvocation.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolInvocationIdentity",
+      "origin": "macro_lib::db::tool_invocations::ToolInvocationIdentity",
+      "path": "ToolInvocationIdentity.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ToolInvocationStatus",
+      "origin": "macro_lib::db::tool_invocations::ToolInvocationStatus",
+      "path": "ToolInvocationStatus.ts"
+    },
+    {
+      "families": [
+        "tools"
+      ],
+      "name": "ToolModePolicyResult",
+      "origin": "macro_lib::core::tool_policy::ToolModePolicyResult",
+      "path": "ToolModePolicyResult.ts"
+    },
+    {
+      "families": [
+        "tools"
+      ],
+      "name": "ToolValidationResult",
+      "origin": "macro_lib::core::tool_policy::ToolValidationResult",
+      "path": "ToolValidationResult.ts"
+    },
+    {
+      "families": [
+        "speech_result"
+      ],
+      "name": "TranscriptionResult",
+      "origin": "macro_lib::speech::TranscriptionResult",
+      "path": "TranscriptionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpdateConversationGoalInput",
+      "origin": "macro_lib::db::conversation_goals::UpdateConversationGoalInput",
+      "path": "UpdateConversationGoalInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpdateProviderConfigInput",
+      "origin": "macro_lib::db::models::UpdateProviderConfigInput",
+      "path": "UpdateProviderConfigInput.ts"
+    },
+    {
+      "families": [
+        "speech"
+      ],
+      "name": "UpdateSpeechProviderParams",
+      "origin": "macro_lib::commands::speech::UpdateSpeechProviderParams",
+      "path": "UpdateSpeechProviderParams.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpsertArchitectPlanConversationSyncInput",
+      "origin": "macro_lib::db::models::UpsertArchitectPlanConversationSyncInput",
+      "path": "UpsertArchitectPlanConversationSyncInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpsertConversationCitationInput",
+      "origin": "macro_lib::db::models::UpsertConversationCitationInput",
+      "path": "UpsertConversationCitationInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpsertConversationCompactionStateInput",
+      "origin": "macro_lib::db::models::UpsertConversationCompactionStateInput",
+      "path": "UpsertConversationCompactionStateInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpsertConversationToolboxStateInput",
+      "origin": "macro_lib::db::models::UpsertConversationToolboxStateInput",
+      "path": "UpsertConversationToolboxStateInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpsertProjectContextStateInput",
+      "origin": "macro_lib::db::models::UpsertProjectContextStateInput",
+      "path": "UpsertProjectContextStateInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "UpsertSessionContextStateInput",
+      "origin": "macro_lib::db::models::UpsertSessionContextStateInput",
+      "path": "UpsertSessionContextStateInput.ts"
+    },
+    {
+      "families": [
+        "web"
+      ],
+      "name": "WebFetchResourceDto",
+      "origin": "macro_lib::commands::web_search::WebFetchResourceDto",
+      "path": "WebFetchResourceDto.ts"
+    },
+    {
+      "families": [
+        "web"
+      ],
+      "name": "WebSearchResultDto",
+      "origin": "macro_lib::commands::web_search::WebSearchResultDto",
+      "path": "WebSearchResultDto.ts"
+    },
+    {
+      "families": [
+        "web"
+      ],
+      "name": "WebSearchSecretInput",
+      "origin": "macro_lib::commands::web_search::WebSearchSecretInput",
+      "path": "WebSearchSecretInput.ts"
+    },
+    {
+      "families": [
+        "web"
+      ],
+      "name": "WebSearchSecretStatus",
+      "origin": "macro_lib::commands::web_search::WebSearchSecretStatus",
+      "path": "WebSearchSecretStatus.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectActivatePlanChatRequestDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectActivatePlanChatRequestDto",
+      "path": "WorkspaceArchitectActivatePlanChatRequestDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectActivatePlanHeadRequestDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectActivatePlanHeadRequestDto",
+      "path": "WorkspaceArchitectActivatePlanHeadRequestDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectChatMessageDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectChatMessageDto",
+      "path": "WorkspaceArchitectChatMessageDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectListPlansRequestDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectListPlansRequestDto",
+      "path": "WorkspaceArchitectListPlansRequestDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanActivationHeadDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanActivationHeadDto",
+      "path": "WorkspaceArchitectPlanActivationHeadDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanListDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanListDto",
+      "path": "WorkspaceArchitectPlanListDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanRecordDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanRecordDto",
+      "path": "WorkspaceArchitectPlanRecordDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanReplicaDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanReplicaDto",
+      "path": "WorkspaceArchitectPlanReplicaDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanRuntimeStatusDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanRuntimeStatusDto",
+      "path": "WorkspaceArchitectPlanRuntimeStatusDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanSummaryDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanSummaryDto",
+      "path": "WorkspaceArchitectPlanSummaryDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceArchitectPlanTranscriptDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceArchitectPlanTranscriptDto",
+      "path": "WorkspaceArchitectPlanTranscriptDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceBootstrapDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceBootstrapDto",
+      "path": "WorkspaceBootstrapDto.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "WorkspaceFileSearchResultDto",
+      "origin": "macro_lib::fs::dto::WorkspaceFileSearchResultDto",
+      "path": "WorkspaceFileSearchResultDto.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "WorkspaceFileSearchRootDto",
+      "origin": "macro_lib::fs::dto::WorkspaceFileSearchRootDto",
+      "path": "WorkspaceFileSearchRootDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceMetadataDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceMetadataDto",
+      "path": "WorkspaceMetadataDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceMetadataRecoveryHintDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceMetadataRecoveryHintDto",
+      "path": "WorkspaceMetadataRecoveryHintDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceMetadataRecoveryReportDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceMetadataRecoveryReportDto",
+      "path": "WorkspaceMetadataRecoveryReportDto.ts"
+    },
+    {
+      "families": [
+        "mounts"
+      ],
+      "name": "WorkspaceProjectMount",
+      "origin": "macro_lib::core::workspace_execution::workspace_tools::WorkspaceProjectMount",
+      "path": "WorkspaceProjectMount.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceProjectRegistryReconcileReportDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceProjectRegistryReconcileReportDto",
+      "path": "WorkspaceProjectRegistryReconcileReportDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceProjectRegistryReconcileSkippedDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceProjectRegistryReconcileSkippedDto",
+      "path": "WorkspaceProjectRegistryReconcileSkippedDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceReconcileProjectRegistryFromHintsRequestDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceReconcileProjectRegistryFromHintsRequestDto",
+      "path": "WorkspaceReconcileProjectRegistryFromHintsRequestDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto",
+      "path": "WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceRecoverMissingMetadataRequestDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceRecoverMissingMetadataRequestDto",
+      "path": "WorkspaceRecoverMissingMetadataRequestDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceState",
+      "origin": "macro_lib::workspace::metadata::WorkspaceState",
+      "path": "WorkspaceState.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceTaskCatalogDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceTaskCatalogDto",
+      "path": "WorkspaceTaskCatalogDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceTaskExecutionTargetDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceTaskExecutionTargetDto",
+      "path": "WorkspaceTaskExecutionTargetDto.ts"
+    },
+    {
+      "families": [
+        "workspace"
+      ],
+      "name": "WorkspaceTaskPlanSummaryDto",
+      "origin": "macro_lib::workspace::metadata::WorkspaceTaskPlanSummaryDto",
+      "path": "WorkspaceTaskPlanSummaryDto.ts"
+    },
+    {
+      "families": [
+        "files"
+      ],
+      "name": "WriteResultDto",
+      "origin": "macro_lib::fs::dto::WriteResultDto",
+      "path": "WriteResultDto.ts"
+    }
+  ],
+  "version": 1
+}

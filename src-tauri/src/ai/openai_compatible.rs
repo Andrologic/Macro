@@ -1,4 +1,4 @@
-use super::chatgpt::types::{
+use super::types::{
     AiChatMessageContent, AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
     AiToolCall, AiToolCallFunction,
 };
@@ -242,6 +242,7 @@ async fn stream_chat_inner(
                 reasoning_summary: optional_text(accumulator.reasoning_summary),
                 tool_traces: None,
                 hidden_context: None,
+                accepted_submission_ids: None,
                 completion_reason: accumulator.completion_reason,
             },
         )
@@ -378,7 +379,7 @@ fn message_content_to_plain_text(content: &AiChatMessageContent) -> String {
 }
 
 fn serialize_provider_input_items(
-    message: &super::chatgpt::types::AiChatMessage,
+    message: &super::types::AiChatMessage,
 ) -> Result<Option<Vec<Value>>, String> {
     let Some(items) = message
         .provider_input_items
@@ -807,8 +808,7 @@ fn ensure_terminal_completion_reason(
     if completion_reason.is_none() {
         let has_complete_tool_batch = !tool_calls.is_empty()
             && tool_calls.iter().all(|tool_call| {
-                !tool_call.id.trim().is_empty()
-                    && !tool_call.function.name.trim().is_empty()
+                !tool_call.function.name.trim().is_empty()
                     && serde_json::from_str::<Value>(&tool_call.function.arguments).is_ok()
             });
         *completion_reason = Some(
@@ -1003,13 +1003,12 @@ fn merge_tool_call_deltas(tool_calls: &mut Vec<AiToolCall>, deltas: &[Value]) {
 fn normalize_tool_calls(tool_calls: Vec<AiToolCall>) -> Vec<AiToolCall> {
     tool_calls
         .into_iter()
-        .enumerate()
-        .filter_map(|(index, mut tool_call)| {
+        .filter_map(|mut tool_call| {
             if tool_call.function.name.trim().is_empty() {
                 return None;
             }
             if tool_call.id.trim().is_empty() {
-                tool_call.id = format!("call_{}", index + 1);
+                tool_call.id = format!("call_{}", uuid::Uuid::new_v4().simple());
             }
             if tool_call.kind.trim().is_empty() {
                 tool_call.kind = "function".to_string();
@@ -1068,7 +1067,7 @@ fn supports_reasoning_effort(provider_type: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::chatgpt::types::AiChatMessage;
+    use super::super::types::AiChatMessage;
     use super::*;
     use std::future::pending;
 
@@ -1453,5 +1452,40 @@ mod tests {
             normalized[0].function.arguments,
             "{\"path\":\"src/lib.rs\"}"
         );
+    }
+
+    #[test]
+    fn missing_provider_call_ids_are_unique_and_survive_tool_history() {
+        let call = |id: &str| AiToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: AiToolCallFunction {
+                name: "read".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let calls = normalize_tool_calls(vec![call(""), call("provider-id"), call("")]);
+        let next_batch = normalize_tool_calls(vec![call("")]);
+        assert!(calls[0].id.starts_with("call_"));
+        assert_eq!(calls[1].id, "provider-id");
+        assert_ne!(calls[0].id, calls[2].id);
+        assert_ne!(calls[0].id, next_batch[0].id);
+        assert_ne!(calls[2].id, next_batch[0].id);
+
+        let mut assistant = message("assistant", "");
+        assistant.tool_calls = calls;
+        let mut result = message("tool", "read result");
+        result.tool_call_id = Some(assistant.tool_calls[0].id.clone());
+        let mut history = request(None);
+        history.messages = vec![assistant, result];
+        let serialized = serialize_messages(&history).expect("tool history");
+        assert_eq!(
+            serialized[0]["tool_calls"][0]["id"],
+            serialized[1]["tool_call_id"]
+        );
+
+        let mut reason = None;
+        ensure_terminal_completion_reason(&mut reason, &[call("")]);
+        assert_eq!(reason.as_deref(), Some("completed"));
     }
 }

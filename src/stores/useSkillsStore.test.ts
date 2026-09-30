@@ -1,5 +1,6 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import type { SkillManifest } from '../types';
+import type { SkillManifest, SkillScriptRunRequest } from '../types';
 
 const PROJECT_ROOT = {
   projectId: 'project-1',
@@ -96,7 +97,7 @@ const loadSkillsStore = async (skills: SkillManifest[]) => {
       path: 'references/style.md',
       content: 'Use concise UI copy.',
     })),
-    runSkillScript: mock(async () => ({
+    runSkillScript: mock(async (_request: SkillScriptRunRequest & { workspacePath?: string | null }) => ({
       skillId: skills[0]?.id ?? 'global:missing',
       scriptPath: 'scripts/check.sh',
       stdout: 'ok',
@@ -166,7 +167,7 @@ const loadSkillsStore = async (skills: SkillManifest[]) => {
 
   importCounter += 1;
   const module = await import(`./useSkillsStore.ts?skills-store-test=${importCounter}`);
-  return { useSkillsStore: module.useSkillsStore, services };
+  return { useSkillsStore: module.useSkillsStore, services, appState };
 };
 
 describe('useSkillsStore', () => {
@@ -174,6 +175,23 @@ describe('useSkillsStore', () => {
     localStorage.clear();
     mock.restore();
   });
+
+  for (const method of ['loadSettings', 'refreshSkills'] as const) {
+    it(`does not apply a stopped ${method} response`, async () => {
+      const { useSkillsStore, services } = await loadSkillsStore([]);
+      const scope = createLifecycleScope();
+      let release!: () => void;
+      services.listSkills.mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { skills: [buildSkill('global:agents:late')], projectRoots: [] };
+      });
+      const loading = useSkillsStore.getState()[method](scope).catch((error: unknown) => error);
+      scope.stop();
+      release();
+      expect((await loading).name).toBe('LifecycleStoppedError');
+      expect(useSkillsStore.getState().skills).toEqual([]);
+    });
+  }
 
   it('loads persisted settings and sends active project roots to the service', async () => {
     const skill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });
@@ -320,6 +338,7 @@ describe('useSkillsStore', () => {
       scriptPath: 'scripts/check.sh',
       args: ['--fix'],
       allowWorkspace: true,
+      executionContext: { projectId: PROJECT_ROOT.projectId, workspacePath: PROJECT_ROOT.path },
     });
 
     expect(result).toContain('STDOUT:\nok');
@@ -330,6 +349,92 @@ describe('useSkillsStore', () => {
       allowWorkspace: true,
       projectRoots: [PROJECT_ROOT],
       workspacePath: PROJECT_ROOT.path,
+      workspaceRoot: { projectId: PROJECT_ROOT.projectId, path: PROJECT_ROOT.path },
+    });
+  });
+
+  it('keeps a captured task worktree across navigation before and during execution', async () => {
+    const skill = buildSkill('project:project-1:agents:runner:aaa111');
+    const { useSkillsStore, services, appState } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+    await useSkillsStore.getState().setSkillEnabled(skill.id, true);
+    await useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
+    const executionContext = {
+      projectId: PROJECT_ROOT.projectId,
+      workspacePath: '/worktrees/task-1',
+    };
+    appState.selectedProjectId = 'another-project';
+    let release!: () => void;
+    services.runSkillScript.mockImplementationOnce(async (request) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return {
+        skillId: skill.id, scriptPath: request.scriptPath,
+        stdout: request.workspacePath ?? 'temporary', stderr: '', exitCode: 0,
+        timedOut: false, truncated: false,
+      };
+    });
+    const pending = useSkillsStore.getState().runSkillScriptResult({
+      skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: true,
+      executionContext,
+    });
+    appState.selectedProjectId = 'third-project';
+    release();
+    expect(await pending).toMatchObject({ stdout: '/worktrees/task-1' });
+    expect(services.runSkillScript).toHaveBeenCalledWith({
+      skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: true,
+      workspacePath: '/worktrees/task-1',
+      projectRoots: [PROJECT_ROOT],
+      workspaceRoot: { projectId: PROJECT_ROOT.projectId, path: '/worktrees/task-1' },
+    });
+  });
+
+  it('rejects missing captured workspaces and removed projects without a selection fallback', async () => {
+    const skill = buildSkill('global:agents:runner:aaa111');
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+    await useSkillsStore.getState().setSkillEnabled(skill.id, true);
+    await useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
+    for (const executionContext of [
+      undefined,
+      { projectId: PROJECT_ROOT.projectId, workspacePath: null },
+      { projectId: 'removed-project', workspacePath: '/worktrees/removed' },
+    ]) {
+      await expect(useSkillsStore.getState().runSkillScriptResult({
+        skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: true,
+        executionContext,
+      })).rejects.toThrow(/workspace|project/i);
+    }
+    expect(services.runSkillScript).not.toHaveBeenCalled();
+  });
+
+  it('preserves a backend workspace deletion error without retrying another directory', async () => {
+    const skill = buildSkill('global:agents:runner:aaa111');
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+    await useSkillsStore.getState().setSkillEnabled(skill.id, true);
+    await useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
+    services.runSkillScript.mockRejectedValueOnce(new Error('Failed to resolve workspace path: missing'));
+    await expect(useSkillsStore.getState().runSkillScriptResult({
+      skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: true,
+      executionContext: { projectId: PROJECT_ROOT.projectId, workspacePath: '/worktrees/deleted' },
+    })).rejects.toThrow('Failed to resolve workspace path: missing');
+    expect(services.runSkillScript).toHaveBeenCalledTimes(1);
+    expect(services.runSkillScript.mock.calls[0]?.[0].workspacePath).toBe('/worktrees/deleted');
+  });
+
+  it('requests the temporary directory when workspace access is disabled', async () => {
+    const skill = buildSkill('global:agents:runner:aaa111');
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+    await useSkillsStore.getState().setSkillEnabled(skill.id, true);
+    await useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
+    await useSkillsStore.getState().runSkillScriptResult({
+      skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: false,
+      executionContext: { projectId: 'removed-project', workspacePath: '/worktrees/deleted' },
+    });
+    expect(services.runSkillScript).toHaveBeenCalledWith({
+      skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: false,
+      workspacePath: null, workspaceRoot: null, projectRoots: [PROJECT_ROOT],
     });
   });
 

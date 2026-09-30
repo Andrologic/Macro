@@ -18,6 +18,11 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import {
+  COMPOSER_DRAFTS_STORAGE_KEY,
+  loadComposerDraftsFromStorage,
+  saveComposerDraftsToStorage,
+} from '../../stores/chat/chatLocalSessionState';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
 import { registerImplementScenarios } from './__tests__/implement.scenarios';
@@ -72,6 +77,8 @@ export type MockChatState = {
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
+  activeContextKey: string | null;
+  selectedConversationContextKey: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
   conversationCompactionStatusById: Record<
     string,
@@ -437,6 +444,35 @@ const loadChatZoneModule = async () => {
         provider.authStatus === 'authenticated'),
   }));
 
+  mock.module('../../composition/goalProductComposition', () => ({
+    conversationGoalProductFlow: {
+      hydrate: async () => undefined,
+      loadCurrent: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      reserveUserTurn: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      releaseUserTurn: () => undefined,
+      reconcileQueuedTurns: () => undefined,
+      activate: async (id: string, objective: string, providerId: string | null, modelId: string | null,
+        reasoningEffort: import('../../types').ReasoningEffort | null) =>
+        useConversationGoalStore.getState().activateGoal({ conversationId: id, objective, providerId, modelId, reasoningEffort }),
+      status: async (id: string, status: import('../../types').ConversationGoalOperationalStatus, reason: string | null = null,
+        expected?: { goalId: string; revision: number }) => {
+        const current = useConversationGoalStore.getState().goalsByConversationId[id];
+        if (!current || (expected && (current.goalId !== expected.goalId || current.revision !== expected.revision))) return null;
+        useConversationGoalStore.getState().setOperationalStatus(id, status, reason);
+        return useConversationGoalStore.getState().goalsByConversationId[id];
+      },
+      pause: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'paused'),
+      resume: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'active_ready'),
+      stop: async (id: string) => useConversationGoalStore.getState().clearGoal(id),
+      track: () => undefined,
+    },
+  }));
+  mock.module('../../composition/goalArtifactComposition', () => ({
+    listConversationGoalAuditArtifacts: async () => [],
+    readGoalAuditArtifact: async () => '',
+    saveGoalAuditArtifact: async () => null,
+  }));
+
   mock.module('../../stores/useShortcutsStore', () => ({
     useShortcutsStore,
   }));
@@ -660,7 +696,7 @@ const buildConversation = (): MockConversation => ({
   title: 'New Conversation',
   scope_mode: 'Chat',
   task_id: null,
-  project_id: null,
+  project_id: 'project-1',
   group_id: null,
 });
 
@@ -674,6 +710,15 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   tool_traces: [],
   ...overrides,
 });
+
+const installUnresolvedJournalMock = () => installTauriRuntimeMock(async (command) =>
+  command === 'db_list_unresolved_tool_invocations'
+    ? [{
+        conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
+        tool_name: 'old_tool', status: 'unknown',
+      }]
+    : undefined
+);
 
 export const buildCompactionEvent = (
   overrides: Partial<
@@ -804,6 +849,8 @@ const resetState = () => {
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
     hydrationStatus: 'ready',
     restoreStatus: 'ready',
+    activeContextKey: 'Chat::scope-a',
+    selectedConversationContextKey: 'Chat::scope-a',
     isLoading: false,
     isStreaming: false,
     sendState: 'idle',
@@ -811,7 +858,7 @@ const resetState = () => {
     toolApprovalRecoveryError: null,
     dismissToolApprovalRecoveryError: mock(() => undefined),
     stopStreaming: mock(() => undefined),
-    sendMessage: mock(async () => ({ status: 'sent' })),
+    sendMessage: mock(async () => ({ status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' })),
     submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
@@ -1120,7 +1167,9 @@ describe('ChatZone', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
-    installTauriRuntimeMock();
+    installTauriRuntimeMock(async (command) =>
+      command === 'db_list_unresolved_tool_invocations' ? [] : undefined
+    );
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback: FrameRequestCallback) =>
         setTimeout(() => callback(performance.now()), 0) as unknown as number;
@@ -1163,6 +1212,79 @@ describe('ChatZone', () => {
 
   afterAll(() => {
     mock.restore();
+  });
+
+  it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
+    chatState = {
+      ...chatState,
+      messages: Array.from({ length: 1000 }, (_, index) => buildMessage({
+        id: `history-${index}`, role: 'user', content: `History message ${index}`,
+      })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const rows = requireContainer().querySelectorAll('[data-index]');
+    expect(rows).toHaveLength(20);
+    expect(rows[0]?.getAttribute('data-index')).toBe('980');
+    expect(rows[19]?.getAttribute('data-index')).toBe('999');
+    expect(requireContainer().textContent).toContain('History message 999');
+    expect(chatState.messages).toHaveLength(1000);
+  });
+
+  it('preserves compaction spacing when the bootstrap window omits older rows', async () => {
+    chatState = {
+      ...chatState,
+      messages: Array.from({ length: 30 }, (_, index) => buildMessage({
+        id: `history-${index}`, role: 'assistant', content: `History message ${index}`,
+      })),
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({ id: 'early', displayAfterMessageId: 'history-0' }),
+          buildCompactionEvent({ id: 'recent', displayAfterMessageId: 'history-29' }),
+        ],
+      },
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const first = requireContainer().querySelector<HTMLElement>('[data-index="12"]');
+    const last = requireContainer().querySelector<HTMLElement>('[data-index="31"]');
+    expect(first?.style.transform).toBe('translateY(2700px)');
+    expect(last?.style.transform).toBe('translateY(7312px)');
+    expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
+  it('hides the previous conversation journal while a new context resolves', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'resolving' };
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the previous journal hidden when context resolution fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error', activeContextKey: 'Chat::scope-b' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the selected conversation journal visible if provider restoration fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('old_tool');
+  });
+
+  it('hides a selected conversation outside the active mode', async () => {
+    installUnresolvedJournalMock();
+    chatState = {
+      ...chatState,
+      conversations: [{ ...buildConversation(), scope_mode: 'Implement' }],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
   });
 
   it('renders the first user message when the selected conversation has messages', async () => {
@@ -1380,6 +1502,189 @@ describe('ChatZone', () => {
     });
 
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'restores only unsent edits after active-turn acceptance and immediate reload (edited: %s)',
+    async (edited) => {
+      const acceptanceDeferred = createDeferred<'queued'>();
+      const originalSave = chatState.saveComposerDraftForContext;
+      const originalClear = chatState.clearComposerDraftForContext;
+      const persistTextDrafts = () => {
+        expect(saveComposerDraftsToStorage(Object.fromEntries(
+          Object.entries(composerDraftsByContextKey).map(([key, draft]) => [key, {
+            text: draft.text, images: [], contextRefs: [],
+          }]),
+        ))).toBe(true);
+      };
+      window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+      chatState = {
+        ...chatState,
+        isStreaming: true,
+        submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+        saveComposerDraftForContext: mock((key: string, draft: ComposerDraft) => {
+          originalSave(key, draft);
+          persistTextDrafts();
+        }),
+        clearComposerDraftForContext: mock((key: string) => {
+          originalClear(key);
+          persistTextDrafts();
+        }),
+      };
+      chatState.saveComposerDraftForContext('conversation:conv-1', {
+        text: 'Version antérieure enregistrée.', images: [], contextRefs: [],
+      });
+      chatState.saveComposerDraftForContext('conversation:conv-2', {
+        text: 'Autre conversation intacte.', images: [], contextRefs: [],
+      });
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      await setComposerText('Message accepté dans la file.');
+      await clickSendButton();
+      if (edited) await setComposerText('Nouvelle édition non envoyée.');
+      await act(async () => {
+        acceptanceDeferred.resolve('queued');
+        await acceptanceDeferred.promise;
+      });
+      expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
+      // Observe durable state before pagehide or the 250 ms draft timer can repair it.
+      if (!edited) {
+        expect(loadComposerDraftsFromStorage()['conversation:conv-1']).toBeUndefined();
+      }
+      await act(async () => {
+        window.dispatchEvent(new window.Event('pagehide'));
+        requireRoot().unmount();
+      });
+      const restored = loadComposerDraftsFromStorage();
+      composerDraftsByContextKey = Object.fromEntries(Object.entries(restored).map(
+        ([key, draft]) => [key, { text: draft.text, images: [], contextRefs: [] }],
+      ));
+      root = createRoot(requireContainer());
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
+      expect(restored['conversation:conv-2']?.text).toBe('Autre conversation intacte.');
+      window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    },
+  );
+
+  it('keeps a newer saved draft after deferred active-turn acceptance', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    const submittedRef = {
+      id: 'file:submitted.md',
+      kind: 'file' as const,
+      title: 'submitted.md',
+      data: { id: 'submitted.md', path: '/synthetic/submitted.md', relativePath: 'submitted.md' },
+    };
+    const newerRef = {
+      id: 'file:newer.md',
+      kind: 'file' as const,
+      title: 'newer.md',
+      data: { id: 'newer.md', path: '/synthetic/newer.md', relativePath: 'newer.md' },
+    };
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      composerContextRefs: [submittedRef],
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Premier message accepté.');
+    await clickSendButton();
+
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+    await setComposerText('Nouveau brouillon conservé.');
+    await act(async () => {
+      useChatStore.setState({ composerContextRefs: [newerRef] });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await pasteComposerImage();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Nouveau brouillon conservé.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([newerRef]);
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Nouveau brouillon conservé.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [newerRef],
+    });
+  });
+
+  it('does not clear another conversation draft after active-turn acceptance', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Message de la première conversation.');
+    await clickSendButton();
+
+    await act(async () => {
+      useChatStore.setState({
+        selectedConversationId: 'conv-2',
+        composerContextRefs: [],
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await setComposerText('Brouillon de la deuxième conversation.');
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Brouillon de la deuxième conversation.');
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+    expect(composerDraftsByContextKey['conversation:conv-2']?.text).toBe(
+      'Brouillon de la deuxième conversation.',
+    );
+  });
+
+  it('accepts an active-turn submission only once during a deferred click', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Un seul message doit être accepté.');
+    await clickSendButton();
+    await clickSendButton();
+
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
   });
 
   it('inserts only the image when a paste contains image, text, and HTML', async () => {
@@ -1814,11 +2119,44 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Finish the authentication migration',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
     expect(
       requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
     ).toContain('Finish the authentication migration');
+  });
+
+  it('shows an explicit Goal error when send returns no assistant response', async () => {
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'sent' as const, turnId: 'turn-without-response', assistantMessageId: null })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']).toMatchObject({
+      status: 'error',
+      lastError: 'The executor turn did not return a saved assistant response.',
+    });
+  });
+
+  it('keeps a Goal paused when its original send finishes after Pause', async () => {
+    const sending = createDeferred<{ status: 'sent'; turnId: string; assistantMessageId: string }>();
+    chatState = { ...chatState, sendMessage: mock(() => sending.promise) };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    await act(async () => {
+      requireContainer().querySelector<HTMLButtonElement>('button[aria-label="Pause"]')?.click();
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
+    await act(async () => {
+      sending.resolve({ status: 'sent', turnId: 'turn-late', assistantMessageId: 'assistant-late' });
+      await sending.promise;
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
   });
 
   it('keeps the Goal control outside the composer and removes the command', async () => {
@@ -2190,7 +2528,7 @@ describe('ChatZone', () => {
       providerId: 'provider-1',
       modelId: 'model-1',
       reasoningEffort: 'high',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2242,7 +2580,7 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Ship the CSV export end to end',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2546,6 +2884,25 @@ describe('ChatZone', () => {
     expect(fileChip?.textContent).toContain('File');
     expect(fileChip?.textContent).toContain('src/App.tsx');
     expect(requireContainer().textContent).not.toContain('[file: src/App.tsx]');
+  });
+
+  it('shows the frozen cited conversation excerpts on a sent user message', async () => {
+    chatState = {
+      ...chatState,
+      messages: [buildMessage({
+        id: 'msg-cited', role: 'user', content: 'What did we decide?',
+        context_refs: [{
+          id: 'source-conv', conversationId: 'source-conv', kind: 'conversation',
+          title: 'Earlier discussion', sourceUpdatedAt: '2026-09-28T12:00:00Z',
+          snippet: '[message_id=source-msg; role=user; at=2026-09-28T11:00:00Z]\nReview every release.',
+        }],
+      })],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const details = requireContainer().querySelector('details');
+    expect(details?.textContent).toContain('Earlier discussion');
+    expect(details?.textContent).toContain('message_id=source-msg');
+    expect(details?.textContent).toContain('Review every release.');
   });
 
   it('moves message editing into the composer and saves bracket text', async () => {

@@ -29,11 +29,20 @@ L'architecture repose sur quatre principes :
 - transport interchangeable entre backend desktop et backend distant
 - préservation d'un historique de travail auditable via la persistance locale et la branche metadata
 
-Macro doit pouvoir fonctionner dans trois topologies techniques :
+Le produit actuel fonctionne en desktop local avec backend Tauri embarqué.
+Les topologies client desktop ou web/mobile connecté à un kernel distant restent
+des objectifs futurs. Le prototype headless et le transport remote décrits plus
+bas ne constituent pas des capacités produit supportées.
 
-- desktop local avec backend Tauri embarqué
-- client desktop connecté à un kernel distant
-- client web/mobile connecté à un kernel distant
+Les fondations de modularité sont déjà intégrées : contrats de domaine et
+adaptateurs de composition, services de workflow, registres de contributions
+internes et contrats IPC générés. Les sections 5 à 7 décrivent leurs raccords
+et leurs limites. Les adaptateurs délèguent encore aux propriétaires existants ;
+l'extraction ne supprime pas tous les couplages historiques entre stores.
+Les registres accueillent du code interne de confiance livré avec l'application.
+Ils ne fournissent ni API publique de plugins ni runtime d'extensions
+téléchargeables. Le contrat de [contributions du shell](workspace-shell.md)
+précise cette frontière.
 
 ---
 
@@ -127,6 +136,87 @@ complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
 verrou avant toute écriture. Le watcher desktop coalesce les événements puis
 rescane les documents chargés et les nouveaux documents projet.
 
+Le watcher réconcilie les dossiers de configuration par racine canonique. Les
+projets partageant une racine partagent son abonnement ; chaque racine unique
+possède un backend natif indépendant, séparé du backend global. Ce choix permet
+de libérer aussi une installation récursive partiellement échouée, au prix de
+handles et de threads dont le nombre croît avec les racines uniques. Les quotas
+du système restent applicables et la fermeture native peut être asynchrone.
+La maintenance vérifie les identités des dossiers et réessaie les abonnements
+avec une temporisation progressive plafonnée à trente secondes. Ce délai est
+commun aux racines : une panne persistante peut donc retarder aussi le
+rechargement d'une racine saine. Le manager refuse de servir un document dont
+la racine a été remplacée avant le rafraîchissement de son cache.
+Une dégradation de maintenance apparaît dans un diagnostic dédié, consultable
+dans le snapshot. Son apparition et son rétablissement émettent
+`config://changed`, sans répéter un état inchangé ni effacer les avertissements
+issus des commandes workspace. Un rechargement échoué reste à réessayer après
+la temporisation, même sans nouvel événement. Le diagnostic de panne est retiré
+seulement après une nouvelle vérification réussie.
+Une racine résolue reste surveillée si le chargement d'un document échoue ; la
+maintenance réessaie ce chargement après correction du fichier. Le manager
+conserve séparément la racine demandée et la configuration activée, pour que
+les abonnements et les retries suivent le registre même pendant une transition
+bloquée. Le retrait explicite désactive ce désiré sans effacer une intention
+durable encore nécessaire lors d’un futur enregistrement. La demande est
+mémorisée avant toute création, résolution ou lecture d’identité du dossier.
+Une erreur à cette frontière utilise la même intention avec une cible
+indisponible et bloque l’ancienne configuration. Le chemin demandé permet une
+reprise lorsque le dossier redevient valide. Le besoin de résoudre cette
+racine appartient à la demande elle-même ; une erreur de révocation peut changer
+le diagnostic sans effacer ce travail restant.
+Le chemin du dépôt fourni par le registre reste distinct de sa racine metadata.
+Son indisponibilité empêche de réactiver une racine metadata encore accessible.
+Si la destination metadata elle-même est inconnue, l’ancienne racine n’est plus
+servie ni surveillée à sa place. Le diagnostic demande une nouvelle
+réconciliation du registre pour résoudre cette destination. Une racine déjà
+connue reprend automatiquement lorsque le même dépôt revient. Une purge ou une récupération du cache
+émet aussi `config://changed` pour actualiser le
+snapshot frontend. Une absence observée par le bootstrap invalide aussi le
+consentement sans attendre la maintenance. Le watcher conserve les événements
+de suppression ou de déplacement de la racine jusqu’à leur transmission au
+manager, même si le dossier revient avant cette transmission. Une erreur native
+ou une demande de rescan seule ne constitue pas une preuve de disparition.
+Les opérations projet acquièrent
+leurs verrous de document, de transaction et de publication avant le contrôle
+final du chemin canonique et de l’identité ; les écritures suivantes ne
+reprennent pas ces verrous. Un déplacement masqué par un lien symbolique reste
+donc une transition, même si l’inode du dossier n’a pas changé.
+Les propositions projet persistées lient leur identifiant d'approbation au
+chemin canonique et à l'identité du dossier. Un changement de racine renouvelle
+cet identifiant, même si la nouvelle racine ne contient pas le document. Ce
+renouvellement persiste après redémarrage, en conservant le contenu proposé et
+la baseline approuvée. Les anciennes propositions sans ce lien demandent
+également une nouvelle approbation.
+Une intention durable unique par projet, dans le stockage privé `.runtime`,
+impose la reprise d’une transition incomplète avant toute réutilisation de sa
+racine, y compris au retour au dossier initial ou après redémarrage. Elle est
+persistée avant le renouvellement des propositions. Chaque proposition reçoit
+atomiquement un nouvel identifiant et l’acquittement de cette intention. La
+reprise parcourt tous les types de documents projet, même si leur JSON est
+absent, et conserve les contenus proposés et les baselines. Une erreur sur une
+proposition ne dispense pas de traiter les suivantes. L’intention n’est retirée
+qu’après tous les acquittements durables ; une erreur conserve la configuration
+concernée indisponible et déclenche une nouvelle tentative.
+Ce protocole remplace les journaux intermédiaires de renouvellement par
+proposition. Les journaux de publication des documents restent indépendants.
+Le stockage ne conserve qu’une intention courante et un acquittement par
+proposition, sans historique croissant ni fichier annexe dans le projet.
+Si l’intention ne peut pas être persistée, Macro retourne une erreur et bloque
+la configuration concernée dans le processus. La reprise après crash suppose
+une intention persistée ; l’échec de cette première écriture peut perdre
+l’observation au redémarrage, même si d’autres fichiers restent inscriptibles.
+
+Si la réconciliation échoue après une mutation du registre déjà persistée, la
+commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,
+publié via `config://changed` et consultable dans le snapshot, distingue cet
+échec de configuration de l'opération déjà terminée. Le client doit réessayer
+le rechargement de configuration, pas la création, l'import ou le retrait.
+Une lecture principale du registre échouée peut transmettre une erreur. En
+revanche, un bootstrap ou un listage déjà lu reste fourni si seule la
+réconciliation accessoire échoue ; cette dégradation utilise le même diagnostic
+et le même événement, pour ne pas ouvrir un shell vide à la place des projets.
+
 Une acceptation sensible est engagée dès que la baseline approuvée est écrite.
 Si le nettoyage de la proposition échoue ensuite, le résultat reste appliqué,
 avec un diagnostic de nettoyage différé. Le chargement suivant reprend ce
@@ -196,6 +286,10 @@ Le frontend est organisé autour de :
 
 L'application n'utilise pas un routage classique basé sur des pages.
 
+Les définitions d'espaces, sessions et contributions du shell sont décrites dans
+[Workspace and shell contributions](workspace-shell.md). Consulter ce contrat
+avant d'ajouter une vue interne, un raccourci ou une entrée de réglages.
+
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
 Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.
@@ -233,7 +327,109 @@ L'initialisation se fait en plusieurs niveaux :
 - données cœur comme chat et tâches
 - configuration et providers en basse priorité
 
-### 5.5 Lazy loading
+### 5.5 Composition et frontières TypeScript
+
+`main.tsx` est la racine de composition. Il installe les préférences de
+notification, l'ouverture des contextes de travail et l'adaptateur de changement de langue avant l'initialisation de
+la configuration. `startNotificationComposition` retourne un arrêt idempotent,
+appelé par HMR. Un redémarrage reconnecte les notifications de langue en attente.
+Le renderer est attaché par l'effet de montage de `Toaster` et détaché au démontage.
+
+`src/domains/contracts.ts` définit les capacités publiques déjà utilisées :
+
+| Domaine | Requêtes | Commandes exposées |
+| --- | --- | --- |
+| Chat | Conversations et messages par conversation | Sélection, arrêt du streaming |
+| Plans | Nœuds du plan actif | Activation d'un plan |
+| Tasks | Tâche par identifiant | Activation, passage en review |
+| Projects | Projets autonomes et groupes | Changement de contexte projet |
+| Tools | Identifiants d'outils Chat et MCP activés | Chargement des réglages, appel MCP |
+| Providers | Providers et modèles par provider | Chargement, sélection du provider et du modèle |
+
+Les adaptateurs de `src/composition/domainAdapters.ts` délèguent aux propriétaires
+actuels à chaque appel. Ils ne copient pas l'état durable. Les effets de
+configuration reçoivent les commandes Tools et Providers comme paramètres ;
+ils ne connaissent plus leurs stores. Les autres adaptateurs préparent les
+extractions suivantes et ne remplacent pas encore les appels internes des stores.
+Les consommateurs injectés importent les interfaces du domaine, jamais la racine
+de composition. Les modèles partagés résident dans `src/types/` ; les types
+`Citation` et `IconName` y sont définis indépendamment de leurs consommateurs.
+
+Le prompt de reprise après outil et la normalisation des contrats d'artefacts
+résident dans `src/domains/chat/` et `src/domains/plans/`. Leur utilisation ne
+charge plus l'orchestration Architect ni le service de persistance des artefacts.
+
+L'API `notify.*`, les templates accessibles, les actions de session, l'historique
+et le canal desktop restent centralisés. Les préférences sont lues par un
+adaptateur typé, directement dans leur store propriétaire. Sans renderer, les
+notifications destinées au toast sont conservées par identifiant en mémoire ;
+une mise à jour remplace la livraison du même identifiant et une fermeture
+l'annule. Leur délai d'expiration commence au montage du renderer. L'historique
+et le canal desktop restent traités lors de l'émission. Cette attente est
+transitoire et n'introduit aucune seconde persistance. Les anciens appels
+techniques `toast.*` conservent leur comportement Sonner ; le contrat de livraison
+différée concerne `notify.*`.
+
+La garde `architecture:check`, exécutée par le profil CI frontend et le contrôle différentiel avant push, analyse les
+imports locaux, distingue les types du runtime et interdit les nouvelles arêtes
+contraires aux frontières ainsi que les nouveaux cycles. Les exceptions
+historiques sont nommées dans le fichier de référence portable sous
+`dev/architecture/`. Leur attribution organise les extractions restantes :
+Chat pour l'orchestration conversationnelle, Tasks/Plans pour la persistance et
+les transitions, Providers pour la sélection et les transports, Shell pour
+les réglages et l'interface. `appStateRuntime` reste une dette existante ; aucun
+nouveau consommateur ni service locator n'est ajouté ici. Les contrats globaux
+seront consolidés au lot 15.
+
+Mesure de cette extraction, hors tests et déclarations `.d.ts` :
+
+| Mesure | Avant | Après |
+| --- | ---: | ---: |
+| Modules TypeScript | 513 | 524 |
+| Arêtes runtime | 1 773 | 1 789 |
+| Arêtes de types | 671 | 679 |
+| Plus grande SCC statique | 25 | 16 |
+| Plus grande SCC avec imports dynamiques | 34 | 24 |
+| Exceptions de frontières | 40 | 36 |
+
+Une même paire de modules peut porter une arête runtime et une arête de types.
+Le graphe conserve aussi les imports dynamiques ; les déplacer ne contourne pas
+la garde. Le parcours des fichiers commence dans `src/`. Les alias sont lus dans
+la configuration Vite sans exécuter ses plugins. Le contrat du résolveur couvre :
+
+- les imports relatifs, les chemins `/src/...` et les références TypeScript
+  `src/...` permises par le `baseUrl` actuel ;
+- les objets `resolve` et `alias` littéraux dans la configuration exportée,
+  avec des clés d'alias textuelles et des cibles `/src/...`, `./...` ou `../...` ;
+- l'ordre des alias et la normalisation des barres finales de Vite. La première
+  correspondance décide de la cible, même si celle-ci est absente ;
+- les fichiers exacts, la conversion des suffixes JavaScript en suffixes TypeScript,
+  puis les extensions par défaut de Vite et les fichiers `index`. Des fixtures
+  comparent ces choix au résolveur Vite installé, avec une configuration isolée.
+
+Une cible relative d'alias part du fichier importeur. Les remplacements absolus
+propres à une machine, les remplacements par un nom de paquet, les substitutions
+`$`, les configurations indirectes ou ambiguës et les options de résolution
+supplémentaires font échouer la garde. Les chemins symboliques, les imports qui
+sortent de `src/` et la résolution d'un répertoire source par son `package.json`
+demandent aussi une adaptation explicite. Les spécificateurs internes `#...`
+ainsi que les champs `exports` ou `browser` des manifests de paquet du projet
+sont refusés pour empêcher une redirection locale classée comme externe. L'inventaire des fichiers sous `src/`
+permet de refuser un module JavaScript ou `.mts`/`.cts` qui masquerait une cible
+TypeScript analysée. Les tests, déclarations et assets restent hors du graphe.
+`import.meta.glob`, `globEager` et `globEagerDefault` sont refusés : leurs imports
+sont produits par une transformation Vite, hors de l'analyse TypeScript.
+Les règles de frontières des domaines gardent le même périmètre.
+
+Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
+mais réduisent le groupe de modules chargés cycliquement. Le contrat pur `mentionContract` supprime le cycle séparé entre
+`MentionChip` et `MentionNode`, sans changer les exports du nœud Lexical. La SCC statique restante
+unit encore les stores App, Chat, Tasks, Skills et Terminal aux services Architect,
+metadata, merge et worktrees ; ces extractions appartiennent aux lots suivants.
+Les notifications et i18n ne participent plus aux SCC, même avec les imports
+dynamiques. La baseline finale interdit leur réintroduction.
+
+### 5.6 Lazy loading
 
 L'application charge paresseusement :
 
@@ -266,24 +462,111 @@ Il gère notamment :
 
 - les conversations
 - les messages
-- le streaming
+- la projection du runtime de chaque conversation
 - les pièces jointes image
 - les références de contexte du composeur
 - la relation entre mode actif et conversation sélectionnée
 
-Le store porte aussi une partie de la logique d'orchestration entre chat et mode produit.
+Les cas d'usage `chatSend/sendMessage`, `chatRequestPreparation`,
+`chatAssistantStreamRuntime` et `chatAssistantPersistenceRuntime` coordonnent
+l'envoi, la préparation de la requête, le stream et la reprise
+après échec de sauvegarde. Ils reçoivent des ports typés et se testent sans React
+ni mock de store. L'adaptateur capture les sélections UI avant la première
+attente ; le runtime reçoit ensuite ce snapshot, ses dépendances et les
+opérations de projection séparément.
+
+Une référence de conversation conserve l'identifiant de la source dans le brouillon ou la file. Juste avant la persistance du message utilisateur, `conversationContextSource` refuse une source encore active et lit un snapshot natif cohérent : la cible, la source et les messages sont lus dans la même transaction SQLite, avec vérification du projet commun avant le retour des messages. La sélection retient au plus trois passages de 850 caractères par source ; elle cherche les mots entiers dans les 4 000 premiers caractères et les 500 premiers mots d'au moins trois caractères de chaque message candidat. L'identifiant des messages, leur rôle, leur date et la date de mise à jour de la conversation accompagnent les extraits figés dans `context_refs_json`. Une édition concurrente peut être retenue avant ou après sa validation, mais ne mélange pas deux états du transcript. La préparation de requête ne recherche pas de nouveaux passages : elle injecte ces extraits en les marquant comme matériau non fiable. Une soumission en file relit et revalide la source à son départ. Le snapshot ne contient que les messages encore présents après un retour en arrière.
+
+Les soumissions différées utilisent le stockage local de récupération du chat.
+Leur runtime, la revalidation de contexte, les instructions du plan Architect et
+le panneau de récupération sont chargés à la demande pour préserver le budget du bundle initial. La capture
+du contenu et des sélections reste synchrone avant ces chargements.
+`chatQueuedSubmissions` conserve uniquement l'intention et le contenu acceptés,
+avec un identifiant repris comme `turn_id`. Le store garde l'entrée tant que le
+message utilisateur et ses images ne sont pas durables. Une reprise relit le
+transcript pour reconnaître ce tour avant tout nouvel envoi. Elle recharge les
+configurations et les droits sur la cible capturée ; un changement de cible
+bloque la reprise. Le panneau commun de récupération porte l'action de réessai,
+indépendamment des préférences de notification et sans état parallèle dans `ChatZone`.
+
+`chatTurnRuntime` possède les identités de session, les promesses de stream,
+les instructions en attente et les propriétaires de persistance. Le record des
+phases reste unique, derrière un port de projection adossé au store. Le runtime
+ne maintient aucune seconde copie des messages ou de la sélection. Sa transition
+`beginCompletion` vers `persisting`, puis `releaseCompletion` ou `failCompletion`,
+forme le point de raccord des transports. `claimStream` attribue une identité
+de tentative distincte lors d'une récupération du même tour. Un stream remplacé ne libère pas son
+successeur et l'attente de fin suit les remplacements dus à la récupération.
+
+Cette identité de stream ne désigne pas une requête modèle. `toolCallingLoop`
+attribue un identifiant distinct à chaque requête fournisseur, y compris les
+renvois internes des transports HTTP et natif ; le
+message assistant conserve son texte brut, le texte accepté et un coût
+`null` tant qu'aucun coût par tentative n'est attribuable. Avant une écriture
+partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publie
+le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
+écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Quand
+un utilisateur arrête le stream, la tentative en cours, suivie en mémoire au fil
+des tokens ou dès l'envoi de la requête, rejoint le message avant sa sauvegarde
+partielle. Si la préparation après un dépassement de contexte échoue, Macro
+garde les tentatives déjà enregistrées sur le message assistant. Quand
+une récupération de dépassement de contexte remplace le stream sur le même
+message, ses nouvelles tentatives s'ajoutent aux précédentes par identifiant.
+Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses
+tentatives. Son échec utilise la récupération de réponse non sauvegardée, qui
+retransmet aussi les tentatives. Un crash pendant un tour fournisseur ou après un échec d'écriture
+intermédiaire peut laisser ses derniers tokens et sa tentative hors de SQLite.
+`chatPersistenceService` sérialise les écritures partielles et finales par
+message assistant : une ancienne sauvegarde ne peut pas écraser celle de Stop.
+
+`chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
+`chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
+asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
+MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
+`mcp/toolDiscovery` décide, à partir de l'allowlist et du catalogue figés du tour, si le modèle reçoit les schémas MCP directs ou les fonctions `mcp_search` et `mcp_call`. La recherche est bornée et ne parcourt que les outils autorisés. Le dispatch conserve les identifiants trouvés pour ce tour ; `mcp_call` transmet ensuite l'identifiant et les arguments à l'exécuteur MCP existant, qui revalide la politique, l'approbation éventuelle et la génération. Les transports commun, natif et Copilot exposent les mêmes fonctions de découverte. Une récupération d'overflow conserve le catalogue initial ; elle ne crée pas de nouveaux droits.
+La récupération d'overflow transmet les capacités capturées à la préparation :
+type d'agent, allowlist, catalogue et clé MCP, risque et réglages d'outils. Elle
+reconstruit le contexte compacté sans résoudre une nouvelle génération MCP ni
+relire les sélections de configuration du tour. Le contrôle
+de tentative accompagne aussi l'exécuteur pendant ses attentes, puis les ports
+Architect et terminal avant chaque nouvelle opération. Architect résout sa cible
+implicite à partir du plan et de la branche capturés ; ses projections UI ne
+s'appliquent que si la sélection correspond encore au tour. Une écriture déjà
+engagée peut finir après Stop, sans lancer la projection suivante. Une erreur
+tardive du placeholder assistant n'autorise pas l'ancien tour à remettre en
+brouillon une tâche reprise par son successeur ; un échec du tour encore
+propriétaire conserve sa compensation.
+`chatToolExecution` charge `chatToolExecutionRuntime` au premier appel d'outil.
+Ce runtime garde le routage et les contrôles de politique existants, notamment
+la vérification du propriétaire après le chargement. `deferredArchitectTool`
+charge le handler Architect au premier appel du port et revérifie l'autorité
+du tour avant ses effets. Les ports et le contexte restent ceux capturés par
+l'appelant ; ces façades n'ajoutent aucun propriétaire de workflow.
+
+`chatToolApproval` coordonne leur approbation durable et `chatAgentTerminal`
+gère les sessions terminal de l'agent. Les ports raccordent les effets des
+autres domaines sans importer leurs stores. `chatPersistenceService` reste propriétaire
+des adaptateurs de persistance existants.
+
+Le store conserve la sélection, l'hydratation des conversations, les projections
+de messages et diagnostics, le compositeur, les questionnaires et les dialogues
+d'approbation. Les workflows de rejeu et checkpoints ainsi que les adaptateurs
+Architect/Implement restent une dette distincte de l'orchestration d'un envoi.
+Cette extraction ne supprime donc pas à elle seule la grande SCC historique.
 
 En mode Implement, l'en-tête de la conversation dérive le contexte visible de la tâche cataloguée sélectionnée. Il utilise `plan_title` et `branch_name` de cette tâche, puis résout les noms de projets depuis le registre déjà chargé. Une valeur absente n'est pas remplacée par une sélection globale et aucun état d'affichage durable n'est ajouté.
 
 ### 6.3 `useTaskStore`
 
-`useTaskStore` gère :
+`useTaskStore` conserve le catalogue des tâches, la sélection et les projections
+visibles des opérations. Le démarrage, la préparation, les commandes projet et
+la revue/merge s'exécutent dans des services auxquels le store fournit des ports
+typés. Les mutations de statut d'un plan calculent leur résultat sous le verrou
+par branche du service Plans.
 
-- les tâches dérivées de la stratégie
-- leur activation
-- leurs transitions d'état
-- la relation entre tâche, branche et worktree
-- la persistance du statut d'exécution dans les metadata du plan
+[Workflows des tâches et des plans](task-plan-workflows.md) décrit la propriété
+de l'état, les raccords de composition, les protections de concurrence, la
+reprise après effets durables et les responsabilités qui restent dans l'UI.
 
 ### 6.4 Stores spécialisés
 
@@ -391,7 +674,129 @@ Les DTO frontend servent de couche de stabilisation entre :
 
 Cette couche limite le couplage direct entre composants React et détails de sérialisation.
 
-### 7.4 Boucle d'outils et compatibilité des providers
+Les wrappers natifs sont regroupés par domaine dans `src/services/ipc/`. La façade
+`tauriIpc.ts` conserve les exports historiques. Les modules de domaine utilisent
+`tauriRuntimeBridge` directement ; le bridge navigateur reste un transport desktop,
+sans sélectionner le provider HTTP expérimental.
+
+Les formes réseau Rust sont réexportées par domaine dans `ipc_contracts` et
+générées sous `src/types/generated/ipc/`. Le générateur `generate_config` partage
+son moteur entre configuration et IPC. Le registre suit les dépendances ts-rs,
+vérifie les imports et les collisions, puis produit un manifeste déterministe.
+`config:check` et `ipc:check` refusent les fichiers manquants, modifiés ou
+surnuméraires sans écrire. Les profils CI natifs et le contrôle différentiel
+exécutent ces vérifications.
+
+Les fichiers `ipc/*.types.ts` adaptent les contrats générés aux consommateurs
+existants : propriétés facultatives historiques, unions frontend plus précises
+que les champs String Rust, vues partielles et normalisation du statut Git.
+Ils conservent uniquement les différences de forme. Les helpers `OmitFields` et
+`OptionalFields` bornent leurs clés à `keyof` du contrat natif : retirer ou renommer
+un champ adapté fait échouer le typage à cette frontière. Cette contrainte vérifie
+les noms de champs ; elle ne remplace pas une validation runtime ni la relecture
+des adaptations sémantiques. Les parseurs et les objets
+pratiques de paramètres restent frontend. Une modification de ces adaptations
+exige de vérifier les consommateurs, pas seulement de régénérer les fichiers.
+
+La génération utilise ts-rs 12 avec une représentation numérique explicite des
+entiers IPC, conforme au JSON actuel. Cette représentation ne garantit pas une
+précision au-delà des entiers sûrs de JavaScript. Les valeurs JSON libres utilisent
+le type récursif `JsonValue`. La configuration conserve ses annotations et ses
+sorties existantes. Les omissions `skip_serializing_if` sont déclarées explicitement
+lorsque ts-rs ne peut pas les déduire. Les aliases Serde d'entrée et les fonctions
+`deserialize_with` continuent de valider côté Rust ; les bindings décrivent les
+noms canoniques et les formes, pas ces contraintes de valeurs.
+
+Les unions de statut dont le backend renvoie encore une String, les paramètres
+pratiques tels que `FrontendLogParams`, les projections de mise à jour et les
+champs provider adaptés restent des contrats frontend identifiés. Le canal
+`MCPRuntimeEvent` réservé au frontend n'a pas de DTO Rust à générer. Les erreurs
+natives, elles, dérivent du payload effectivement sérialisé par `CommandError` ;
+la normalisation des erreurs de service conserve aussi les rejets historiques
+sous forme de chaîne ou d'enveloppe distante.
+
+
+Les exports de `ServiceProvider` restent raccordés au chargement dynamique des
+providers. L'absence d'appel direct à une méthode ne démontre pas qu'elle est
+inutilisée. La façade `tauriIpc.ts` et les réexports Rust de `commands` pourront
+être retirés après migration explicite de leurs appelants ; leur retrait ne doit
+pas être déduit d'une recherche d'imports nommés uniquement.
+
+
+### 7.4 Courtier et hôte de formulaires MCP
+
+Le runtime persistant ouvre un port IPC typé seulement lorsqu'un hôte UI
+s'enregistre avec `mcp_runtime_open_interaction_port`. En l'absence de port, une
+requête échoue avec `MCP_INTERACTION_NO_HOST`. Le bail du port et les identifiants
+de serveur, de génération, d'opération et de demande lient chaque réponse à son
+appel. Le courtier limite les demandes simultanées, leur taille, le nombre de
+prompts et le délai de réponse. La fermeture du port, l'annulation de l'opération
+et l'arrêt du runtime retirent les demandes en attente. Les réponses `accept`,
+`decline` et `cancel` ont un contrat typé ; `cancel` est transmis au serveur
+dans `inputResponses`, tandis que l'annulation externe interrompt l'appel.
+
+Les chemins stdio et HTTP modernes traitent `input_required` lorsque toutes les
+demandes sont des formulaires `elicitation/create`. Ils conservent `requestState`
+en mémoire dans le backend et le retransmettent tel quel avec `inputResponses` au tour MCP suivant.
+Le schéma de formulaire plat est vérifié avant remise au port et conservé avec
+la demande en attente ; chaque `accept`, y compris depuis un IPC hostile, est
+validé contre ses champs, obligations, choix et contraintes avant continuation.
+Les schémas non pris en charge échouent fermés. Une valeur `requestState` non
+chaîne ou dépassant 128 Kio est refusée sans journalisation ; un tour contenant uniquement `requestState` se poursuit sans hôte UI et sans
+`inputResponses`. Aucun appel n'est relancé après une erreur de transport. Le
+runtime s'arrête après quatre continuations. L'hôte de formulaires est monté
+au niveau global de l'application Tauri, indépendamment de la conversation
+active. Sa modale et ses erreurs prennent la priorité sur les autres modales
+de l'application. Il ouvre un bail unique, conserve en mémoire une file de demandes bornée
+par le courtier, affiche l'identité du serveur et l'opération, puis demande une
+revue explicite des valeurs avant `accept`. `decline` et `cancel` restent deux
+réponses distinctes. La fermeture de l'hôte vide la file et révoque le bail.
+Le délai absolu accompagne chaque demande ; pendant qu'une file existe, l'hôte
+interroge les seuls identifiants encore en attente pour retirer rapidement les
+appels annulés ailleurs. Aucune valeur saisie, réponse ni donnée `requestState` n'est enregistrée
+dans l'historique. Les formulaires qui semblent demander
+un secret n'affichent aucun champ et ne proposent pas `accept` ; l'interface
+rappelle aussi de ne jamais saisir de secret. Une détection textuelle ne peut
+pas établir à elle seule qu'une saisie arbitraire n'est pas sensible.
+
+Chaque `tools/call` moderne stdio ou HTTP ajoute `elicitation: {form: {}}` à
+`_meta.io.modelcontextprotocol/clientCapabilities` uniquement si le courtier
+a un port vivant. rmcp fusionne ces capacités avec les métadonnées de découverte
+existantes, dont la version du protocole et l'identité du client. Aucun mode URL
+n'est annoncé. Le validateur Rust accepte les formats MCP usuels ; pour `email`,
+il applique un sous-ensemble ASCII conservateur.
+
+Le chemin HTTP moderne utilise la même boucle de continuation que stdio,
+avec le contexte d'opération fourni par le runtime et le même courtier IPC.
+Les réponses restent liées au serveur, aux projets, à la génération et à
+l'opération. Chaque continuation transmet les arguments initiaux, l'état opaque
+et les réponses validées. La boucle vérifie aussi l'annulation avant de rendre
+un résultat final, même si le transport vient de recevoir sa réponse.
+Une erreur HTTP ou d'authentification arrête l'appel.
+Les redirections de `tools/call`, même de même origine, sont refusées pour éviter
+le rejeu d'une mutation potentiellement acceptée. La récupération automatique
+de session du SDK est désactivée pour le client HTTP moderne ; le runtime peut
+reconnecter une session, mais ne rejoue pas l'appel interrompu.
+
+Le SDK rmcp expose les paramètres URL, mais le courtier et l'hôte de Macro
+valident seulement des formulaires. Un parcours URL demanderait un contrat
+séparé d'ouverture, de confirmation et d'annulation, ainsi qu'une politique
+pour les destinations et les flux d'authentification. Il reste reporté : aucune
+capacité URL n'est annoncée et toute demande URL échoue explicitement.
+Les handlers legacy répondent encore `-32601` à `elicitation/create`.
+Leurs requêtes serveur ne suivent pas la continuation `input_required` moderne ;
+leur prise en charge exige d'abord une corrélation avec l'appel et sa durée de vie.
+Ce lot couvre donc les formulaires HTTP modernes, sans activer URL ni legacy.
+
+Les mécanismes du client rmcp de Codex ont servi de référence pour la liaison
+à la requête, l'annulation et la séparation entre reprise de connexion et reprise
+d'un appel. Aucun code de ce client n'est incorporé.
+
+### 7.5 Boucle d'outils et compatibilité des providers
+
+Les résultats MCP conservent des blocs typés dans l’historique. Le
+[contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
+modèle, les replis explicites et le retour à une ancienne version.
 
 `streamingChat` valide les arguments d'un outil avec le schéma publié dans le
 registre avant d'appeler son exécuteur. Un échec de validation ou d'exécution
@@ -483,6 +888,25 @@ Le module `core` porte :
 - la gestion d'erreurs
 - le logging
 - la politique d'outils
+
+`core::workspace_execution` porte l'exécution native partagée, les montages
+virtuels, l'annulation et les transactions de fichiers avec checkpoints.
+`fs::operations` porte les accès confinés et `git::operations` les opérations
+Git natives et WSL utilisées par ce cœur. Le dispatch des workflows et leurs
+journaux résident dans `git::operations::workflow`. Ces modules ne dépendent
+ni des commandes Tauri ni de State, Window ou AppHandle.
+
+`core::command_error` conserve le contrat d'erreur sérialisé et
+`core::db_state` l'état d'initialisation DB. Les identifiants de secrets MCP
+sont définis dans `core::mcp_ids`, accessibles au registre de configuration
+sans importer son adaptateur de commandes.
+
+Les adaptateurs gardent leur autorité propre. Tauri conserve les décisions du
+frontend et la validation native ; le tool host vérifie son bearer local et
+refuse les outils terminal ; le headless vérifie le registre serveur, les
+politiques de tous les projets affectés et son journal durable. Partager
+l'exécuteur ne remplace aucun de ces contrôles. Les options internes de racine
+et de capture des checkpoints ne deviennent pas des paramètres client.
 
 ### 9.3 `db`
 
@@ -639,6 +1063,19 @@ revalidation ou la clôture durable, un refus révoque l'autorisation avant le
 dispatch. Les approbations MCP exposent l'identité protocolaire et un aperçu des
 arguments, avec champs sensibles masqués et troncature signalée.
 
+La colonne `messages.generation_attempts_json` stocke les tentatives déjà
+observées par le runtime. `toolTraceState` reclasse les traces au rechargement
+et dès qu'un flux se termine ou s'interrompt : `done` et `denied` sont clos,
+une trace non résolue devient `unknown`, et seul le marqueur d'approbation
+restauré rend cette demande `replayable`. `live` exige un flux propriétaire
+encore actif. Ces états décrivent la preuve disponible pour la trace, pas une
+garantie d'exécution unique de l'effet externe.
+`streamAccumulator` laisse une trace sans résultat confirmé en `running` avec
+`recovery_state=unknown` à la fin du tour. Le rendu des anciens marqueurs
+`[TOOL]` exige `[TOOL_DONE]` pour afficher une fin confirmée.
+Le transport natif ne marque une trace `done` que si le backend a confirmé la
+remise du résultat, y compris lorsque la remise d'une erreur est nécessaire.
+
 ### 10.2 Persistance locale frontend
 
 Le frontend utilise aussi de la persistance locale légère pour :
@@ -729,6 +1166,37 @@ Les plans sont stockés dans une structure de type :
 Les artefacts de relais de tâches sont séparés du dossier `tasks/<task-id>/`, qui reste réservé aux rendus générés comme `planned.md` et `executed.md`.
 
 `artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement à marquer la revue de l'artefact pour la tâche consommatrice courante.
+
+Les écritures et validations d'artefacts utilisent le journal SQLite des mutations
+Plans, la même file de mutations par branche et le même verrou de workspace que
+la reprise Plans. L'intention `artifacts` conserve les contenus avant et après
+pour chaque réplique, y compris l'index, le manifeste existant et les contenus
+inchangés nécessaires à une validation. Elle précède toute écriture de fichier.
+Avant le marqueur durable `files_applied`, une erreur ou une réouverture restaure
+l'état antérieur. Après ce marqueur, la reprise vérifie l'état final et termine
+le signalement au coordinateur metadata, sans annuler l'opération. Le journal
+reste présent jusqu'au succès de cette reprise.
+
+Chaque écriture ou suppression réutilise la révision native observée. La reprise
+refuse un fichier dont le contenu diffère à la fois de l'état initial et de
+l'état attendu ; elle conserve l'intention pour ne pas écraser une modification
+externe. Une intention d'artefacts invalide, y compris son enveloppe, bloque
+aussi la reprise et reste dans le journal actif. Le chargeur reconnaît également
+une intention d'artefacts par son identifiant ou ses instantanés si le champ
+`operation` manque ou a changé. Le module de persistance des artefacts est chargé
+à la demande lors d'une lecture, d'une mutation ou d'une reprise d'artefact.
+Si le registre des projets
+change et qu'une ancienne clé de workspace chevauche la clé actuelle, la reprise
+bloque explicitement l'accès plutôt que de rejouer sous un verrou différent.
+Rétablir le registre initial permet alors de reprendre cette intention.
+Les lectures
+d'artefacts vérifient les chemins, les empreintes de contenu, le résumé du
+manifeste lorsqu'il existe et l'accord des répliques avant d'exposer une
+validation ou d'autoriser la fin d'une tâche. Un ancien état partiel sans journal
+est donc signalé, sans inventer le contenu antérieur manquant. Ces garanties
+reposent sur les écritures atomiques natives et le journal SQLite existants ;
+elles n'ajoutent pas de verrou distribué entre processus.
+
 
 ### 11.2 Raison de cette structure
 
@@ -881,6 +1349,8 @@ Avant exécution d'un outil, Macro peut valider :
 - si le chemin cible est autorisé
 - si les restrictions metadata doivent s'appliquer
 
+Seuls les outils intégrés explicitement classés comme lectures du workspace ou de Git peuvent s'exécuter ensemble. `runToolBatch` et le transport natif/Copilot partagent ce contrat : trois lectures actives au maximum, résultats et contexte fournisseur publiés dans l'ordre initial, puis passage aux appels suivants. Le pont Copilot relaie aussi ses inspections Git au frontend lorsqu'il dispose de ce canal, afin qu'elles traversent le même planificateur ; sans canal frontend, ses inspections Git seules peuvent encore passer par le tool host confiné. Les autres appels gardent leur ordre séquentiel et séparent les groupes ; les outils MCP restent hors de cette liste tant que leurs effets ne sont pas déclarés et vérifiés. Une annulation empêche la publication tardive d'un résultat, sans supposer qu'un transport puisse arrêter instantanément une opération de lecture déjà partie. Les résultats déjà confirmés restent dans l'historique du tour ; une soumission native encore sans accusé de réception au moment de l'annulation n'y est pas présentée comme un succès.
+
 ### 13.3 Exécution de workspace tools
 
 La couche d'exécution d'outils encapsule :
@@ -904,6 +1374,13 @@ Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible
 Les remplacements atomiques conservent les bits de permission Unix de la cible. Un nouveau fichier commençant par un shebang reçoit les bits exécutables, conformément au comportement de l'outil `write` d'Oh My Pi. Les checkpoints enregistrent également le mode Unix et le réappliquent lors d'un replay ou d'une compensation ; une restauration ne doit donc pas transformer silencieusement un script exécutable en fichier ordinaire. Sous WSL, cette garantie est appliquée au fichier temporaire avant la dernière validation de révision et le renommage.
 
 Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
+
+L'état d'une mutation headless est interrogeable par `execution_id` via
+`/tools/executions/{execution_id}` dans ce protocole. Cette capacité existe
+pour l'invocation distante suivie par `remoteKernelApi` ; l'identifiant n'est
+pas relié au `ToolTrace` SQLite et aucune interrogation générale des outils
+desktop, MCP ou terminaux n'est déduite de `recovery_state`. Une intention
+distante encore `pending` après redémarrage reste indéterminée.
 
 ### 13.5 Sorties bornées et reprise
 
@@ -1077,7 +1554,7 @@ Les DTO de skills sont transport-neutres. Le manifeste conserve les champs histo
 
 Le provider remote expose les opérations équivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le préfixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolérant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit répondre `unsupported` ou 404/405/501; l'UI présente alors que le runtime courant ne supporte pas la capacité précise.
 
-Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal a `skills=false` et `skillScripts=false`. Le bootstrap peut annoncer les capacités effectivement disponibles.
 
 La surface complète reste supportée par le desktop local via Tauri IPC.
 
@@ -1085,16 +1562,134 @@ La surface complète reste supportée par le desktop local via Tauri IPC.
 
 ## 15. Streaming IA et orchestration conversationnelle
 
+Le journal SQLite `tool_invocations` prépare le raccordement du streaming. La
+commande `db_record_tool_invocation` crée, avant dispatch, une intention liée à
+la conversation et identifiée par tour, message et appel. Le backend calcule une
+empreinte SHA-256 du JSON canonique des arguments sans conserver leur contenu.
+L'insertion et la clôture utilisent `synchronous=FULL` sur leur connexion SQLite
+avant de confirmer le commit ; la connexion revient à `NORMAL` après succès.
+Un second enregistrement de même identité est idempotent si le nom, la classe
+d'effet, l'empreinte et l'identifiant distant concordent ; sinon il échoue.
+La réponse porte `is_new=true` seulement lors de la première insertion ; le
+futur appelant ne doit dispatcher que dans ce cas. Une nouvelle lecture de
+`pending`, `unknown` ou `completed` renvoie `is_new=false` et n'autorise pas un
+second effet. L'identifiant de reçu peut être partagé entre deux invocations
+distinctes ; sa cohérence est vérifiée à l'intérieur de chaque identité.
+`db_complete_tool_invocation` exige un identifiant de reçu que le futur appelant
+ne doit fournir qu'après confirmation du résultat par le transport. Le journal
+ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encore
+`pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
+clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
+automatiquement. La suppression de conversation efface les entrées par cascade.
+La garantie est un dispatch au plus une fois par identité, pas une exécution
+exactement une fois : une interruption après l'écriture initiale peut laisser
+l'effet non exécuté. Supprimer un tour ne supprime pas son journal, afin de ne
+pas autoriser à nouveau un effet potentiel portant la même identité. Une
+restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
+l'archive ; le futur transport doit donc vérifier son propre identifiant
+d'idempotence avant toute reprise depuis une sauvegarde.
+Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
+l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin n'est écrit
+qu'après la réponse de l'exécuteur et le traitement éventuel d'un gros résultat.
+`completed` prouve cette réponse et, si l'écriture de l'artefact a réussi, sa
+conservation. L'échec de cette écriture peut produire un simple aperçu ; le
+journal v7 ne conserve aucun résultat brut et ne garantit pas la reconstruction
+d'une réponse courte. Il ne prouve pas non plus
+l'acceptation par le fournisseur Copilot ; la trace UI reste `unknown` tant que
+ce reçu fournisseur manque. Une annulation, une exception de transport ou un
+échec explicite du traitement du résultat laisse
+l'intention locale `unknown`, sans rejeu automatique. Le mode frontend-only
+distant conserve son chemin d'exécution sans écrire dans le journal SQLite
+`tool_invocations`. Pour `write`, `edit`, `delete`, `apply_patch` et les mutations
+Git prises en charge, `remoteKernelApi` utilise déjà l'`invocationId` composé
+de la conversation, du tour et de l'appel, une intention conservée dans le
+stockage du navigateur, un `execution_id` et le journal du noyau distant pour
+retrouver un résultat perdu. Cette identité ne contient pas l'identifiant du
+message et l'intention navigateur est effacée après une réponse confirmée :
+un second dispatch du même appel peut obtenir un nouvel `execution_id` et
+répéter l'effet. Ce défaut préexistant n'est pas couvert par le journal local.
+Les lectures et les autres outils distants ne bénéficient pas non plus du
+journal SQLite du Chat. Le raccordement de l'`execution_id` au journal de
+conversation exige un contrat distant de réservation préalable et de reçu,
+ainsi qu'une politique de rétention ; aucune correspondance
+n'est déduite de l'identifiant d'appel local. L'UI des invocations inconnues
+relève d'un lot séparé.
+La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
+avant de migrer sa copie temporaire, ce qui accepte les archives antérieures à
+la migration du journal sans assouplir le contrôle des objets SQLite existants.
+
 ### 15.1 Chat streaming
 
-Le streaming des réponses IA est géré côté frontend par un service dédié.
+`streamingChat.ts` conserve la façade publique, les estimateurs synchrones et
+l'annulation. Au premier envoi, il charge `streamingChatExecution.ts`, qui
+choisit le transport et conserve la boucle existante. Avant cette attente,
+la façade capture les options, les callbacks et le mode de raisonnement résolu
+(y compris son absence), puis réserve les ressources dans le registre unique
+`streamResources`. L'annulation interrompt cette attente même sans signal
+fourni par l'appelant ; un chargement tardif ne lance aucun transport. Un échec
+de chargement est évincé du cache pour permettre une nouvelle tentative.
 
-Cette couche s'occupe de :
+Le même objet de ressources accompagne tous les tours natifs ou HTTP d'un
+envoi. Deux appels non annulés d'une même session peuvent s'exécuter, mais seul
+le plus récent occupe la clé du registre. Un ancien appel ne réinscrit jamais
+sa clé et ne nettoie jamais les ressources de son successeur. Les callbacks de
+compatibilité fournisseur sont injectés par la façade ; l'exécution différée
+ne relit pas le store pour choisir le mode de raisonnement. Les
+types métier purs sont dans `services/ai/contracts.ts`. `toolCallingLoop.ts`
+possède les tours, le rejeu, le compactage inter-tours, le steering, les limites
+et les interruptions. `nativeAdapter.ts` et `chatCompletionsAdapter.ts` lui
+fournissent un tour et sa projection dans le format du fournisseur. Les codecs
+Responses, Chat Completions et Copilot gardent leurs représentations propres.
 
-- envoyer le contexte conversationnel
-- recevoir les tokens ou chunks
-- mettre à jour la conversation en cours
-- annuler un stream si nécessaire
+`toolCallRunner.ts` applique la validation Macro, l'allowlist et l'ordre du lot
+séquentiel, puis délègue les effets au callback métier du Chat. Une chaîne vide
+est un résultat explicite. Le repli historique `read_file` conserve l'identifiant
+de l'appel et accepte le résultat structuré de `read`. Les replis web partagent
+`fallbackTools.ts` et le signal de la tentative. Les demandes vivantes Copilot
+réutilisent la validation et la normalisation sans attendre la fin du stream.
+Le lot séquentiel refuse les questionnaires multiples ; le relais vivant
+accepte le premier, puis refuse les suivants.
+
+`streamAccumulator.ts` garde l'ordre d'insertion des traces et leur contexte
+visible/caché. La priorité des statuts protégés vient de `toolTraceState.ts`.
+Pour les outils relayés par Copilot, chaque résultat proposé, y compris une
+erreur de secours, porte son propre `submission_id`. Le bridge ne place cet
+identifiant dans `accepted_submission_ids` qu'après avoir résolu la réponse du
+canal. Le transport natif utilise ces identifiants à `ai:done` pour conserver
+les traces et les éléments rejouables des seuls résultats acceptés. Le
+`hidden_context` durable
+provient du même événement du bridge ; les blocs d'outils relayés émis par le
+SDK exigent aussi un reçu de remise accepté. L'accusé de l'écriture IPC ne suffit pas.
+Une fin reçue pendant une remise attend au plus cinq secondes la réponse IPC,
+puis les remises sans preuve d'acceptation restent d'issue inconnue. Cette
+classification n'implique aucune reprise exactement une fois des effets externes.
+L'approbation, la persistance et l'identité de tentative restent aux modules
+Chat. Chaque transport nettoie ses propres ressources, y compris les listeners
+acquis après un échec partiel, sans toucher à celles d'une requête suivante.
+
+Les DTO IA communs sont définis dans `src-tauri/src/ai/types.rs`, avec le chemin
+ChatGPT historique réexporté. Les contrats du processus Copilot sont dans
+`ai/copilot/protocol.rs`. Le payload `tool_result` réellement sérialisé fournit
+le type du décodeur bridge via le générateur Config/IPC commun. Le décodeur
+vérifie encore les valeurs et les deux identifiants à l'exécution. Le bridge
+conserve `is_error` et `error_kind` jusqu'au résultat SDK, où un refus devient
+`denied` et une erreur devient `failure`. Une panne du canal rejette l'appel.
+`bun run typecheck:copilot` vérifie tous ses modules avec le SDK installé ; les
+efforts de raisonnement hors de son contrat sont refusés explicitement.
+Le catalogue Copilot exclut les outils `config_*`, `skill_*`, `task_artifact_*`
+et `task_todo_*`, dont le bridge ne possède pas de gestionnaire. Les outils
+internes remis au SDK sont l’intersection du catalogue fourni dans `request.tools`,
+de l’allowlist et des routes prises en charge. Leurs schémas filtrés sont conservés,
+sans reconstruction depuis le registre statique. La liste `availableTools` et
+l’approbation technique du SDK utilisent cette même intersection ; la politique
+frontend continue de décider des autorisations d’exécution.
+
+Les profils de capacités techniques suivent le type de fournisseur configuré,
+comme le dispatch natif. L'identifiant sert de repli quand ce type est absent ;
+l'URL OpenCode ne spécialise qu'un transport OpenAI compatible. Une matrice de
+fixtures partagée vérifie cette précédence en TypeScript et Rust. Ces capacités
+n'accordent aucun droit d'outil et restent distinctes des profils de protocole
+de raisonnement et des capacités capturées du tour Chat.
 
 Les transports conservent la cause de fin fournie par le modèle. Une fin par
 limite de sortie devient `length`, y compris quand Responses la signale par
@@ -1151,7 +1746,19 @@ Le socle est séparé en quatre couches :
 
 La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
 
-Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+Le coordinateur `goal_auditor` est assemblé avec le transport fournisseur et le journal durable par ports injectés. Le profil lecture seule est appliqué aux outils du tour enfant. Le journal IPC enregistre chaque transition et sa projection dans `agent_runs` en une transaction SQLite, avec idempotence par `(runId, sequence)`. La conversation enfant est réservée et liée au run avant le streaming. Le parcours produit déclenche l'audit après une réponse assistant enregistrée et terminée pour le tour exécutant attendu.
+
+Le runtime attend la confirmation de `queued` avant de planifier l'enfant, celle de `running` avant son exécution et celle de la transition terminale avant tout verdict applicable. Une écriture refusée ou non confirmée échoue localement sans appliquer le verdict. Les attentes du journal sont annulables et bornées à dix secondes par défaut ; l'insertion SQLite de `queued` vérifie immédiatement la profondeur du parent. L'annulation ne peut pas annuler rétroactivement un effet IPC déjà lancé : le port doit traiter le signal et réconcilier un résultat tardif éventuel à partir de l'identifiant du run. Le port de verdict doit respecter le signal et la révision attendue pour éviter un effet tardif après annulation.
+
+Si l'annulation interrompt l'attente d'une écriture `queued` ou terminale non confirmée, le résultat reste un échec du journal : aucun état `cancelled` durable n'est alors garanti. L'identifiant du run permet d'inspecter l'état avant une nouvelle tentative.
+
+Si un adaptateur asynchrone retarde `registerRun`, le coordinateur borne aussi son attente à dix secondes et l'interrompt à l'annulation. Une panne ou un délai du port échoue sans créer de tour enfant ; une annulation conserve son motif. Si l'inscription aboutit après le résultat, le coordinateur rappelle `releaseRun` ; l'adaptateur asynchrone doit fournir ce nettoyage idempotent et reste responsable d'un appel qui ne se termine jamais. Le journal Tauri enregistre ce descripteur de façon synchrone. Après la fin du cycle, le coordinateur libère le run en mémoire et les données transitoires du journal durable ; SQLite conserve les transitions et leurs contrôles de rejeu.
+
+La migration SQLite 9 conserve les buts courants et remplacés, leur révision, leurs critères de réussite et les champs opérationnels affichés dans le bandeau. Chaque couple `(conversationId, executorTurnId)` ne peut avoir qu'un audit ; ce dernier conserve son run courant et l'historique des runs de reprise. L'écriture `queued` et la revendication de l'audit partagent une transaction SQLite : elles exigent un tour assistant du parent et un run `goal_auditor`, puis sont confirmées avant `running`. Le verdict exige la transition terminale `completed`, l'identité de l'audit et du run, la même sortie durable et la révision courante du but. La mise à jour du but et celle de l'audit partagent une transaction SQLite.
+
+Au redémarrage, le backend marque les audits restés `queued` ou `running` comme `interrupted`, après la réconciliation des runs. Une reprise explicite du même audit reste possible par le contrat natif, mais le bouton Reprendre du parcours produit lance un nouveau tour exécutant. Le claim place le but en statut `auditing` sans changer sa révision ; `update_goal` refuse ce statut afin qu'une mise à jour cosmétique ne rende pas le verdict stale. Le port frontend vérifie le signal avant et après l'IPC de verdict ; une annulation arrivée après un commit SQLite ne peut pas annuler ce commit. L'objectif libre est enregistré comme critère de référence si aucun critère distinct n'est fourni, et le verdict exige des preuves structurées.
+
+La désactivation d'un but courant utilise `(conversationId, goalId, expectedRevision)` et empêche sa réapparition après redémarrage. Le bandeau est réhydraté depuis le but courant natif ; Pause, édition, Reprendre et Stop utilisent la révision native avant de publier l'état dans le store. Les champs `lastExecutorTurnAt`, `awaitingUserSinceAt`, `executorTurnCount` et `lastError` sont lus directement. Les résultats d'audit sont des artefacts rattachés au but et à sa conversation de projet, écrits et récupérés par le journal de mutations des métadonnées existant. Le verdict natif appliqué permet de reconstruire un artefact manquant sans créer de plan fictif. Les listes utilisateur et le bootstrap de conversation excluent les enfants internes identifiés par leur run `goal_auditor`, pour que la restauration d’une tâche retrouve son exécuteur. Les snapshots complets et la lecture directe conservent ces enfants et leurs messages. La suppression du parent supprime ses enfants d’évaluation dans la même transaction ; Stop conserve les historiques.
 
 ---
 
@@ -1324,3 +1931,95 @@ Ce document ne doit pas être mis à jour pour :
 - des ajustements purement visuels
 - des détails d'UX sans impact d'architecture
 - des idées produit non encore traduites en architecture cible
+
+## 20. Durées de vie des ressources frontend
+
+`LifecycleContext` exprime la validité d'un consommateur ; il ne remplace ni
+l'identité d'un tour Chat, ni les versions de mutation et identifiants de requête.
+`createLifecycleScope` révoque le contexte avant de libérer les ressources. Un
+handle acquis après cette révocation est libéré immédiatement, une seule fois.
+`track` et `drain` attendent les opérations déjà admises : arrêter un consommateur
+ne constitue pas un retour arrière d'une écriture durable.
+
+- **Application et bootstrap.** `applicationStartup`, consommé par `main.tsx`,
+  possède le pipeline de restauration, la configuration et les compositions.
+  Une génération HMR retirée ne peut ni lancer l'étape suivante, ni installer
+  les effets de configuration, ni rendre une application ou un écran de reprise.
+  La génération suivante attend le drainage de la précédente. Les ports Plans
+  restent installés jusqu'à la fin des opérations admises. Le bootstrap possède
+  son ordonnanceur différé et ses abonnements Task/Chat ; son redémarrage révoque
+  d'abord l'ancien contexte et attend ses effets avant de réhydrater.
+- **Sessions de domaine.** Les conversations, tâches et plans restent possédés
+  par leurs stores et runtimes. Monter ou retirer un panneau ne termine pas un
+  tour Chat ni une opération de métadonnées. Les captures immuables de Chat et
+  les leases et journaux des mutations gardent leur rôle. Une saga admise finit
+  son unité durable avant que son consommateur constate le retrait.
+- **Vues et opérations.** Les lectures du pied de page capturent la cible Git et
+  la génération de vue ; changer de cible permet une nouvelle lecture sans
+  attendre l'ancienne et sans recevoir son résultat. La dictée conserve son
+  identité d'opération après chaque préparation asynchrone de l'audio et avant
+  l'envoi au fournisseur. La fin d'une ancienne dictée ne réinitialise pas celle
+  du contexte suivant. Les nettoyages existants des fenêtres et de CodeMirror
+  restent en place, ainsi que la barrière globale de fermeture de page.
+- **Terminaux.** La composition injecte un port de rendu typé dans le store,
+  sans import du rendu depuis le store. Les fermetures locales et événements
+  natifs passent par une finalisation commune. Les réponses tardives ne peuvent
+  pas recréer un onglet fermé. L'arrêt frontend libère les listeners, timers,
+  observers et ressources xterm et attend les appels admis, sans fermer les PTY
+  natifs. Le détachement d'une vue conserve au plus six rendus détachés ; il
+  n'introduit aucune expiration de session native.
+  La composition d'entrée installe un port léger. Le renderer et xterm restent
+  chargés avec le panneau Terminal ; le premier attachement acquiert ce port.
+  Après l'arrêt de l'application, un attachement tardif est refusé avant toute
+  création xterm. Le nettoyage d'un onglet non rendu ne charge pas le renderer.
+- **Caches.** L'identité de la requête protège les publications des caches Plans
+  et panneaux après invalidation. Le registre des projets possède l'éviction
+  ciblée des caches Git frontend lorsqu'un projet disparaît ou change de chemin.
+  Ces règles décrivent la propriété des données ; elles ne constituent pas une
+  mesure de fuite mémoire ni une nouvelle politique de TTL.
+
+Cette frontière frontend ne rend pas annulable un IPC natif déjà envoyé.
+
+Le watcher de fichiers de `src-tauri/src/fs/watcher.rs` possède son propre arrêt,
+distinct du watcher de configuration. Il révoque la publication, abandonne les
+événements de debounce en attente, puis attend la tâche et la destruction du
+callback natif. `Drop` révoque aussi la publication et demande l'arrêt de la tâche.
+La sortie acceptée de l'application attend ce nettoyage pendant au plus deux
+secondes ; une demande de fermeture encore annulable ne l'engage pas. Le délai
+expiré produit un avertissement et laisse le nettoyage continuer tant que le
+processus vit. Il ne constitue pas une preuve de fin du nettoyage natif.
+
+Les opérations natives Terminal possèdent un verrou par identifiant d'onglet.
+La reconnexion le conserve de la lecture persistée à l'installation du PTY ; la
+fermeture le conserve jusqu'à la suppression durable. Une fermeture révoque les
+sauvegardes différées et attend celles déjà admises. Son intention `closed` est
+persistée avant la terminaison du processus. Si la suppression échoue, une
+nouvelle fermeture peut la reprendre et la reconnexion reste refusée, y compris
+après redémarrage lorsque cette intention a été persistée. Une écriture initiale
+échouée ne garantit pas la conservation de l'intention après crash. Le fence en
+mémoire reste détenu jusqu'à la reprise ; les propriétaires ordinaires sont
+retirés du registre lorsqu'ils ne servent plus. EOF retire le droit de sauvegarde
+du runtime et persiste son état final sous le même verrou de persistance.
+Une tâche différée de ce runtime ne peut donc pas remplacer la session reconnectée,
+même si son compteur de révision est plus récent. Les événements et DTO actifs
+vérifient aussi ce propriétaire au moment de leur publication. Une commande déjà
+envoyée continue son effet natif ; un retour après retrait signale la session
+retirée sans annoncer une annulation ou une remise en état. Une terminaison ou
+une persistance initiale échouée conserve le propriétaire natif pour une nouvelle
+tentative de fermeture. Les protections `Drop` du PTY et
+les annulations par identifiant d'exécution restent indépendantes.
+Les lecteurs natifs présentent les propriétaires conservés pour nettoyage comme
+des onglets `closed` inactifs. Ils restent visibles après rechargement, y compris
+pour une préparation de worktree, afin de reprendre le nettoyage avec le bouton
+de fermeture existant. Leur synchronisation de métadonnées est suspendue. Un
+`closed` persisté sans propriétaire natif est omis de la liste et refusé en lecture.
+À EOF, la révocation précède l'événement de déconnexion et l'attente du verrou
+de persistance ; la sauvegarde finale et les sorties déjà admises sont conservées.
+
+Le cache Git natif appartient à `GitState`, partagé par les opérations. Ses
+handles restent utilisables par une opération admise après leur retrait du cache.
+`invalidate_repo_if_same` retire seulement le handle attendu du chemin canonique,
+sans retirer un remplacement ou un autre dépôt. Les racines metadata en cache
+sont revalidées avant réutilisation et retirées après nettoyage du projet. Cette
+propriété native ne fait pas dépendre un handle Git du montage d'un panneau et
+n'ajoute ni TTL ni affirmation de fuite mesurée.

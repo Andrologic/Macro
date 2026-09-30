@@ -14,6 +14,7 @@ const STATE_LOCK_FILE_NAME: &str = "state.lock";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct StateSnapshot {
     pub schema_version: u32,
     pub values: BTreeMap<String, Value>,

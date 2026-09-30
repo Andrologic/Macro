@@ -97,6 +97,7 @@ pub mod core;
 mod db;
 mod dev_overrides;
 mod diagnostics;
+pub mod ipc_contracts;
 mod local_backup;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
@@ -107,7 +108,7 @@ mod speech;
 mod state_manager;
 
 // Placeholder modules for critical manual implementation
-mod fs;
+pub mod fs;
 pub mod git;
 pub mod lsp;
 
@@ -753,8 +754,25 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
+            commands::tool_invocations::db_record_tool_invocation,
+            commands::tool_invocations::db_complete_tool_invocation,
+            commands::tool_invocations::db_mark_tool_invocation_unknown,
+            commands::tool_invocations::db_list_unresolved_tool_invocations,
+            commands::goal_audit::db_record_goal_audit_transition,
+            commands::goal_audit::db_link_goal_audit_child_conversation,
+            commands::goal_audit::db_reserve_goal_audit_child_conversation,
+            commands::goal_auditor_read::tool_execute_goal_auditor_read,
+            commands::goal_audit::db_get_current_conversation_goal,
+            commands::goal_audit::db_activate_conversation_goal,
+            commands::goal_audit::db_update_conversation_goal,
+            commands::goal_audit::db_deactivate_conversation_goal,
+            commands::goal_audit::db_get_conversation_goal_audit,
+            commands::goal_audit::db_list_conversation_goal_audits,
+            commands::goal_audit::db_list_recoverable_conversation_goal_audits,
+            commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::db_get_conversation_source_snapshot,
             commands::db_search_messages,
             commands::db_create_message,
             commands::db_import_messages,
@@ -883,6 +901,10 @@ pub fn run() {
             commands::mcp::mcp_runtime_refresh_catalog,
             commands::mcp::mcp_runtime_call_tool,
             commands::mcp::mcp_runtime_cancel_operation,
+            commands::mcp::mcp_runtime_open_interaction_port,
+            commands::mcp::mcp_runtime_close_interaction_port,
+            commands::mcp::mcp_runtime_list_pending_interactions,
+            commands::mcp::mcp_runtime_respond_to_interaction,
             commands::web_search::web_search_get_secret_status,
             commands::web_search::web_search_set_secret,
             commands::web_search::web_search_execute,
@@ -1029,12 +1051,14 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            fs::watcher::shutdown_watcher(app_handle);
         }
         tauri::RunEvent::Exit => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            fs::watcher::shutdown_watcher(app_handle);
         }
         _ => {}
     });

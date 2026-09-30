@@ -5,33 +5,18 @@
 
 import { create } from 'zustand';
 import * as tauriIpc from '../services/tauriIpc';
-
-export type CitationType = 'web' | 'file' | 'document' | 'source_passage';
-export type CitationScope = 'context' | 'source';
-export type SourcePassageKind = 'interesting' | 'used';
-
-export interface Citation {
-  id: string;
-  type: CitationType;
-  scope: CitationScope;
-  source: string; // URL for web, filename for files
-  title: string;
-  snippet?: string;
-  content?: string;
-  messageId: string;
-  conversationId: string;
-  timestamp: string;
-  // Web-specific
-  url?: string;
-  favicon?: string;
-  // File-specific
-  path?: string;
-  language?: string;
-  sizeBytes?: number;
-  // Source passage-specific
-  kind?: SourcePassageKind;
-  reason?: string;
-}
+export type {
+  Citation,
+  CitationScope,
+  CitationType,
+  SourcePassageKind,
+} from '../types/citation';
+import type {
+  Citation,
+  CitationScope,
+  CitationType,
+  SourcePassageKind,
+} from '../types/citation';
 
 interface CitationsState {
   citations: Citation[];

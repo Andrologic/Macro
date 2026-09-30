@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
 const actualCore = await import("@tauri-apps/api/core");
 const invokeCalls: Array<{ command: string; payload: unknown; options?: unknown }> = [];
-const invokeMock = mock(async (command: string, payload?: unknown, options?: unknown) => {
+const invokeMock = mock(async (command: string, payload?: unknown, options?: unknown): Promise<unknown> => {
   invokeCalls.push({ command, payload, ...(options ? { options } : {}) });
   return '{"ok":true}';
 });
@@ -97,6 +97,77 @@ describe("tauriIpc confined web fetch", () => {
         payload: { executionId: "web-execution-456" },
       },
     ]);
+  });
+});
+
+describe("tauriIpc tool invocation journal notifications", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("announces a newly recorded invocation before dispatch", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const changed: string[] = [];
+    const onChange = (event: Event) => {
+      changed.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    };
+    window.addEventListener("macro:tool-invocations-changed", onChange);
+    try {
+      invokeMock.mockImplementationOnce(async () => ({ is_new: true }));
+      await tauriIpc.recordToolInvocation({
+        conversationId: "conversation-a", turnId: "turn-a", messageId: "message-a",
+        callId: "call-a", toolName: "write", effectClass: "workspace_mutation",
+        arguments: { path: "file.txt" }, remoteExecutionId: null,
+      });
+      expect(changed).toEqual(["conversation-a"]);
+    } finally {
+      window.removeEventListener("macro:tool-invocations-changed", onChange);
+    }
+  });
+
+  it("refreshes the owning conversation after confirmed journal mutations", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const changed: string[] = [];
+    const onChange = (event: Event) => {
+      changed.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    };
+    window.addEventListener("macro:tool-invocations-changed", onChange);
+    try {
+      await tauriIpc.completeToolInvocation({
+        conversationId: "conversation-a", turnId: "turn-a", messageId: "message-a",
+        callId: "call-a", receiptId: "receipt-a",
+      });
+      await tauriIpc.markToolInvocationUnknown({
+        conversationId: "conversation-b", turnId: "turn-b", messageId: "message-b",
+        callId: "call-b",
+      });
+      expect(changed).toEqual(["conversation-a", "conversation-b"]);
+      expect(invokeCalls.map(({ command }) => command)).toEqual([
+        "db_complete_tool_invocation", "db_mark_tool_invocation_unknown",
+      ]);
+    } finally {
+      window.removeEventListener("macro:tool-invocations-changed", onChange);
+    }
+  });
+
+  it("does not announce a failed journal completion", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const changed: string[] = [];
+    const onChange = (event: Event) => {
+      changed.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    };
+    window.addEventListener("macro:tool-invocations-changed", onChange);
+    try {
+      invokeMock.mockImplementationOnce(async () => { throw new Error("database unavailable"); });
+      await expect(tauriIpc.completeToolInvocation({
+        conversationId: "conversation-a", turnId: "turn-a", messageId: "message-a",
+        callId: "call-a", receiptId: "receipt-a",
+      })).rejects.toThrow("database unavailable");
+      expect(changed).toEqual([]);
+    } finally {
+      window.removeEventListener("macro:tool-invocations-changed", onChange);
+    }
   });
 });
 
@@ -367,6 +438,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             hiddenContext: null,
             providerInputItemsJson: JSON.stringify([{ type: "message" }]),
             providerTurnStateJson: null,
+            generationAttemptsJson: null,
             contextRefsJson: null,
           },
         },
@@ -576,6 +648,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
     await tauriIpc.aiSubmitToolResult({
       requestId: "req-1",
       toolCallId: "call_question",
+      submissionId: "submission-1",
       result: "Questionnaire queued.",
       hiddenContext: "<questionnaire_context />",
       visibleContent: "Need one choice.",
@@ -589,6 +662,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           request: {
             request_id: "req-1",
             tool_call_id: "call_question",
+            submission_id: "submission-1",
             result: "Questionnaire queued.",
             hidden_context: "<questionnaire_context />",
           visible_content: "Need one choice.",
@@ -1313,6 +1387,40 @@ describe("tauriIpc persistent MCP runtime", () => {
         command: "mcp_runtime_cancel_operation",
         payload: { operationId: "operation-1" },
       },
+    ]);
+  });
+
+  it("binds a typed MCP interaction channel and routes responses to its lease", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const onRequest = mock(() => {});
+    const previousInternals = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { transformCallback: () => 1 },
+    });
+    try {
+      await tauriIpc.mcpRuntimeOpenInteractionPort(onRequest);
+    } finally {
+      if (previousInternals) Object.defineProperty(window, "__TAURI_INTERNALS__", previousInternals);
+      else Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
+    const channel = (invokeCalls[0].payload as { channel: InstanceType<typeof actualCore.Channel> }).channel;
+    expect(channel).toBeInstanceOf(actualCore.Channel);
+    expect(channel.onmessage).toBe(onRequest);
+    const response = {
+      requestId: "request-1",
+      key: { serverId: "server-a", projectId: null, projectIds: [], configGeneration: 1 },
+      operationId: "operation-1",
+      answers: [{ id: "prompt-1", action: "decline" as const, content: null }],
+    };
+    await tauriIpc.mcpRuntimeRespondToInteraction("lease-1", response);
+    await tauriIpc.mcpRuntimeListPendingInteractions("lease-1");
+    await tauriIpc.mcpRuntimeCloseInteractionPort("lease-1");
+    expect(invokeCalls).toEqual([
+      { command: "mcp_runtime_open_interaction_port", payload: { channel } },
+      { command: "mcp_runtime_respond_to_interaction", payload: { leaseId: "lease-1", response } },
+      { command: "mcp_runtime_list_pending_interactions", payload: { leaseId: "lease-1" } },
+      { command: "mcp_runtime_close_interaction_port", payload: { leaseId: "lease-1" } },
     ]);
   });
 

@@ -94,7 +94,7 @@ Chaque fichier commence au minimum par :
 | `settings.json` | Langue, apparence, zoom, code, raccourcis, notifications et applications d’ouverture |
 | `agents.json` | Prompts, limites de tours, compaction, revues, modèles dédiés et smart commit |
 | `providers.json` | Fournisseurs IA et vocaux, modèles manuels, overrides et dictée |
-| `tools.json` | Risque, outils par mode, recherche web, MCP, commandes projet et changement de projet |
+| `tools.json` | Risque, outils par mode, recherche web, MCP, serveur LSP, commandes projet et changement de projet |
 | `skills.json` | Racines, destinations d’installation, priorités et permissions de skills |
 | `git.json` | Branches, modèles de noms, politiques de merge et synchronisation metadata |
 
@@ -365,3 +365,7 @@ Les conversations, plans, projets, worktrees, caches et autres données métier
 ne sont pas réinitialisés. La suppression physique des anciennes colonnes et
 tables fera l’objet d’une migration ultérieure après la période de
 compatibilité.
+
+Le réglage sensible utilisateur `tools.languageServer` active les diagnostics
+après édition pour des racines explicitement autorisées. Voir
+[Diagnostics après édition](lsp-diagnostics.md) pour son contrat et ses limites.

@@ -26,18 +26,18 @@ pub fn resolve_provider_capabilities(
     let normalized_type = provider_type.trim().to_ascii_lowercase();
     let normalized_base_url = base_url.unwrap_or_default().trim().to_ascii_lowercase();
 
-    if normalized_id == "opencode-go" || normalized_base_url.contains("opencode.ai") {
-        return ProviderCapabilityProfile {
-            provider_id: "opencode-go",
-            provider_type: "openai",
-            http_only: true,
-            uses_local_secret_store: true,
-            uses_local_runtime: false,
-            supports_model_scan: true,
-        };
-    }
+    // Match native dispatch before considering endpoint-specific HTTP behavior.
+    let effective_type = if normalized_type.is_empty() {
+        match normalized_id.as_str() {
+            "copilot" => "copilot",
+            "chatgpt" => "chatgpt",
+            _ => "openai",
+        }
+    } else {
+        normalized_type.as_str()
+    };
 
-    match normalized_type.as_str() {
+    match effective_type {
         "copilot" => ProviderCapabilityProfile {
             provider_id: "copilot",
             provider_type: "copilot",
@@ -54,7 +54,22 @@ pub fn resolve_provider_capabilities(
             uses_local_runtime: false,
             supports_model_scan: true,
         },
-        _ => OPENAI_COMPATIBLE_DEFAULT,
+        _ => {
+            if effective_type == "openai"
+                && (normalized_id == "opencode-go" || normalized_base_url.contains("opencode.ai"))
+            {
+                return ProviderCapabilityProfile {
+                    provider_id: "opencode-go",
+                    provider_type: "openai",
+                    http_only: true,
+                    uses_local_secret_store: true,
+                    uses_local_runtime: false,
+                    supports_model_scan: true,
+                };
+            }
+
+            OPENAI_COMPATIBLE_DEFAULT
+        }
     }
 }
 
@@ -80,5 +95,32 @@ mod tests {
         assert!(!capabilities.http_only);
         assert!(capabilities.uses_local_runtime);
         assert!(!capabilities.uses_local_secret_store);
+    }
+    #[test]
+    fn capabilities_match_the_shared_dispatch_matrix() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/shared/providerCapabilityCases.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let input = &case["input"];
+            let actual = resolve_provider_capabilities(
+                input["providerId"].as_str().unwrap(),
+                input["providerType"].as_str().unwrap_or_default(),
+                input["baseUrl"].as_str(),
+            );
+            assert_eq!(
+                serde_json::json!({
+                    "providerId": actual.provider_id,
+                    "providerType": actual.provider_type,
+                    "httpOnly": actual.http_only,
+                    "usesLocalSecretStore": actual.uses_local_secret_store,
+                    "usesLocalRuntime": actual.uses_local_runtime,
+                    "supportsModelScan": actual.supports_model_scan,
+                }),
+                case["expected"],
+                "input: {input}"
+            );
+        }
     }
 }

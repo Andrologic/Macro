@@ -1,5 +1,69 @@
+import { stripContinuationOverlap, shouldRetryMissingRequiredTool } from './ai/completionRecovery';
+import { hasMeaningfulVisibleAssistantText, summarizeProviderTextPresence, shouldRetryArchitectPostToolResponse } from './ai/streamDiagnostics';
+import { stripThinkingBlocksForModel, resolveChatCompletionProviderProfile, normalizeToolCallIdForProvider, finalizeDanglingToolCallsForChatCompletions, normalizeChatCompletionMessageSequence, buildChatCompletionMessages, validateChatCompletionMessageSequence, buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem, chatCompletionMessagesHaveToolHistory, applyToolsToChatCompletionsRequest } from './ai/chatCompletionsCodec';
+import { serializeCopilotConversationPrompt, estimateCopilotSerializedPayloadTokens } from './ai/copilotPromptCodec';
+import { buildChatGptProviderTurnState, buildFunctionCallOutputProviderInputItem, extractVisibleTextFromProviderInputItems, buildChatGptVisibleTurnContent, getMissingChatGptVisibleTurnSuffix, isEmptyTerminalChatGptTurn, compactToolResultForChatGptModelContext } from './ai/responsesCodec';
+import { createStreamAccumulator } from './ai/streamAccumulator';
+import { collectAllowedTools } from './ai/toolDefinitions';
+import { getActiveStreamingSessionIds } from './ai/streamResources';
+import { readStreamChunkWithIdleTimeout } from './ai/httpTransport';
+import { extractSseData, createSseEventParser } from './ai/sse';
+import { classifyReasoningRejection, isReasoningUnsupportedError, isReasoningReplayRequiredError, isContextOverflowError, classifyProviderError } from './ai/providerErrors';
+import { getToolCallLoopKey, isRepeatedToolCallLoop } from './ai/toolCallRunner';
+import { isToolInterruptResolution, normalizeToolCallResolution } from './ai/toolCallResolution';
+import { formatToolTraceDetail, buildToolContextBlock } from './ai/toolPresentation';
+import { applyReasoningToChatCompletionsRequest, shouldRequestProviderReasoning } from './providerProtocolProfiles';
+
+const __testables = {
+  applyReasoningToChatCompletionsRequest,
+  applyToolsToChatCompletionsRequest,
+  buildAssistantChatCompletionProviderItem,
+  buildChatCompletionMessages,
+  buildChatGptProviderTurnState,
+  buildChatGptVisibleTurnContent,
+  buildFunctionCallOutputProviderInputItem,
+  buildToolChatCompletionProviderItem,
+  buildToolContextBlock,
+  chatCompletionMessagesHaveToolHistory,
+  classifyProviderError,
+  classifyReasoningRejection,
+  collectAllowedTools,
+  compactToolResultForChatGptModelContext,
+  createStreamAccumulator,
+  createSseEventParser,
+  estimateCopilotSerializedPayloadTokens,
+  extractVisibleTextFromProviderInputItems,
+  extractSseData,
+  finalizeDanglingToolCallsForChatCompletions,
+  formatToolTraceDetail,
+  getActiveStreamingSessionIds,
+  getMissingChatGptVisibleTurnSuffix,
+  getToolCallLoopKey,
+  hasMeaningfulVisibleAssistantText,
+  isContextOverflowError,
+  isEmptyTerminalChatGptTurn,
+  isReasoningReplayRequiredError,
+  isReasoningUnsupportedError,
+  isRepeatedToolCallLoop,
+  isToolInterruptResolution,
+  normalizeChatCompletionMessageSequence,
+  normalizeToolCallIdForProvider,
+  normalizeToolCallResolution,
+  readStreamChunkWithIdleTimeout,
+  resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
+  resolveChatCompletionProviderProfile,
+  serializeCopilotConversationPrompt,
+  shouldRetryArchitectPostToolResponse,
+  shouldRetryMissingRequiredTool,
+  shouldRequestProviderReasoning,
+  stripThinkingBlocksForModel,
+  stripContinuationOverlap,
+  summarizeProviderTextPresence,
+  validateChatCompletionMessageSequence,
+};
+
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ToolTrace } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
 import { fingerprintImageSource } from './contextTokenEstimation';
 import type {
@@ -10,6 +74,7 @@ import type {
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
+const actualWebSearch = await import('./webSearch');
 
 const loadStreamingChat = async (
   fetchImpl?: ReturnType<typeof mock>,
@@ -17,9 +82,16 @@ const loadStreamingChat = async (
     invokeImpl?: ReturnType<typeof mock>;
     listenImpl?: ReturnType<typeof mock>;
     forceTauriAvailable?: boolean;
+    webSearchImpl?: typeof actualWebSearch.webSearch;
+    webFetchImpl?: typeof actualWebSearch.fetchWebPage;
   }
 ) => {
   mock.restore();
+  mock.module('./webSearch', () => ({
+    ...actualWebSearch,
+    webSearch: options?.webSearchImpl ?? actualWebSearch.webSearch,
+    fetchWebPage: options?.webFetchImpl ?? actualWebSearch.fetchWebPage,
+  }));
   const invokeImpl = options?.invokeImpl ?? mock(async () => undefined);
   const actualCore = await import('@tauri-apps/api/core');
   const actualEvent = await import('@tauri-apps/api/event');
@@ -109,7 +181,9 @@ const loadStreamingChat = async (
     aiSubmitToolResult: async (params: {
       requestId: string;
       toolCallId: string;
+      submissionId?: string;
       result: string;
+      blocks?: import('../shared/toolResultContent').ToolResultBlock[];
       hiddenContext?: string | null;
       visibleContent?: string | null;
       interrupt?: boolean;
@@ -120,7 +194,9 @@ const loadStreamingChat = async (
         request: {
           request_id: params.requestId,
           tool_call_id: params.toolCallId,
+          ...(params.submissionId ? { submission_id: params.submissionId } : {}),
           result: params.result,
+          ...(params.blocks ? { blocks: params.blocks } : {}),
           hidden_context: params.hiddenContext ?? null,
           visible_content: params.visibleContent ?? null,
           interrupt: params.interrupt ?? false,
@@ -142,7 +218,10 @@ const loadStreamingChat = async (
   }));
 
   streamingChatImportCounter += 1;
-  return import(`./streamingChat.ts?test=${streamingChatImportCounter}`);
+  return {
+    ...await import(`./streamingChat.ts?test=${streamingChatImportCounter}`),
+    __testables,
+  };
 };
 
 const asObjectSchema = (
@@ -285,7 +364,7 @@ describe('streamingChat native request ownership', () => {
     expect(cancelledRequestIds).toEqual([requestIds[1]]);
 
     emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
-    void second;
+    await second;
   });
 });
 
@@ -551,6 +630,8 @@ describe('streamingChat SSE stream handling', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const emitted: string[] = [];
     const onError = mock(() => undefined);
+    const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
+    const attemptProgress: Array<NonNullable<StreamCompletionResult['generationAttempts']>[number]> = [];
 
     await streamChat({
       providerId: 'provider-1',
@@ -563,9 +644,18 @@ describe('streamingChat SSE stream handling', () => {
       onToken: (token: string) => emitted.push(token),
       onComplete: () => undefined,
       onError,
+      onGenerationAttemptsUpdate: (attempts: NonNullable<StreamCompletionResult['generationAttempts']>) => { attemptUpdates.push(attempts); },
+      onGenerationAttemptProgress: (attempt: NonNullable<StreamCompletionResult['generationAttempts']>[number]) => { attemptProgress.push(attempt); },
     });
 
     expect(emitted.join('')).toBe('Partial.');
+    expect(attemptUpdates.at(-1)).toEqual([
+      expect.objectContaining({ status: 'partial', rawText: 'Partial.', acceptedText: 'Partial.', costUsd: null }),
+    ]);
+    expect(attemptProgress.at(-1)).toMatchObject({
+      id: attemptUpdates.at(-1)?.[0]?.id,
+      status: 'partial', rawText: 'Partial.', acceptedText: 'Partial.',
+    });
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'ProviderRuntimeError',
@@ -1080,6 +1170,28 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('keeps an unconfirmed tool trace unknown when the provider turn ends', async () => {
+    const { __testables } = await loadStreamingChat();
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+    });
+    accumulator.upsertToolTraceFromProvider({ tool_call_id: 'unconfirmed', tool_name: 'read', status: 'running' });
+
+    expect(accumulator.buildResult().toolTraces).toEqual([
+      expect.objectContaining({ tool_call_id: 'unconfirmed', status: 'running', recovery_state: 'unknown' }),
+    ]);
+  });
+
+  it('keeps an unknown native trace unknown in live context until a confirmed result', async () => {
+    const { __testables } = await loadStreamingChat();
+    const accumulator = __testables.createStreamAccumulator({ onToken: () => undefined });
+    accumulator.upsertToolTraceFromProvider({ tool_call_id: 'uncertain', tool_name: 'read', status: 'running', recovery_state: 'unknown' });
+    expect(accumulator.snapshotLiveContext().toolTraces[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    accumulator.upsertToolTraceFromProvider({ tool_call_id: 'uncertain', tool_name: 'read', status: 'done' });
+    expect(accumulator.snapshotLiveContext().toolTraces[0]).toMatchObject({ status: 'done', recovery_state: 'completed' });
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 
@@ -1278,6 +1390,49 @@ describe('streamingChat tool rendering helpers', () => {
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0]?.reasoning_effort).toBe('max');
     expect(requestBodies[1]?.reasoning_effort).toBeUndefined();
+  });
+
+  it('gives a native reasoning retry its own generation attempt', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const requests: Array<Record<string, unknown>> = [];
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => { listeners.delete(eventName); };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command !== 'ai_stream_chat') return undefined;
+      const request = (payload as { request: Record<string, unknown> }).request;
+      requests.push(request);
+      if (requests.length === 1) throw new Error('Unknown parameter: reasoning_effort');
+      queueMicrotask(() => {
+        listeners.get('ai:done')?.({
+          payload: { request_id: request.request_id, output_text: 'Done.', tool_calls: [], completion_reason: 'completed' },
+        });
+      });
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock, listenImpl: listenMock, forceTauriAvailable: true,
+    });
+    const onComplete = mock((_result: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'gpt-test',
+      reasoningEffort: 'high', reasoningTransportMode: 'openai_effort',
+      messages: [{ role: 'user', content: 'Answer.' }],
+      enableWebSearch: false, enableWebFetch: false,
+      onToken: () => undefined, onComplete,
+      onError: (error: Error) => { throw error; },
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.reasoning_effort).toBe('high');
+    expect(requests[1]?.reasoning_effort).toBeNull();
+    const attempts = onComplete.mock.calls[0]?.[0].generationAttempts;
+    expect(attempts).toHaveLength(2);
+    expect(attempts?.[0]).toMatchObject({ status: 'abandoned', rawText: '' });
+    expect(attempts?.[1]).toMatchObject({ status: 'completed', rawText: 'Done.', acceptedText: 'Done.' });
+    expect(attempts?.[0]?.id).not.toBe(attempts?.[1]?.id);
   });
 
   it('serializes provider reasoning metadata without replaying visible think blocks as content', async () => {
@@ -2897,6 +3052,12 @@ describe('streamingChat tool rendering helpers', () => {
           json: async () => ({}),
         };
       }
+      if (requestCount === 2) {
+        return {
+          ok: true,
+          body: new ReadableStream({ start(controller) { controller.error(new Error('Stream interrupted')); } }),
+        };
+      }
 
       return {
         ok: true,
@@ -2919,6 +3080,8 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onError = mock(() => undefined);
     const onComplete = mock(() => undefined);
+    const attemptUpdates: Array<NonNullable<StreamCompletionResult['generationAttempts']>> = [];
+    const attemptProgress: Array<NonNullable<StreamCompletionResult['generationAttempts']>[number]> = [];
 
     await streamChat({
       providerId: 'openrouter',
@@ -2931,13 +3094,24 @@ describe('streamingChat tool rendering helpers', () => {
       onToken: () => undefined,
       onComplete,
       onError,
+      onGenerationAttemptsUpdate: (attempts: NonNullable<StreamCompletionResult['generationAttempts']>) => { attemptUpdates.push(attempts); },
+      onGenerationAttemptProgress: (attempt: NonNullable<StreamCompletionResult['generationAttempts']>[number]) => { attemptProgress.push(attempt); },
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(onError).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({ visibleContent: 'Recovered.' })
     );
+    const attempts = attemptUpdates.at(-1);
+    expect(attempts).toHaveLength(3);
+    expect(attempts?.[0]).toMatchObject({ status: 'abandoned', rawText: '', acceptedText: '', costUsd: null });
+    expect(attempts?.[1]).toMatchObject({ status: 'abandoned', rawText: '', acceptedText: '', costUsd: null });
+    expect(attempts?.[2]).toMatchObject({ status: 'completed', rawText: 'Recovered.', acceptedText: 'Recovered.', costUsd: null });
+    expect(attempts?.[0]?.id).not.toBe(attempts?.[1]?.id);
+    expect(attempts?.[1]?.id).not.toBe(attempts?.[2]?.id);
+    expect(attemptProgress[0]).toMatchObject({ id: attempts?.[0]?.id, rawText: '' });
+    expect(attemptProgress.some((attempt) => attempt.id === attempts?.[2]?.id && attempt.rawText === '')).toBe(true);
   });
 
   it('interrupts the turn immediately when the question tool is invoked', async () => {
@@ -3432,6 +3606,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
     const streamed: string[] = [];
+    const attemptSnapshots: string[] = [];
     const onComplete = mock((_result: unknown) => undefined);
     const onToolCall = mock(async () => 'must not run');
 
@@ -3446,6 +3621,7 @@ describe('streamingChat tool rendering helpers', () => {
       enableWebSearch: false,
       enableWebFetch: false,
       onToken: (token: string) => streamed.push(token),
+      onGenerationAttemptsUpdate: () => { attemptSnapshots.push(streamed.join('')); },
       onComplete,
       onToolCall,
       onError: (error: Error) => {
@@ -3459,6 +3635,7 @@ describe('streamingChat tool rendering helpers', () => {
     expect(JSON.stringify(requestBodies[1]?.messages)).toContain('Continue exactly where it stopped');
     expect(JSON.stringify(requestBodies[1]?.messages)).not.toContain('call_truncated');
     expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(attemptSnapshots).toEqual(['Alpha repeated phrase', 'Alpha repeated phrase and omega']);
     expect(onToolCall).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3475,6 +3652,12 @@ describe('streamingChat tool rendering helpers', () => {
     expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
       '"content":"repeated phrase and omega"',
     );
+    const attempts = (onComplete.mock.calls[0]?.[0] as StreamCompletionResult).generationAttempts;
+    expect(attempts).toEqual([
+      expect.objectContaining({ status: 'partial', rawText: 'Alpha repeated phrase', acceptedText: 'Alpha repeated phrase', costUsd: null }),
+      expect.objectContaining({ status: 'completed', rawText: 'repeated phrase and omega', acceptedText: ' and omega', costUsd: null }),
+    ]);
+    expect(new Set(attempts?.map((attempt) => attempt.id)).size).toBe(2);
   });
 
   it('stops after one generic incomplete recovery attempt', async () => {
@@ -3609,6 +3792,7 @@ describe('streamingChat tool rendering helpers', () => {
           request: {
             request_id: string;
             result: string;
+            submission_id: string;
           };
         }).request;
         queueMicrotask(() => {
@@ -3617,6 +3801,7 @@ describe('streamingChat tool rendering helpers', () => {
               request_id: request.request_id,
               output_text: 'Plan loaded.',
               tool_calls: [],
+              accepted_submission_ids: [request.submission_id],
               hidden_context: `<tool_context tool_call_id="call_plan" tool="plan_get">\n${request.result}\n</tool_context>`,
             },
           });
@@ -3667,6 +3852,7 @@ describe('streamingChat tool rendering helpers', () => {
       request: {
         request_id: expect.any(String),
         tool_call_id: 'call_plan',
+        submission_id: expect.any(String),
         result: 'plan_get:plan-1',
         hidden_context: null,
         visible_content: null,
@@ -3738,7 +3924,7 @@ describe('streamingChat tool rendering helpers', () => {
       });
   });
 
-  it('sends Copilot built-in override metadata only for shadowing tools', async () => {
+  it.each(['copilot', 'chatgpt'])('sends workspace schemas through native %s with provider-specific overrides', async (providerType) => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
       listeners.set(eventName, handler);
@@ -3770,12 +3956,12 @@ describe('streamingChat tool rendering helpers', () => {
 
     await streamChat({
       conversationId: 'conv-1',
-      providerId: 'copilot',
-      providerType: 'copilot',
+      providerId: providerType,
+      providerType,
       baseUrl: 'copilot://cli',
       modelId: 'gpt-5',
       messages: [{ role: 'user', content: 'Search and inspect git status.' }],
-      allowedToolIds: ['grep', 'web_fetch', 'git_status'],
+      allowedToolIds: ['grep', 'web_fetch', 'git_status', 'apply_patch', 'ast_grep'],
       enableWebSearch: false,
       enableWebFetch: true,
       onToken: () => undefined,
@@ -3789,7 +3975,7 @@ describe('streamingChat tool rendering helpers', () => {
       request?: {
         tools?: Array<{
           overridesBuiltInTool?: true;
-          function?: { name?: string };
+          function?: { name?: string; parameters?: { required?: string[] } };
         }>;
       };
     };
@@ -3798,9 +3984,17 @@ describe('streamingChat tool rendering helpers', () => {
     const webFetchTool = tools.find((tool) => tool.function?.name === 'web_fetch');
     const gitStatusTool = tools.find((tool) => tool.function?.name === 'git_status');
 
-    expect(grepTool?.overridesBuiltInTool).toBe(true);
-    expect(webFetchTool?.overridesBuiltInTool).toBe(true);
+    expect(grepTool?.overridesBuiltInTool).toBe(providerType === 'copilot' ? true : undefined);
+    expect(webFetchTool?.overridesBuiltInTool).toBe(providerType === 'copilot' ? true : undefined);
     expect(gitStatusTool?.overridesBuiltInTool).toBeUndefined();
+    const patch = tools.find(tool => tool.function?.name === 'apply_patch');
+    const ast = tools.find(tool => tool.function?.name === 'ast_grep');
+    expect(patch?.function?.parameters?.required).toEqual(['patch_text']);
+    expect(ast?.function?.parameters?.required).toEqual(['pattern']);
+    expect(patch?.overridesBuiltInTool).toBe(providerType === 'copilot' ? true : undefined);
+    expect(ast?.overridesBuiltInTool).toBeUndefined();
+    expect(tools.map(tool => tool.function?.name)).not.toContain('write');
+    expect(tools.map(tool => tool.function?.name)).not.toContain('edit');
   });
 
   it('does not leak Copilot override metadata into OpenAI-compatible payloads', async () => {
@@ -4103,4 +4297,584 @@ describe('streamingChat tool rendering helpers', () => {
     });
   });
 
+});
+
+
+describe('streamingChat shared tool batch cancellation', () => {
+  for (const transport of ['native', 'http'] as const) {
+    for (const toolName of ['web_search', 'web_fetch'] as const) {
+      it(`cancels ${toolName} fallback on ${transport} without publishing late output or another turn`, async () => {
+        const controller = new AbortController();
+        const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+        const toolCall = { id: 'web-call', type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'web_search' ? { query: 'query' } : { url: 'https://example.invalid' }) } };
+        let providerCalls = 0;
+        let seenSignal: AbortSignal | undefined;
+        const invokeImpl = mock(async (command: string, payload?: { request?: { request_id: string } }) => {
+          if (command === 'ai_stream_chat') {
+            providerCalls += 1;
+            queueMicrotask(() => callbacks.get('ai:done')?.({ payload: { request_id: payload?.request?.request_id, output_text: '', tool_calls: [toolCall], completion_reason: 'completed' } }));
+          }
+        });
+        const fetchImpl = mock(async () => {
+          providerCalls += 1;
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...toolCall }] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
+        });
+        const { streamChat } = await loadStreamingChat(fetchImpl, {
+          invokeImpl,
+          forceTauriAvailable: transport === 'native',
+          listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+            callbacks.set(name, callback);
+            return () => { callbacks.delete(name); };
+          }),
+          webSearchImpl: async (_query, options) => {
+            seenSignal = options?.signal;
+            controller.abort();
+            await Promise.resolve();
+            return [{ title: 'late-result', url: 'https://example.invalid', snippet: 'late-result' }];
+          },
+          webFetchImpl: async (_url, signal) => {
+            seenSignal = signal;
+            controller.abort();
+            await Promise.resolve();
+            return { title: 'late-result', url: 'https://example.invalid', content: 'late-result', snippet: 'late-result' };
+          },
+        });
+        const completed: StreamCompletionResult[] = [];
+        const onResult = mock(() => undefined);
+        const onError = mock(() => undefined);
+        await streamChat({
+          providerId: 'fixture', providerType: transport === 'native' ? 'chatgpt' : 'openai',
+          baseUrl: 'https://example.invalid', apiKey: 'fixture-key', modelId: 'fixture',
+          messages: [{ role: 'user', content: 'Inspect the page' }], allowedToolIds: [toolName],
+          webSearchOptions: { configured: true }, signal: controller.signal,
+          onToken: () => undefined, onComplete: (result: StreamCompletionResult) => completed.push(result), onError, onToolResult: onResult,
+        });
+        expect(seenSignal?.aborted).toBe(true);
+        expect(providerCalls).toBe(1);
+        expect(onResult).not.toHaveBeenCalled();
+        expect(onError).not.toHaveBeenCalled();
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.hiddenContext ?? '').not.toContain('late-result');
+      });
+    }
+  }
+});
+
+describe('streamingChat transport lifetime', () => {
+  it('keeps the newer HTTP reader cancellable after an older same-session stream finishes', async () => {
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const cancelled: number[] = [];
+    let bothStarted!: () => void;
+    const started = new Promise<void>((resolve) => { bothStarted = resolve; });
+    const fetchImpl = mock(async () => {
+      const index = streams.length;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+          if (streams.length === 2) bothStarted();
+        },
+        cancel() { cancelled.push(index); },
+      }));
+    });
+    const { streamChat, cancelStream } = await loadStreamingChat(fetchImpl);
+    const completed: StreamCompletionResult[] = [];
+    const errors: Error[] = [];
+    const options = {
+      sessionId: 'overlapping-http', providerId: 'custom', providerType: 'custom',
+      modelId: 'model', baseUrl: 'https://example.invalid', messages: [],
+      onToken: () => undefined,
+      onComplete: (result: StreamCompletionResult) => completed.push(result),
+      onError: (error: Error) => errors.push(error),
+    };
+    const first = streamChat(options);
+    const second = streamChat(options);
+    await started;
+    streams[0].enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"first"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+    await first;
+    cancelStream('overlapping-http');
+    await second;
+    expect(cancelled).toContain(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(completed).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
+  it('discards a live native tool resolution after its provider turn has completed', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    let resolveTool!: (value: string) => void;
+    const tool = new Promise<string>((resolve) => { resolveTool = resolve; });
+    const submit = mock(async () => undefined);
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') await submit();
+      }),
+    });
+    const results: string[] = [];
+    const traces: unknown[] = [];
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: () => tool,
+      onToolResult: (_name: string, result: string) => results.push(result),
+      onToolTracesUpdate: (value: unknown) => traces.push(value),
+      onToken: () => undefined, onComplete: () => undefined,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'late-call', tool_name: 'read', args: { path: 'README.md' } } });
+    listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+    await run;
+    const finishedTraceCount = traces.length;
+    resolveTool('late-result');
+    await tool;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(submit).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+    expect(traces).toHaveLength(finishedTraceCount);
+  });
+
+  it('keeps a native tool outcome unknown when both result submissions fail', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    let submittedTwice!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const attemptsDone = new Promise<void>((resolve) => { submittedTwice = resolve; });
+    let submissions = 0;
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          submissions += 1;
+          if (submissions === 2) submittedTwice();
+          throw new Error('submit unavailable');
+        }
+      }),
+    });
+    const traces: Array<Array<{ status: string; recovery_state?: string }>> = [];
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: () => 'file contents',
+      onToolTracesUpdate: (value: ToolTrace[]) => traces.push(value),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'unsubmitted', tool_name: 'read', args: { path: 'README.md' } } });
+    await attemptsDone;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+    await run;
+
+    expect(submissions).toBe(2);
+    expect(traces.at(-1)?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    expect(completed.mock.calls[0]?.[0].toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    expect(JSON.stringify(completed.mock.calls[0]?.[0].providerInputItems)).not.toContain('unsubmitted');
+  });
+
+  for (const bridgeAcceptsFirst of [false, true]) it(`uses the bridge-accepted native submission after an IPC failure (${bridgeAcceptsFirst})`, async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    let errorSubmitted!: () => void;
+    let releaseFallback!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const fallbackDone = new Promise<void>((resolve) => { errorSubmitted = resolve; });
+    const fallbackGate = new Promise<void>((resolve) => { releaseFallback = resolve; });
+    const submissions: Array<{ result: string; submission_id?: string; hidden_context?: string; is_error?: boolean }> = [];
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; result?: string; hidden_context?: string; is_error?: boolean } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          submissions.push(params.request as typeof submissions[number]);
+          if (submissions.length === 1) throw new Error('result submission failed');
+          listeners.get('ai:done')!({ payload: {
+            request_id: requestId, output_text: 'done', tool_calls: [],
+            accepted_submission_ids: [submissions[bridgeAcceptsFirst ? 0 : 1].submission_id],
+            ...(bridgeAcceptsFirst ? { hidden_context: '<questionnaire_context>rejected result</questionnaire_context>' } : {}),
+          } });
+          errorSubmitted();
+          await fallbackGate;
+        }
+      }),
+    });
+    const live: LiveStreamContextSnapshot[] = [];
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['question'],
+      onToolCall: () => ({
+        kind: 'interrupt' as const,
+        result: 'Question queued',
+        visibleContent: 'Choose',
+        hiddenContext: '<questionnaire_context>rejected result</questionnaire_context>',
+      }),
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => live.push(snapshot),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: {
+      request_id: requestId, tool_call_id: 'rejected-question', tool_name: 'question',
+      args: { intro: 'Choose', questions: [{ id: 'choice', prompt: 'Pick one', choices: ['A', 'B'] }] },
+    } });
+    await fallbackDone;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(completed).not.toHaveBeenCalled();
+    releaseFallback();
+    await run;
+
+    expect(submissions).toHaveLength(2);
+    expect(submissions[0]).toMatchObject({ hidden_context: '<questionnaire_context>rejected result</questionnaire_context>' });
+    expect(submissions[1]).toMatchObject({ is_error: true });
+    expect(submissions[1]?.hidden_context).toBeNull();
+    const result = completed.mock.calls[0]?.[0];
+    if (bridgeAcceptsFirst) {
+      expect(live.some((snapshot) => snapshot.hiddenContext?.includes('Question queued'))).toBe(true);
+      expect(result?.hiddenContext).toContain('rejected result');
+      expect(JSON.stringify(result?.providerInputItems)).toContain('Question queued');
+      expect(JSON.stringify(result?.providerInputItems)).not.toContain('result submission failed');
+    } else {
+      expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
+      expect(result?.hiddenContext ?? '').not.toContain('rejected result');
+      expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
+      expect(JSON.stringify(result?.providerInputItems)).toContain('result submission failed');
+    }
+    expect(result?.toolTraces?.[0]).toMatchObject({ status: 'done', recovery_state: 'completed' });
+  });
+
+  for (const acceptedByBridge of [true, false]) it(`keeps only bridge-accepted native interrupt context when completion races submission (${acceptedByBridge})`, async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let releaseSubmission!: () => void;
+    let completionEmitted!: () => void;
+    const submissionGate = new Promise<void>((resolve) => { releaseSubmission = resolve; });
+    const completionReady = new Promise<void>((resolve) => { completionEmitted = resolve; });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; submission_id?: string } }) => {
+        const requestId = params.request!.request_id!;
+        if (command === 'ai_stream_chat') {
+          queueMicrotask(() => listeners.get('ai:tool-request')!({ payload: {
+            request_id: requestId, tool_call_id: 'accepted-question', tool_name: 'question',
+            args: { intro: 'Choose', questions: [{ id: 'choice', prompt: 'Pick one', choices: ['A', 'B'] }] },
+          } }));
+        }
+        if (command === 'ai_submit_tool_result') {
+          listeners.get('ai:done')!({ payload: {
+            request_id: requestId, output_text: 'Choose', tool_calls: [],
+            accepted_submission_ids: acceptedByBridge ? [params.request!.submission_id] : [],
+            ...(acceptedByBridge ? { hidden_context: '<questionnaire_context>accepted result</questionnaire_context>' } : {}),
+          } });
+          completionEmitted();
+          await submissionGate;
+        }
+      }),
+    });
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['question'],
+      onToolCall: () => ({
+        kind: 'interrupt' as const,
+        result: 'Question queued',
+        visibleContent: 'Choose',
+        hiddenContext: '<questionnaire_context>accepted result</questionnaire_context>',
+      }),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await completionReady;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(completed).not.toHaveBeenCalled();
+    releaseSubmission();
+    await run;
+    if (acceptedByBridge) expect(completed.mock.calls[0]?.[0].hiddenContext).toContain('accepted result');
+    else {
+      expect(completed.mock.calls[0]?.[0].hiddenContext ?? '').not.toContain('accepted result');
+      expect(JSON.stringify(completed.mock.calls[0]?.[0].providerInputItems)).not.toContain('Question queued');
+      expect(completed.mock.calls[0]?.[0].toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    }
+  });
+
+  it('finishes with an unknown tool outcome when native submission never settles', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    let submitting!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const submissionReady = new Promise<void>((resolve) => { submitting = resolve; });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          submitting();
+          await new Promise<void>(() => undefined);
+        }
+      }),
+    });
+    const live: LiveStreamContextSnapshot[] = [];
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['question'],
+      onToolCall: () => ({
+        kind: 'interrupt' as const, result: 'Question queued', visibleContent: 'Choose',
+        hiddenContext: '<questionnaire_context>unconfirmed</questionnaire_context>',
+      }),
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => live.push(snapshot),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: {
+      request_id: requestId, tool_call_id: 'unconfirmed-question', tool_name: 'question',
+      args: { intro: 'Choose', questions: [{ id: 'choice', prompt: 'Pick one', choices: ['A', 'B'] }] },
+    } });
+    await submissionReady;
+    listeners.get('ai:done')!({ payload: {
+      request_id: requestId, output_text: 'done', tool_calls: [], accepted_submission_ids: [],
+    } });
+    await run;
+
+    const result = completed.mock.calls[0]?.[0];
+    expect(result?.hiddenContext ?? '').not.toContain('unconfirmed');
+    expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
+    expect(result?.toolTraces?.[0]).toMatchObject({ status: 'running', recovery_state: 'unknown' });
+    expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
+  }, 12_000);
+
+  it('publishes parallel native read results in order and waits for the final submission receipt', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const submissions: Array<{ tool_call_id: string; submission_id: string }> = [];
+    const release = new Map<string, () => void>();
+    let requestId = '';
+    let started!: () => void;
+    let firstSubmitting!: () => void;
+    let bothSubmitting!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const firstSubmissionReady = new Promise<void>((resolve) => { firstSubmitting = resolve; });
+    const submissionsReady = new Promise<void>((resolve) => { bothSubmitting = resolve; });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; tool_call_id?: string; submission_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') {
+          const submission = params.request as typeof submissions[number];
+          submissions.push(submission);
+          const gate = new Promise<void>((resolve) => { release.set(submission.tool_call_id, resolve); });
+          if (submissions.length === 1) firstSubmitting();
+          if (submissions.length === 2) bothSubmitting();
+          await gate;
+        }
+      }),
+    });
+    const completed = mock((_result: StreamCompletionResult) => undefined);
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: (_toolName: string, args: Record<string, unknown>) => String(args.path),
+      onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    for (const toolCallId of ['first', 'second']) listeners.get('ai:tool-request')!({ payload: {
+      request_id: requestId, tool_call_id: toolCallId, tool_name: 'read', args: { path: `${toolCallId}.txt` },
+    } });
+    await firstSubmissionReady;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(submissions.map(submission => submission.tool_call_id)).toEqual(['first']);
+    expect(completed).not.toHaveBeenCalled();
+    release.get('first')!();
+    await submissionsReady;
+    listeners.get('ai:done')!({ payload: {
+      request_id: requestId, output_text: 'done', tool_calls: [],
+      accepted_submission_ids: submissions.map(submission => submission.submission_id),
+    } });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(completed).not.toHaveBeenCalled();
+    release.get('second')!();
+    await run;
+
+    const result = completed.mock.calls[0]?.[0];
+    expect(JSON.stringify(result?.providerInputItems)).toContain('first.txt');
+    expect(JSON.stringify(result?.providerInputItems)).toContain('second.txt');
+    expect(result?.toolTraces?.map(trace => [trace.tool_call_id, trace.recovery_state])).toEqual([
+      ['first', 'completed'], ['second', 'completed'],
+    ]);
+  });
+});
+
+describe('streamingChat partial native listener setup', () => {
+  it('disposes immediate and late acquisitions once without touching a successor', async () => {
+    const disposers: Array<ReturnType<typeof mock>> = [];
+    const callbacks: Array<{ name: string; callback: (event: { payload: Record<string, unknown> }) => void }> = [];
+    const late: Array<() => void> = [];
+    let failSetup!: (error: Error) => void;
+    let successorReady!: () => void;
+    const ready = new Promise<void>((resolve) => { successorReady = resolve; });
+    let successorId = '';
+    const cancel = mock(() => undefined);
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock((name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        const index = callbacks.length;
+        callbacks.push({ name, callback });
+        const dispose = mock(() => undefined);
+        disposers.push(dispose);
+        if (index === 2) return new Promise<() => void>((_resolve, reject) => { failSetup = reject; });
+        if (index > 2 && index < 6) return new Promise<() => void>((resolve) => { late.push(() => resolve(dispose)); });
+        return Promise.resolve(dispose);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id: string } }) => {
+        if (command === 'ai_cancel_stream') cancel();
+        if (command === 'ai_stream_chat') {
+          successorId = params.request!.request_id;
+          successorReady();
+        }
+      }),
+    });
+    const controller = new AbortController();
+    const errors: Error[] = [];
+    const completed = mock(() => undefined);
+    const options = {
+      sessionId: 'listener-race', providerId: 'copilot', providerType: 'copilot', modelId: 'model',
+      messages: [], onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => errors.push(error),
+    };
+    const first = streamChat({ ...options, signal: controller.signal });
+    const successor = streamChat(options);
+    await ready;
+    failSetup(new Error('listener setup failed'));
+    await first;
+    expect(errors.map((error) => error.message)).toEqual(['listener setup failed']);
+    expect(disposers[0]).toHaveBeenCalledTimes(1);
+    expect(disposers[1]).toHaveBeenCalledTimes(1);
+    for (const dispose of disposers.slice(3)) expect(dispose).not.toHaveBeenCalled();
+    for (const resolve of late) resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    for (const index of [0, 1, 3, 4, 5]) expect(disposers[index]).toHaveBeenCalledTimes(1);
+    for (const dispose of disposers.slice(6)) expect(dispose).not.toHaveBeenCalled();
+    controller.abort();
+    expect(cancel).not.toHaveBeenCalled();
+    callbacks.slice(6).find(({ name }) => name === 'ai:done')!.callback({
+      payload: { request_id: successorId, output_text: 'successor', tool_calls: [] },
+    });
+    await successor;
+    expect(completed).toHaveBeenCalledTimes(1);
+    for (const index of [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11]) expect(disposers[index]).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+for (const ending of ['done', 'abort'] as const) {
+  it(`${ending === 'done' ? 'retains confirmed' : 'does not claim unconfirmed'} native MCP media when ${ending} races tool submission`, async () => {
+    const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+    const { normalizeToolResultBlocks, readTypedToolResult } = await import('../shared/toolResultContent');
+    const blocks = normalizeToolResultBlocks(fixture.content);
+    const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const controller = new AbortController();
+    let submitted: Record<string, unknown> | undefined;
+    let completed: StreamCompletionResult | undefined;
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        callbacks.set(name, callback);
+        return () => callbacks.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, args: { request?: Record<string, unknown> }) => {
+        if (command === 'ai_stream_chat') queueMicrotask(() => callbacks.get('ai:tool-request')!({ payload: {
+          request_id: args.request!.request_id, tool_call_id: 'media-call', tool_name: 'mcp__fixture__read', args: {},
+        } }));
+        if (command === 'ai_submit_tool_result') {
+          submitted = args.request;
+          if (ending === 'abort') controller.abort();
+          else callbacks.get('ai:done')!({ payload: { request_id: submitted!.request_id, output_text: 'done', tool_calls: [], accepted_submission_ids: [submitted!.submission_id] } });
+        }
+      }),
+    });
+    await streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', messages: [],
+      allowedToolIds: ['mcp__fixture__read'], signal: controller.signal,
+      mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
+      onToolCall: () => ({ kind: 'result', result: 'Partial remote result.', blocks, isError: true }),
+      onToken() {}, onComplete(result: StreamCompletionResult) { completed = result; }, onError(error: Error) { throw error; },
+    });
+    expect(submitted!.blocks).toEqual(blocks);
+    expect(submitted!.is_error).toBe(true);
+    const storedResult = completed?.providerInputItems?.find(item => readTypedToolResult(item));
+    if (ending === 'done') {
+      expect(readTypedToolResult(storedResult)).toEqual({ version: 1, blocks, isError: true });
+    } else {
+      expect(storedResult).toBeUndefined();
+    }
+  });
+}
+
+it('native Copilot replay names unavailable media without putting base64 in its prompt', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+  let request: Record<string, unknown> = {};
+  const { streamChat } = await loadStreamingChat(undefined, {
+    forceTauriAvailable: true,
+    listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => { callbacks.set(name, callback); return () => callbacks.delete(name); }),
+    invokeImpl: mock(async (command: string, args: { request?: Record<string, unknown> }) => {
+      if (command === 'ai_stream_chat') {
+        request = args.request!;
+        callbacks.get('ai:done')!({ payload: { request_id: request.request_id, output_text: 'done', tool_calls: [] } });
+      }
+    }),
+  });
+  await streamChat({ providerId: 'copilot', providerType: 'copilot', modelId: 'fixture',
+    messages: [{ role: 'assistant', content: 'Earlier response', provider_input_items: [{ type: 'function_call_output', call_id: 'c', output: 'text fallback', macro_tool_result: { version: 1, blocks: fixture.content, isError: true } }] }],
+    onToken() {}, onComplete() {}, onError(error: Error) { throw error; },
+  });
+  const message = (request.messages as Array<{ content: string }>)[0];
+  expect(message.content).toContain('not sent as media by Copilot historical prompt replay');
+  expect(message.content).not.toContain(fixture.content[1].data!);
 });

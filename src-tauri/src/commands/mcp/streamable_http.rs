@@ -47,9 +47,12 @@ use sse_stream::{Sse, SseStream};
 use url::Url;
 
 use super::ids::build_mcp_tool_id;
-use super::modern_adapter::{McpModernServerMetadata, MODERN_PROTOCOL_VERSION};
+use super::modern_adapter::{
+    form_request_options, McpModernServerMetadata, McpModernToolCallOutcome,
+    MODERN_PROTOCOL_VERSION,
+};
 use super::oauth::McpBearerTokenProvider;
-use super::result_format::format_tool_call_result;
+use super::result_format::normalize_tool_call_result;
 use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
@@ -716,6 +719,7 @@ impl GuardedStreamableHttpClient {
     async fn send_following_same_origin<F>(
         &self,
         build_request: F,
+        allow_redirects: bool,
     ) -> Result<reqwest::Response, StreamableHttpError<AdapterError>>
     where
         F: Fn(&Url) -> reqwest::RequestBuilder,
@@ -738,6 +742,11 @@ impl GuardedStreamableHttpClient {
                 && status != reqwest::StatusCode::PERMANENT_REDIRECT
             {
                 return Ok(response);
+            }
+            if !allow_redirects {
+                return Err(StreamableHttpError::Client(AdapterError::RedirectRefused(
+                    "redirecting tools/call would replay a potentially accepted mutation".into(),
+                )));
             }
             let location = response
                 .headers()
@@ -887,18 +896,26 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
                 session_id: session_id.as_ref().map(ToString::to_string),
             },
         )?;
+        let allow_redirects = !matches!(
+            &message,
+            ClientJsonRpcMessage::Request(request)
+                if matches!(&request.request, ClientRequest::CallToolRequest(_))
+        );
         let body = serde_json::to_vec(&message).map_err(StreamableHttpError::Deserialize)?;
 
         let client = self.http.clone();
         let headers_clone = headers.clone();
         let mut response = self
-            .send_following_same_origin(move |url| {
-                let mut request = client.post(url.as_str());
-                for (name, value) in &headers_clone {
-                    request = request.header(name, value);
-                }
-                request.body(body.clone())
-            })
+            .send_following_same_origin(
+                move |url| {
+                    let mut request = client.post(url.as_str());
+                    for (name, value) in &headers_clone {
+                        request = request.header(name, value);
+                    }
+                    request.body(body.clone())
+                },
+                allow_redirects,
+            )
             .await?;
 
         let status = response.status();
@@ -1015,13 +1032,16 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         let client = self.http.clone();
         let headers_clone = headers.clone();
         let mut response = self
-            .send_following_same_origin(move |url| {
-                let mut request = client.delete(url.as_str());
-                for (name, value) in &headers_clone {
-                    request = request.header(name, value);
-                }
-                request
-            })
+            .send_following_same_origin(
+                move |url| {
+                    let mut request = client.delete(url.as_str());
+                    for (name, value) in &headers_clone {
+                        request = request.header(name, value);
+                    }
+                    request
+                },
+                true,
+            )
             .await?;
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
@@ -1069,13 +1089,16 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         let client = self.http.clone();
         let headers_clone = headers.clone();
         let mut response = self
-            .send_following_same_origin(move |url| {
-                let mut request = client.get(url.as_str());
-                for (name, value) in &headers_clone {
-                    request = request.header(name, value);
-                }
-                request
-            })
+            .send_following_same_origin(
+                move |url| {
+                    let mut request = client.get(url.as_str());
+                    for (name, value) in &headers_clone {
+                        request = request.header(name, value);
+                    }
+                    request
+                },
+                true,
+            )
             .await?;
         let status = response.status();
         if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
@@ -1770,15 +1793,11 @@ impl RmcpLegacyHttpClient {
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
-                Ok(McpCallToolResponse {
-                    content: format_tool_call_result(&raw_result),
-                    is_error: result.is_error.unwrap_or(false),
-                    raw_result,
-                })
+                Ok(normalize_tool_call_result(raw_result))
             }
             CallToolResponse::InputRequired(_) => Err(command_error(format!(
                 "Streamable HTTP MCP server '{}' requires interaction rounds; \
-                 interaction brokering arrives with plan Lot G.",
+                 interaction brokering is not connected for HTTP transport.",
                 self.server_name
             ))),
             CallToolResponse::Task(_) => Err(command_error(format!(
@@ -1819,10 +1838,11 @@ impl RmcpModernHttpClient {
         startup_timeout: Option<Duration>,
         operation_timeout: Option<Duration>,
     ) -> CommandResult<Self> {
-        let transport = StreamableHttpClientTransport::with_client(
-            client.clone(),
-            http_transport_config(&client),
-        );
+        let transport = StreamableHttpClientTransport::with_client(client.clone(), {
+            let mut config = http_transport_config(&client);
+            config.reinit_on_expired_session = false;
+            config
+        });
         let handler = ClosedCapabilityHttpClientHandler::modern();
         let startup = startup_timeout.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let handshake = handler.serve_with_lifecycle(
@@ -1911,13 +1931,17 @@ impl RmcpModernHttpClient {
 
     /// Sends exactly one modern tool round. MRTR continuation stays with the
     /// interaction broker; nothing here ever replays an accepted call.
-    pub(crate) async fn call_tool_complete(
+    pub(crate) async fn call_tool_round(
         &self,
         tool_name: &str,
         arguments: Value,
+        request_state: Option<String>,
+        input_responses: Option<std::collections::BTreeMap<String, Value>>,
         cancellation: Arc<McpOperationCancellation>,
-    ) -> CommandResult<McpCallToolResponse> {
-        let params = build_call_params(tool_name, arguments)?;
+    ) -> CommandResult<McpModernToolCallOutcome> {
+        let mut params = build_call_params(tool_name, arguments)?;
+        params.request_state = request_state;
+        params.input_responses = input_responses;
         let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
         let operation_timeout = tokio::time::sleep(self.operation_timeout);
         tokio::pin!(operation_timeout);
@@ -1934,7 +1958,7 @@ impl RmcpModernHttpClient {
             }
             result = self.service.peer().send_cancellable_request(
                 request,
-                PeerRequestOptions::no_options(),
+                form_request_options(&cancellation),
             ) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error))?,
         };
         let response = tokio::select! {
@@ -1999,24 +2023,20 @@ impl RmcpModernHttpClient {
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
-                Ok(McpCallToolResponse {
-                    content: format_tool_call_result(&raw_result),
-                    is_error: result.is_error.unwrap_or(false),
-                    raw_result,
+                Ok(McpModernToolCallOutcome::Complete(
+                    normalize_tool_call_result(raw_result),
+                ))
+            }
+            CallToolResponse::InputRequired(result) => {
+                Ok(McpModernToolCallOutcome::InputRequired {
+                    raw_result: serde_json::to_value(result).unwrap_or(Value::Null),
                 })
             }
-            CallToolResponse::InputRequired(_) => Err(command_error(format!(
-                "Streamable HTTP MCP server '{}' requested an interaction round; \
-                 interaction brokering arrives with plan Lot G.",
-                self.server_name
-            ))),
-            CallToolResponse::Task(_) => Err(command_error(format!(
-                "Streamable HTTP MCP server '{}' materialized a task; \
-                 task support arrives with plan Lot G.",
-                self.server_name
-            ))),
+            CallToolResponse::Task(result) => Ok(McpModernToolCallOutcome::Task {
+                raw_result: serde_json::to_value(result).unwrap_or(Value::Null),
+            }),
             _ => Err(command_error(format!(
-                "Streamable HTTP MCP server '{}' returned an unexpected tools/call kind.",
+                "MCP server '{}' returned an unexpected tools/call response kind.",
                 self.server_name
             ))),
         }
@@ -2272,13 +2292,18 @@ mod tests {
         let modern_tools = modern.list_tools_page(None).await.unwrap();
         assert_eq!(modern_tools.tools[0].name, "echo");
         let modern_call = modern
-            .call_tool_complete(
+            .call_tool_round(
                 "echo",
                 serde_json::json!({}),
+                None,
+                None,
                 Arc::new(McpOperationCancellation::default()),
             )
             .await
             .unwrap();
+        let McpModernToolCallOutcome::Complete(modern_call) = modern_call else {
+            panic!("expected complete result");
+        };
         assert_eq!(modern_call.content, "modern:ok");
         modern.shutdown().await;
         let modern_calls = modern_methods
@@ -2438,3 +2463,7 @@ mod tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "http_forms_tests.rs"]
+mod http_forms_tests;

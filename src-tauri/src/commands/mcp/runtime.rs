@@ -1,4 +1,5 @@
 use super::ids::is_canonical_mcp_server_id;
+use super::interaction::McpInteractionBroker;
 use super::types::{
     McpCallToolResponse, McpCatalogDto, McpProtocolEra, McpProtocolMode, McpRuntimeKey,
     McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpRuntimeStatus,
@@ -51,13 +52,44 @@ impl fmt::Display for McpRuntimeError {
 
 impl std::error::Error for McpRuntimeError {}
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct McpOperationCancellation {
     cancelled: AtomicBool,
     notify: Notify,
+    interaction: StdMutex<Option<McpInteractionContext>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct McpInteractionContext {
+    pub key: McpRuntimeKey,
+    pub operation_id: String,
+    pub broker: McpInteractionBroker,
+}
+
+impl fmt::Debug for McpOperationCancellation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpOperationCancellation")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
 }
 
 impl McpOperationCancellation {
+    pub(crate) fn attach_interaction(&self, context: McpInteractionContext) {
+        *self
+            .interaction
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(context);
+    }
+
+    pub(crate) fn interaction(&self) -> Option<McpInteractionContext> {
+        self.interaction
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
         self.notify.notify_waiters();
@@ -279,6 +311,7 @@ pub struct McpRuntimeManager {
     connector: Arc<dyn McpConnector>,
     state: Arc<Mutex<RuntimeState>>,
     operations: Arc<StdMutex<OperationRegistry>>,
+    interaction: McpInteractionBroker,
     shutting_down: Arc<AtomicBool>,
 }
 
@@ -300,8 +333,13 @@ impl McpRuntimeManager {
             connector,
             state: Arc::new(Mutex::new(RuntimeState::default())),
             operations: Arc::new(StdMutex::new(OperationRegistry::default())),
+            interaction: McpInteractionBroker::default(),
             shutting_down: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) fn interaction_broker(&self) -> &McpInteractionBroker {
+        &self.interaction
     }
 
     pub async fn snapshot(&self) -> McpRuntimeSnapshotDto {
@@ -644,7 +682,7 @@ impl McpRuntimeManager {
                     },
                 );
             ActiveOperationGuard {
-                operation_id: operation_id.clone(),
+                operation_id,
                 operations: self.operations.clone(),
             }
         };
@@ -747,7 +785,7 @@ impl McpRuntimeManager {
             );
         }
         let _operation_guard = ActiveOperationGuard {
-            operation_id,
+            operation_id: operation_id.clone(),
             operations: self.operations.clone(),
         };
 
@@ -792,6 +830,11 @@ impl McpRuntimeManager {
             )
         };
 
+        cancellation.attach_interaction(McpInteractionContext {
+            key: key.clone(),
+            operation_id: operation_id.clone(),
+            broker: self.interaction.clone(),
+        });
         let permit = tokio::select! {
             permit = concurrency.acquire_owned() => permit.map_err(|_| {
                 McpRuntimeError::new(NOT_CONNECTED, "The MCP runtime is shutting down.")
@@ -1008,6 +1051,7 @@ impl McpRuntimeManager {
     }
 
     pub async fn shutdown_all(&self) {
+        self.interaction.shutdown();
         self.shutting_down.store(true, Ordering::Release);
         let sessions = {
             let mut state = self.state.lock().await;
@@ -1340,6 +1384,7 @@ mod tests {
         closed: AtomicBool,
         list_started: Notify,
         call_started: Notify,
+        interaction_seen: StdMutex<Option<(McpRuntimeKey, String)>>,
     }
 
     impl McpSession for FakeSession {
@@ -1383,6 +1428,9 @@ mod tests {
         ) -> McpFuture<'a, McpCallToolResponse> {
             Box::pin(async move {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
+                *self.interaction_seen.lock().unwrap() = cancellation
+                    .interaction()
+                    .map(|context| (context.key, context.operation_id));
                 self.call_started.notify_one();
                 if self.block_calls.load(Ordering::SeqCst) {
                     cancellation.cancelled().await;
@@ -1390,6 +1438,7 @@ mod tests {
                 }
                 Ok(McpCallToolResponse {
                     content: format!("{tool_name}:{arguments}"),
+                    blocks: vec![],
                     is_error: false,
                     raw_result: serde_json::json!({"ok": true}),
                 })
@@ -1610,7 +1659,7 @@ mod tests {
     #[tokio::test]
     async fn calls_a_tool_on_the_connected_session() {
         let session = Arc::new(FakeSession::default());
-        let (manager, connector) = manager(session);
+        let (manager, connector) = manager(session.clone());
         let key = connected_key(&manager).await;
 
         let result = manager
@@ -1624,6 +1673,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.content, "echo:{\"value\":\"ok\"}");
+        assert_eq!(
+            *session.interaction_seen.lock().unwrap(),
+            Some((key, "operation-call-1".into()))
+        );
         assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 1);
         assert!(manager.active_operation_ids().await.is_empty());
     }

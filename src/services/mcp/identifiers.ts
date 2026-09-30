@@ -1,4 +1,8 @@
 export const MCP_TOOL_ID_PREFIX = 'mcp__';
+export const MCP_SEARCH_TOOL_ID = 'mcp_search';
+export const MCP_CALL_TOOL_ID = 'mcp_call';
+export const isMcpDiscoveryToolId = (toolId: string): boolean =>
+  toolId === MCP_SEARCH_TOOL_ID || toolId === MCP_CALL_TOOL_ID;
 
 const MCP_IDENTIFIER_MAX_LENGTH = 64;
 

@@ -221,12 +221,12 @@ describe('remote provider', () => {
       branchName: 'main',
       includeDeleted: true,
       includeArchived: true,
-      scopedProjectIdsHint: ['project-octan-sales'],
+      scopedProjectIdsHint: ['project-sample-sales'],
     });
     await workspaceArchitectActivatePlanHead({
       branchName: 'main',
       planId: 'plan-1',
-      scopedProjectIdsHint: ['project-octan-sales'],
+      scopedProjectIdsHint: ['project-sample-sales'],
     });
     await workspaceArchitectActivatePlanChat({
       branchName: 'main',
@@ -242,7 +242,7 @@ describe('remote provider', () => {
       branchName: 'main',
       includeDeleted: true,
       includeArchived: true,
-      scopedProjectIdsHint: ['project-octan-sales'],
+      scopedProjectIdsHint: ['project-sample-sales'],
     });
   });
 
@@ -369,7 +369,12 @@ describe('remote provider', () => {
       readSkillResource({ skillId: 'remote:docs', resourcePath: 'references/a.md' }),
     ).resolves.toMatchObject({ content: 'A' });
     await expect(
-      runSkillScript({ skillId: 'remote:docs', scriptPath: 'scripts/check.sh' }),
+      runSkillScript({
+        skillId: 'remote:docs', scriptPath: 'scripts/check.sh', allowWorkspace: true,
+        workspacePath: '/worktrees/task',
+        workspaceRoot: { projectId: 'p1', path: '/worktrees/task' },
+        projectRoots: [{ projectId: 'p1', projectName: 'Project', path: '/repos/project' }],
+      }),
     ).resolves.toMatchObject({ stdout: 'ok' });
 
     expect(fetchCalls.map((call) => call.url)).toEqual([
@@ -381,6 +386,12 @@ describe('remote provider', () => {
     expect(JSON.parse(String(fetchCalls[1].init?.body))).toMatchObject({
       skillId: 'remote:docs',
       projectRoots: [],
+    });
+    expect(JSON.parse(String(fetchCalls[3].init?.body))).toMatchObject({
+      allowWorkspace: true,
+      workspacePath: '/worktrees/task',
+      workspaceRoot: { projectId: 'p1', path: '/worktrees/task' },
+      projectRoots: [{ projectId: 'p1', projectName: 'Project', path: '/repos/project' }],
     });
   });
 

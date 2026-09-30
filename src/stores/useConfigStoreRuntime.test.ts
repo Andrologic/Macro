@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 
 const unlistenMock = mock(() => undefined);
-const listenMock = mock(async () => unlistenMock);
+const listenMock = mock(async (): Promise<() => void> => unlistenMock);
 const actualTauriRuntimeBridge = await import('../services/tauriRuntimeBridge');
 
 mock.module('../services/tauriRuntimeBridge', () => ({
@@ -53,5 +53,25 @@ describe('configuration runtime listener initialization', () => {
     expect(listenMock).toHaveBeenCalledTimes(8);
     expect(configStore.useConfigStore.getState().status).toBe('ready');
     configStore.disposeConfigRuntimeForTests();
+  });
+});
+
+describe('configuration runtime retirement', () => {
+  it('releases late listener acquisitions once and admits no hydration after stop', async () => {
+    const registrations: Array<(release: () => void) => void> = [];
+    const releases = Array.from({ length: 4 }, () => mock(() => undefined));
+    listenMock.mockImplementation(() => new Promise((resolve) => { registrations.push(resolve); }));
+    const invoke = mock(async () => undefined);
+    installTauriRuntimeMock(invoke);
+    const module = await import(`./useConfigStore.ts?retirement=${++importCounter}`);
+    const starting = module.initializeConfigRuntime();
+    const stopping = module.stopConfigRuntime();
+    expect(registrations).toHaveLength(4);
+    registrations.forEach((resolve, index) => resolve(releases[index]));
+    await Promise.all([starting, stopping]);
+    await module.stopConfigRuntime();
+    for (const release of releases) expect(release).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalled();
+    removeTauriRuntimeMock();
   });
 });

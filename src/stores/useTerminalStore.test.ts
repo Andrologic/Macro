@@ -505,8 +505,10 @@ describe('useTerminalStore', () => {
     terminalInterruptMock.mockReset();
     terminalClearTabMock.mockReset();
     terminalCloseTabMock.mockReset();
+    terminalCloseTabMock.mockImplementation(async () => undefined);
     loadPreferenceMock.mockReset();
     savePreferenceMock.mockReset();
+    savePreferenceMock.mockImplementation(async () => undefined);
     resolveProjectExecutionContextMock.mockReset();
     listenMock.mockReset();
 
@@ -662,6 +664,57 @@ describe('useTerminalStore', () => {
     );
   });
 
+  it('centralizes close for simultaneous callers and ignores a late reconnect DTO', async () => {
+    const { createTerminalStore } = await loadTerminalStore();
+    const port = { disposeTab: mock(() => undefined), disposeAll: mock(() => undefined) };
+    const store = createTerminalStore(port);
+    const tab = await store.getState().createManualTab();
+    let finishReconnect!: (dto: TerminalTabDto) => void;
+    let finishClose!: () => void;
+    terminalReconnectTabMock.mockImplementationOnce(() => new Promise((resolve) => { finishReconnect = resolve; }));
+    terminalCloseTabMock.mockImplementationOnce(() => new Promise((resolve) => { finishClose = () => resolve(undefined); }));
+    const reconnect = store.getState().reconnectTab(tab.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const close = store.getState().closeTab(tab.id);
+    expect(store.getState().closeTab(tab.id)).toBe(close);
+    eventHandlers['terminal:closed']?.({ payload: { tab_id: tab.id } });
+    finishClose();
+    await close;
+    finishReconnect(buildManualTabDto({ id: tab.id }));
+    await reconnect;
+    expect(terminalCloseTabMock).toHaveBeenCalledTimes(1);
+    expect(port.disposeTab).toHaveBeenCalledTimes(1);
+    expect(store.getState().tabs[tab.id]).toBeUndefined();
+    await store.getState().stopRuntime();
+  });
+
+  it('drains late listener acquisition and native work before restart without closing native tabs', async () => {
+    const { createTerminalStore } = await loadTerminalStore();
+    const releases: Array<ReturnType<typeof mock>> = [];
+    const registrations: Array<(release: () => void) => void> = [];
+    listenMock.mockImplementation(() => new Promise((resolve) => { registrations.push(resolve); }));
+    const port = { disposeTab: mock(() => undefined), disposeAll: mock(() => undefined) };
+    const store = createTerminalStore(port);
+    const starting = store.getState().initialize().catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(registrations).toHaveLength(3);
+    let drained = false;
+    const stopping = store.getState().stopRuntime().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    for (const resolve of registrations) {
+      const release = mock(() => undefined);
+      releases.push(release);
+      resolve(release);
+    }
+    await Promise.all([starting, stopping]);
+    await store.getState().stopRuntime();
+    expect(port.disposeAll).toHaveBeenCalledTimes(1);
+    for (const release of releases) expect(release).toHaveBeenCalledTimes(1);
+    expect(terminalCloseTabMock).not.toHaveBeenCalled();
+    expect(store.getState().initialized).toBe(false);
+  });
+
   it('retries failed subscriptions after cleaning up partial registrations', async () => {
     listenMock.mockImplementationOnce(async () => { throw new Error('offline'); });
     const { useTerminalStore } = await loadTerminalStore();
@@ -799,9 +852,9 @@ describe('useTerminalStore', () => {
     appStoreState.standaloneProjects = [
       {
         id: 'project-lplr-current',
-        name: 'lplr-app',
-        mountName: 'lplr-app',
-        path: 'C:/repos/lplr-app',
+        name: 'sample-app',
+        mountName: 'sample-app',
+        path: 'C:/repos/sample-app',
         created_at: '2026-03-26T08:00:00.000Z',
         status: 'active',
         metadata: {
@@ -821,14 +874,14 @@ describe('useTerminalStore', () => {
       {
         id: 'task-stale',
         plan_id: '',
-        project_id: 'project-lplr-app-1780237886690',
-        project_ids: ['project-lplr-app-1780237886690'],
+        project_id: 'project-sample-app-1780237886690',
+        project_ids: ['project-sample-app-1780237886690'],
         execution_targets: [
           {
-            projectId: 'project-lplr-app-1780237886690',
+            projectId: 'project-sample-app-1780237886690',
             branchName: 'feature/catalogue',
             worktreeKey: 'stale-worktree',
-            repoPath: 'C:/repos/lplr-app',
+            repoPath: 'C:/repos/sample-app',
           },
         ],
         title: 'Standalone stale task',
@@ -844,23 +897,23 @@ describe('useTerminalStore', () => {
     resolveProjectExecutionContextMock.mockImplementation(
       (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }): MockExecutionContext => ({
         projectId: params?.selectedProjectId ?? 'project-lplr-current',
-        projectName: 'lplr-app',
+        projectName: 'sample-app',
         taskId: params?.selectedTaskId ?? null,
-        workspacePath: 'C:/repos/lplr-app',
+        workspacePath: 'C:/repos/sample-app',
         workspacePathsByProjectId: {
-          'project-lplr-current': 'C:/repos/lplr-app',
+          'project-lplr-current': 'C:/repos/sample-app',
         },
       })
     );
 
     const { useTerminalStore } = await loadTerminalStore();
     await useTerminalStore.getState().createSession({
-      projectId: 'project-lplr-app-1780237886690',
+      projectId: 'project-sample-app-1780237886690',
     });
 
     expect(terminalCreateSessionMock).toHaveBeenCalledWith({
       projectId: 'project-lplr-current',
-      cwd: 'C:/repos/lplr-app',
+      cwd: 'C:/repos/sample-app',
     });
   });
 
@@ -1105,6 +1158,29 @@ describe('useTerminalStore', () => {
     expect(useTerminalStore.getState().activeTabId).toBe(tab.id);
   });
 
+  it('keeps incomplete native closes inactive and reachable after initialization', async () => {
+    const retained = [
+      buildManualTabDto({ status: 'closed', has_live_session: false }),
+      buildTaskTabDto({
+        kind: 'worktree_setup', status: 'closed', has_live_session: false, is_restored: false,
+      }),
+    ];
+    terminalListTabsMock.mockResolvedValueOnce(retained);
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+
+    expect(terminalUpdateTabMetadataMock).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().getVisibleTabsForScope().map((tab: { id: string }) => tab.id))
+      .toEqual(retained.map((tab) => tab.id));
+    for (const dto of retained) {
+      expect(useTerminalStore.getState().tabs[dto.id].hasLiveSession).toBe(false);
+      expect(useTerminalStore.getState().tabs[dto.id].status).toBe('closed');
+      await useTerminalStore.getState().closeTab(dto.id);
+      expect(terminalCloseTabMock).toHaveBeenCalledWith(dto.id);
+      expect(useTerminalStore.getState().tabs[dto.id]).toBeUndefined();
+    }
+  });
+
   it('keeps successful worktree setup tabs hidden from the visible terminal scope', async () => {
     const { useTerminalStore } = await loadTerminalStore();
 
@@ -1167,8 +1243,8 @@ describe('useTerminalStore', () => {
     const standaloneProject = {
       id: 'project-lplr-current',
       name: 'LPLR App',
-      mountName: 'lplr-app',
-      path: 'C:/repos/lplr-app',
+      mountName: 'sample-app',
+      path: 'C:/repos/sample-app',
       created_at: '2026-03-26T08:00:00.000Z',
       status: 'active',
       metadata: {
@@ -1187,14 +1263,14 @@ describe('useTerminalStore', () => {
       {
         ...buildTasks()[0],
         id: 'task-stale',
-        project_id: 'project-lplr-app-1780237886690',
-        project_ids: ['project-lplr-app-1780237886690'],
+        project_id: 'project-sample-app-1780237886690',
+        project_ids: ['project-sample-app-1780237886690'],
         execution_targets: [
           {
-            projectId: 'project-lplr-app-1780237886690',
+            projectId: 'project-sample-app-1780237886690',
             branchName: 'feature/catalogue',
-            worktreeKey: 'project-lplr-app-1780237886690::feature/catalogue',
-            repoPath: 'C:/repos/lplr-app',
+            worktreeKey: 'project-sample-app-1780237886690::feature/catalogue',
+            repoPath: 'C:/repos/sample-app',
           },
         ],
         task_source: 'standalone',
@@ -1206,8 +1282,8 @@ describe('useTerminalStore', () => {
 
     await useTerminalStore.getState().ensureTaskTab({
       taskId: 'task-stale',
-      projectId: 'project-lplr-app-1780237886690',
-      cwd: 'C:/repos/lplr-app/.macro/worktrees/feature-catalogue',
+      projectId: 'project-sample-app-1780237886690',
+      cwd: 'C:/repos/sample-app/.macro/worktrees/feature-catalogue',
       title: 'Catalogue',
       reveal: true,
       promptContext: null,

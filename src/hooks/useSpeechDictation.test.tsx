@@ -225,7 +225,7 @@ describe('useSpeechDictation', () => {
       error: null,
       enhancementEnabled: true,
       initialize: mock(async () => undefined),
-      transcribe: mock(async () => ({ text: 'Message vocale corrige' })),
+      transcribe: mock(async () => ({ text: 'Message vocal corrigé' })),
     });
 
     await act(async () => {
@@ -239,7 +239,7 @@ describe('useSpeechDictation', () => {
     });
 
     expect(enhanceTranscript).toHaveBeenCalledTimes(1);
-    expect(onInterimTranscript).toHaveBeenCalledWith('Message vocale corrige');
+    expect(onInterimTranscript).toHaveBeenCalledWith('Message vocal corrigé');
     expect(onTranscript).not.toHaveBeenCalled();
     expect(currentHook?.phase).toBe('enhancing');
 
@@ -276,6 +276,27 @@ describe('useSpeechDictation', () => {
     expect(onInterimTranscript).toHaveBeenCalledWith('Texte brut conservé');
     expect(onTranscript).toHaveBeenCalledWith('Texte brut conservé', 'send');
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('does not submit audio from a retired recording or reset its replacement', async () => {
+    const transcribe = mock(async () => ({ text: 'Transcript' }));
+    useSpeechToTextStore.setState({ providers: [provider], selectedProviderId: provider.id,
+      isInitialized: true, initialize: mock(async () => undefined), transcribe });
+    let releaseStop!: (audio: Awaited<ReturnType<typeof stopRecording>>) => void;
+    stopRecording.mockImplementationOnce(() => new Promise((resolve) => { releaseStop = resolve; }));
+    await act(async () => root.render(<Harness contextKey="conversation:a" />));
+    await act(async () => { await currentHook?.toggle(); });
+    let finishing: Promise<void> | undefined;
+    await act(async () => { finishing = currentHook?.finish(); });
+    await act(async () => root.render(<Harness contextKey="conversation:b" />));
+    await act(async () => { await currentHook?.toggle(); });
+    expect(currentHook?.phase).toBe('recording');
+    await act(async () => {
+      releaseStop({ blob: new Blob(['audio']), mimeType: 'audio/webm', fileName: 'dictation.webm' });
+      await finishing;
+    });
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(currentHook?.phase).toBe('recording');
   });
 
   it('does not insert a transcript after the composer context changes', async () => {

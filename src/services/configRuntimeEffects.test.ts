@@ -133,7 +133,7 @@ describe('configRuntimeEffects', () => {
   });
 
   it('applies the first hydrated snapshot after installation at cold start', () => {
-    installConfigRuntimeEffects();
+    installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
 
     useConfigStore.setState({
       snapshot: snapshot({
@@ -152,7 +152,7 @@ describe('configRuntimeEffects', () => {
       inAppNotificationsEnabled: true,
       notificationChannelModes: { agent: 'both' },
     });
-    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr');
+    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr', expect.objectContaining({ isActive: expect.any(Function) }));
     expect(loadProviderConfigs).toHaveBeenCalledTimes(1);
     expect(loadToolSettings).toHaveBeenCalledTimes(1);
     expect(refreshWebSearchSettings).toHaveBeenCalledTimes(1);
@@ -161,7 +161,7 @@ describe('configRuntimeEffects', () => {
 
   it('applies changed settings without reloading unrelated documents', () => {
     useConfigStore.setState({ snapshot: initialSnapshot });
-    installConfigRuntimeEffects();
+    installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
 
     useConfigStore.setState({
       snapshot: snapshot({
@@ -187,7 +187,7 @@ describe('configRuntimeEffects', () => {
       notificationChannelModes: { agent: 'in_app', system: 'desktop' },
     });
     expect(resolveSupportedLanguage).toHaveBeenCalledWith('fr');
-    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr');
+    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr', expect.objectContaining({ isActive: expect.any(Function) }));
     expect(loadProviderConfigs).not.toHaveBeenCalled();
     expect(loadToolSettings).not.toHaveBeenCalled();
     expect(refreshWebSearchSettings).not.toHaveBeenCalled();
@@ -196,7 +196,7 @@ describe('configRuntimeEffects', () => {
 
   it('refreshes only the consumers of each changed runtime document', () => {
     useConfigStore.setState({ snapshot: initialSnapshot });
-    installConfigRuntimeEffects();
+    installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
 
     const providersChanged = snapshot({
       ...initialSnapshot.effective,
@@ -233,7 +233,7 @@ describe('configRuntimeEffects', () => {
 
   it('does no runtime work for null, identical, or structurally unchanged snapshots', () => {
     useConfigStore.setState({ snapshot: initialSnapshot });
-    installConfigRuntimeEffects();
+    installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
     useConfigStore.setState({ snapshot: null });
     useConfigStore.setState({ snapshot: initialSnapshot });
     useConfigStore.setState({ snapshot: snapshot({ ...initialSnapshot.effective }) });
@@ -248,8 +248,8 @@ describe('configRuntimeEffects', () => {
   it('installs once, cleans up idempotently, and can be installed again', () => {
     useConfigStore.setState({ snapshot: initialSnapshot });
 
-    const firstCleanup = installConfigRuntimeEffects();
-    const secondCleanup = installConfigRuntimeEffects();
+    const firstCleanup = installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
+    const secondCleanup = installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
 
     expect(secondCleanup).toBe(firstCleanup);
     expect(persistenceErrorListeners.size).toBe(1);
@@ -268,7 +268,7 @@ describe('configRuntimeEffects', () => {
     });
     expect(loadProviderConfigs).not.toHaveBeenCalled();
 
-    installConfigRuntimeEffects();
+    installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
     expect(persistenceErrorListeners.size).toBe(1);
     expect(subscribePreferencePersistenceErrors).toHaveBeenCalledTimes(2);
     useConfigStore.setState({
@@ -281,7 +281,7 @@ describe('configRuntimeEffects', () => {
   });
 
   it('does not create a notification when notification persistence itself fails', () => {
-    installConfigRuntimeEffects();
+    installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
     const listener = [...persistenceErrorListeners][0];
 
     listener(new Error('Disk full'), 'notificationCenterItems');
@@ -290,7 +290,7 @@ describe('configRuntimeEffects', () => {
   });
 
   it('reports persistence errors while installed and stops after cleanup', () => {
-    const cleanupEffects = installConfigRuntimeEffects();
+    const cleanupEffects = installConfigRuntimeEffects({ providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } });
     const listener = [...persistenceErrorListeners][0];
 
     listener(new Error('Disk full'), 'theme');
@@ -321,4 +321,16 @@ describe('configRuntimeEffects', () => {
     expect(persistenceErrorListeners.size).toBe(0);
     expect(persistenceUnsubscribes[0]).toHaveBeenCalledTimes(1);
   });
+});
+
+it('a retired effects disposer cannot unsubscribe its replacement', async () => {
+  const dependencies = { providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } };
+  const old = installConfigRuntimeEffects(dependencies);
+  await old();
+  const next = installConfigRuntimeEffects(dependencies);
+  await old();
+  loadProviderConfigs.mockClear();
+  useConfigStore.setState({ snapshot: snapshot({ providers: { default: 'new' } }) });
+  expect(loadProviderConfigs).toHaveBeenCalledTimes(1);
+  await next();
 });

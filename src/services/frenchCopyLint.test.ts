@@ -27,7 +27,13 @@ const SUSPICIOUS_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
 const TECHNICAL_LITERAL_ALLOWLIST = new Set([
   'skip-dom-selection',
   'skip-selection-focus',
+  // These exact English provider errors do not contain French accent omissions.
+  'Goal auditor provider selection conflicts with its authorization.',
+  'Invalid goal auditor provider selection.',
 ]);
+
+// A kind comparison uses a tagged union identifier rather than user-facing copy.
+const isKindComparison = (prefix: string): boolean => /\.kind\s*(?:===|!==)\s*$/.test(prefix);
 
 const isTechnicalCssLiteral = (literal: string): boolean => {
   if (!literal.trim()) {
@@ -74,6 +80,13 @@ const collectSourceFiles = (directory: string): string[] => {
 };
 
 describe('french hardcoded copy', () => {
+  it('distinguishes kind comparisons from displayed labels', () => {
+    expect(isKindComparison('if (scope.kind !== ')).toBe(true);
+    expect(isKindComparison('scope.kind === ')).toBe(true);
+    expect(isKindComparison('const label = ')).toBe(false);
+    expect(isKindComparison('notify.info(')).toBe(false);
+  });
+
   it('does not contain common French accent omissions in user-facing strings', () => {
     const files = collectSourceFiles(SRC_ROOT);
     const findings: string[] = [];
@@ -99,6 +112,9 @@ describe('french hardcoded copy', () => {
 
         for (const match of line.matchAll(STRING_LITERAL_PATTERN)) {
           const literal = match[2];
+          if (isKindComparison(line.slice(0, match.index))) {
+            continue;
+          }
           if (!literal || !/[A-Za-z]/.test(literal)) {
             continue;
           }

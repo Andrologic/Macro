@@ -171,8 +171,8 @@ describe('projectIdentityReconciliation', () => {
   });
 
   it('retargets stale strategy children even when the plan already points to the current project', () => {
-    const currentProjectId = 'project-octan-sales-1780653766405';
-    const staleProjectId = 'project-lplr-app-1780329499166';
+    const currentProjectId = 'project-sample-sales-1780653766405';
+    const staleProjectId = 'project-sample-app-1780329499166';
     const plan = {
       id: 'plan-renamed-project',
       projectId: currentProjectId,

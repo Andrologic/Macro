@@ -1,9 +1,6 @@
 use super::{get_pool, CommandError, CommandResult, DbPool};
 use crate::ai::AiState;
-use crate::ai::{
-    chatgpt::{self, AiChatRequest},
-    copilot, macro_ai, openai_compatible,
-};
+use crate::ai::{chatgpt, copilot, macro_ai, openai_compatible, types::AiChatRequest};
 use crate::db::repository;
 use tauri::{AppHandle, State};
 

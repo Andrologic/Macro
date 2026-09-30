@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { Project, ProjectGroup } from '../types';
-import { registerAppStateGetter } from './appStateRuntime';
+import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+const registerAppStateGetter = (getAppState: () => unknown) => installArchitectPlanPorts({
+  getAppState: () => getAppState() as ArchitectPlanServiceAppState,
+});
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 type MockAppState = {
@@ -351,6 +354,20 @@ describe('architectPlanService replicas', () => {
   afterEach(() => {
     console.info = originalConsoleInfo;
     mock.restore();
+  });
+
+  it('completes mutations for a plan named artifacts without poisoning recovery', async () => {
+    const branchName = 'develop';
+    const planId = 'artifacts';
+    const { service } = await loadArchitectPlanService();
+    await service.createArchitectPlan({ branchName, planId, title: 'Ordinary plan', projectIds: ['web', 'api'] });
+    await service.updateArchitectPlan({ branchName, planId, description: 'Updated normally' });
+    expect((await service.getArchitectPlan(branchName, planId))?.description).toBe('Updated normally');
+    expect(JSON.parse(appSettings.get('pendingArchitectPlanReplicaMutations:v1') || '[]')).toEqual([]);
+    const { recoverArchitectPlanReplicaMutationsUnlocked } = await import('./architectPlanMutationPersistence');
+    const { resolveArchitectPlanServiceDependencies } = await import('./architectPlanReadContext');
+    await recoverArchitectPlanReplicaMutationsUnlocked(resolveArchitectPlanServiceDependencies(), undefined, '/unrelated/workspace');
+    expect(JSON.parse(appSettings.get('pendingArchitectPlanReplicaMutations:v1') || '[]')).toEqual([]);
   });
 
   it('creates the v3 replica layout with manifest and chat transcript files', async () => {

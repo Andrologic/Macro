@@ -1,0 +1,227 @@
+[
+  {
+    "input": {
+      "providerId": "copilot"
+    },
+    "expected": {
+      "providerId": "copilot",
+      "providerType": "copilot",
+      "httpOnly": false,
+      "usesLocalSecretStore": false,
+      "usesLocalRuntime": true,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "chatgpt"
+    },
+    "expected": {
+      "providerId": "chatgpt",
+      "providerType": "chatgpt",
+      "httpOnly": false,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "opencode-go"
+    },
+    "expected": {
+      "providerId": "opencode-go",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "custom",
+      "baseUrl": "https://opencode.ai/v1"
+    },
+    "expected": {
+      "providerId": "opencode-go",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "custom",
+      "providerType": "copilot"
+    },
+    "expected": {
+      "providerId": "copilot",
+      "providerType": "copilot",
+      "httpOnly": false,
+      "usesLocalSecretStore": false,
+      "usesLocalRuntime": true,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "custom",
+      "providerType": "chatgpt"
+    },
+    "expected": {
+      "providerId": "chatgpt",
+      "providerType": "chatgpt",
+      "httpOnly": false,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "copilot",
+      "providerType": "openai"
+    },
+    "expected": {
+      "providerId": "custom",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "chatgpt",
+      "providerType": "copilot"
+    },
+    "expected": {
+      "providerId": "copilot",
+      "providerType": "copilot",
+      "httpOnly": false,
+      "usesLocalSecretStore": false,
+      "usesLocalRuntime": true,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "opencode-go",
+      "providerType": "copilot",
+      "baseUrl": "https://opencode.ai"
+    },
+    "expected": {
+      "providerId": "copilot",
+      "providerType": "copilot",
+      "httpOnly": false,
+      "usesLocalSecretStore": false,
+      "usesLocalRuntime": true,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "copilot",
+      "providerType": "copilot",
+      "baseUrl": "https://opencode.ai"
+    },
+    "expected": {
+      "providerId": "copilot",
+      "providerType": "copilot",
+      "httpOnly": false,
+      "usesLocalSecretStore": false,
+      "usesLocalRuntime": true,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "copilot",
+      "providerType": "chatgpt",
+      "baseUrl": "https://opencode.ai"
+    },
+    "expected": {
+      "providerId": "chatgpt",
+      "providerType": "chatgpt",
+      "httpOnly": false,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "custom",
+      "providerType": "ollama",
+      "baseUrl": "https://opencode.ai"
+    },
+    "expected": {
+      "providerId": "custom",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": " COPILOT ",
+      "providerType": " OPENAI "
+    },
+    "expected": {
+      "providerId": "custom",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": " Custom ",
+      "providerType": " CHATGPT "
+    },
+    "expected": {
+      "providerId": "chatgpt",
+      "providerType": "chatgpt",
+      "httpOnly": false,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "Custom",
+      "providerType": ""
+    },
+    "expected": {
+      "providerId": "custom",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  },
+  {
+    "input": {
+      "providerId": "opencode-go",
+      "providerType": "unsupported"
+    },
+    "expected": {
+      "providerId": "custom",
+      "providerType": "openai",
+      "httpOnly": true,
+      "usesLocalSecretStore": true,
+      "usesLocalRuntime": false,
+      "supportsModelScan": true
+    }
+  }
+]

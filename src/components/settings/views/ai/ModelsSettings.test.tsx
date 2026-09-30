@@ -5,6 +5,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { AIModel, ProviderConfig } from '../../../../types';
 
 let importCounter = 0;
+let liveProviderStore: typeof import('../../../../stores/useProviderStore').useProviderStore | undefined;
+let notifySuccess: ReturnType<typeof mock>;
+let notifyError: ReturnType<typeof mock>;
 let providerConfigs: ProviderConfig[];
 let modelsByProvider: Record<string, AIModel[]>;
 let metadataModelConfigListeners: Set<(value: unknown) => void>;
@@ -58,8 +61,8 @@ const loadModelsSettings = async () => {
 
   mock.module('../../../../stores/useProviderStore', () => ({
     providerHasCredentials: (provider: ProviderConfig) =>
-      !!provider.isEnabled && (!!provider.isLocal || !!provider.apiKey || !!provider.hasStoredApiKey),
-    useProviderStore: () => ({
+      !!provider.isEnabled && (provider.authStatus === 'authenticated' || !!provider.isLocal || !!provider.apiKey || !!provider.hasStoredApiKey),
+    useProviderStore: liveProviderStore ?? (() => ({
       providerConfigs,
       modelsByProvider,
       providerSettingsById: {},
@@ -74,7 +77,7 @@ const loadModelsSettings = async () => {
       scanModelsForProvider: mock(async () => []),
       refreshLoadedModelContextCatalog: refreshLoadedCatalogMock,
       getAvailableReasoningEfforts: () => [],
-    }),
+    })),
   }));
 
   mock.module('../../../../services/modelContextCatalog', () => ({
@@ -154,8 +157,8 @@ const loadModelsSettings = async () => {
 
   mock.module('../../../ui/toastService', () => ({
     notify: {
-      success: mock(() => undefined),
-      error: mock(() => undefined),
+      success: notifySuccess,
+      error: notifyError,
     },
   }));
 
@@ -198,6 +201,9 @@ describe('ModelsSettings metadata model config', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    liveProviderStore = undefined;
+    notifySuccess = mock(() => undefined);
+    notifyError = mock(() => undefined);
     providerConfigs = [provider('provider-a'), provider('provider-b')];
     modelsByProvider = {
       'provider-a': [model('provider-a', 'model-a')],
@@ -250,6 +256,45 @@ describe('ModelsSettings metadata model config', () => {
     root = null;
     mock.restore();
     window.localStorage.clear();
+  });
+
+  it('notifies the actual ChatGPT sync rejection and only reports success after retry', async () => {
+    const ipc = await import('../../../../services/tauriIpc');
+    const message = 'No verified ChatGPT model catalog. Retry model sync.';
+    const sync = mock(async () => { throw { message }; });
+    mock.module('../../../../services/tauriIpc', () => ({
+      ...ipc,
+      isTauriAvailable: () => true,
+      aiSyncProviderModels: sync,
+      listProviderModels: async () => [],
+    }));
+    const actual = await import(`../../../../stores/useProviderStore.ts?settings-sync=${++importCounter}`);
+    liveProviderStore = actual.useProviderStore;
+    liveProviderStore!.setState({
+      providerConfigs: [provider('chatgpt', { providerType: 'chatgpt', authStatus: 'authenticated' })],
+      modelsByProvider: {},
+      loadProviderConfigs: async () => undefined,
+      refreshLoadedModelContextCatalog: async () => undefined,
+    });
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    const syncButton = Array.from(container!.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Sync');
+    expect(syncButton).toBeDefined();
+    expect(syncButton!.disabled).toBe(false);
+    await act(async () => { syncButton!.click(); await flush(); });
+    expect(sync).toHaveBeenCalledWith('chatgpt');
+    expect(notifyError).toHaveBeenCalledWith(message);
+    expect(notifySuccess).not.toHaveBeenCalled();
+    expect(liveProviderStore!.getState().lastError).toBe(message);
+    sync.mockImplementationOnce(async () => [] as never);
+    await act(async () => { syncButton!.click(); await flush(); });
+    expect(notifySuccess).toHaveBeenCalledWith('Models refreshed');
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(liveProviderStore!.getState().lastError).toBeNull();
   });
 
   it('migrates and repairs a dedicated legacy commit model before rendering selects', async () => {

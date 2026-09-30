@@ -167,9 +167,9 @@ describe('resolveProjectExecutionContext', () => {
     const standaloneProject = {
       ...projects[0],
       id: 'project-lplr-current',
-      name: 'lplr-app',
-      mountName: 'lplr-app',
-      path: '/repos/lplr-app',
+      name: 'sample-app',
+      mountName: 'sample-app',
+      path: '/repos/sample-app',
     };
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
@@ -178,12 +178,12 @@ describe('resolveProjectExecutionContext', () => {
       tasks: [
         {
           id: 'task-stale',
-          project_id: 'project-lplr-app-1780237886690',
-          project_ids: ['project-lplr-app-1780237886690'],
+          project_id: 'project-sample-app-1780237886690',
+          project_ids: ['project-sample-app-1780237886690'],
           assigned_branch: 'feature/catalogue',
           execution_targets: [
             {
-              projectId: 'project-lplr-app-1780237886690',
+              projectId: 'project-sample-app-1780237886690',
               executionMode: 'git',
               branchName: 'feature/catalogue',
               worktreeKey: 'stale-worktree',
@@ -208,10 +208,10 @@ describe('resolveProjectExecutionContext', () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const standaloneProject = {
       ...projects[0],
-      id: 'project-lplr-app-1780329499166',
-      name: 'octan_sales',
-      mountName: 'octan_sales',
-      path: '/repos/octan_sales',
+      id: 'project-sample-app-1780329499166',
+      name: 'sample_sales',
+      mountName: 'sample_sales',
+      path: '/repos/sample_sales',
     };
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
@@ -220,29 +220,30 @@ describe('resolveProjectExecutionContext', () => {
       tasks: [
         {
           id: 'task-renamed',
-          project_id: 'project-lplr-app-1780329499166',
-          project_ids: ['project-lplr-app-1780329499166'],
+          project_id: 'project-sample-app-1780329499166',
+          project_ids: ['project-sample-app-1780329499166'],
           assigned_branch: 'feature/catalogue',
           execution_targets: [
             {
-              projectId: 'project-lplr-app-1780329499166',
+              projectId: 'project-sample-app-1780329499166',
               executionMode: 'git',
               branchName: 'feature/catalogue',
-              worktreeKey: 'branch-project-lplr-app-feature-catalogue',
-              repoPath: '/repos/lplr-app',
+              worktreeKey: 'branch-project-sample-app-feature-catalogue',
+              repoPath: '/repos/sample-app',
+              executionKind: 'repository_root',
             },
           ],
         },
       ],
       selectedGroupId: null,
-      selectedProjectId: 'project-lplr-app-1780329499166',
+      selectedProjectId: 'project-sample-app-1780329499166',
       selectedTaskId: 'task-renamed',
     });
 
-    expect(context.projectId).toBe('project-lplr-app-1780329499166');
-    expect(context.workspacePath).toBe('/repos/octan_sales');
+    expect(context.projectId).toBe('project-sample-app-1780329499166');
+    expect(context.workspacePath).toBe('/repos/sample_sales');
     expect(context.workspacePathsByProjectId).toEqual({
-      'project-lplr-app-1780329499166': '/repos/octan_sales',
+      'project-sample-app-1780329499166': '/repos/sample_sales',
     });
   });
 
@@ -358,6 +359,81 @@ describe('resolveProjectExecutionContext', () => {
       'macro-api': 'C:/worktrees/macro-api-payments',
       'macro-web': 'C:/worktrees/macro-web-payments',
     });
+  });
+
+  it('keeps an unresolved task worktree unavailable instead of using another root', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement', projects, projectGroups,
+      tasks: [{
+        id: 'task-1', project_id: 'macro-api', assigned_branch: 'feature/missing',
+        execution_targets: [{
+          projectId: 'macro-api', executionMode: 'git',
+          branchName: 'feature/missing', worktreeKey: 'task-1-worktree',
+        }],
+      }],
+      selectedTaskId: 'task-1', selectedProjectId: 'macro-web',
+      activeRepositoryPath: '/repos/unrelated',
+    });
+    expect(context.projectId).toBe('macro-api');
+    expect(context.workspacePath).toBeNull();
+    expect(context.workspacePathsByProjectId).toEqual({});
+    expect(context.projectMounts).toEqual([
+      expect.objectContaining({ projectId: 'macro-api', workspacePath: null }),
+    ]);
+  });
+
+  it('does not resolve a deleted task against the selected project or its conversation project', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement', projects, projectGroups, tasks: [],
+      conversationId: 'deleted-task-conversation',
+      conversations: [{
+        id: 'deleted-task-conversation', title: 'Deleted task', description: '',
+        task_id: 'deleted-task', project_id: 'macro-api', group_id: 'macro-suite',
+        last_message: '', message_count: 0, updated_at: '2026-03-05T00:00:00Z', is_unread: false,
+      }],
+      selectedTaskId: 'other-task', selectedProjectId: 'macro-web',
+      activeRepositoryPath: projects[0].path,
+    });
+    expect(context.projectId).toBeNull();
+    expect(context.workspacePath).toBeNull();
+    expect(context.projectMounts).toEqual([]);
+  });
+
+  it('ignores another selected task workspace override for the same project', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement', projects, projectGroups,
+      conversationId: 'task-conversation',
+      conversations: [{
+        id: 'task-conversation', title: 'Task', description: '',
+        task_id: 'task-1', project_id: 'macro-api', group_id: 'macro-suite',
+        last_message: '', message_count: 0, updated_at: '2026-03-05T00:00:00Z', is_unread: false,
+      }],
+      tasks: [{
+        id: 'task-1', project_id: 'macro-api',
+        execution_targets: [{
+          projectId: 'macro-api', executionMode: 'git',
+          branchName: 'feature/one', worktreeKey: 'worktree-one',
+        }],
+      }],
+      selectedTaskId: 'other-task', selectedProjectId: 'macro-api',
+      workspacePathOverridesByProjectId: { 'macro-api': '/worktrees/other-task' },
+      branchWorktrees: { 'worktree-one': '/worktrees/one' },
+    });
+    expect(context.workspacePath).toBe('/worktrees/one');
+  });
+
+  it('keeps direct non-Git launches on the project root', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const directProject = { ...projects[0], gitSetupState: 'not_git' as const, directEdit: true };
+    const input = { mode: 'Architect' as const, projects: [directProject, projects[1]], selectedProjectId: directProject.id };
+    const context = resolveProjectExecutionContext(input);
+    input.selectedProjectId = projects[1].id;
+    expect(context.projectId).toBe(directProject.id);
+    expect(context.workspacePath).toBe(directProject.path);
+    expect(context.actionableProjectIds).toContain(directProject.id);
   });
 
   it('uses explicit workspace overrides ahead of task worktrees during merge workflows', async () => {

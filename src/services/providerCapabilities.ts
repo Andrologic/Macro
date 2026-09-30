@@ -7,38 +7,19 @@ export interface ProviderCapabilityProfile {
   supportsModelScan: boolean;
 }
 
-const DEFAULT_OPENAI_COMPATIBLE_CAPABILITIES: ProviderCapabilityProfile = {
-  providerId: 'custom',
-  httpOnly: true,
-  usesLocalSecretStore: true,
-  usesLocalRuntime: false,
-  supportsModelScan: true,
+const OPENAI_COMPATIBLE: ProviderCapabilityProfile = {
+  providerId: 'custom', providerType: 'openai', httpOnly: true,
+  usesLocalSecretStore: true, usesLocalRuntime: false, supportsModelScan: true,
 };
-
-const BUILT_IN_PROVIDER_CAPABILITIES: Record<string, ProviderCapabilityProfile> = {
-  'opencode-go': {
-    providerId: 'opencode-go',
-    providerType: 'openai',
-    httpOnly: true,
-    usesLocalSecretStore: true,
-    usesLocalRuntime: false,
-    supportsModelScan: true,
-  },
+const PROFILES: Record<string, ProviderCapabilityProfile> = {
+  'opencode-go': { ...OPENAI_COMPATIBLE, providerId: 'opencode-go' },
   copilot: {
-    providerId: 'copilot',
-    providerType: 'copilot',
-    httpOnly: false,
-    usesLocalSecretStore: false,
-    usesLocalRuntime: true,
-    supportsModelScan: true,
+    providerId: 'copilot', providerType: 'copilot', httpOnly: false,
+    usesLocalSecretStore: false, usesLocalRuntime: true, supportsModelScan: true,
   },
   chatgpt: {
-    providerId: 'chatgpt',
-    providerType: 'chatgpt',
-    httpOnly: false,
-    usesLocalSecretStore: true,
-    usesLocalRuntime: false,
-    supportsModelScan: true,
+    providerId: 'chatgpt', providerType: 'chatgpt', httpOnly: false,
+    usesLocalSecretStore: true, usesLocalRuntime: false, supportsModelScan: true,
   },
 };
 
@@ -47,22 +28,14 @@ export const resolveProviderCapabilities = (params: {
   providerType?: string;
   baseUrl?: string;
 }): ProviderCapabilityProfile => {
-  const providerId = params.providerId.trim().toLowerCase();
-  const providerType = params.providerType?.trim().toLowerCase();
-  const baseUrl = params.baseUrl?.trim().toLowerCase() ?? '';
-  const builtIn = BUILT_IN_PROVIDER_CAPABILITIES[providerId];
-
-  if (builtIn) {
-    return builtIn;
+  const id = params.providerId.trim().toLowerCase();
+  // Native dispatch uses the configured type. ID inference is only for callers
+  // without that configuration, such as model discovery before provider setup.
+  const type = params.providerType?.trim().toLowerCase() ||
+    (id === 'copilot' || id === 'chatgpt' ? id : 'openai');
+  if (type === 'copilot' || type === 'chatgpt') return { ...PROFILES[type] };
+  if (type === 'openai' && (id === 'opencode-go' || params.baseUrl?.trim().toLowerCase().includes('opencode.ai'))) {
+    return { ...PROFILES['opencode-go'] };
   }
-
-  if (baseUrl.includes('opencode.ai')) {
-    return BUILT_IN_PROVIDER_CAPABILITIES['opencode-go'];
-  }
-
-  return {
-    ...DEFAULT_OPENAI_COMPATIBLE_CAPABILITIES,
-    providerId,
-    providerType,
-  };
+  return { ...OPENAI_COMPATIBLE };
 };

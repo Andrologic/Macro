@@ -1,7 +1,7 @@
 use crate::app_updates::{diagnostic_manifest, StagedUpdatePhase};
 use crate::commands::mcp::{McpRuntimeManager, McpRuntimeStatus};
-use crate::commands::{DbInitializationState, DbPool};
 use crate::config::ConfigManager;
+use crate::core::db_state::{DbInitializationState, DbPool};
 use crate::core::platform_log_dir;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
@@ -31,6 +31,7 @@ struct StoredDiagnosticReport {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct DiagnosticReportPreview {
     report_id: String,
     suggested_file_name: String,
