@@ -121,10 +121,10 @@ export class ConversationCaptures {
     });
   }
   /** Fresh identity/activity validation without hydrating histories. */
-  refreshCatalogMetadata(): Promise<CatalogObservation> {
+  refreshCatalogMetadata(reliability = false): Promise<CatalogObservation> {
     return this.serial(async () => {
       const { observation, revision, resources } = await this.observe(false, new Set());
-      const refs = observation.conversations.map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
+      const refs = observation.conversations.filter(conversation => reliability || conversation.scope_mode !== 'Architect').map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
       return { revision, refs, resources };
     });
   }

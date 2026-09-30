@@ -32,11 +32,11 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       task_kind: task.task_kind ?? null, archived: Boolean(task.archived_at), merged: Boolean(task.merged_at),
       finalization: task.task_source === 'plan_finalization', merge_state: task.merge_workflow_summary?.phase ?? null,
     })),
-    load: async (kind, ref, policy) => {
+    load: async (kind, ref, policy, selection) => {
       const text = (value: string) => exportDetailText(value, policy);
       if (kind === 'tools') {
         if (!('conversation_id' in ref) || ref.instance_id !== instanceId) return fail('not_found');
-        const catalog = await conversations.refreshCatalogMetadata();
+        const catalog = await conversations.refreshCatalogMetadata(selection?.reliability ?? false);
         if (!catalog.refs.some(candidate => stableJson(candidate) === stableJson(ref))) return fail('not_found');
         const metadata = await pilotToolTracesList(ref.conversation_id);
         const items: ContentTool[] = [];
@@ -48,7 +48,7 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
           items.push({ trace_id: traceId, message_id: pilotTaskId(trace.message_id), position: items.length,
             tool_name: text(trace.tool_name), status: trace.status, has_detail: trace.has_detail });
         }
-        const current = await conversations.refreshCatalogMetadata();
+        const current = await conversations.refreshCatalogMetadata(selection?.reliability ?? false);
         if (!current.refs.some(candidate => stableJson(candidate) === stableJson(ref))) return fail('not_found');
         return { fingerprint: [metadata.revision, metadata.traces], items, read: async id => {
           const target = details.get(id); if (!target) return null;

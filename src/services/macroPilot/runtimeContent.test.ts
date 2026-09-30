@@ -182,7 +182,7 @@ function harness() {
   });
   const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   async function deliver(input: ContentRequest, source = 'session:mobile') {
-    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input };
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input, ...('consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
     const start = results.length; queue.push(delivery); wake?.();
     await until(() => results.slice(start).some(result => result.request_id === input.request_id));
@@ -602,5 +602,36 @@ it('falls back from the reliability offer while retaining negotiated task capabi
     conversations[0].title = 'Legacy edit';
     await until(() => h.events.some(e => e.change.kind === 'conversation.changed'));
     expect(h.events.some(e => e.change.kind === 'conversation.resource_changed')).toBe(false);
+  } finally { await h.runtime.stop(); }
+});
+
+it('requires negotiated Architect visibility for tool lists, continuations and details', async () => {
+  conversations[0].scope_mode = 'Architect';
+  messages[0].role = 'assistant';
+  messages[0].tool_traces_json = JSON.stringify(Array.from({ length: 51 }, (_, i) => ({ tool_call_id: `tool:${i}`, tool_name: 'read_file', status: 'done', detail: 'Synthetic public detail' })));
+  const h = harness();
+  const target = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+  const consistency = 'network-reliability-1';
+  try {
+    await h.runtime.start();
+    expect(await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }))).toMatchObject({ result: { items: [] } });
+    const before = nativeCalls.filter(name => name === 'pilot_tool_traces_list').length;
+    expect(await h.deliver(request('conversation.tools.list', { ref: target }))).toMatchObject({ type: 'error', code: 'not_found' });
+    expect(nativeCalls.filter(name => name === 'pilot_tool_traces_list')).toHaveLength(before);
+    const first = await h.deliver(request('conversation.tools.list', { ref: target, consistency }));
+    if (first.type !== 'response' || first.operation !== 'conversation.tools.list') throw Error('Architect tool list failed');
+    expect(first.result.items).toHaveLength(50);
+    const continuation = { snapshot_id: first.result.page.snapshot_id, cursor: first.result.page.next_cursor };
+    const detail = { ref: target, snapshot_id: first.result.page.snapshot_id, item_id: first.result.items[0].trace_id, offset_bytes: 0 };
+    expect(await h.deliver(request('conversation.tools.list', { ref: target, continuation }))).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+    expect(await h.deliver(request('conversation.tool.read', detail))).toMatchObject({ type: 'error', code: 'snapshot_expired' });
+    expect(await h.deliver(request('conversation.tools.list', { ref: target, continuation, consistency }))).toMatchObject({ result: { page: { offset: 50 }, items: expect.any(Array) } });
+    expect(await h.deliver(request('conversation.tool.read', { ...detail, consistency }))).toMatchObject({ result: { content: { text: 'Synthetic public detail' } } });
+    // A previously legal legacy capture must lose visibility when its mode changes.
+    conversations[0].scope_mode = 'Chat';
+    const legacy = await h.deliver(request('conversation.tools.list', { ref: target }));
+    if (legacy.type !== 'response' || legacy.operation !== 'conversation.tools.list') throw Error('Legacy Chat tool list failed');
+    conversations[0].scope_mode = 'Architect';
+    expect(await h.deliver(request('conversation.tool.read', { ...detail, snapshot_id: legacy.result.page.snapshot_id }))).toMatchObject({ type: 'error', code: 'not_found' });
   } finally { await h.runtime.stop(); }
 });

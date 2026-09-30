@@ -3962,6 +3962,9 @@
             },
             "continuation": {
               "$ref": "#/$defs/continuation"
+            },
+            "consistency": {
+              "const": "network-reliability-1"
             }
           }
         }
@@ -4084,6 +4087,9 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 9007199254740991
+            },
+            "consistency": {
+              "const": "network-reliability-1"
             }
           }
         }

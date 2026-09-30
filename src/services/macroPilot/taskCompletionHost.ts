@@ -19,14 +19,14 @@ export interface DetailSource {
 }
 export interface TaskCompletionSource {
   cards(policy: TextPolicy): Promise<ContentTaskCard[]>;
-  load(kind: DetailKind, ref: DetailRef, policy: TextPolicy): Promise<DetailSource>;
+  load(kind: DetailKind, ref: DetailRef, policy: TextPolicy, selection?: { reliability: boolean }): Promise<DetailSource>;
   execute(ref: ContentTaskRef, action: TaskAction, title: string | undefined, beforeEffect: () => Promise<void>): Promise<void>;
 }
 interface Revision { hash: string; revision: number }
 interface Receipt { digest: string; revision: number; state: 'pending' | 'applied' }
 interface Journal { version: 1; records: Record<string, Revision>; receipts: Record<string, Receipt> }
 interface Capture {
-  binding: string; key: string; kind: CaptureKind; ref: CaptureRef; revision: number;
+  reliability: boolean; binding: string; key: string; kind: CaptureKind; ref: CaptureRef; revision: number;
   observed: number; policy: string; cursors: Map<string, number>; bodies: Map<string, { hash: string; bytes: number }>;
 }
 const fail = (code: string): never => { throw new Error(code); };
@@ -69,9 +69,9 @@ export class TaskCompletionHost {
     const size = [...this.captures.values()].reduce((sum, c) => sum + [...c.bodies.values()].reduce((bytes, body) => bytes + body.bytes, 0) + utf8Bytes(stableJson({ ...c, cursors: [...c.cursors], bodies: [...c.bodies] })), 0);
     if (size > 8 * 1024 * 1024 || this.captures.size > 128) fail('resource_limit');
   }
-  private async load(kind: CaptureKind, ref: CaptureRef, policy: TextPolicy) {
+  private async load(kind: CaptureKind, ref: CaptureRef, policy: TextPolicy, reliability = false) {
     const cards = kind === 'cards' ? await this.deps.source.cards(policy) : undefined;
-    const source: DetailSource = cards ? { fingerprint: cards, items: cards } : await this.deps.source.load(kind as DetailKind, ref as DetailRef, policy);
+    const source: DetailSource = cards ? { fingerprint: cards, items: cards } : await this.deps.source.load(kind as DetailKind, ref as DetailRef, policy, { reliability });
     if ((source.items?.length ?? 0) > 2000 || utf8Bytes(stableJson(source)) > 8 * 1024 * 1024) fail('resource_limit');
     const key = await sha([kind, ref]);
     const hash = await sha([source.fingerprint, source.task, source.items, policy]);
@@ -95,7 +95,7 @@ export class TaskCompletionHost {
     const captures = [...this.captures.values()];
     if (!captures.length) return;
     const capture = captures[this.observeOffset++ % captures.length];
-    try { await this.load(capture.kind, capture.ref, policy); }
+    try { await this.load(capture.kind, capture.ref, policy, capture.reliability); }
     catch {
       // An inaccessible source invalidates all its captures, without exposing why.
       for (const [id, item] of this.captures) if (item.key === capture.key) this.captures.delete(id);
@@ -106,14 +106,19 @@ export class TaskCompletionHost {
       await this.save(next);
     }
   }
+  private reliability(delivery: ContentDelivery): boolean {
+    const selected = 'consistency' in delivery.request.body && delivery.request.body.consistency === 'network-reliability-1';
+    if (selected && !delivery.capabilities?.includes('network-reliability-1')) fail('validation_failed');
+    return selected;
+  }
   private binding(delivery: ContentDelivery, kind: CaptureKind, ref: CaptureRef) {
-    return stableJson([delivery.account_id, delivery.source_session_id, delivery.instance_id, kind, ref]);
+    return stableJson([delivery.account_id, delivery.source_session_id, delivery.instance_id, kind, ref, this.reliability(delivery)]);
   }
   private async current(delivery: ContentDelivery, id: string, kind: CaptureKind, ref: CaptureRef, policy: TextPolicy) {
     this.prune();
     const capture = this.captures.get(id);
     if (!capture || capture.binding !== this.binding(delivery, kind, ref) || capture.policy !== await sha(policy)) return fail('snapshot_expired');
-    const loaded = await this.load(kind, ref, policy);
+    const loaded = await this.load(kind, ref, policy, this.reliability(delivery));
     if (loaded.revision !== capture.revision) return fail('stale_revision');
     return { capture, source: loaded.source };
   }
@@ -125,6 +130,7 @@ export class TaskCompletionHost {
   async handle(delivery: ContentDelivery, policy: TextPolicy, authorize: () => Promise<void>): Promise<unknown> {
     this.prune();
     const request = delivery.request;
+    this.reliability(delivery);
     if (request.operation === 'task.action') {
       const body = request.body;
       const key = await sha([delivery.account_id, delivery.source_session_id, body.idempotency_key]);
@@ -204,9 +210,9 @@ export class TaskCompletionHost {
       if (!capture.cursors.has(continuation.cursor)) return fail('snapshot_expired');
       offset = capture.cursors.get(continuation.cursor)!;
     } else {
-      const loaded = await this.load(kind, ref, policy); source = loaded.source;
+      const loaded = await this.load(kind, ref, policy, this.reliability(delivery)); source = loaded.source;
       id = crypto.randomUUID();
-      capture = { binding: this.binding(delivery, kind, ref), key: loaded.key, kind, ref, revision: loaded.revision,
+      capture = { reliability: this.reliability(delivery), binding: this.binding(delivery, kind, ref), key: loaded.key, kind, ref, revision: loaded.revision,
         observed: this.now(), policy: await sha(policy), cursors: new Map(), bodies: new Map() };
       this.captures.set(id, capture);
       try { this.budget(); } catch (error) { this.captures.delete(id); throw error; }

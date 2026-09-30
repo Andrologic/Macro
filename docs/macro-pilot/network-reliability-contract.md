@@ -18,11 +18,13 @@ this capability. Installing the desktop alone does not enable it on old peers.
    The relay selects it only if the live producer and consumer both offer it.
    Its selection remains bound to account, session, instance, access revision
    and producer generation. ACCOUNT negotiation cannot select this capability.
-3. Enhanced `projects.list`, `conversations.list` and `conversation.read` requests
+3. Enhanced `projects.list`, `conversations.list`, `conversation.read`,
+   `conversation.tools.list` and `conversation.tool.read` requests
    set `body.consistency: "network-reliability-1"`. The relay checks its stored
    selection, then attaches `capabilities: ["network-reliability-1"]` to the
    producer delivery. The desktop rejects an enhanced request without that
-   attestation. Capabilities confer no authorization; the existing fresh
+   attestation. Tool operations also require the existing `task-details-1`
+   selection. Capabilities confer no authorization; the existing fresh
    authorization before emission still applies, including cached responses.
 4. The producer returns extensions only on opted-in requests. Old requests keep
    their shapes, revision semantics and Chat/Implement catalog. Cursor ownership
@@ -116,7 +118,11 @@ exists. Their diagnostic is delivered through the structured summary.
 Local Macro failures remain `activity: error` with a null provider diagnosis.
 
 Architect is exposed only to enhanced clients, as `kind: "conversation"` with
-`mode: "Architect"`. Its transcript is readable. The existing v1 send command
+`mode: "Architect"`. Its transcript and tool traces are readable only with the
+consistency marker and
+attested selection, including list continuations and detail chunks. Tool captures
+also bind their consistency mode; changing mode requires a new capture.
+The existing v1 send command
 still requires actual Chat mode, no task association, fresh configuration,
 no active run/question/approval, and a desktop preflight. Implement references
 still require a unique task and project binding. Clients must show the composer
@@ -125,7 +131,7 @@ runtime and hydrated transcript decide eligibility.
 
 Keep these independent signals when presenting an action:
 
-- A1 `applied`/`duplicate` means the desktop accepted the command effect. It does
+- A1 `accepted`/`duplicate` means the desktop accepted the command effect. It does
   not mean the provider finished successfully.
 - `activity: busy` means the conversation is running.
 - `activity: error` plus `provider_error` means a provider failure was observed.
