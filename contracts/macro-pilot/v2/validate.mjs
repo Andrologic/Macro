@@ -40,6 +40,7 @@ export function validateMessage(message) {
     reject(message.request_id !== message.request.request_id || message.account_id !== message.request.account_id, 'delivery correlation mismatch');
     const scope = message.request.body.ref ?? message.request.body;
     reject(scope.instance_id !== message.instance_id, 'delivery instance mismatch');
+    reject(message.request.body.consistency === 'network-reliability-1' && !(message.capabilities ?? []).includes('network-reliability-1'), 'unattested reliability selection');
     reject(!validateMessage(message.request).valid, 'invalid delivered request');
   }
   if (message.type === 'delivery.result') {
@@ -72,6 +73,7 @@ export function validateMessage(message) {
     });
   }
   if (message.type === 'request') {
+    reject(message.body.known_revision !== undefined && (message.body.consistency !== 'network-reliability-1' || message.body.continuation), 'conditional projects require negotiated initial request');
     reject(message.body.continuation && message.body.snapshot_id && message.body.continuation.snapshot_id !== message.body.snapshot_id, 'continuation snapshot mismatch');
   }
   if (message.type === 'response' && message.operation === 'review.get') {
@@ -133,10 +135,17 @@ export function validateExchange(request, response) {
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
       if (result.page && !body.continuation) reject(result.page.offset !== 0, 'initial page starts after zero');
       if (request.operation === 'conversations.list') {
+        for (const item of result.items) {
+          const enhanced = body.consistency === 'network-reliability-1';
+          reject(enhanced !== ('content_revision' in item && 'mode' in item && 'provider_error' in item), 'summary selection mismatch');
+          reject(!enhanced && ('content_revision' in item || 'mode' in item || 'provider_error' in item), 'legacy summary extension');
+          reject(item.provider_error != null && item.activity !== 'error', 'provider diagnosis requires error');
+        }
         for (const item of result.items) reject(item.ref.instance_id !== body.instance_id || item.ref.kind !== body.kind, 'conversation catalog scope mismatch');
       }
       if (request.operation === 'projects.list') {
-        for (const item of result.items) reject(item.instance_id !== body.instance_id, 'project instance mismatch');
+        if (result.not_modified) reject(body.consistency !== 'network-reliability-1' || body.known_revision !== result.revision || body.continuation, 'invalid conditional response');
+        for (const item of result.items ?? []) reject(item.instance_id !== body.instance_id, 'project instance mismatch');
       }
       if (request.operation === 'task.get') reject(['instance_id', 'workspace_id', 'task_id'].some(key => body.ref[key] !== result.ref[key]), 'task reference mismatch');
       if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');

@@ -77,6 +77,7 @@ function recordedFinalText(content: string): string | null {
   return (output + rest).trim();
 }
 export function messageText(message: DbMessage, generating: boolean, policy: TextPolicy, attestedText?: string | null): ExportText {
+  if (message.role === 'assistant' && message.completion_reason === 'provider_error') return { content_state: 'withheld', reason: 'unknown_provenance' };
   if (message.role === 'assistant' && generating) return { content_state: 'pending', reason: 'generating' };
   if (message.role === 'user') {
     const whole = controlledText(message.content, policy);

@@ -27,7 +27,8 @@ export function desktopConversationCaptureSource(ports: DesktopStorePorts): Conv
       const runtime = ports.chat().conversationRuntimeById[conversationId];
       if (!runtime) return { activity: 'unknown', generatingMessageId: null };
       const busy = runtime.phase !== 'idle' && runtime.phase !== 'error';
-      return { activity: busy ? 'busy' : runtime.phase === 'error' ? 'error' : 'idle', generatingMessageId: runtime.assistantMessageId ?? null };
+      return { activity: busy ? 'busy' : runtime.phase === 'error' ? 'error' : 'idle', generatingMessageId: runtime.assistantMessageId ?? null,
+        ...(runtime.phase === 'error' && runtime.lastErrorOrigin === 'provider' ? { providerFailure: runtime.providerFailure ?? { category: 'unknown', message: 'provider_failed', recovery: 'review_before_retry' } } : {}) };
     },
   };
 }

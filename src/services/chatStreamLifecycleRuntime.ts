@@ -247,6 +247,8 @@ export const createChatStreamLifecycleRuntime = (params: {
     assistantMessage: ChatMessage | undefined,
   ): Promise<boolean> => {
     if (errorPresentation.displayTarget === "transcript") {
+      // This local diagnostic contains provider-authored text, not final output.
+      adapters.updateMessageFields(stream.assistantMessageId, { completion_reason: "provider_error" });
       adapters.updateMessageContent(
         stream.assistantMessageId,
         buildAssistantContentWithProviderError(

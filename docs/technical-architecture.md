@@ -1578,6 +1578,8 @@ Le [contrat public v2](macro-pilot/content-contract-v2.md) sépare la négociati
 
 Les commandes natives `pilot_content_policy` et `pilot_review_commit` passent par les wrappers typés de `tauriIpc.ts`. La première fournit des valeurs du coffre uniquement pour détecter les contenus à ne pas exporter. La seconde conserve le verrou du dépôt, acquiert le verrou d'écriture SQLite, recontrôle la capture, les branches suivies, la politique et l'échéance, puis enregistre ensemble décision, reçu et événement. Elle ne modifie pas Git. Les écritures d'un éditeur externe après le dernier contrôle ne sont pas rendues atomiques avec SQLite.
 
+L’extension négociée [network-reliability-1](macro-pilot/network-reliability-contract.md) ajoute des révisions durables par conversation, des diagnostics provider issus d’une liste fermée et une lecture conditionnelle des projets. Le journal de captures migre en version 3 ; les reçus des commandes restent indépendants. Les réponses et événements destinés aux anciens clients conservent leurs règles de compatibilité décrites dans ce contrat.
+
 Les budgets conservateurs sont de 24 Mio pour les captures de conversations, 32 Mio pour les captures natives et 7 Mio pour les métadonnées et réponses du host. Les limites de pagination, d'expiration et d'enveloppe restent celles du contrat. La préparation native refuse actuellement Windows et WSL pour le contenu v2 ; ACCOUNT et la supervision v1 gardent leurs capacités propres. Le [guide d'intégration](macro-pilot/content-consumer-guide.md) décrit les vérifications nécessaires avec un relais et un compagnon compatibles.
 
 ---

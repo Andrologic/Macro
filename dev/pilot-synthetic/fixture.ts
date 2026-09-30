@@ -82,9 +82,10 @@ export function syntheticFixture() {
       } }, 201);
       if (path === '/pilot/extensions/negotiate') return json({ negotiation_version: '1.0', type: 'negotiated', request_id: body.request_id, selected_version: '2.0' });
       if (path === '/pilot/v2/account/requests') {
+        const observed = Date.now();
         const identity = { ...account.identity, account_id: account.account_id, session_id: sessionId, revision: 1 };
         const result = body.operation === 'account.get' ? identity : body.operation === 'sessions.list' ? {
-          page: { snapshot_id: 'snapshot:synthetic', revision: 1, observed_at: new Date().toISOString(), expires_at: expiry(), export_policy_revision: 'visible-1', offset: 0, total: 1, next_cursor: null },
+          page: { snapshot_id: 'snapshot:synthetic', revision: 1, observed_at: new Date(observed).toISOString(), expires_at: new Date(observed + 300_000).toISOString(), export_policy_revision: 'visible-1', offset: 0, total: 1, next_cursor: null },
           items: [{ session_id: sessionId, device_id: session.device_id, label: 'Synthetic desktop', client_kind: 'desktop', state: 'active', created_at: session.issued_at, expires_at: expiry() }],
         } : body.operation === 'session.logout' ? { outcome: 'applied', revision: 2 } : undefined;
         if (!result) { failures.push('unknown account operation'); throw Error('Unexpected account operation'); }

@@ -1,3 +1,4 @@
+import { safeProviderFailure } from './chatErrorPresentation';
 import { snapshotScopedMcpServers } from "./mcp/runtimeSnapshot";
 import { createChatToolDispatch, type ChatToolDispatchPorts } from "./chatToolDispatch";
 import type { ConversationCompactionStatus } from "./contextCompactionSession";
@@ -450,6 +451,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
             abortController: null,
             lastError: presentation.message,
             lastErrorOrigin: presentation.origin,
+            providerFailure: safeProviderFailure(presentation),
             lastErrorDisplayTarget: presentation.displayTarget,
           }, presentation.displayTarget === "composer" ? { globalLastError: presentation.message } : undefined);
 

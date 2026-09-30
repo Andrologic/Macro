@@ -114,3 +114,11 @@ and hydrated transcript. It preserves the conversation's project scope, provider
 model and reasoning effort. Active desktop selections do not retarget the send.
 Retries retain the complete original command and idempotency key; an uncertain
 execution remains blocked until local reconciliation.
+
+## Network reliability extension
+
+The [network reliability contract](../../../docs/macro-pilot/network-reliability-contract.md)
+defines negotiated per-conversation captures, safe provider diagnostics for Chat,
+Architect and Implement, conditional projects, migration and legacy behavior.
+Relay and mobile consumers must implement its selection and invalidation rules
+before enabling `network-reliability-1`.

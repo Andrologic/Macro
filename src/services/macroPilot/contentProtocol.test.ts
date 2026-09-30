@@ -89,3 +89,19 @@ describe('browser content protocol', () => {
     expect(validatePageContinuation(first, second).valid).toBe(false);
   });
 });
+
+it('correlates reliability fixtures and refuses conditional and summary downgrades', async () => {
+  const catalog = await fixture<ContentRequest<'conversations.list'>>('reliability-catalog-request');
+  const response = await fixture('reliability-catalog-response');
+  expect(validateContentResponse(catalog, response)).toBe(true);
+  expect(validateContentResponse(catalog, await fixture('reliability-provider-failure'))).toBe(true);
+  expect(validateContentResponse(await fixture('request-conversations.list'), response)).toBe(false);
+  expect(validateContentResponse(catalog, await fixture('response-conversations.list'))).toBe(false);
+  const request = await fixture<ContentRequest<'projects.list'>>('reliability-projects-request');
+  const unchanged = await fixture('reliability-projects-unchanged');
+  expect(validateContentResponse(request, unchanged)).toBe(true);
+  expect(validateContentResponse({ ...request, body: { ...request.body, known_revision: 2 } }, unchanged)).toBe(false);
+  expect(validateContentResponse(await fixture('request-projects.list'), unchanged)).toBe(false);
+  expect(validateContentResponse(await fixture('reliability-negotiate'), await fixture('reliability-negotiated'))).toBe(true);
+  expect(validateContentResponse(await fixture('negotiate'), await fixture('reliability-negotiated'))).toBe(false);
+});

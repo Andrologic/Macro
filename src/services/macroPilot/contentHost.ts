@@ -1,5 +1,5 @@
 import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSource } from './taskCompletionHost';
-import { ConversationCaptures, ConversationCaptureError, type ConversationRef } from './conversationCaptures';
+import { ConversationCaptures, ConversationCaptureError, type ConversationRef, type CatalogObservation } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
 import { validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
@@ -12,7 +12,7 @@ interface ReviewRecord { ref: ContentReviewRef; token: string; revision: number;
 interface Receipt { digest: string; revision: number }
 interface Journal {
   version: 1; stream: string; sequence: number; outbox: ContentEvent[];
-  projects: number; conversations: number; refs: ConversationRef[];
+  resources?: Record<string, number>; projects: number; conversations: number; refs: ConversationRef[];
   reviews: Record<string, ReviewRecord>; receipts: Record<string, Receipt>;
 }
 interface Snapshot { binding: string; target: ReviewTarget; info: ReviewCaptureInfo; capture: ContentCapture; cursors: Record<string, string> }
@@ -45,6 +45,8 @@ export class ContentHost {
   private replies = new Map<string, { digest: string; expires: number; response: unknown }>();
   private policyKey: string | null = null;
   private reviewOffset = 0;
+  private reliability = false;
+  enableReliability(): void { this.reliability = true; }
   private readonly taskCompletion?: TaskCompletionHost;
   private readonly now: () => number;
   constructor(private readonly deps: ContentHostDependencies) {
@@ -129,14 +131,14 @@ export class ContentHost {
     // describes the baseline; it does not invalidate content exposed afterwards.
     await this.serial(async () => {
       const next = structuredClone(this.state);
-      next.projects = projects; next.conversations = conversations.revision; next.refs = conversations.refs;
+      next.projects = projects; next.conversations = conversations.revision; next.refs = conversations.refs; next.resources = conversations.resources;
       await this.save(next);
     });
   }
   async observe(): Promise<void> {
     await this.serial(() => this.policy());
     let projects: number | null = null;
-    let conversations: { revision: number; refs: ConversationRef[] } | null = null;
+    let conversations: CatalogObservation | null = null;
     let observationError: unknown;
     try { projects = await this.deps.conversations.refreshProjects(); }
     catch (error) { observationError = error; }
@@ -158,8 +160,12 @@ export class ContentHost {
         this.event(next, { kind: 'conversations.changed', scope: { instance_id: this.deps.instanceId }, revision: conversations.revision });
         const present = new Set(conversations.refs.map(stableJson));
         for (const ref of next.refs) if (!present.has(stableJson(ref))) this.event(next, { kind: 'conversation.removed', scope: ref, revision: conversations.revision });
-        for (const ref of conversations.refs) this.event(next, { kind: 'conversation.changed', scope: ref, revision: conversations.revision });
-        next.refs = conversations.refs;
+        if (!this.reliability) for (const ref of conversations.refs) this.event(next, { kind: 'conversation.changed', scope: ref, revision: conversations.revision });
+        if (this.reliability) for (const ref of conversations.refs) {
+          const key = stableJson(ref); const revision = conversations.resources[key];
+          if (next.resources?.[key] !== revision) this.event(next, { kind: 'conversation.resource_changed', scope: ref, revision });
+        }
+        next.refs = conversations.refs; next.resources = conversations.resources;
       }
       if (stableJson(next) !== stableJson(this.state)) await this.save(next);
       await this.taskCompletion?.observe(await this.policy());
@@ -222,9 +228,11 @@ export class ContentHost {
     return snapshot;
   }
   private async read(delivery: ContentDelivery, request: ContentRequest): Promise<unknown> {
-    const scope = { accountId: delivery.account_id, sessionId: delivery.source_session_id, instanceId: delivery.instance_id };
+    const body = request.body as { consistency?: string };
+    const scope = { accountId: delivery.account_id, sessionId: delivery.source_session_id, instanceId: delivery.instance_id, reliability: body.consistency === 'network-reliability-1' };
+    if (scope.reliability && !delivery.capabilities?.includes('network-reliability-1')) failure('validation_failed');
     switch (request.operation) {
-      case 'projects.list': return this.deps.conversations.projectsList(scope, request.body.continuation);
+      case 'projects.list': if (request.body.known_revision !== undefined) return this.deps.conversations.projectsConditional(scope, request.body.known_revision); return this.deps.conversations.projectsList(scope, request.body.continuation);
       case 'conversations.list': return this.deps.conversations.conversationsList(scope, request.body.kind, request.body.continuation);
       case 'conversation.read': return this.deps.conversations.conversationRead(scope, request.body.ref, request.body.continuation);
       case 'review.get': {
@@ -274,7 +282,7 @@ export class ContentHost {
       const body = request.body as { instance_id?: string; ref?: { instance_id: string } };
       if ((body.instance_id ?? body.ref?.instance_id) !== this.deps.instanceId) failure('validation_failed');
       const replyKey = await hash([delivery.account_id, delivery.source_session_id, delivery.request_id]);
-      const requestDigest = await hash(request);
+      const requestDigest = await hash([request, delivery.capabilities ?? []]);
       let deadline = 0;
       const guard = () => { this.check(); if (this.now() >= deadline || this.now() >= Date.parse(delivery.expires_at)) failure('unavailable'); };
       const authorizeNow = async () => { this.check(); deadline = Date.parse(await authorize(delivery)); if (!Number.isFinite(deadline) || deadline > this.now() + 10_000 || deadline > Date.parse(delivery.expires_at)) failure('unavailable'); guard(); };
@@ -317,6 +325,12 @@ export class ContentHost {
         } else {
           const cached = this.replies.get(replyKey);
           if (cached && cached.expires > this.now()) {
+            if (request.operation === 'projects.list' || request.operation === 'conversations.list' || request.operation === 'conversation.read') {
+              const result = (cached.response as { result: { page?: { snapshot_id: string } } }).result;
+              if (result.page) await this.deps.conversations.validateCached({ accountId: delivery.account_id, sessionId: delivery.source_session_id,
+                instanceId: delivery.instance_id, reliability: request.body.consistency === 'network-reliability-1' }, request.operation,
+                request.operation === 'conversation.read' ? request.body.ref : request.operation === 'conversations.list' ? request.body.kind : null, result.page.snapshot_id);
+            }
             if (request.operation === 'diff.files' || request.operation === 'diff.read') this.snapshot(delivery, request.body.ref, request.body.snapshot_id);
             if (request.operation === 'review.get') {
               const capture = (cached.response as { result: ContentCapture }).result;
@@ -334,7 +348,7 @@ export class ContentHost {
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
         response = { contract_version: '2.0', type: 'response', request_id: request.request_id, account_id: request.account_id, operation: request.operation, result };
         if (!validateContentResponse(request, response)) failure('content_unavailable');
-        if (request.operation !== 'review.verdict' && !TASK_COMPLETION_OPERATIONS.has(request.operation)) {
+        if (request.operation !== 'review.verdict' && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }

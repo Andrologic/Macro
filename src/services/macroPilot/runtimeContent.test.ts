@@ -123,6 +123,8 @@ function harness() {
   const events: ContentEvent[] = [];
   const requests: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
   let wake: (() => void) | undefined;
+  let rejectReliability = false;
+  let acknowledgedLegacyPoll = false;
   let loseResult = false;
   let lostResultDelay = 0;
   let loseEvent = false;
@@ -153,6 +155,8 @@ function harness() {
       const signal = init?.signal;
       if (path.endsWith('/poll')) {
         if (path.includes('/v1/')) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); throw Error('aborted'); }
+        if (rejectReliability && (body.capabilities as string[] | undefined)?.includes('network-reliability-1')) return json({ code: 'validation_failed' }, 422);
+        if (rejectReliability && !acknowledgedLegacyPoll) { acknowledgedLegacyPoll = true; return new Response(null, { status: 204 }); }
         while (!queue.length && !signal?.aborted) await new Promise<void>(resolve => { wake = resolve; signal?.addEventListener('abort', () => resolve(), { once: true }); });
         if (signal?.aborted) throw Error('aborted');
         return json(queue.shift()!);
@@ -186,6 +190,7 @@ function harness() {
     expect(validateContentMessage(result)).toBe(true); return result.response;
   }
   return { client, runtime, deliver, results, events, requests, values,
+    legacyRelay: () => { rejectReliability = true; },
     waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
     waitEvents: (wait: Promise<void>) => { eventWait = wait; },
     loseResult: (delay = 0) => { loseResult = true; lostResultDelay = delay; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
@@ -441,7 +446,7 @@ it('keeps first reads and pages valid while twelve unchanged review references a
     const review = await h.deliver(request('review.get', { ref }));
     const transcriptRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
     const transcript = await h.deliver(request('conversation.read', { ref: transcriptRef }));
-    if (projects.type !== 'response' || projects.operation !== 'projects.list' || review.type !== 'response' || review.operation !== 'review.get' || transcript.type !== 'response' || transcript.operation !== 'conversation.read') throw Error('first reads failed');
+    if (projects.type !== 'response' || projects.operation !== 'projects.list' || !('page' in projects.result) || review.type !== 'response' || review.operation !== 'review.get' || transcript.type !== 'response' || transcript.operation !== 'conversation.read') throw Error('first reads failed');
     expect(projects.result.page.total).toBe(105); expect(projects.result.items).toHaveLength(100);
     expect(transcript.result.page.total).toBe(105);
     await until(() => {
@@ -583,3 +588,19 @@ it('retries an identical result after its execution lease expires without execut
     expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
   } finally { await h.runtime.stop(); }
 }, 12000);
+
+it('falls back from the reliability offer while retaining negotiated task capabilities', async () => {
+  const h = harness(); h.legacyRelay();
+  try {
+    await h.runtime.start();
+    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 3);
+    const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll'));
+    expect(polls[0].body.capabilities).toContain('network-reliability-1');
+    expect(polls[1].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
+    const catalog = await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }));
+    expect(JSON.stringify(catalog)).not.toContain('content_revision');
+    conversations[0].title = 'Legacy edit';
+    await until(() => h.events.some(e => e.change.kind === 'conversation.changed'));
+    expect(h.events.some(e => e.change.kind === 'conversation.resource_changed')).toBe(false);
+  } finally { await h.runtime.stop(); }
+});

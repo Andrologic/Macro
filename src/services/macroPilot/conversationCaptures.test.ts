@@ -368,3 +368,71 @@ for (const lifecycle of ['expiry', 'clear'] as const) it(`stops transcript obser
   expect(renewed.page.revision).toBe(first.page.revision + 1);
   expect(renewed.items[0]).toHaveProperty('text', 'Changed after capture ended');
 });
+
+describe('negotiated independent conversation revisions', () => {
+  const selected = { ...scope, reliability: true };
+  it('keeps B cursors valid after A changes, while legacy cursors require a new capture', async () => {
+    const env = setup(); env.messages.push(message('m2'));
+    env.conversations.push(conversation('other'));
+    env.messages.push({ ...message('other-message'), conversation_id: 'other' });
+    const modern = await env.captures.conversationRead(selected, ref, undefined, 1);
+    const legacy = await env.captures.conversationRead(scope, ref, undefined, 1);
+    const other = { ...ref, conversation_id: 'other' };
+    await env.captures.conversationRead(selected, other);
+    env.messages[2].content = 'Changed A';
+    await env.captures.refreshCatalog();
+    const continued = await env.captures.conversationRead(selected, ref, { snapshot_id: modern.page.snapshot_id, cursor: modern.page.next_cursor! });
+    expect(continued.page.revision).toBe(modern.page.revision);
+    expect(continued.items[0].message_id).toBe('m2');
+    await expect(env.captures.conversationRead(scope, ref, { snapshot_id: legacy.page.snapshot_id, cursor: legacy.page.next_cursor! })).rejects.toMatchObject({ code: 'stale_revision' });
+    const catalog = await env.captures.conversationsList(selected, 'conversation');
+    expect(catalog.items.find(i => i.ref.conversation_id === 'chat')?.content_revision).toBe(modern.page.revision);
+    expect(catalog.page.revision).toBeGreaterThan(modern.page.revision);
+    await expect(env.captures.conversationRead(scope, ref, { snapshot_id: modern.page.snapshot_id, cursor: modern.page.next_cursor! })).rejects.toMatchObject({ code: 'validation_failed' });
+  });
+  for (const change of ['delete', 'recreate', 'policy', 'membership', 'same-chat'] as const) it(`invalidates only valid authority on ${change}`, async () => {
+    const env = setup(); env.messages.push(message('m2'));
+    if (change === 'membership') {
+      env.conversations[0] = { ...conversation('implement'), scope_mode: 'Implement', project_id: 'p1', task_id: 'task' };
+      env.messages.forEach(m => { m.conversation_id = 'implement'; });
+    }
+    const target = change === 'membership' ? { instance_id: 'instance', kind: 'implement' as const, workspace_id: 'workspace', task_id: pilotTaskId('task'), conversation_id: 'implement' } : ref;
+    const first = await env.captures.conversationRead(selected, target, undefined, 1);
+    if (change === 'delete' || change === 'recreate') env.conversations.splice(0);
+    if (change === 'policy') env.deps.policy = () => ({ revision: 'visible-1', secrets: ['replacement'] });
+    if (change === 'membership') env.deps.source.tasks = async () => [];
+    if (change === 'same-chat') env.messages[0].content = 'Own edit';
+    await env.captures.refreshCatalog();
+    if (change === 'recreate') env.conversations.push(conversation());
+    await expect(env.captures.conversationRead(selected, target, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! })).rejects.toMatchObject({ code: 'stale_revision' });
+  });
+  it('migrates v2 fingerprints without storing content or rolling back revisions', async () => {
+    const env = setup(); const old = await env.captures.conversationRead(scope, ref);
+    const journal = JSON.parse(env.stored!); delete journal.resources; journal.version = 2;
+    await env.deps.storage.compareAndSwap(env.stored, JSON.stringify(journal));
+    const restart = new ConversationCaptures(env.deps);
+    const page = await restart.conversationRead(selected, ref);
+    expect(page.page.revision).toBeGreaterThanOrEqual(old.page.revision);
+    expect(JSON.parse(env.stored!).version).toBe(3);
+    expect(env.stored).not.toContain('Bonjour');
+    expect(env.stored).not.toContain('boundary-secret');
+  });
+  it('exports Architect read-only metadata only to an opted-in client and supports conditional projects', async () => {
+    const env = setup(); env.conversations.push({ ...conversation('architect'), scope_mode: 'Architect' });
+    expect((await env.captures.conversationsList(scope, 'conversation')).items).toHaveLength(1);
+    expect((await env.captures.conversationsList(selected, 'conversation')).items.find(i => i.ref.conversation_id === 'architect')).toMatchObject({ mode: 'Architect', provider_error: null });
+    await expect(env.captures.conversationRead(scope, { ...ref, conversation_id: 'architect' })).rejects.toMatchObject({ code: 'not_found' });
+    expect((await env.captures.conversationRead(selected, { ...ref, conversation_id: 'architect' })).items).toEqual([]);
+    const projects = await env.captures.projectsList(selected);
+    const unchanged = await env.captures.projectsConditional(selected, projects.page.revision);
+    expect(unchanged).toMatchObject({ not_modified: true, revision: projects.page.revision });
+    env.deps.source.projects = async () => [{ id: 'p1', name: 'Renamed project' }];
+    expect(await env.captures.projectsConditional(selected, projects.page.revision)).toHaveProperty('items');
+  });
+});
+
+it('withholds persisted provider diagnostic text even with previous final evidence', () => {
+  const row = { ...message(), role: 'assistant', completion_reason: 'provider_error', content: '<think>private</think>Final plus raw diagnostic' };
+  expect(messageText(row, false, policy, 'Final plus raw diagnostic')).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
+  expect(completion(row.completion_reason)).toBe('unknown');
+});

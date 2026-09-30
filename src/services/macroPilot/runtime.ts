@@ -206,10 +206,14 @@ export class PilotRuntime {
     const base = `/pilot/v2/instances/${encodeURIComponent(instanceId)}/deliveries`;
     let failures = 0;
     let extended = true;
+    let reliability = true;
+    let advertised = false;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES] } : {}) }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reliability ? ['network-reliability-1'] : [])] } : {}) }, signal);
         if (signal.aborted) break;
+        advertised = true;
+        if (reliability) host.enableReliability();
         if (response.status === 204) { failures = 0; await pause(25, signal); continue; }
         const deliveryExpiresAt = Date.parse((response.data as ContentDelivery).expires_at);
         const result = await host.handle(response.data, async (delivery: ContentDelivery) => {
@@ -236,7 +240,7 @@ export class PilotRuntime {
       } catch (error) {
         if (signal.aborted) break;
         const status = object(error).status;
-        if (extended && (status === 400 || status === 422)) { extended = false; continue; }
+        if (!advertised && extended && (status === 400 || status === 422)) { if (reliability) reliability = false; else extended = false; continue; }
         this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal);
       }
     }
