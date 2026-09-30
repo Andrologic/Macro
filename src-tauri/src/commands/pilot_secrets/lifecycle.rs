@@ -20,8 +20,6 @@ thread_local! {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGSessionCopyCurrentDictionary() -> *const c_void;
-    static kCGSessionOnConsoleKey: *const c_void;
-    static kCGSessionLoginDoneKey: *const c_void;
 }
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -31,15 +29,23 @@ extern "C" {
 }
 
 fn active_console() -> bool {
-    // SAFETY: CG returns an owned CF dictionary or NULL. Only public Boolean
-    // session properties are inspected, and the owned dictionary is released.
+    // CGSession.h defines these keys as CFSTR macros, not exported symbols.
+    // NSString is toll-free bridged with CFString; keep both keys alive through
+    // the dictionary lookups.
+    let on_console = NSString::from_str("kCGSSessionOnConsoleKey");
+    let login_done = NSString::from_str("kCGSessionLoginDoneKey");
+    // SAFETY: CG returns an owned CF dictionary or NULL. The retained NSString
+    // keys are valid CFString keys. Only public Boolean session properties are
+    // inspected, and the owned dictionary is released exactly once.
     unsafe {
         let session = CGSessionCopyCurrentDictionary();
         if session.is_null() {
             return false;
         }
-        let active = CFDictionaryGetValue(session, kCGSessionOnConsoleKey) == kCFBooleanTrue
-            && CFDictionaryGetValue(session, kCGSessionLoginDoneKey) == kCFBooleanTrue;
+        let active = CFDictionaryGetValue(session, Retained::as_ptr(&on_console).cast())
+            == kCFBooleanTrue
+            && CFDictionaryGetValue(session, Retained::as_ptr(&login_done).cast())
+                == kCFBooleanTrue;
         CFRelease(session);
         active
     }
@@ -171,4 +177,16 @@ pub(super) fn install() {
         }
         *cell.borrow_mut() = Some(observer);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_and_reads_current_console_without_recovering_credentials() {
+        // Exercise the production FFI path so test linkage cannot dead-strip it.
+        // A console may be absent or inactive; neither result grants recovery.
+        std::hint::black_box(active_console());
+    }
 }
