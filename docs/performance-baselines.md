@@ -491,3 +491,36 @@ the timing values are not measurements of first-send module loading. That latenc
 requires a browser measurement. Focused transport tests cover delayed loading,
 cancellation without an external signal, reentrant and same-session successors,
 reasoning capture, retry after module failure, HTTP readers and native listeners.
+
+
+## Bundle budgets for the 0.1.8 feature set
+
+A clean production build of `473a5caece81e805fe46fe47d7b29001a471cd46`
+used Bun 1.3.14 and the locked dependencies with
+`NODE_ENV=production bun dev/performance/build-bundles.mjs`.
+The existing guard rejected the deferred ChatZone chunk and three locale chunks.
+The emitted measurements are:
+
+| Chunk | Emitted bytes | Gzip bytes, level 9 | Budget bytes |
+| --- | ---: | ---: | ---: |
+| Application entry | 1,460,181 | 383,142 | 1,465,000, unchanged |
+| ChatZone | 198,707 | 57,550 | 201,000 |
+| French locale | 136,396 | 40,607 | 138,500 |
+| Korean locale | 136,978 | 40,891 | 138,500 |
+| Japanese locale | 151,451 | 42,633 | 153,000 |
+
+The ChatZone graph now includes the Goal product flow, its evaluator coordinator,
+provider executor, review artifacts and subagent runtime, alongside conversation
+sources and recovery controls. These are application modules in the deferred
+chat chunk. Its growth is accepted for these features; it is not a measured
+performance improvement. The entry, vendor, task-queue and rich-markdown caps
+remain fixed. The adjusted caps leave approximately 1% above the measured chat
+and largest locale outputs.
+
+The emitted static entry closure contains 1,808,736 bytes, or 490,648 gzip bytes.
+ChatZone remains outside that closure. The guard found no forbidden deferred
+transport, tool handler, Mermaid or xterm module in startup, and all 12 emitted
+locale objects matched their source JSON. These checks cover emitted imports
+and data, not first-open latency, WebView rendering or a native startup timing.
+The earlier performance series in this document remain tied to their recorded
+commits and are not re-measured by this build.
