@@ -408,7 +408,7 @@ mod tests {
                 scope_mode: "Chat".into(),
                 task_id: None,
                 group_id: None,
-                project_id: None,
+                project_id: Some("project".into()),
                 provider_id: None,
                 model_id: None,
                 reasoning_effort: None,

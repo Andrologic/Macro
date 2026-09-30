@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { McpInteractionRequest, McpInteractionResponse } from '../../types/generated/ipc';
@@ -98,34 +98,54 @@ describe('global MCP form dialog', () => {
 
   it('keeps an incoming form and its expiry error above an existing modal', async () => {
     const { host, send } = setup();
-    await act(async () => {
-      root.render(<>
-        <Dialog title="Release notes" onClose={() => undefined}
-          backdropClassName="fixed inset-0 z-[12000] flex items-center justify-center">
-          <p>Release notes</p>
-        </Dialog>
-        <McpFormHostView host={host} />
-      </>);
-      await Promise.resolve();
-    });
-    await act(async () => { send({ ...request('r-over', 'alpha'), expiresAtMs: Date.now() + 25 }); });
-    const roots = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'));
-    const formRoot = roots.find((candidate) => candidate.textContent?.includes('MCP form request'));
-    const releaseRoot = roots.find((candidate) => candidate.textContent?.includes('Release notes'));
-    expect(formRoot?.style.zIndex).toBe('14000');
-    expect(formRoot?.hasAttribute('inert')).toBe(false);
-    expect(releaseRoot?.hasAttribute('inert')).toBe(true);
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 35)); });
-    const error = document.querySelector<HTMLElement>('[role="alert"]');
-    expect(error?.textContent).toContain('expired');
-    const noticeRoot = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'))
-      .find((candidate) => candidate.textContent?.includes('expired'));
-    expect(noticeRoot?.style.zIndex).toBe('14010');
-    expect(noticeRoot?.hasAttribute('inert')).toBe(false);
-    expect(releaseRoot?.hasAttribute('inert')).toBe(true);
-    await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')?.click(); });
-    expect(document.querySelector<HTMLElement>('[role="alert"]')).toBeNull();
-    expect(releaseRoot?.hasAttribute('inert')).toBe(false);
+    const startedAt = 100_000;
+    const clock = spyOn(Date, 'now').mockReturnValue(startedAt);
+    const originalSetTimeout = globalThis.setTimeout;
+    const expiryCallbacks: Array<() => void> = [];
+    // Drive the host's actual deadline callback after inspecting the active dialog.
+    const controlledTimeout = Object.assign((callback: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay === 25 && typeof callback === 'function') {
+        expiryCallbacks.push(() => callback(...args));
+        return originalSetTimeout(() => undefined, delay);
+      }
+      return originalSetTimeout(callback, delay, ...args);
+    }, { __promisify__: originalSetTimeout.__promisify__ }) as typeof setTimeout;
+    const timers = spyOn(globalThis, 'setTimeout').mockImplementation(controlledTimeout);
+    try {
+      await act(async () => {
+        root.render(<>
+          <Dialog title="Release notes" onClose={() => undefined}
+            backdropClassName="fixed inset-0 z-[12000] flex items-center justify-center">
+            <p>Release notes</p>
+          </Dialog>
+          <McpFormHostView host={host} />
+        </>);
+        await Promise.resolve();
+      });
+      await act(async () => { send({ ...request('r-over', 'alpha'), expiresAtMs: Date.now() + 25 }); });
+      const roots = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'));
+      const formRoot = roots.find((candidate) => candidate.textContent?.includes('MCP form request'));
+      const releaseRoot = roots.find((candidate) => candidate.textContent?.includes('Release notes'));
+      expect(formRoot?.style.zIndex).toBe('14000');
+      expect(formRoot?.hasAttribute('inert')).toBe(false);
+      expect(releaseRoot?.hasAttribute('inert')).toBe(true);
+      expect(expiryCallbacks).toHaveLength(1);
+      clock.mockReturnValue(startedAt + 25);
+      await act(async () => { expiryCallbacks[0](); });
+      const error = document.querySelector<HTMLElement>('[role="alert"]');
+      expect(error?.textContent).toContain('expired');
+      const noticeRoot = Array.from(document.querySelectorAll<HTMLElement>('[data-macro-dialog-root]'))
+        .find((candidate) => candidate.textContent?.includes('expired'));
+      expect(noticeRoot?.style.zIndex).toBe('14010');
+      expect(noticeRoot?.hasAttribute('inert')).toBe(false);
+      expect(releaseRoot?.hasAttribute('inert')).toBe(true);
+      await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')?.click(); });
+      expect(document.querySelector<HTMLElement>('[role="alert"]')).toBeNull();
+      expect(releaseRoot?.hasAttribute('inert')).toBe(false);
+    } finally {
+      timers.mockRestore();
+      clock.mockRestore();
+    }
   });
 
   it('submits a required __proto__ field as an own JSON value after review', async () => {

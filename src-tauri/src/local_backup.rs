@@ -1846,6 +1846,10 @@ mod tests {
         let (_temp, data, config) = profile().await;
         let database = data.join("macro.db");
         let pool = crate::db::create_pool(&database).await.unwrap();
+        sqlx::query("UPDATE conversations SET project_id = 'project' WHERE id = 'conversation'")
+            .execute(&pool)
+            .await
+            .unwrap();
         conversation_goals::activate_goal(
             &pool,
             ActivateConversationGoalInput {
@@ -1925,6 +1929,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let project_id: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM conversations WHERE id = 'conversation'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(project_id.as_deref(), Some("project"));
         assert_eq!(goal.objective, "Finish");
         assert_eq!(goal.success_criteria, ["Check tests"]);
         let audit = conversation_goals::get_audit(&pool, "audit")

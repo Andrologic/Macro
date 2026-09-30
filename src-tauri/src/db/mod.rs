@@ -2352,6 +2352,14 @@ mod tests {
         let pool = create_pool(&db_path).await.expect("initial pool");
         // Reproduce the historical agent-run schema before the later, non-idempotent
         // additive migrations. The missing metadata belongs to that schema.
+        for statement in [
+            "DROP TRIGGER conversation_goal_audit_run_status",
+            "DROP TABLE conversation_goal_audit_runs",
+            "DROP TABLE conversation_goal_audits",
+            "DROP TABLE conversation_goals",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
         sqlx::query("DROP TABLE agent_run_transitions")
             .execute(&pool)
             .await
