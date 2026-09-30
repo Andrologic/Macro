@@ -1049,7 +1049,7 @@
       "reconciliationConfirm": "I confirm it was not executed",
       "reconciliationDone": "The command was marked as not executed. A new explicit command is required.",
       "reconciliationFailed": "The local reconciliation could not be saved.",
-      "runtimeUnavailable": "Die Desktop-Überwachung ist nicht verfügbar. Ihr Journal konnte nicht geladen werden oder das Relay ist nicht erreichbar. Lokale Befehle werden nicht erneut ausgeführt.",
+      "runtimeUnavailable": "Dieser Computer ist derzeit in Macro Pilot nicht verfügbar. Versuchen Sie erneut, die Verbindung herzustellen. Ihre lokalen Projekte und Unterhaltungen bleiben verfügbar.",
       "status": {
         "expired": "Sitzung abgelaufen",
         "revoked": "Zugriff widerrufen",

@@ -374,7 +374,6 @@ export const PilotView: React.FC = () => {
                     <dt className="text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')}</dt>
                     <dd>{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</dd>
                   </dl>
-                  {availability === 'unavailable' && <Button size="sm" variant="secondary" onClick={() => void import('../../../composition/macroPilotDesktop').then(({ macroPilotRuntime }) => macroPilotRuntime.retry())}>{t('common.retry', 'Retry')}</Button>}
                   {store.accessRequests.length > 0 && <div className="space-y-3 border-t border-border/50 pt-3">
                     <div className="flex items-center justify-between gap-3">
                       <span>{t('settings.pilot.legacyAccessTitle', 'Access requests from older devices')}</span>
@@ -397,7 +396,7 @@ export const PilotView: React.FC = () => {
 
       {store.instance && runtimeStatus === 'unavailable' && (
         <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs space-y-2">
-          <p>{t('settings.pilot.runtimeUnavailable', 'Desktop supervision is unavailable. Its journal could not be loaded or the relay could not be reached. Local commands are not replayed.')}</p>
+          <p>{t('settings.pilot.runtimeUnavailable', 'This computer is currently unavailable in Macro Pilot. Retry the connection. Your local projects and conversations remain available.')}</p>
           <Button size="sm" variant="secondary" onClick={() => void import('../../../composition/macroPilotDesktop').then(({ macroPilotRuntime }) => macroPilotRuntime.retry())}>
             {t('common.retry', 'Retry')}
           </Button>

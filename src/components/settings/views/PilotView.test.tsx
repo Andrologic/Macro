@@ -160,11 +160,23 @@ describe('PilotView', () => {
     expect(reconcileNotExecutedMock).toHaveBeenCalledWith('["session:phone","reply:01"]');
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);
   });
-  it('shows unavailable supervision instead of an empty reconciliation result', async () => {
+  it('shows unavailable remote access with one retry when troubleshooting is closed or open', async () => {
+    await showAccount();
     runtimeStatus = 'unavailable';
     indeterminate = [];
     await act(async () => { runtimeListener?.(); await Promise.resolve(); });
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Desktop supervision is unavailable');
+    const explanation = 'This computer is currently unavailable in Macro Pilot. Retry the connection. Your local projects and conversations remain available.';
+    const retries = () => [...container.querySelectorAll('button')].filter(item => item.textContent === 'Retry');
+    const details = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'))!;
+    expect(details.open).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(explanation);
+    expect(retries()).toHaveLength(1);
+    expect(details.contains(retries()[0])).toBe(false);
+    await act(async () => { details.open = true; });
+    expect(retries()).toHaveLength(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(explanation);
+    expect(container.textContent).not.toContain('Its journal');
+    expect(container.textContent).not.toContain('Local commands are not replayed.');
     expect(container.textContent).not.toContain('No command requires local reconciliation.');
   });
 

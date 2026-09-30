@@ -1048,7 +1048,7 @@
       "reconciliationConfirm": "I confirm it was not executed",
       "reconciliationDone": "The command was marked as not executed. A new explicit command is required.",
       "reconciliationFailed": "The local reconciliation could not be saved.",
-      "runtimeUnavailable": "デスクトップの監視を利用できません。ジャーナルを読み込めなかったか、リレーに接続できません。ローカルコマンドは再実行されません。",
+      "runtimeUnavailable": "このコンピューターは現在 Macro Pilot で利用できません。接続を再試行してください。ローカルのプロジェクトと会話は引き続き利用できます。",
       "status": {
         "expired": "セッションの期限切れ",
         "revoked": "アクセス取り消し済み",

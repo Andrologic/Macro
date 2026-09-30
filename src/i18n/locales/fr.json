@@ -1076,7 +1076,7 @@
       "reconciliationConfirm": "Je confirme qu’elle n’a pas été exécutée",
       "reconciliationDone": "La commande a été marquée comme non exécutée. Une nouvelle commande explicite est requise.",
       "reconciliationFailed": "Le rapprochement local n’a pas pu être enregistré.",
-      "runtimeUnavailable": "La supervision desktop est indisponible. Son journal n’a pas pu être chargé ou le relais est inaccessible. Les commandes locales ne sont pas rejouées.",
+      "runtimeUnavailable": "Cet ordinateur est actuellement indisponible dans Macro Pilot. Réessayez de rétablir la connexion. Vos projets et conversations locaux restent disponibles.",
       "status": {
         "expired": "Session expirée",
         "revoked": "Accès révoqué",

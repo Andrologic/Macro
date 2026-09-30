@@ -1053,7 +1053,7 @@
       "reconciliationConfirm": "I confirm it was not executed",
       "reconciliationDone": "The command was marked as not executed. A new explicit command is required.",
       "reconciliationFailed": "The local reconciliation could not be saved.",
-      "runtimeUnavailable": "La supervisión del equipo no está disponible. No se pudo cargar su registro o no se pudo acceder al relay. Los comandos locales no se vuelven a ejecutar.",
+      "runtimeUnavailable": "Este ordenador no está disponible actualmente en Macro Pilot. Vuelve a intentar restablecer la conexión. Tus proyectos y conversaciones locales siguen disponibles.",
       "status": {
         "expired": "Sesión caducada",
         "revoked": "Acceso revocado",
