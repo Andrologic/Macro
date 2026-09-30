@@ -350,6 +350,8 @@ export class MacroPilotNativeClient {
   private vaultFence = 0;
   private lastVaultScope: PilotSecretScope | null = null;
   private vaultRecovering = false;
+  // Restored credentials alone cannot restart a producer until a fresh /me succeeds.
+  private sessionVerification: { generation: string; fence: number } | null = null;
   private readonly accountClient = new PilotAccountClient({
     context: () => {
       const state = this.persisted;
@@ -386,6 +388,7 @@ export class MacroPilotNativeClient {
   };
 
   private blockedVaultState(): Partial<PilotPublicState> {
+    if (this.sessionVerification && this.vaultLease?.status === 'ready') return { status: 'vault_unavailable' };
     if (!this.vaultLease || this.vaultLease.status === 'ready') return {};
     const status = this.vaultLease.status;
     return { status: 'vault_unavailable', vaultStatus: status,
@@ -394,7 +397,8 @@ export class MacroPilotNativeClient {
   }
 
   private publish(patch: Partial<PilotPublicState>): void {
-    if (patch.status === 'connected') patch = { ...patch, ...this.blockedVaultState() };
+    const status = patch.status ?? this.publicState.status;
+    if (status === 'connected' || status === 'offline') patch = { ...patch, ...this.blockedVaultState() };
     this.publicState = { ...this.publicState, ...patch };
     for (const listener of this.listeners) listener();
   }
@@ -478,6 +482,7 @@ export class MacroPilotNativeClient {
     this.vaultLease = null;
     this.vaultOwner = null;
     this.lastVaultScope = null;
+    this.sessionVerification = null;
     // Pending activation/resume results carry their own fence and invalidate on return.
     if (lease && this.dependencies.vaultInvalidate) {
       const invalidated = await this.dependencies.vaultInvalidate(lease.generation);
@@ -496,6 +501,9 @@ export class MacroPilotNativeClient {
         const context = this.contextKey();
         const fence = this.vaultFence;
         this.vaultLease = lease;
+        if (this.persisted?.deviceSession) {
+          this.sessionVerification = { generation: lease.generation, fence };
+        }
         this.publish({ vaultStatus: 'ready', lastError: null });
         void (async () => {
           // A suspended startup request may still be unwinding. Start a fresh
@@ -506,7 +514,12 @@ export class MacroPilotNativeClient {
         })().catch(() => undefined);
         return;
       }
-      if (lease.status === 'suspended') this.vaultFence++;
+      if (lease.status === 'suspended') {
+        this.vaultFence++;
+        if (this.persisted?.deviceSession) {
+          this.sessionVerification = { generation: lease.generation, fence: this.vaultFence };
+        }
+      }
       this.vaultLease = lease;
       this.scopeController.abort();
       this.scopeController = new AbortController();
@@ -544,7 +557,13 @@ export class MacroPilotNativeClient {
       }
       this.vaultLease = resumed;
       if (resumed.status !== 'ready') throw this.vaultFailure(resumed.status);
+      if (this.persisted?.deviceSession) {
+        this.sessionVerification = { generation: resumed.generation, fence: this.vaultFence };
+      }
       this.publish({ vaultStatus: 'ready', lastError: null });
+      await this.initializationPromise?.catch(() => undefined);
+      this.checkContext(context);
+      if (fence !== this.vaultFence || this.vaultLease !== resumed) throw new PilotClientError('context_changed');
       await this.initialize();
     } finally { this.vaultRecovering = false; }
   }
@@ -648,12 +667,22 @@ export class MacroPilotNativeClient {
     if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     try {
       const context = this.contextKey();
+      const fence = this.vaultFence;
+      const verification = this.sessionVerification;
+      const verificationIsCurrent = () => fence === this.vaultFence && verification === this.sessionVerification &&
+        (!verification || (verification.generation === this.vaultLease?.generation &&
+          verification.fence === this.vaultFence && this.vaultLease.status === 'ready'));
       const response = await this.request<{ account: PilotAccount; device_session: PilotDeviceSession }>(
         'GET', '/me', undefined, { authenticated: true },
       );
       this.checkContext(context);
+      if (!verificationIsCurrent()) return this.publicState;
       await this.persist({ account: response.data!.account, deviceSession: response.data!.device_session });
       this.checkContext(context);
+      // A pre-lock /me may already be waiting for its metadata write. Only the
+      // fresh request for this barrier can release the producer after that write.
+      if (!verificationIsCurrent()) return this.publicState;
+      this.sessionVerification = null;
       this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
       if (this.dependencies.deviceName) await this.ensureDesktopInstance();
     } catch (error) {
@@ -725,6 +754,7 @@ export class MacroPilotNativeClient {
     let signal = AbortSignal.any(signals);
     const check = () => {
       this.checkContext(context);
+      if (options.producer && this.sessionVerification) throw new PilotClientError('vault_suspended');
       if (options.signal?.aborted) throw new PilotClientError('context_changed');
       if (signal.aborted) {
         if (this.vaultLease && this.vaultLease.status !== 'ready') throw this.vaultFailure(this.vaultLease.status);
@@ -732,6 +762,7 @@ export class MacroPilotNativeClient {
         throw new PilotClientError('offline');
       }
     };
+    if (options.producer && this.sessionVerification) throw new PilotClientError('vault_suspended');
     const url = `${normalizeOrigin(this.persisted.relayOrigin)}${extension ? '' : '/pilot/v1'}${safePath(path)}`;
     const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
     if (body !== undefined) headers.set('Content-Type', 'application/json; charset=utf-8');
