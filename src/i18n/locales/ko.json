@@ -968,6 +968,7 @@
       "configuration": "Macro의 엄격한 JSON 구성을 편집, 검증 및 검사"
     },
     "pilot": {
+      "accessRequestsFailed": "이전 기기의 접근 요청을 불러오지 못했습니다.",
       "clearExpiredSession": "다시 연결하기 전에 로그아웃",
       "availability": {
         "online": "온라인",

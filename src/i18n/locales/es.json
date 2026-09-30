@@ -973,6 +973,7 @@
       "configuration": "Editar, validar e inspeccionar la configuración JSON estricta de Macro"
     },
     "pilot": {
+      "accessRequestsFailed": "No se pudieron cargar las solicitudes de acceso de dispositivos antiguos.",
       "clearExpiredSession": "Cerrar sesión antes de volver a conectar",
       "availability": {
         "online": "En línea",

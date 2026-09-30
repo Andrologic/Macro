@@ -5,7 +5,7 @@ import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../../../services/externalUrlOpener';
 import type { PilotRuntimeStatus } from '../../../services/macroPilot/runtime';
-import type { PilotAccountConfirmation, PilotPermission } from '../../../services/macroPilot/nativeClient';
+import type { PilotAccountConfirmation, PilotPermission, PilotPublicState } from '../../../services/macroPilot/nativeClient';
 import { usePilotStore } from '../../../stores/usePilotStore';
 import { Button } from '../../ui/Button';
 import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
@@ -14,6 +14,9 @@ import { accountConnectionStatus, computerAvailability, computerAvailabilityMess
 
 const PERMISSIONS: PilotPermission[] = ['supervise', 'respond', 'approve_tools', 'review'];
 const PILOT_RELAY_ORIGIN = 'https://macro.andrologic.ai';
+const accessScopeOf = (state: PilotPublicState) => state.deviceSession && state.instance
+  ? JSON.stringify([state.configurationId, state.relayOrigin, state.account?.account_id, state.deviceSession.ref.session_id, state.instance.ref.instance_id])
+  : null;
 
 interface IndeterminateCommand {
   key: string;
@@ -60,6 +63,38 @@ export const PilotView: React.FC = () => {
   const [reconciliationBusy, setReconciliationBusy] = useState(false);
   const [vaultRecoveryBusy, setVaultRecoveryBusy] = useState(false);
   const vaultRecoveryLock = useRef(false);
+  const [troubleshootOpen, setTroubleshootOpen] = useState(false);
+  const accessScope = accessScopeOf(store);
+  const accessAttempt = useRef({ scope: accessScope, attempted: false, generation: 0 });
+  const [accessFailure, setAccessFailure] = useState<string | null>(null);
+  const [accessLoading, setAccessLoading] = useState<string | null>(null);
+  const refreshAccessRequests = store.refreshAccessRequests;
+
+  const loadAccessRequests = useCallback(async () => {
+    if (!accessScope || usePilotStore.getState().busy || accessScopeOf(usePilotStore.getState()) !== accessScope) return;
+    const attempt = accessAttempt.current;
+    if (attempt.scope !== accessScope) return;
+    attempt.attempted = true;
+    const generation = ++attempt.generation;
+    setAccessFailure(null);
+    setAccessLoading(accessScope);
+    try {
+      await refreshAccessRequests();
+    } catch {
+      if (accessAttempt.current.generation === generation && accessScopeOf(usePilotStore.getState()) === accessScope) setAccessFailure(accessScope);
+    } finally {
+      if (accessAttempt.current.generation === generation) setAccessLoading(null);
+    }
+  }, [accessScope, refreshAccessRequests]);
+
+  useEffect(() => {
+    if (accessAttempt.current.scope !== accessScope) {
+      accessAttempt.current = { scope: accessScope, attempted: false, generation: accessAttempt.current.generation + 1 };
+      setAccessFailure(null);
+      setAccessLoading(null);
+    }
+    if (troubleshootOpen && accessScope && !busy && !store.accessRequestsLoaded && !accessAttempt.current.attempted) void loadAccessRequests();
+  }, [accessScope, busy, troubleshootOpen, store.accessRequestsLoaded, loadAccessRequests]);
 
   const refreshIndeterminate = useCallback(async () => {
     const { macroPilotRuntime } = await import('../../../composition/macroPilotDesktop');
@@ -355,9 +390,7 @@ export const PilotView: React.FC = () => {
               <Button size="sm" variant="secondary" disabled={store.busy} onClick={connectInstance}>{t('settings.pilot.reattach', 'Restore access')}</Button>
             </div>}
             {store.instance && (
-              <details className="group/troubleshoot border-t border-border/50 pt-3 text-xs" onToggle={event => {
-                if (event.currentTarget.open && !store.accessRequestsLoaded && !store.busy) void run(store.refreshAccessRequests);
-              }}>
+              <details open={troubleshootOpen} className="group/troubleshoot border-t border-border/50 pt-3 text-xs" onToggle={event => setTroubleshootOpen(event.currentTarget.open)}>
                 <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">
                   <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 transition-transform group-open/troubleshoot:rotate-90 motion-reduce:transition-none" />
                   {t('settings.pilot.troubleshoot', 'Resolve a connection problem')}
@@ -374,10 +407,14 @@ export const PilotView: React.FC = () => {
                     <dt className="text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')}</dt>
                     <dd>{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</dd>
                   </dl>
+                  {accessFailure === accessScope && accessScope && <div role="status" className="flex items-center justify-between gap-3 text-muted-foreground">
+                    <span>{t('settings.pilot.accessRequestsFailed', 'Access requests from older devices could not be loaded.')}</span>
+                    <Button size="sm" variant="ghost" disabled={store.busy || accessLoading === accessScope} onClick={() => void loadAccessRequests()}>{t('common.retry', 'Retry')}</Button>
+                  </div>}
                   {store.accessRequests.length > 0 && <div className="space-y-3 border-t border-border/50 pt-3">
                     <div className="flex items-center justify-between gap-3">
                       <span>{t('settings.pilot.legacyAccessTitle', 'Access requests from older devices')}</span>
-                      <Button size="sm" variant="ghost" disabled={store.busy} onClick={() => run(store.refreshAccessRequests)}>{t('common.refresh', 'Refresh')}</Button>
+                      <Button size="sm" variant="ghost" disabled={store.busy || accessLoading === accessScope} onClick={() => void loadAccessRequests()}>{t('common.refresh', 'Refresh')}</Button>
                     </div>
                     {store.accessRequests.map(request => <div key={request.access_request_id} className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
                       <span className="break-words">{request.device_label}</span>

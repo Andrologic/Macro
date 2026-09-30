@@ -107,7 +107,8 @@ describe('PilotView', () => {
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
     pilotState.instance.connection_state = 'reachable';
     pilotState.accessRequestsLoaded = true;
-    pilotState.refreshAccessRequests.mockClear();
+    pilotState.refreshAccessRequests.mockReset();
+    pilotState.refreshAccessRequests.mockImplementation(async () => undefined);
     pilotState.relayOrigin = 'https://macro.andrologic.ai';
     pilotState.account = null; pilotState.deviceSession = null; pilotState.accountCatalog = null;
     pilotState.instanceAccess = null; pilotState.accessRequests = [];
@@ -303,6 +304,81 @@ describe('PilotView', () => {
     expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
     expect(container.textContent).not.toContain('Access requests from older devices');
     expect(container.textContent).not.toContain('No pending access requests');
+  });
+
+  it('loads legacy requests after an account read finishes while troubleshooting stays open', async () => {
+    pilotState.accessRequestsLoaded = false;
+    pilotState.busy = true; pilotState.reading = true;
+    await showAccount();
+    const details = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'))!;
+    await act(async () => { details.open = true; });
+    expect(pilotState.refreshAccessRequests).not.toHaveBeenCalled();
+    pilotState.busy = false; pilotState.reading = false;
+    await act(async () => root.render(<PilotView />));
+    expect(details.open).toBe(true);
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(<PilotView />));
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads requests for a new session and instance while troubleshooting stays open', async () => {
+    await showAccount();
+    const details = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'))!;
+    await act(async () => { details.open = true; });
+    expect(pilotState.refreshAccessRequests).not.toHaveBeenCalled();
+    pilotState.deviceSession = { ...pilotState.deviceSession!, ref: { ...pilotState.deviceSession!.ref, session_id: 'session:new' } };
+    pilotState.accessRequestsLoaded = false;
+    pilotState.busy = true;
+    await act(async () => root.render(<PilotView />));
+    expect(pilotState.refreshAccessRequests).not.toHaveBeenCalled();
+    pilotState.busy = false;
+    await act(async () => root.render(<PilotView />));
+    expect(details.open).toBe(true);
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+    const previousInstance = pilotState.instance;
+    try {
+      pilotState.instance = { ...previousInstance, ref: { ...previousInstance.ref, instance_id: 'instance:new' } };
+      await act(async () => root.render(<PilotView />));
+      expect(details.open).toBe(true);
+      expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(2);
+    } finally { pilotState.instance = previousInstance; }
+  });
+
+  it('ignores a late loading failure from an obsolete context', async () => {
+    await showAccount();
+    pilotState.accessRequestsLoaded = false;
+    let rejectPrevious!: (error: Error) => void;
+    pilotState.refreshAccessRequests.mockImplementationOnce(() => new Promise<undefined>((_resolve, reject) => { rejectPrevious = reject; }));
+    const details = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'))!;
+    await act(async () => { details.open = true; });
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+    pilotState.deviceSession = { ...pilotState.deviceSession!, ref: { ...pilotState.deviceSession!.ref, session_id: 'session:replacement' } };
+    pilotState.refreshAccessRequests.mockImplementationOnce(async () => { pilotState.accessRequestsLoaded = true; });
+    await act(async () => root.render(<PilotView />));
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(2);
+    await act(async () => { rejectPrevious(new Error('context_changed')); await Promise.resolve(); });
+    expect(details.textContent).not.toContain('Access requests from older devices could not be loaded.');
+    expect(details.querySelector('button')).toBeNull();
+  });
+
+  it('offers one explicit retry after loading fails without retrying on renders or reopening', async () => {
+    await showAccount();
+    pilotState.accessRequestsLoaded = false;
+    pilotState.refreshAccessRequests.mockImplementationOnce(async () => { throw new Error('offline'); });
+    const details = [...container.querySelectorAll('details')].find(item => item.textContent?.includes('Resolve a connection problem'))!;
+    await act(async () => { details.open = true; });
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+    expect(details.textContent).toContain('Access requests from older devices could not be loaded.');
+    expect([...details.querySelectorAll('button')].filter(item => item.textContent === 'Retry')).toHaveLength(1);
+    await act(async () => root.render(<PilotView />));
+    await act(async () => { details.open = false; });
+    await act(async () => { details.open = true; });
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(1);
+    pilotState.refreshAccessRequests.mockImplementationOnce(async () => { pilotState.accessRequestsLoaded = true; });
+    await act(async () => button('Retry').click());
+    expect(pilotState.refreshAccessRequests).toHaveBeenCalledTimes(2);
+    expect(details.textContent).not.toContain('Access requests from older devices could not be loaded.');
+    expect(details.querySelector('button')).toBeNull();
   });
 
   it('identifies a persisted session on a previous relay without moving it automatically', async () => {

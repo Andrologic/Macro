@@ -998,6 +998,7 @@
       "configuration": "Edit, validate, and inspect Macro's strict JSON configuration"
     },
     "pilot": {
+      "accessRequestsFailed": "Access requests from older devices could not be loaded.",
       "clearExpiredSession": "Sign out before reconnecting",
       "availability": {
         "online": "Online",

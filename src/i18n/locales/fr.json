@@ -996,6 +996,7 @@
       "configuration": "Modifier, valider et inspecter la configuration JSON stricte de Macro"
     },
     "pilot": {
+      "accessRequestsFailed": "Les demandes d’accès d’anciens appareils n’ont pas pu être chargées.",
       "clearExpiredSession": "Se déconnecter avant de se reconnecter",
       "availability": {
         "online": "En ligne",

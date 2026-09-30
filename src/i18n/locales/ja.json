@@ -968,6 +968,7 @@
       "configuration": "Macro の厳密な JSON 設定を編集、検証、確認する"
     },
     "pilot": {
+      "accessRequestsFailed": "旧バージョンのデバイスからのアクセス要求を読み込めませんでした。",
       "clearExpiredSession": "再接続する前にサインアウト",
       "availability": {
         "online": "オンライン",

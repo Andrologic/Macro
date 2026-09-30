@@ -969,6 +969,7 @@
       "configuration": "Strikte JSON-Konfiguration von Macro bearbeiten, prüfen und untersuchen"
     },
     "pilot": {
+      "accessRequestsFailed": "Zugriffsanfragen älterer Geräte konnten nicht geladen werden.",
       "clearExpiredSession": "Vor dem erneuten Verbinden abmelden",
       "availability": {
         "online": "Online",
