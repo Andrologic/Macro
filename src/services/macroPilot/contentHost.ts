@@ -1,3 +1,4 @@
+import { CONVERSATION_OPERATIONS, type ConversationManager } from './conversationManager';
 import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSource } from './taskCompletionHost';
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef, type CatalogObservation } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
@@ -25,6 +26,7 @@ export interface ContentHostDependencies {
   reviewRefs(): Promise<ContentReviewRef[]>;
   resolveReview(ref: ContentReviewRef): Promise<ReviewTarget>;
   policy(): Promise<TextPolicy>;
+  conversationManagement?: ConversationManager;
   taskCompletion?: { source: TaskCompletionSource; storage: KernelStorage };
   now?: () => number;
 }
@@ -116,7 +118,7 @@ export class ContentHost {
     const policy = await this.deps.policy(); this.check();
     const key = await hash(policy); this.check();
     if (this.policyKey !== null && key !== this.policyKey) {
-      this.deps.conversations.clear(); this.replies.clear(); this.taskCompletion?.clear();
+      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.taskCompletion?.clear();
       const snapshots = [...this.snapshots.values()]; this.snapshots.clear();
       await Promise.all(snapshots.map(snapshot => this.deps.reviews.release(snapshot.info.snapshot_id).catch(() => undefined)));
     }
@@ -278,7 +280,7 @@ export class ContentHost {
       if (!validateContentMessage(input) || input.type !== 'delivery') failure('validation_failed');
       const delivery = input as ContentDelivery; const request = delivery.request;
       if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
-        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation))) failure('validation_failed');
+        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation))) failure('validation_failed');
       const body = request.body as { instance_id?: string; ref?: { instance_id: string } };
       if ((body.instance_id ?? body.ref?.instance_id) !== this.deps.instanceId) failure('validation_failed');
       const replyKey = await hash([delivery.account_id, delivery.source_session_id, delivery.request_id]);
@@ -293,7 +295,12 @@ export class ContentHost {
         await this.policy();
         const readingPolicy = this.policyKey;
         let result: unknown;
-        if (TASK_COMPLETION_OPERATIONS.has(request.operation)) {
+        if (CONVERSATION_OPERATIONS.has(request.operation)) {
+          if (!this.deps.conversationManagement) failure('content_unavailable');
+          // Authorization precedes every management read and write, including replay.
+          await authorizeNow();
+          result = await this.deps.conversationManagement!.handle(delivery, await this.policy(), async () => { await authorizeNow(); await this.policy(); guard(); if (readingPolicy !== this.policyKey) failure('snapshot_expired'); return new Date(deadline).toISOString(); });
+        } else if (TASK_COMPLETION_OPERATIONS.has(request.operation)) {
           if (!this.taskCompletion) failure('content_unavailable');
           const toolRead = request.operation === 'conversation.tools.list' || request.operation === 'conversation.tool.read';
           // Validate visibility and captures after the network authorization wait.
@@ -352,7 +359,7 @@ export class ContentHost {
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
         response = { contract_version: '2.0', type: 'response', request_id: request.request_id, account_id: request.account_id, operation: request.operation, result };
         if (!validateContentResponse(request, response)) failure('content_unavailable');
-        if (request.operation !== 'review.verdict' && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
+        if (request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }
@@ -386,7 +393,7 @@ export class ContentHost {
     }
   }
   async dispose(): Promise<void> {
-    this.disposed = true; this.taskCompletion?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear();
+    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear();
     await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear();
   }
 }

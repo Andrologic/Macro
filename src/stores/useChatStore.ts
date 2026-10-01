@@ -1,3 +1,4 @@
+import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
@@ -962,6 +963,8 @@ interface ChatStore {
   assertPilotConversationDeletionReady: (conversationId: string, token: symbol) => void;
   completeLinkedTaskConversationDeletion: (conversationId: string, options?: { pilotActionToken?: symbol; beforeEffect?: () => Promise<void> }) => Promise<boolean>;
   markAsRead: (conversationId: string) => void;
+  refreshConversationMetadata: () => Promise<void>;
+  hydrateConversationManagementArchives: () => Promise<void>;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
   ensureMessagesLoaded: (conversationId: string) => Promise<void>;
@@ -9727,12 +9730,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ...current.selectedConversationIdsByMode,
         [mode]: conversationId,
       },
-      conversations: current.conversations.map((candidate) =>
-        candidate.id === conversationId
-          ? { ...candidate, is_unread: false }
-          : candidate,
-      ),
+
     }));
+    if (!tauriIpc.isTauriAvailable()) get().markAsRead(conversationId);
     return true;
   };
 
@@ -11012,12 +11012,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       removeUnsavedAssistantResponseFromStorage(messageId);
     });
     const visibleMessages = recoveredMerge.messages;
+    if (tauriIpc.isTauriAvailable()) {
+      const sharedMetadata = await tauriIpc.conversationMetadata();
+      lifecycle?.assertActive();
+      conversations = conversations.map(c => ({ ...c, is_unread: sharedMetadata.some(m => m.conversation_id === c.id && m.response_revision > m.read_revision) }));
+    }
+    const sharedConversationById = new Map(conversations.map(c => [c.id,c]));
     const hydratedVisibleConversations = visibleConversations.map(
       (conversation) => {
         const conversationMessages = visibleMessages.filter(
           (message) => message.conversation_id === conversation.id,
         );
         const latestMessage = conversationMessages.at(-1);
+        conversation = sharedConversationById.get(conversation.id) ?? conversation;
         if (!latestMessage?.persistence_state) return conversation;
         return {
           ...conversation,
@@ -11034,9 +11041,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pruneConversationSelections(hydratedVisibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
-    const archivedConversationPreference = await loadPreference<unknown>(
-      PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
-    );
+    await useConversationArchiveStore.getState().hydrateArchivedConversationIds(lifecycle);
+    const archivedConversationPreference = Array.from(useConversationArchiveStore.getState().archivedConversationIds);
     lifecycle?.assertActive();
     const archivedConversationIds = Array.isArray(archivedConversationPreference)
       ? new Set(
@@ -12928,12 +12934,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    markAsRead: (conversationId) =>
-      set((state) => ({
-        conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, is_unread: false } : conv,
-        ),
-      })),
+    hydrateConversationManagementArchives: async () => {
+      const store = useConversationArchiveStore.getState();
+      if (!store.isArchiveHydrated) await store.hydrateArchivedConversationIds();
+      if (useConversationArchiveStore.getState().archiveHydrationError) throw new Error('content_unavailable');
+    },
+    refreshConversationMetadata: async () => {
+      if (!tauriIpc.isTauriAvailable()) return;
+      const persisted = await tauriIpc.listConversations();
+      const metadata = await tauriIpc.conversationMetadata();
+      const byId = new Map(persisted.map(c => [c.id, mapDbConversationToConversation(c)]));
+      set((state) => ({ conversations: [
+        ...state.conversations.filter(c => byId.has(c.id)).map(c => ({ ...c, ...byId.get(c.id),
+          is_unread: metadata.some(m => m.conversation_id === c.id && m.response_revision > m.read_revision) })),
+        ...[...byId.values()].filter(c => !state.conversations.some(current => current.id === c.id)).map(c => ({ ...c,
+          is_unread: metadata.some(m => m.conversation_id === c.id && m.response_revision > m.read_revision) })),
+      ] }));
+      useConversationArchiveStore.getState().replaceArchivedConversationIds(metadata.filter(m => m.archived).map(m => m.conversation_id));
+    },
+    markAsRead: (conversationId) => {
+      const displayed = getOrderedConversationMessages(conversationId);
+      if (!tauriIpc.isTauriAvailable()) {
+        set((state) => ({ conversations: state.conversations.map(conv => conv.id === conversationId ? { ...conv, is_unread: false } : conv) }));
+        return;
+      }
+      void acknowledgeDisplayedConversation(conversationId, displayed).then(() => get().refreshConversationMetadata()).catch(() => undefined);
+    },
 
     getConversationByTask: (taskId) => {
       return getLatestConversationForTask(taskId) ?? undefined;

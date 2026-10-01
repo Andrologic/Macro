@@ -14,11 +14,12 @@ export type ConversationRef = { instance_id: string; kind: 'conversation'; conve
   { instance_id: string; kind: 'implement'; workspace_id: string; task_id: string; conversation_id: string };
 export interface CaptureProject { id: string; name: string }
 export interface CaptureTask { id: string; project_id: string; conversation_id?: string | null }
-export interface ConversationActivity { providerFailure?: ProviderFailure | null; activity: 'busy' | 'idle' | 'error' | 'unknown'; generatingMessageId: string | null }
+export interface ConversationActivity { attention?: 'none' | 'generating' | 'user_request' | 'tool_approval' | 'error' | 'unknown'; providerFailure?: ProviderFailure | null; activity: 'busy' | 'idle' | 'error' | 'unknown'; generatingMessageId: string | null }
 export interface ConversationCaptureSource {
   projects(): Promise<CaptureProject[]>;
   tasks(): Promise<CaptureTask[]>;
   listConversations(): Promise<DbConversation[]>;
+  catalogMetadata?(): Promise<unknown>;
   getConversation(id: string): Promise<DbConversation | null>;
   listMessages(id: string): Promise<DbMessage[]>;
   activity(id: string): ConversationActivity;
@@ -51,6 +52,7 @@ interface Observation {
   projects: CaptureProject[]; tasks: CaptureTask[]; conversations: DbConversation[];
   transcripts: Array<{ id: string; messages: DbMessage[]; provenMessages: Array<{ id: string; text: string }>; activity: ConversationActivity }>;
   policy: TextPolicy;
+  metadata?: unknown;
 }
 export interface CatalogObservation { revision: number; refs: ConversationRef[]; resources: Record<string, number> }
 interface ResourceRevision { revision: number; fingerprint: string; transcript?: string }
@@ -202,7 +204,7 @@ export class ConversationCaptures {
       if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
       transcripts.push({ id: conversation.id, messages, provenMessages, activity });
     }
-    return structuredClone({ projects, tasks, conversations, transcripts, policy });
+    return structuredClone({ projects, tasks, conversations, transcripts, policy, ...(source.catalogMetadata ? { metadata: await source.catalogMetadata() } : {}) });
   }
   private async observe(projectsOnly = false, transcriptIds?: ReadonlySet<string>): Promise<{ observation: Observation; revision: number; resources: Record<string, number> }> {
     // Bound complete catalog inspection, including both observations and retry.

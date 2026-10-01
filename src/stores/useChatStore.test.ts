@@ -1821,6 +1821,10 @@ const registerUseChatStoreMocks = async () => {
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
     isTauriAvailable: () => tauriAvailable,
+    conversationMetadata: async () => chatSnapshotConversations.map(c => ({ conversation_id: c.id, revision: 1,
+      archived: Array.isArray(nativePreferenceValues.chatArchivedConversationIds) && nativePreferenceValues.chatArchivedConversationIds.includes(c.id),
+      response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null })),
+    conversationImportArchives: async () => undefined,
     stateGetSnapshot: stateGetSnapshotMock,
     stateSetValue: stateSetValueMock,
     stateClear: stateClearMock,

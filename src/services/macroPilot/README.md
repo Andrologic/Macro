@@ -122,3 +122,6 @@ defines negotiated per-conversation captures, safe provider diagnostics for Chat
 Architect and Implement, conditional projects, migration and legacy behavior.
 Relay and mobile consumers must implement its selection and invalidation rules
 before enabling `network-reliability-1`.
+
+For the negotiated mobile conversation catalog, search, observed reading and Chat
+management operations, see [mobile conversations contract](../../../docs/mobile-conversations-contract.md).

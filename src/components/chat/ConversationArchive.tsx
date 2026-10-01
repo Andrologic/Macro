@@ -1,3 +1,4 @@
+import { persistConversationArchives } from '../../services/conversationManagementService';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
@@ -34,7 +35,7 @@ import {
   getConversationExportBaseName,
 } from '../../services/conversationExport';
 import {
-  searchMessages,
+  searchMessages, isTauriAvailable,
   type MessageSearchResult,
 } from '../../services/tauriIpc';
 
@@ -788,10 +789,16 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
       return commitArchivedConversationMutation({
         write: async () => {
-          if (!(await persistArchivedConversationIds(nextArchivedIds))) {
-            throw new Error('archive preference write failed');
+          if (isTauriAvailable()) {
+            await persistConversationArchives(normalizedIds, shouldArchive);
+            archiveWriteCommitted = true;
+            // SQLite is authoritative after import. A legacy preference failure
+            // must not roll back a committed shared archive on screen.
+            await useChatStore.getState().refreshConversationMetadata();
+          } else {
+            if (!(await persistArchivedConversationIds(nextArchivedIds))) throw new Error('archive preference write failed');
+            archiveWriteCommitted = true;
           }
-          archiveWriteCommitted = true;
         },
         onCommitted: async () => {
           if (shouldArchive) {

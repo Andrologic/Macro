@@ -2316,6 +2316,24 @@
         },
         {
           "$ref": "#/$defs/request_task.cards.list"
+        },
+        {
+          "$ref": "#/$defs/request_conversations.catalog"
+        },
+        {
+          "$ref": "#/$defs/request_conversations.search"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.window"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.acknowledge"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.action"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.create"
         }
       ]
     },
@@ -2380,6 +2398,24 @@
         },
         {
           "$ref": "#/$defs/response_task.cards.list"
+        },
+        {
+          "$ref": "#/$defs/response_conversations.catalog"
+        },
+        {
+          "$ref": "#/$defs/response_conversations.search"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.window"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.acknowledge"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.action"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.create"
         }
       ]
     },
@@ -2436,7 +2472,13 @@
             "conversation.tools.list",
             "conversation.tool.read",
             "task.action",
-            "task.cards.list"
+            "task.cards.list",
+            "conversations.catalog",
+            "conversations.search",
+            "conversation.window",
+            "conversation.acknowledge",
+            "conversation.action",
+            "conversation.create"
           ]
         },
         "code": {
@@ -2510,13 +2552,14 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 3,
+          "maxItems": 4,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
-              "network-reliability-1"
+              "network-reliability-1",
+              "conversations-1"
             ]
           }
         }
@@ -2570,13 +2613,14 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 3,
+          "maxItems": 4,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
-              "network-reliability-1"
+              "network-reliability-1",
+              "conversations-1"
             ]
           }
         }
@@ -3093,13 +3137,14 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 3,
+          "maxItems": 4,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
-              "network-reliability-1"
+              "network-reliability-1",
+              "conversations-1"
             ]
           }
         }
@@ -3129,13 +3174,14 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 3,
+          "maxItems": 4,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
-              "network-reliability-1"
+              "network-reliability-1",
+              "conversations-1"
             ]
           }
         }
@@ -4667,6 +4713,931 @@
           }
         }
       ]
+    },
+    "conversationFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "enum": [
+            "active",
+            "archived",
+            "all"
+          ]
+        },
+        "attention": {
+          "enum": [
+            "all",
+            "unread",
+            "running",
+            "needs_attention"
+          ]
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "mode": {
+          "enum": [
+            "Chat",
+            "Architect",
+            "Implement"
+          ]
+        }
+      },
+      "required": []
+    },
+    "conversationCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 320
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "mode": {
+          "enum": [
+            "Chat",
+            "Architect",
+            "Implement"
+          ]
+        },
+        "project": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "project_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 120
+                }
+              },
+              "required": [
+                "project_id",
+                "name"
+              ]
+            }
+          ]
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "unread": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "content_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "attention": {
+          "enum": [
+            "none",
+            "generating",
+            "user_request",
+            "tool_approval",
+            "error",
+            "unknown"
+          ]
+        },
+        "provider_error": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/providerFailure"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ref",
+        "title",
+        "description",
+        "created_at",
+        "updated_at",
+        "mode",
+        "project",
+        "pinned",
+        "archived",
+        "unread",
+        "revision",
+        "content_revision",
+        "attention",
+        "provider_error"
+      ]
+    },
+    "conversationSearchHit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hit_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "source": {
+          "enum": [
+            "metadata",
+            "message"
+          ]
+        },
+        "excerpt": {
+          "type": "string",
+          "maxLength": 320
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          ]
+        }
+      },
+      "required": [
+        "hit_id",
+        "ref",
+        "source",
+        "excerpt",
+        "message_id"
+      ]
+    },
+    "request_conversations.catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversations.catalog"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "kind": {
+              "enum": [
+                "conversation",
+                "implement"
+              ]
+            },
+            "filter": {
+              "$ref": "#/$defs/conversationFilter"
+            },
+            "continuation": {
+              "$ref": "#/$defs/continuation"
+            }
+          },
+          "required": [
+            "instance_id",
+            "kind"
+          ]
+        }
+      }
+    },
+    "response_conversations.catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversations.catalog"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "page": {
+              "$ref": "#/$defs/page"
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/conversationCard"
+              }
+            }
+          },
+          "required": [
+            "page",
+            "items"
+          ]
+        }
+      }
+    },
+    "request_conversations.search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversations.search"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "kind": {
+              "enum": [
+                "conversation",
+                "implement"
+              ]
+            },
+            "query": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "filter": {
+              "$ref": "#/$defs/conversationFilter"
+            },
+            "continuation": {
+              "$ref": "#/$defs/continuation"
+            }
+          },
+          "required": [
+            "instance_id",
+            "kind",
+            "query"
+          ]
+        }
+      }
+    },
+    "response_conversations.search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversations.search"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "page": {
+              "$ref": "#/$defs/page"
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/conversationSearchHit"
+              }
+            }
+          },
+          "required": [
+            "page",
+            "items"
+          ]
+        }
+      }
+    },
+    "request_conversation.window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.window"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "message_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "continuation": {
+              "$ref": "#/$defs/continuation"
+            }
+          },
+          "required": [
+            "ref"
+          ]
+        }
+      }
+    },
+    "response_conversation.window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.window"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "page": {
+              "$ref": "#/$defs/page"
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/message"
+              }
+            },
+            "read_token": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                }
+              ]
+            }
+          },
+          "required": [
+            "page",
+            "items",
+            "read_token"
+          ]
+        }
+      }
+    },
+    "request_conversation.acknowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.acknowledge"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "read_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          },
+          "required": [
+            "ref",
+            "read_token"
+          ]
+        }
+      }
+    },
+    "response_conversation.acknowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.acknowledge"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "acknowledged": {
+              "const": true
+            }
+          },
+          "required": [
+            "acknowledged"
+          ]
+        }
+      }
+    },
+    "request_conversation.action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.action"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "action": {
+              "enum": [
+                "rename",
+                "pin",
+                "unpin",
+                "archive",
+                "restore"
+              ]
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1
+            }
+          },
+          "required": [
+            "ref",
+            "expected_revision",
+            "idempotency_key",
+            "action"
+          ]
+        }
+      }
+    },
+    "response_conversation.action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.action"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "enum": [
+                "applied",
+                "duplicate"
+              ]
+            },
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "outcome",
+            "ref",
+            "revision"
+          ]
+        }
+      }
+    },
+    "request_conversation.create": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.create"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instance_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1
+            },
+            "project_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          },
+          "required": [
+            "instance_id",
+            "idempotency_key"
+          ]
+        }
+      }
+    },
+    "response_conversation.create": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.create"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "enum": [
+                "applied",
+                "duplicate"
+              ]
+            },
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "outcome",
+            "ref",
+            "revision"
+          ]
+        }
+      }
     }
   }
 }

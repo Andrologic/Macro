@@ -782,6 +782,15 @@ pub async fn update_git_worktree_project_access(
 
 // ============ MESSAGES ============
 
+pub async fn get_message(pool: &SqlitePool, id: &str) -> DbResult<Option<Message>> {
+    let mut transaction = pool.begin().await?;
+    let size: Option<i64> = sqlx::query_scalar("SELECT length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) FROM messages WHERE id = ?").bind(id).fetch_optional(&mut *transaction).await?;
+    if size.is_some_and(|n| n > 4 * 1024 * 1024) { return Err(DbError::Validation("resource_limit".into())); }
+    let row = sqlx::query("SELECT * FROM messages WHERE id = ?").bind(id).fetch_optional(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(row.as_ref().map(map_message_row))
+}
+
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"

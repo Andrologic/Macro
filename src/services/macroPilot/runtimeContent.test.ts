@@ -41,6 +41,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   if (command === 'workspace_get_bootstrap') throw new Error('Pilot reads must not bootstrap workspaces');
   if (command === 'workspace_list_tasks') return { tasks: taskRecords };
   if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
+  if (command === 'db_conversation_metadata') return conversations.map(c => ({ conversation_id: c.id, revision: 1, archived: false, response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null }));
   if (command === 'db_list_conversations') return structuredClone(conversations);
   if (command === 'db_get_conversation') return structuredClone(conversations.find(c => c.id === args.id) ?? null);
   if (command === 'db_list_messages') { if (messagesUnavailable) throw 'unavailable'; await messageWait; return structuredClone(messages.filter(message => message.conversation_id === args.conversationId)); }
@@ -596,7 +597,9 @@ it('falls back from the reliability offer while retaining negotiated task capabi
     await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 3);
     const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll'));
     expect(polls[0].body.capabilities).toContain('network-reliability-1');
-    expect(polls[1].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
+    expect(polls[0].body.capabilities).toContain('conversations-1');
+    expect(polls[1].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1']);
+    expect(polls[2].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
     const catalog = await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }));
     expect(JSON.stringify(catalog)).not.toContain('content_revision');
     conversations[0].title = 'Legacy edit';

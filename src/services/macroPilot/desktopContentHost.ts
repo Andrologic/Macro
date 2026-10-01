@@ -4,8 +4,9 @@ import { desktopPilotTasks } from './desktopTaskCatalog';
 import { pilotTaskId, findPilotTask } from './taskIdentity';
 import { gitBranchList, pilotContentPolicy, pilotReviewCommit, dbGetAppSetting, dbCompareAndSwapAppSetting } from '../tauriIpc';
 import { ContentHost, CONTENT_BUDGET, type ReviewTarget } from './contentHost';
+import { ConversationManager } from './conversationManager';
 import { ConversationCaptures } from './conversationCaptures';
-import { conversationCaptureStorage, desktopConversationCaptureSource } from './conversationCaptureSource';
+import { conversationCaptureStorage, desktopConversationCaptureSource, desktopConversationManagementSource } from './conversationCaptureSource';
 import type { TextPolicy } from './conversationText';
 import { createReviewCaptureService } from './reviewCapture';
 import type { PilotKernel } from './kernel';
@@ -77,7 +78,11 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
   const conversations = new ConversationCaptures({ instanceId, workspaceId, source: desktopConversationCaptureSource(options.ports),
       storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations });
   const taskKey = `${key}:task-completion:1`;
-  return new ContentHost({ accountId, instanceId, signal, conversations,
+  const managerKey = `${key}:conversation-management:1`;
+  const conversationManagement = new ConversationManager({ instanceId, source: desktopConversationManagementSource(options.ports), captures: conversations,
+    storage: { load: async () => (await dbGetAppSetting(managerKey))?.value_json ?? null,
+      compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: managerKey, expectedValueJson: previous, valueJson: next })).applied } });
+  return new ContentHost({ accountId, instanceId, signal, conversations, conversationManagement,
     taskCompletion: { source: desktopTaskCompletionSource(instanceId, workspaceId, conversations, options.ports, signal), storage: {
       load: async () => (await dbGetAppSetting(taskKey))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: taskKey, expectedValueJson: previous, valueJson: next })).applied,

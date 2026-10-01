@@ -6,6 +6,7 @@ pub mod agent_runs;
 #[allow(dead_code)]
 pub mod models;
 pub mod pilot_tools;
+pub mod conversation_management;
 pub mod repository;
 
 use crate::ai::macro_ai;
@@ -43,7 +44,7 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -260,6 +261,16 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         .await?;
     }
 
+    if !list_applied_migrations(connection).await?.contains(&7) {
+        apply_migration(
+            connection,
+            7,
+            "007_conversation_management".to_string(),
+            include_str!("migrations/007_conversation_management.sql").to_string(),
+        )
+        .await?;
+    }
+
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
     insert_default_speech_provider(connection).await?;
@@ -276,6 +287,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&4) && !applied.contains(&3))
         || (applied.contains(&5) && !applied.contains(&4))
         || (applied.contains(&6) && !applied.contains(&5))
+        || (applied.contains(&7) && !applied.contains(&6))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -1900,6 +1912,10 @@ mod tests {
                 'architect_plan_conversation_sync',
                 'agent_runs',
                 'conversation_citations',
+                'conversation_action_receipts',
+                'conversation_management',
+                'conversation_response_versions',
+                'conversation_tool_trace_revisions',
                 'conversation_toolbox_state',
                 'schema_migrations',
                 'conversations',
@@ -1933,7 +1949,10 @@ mod tests {
                 "ai_models".to_string(),
                 "app_settings".to_string(),
                 "architect_plan_conversation_sync".to_string(),
+                "conversation_action_receipts".to_string(),
                 "conversation_citations".to_string(),
+                "conversation_management".to_string(),
+                "conversation_response_versions".to_string(),
                 "conversation_tool_trace_revisions".to_string(),
                 "conversation_toolbox_state".to_string(),
                 "conversations".to_string(),
@@ -1967,10 +1986,10 @@ mod tests {
         .execute(&pool)
         .await
         .expect("emulate local Pilot version five");
-        sqlx::query("DELETE FROM schema_migrations WHERE version = 6")
+        sqlx::query("DELETE FROM schema_migrations WHERE version >= 6")
             .execute(&pool)
             .await
-            .expect("remove version six stamp");
+            .expect("emulate a version-five migration history");
         sqlx::query("DROP INDEX idx_messages_created_at_id")
             .execute(&pool)
             .await

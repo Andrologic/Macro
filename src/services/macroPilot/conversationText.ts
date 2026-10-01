@@ -7,13 +7,13 @@ export type ExportText = { content_state: 'complete' | 'excerpt'; text: string }
 const encoder = new TextEncoder();
 export const utf8Bytes = (text: string): number => encoder.encode(text).length;
 const unsafe = /file:\/\/|\/(?:Users|home|private|var|tmp|opt|etc|root|Volumes)\/|[A-Za-z]:\\|gh[pousr]_|github_pat_|sk-[A-Za-z0-9_-]{16,}|-----BEGIN (?:[A-Z ]*PRIVATE KEY)-----/i;
-export function controlledText(text: string, policy: TextPolicy): ExportText {
+export function controlledText(text: string, policy: TextPolicy, maxBytes = 16384): ExportText {
   if (utf8Bytes(text) > (policy.inspectionBytes ?? 1024 * 1024) || unsafe.test(text) ||
       policy.secrets.some(secret => secret.length > 0 && text.includes(secret)) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text)) {
     return { content_state: 'withheld', reason: 'unsafe_content' };
   }
   let bytes = 0; let result = '';
-  for (const char of text) { const size = utf8Bytes(char); if (bytes + size > 16384) break; bytes += size; result += char; }
+  for (const char of text) { const size = utf8Bytes(char); if (bytes + size > maxBytes) break; bytes += size; result += char; }
   return { content_state: result.length === text.length ? 'complete' : 'excerpt', text: result };
 }
 
@@ -76,13 +76,13 @@ function recordedFinalText(content: string): string | null {
   if (hasReasoningMarker(rest)) return null;
   return (output + rest).trim();
 }
-export function messageText(message: DbMessage, generating: boolean, policy: TextPolicy, attestedText?: string | null): ExportText {
+export function messageText(message: DbMessage, generating: boolean, policy: TextPolicy, attestedText?: string | null, maxBytes = 16384): ExportText {
   if (message.role === 'assistant' && message.completion_reason === 'provider_error') return { content_state: 'withheld', reason: 'unknown_provenance' };
   if (message.role === 'assistant' && generating) return { content_state: 'pending', reason: 'generating' };
   if (message.role === 'user') {
     const whole = controlledText(message.content, policy);
     if (whole.content_state === 'withheld') return whole;
-    return controlledText(buildUserMessagePresentation(message.content).content, policy);
+    return controlledText(buildUserMessagePresentation(message.content).content, policy, maxBytes);
   }
   // Inspect before parsing and excerpting, including a secret crossing a page boundary.
   const recordedFinal = typeof attestedText === 'string';
@@ -99,7 +99,7 @@ export function messageText(message: DbMessage, generating: boolean, policy: Tex
     proven.trim().startsWith('<think>') ? legacyFinalText(proven) :
     hasReasoningMarker(proven) ? null : proven;
   if (final === null) return { content_state: 'withheld', reason: 'unknown_provenance' };
-  return controlledText(buildAssistantMessagePresentation(final).content, policy);
+  return controlledText(buildAssistantMessagePresentation(final).content, policy, maxBytes);
 }
 export function completion(reason: string | null | undefined): 'complete' | 'incomplete' | 'unknown' {
   if (['completed', 'length_recovered', 'incomplete_recovered'].includes(reason ?? '')) return 'complete';

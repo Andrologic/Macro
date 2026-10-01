@@ -20,6 +20,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   calls.push(command);
   if (command === 'workspace_get_bootstrap') { bootstrapCalls++; throw new Error('unexpected workspace bootstrap during capture read'); }
   if (command === 'workspace_list_tasks') return { tasks: [] };
+  if (command === 'db_conversation_metadata') return [];
   if (command === 'db_list_conversations') return [structuredClone(conversation)];
   if (command === 'db_get_conversation') return structuredClone(conversation);
   if (command === 'db_list_messages') { if (unavailable) throw new Error('/private/db broken'); return [structuredClone(message)]; }

@@ -1,3 +1,5 @@
+import { observeConversationMessage } from '../../services/conversationReadObservation';
+import { acknowledgeDisplayedConversation } from '../../services/conversationManagementService';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
@@ -782,6 +784,16 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
+  const observedRow = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!observedRow.current || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
+    // Capture this rendered message, before asynchronous reads can see a new turn.
+    const displayed = { ...message };
+    return observeConversationMessage(observedRow.current, () => {
+      void acknowledgeDisplayedConversation(displayed.conversation_id, [displayed])
+        .then(() => useChatStore.getState().refreshConversationMetadata()).catch(() => undefined);
+    });
+  }, [message, assistantActivity]);
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const architectActionMessage =
@@ -806,7 +818,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 
   return (
     <div
-      ref={measureElement}
+      ref={(element) => { observedRow.current = element; measureElement(element); }}
       data-index={virtualMessage.index}
       data-scroll-magnet-anchor={message.id}
       id={`chat-message-${message.id}`}

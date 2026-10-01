@@ -41,6 +41,8 @@ describe('ConversationArchive', () => {
       command?: string,
       payload?: Record<string, unknown>,
     ): Promise<unknown> => {
+      if (command === 'db_conversation_import_archives') return;
+      if (command === 'db_conversation_metadata') return (stateValues.chatArchivedConversationIds as string[] ?? []).map(id => ({ conversation_id: id, archived: true }));
       if (command === 'state_get_snapshot') {
         return { schemaVersion: 1, values: structuredClone(stateValues) };
       }
@@ -307,6 +309,8 @@ describe('ConversationArchive', () => {
       command?: string,
       payload?: Record<string, unknown>,
     ): Promise<unknown> => {
+      if (command === 'db_conversation_import_archives') return;
+      if (command === 'db_conversation_metadata') return (stateValues.chatArchivedConversationIds as string[] ?? []).map(id => ({ conversation_id: id, archived: true }));
       if (command === 'state_get_snapshot') {
         return { schemaVersion: 1, values: structuredClone(stateValues) };
       }

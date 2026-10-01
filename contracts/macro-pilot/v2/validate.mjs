@@ -41,6 +41,7 @@ export function validateMessage(message) {
     const scope = message.request.body.ref ?? message.request.body;
     reject(scope.instance_id !== message.instance_id, 'delivery instance mismatch');
     reject(message.request.body.consistency === 'network-reliability-1' && !(message.capabilities ?? []).includes('network-reliability-1'), 'unattested reliability selection');
+    reject(isConversationOperation(message.request.operation) && !(message.capabilities ?? []).includes('conversations-1'), 'unattested conversations capability');
     reject(!validateMessage(message.request).valid, 'invalid delivered request');
   }
   if (message.type === 'delivery.result') {
@@ -55,7 +56,7 @@ export function validateMessage(message) {
     reject(page.offset + result.items.length > page.total, 'page exceeds total');
     reject((page.next_cursor === null) !== (page.offset + result.items.length === page.total), 'cursor does not match remaining items');
     reject(result.items.length === 0 && page.next_cursor !== null, 'empty nonterminal page');
-    const identities = result.items.map((item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
+    const identities = result.items.map((item) => item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
     reject(new Set(identities).size !== identities.length, 'duplicate page identities');
     result.items.forEach((item, index) => {
       if ('position' in item) reject(item.position !== page.offset + index, 'noncontiguous positions');
@@ -72,6 +73,23 @@ export function validateMessage(message) {
       }
     });
   }
+  if (message.type === 'response' && message.operation === 'conversations.catalog') {
+    for (const item of message.result.items) {
+      reject(item.provider_error !== null && item.attention !== 'error', 'provider diagnosis requires error');
+      reject(item.ref.kind === 'implement' && item.mode !== 'Implement', 'Implement mode mismatch');
+      reject(item.ref.kind === 'conversation' && item.mode === 'Implement', 'Chat mode mismatch');
+    }
+  }
+  if (message.type === 'response' && message.operation === 'conversations.search') {
+    for (const item of message.result.items) reject((item.source === 'message') !== (item.message_id !== null), 'search reference mismatch');
+  }
+  if (message.type === 'request' && message.operation === 'conversation.action') {
+    reject(message.body.ref.kind !== 'conversation', 'Chat action reference required');
+    reject((message.body.action === 'rename') !== ('title' in message.body), 'rename title exclusively');
+    reject(message.body.action === 'rename' && !message.body.title.trim(), 'empty title');
+  }
+  if (message.type === 'request' && message.operation === 'conversation.create') reject(message.body.title !== undefined && !message.body.title.trim(), 'empty title');
+  if (message.type === 'request' && message.operation === 'conversations.search') reject(!message.body.query.trim(), 'empty search');
   if (message.type === 'request') {
     reject(message.body.known_revision !== undefined && (message.body.consistency !== 'network-reliability-1' || message.body.continuation), 'conditional projects require negotiated initial request');
     reject(message.body.continuation && message.body.snapshot_id && message.body.continuation.snapshot_id !== message.body.snapshot_id, 'continuation snapshot mismatch');
@@ -131,9 +149,14 @@ export function validateExchange(request, response) {
       const body = request.body;
       const result = response.result;
       const expectedSnapshot = body.snapshot_id ?? body.continuation?.snapshot_id;
-      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
+      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
-      if (result.page && !body.continuation) reject(result.page.offset !== 0, 'initial page starts after zero');
+      if (result.page && !body.continuation && !(request.operation === 'conversation.window' && body.message_id)) reject(result.page.offset !== 0, 'initial page starts after zero');
+      if (['conversations.catalog', 'conversations.search'].includes(request.operation)) {
+        for (const item of result.items) reject(item.ref.instance_id !== body.instance_id || item.ref.kind !== body.kind, 'conversation catalog scope mismatch');
+      }
+      if (request.operation === 'conversation.action') reject(['instance_id', 'kind', 'conversation_id'].some(key => body.ref[key] !== result.ref[key]), 'action reference mismatch');
+      if (request.operation === 'conversation.create') reject(result.ref.instance_id !== body.instance_id || result.ref.kind !== 'conversation', 'created reference mismatch');
       if (request.operation === 'conversations.list') {
         for (const item of result.items) {
           const enhanced = body.consistency === 'network-reliability-1';
@@ -149,7 +172,7 @@ export function validateExchange(request, response) {
       }
       if (request.operation === 'task.get') reject(['instance_id', 'workspace_id', 'task_id'].some(key => body.ref[key] !== result.ref[key]), 'task reference mismatch');
       if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');
-      if (['task.artifact.read', 'conversation.tool.read'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
+      if (['task.artifact.read', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
       if ('expected_revision' in body) reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
       if (request.operation === 'account.get') reject(result.account_id !== request.account_id, 'account result mismatch');
     }
@@ -178,8 +201,10 @@ export function validatePageContinuation(previous, next) {
   }
   if (previous.account_id !== next.account_id || previous.operation !== next.operation) errors.push('page scope changed');
   if (a.next_cursor === null || b.offset !== a.offset + previous.result.items.length) errors.push('page continuation gap');
-  const identity = (item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
+  const identity = (item) => item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
   const seen = new Set(previous.result.items.map(identity));
   if (next.result.items.some((item) => seen.has(identity(item)))) errors.push('repeated page identity');
   return { valid: errors.length === 0, errors };
 }
+
+export const isConversationOperation = operation => ['conversations.catalog', 'conversations.search', 'conversation.window', 'conversation.acknowledge', 'conversation.action', 'conversation.create'].includes(operation);
