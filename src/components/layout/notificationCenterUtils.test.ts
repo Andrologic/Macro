@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import type { NotificationCenterItem } from '../../stores/useNotificationCenterStore';
 import {
   calculateNotificationCenterPosition,
@@ -118,4 +119,59 @@ describe('notificationCenterUtils', () => {
       },
     ]);
   });
+  it.each([
+    ['America/New_York', '2026-03-08', '2026-03-09'],
+    ['America/New_York', '2026-11-01', '2026-11-02'],
+    ['Europe/Paris', '2026-03-29', '2026-03-30'],
+    ['Europe/Paris', '2026-10-25', '2026-10-26'],
+    ['Asia/Tokyo', '2026-03-08', '2026-03-09'],
+    ['Asia/Tokyo', '2026-11-01', '2026-11-02'],
+  ])('groups the previous civil day in %s after %s', (timezone, yesterday, today) => {
+    // Start a separate runtime so TZ cannot affect other tests or cached Intl state.
+    const items = [
+      buildItem('yesterday-late', `${yesterday}T23:59:50`),
+      buildItem('today', `${today}T00:00:10`),
+      buildItem('yesterday-early', `${yesterday}T00:00:00`),
+      buildItem('invalid', 'not-a-date'),
+      buildItem('older', '2025-12-22T12:00:00'),
+      buildItem('future', `${today}T23:00:00`),
+    ];
+    const source = `
+      import { groupNotificationCenterItemsByDate } from ${JSON.stringify(new URL('./notificationCenterUtils.ts', import.meta.url).href)};
+      const input = JSON.parse(await Bun.stdin.text());
+      console.log(JSON.stringify(input.times.map(time => groupNotificationCenterItemsByDate(input.items, {
+        now: new Date(time).getTime(), locale: 'en-US',
+        labels: { yesterday: 'Hier', lessThanMinute: 'Just now' },
+      }))));
+    `;
+    const child = spawnSync(process.execPath, ['--eval', source], {
+      env: { ...process.env, TZ: timezone },
+      input: JSON.stringify({
+        items,
+        times: [`${today}T00:00:20`, `${today}T12:00:00`],
+      }),
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(child.stderr).toBe('');
+    const [atMidnight, atNoon] = JSON.parse(child.stdout);
+    const yesterdayGroup = { id: 'yesterday', label: 'Hier', items: [items[0], items[2]] };
+    const olderGroup = expect.objectContaining({
+      label: 'December 22, 2025', items: [items[4]],
+    });
+    expect(atMidnight).toEqual([
+      yesterdayGroup,
+      { id: 'less-than-minute', label: 'Just now', items: [items[1], items[5]] },
+      olderGroup,
+    ]);
+    expect(atNoon).toEqual([
+      yesterdayGroup,
+      { id: 'today:hour:11', label: '11 hr. ago', items: [items[1]] },
+      olderGroup,
+      { id: 'less-than-minute', label: 'Just now', items: [items[5]] },
+    ]);
+  });
+
 });
