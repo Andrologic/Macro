@@ -204,7 +204,7 @@ export class ConversationManager {
           const rawDescription = controlledText(row.description ?? '', policy, 1024 * 1024);
           const metadata = `${'text' in rawTitle ? rawTitle.text : ''} ${'text' in rawDescription ? rawDescription.text : ''}`;
           const index = normalizeConversationSearch(metadata).indexOf(query);
-          if (index >= 0) results.push({ hit_id: crypto.randomUUID(), ref: card.ref, source: 'metadata', excerpt: searchExcerpt(metadata, index, policy), message_id: null });
+          if (index >= 0) results.push({ hit_id: crypto.randomUUID(), ref: card.ref, title: card.title, source: 'metadata', excerpt: searchExcerpt(metadata, index, policy), message_id: null });
         }
         if (results.length > 2000) fail('resource_limit');
         let searchOffset = 0; const deadline = this.now() + 10000;
@@ -222,7 +222,7 @@ export class ConversationManager {
             if (!terms.every(t => normalized.includes(t))) continue;
             // Never export the raw FTS snippet, which can contain reasoning/context.
             const index = normalized.indexOf(terms[0]);
-            results.push({ hit_id: crypto.randomUUID(), ref: card.ref, source: 'message', excerpt: searchExcerpt(text.text, index, policy), message_id: message.id });
+            results.push({ hit_id: crypto.randomUUID(), ref: card.ref, title: card.title, source: 'message', excerpt: searchExcerpt(text.text, index, policy), message_id: message.id });
             if (results.length > 2000) fail('resource_limit');
           }
           check();

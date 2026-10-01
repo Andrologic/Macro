@@ -12,10 +12,22 @@
       "expires_at": "2026-01-01T00:05:00Z",
       "export_policy_revision": "visible-1",
       "offset": 0,
-      "total": 1,
+      "total": 2,
       "next_cursor": null
     },
     "items": [
+      {
+        "hit_id": "hit-metadata-demo",
+        "ref": {
+          "instance_id": "instance-demo",
+          "kind": "conversation",
+          "conversation_id": "chat-demo"
+        },
+        "source": "metadata",
+        "excerpt": "Titre synthétique",
+        "message_id": null,
+        "title": "Conversation synthétique"
+      },
       {
         "hit_id": "hit-demo",
         "ref": {
@@ -25,7 +37,8 @@
         },
         "source": "message",
         "excerpt": "Réponse synthétique",
-        "message_id": "message-demo"
+        "message_id": "message-demo",
+        "title": "Conversation synthétique"
       }
     ]
   }

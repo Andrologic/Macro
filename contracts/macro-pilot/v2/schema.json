@@ -4876,6 +4876,10 @@
         "ref": {
           "$ref": "#/$defs/conversationRef"
         },
+        "title": {
+          "type": "string",
+          "maxLength": 240
+        },
         "source": {
           "enum": [
             "metadata",
@@ -4903,6 +4907,7 @@
       "required": [
         "hit_id",
         "ref",
+        "title",
         "source",
         "excerpt",
         "message_id"

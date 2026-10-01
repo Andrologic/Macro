@@ -85,6 +85,25 @@ test('searches all metadata and indexed messages, ignoring accents and exporting
   const second=await s.read('conversations.search',{instance_id:'instance',kind:'conversation',query:'CAFE DEJA PRET',continuation:{snapshot_id:first.page.snapshot_id,cursor:first.page.next_cursor}}) as CapturePage<ContentConversationSearchHit>;
   expect(second.items.some(hit=>hit.message_id==='late')).toBe(true);
 });
+test('search hits carry controlled card titles outside the first loaded catalog page without extra histories',async()=>{
+  const s=setup(65);const target=s.conversations[60];const withheld=s.conversations[61];
+  target.title='Café '+ '😀'.repeat(300);withheld.title='Private synthetic-secret';withheld.description='Café demande contrôlée';
+  s.add(message('outside-page',target.id,'Café réponse utile'));s.add(message('withheld-title',withheld.id,'Café réponse utile'));
+  const first=await s.read('conversations.catalog',{instance_id:'instance',kind:'conversation'}) as CapturePage<ContentConversationCard>;
+  expect(first.items).toHaveLength(50);expect(first.items.some(card=>[target.id,withheld.id].includes(card.ref.conversation_id))).toBe(false);
+  const found=await s.read('conversations.search',{instance_id:'instance',kind:'conversation',query:'CAFE'}) as CapturePage<ContentConversationSearchHit>;
+  expect(found.items).toHaveLength(4);
+  const rest=await s.read('conversations.catalog',{instance_id:'instance',kind:'conversation',continuation:{snapshot_id:first.page.snapshot_id,cursor:first.page.next_cursor}}) as CapturePage<ContentConversationCard>;
+  for(const id of [target.id,withheld.id]){
+    const card=rest.items.find(card=>card.ref.conversation_id===id)!;
+    const hits=found.items.filter(hit=>hit.ref.conversation_id===id);
+    expect(hits.map(hit=>hit.source)).toEqual(['metadata','message']);
+    for(const hit of hits){expect(hit.title).toBe(card.title);expect(Array.from(hit.title).length).toBeLessThanOrEqual(240);}
+  }
+  expect(found.items.find(hit=>hit.ref.conversation_id===target.id)?.title).toBe('Café '+ '😀'.repeat(235));
+  expect(found.items.filter(hit=>hit.ref.conversation_id===withheld.id).every(hit=>hit.title==='')).toBe(true);
+  expect(JSON.stringify(found)).not.toContain('synthetic-secret');expect(s.counts().transcriptReads).toBe(0);expect(s.counts().messageReads).toBe(2);
+});
 test('search excerpts retain the match after composed, decomposed and expanded Unicode prefixes',async()=>{
   for (const prefix of ['é'.repeat(500), 'e\u0301'.repeat(500), '각'.repeat(500), '😀'.repeat(500)]) {
     const s=setup();s.conversations[0].description=prefix+' café '+ 'tail '.repeat(5000);s.add(message('unicode-result',s.ref.conversation_id,s.conversations[0].description));

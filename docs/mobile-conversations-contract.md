@@ -69,9 +69,15 @@ contexte reste local et ne figure jamais dans les cartes.
 et une continuation optionnelle. Le desktop cherche d'abord dans les titres
 et descriptions complets, puis dans son index de messages, avec casse et accents
 normalisés. Les résultats de métadonnées précèdent ceux des messages. Chaque
-résultat a un `hit_id` unique, une référence de conversation, une source, un
+résultat a un `hit_id` unique, une référence de conversation, un `title` requis,
+une source, un
 extrait de 320 caractères et un `message_id` uniquement pour un résultat de
-message. Les extraits FTS bruts ne sont jamais transmis : le desktop relit le
+message. `title` reprend exactement le titre contrôlé de la carte, limité à
+240 caractères Unicode, pour les deux sources. Il peut être vide si la politique
+retient le titre. Le client peut ainsi nommer une conversation absente des pages
+de catalogue déjà chargées, sans télécharger le catalogue complet. Cette donnée
+provient de la carte déjà construite et ne nécessite aucune lecture d'historique
+supplémentaire. Les extraits FTS bruts ne sont jamais transmis : le desktop relit le
 message concerné, vérifie sa provenance et sa politique d'export, puis compose
 l'extrait à partir du texte visible. Raisonnement, payloads d'outils, contenu
 non autorisé et secrets restent exclus.
