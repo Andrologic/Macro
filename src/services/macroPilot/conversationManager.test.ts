@@ -85,6 +85,14 @@ test('searches all metadata and indexed messages, ignoring accents and exporting
   const second=await s.read('conversations.search',{instance_id:'instance',kind:'conversation',query:'CAFE DEJA PRET',continuation:{snapshot_id:first.page.snapshot_id,cursor:first.page.next_cursor}}) as CapturePage<ContentConversationSearchHit>;
   expect(second.items.some(hit=>hit.message_id==='late')).toBe(true);
 });
+test('search excerpts retain the match after composed, decomposed and expanded Unicode prefixes',async()=>{
+  for (const prefix of ['é'.repeat(500), 'e\u0301'.repeat(500), '각'.repeat(500), '😀'.repeat(500)]) {
+    const s=setup();s.conversations[0].description=prefix+' café '+ 'tail '.repeat(5000);s.add(message('unicode-result',s.ref.conversation_id,s.conversations[0].description));
+    const page=await s.read('conversations.search',{instance_id:'instance',kind:'conversation',query:'CAFE'}) as CapturePage<ContentConversationSearchHit>;
+    expect(page.items.map(hit=>hit.source)).toEqual(['metadata','message']);
+    for(const hit of page.items){expect(hit.excerpt).toContain('café');expect(Array.from(hit.excerpt).length).toBeLessThanOrEqual(320);expect(hit.excerpt).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);}
+  }
+});
 test('found message loads an anchored bounded window and acknowledgement preserves a concurrent response',async()=>{
   const s=setup();for(let i=0;i<140;i++)s.add(message(`answer-${String(i).padStart(3,'0')}`,s.ref.conversation_id));
   const page=await s.read('conversation.window',{ref:s.ref,message_id:'answer-110'}) as CapturePage<MessageItem>&{read_token:string};

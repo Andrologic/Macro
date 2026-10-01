@@ -33,6 +33,21 @@ function bounded(text: string, policy: TextPolicy, length: number): string {
   const checked = controlledText(text, policy);
   return 'text' in checked ? Array.from(checked.text.replace(/\s+/g, ' ').trim()).slice(0, length).join('') : '';
 }
+/** Matching uses folded text; snippets retain original Unicode and offsets.
+ * The full source has already passed policy inspection before this crop. */
+function searchExcerpt(text: string, normalizedIndex: number, policy: TextPolicy): string {
+  let originalIndex = 0; let foldedIndex = 0;
+  for (const point of text) {
+    const width = normalizeConversationSearch(point).length;
+    if (foldedIndex + width > normalizedIndex) break;
+    foldedIndex += width; originalIndex += point.length;
+  }
+  let start = Math.max(0, originalIndex - 60);
+  if (start && /[\uDC00-\uDFFF]/.test(text[start])) start++;
+  // Crop only the inspected text. Checking a whole long suffix again with the
+  // short-field budget would produce an empty excerpt for an early match.
+  return bounded(Array.from(text.slice(start, start + 1280)).slice(0, 320).join(''), policy, 320);
+}
 function matches(card: ContentConversationCard, filter: ContentConversationFilter = {}): boolean {
   const archive = filter.archived ?? 'active';
   if (archive !== 'all' && card.archived !== (archive === 'archived')) return false;
@@ -189,7 +204,7 @@ export class ConversationManager {
           const rawDescription = controlledText(row.description ?? '', policy, 1024 * 1024);
           const metadata = `${'text' in rawTitle ? rawTitle.text : ''} ${'text' in rawDescription ? rawDescription.text : ''}`;
           const index = normalizeConversationSearch(metadata).indexOf(query);
-          if (index >= 0) results.push({ hit_id: crypto.randomUUID(), ref: card.ref, source: 'metadata', excerpt: bounded(metadata.slice(Math.max(0,index-60)), policy,320), message_id: null });
+          if (index >= 0) results.push({ hit_id: crypto.randomUUID(), ref: card.ref, source: 'metadata', excerpt: searchExcerpt(metadata, index, policy), message_id: null });
         }
         if (results.length > 2000) fail('resource_limit');
         let searchOffset = 0; const deadline = this.now() + 10000;
@@ -207,7 +222,7 @@ export class ConversationManager {
             if (!terms.every(t => normalized.includes(t))) continue;
             // Never export the raw FTS snippet, which can contain reasoning/context.
             const index = normalized.indexOf(terms[0]);
-            results.push({ hit_id: crypto.randomUUID(), ref: card.ref, source: 'message', excerpt: bounded(text.text.slice(Math.max(0,index-60)), policy, 320), message_id: message.id });
+            results.push({ hit_id: crypto.randomUUID(), ref: card.ref, source: 'message', excerpt: searchExcerpt(text.text, index, policy), message_id: message.id });
             if (results.length > 2000) fail('resource_limit');
           }
           check();
