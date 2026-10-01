@@ -60,7 +60,18 @@ const readStringArrayArg = (
     : [];
 };
 
-export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
+export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = (props) => (
+  <ToolApprovalRequestFooter
+    key={JSON.stringify([
+      props.pendingApproval.conversationId,
+      props.pendingApproval.assistantMessageId,
+      props.pendingApproval.toolCallId,
+    ])}
+    {...props}
+  />
+);
+
+const ToolApprovalRequestFooter: React.FC<ToolApprovalFooterProps> = ({
   pendingApproval,
   onAllowOnce,
   onAllowForConversation,
