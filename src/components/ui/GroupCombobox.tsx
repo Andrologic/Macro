@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 import i18n from '../../i18n';
 import { cn } from '../../utils/cn';
@@ -31,6 +31,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
   className,
   placeholder = i18n.t('project.selectGroupPlaceholder', 'Select a group...'),
 }) => {
+  const dropdownId = useId();
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -215,6 +216,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
     ? createPortal(
         <div
           ref={dropdownRef}
+          id={dropdownId}
           style={{
             top: dropdownPosition.top,
             left: dropdownPosition.left,
@@ -317,6 +319,10 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           )}
         />
         <button
+          type="button"
+          aria-label={i18n.t('project.selectGroupPlaceholder', 'Select a group...')}
+          aria-expanded={isOpen}
+          aria-controls={isOpen ? dropdownId : undefined}
           onClick={() => setIsOpen(!isOpen)}
           className={cn(
             'absolute right-2 top-1/2 -translate-y-1/2',
