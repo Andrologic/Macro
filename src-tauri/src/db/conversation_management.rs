@@ -44,7 +44,7 @@ fn guard(deadline: &str) -> Result<(), String> {
     Ok(())
 }
 pub async fn metadata(pool: &SqlitePool) -> Result<Vec<ConversationMetadata>, String> {
-    let rows = sqlx::query("SELECT s.conversation_id, s.revision, s.archived, COALESCE((SELECT MAX(revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS response_revision, s.read_revision,
+    let rows = sqlx::query("SELECT s.conversation_id, s.revision, s.archived, COALESCE((SELECT MAX(revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS response_revision, COALESCE((SELECT MIN(v.revision)-1 FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id AND v.revision > v.read_revision), (SELECT MAX(v.revision) FROM conversation_response_versions v WHERE v.conversation_id = s.conversation_id),0) AS read_revision,
  EXISTS(SELECT 1 FROM messages m, json_each(CASE WHEN json_valid(m.tool_traces_json) THEN m.tool_traces_json ELSE '[]' END) trace
  WHERE m.conversation_id = s.conversation_id AND m.role = 'assistant' AND m.completion_reason IS NOT 'provider_error' AND CASE WHEN trace.type = 'object' THEN json_extract(trace.value, '$.status') END = 'pending_approval'
  AND CASE WHEN trace.type = 'object' THEN json_type(trace.value, '$.tool_call_id') END = 'text'
@@ -85,17 +85,40 @@ pub async fn response_version(
 pub async fn acknowledge(
     pool: &SqlitePool,
     conversation_id: &str,
-    observed: i64,
+    observed: &[i64],
+    execute_before: Option<&str>,
 ) -> Result<(), String> {
-    if observed < 0 {
+    if observed.len() > 2000 || observed.iter().any(|revision| *revision < 1) {
         return Err("validation_failed".into());
     }
-    let result = sqlx::query("UPDATE conversation_management SET read_revision = MAX(read_revision, ?) WHERE conversation_id = ? AND response_revision >= ?")
-        .bind(observed).bind(conversation_id).bind(observed).execute(pool).await.map_err(db)?;
-    if result.rows_affected() != 1 {
+    if let Some(deadline) = execute_before {
+        guard(deadline)?;
+    }
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+    let current: Option<i64> = sqlx::query_scalar(
+        "SELECT response_revision FROM conversation_management WHERE conversation_id = ?",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    if current.is_none()
+        || observed
+            .iter()
+            .any(|revision| *revision > current.unwrap_or(0))
+    {
         return Err("stale_revision".into());
     }
-    Ok(())
+    for revision in observed {
+        // A changed/deleted response has a different current version. Observing
+        // its old bytes never reads the new version or another message.
+        sqlx::query("UPDATE conversation_response_versions SET read_revision = MAX(read_revision, ?) WHERE conversation_id = ? AND revision = ?")
+            .bind(revision).bind(conversation_id).bind(revision).execute(&mut *tx).await.map_err(db)?;
+    }
+    if let Some(deadline) = execute_before {
+        guard(deadline)?;
+    }
+    tx.commit().await.map_err(db)
 }
 /// First hydration imports legacy archive preferences once. Later catalog reads
 /// and both desktop/mobile mutations use the same authoritative state.
@@ -342,7 +365,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        acknowledge(&pool, &id, observed).await.unwrap();
+        acknowledge(&pool, &id, &[observed], None).await.unwrap();
         let state = metadata(&pool).await.unwrap().remove(0);
         assert!(state.response_revision > state.read_revision);
         assert_eq!(
@@ -354,12 +377,14 @@ mod tests {
         let current = response_version(&pool, "answer", "Concurrent")
             .await
             .unwrap();
-        acknowledge(&pool, &id, current).await.unwrap();
-        acknowledge(&pool, &id, observed).await.unwrap();
+        acknowledge(&pool, &id, &[current], None).await.unwrap();
+        acknowledge(&pool, &id, &[observed], None).await.unwrap();
         let state = metadata(&pool).await.unwrap().remove(0);
         assert_eq!(state.response_revision, state.read_revision);
         assert_eq!(
-            acknowledge(&pool, &id, current + 100).await.unwrap_err(),
+            acknowledge(&pool, &id, &[current + 100], None)
+                .await
+                .unwrap_err(),
             "stale_revision"
         );
     }
@@ -421,7 +446,7 @@ mod tests {
         let (temp, pool, id) = setup().await;
         sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('observed',?,'assistant','Visible','2026-01-01T00:00:00Z')")
             .bind(&id).execute(&pool).await.unwrap();
-        acknowledge(&pool, &id, 1).await.unwrap();
+        acknowledge(&pool, &id, &[1], None).await.unwrap();
         let command = input(&id, "archive", Some(1));
         action(&pool, command.clone()).await.unwrap();
         sqlx::query("DROP TABLE schema_migrations")
@@ -441,6 +466,59 @@ mod tests {
             action(&reopened, command).await.unwrap().outcome,
             "duplicate"
         );
+    }
+    #[tokio::test]
+    async fn reading_a_later_window_preserves_unseen_earlier_responses() {
+        let (_temp, pool, id) = setup().await;
+        sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('earlier',?,'assistant','Unseen','2026-01-01T00:00:00Z'),('later',?,'assistant','Seen','2026-01-01T00:01:00Z')")
+            .bind(&id).bind(&id).execute(&pool).await.unwrap();
+        acknowledge(&pool, &id, &[2], None).await.unwrap();
+        let state = metadata(&pool).await.unwrap().remove(0);
+        assert!(state.response_revision > state.read_revision);
+        acknowledge(&pool, &id, &[1], None).await.unwrap();
+        let state = metadata(&pool).await.unwrap().remove(0);
+        assert_eq!(state.response_revision, state.read_revision);
+    }
+    #[tokio::test]
+    async fn acknowledgement_expiring_while_waiting_for_sqlite_rolls_back() {
+        let (_temp, pool, id) = setup().await;
+        sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('blocked',?,'assistant','Unseen','2026-01-01T00:00:00Z')")
+            .bind(&id).execute(&pool).await.unwrap();
+        let tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let deadline = (chrono::Utc::now() + chrono::Duration::milliseconds(30)).to_rfc3339();
+        let release = async {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            tx.rollback().await.unwrap();
+        };
+        let (result, _) = tokio::join!(acknowledge(&pool, &id, &[1], Some(&deadline)), release);
+        assert_eq!(result.unwrap_err(), "unavailable");
+        assert_eq!(metadata(&pool).await.unwrap()[0].read_revision, 0);
+    }
+    #[tokio::test]
+    async fn bounded_transcript_rejects_large_hidden_payload_before_mapping_and_fts_ignores_accents(
+    ) {
+        let (_temp, pool, id) = setup().await;
+        sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at,hidden_context) VALUES('oversized',?,'user','Café DÉJÀ prêt','2026-01-01T00:00:00Z',zeroblob(800000))")
+            .bind(&id).execute(&pool).await.unwrap();
+        assert!(
+            matches!(repository::list_messages_bounded(&pool, &id).await, Err(crate::db::DbError::Validation(code)) if code == "resource_limit")
+        );
+        sqlx::query("UPDATE messages SET hidden_context=NULL WHERE id='oversized'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository::list_messages_bounded(&pool, &id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let found = repository::search_messages(&pool, "CAFE deja PRET", &[id], 50, 0)
+            .await
+            .unwrap();
+        assert_eq!(found.results.len(), 1);
+        assert_eq!(found.results[0].message_id, "oversized");
     }
     #[tokio::test]
     async fn desktop_archives_are_atomic_and_provider_failure_is_not_an_approval() {

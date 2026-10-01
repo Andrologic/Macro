@@ -826,6 +826,19 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
     Ok(messages)
 }
 
+/// The remote window has a conservative budget before any transcript strings
+/// cross IPC. The read transaction keeps the size check and fetch consistent.
+pub async fn list_messages_bounded(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
+    let mut tx = pool.begin().await?;
+    let size: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(2048 + 6 * (length(CAST(id AS BLOB)) + length(CAST(conversation_id AS BLOB)) + length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(turn_id AS BLOB)),0) + length(CAST(role AS BLOB)) + length(CAST(created_at AS BLOB)) + COALESCE(length(CAST(completion_reason AS BLOB)),0))),0) FROM messages WHERE conversation_id = ?")
+        .bind(conversation_id).fetch_one(&mut *tx).await?;
+    if size > 4 * 1024 * 1024 { return Err(DbError::Validation("resource_limit".into())); }
+    let rows = sqlx::query("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC")
+        .bind(conversation_id).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(rows.iter().map(map_message_row).collect())
+}
+
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"

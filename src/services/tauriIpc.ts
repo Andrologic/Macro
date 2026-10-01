@@ -608,5 +608,5 @@ export type {
 
 export * from "./ipc/pilot";
 
-export { conversationSetArchives, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, conversationImportArchives, getMessage } from './ipc/conversationManagement';
+export { listMessagesBounded, conversationSetArchives, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, conversationImportArchives, getMessage } from './ipc/conversationManagement';
 export type { ConversationMetadata, ConversationActionInput, ConversationActionResult } from './ipc/conversationManagement';

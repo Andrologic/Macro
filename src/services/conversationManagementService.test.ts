@@ -14,7 +14,7 @@ const invoke=mock(async (command:string,args:Record<string,unknown>={})=>{
   if(command==='db_conversation_metadata')return structuredClone(metadata);
   if(command==='db_get_message')return structuredClone(messages.find(m=>m.id===args.messageId)??null);
   if(command==='db_conversation_response_version'){beforeVersion?.();const m=messages.find(m=>m.id===args.messageId);if(!m||m.content!==args.content)throw new Error('stale_revision');return revision;}
-  if(command==='db_conversation_acknowledge'){const s=metadata.find(m=>m.conversation_id===args.conversationId)!;s.read_revision=Math.max(s.read_revision,args.observed as number);return;}
+  if(command==='db_conversation_acknowledge'){const s=metadata.find(m=>m.conversation_id===args.conversationId)!;s.read_revision=Math.max(s.read_revision,...(args.observed as number[]));return;}
   if(command==='db_conversation_set_archives'){for(const id of args.ids as string[]){const state=metadata.find(m=>m.conversation_id===id)!;if(state.archived!==args.archived){state.archived=args.archived as boolean;state.revision++;}}return;}
   if(command==='db_conversation_action'){const input=args.input as {conversation_id:string;action:string;expected_revision:number};const s=metadata.find(m=>m.conversation_id===input.conversation_id)!;if(s.revision!==input.expected_revision)throw new Error('stale_revision');s.archived=input.action==='archive';s.revision++;return {outcome:'applied',conversation_id:s.conversation_id,revision:s.revision};}
   throw new Error(`Unexpected synthetic IPC ${command}`);

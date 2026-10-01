@@ -25,11 +25,17 @@ pub async fn db_conversation_response_version(
 pub async fn db_conversation_acknowledge(
     pool: State<'_, DbPool>,
     conversation_id: String,
-    observed: i64,
+    observed: Vec<i64>,
+    execute_before: Option<String>,
 ) -> CommandResult<()> {
-    management::acknowledge(&get_pool(&pool).await?, &conversation_id, observed)
-        .await
-        .map_err(command_error)
+    management::acknowledge(
+        &get_pool(&pool).await?,
+        &conversation_id,
+        &observed,
+        execute_before.as_deref(),
+    )
+    .await
+    .map_err(command_error)
 }
 #[tauri::command]
 pub async fn db_conversation_action(
@@ -48,6 +54,21 @@ pub async fn db_conversation_import_archives(
     management::import_archives(&get_pool(&pool).await?, &ids)
         .await
         .map_err(command_error)
+}
+#[tauri::command(rename_all = "camelCase")]
+pub async fn db_list_messages_bounded(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Vec<crate::db::models::Message>> {
+    let pool = get_pool(&pool).await?;
+    crate::db::repository::list_messages_bounded(&pool, &conversation_id)
+        .await
+        .map_err(|error| match error {
+            crate::db::DbError::Validation(code) if code == "resource_limit" => {
+                command_error("resource_limit")
+            }
+            _ => command_error("unavailable"),
+        })
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn db_get_message(

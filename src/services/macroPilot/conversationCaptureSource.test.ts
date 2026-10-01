@@ -4,6 +4,7 @@ import type { DbConversation, DbMessage } from '../tauriIpc';
 const calls: string[] = [];
 let bootstrapCalls = 0;
 let unavailable = false;
+let boundedUnavailable = false;
 let stored: string | null = null;
 const projectStore = {
   standaloneProjects: [{ id: 'standalone', name: 'Standalone' }],
@@ -23,6 +24,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   if (command === 'db_conversation_metadata') return [];
   if (command === 'db_list_conversations') return [structuredClone(conversation)];
   if (command === 'db_get_conversation') return structuredClone(conversation);
+  if (command === 'db_list_messages_bounded') { if (boundedUnavailable) throw { message: 'resource_limit' }; return [structuredClone(message)]; }
   if (command === 'db_list_messages') { if (unavailable) throw new Error('/private/db broken'); return [structuredClone(message)]; }
   if (command === 'db_get_app_setting') return stored === null ? null : { value_json: stored };
   if (command === 'db_compare_and_swap_app_setting') {
@@ -35,7 +37,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
 mock.module('../../stores/useAppStore', () => ({ useAppStore: { getState: () => projectStore } }));
 afterAll(() => mock.restore());
 const { useChatStore } = await import('../../stores/useChatStore');
-const { desktopConversationCaptureSource, conversationCaptureStorage } = await import('./conversationCaptureSource');
+const { desktopConversationCaptureSource, desktopConversationManagementSource, conversationCaptureStorage } = await import('./conversationCaptureSource');
 const { desktopStorePorts } = await import('../../composition/macroPilotDesktop');
 const { ConversationCaptures } = await import('./conversationCaptures');
 
@@ -59,4 +61,15 @@ it('uses actual IPC wrappers and chat store with an unloaded cache, preserving U
   expect(calls.filter(c => /create|update|delete|rename/.test(c))).toEqual([]);
   unavailable = true;
   await expect(captures.conversationRead(scope, { instance_id: 'instance', kind: 'conversation', conversation_id: conversation.id })).rejects.toMatchObject({ code: 'unavailable', message: 'unavailable' });
+});
+
+
+it('new windows use the bounded native reader and preserve its safe resource error', async () => {
+  const source = desktopConversationManagementSource(desktopStorePorts);
+  const before = calls.filter(c => c === 'db_list_messages').length;
+  expect(await source.listMessages(conversation.id)).toHaveLength(1);
+  expect(calls).toContain('db_list_messages_bounded');
+  expect(calls.filter(c => c === 'db_list_messages').length).toBe(before);
+  boundedUnavailable = true;
+  await expect(source.listMessages(conversation.id)).rejects.toMatchObject({ code: 'resource_limit', message: 'resource_limit' });
 });

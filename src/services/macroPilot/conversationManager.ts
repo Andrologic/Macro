@@ -12,7 +12,7 @@ export interface ConversationManagementSource extends ConversationCaptureSource 
   search(query: string, conversationIds: string[], offset: number): Promise<MessageSearchPage>;
   message(id: string): Promise<DbMessage | null>;
   responseVersion(message: DbMessage): Promise<number>;
-  acknowledge(conversationId: string, observed: number): Promise<void>;
+  acknowledge(conversationId: string, observed: number[], executeBefore?: string): Promise<void>;
   action(input: ConversationActionInput): Promise<ConversationActionResult>;
   synchronize(): Promise<void>;
 }
@@ -23,7 +23,7 @@ interface Dependencies {
 interface Catalog { cards: ContentConversationCard[]; conversations: DbConversation[]; fingerprint: string; revision: number }
 type Items = ContentConversationCard[] | ContentConversationSearchHit[] | MessageItem[];
 interface Snapshot { binding: string; fingerprint: string; revision: number; observed: number; items: Items; cursors: Map<string, number>; bytes: number; ref?: ConversationRef; nativeSnapshot?: string }
-interface ReadTicket { binding: string; conversationId: string; observed: number; expires: number }
+interface ReadTicket { binding: string; conversationId: string; observed: number[]; expires: number }
 function fail(code: ConstructorParameters<typeof ConversationCaptureError>[0]): never { throw new ConversationCaptureError(code); }
 export async function conversationHash(value: unknown): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(value)))), b => b.toString(16).padStart(2, '0')).join('');
@@ -50,7 +50,7 @@ export class ConversationManager {
   private tickets = new Map<string, ReadTicket>();
   private epoch = 0;
   constructor(private deps: Dependencies) {}
-  clear(): void { this.epoch++; this.snapshots.clear(); this.tickets.clear(); }
+  clear(): void { this.epoch++; this.snapshots.clear(); this.tickets.clear(); this.deps.captures.clear(); }
   private now() { return (this.deps.now ?? Date.now)(); }
   private binding(delivery: ContentDelivery, target: unknown) { return stableJson([delivery.account_id, delivery.source_session_id, delivery.instance_id, target]); }
   private prune() {
@@ -58,7 +58,7 @@ export class ConversationManager {
     for (const [key, t] of this.tickets) if (t.expires <= this.now()) this.tickets.delete(key);
   }
   private quota(extra = 0) {
-    if ([...this.snapshots.values()].reduce((n, s) => n + s.bytes + s.cursors.size * 128, this.tickets.size * 512 + extra) > 8 * 1024 * 1024) fail('resource_limit');
+    if ([...this.snapshots.values()].reduce((n, s) => n + s.bytes + s.cursors.size * 128, this.tickets.size * 1024 + extra) > 8 * 1024 * 1024) fail('resource_limit');
   }
   private async catalog(policy: TextPolicy): Promise<Catalog> {
     const epoch = this.epoch;
@@ -160,11 +160,11 @@ export class ConversationManager {
       return { outcome: result.outcome, revision: result.revision, ref: { instance_id: delivery.instance_id, kind: 'conversation', conversation_id: result.conversation_id } };
     }
     if (request.operation === 'conversation.acknowledge') {
-      await authorize(); check();
+      const deadline = await authorize(); check();
       const ticket = this.tickets.get(request.body.read_token);
       if (!ticket || ticket.expires <= this.now() || ticket.binding !== this.binding(delivery, request.body.ref)) fail('snapshot_expired');
       if (!catalog.cards.some(c => stableJson(c.ref) === stableJson(request.body.ref))) fail('not_found');
-      await this.deps.source.acknowledge(ticket.conversationId, ticket.observed); check();
+      await this.deps.source.acknowledge(ticket.conversationId, ticket.observed, deadline); check();
       await this.deps.source.synchronize(); return { acknowledged: true };
     }
     const continuation = body.continuation as { snapshot_id: string; cursor: string } | undefined;
@@ -235,16 +235,16 @@ export class ConversationManager {
     if (request.operation === 'conversation.window') {
       await this.deps.captures.validateCached({ accountId: delivery.account_id, sessionId: delivery.source_session_id, instanceId: delivery.instance_id, reliability: true }, 'conversation.read', request.body.ref, snapshot.nativeSnapshot!);
       const result = this.page(key!, offset, policy);
-      let observed = 0;
+      const observed: number[] = [];
       for (const item of result.items as MessageItem[]) {
         if (item.role !== 'assistant' || !('text' in item) || item.completion !== 'complete') continue;
         const raw = await this.deps.source.message(item.message_id); if (!raw || raw.conversation_id !== request.body.ref.conversation_id) fail('stale_revision');
         const text = messageText(raw, false, policy, await this.deps.source.finalProvenance?.(raw));
         if (!('text' in text) || text.text !== item.text) fail('stale_revision');
-        observed = Math.max(observed, await this.deps.source.responseVersion(raw));
+        observed.push(await this.deps.source.responseVersion(raw));
       }
       let token: string | null = null;
-      if (observed) { this.quota(512); token = crypto.randomUUID(); this.tickets.set(token, { binding: this.binding(delivery, request.body.ref), conversationId: request.body.ref.conversation_id, observed, expires: snapshot.observed + 300000 }); }
+      if (observed.length) { this.quota(1024); token = crypto.randomUUID(); this.tickets.set(token, { binding: this.binding(delivery, request.body.ref), conversationId: request.body.ref.conversation_id, observed, expires: snapshot.observed + 300000 }); }
       check(); return { ...result, read_token: token };
     }
     check(); return this.page(key!, offset, policy);

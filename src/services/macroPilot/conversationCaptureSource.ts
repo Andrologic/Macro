@@ -2,9 +2,9 @@ import { desktopPilotTasks } from './desktopTaskCatalog';
 import type { DesktopStorePorts } from './desktopStorePorts';
 import {
   dbCompareAndSwapAppSetting, dbGetAppSetting, getConversation, listConversations,
-  listMessages, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, searchMessages, getMessage,
+  listMessages, listMessagesBounded, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, searchMessages, getMessage,
 } from '../tauriIpc';
-import type { ConversationCaptureSource } from './conversationCaptures';
+import { ConversationCaptureError, type ConversationCaptureSource } from './conversationCaptures';
 import type { KernelStorage } from './kernel';
 import type { ConversationManagementSource } from './conversationManager';
 import { assistantTurnRequiresUserReply } from '../chatDbMappers';
@@ -54,6 +54,13 @@ export function desktopConversationManagementSource(ports: DesktopStorePorts): C
   const persistedAttention = new Map<string, 'tool_approval' | 'user_request' | 'error'>();
   const capture = desktopConversationCaptureSource(ports);
   return { ...capture,
+    listMessages: async id => {
+      try { return await listMessagesBounded(id); }
+      catch (error) {
+        if (error && typeof error === 'object' && 'message' in error && error.message === 'resource_limit') throw new ConversationCaptureError('resource_limit');
+        throw new ConversationCaptureError('unavailable');
+      }
+    },
     activity: id => {
       const current = capture.activity(id);
       const attention = persistedAttention.get(id);

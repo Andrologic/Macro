@@ -79,7 +79,10 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
       storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations });
   const taskKey = `${key}:task-completion:1`;
   const managerKey = `${key}:conversation-management:1`;
-  const conversationManagement = new ConversationManager({ instanceId, source: desktopConversationManagementSource(options.ports), captures: conversations,
+  const managementSource = desktopConversationManagementSource(options.ports);
+  const managementCaptures = new ConversationCaptures({ instanceId, workspaceId, source: managementSource,
+    storage: conversationCaptureStorage(`${configurationId}:conversations-1`, instanceId), policy: () => policy, quotaBytes: 8 * 1024 * 1024 });
+  const conversationManagement = new ConversationManager({ instanceId, source: managementSource, captures: managementCaptures,
     storage: { load: async () => (await dbGetAppSetting(managerKey))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: managerKey, expectedValueJson: previous, valueJson: next })).applied } });
   return new ContentHost({ accountId, instanceId, signal, conversations, conversationManagement,

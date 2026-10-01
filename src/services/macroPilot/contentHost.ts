@@ -367,7 +367,7 @@ export class ContentHost {
         this.check();
         // No cached body or controlled error is emitted without current authorization.
         if (!deadline) await authorizeNow(); else guard();
-        const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+        const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
         const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict']);
         const uncertainTaskAction = completedTaskAction || await this.taskCompletion?.hasActionReceipt(delivery);
         const code = uncertainTaskAction ? 'conflict' : error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';

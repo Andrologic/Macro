@@ -17,9 +17,11 @@ function setup(count = 1) {
   const metadata: ConversationMetadata[] = conversations.map(c => ({ conversation_id:c.id,revision:1,archived:false,response_revision:0,read_revision:0,pending_tool:false,provider_failed:false,question_message_id:null,preview_message_id:null }));
   const messages: DbMessage[] = [];
   const activities = new Map<string, ConversationActivity>();
+  let acknowledgementDeadline: string | undefined;
   let transcriptReads = 0; let messageReads = 0; let syncCalls = 0; let mutations = 0; let finalProvenance = true;
   let searchOffsets: number[] = [];
   const revisions = new Map<string,number>();
+  const observedRevisions = new Set<number>();
   const receipts = new Map<string,{digest:string;conversation_id:string;revision:number}>();
   const source: ConversationManagementSource = {
     projects:async () => [{id:'project',name:'Synthetic project'}], tasks:async () => [],
@@ -29,7 +31,7 @@ function setup(count = 1) {
     activity:id => activities.get(id)??{activity:'idle',generatingMessageId:null}, finalProvenance:async m=>finalProvenance?m.content:null,
     message:async id=>{ messageReads++; return structuredClone(messages.find(m=>m.id===id)??null); },
     responseVersion:async m=>{ if (messages.find(row=>row.id===m.id)?.content!==m.content) throw new Error('stale_revision'); return revisions.get(m.id)??0; },
-    acknowledge:async (id,observed)=>{ const state=metadata.find(m=>m.conversation_id===id)!;state.read_revision=Math.max(state.read_revision,observed); },
+    acknowledge:async (id,observed,deadline)=>{ acknowledgementDeadline=deadline; const state=metadata.find(m=>m.conversation_id===id)!;observed.forEach(r=>observedRevisions.add(r)); const unread=messages.filter(m=>m.conversation_id===id && m.role==='assistant' && !observedRevisions.has(revisions.get(m.id)!)).map(m=>revisions.get(m.id)!);state.read_revision=unread.length?Math.min(...unread)-1:state.response_revision; },
     synchronize:async ()=>{syncCalls++;},
     search:async (_query,ids,offset)=>{searchOffsets.push(offset); const found=messages.filter(m=>ids.includes(m.conversation_id));return {results:found.slice(offset,offset+50).map(m=>({messageId:m.id,conversationId:m.conversation_id,conversationTitle:'Synthetic',conversationDescription:null,role:m.role,snippet:'UNSAFE raw snippet synthetic-secret',createdAt:m.created_at})),nextOffset:offset+50<found.length?offset+50:null};},
     action:async input=>{
@@ -50,7 +52,7 @@ function setup(count = 1) {
   const read = async (operation:string,body:unknown,session?:string,account?:string) => {const input=delivery(operation,body,session,account);expect(validateMessage(input).valid).toBe(true);const result=await manager.handle(input,policy,async()=>new Date(clock+10000).toISOString());expect(validateExchange(input.request,{contract_version:'2.0',type:'response',request_id:input.request_id,account_id:input.account_id,operation,result})).toEqual({valid:true,errors:[]});return result;};
   const add = (m:DbMessage) => {messages.push(m);const state=metadata.find(s=>s.conversation_id===m.conversation_id)!;state.response_revision++;revisions.set(m.id,state.response_revision);};
   const ref = {instance_id:'instance',kind:'conversation' as const,conversation_id:conversations[0].id};
-  return {manager,captures,source,conversations,metadata,messages,activities,delivery,read,ref,add,revisions,clock:()=>clock,expire:()=>{clock+=300001;}, counts:()=>({transcriptReads,messageReads,syncCalls,mutations,searchOffsets}),withhold:()=>{finalProvenance=false;}, clear:()=>manager.clear()};
+  return {manager,captures,source,conversations,metadata,messages,activities,delivery,read,ref,add,revisions,clock:()=>clock,expire:()=>{clock+=300001;}, counts:()=>({acknowledgementDeadline,transcriptReads,messageReads,syncCalls,mutations,searchOffsets}),withhold:()=>{finalProvenance=false;}, clear:()=>manager.clear()};
 }
 test('catalog is bounded, pinned then recent, paginated and never loads transcripts',async()=>{
   const s=setup(125);s.conversations[124].is_pinned=true;s.conversations[123].updated_at='2026-01-02T00:00:00Z';s.conversations[0].description='x'.repeat(800);s.conversations[0].title='😀'.repeat(400);
@@ -87,6 +89,7 @@ test('found message loads an anchored bounded window and acknowledgement preserv
   const s=setup();for(let i=0;i<140;i++)s.add(message(`answer-${String(i).padStart(3,'0')}`,s.ref.conversation_id));
   const page=await s.read('conversation.window',{ref:s.ref,message_id:'answer-110'}) as CapturePage<MessageItem>&{read_token:string};
   expect(page.page.offset).toBe(105);expect(page.items.some(m=>m.message_id==='answer-110')).toBe(true);expect(page.items.length).toBeLessThanOrEqual(50);expect(page.read_token).toBeString();
+  await s.read('conversation.acknowledge',{ref:s.ref,read_token:page.read_token});expect(s.metadata[0].read_revision).toBe(0);expect(s.counts().acknowledgementDeadline).toBe(new Date(s.clock()+10000).toISOString());
   s.add(message('concurrent',s.ref.conversation_id));await s.read('conversation.acknowledge',{ref:s.ref,read_token:page.read_token});expect(s.metadata[0].response_revision).toBeGreaterThan(s.metadata[0].read_revision);
   await expect(s.read('conversation.acknowledge',{ref:s.ref,read_token:page.read_token},'other')).rejects.toThrow('snapshot_expired');s.clear();await expect(s.read('conversation.acknowledge',{ref:s.ref,read_token:page.read_token})).rejects.toThrow('snapshot_expired');
 });
@@ -112,7 +115,12 @@ test('host gates new operations on capability and current account authorization,
   const foreign=s.delivery('conversations.catalog',{instance_id:'instance',kind:'conversation'},'session','other');await expect(host.handle(foreign,async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow('validation_failed');
   const unattested=s.delivery('conversation.create',{instance_id:'instance',idempotency_key:'denied'});unattested.capabilities=[];await expect(host.handle(unattested,async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow('validation_failed');
   const granted=s.delivery('conversation.create',{instance_id:'instance',idempotency_key:'allowed'});expect(taskActionPermissions(granted.request)).toEqual(['respond']);expect(()=>assertTaskActionPermissions(['respond'],{granted_permissions:['supervise']})).toThrow('forbidden');
-  const result=await host.handle(granted,async()=>new Date(s.clock()+10000).toISOString());expect(result.response.type).toBe('response');expect(s.counts().mutations).toBe(1);await host.dispose();await expect(host.handle(granted,async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow('unavailable');
+  const result=await host.handle(granted,async()=>new Date(s.clock()+10000).toISOString());expect(result.response.type).toBe('response');expect(s.counts().mutations).toBe(1);
+  s.source.action=async()=>{throw {message:'stale_revision'};};
+  const stale=await host.handle(s.delivery('conversation.action',{ref:s.ref,expected_revision:1,idempotency_key:'native-stale',action:'pin'}),async()=>new Date(s.clock()+10000).toISOString());expect(stale.response).toMatchObject({type:'error',code:'stale_revision'});
+  s.source.action=async()=>{throw {message:'synthetic-private-provider-payload'};};
+  const safe=await host.handle(s.delivery('conversation.create',{instance_id:'instance',idempotency_key:'native-private'}),async()=>new Date(s.clock()+10000).toISOString());expect(safe.response).toMatchObject({type:'error',code:'unavailable'});expect(JSON.stringify(safe)).not.toContain('synthetic-private-provider-payload');
+  await host.dispose();await expect(host.handle(granted,async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow('unavailable');
 });
 
 test('missing descriptions use only the latest controlled user preview and never a raw assistant snippet',async()=>{

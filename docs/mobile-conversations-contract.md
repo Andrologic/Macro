@@ -89,10 +89,12 @@ fictif à une tâche.
 
 Chaque page de `conversation.window` a un `read_token`, éventuellement nul.
 Un jeton couvre uniquement les réponses complètes, exportables et observées
-dans cette page. Le client appelle `conversation.acknowledge` avec la même
+dans cette page. Le jeton conserve les versions exactes de ces réponses, sans
+acquitter les réponses antérieures absentes d'une fenêtre de recherche. Le client appelle `conversation.acknowledge` avec la même
 `ref` et ce jeton après affichage. Le jeton est lié au compte, à la session,
 à l'instance et à la conversation, avec la durée de la capture. Une nouvelle
-réponse écrite après cette observation reste non lue. Les acquittements répétés
+réponse écrite après cette observation reste non lue. SQLite vérifie aussi
+l'expiration d'autorisation avant la transaction d'acquittement et avant son commit. Les acquittements répétés
 ou reçus dans le désordre ne font jamais reculer la lecture.
 
 Le desktop capture également les octets affichés avant son appel asynchrone
@@ -146,6 +148,10 @@ de compte ou de la révocation, comme les autres contenus v2.
 Le desktop limite les captures de gestion à 8 MiB, un catalogue à 4 MiB, une
 capture de transcript à 4 MiB dans cette capacité et les résultats de recherche
 à 2 000. Une recherche complète a un budget de dix secondes. Dépasser une limite
-renvoie une erreur explicite, pas un résultat silencieusement tronqué. Les reçus
+renvoie une erreur explicite, pas un résultat silencieusement tronqué. Avant
+de charger une fenêtre, SQLite vérifie dans la même transaction une estimation
+conservatrice du poids de tous les champs natifs. Un transcript trop lourd est
+refusé avant création des objets et transfert IPC. Le lecteur v2 historique
+conserve son chemin existant. Les reçus
 ont un plafond de 10 000 et ne sont pas évincés pour permettre une création double.
 Le parcours de transcript v2 ancien garde ses limites propres.
