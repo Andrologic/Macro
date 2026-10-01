@@ -388,10 +388,11 @@ export const detectNewReviewAttentionEvents = (
 ): WorkflowAttentionEvent[] => {
   const previousStatuses = indexTaskStatuses(previousTasks);
 
+  const selectedTask = context.selectedTaskId
+    ? resolveTaskReference(nextTasks, context.selectedTaskId)
+    : undefined;
+
   return nextTasks.flatMap<WorkflowAttentionEvent>((task) => {
-    const selectedTask = context.selectedTaskId
-      ? resolveTaskReference(nextTasks, context.selectedTaskId)
-      : undefined;
     if (
       task.status !== 'InReview' ||
       previousStatuses.get(task.id) === undefined ||
