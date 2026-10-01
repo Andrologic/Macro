@@ -83,7 +83,7 @@ export function desktopConversationManagementSource(ports: DesktopStorePorts): C
     },
     search: (query, conversationIds, offset) => searchMessages({ query, conversationIds, offset, limit: 50 }),
     message: getMessage,
-    responseVersion: message => conversationResponseVersion(message.id, message.content),
+    responseVersion: message => conversationResponseVersion(message.id, message.content, message.completion_reason),
     acknowledge: conversationAcknowledge,
     action: conversationAction,
     synchronize: () => ports.chat().refreshConversationMetadata(),

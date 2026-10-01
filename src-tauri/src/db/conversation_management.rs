@@ -75,9 +75,12 @@ pub async fn response_version(
     pool: &SqlitePool,
     message_id: &str,
     content: &str,
+    completion_reason: Option<&str>,
 ) -> Result<i64, String> {
-    let row = sqlx::query("SELECT m.content, v.revision FROM messages m JOIN conversation_response_versions v ON v.message_id = m.id WHERE m.id = ?").bind(message_id).fetch_optional(pool).await.map_err(db)?.ok_or("not_found")?;
-    if row.get::<String, _>("content") != content {
+    let row = sqlx::query("SELECT m.content, m.completion_reason, v.revision FROM messages m JOIN conversation_response_versions v ON v.message_id = m.id WHERE m.id = ?").bind(message_id).fetch_optional(pool).await.map_err(db)?.ok_or("not_found")?;
+    if row.get::<String, _>("content") != content
+        || row.get::<Option<String>, _>("completion_reason").as_deref() != completion_reason
+    {
         return Err("stale_revision".into());
     }
     Ok(row.get("revision"))
@@ -360,7 +363,9 @@ mod tests {
     async fn acknowledgement_is_monotonic_and_preserves_concurrent_reply() {
         let (_temp, pool, id) = setup().await;
         sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('answer',?,'assistant','Observed','2026-01-01T00:00:00Z')").bind(&id).execute(&pool).await.unwrap();
-        let observed = response_version(&pool, "answer", "Observed").await.unwrap();
+        let observed = response_version(&pool, "answer", "Observed", None)
+            .await
+            .unwrap();
         sqlx::query("UPDATE messages SET content='Concurrent' WHERE id='answer'")
             .execute(&pool)
             .await
@@ -369,12 +374,12 @@ mod tests {
         let state = metadata(&pool).await.unwrap().remove(0);
         assert!(state.response_revision > state.read_revision);
         assert_eq!(
-            response_version(&pool, "answer", "Observed")
+            response_version(&pool, "answer", "Observed", None)
                 .await
                 .unwrap_err(),
             "stale_revision"
         );
-        let current = response_version(&pool, "answer", "Concurrent")
+        let current = response_version(&pool, "answer", "Concurrent", None)
             .await
             .unwrap();
         acknowledge(&pool, &id, &[current], None).await.unwrap();
@@ -466,6 +471,34 @@ mod tests {
             action(&reopened, command).await.unwrap().outcome,
             "duplicate"
         );
+    }
+    #[tokio::test]
+    async fn completion_at_identical_text_requires_a_new_observation() {
+        let (_temp, pool, id) = setup().await;
+        sqlx::query("INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES('finishing',?,'assistant','Unchanged','2026-01-01T00:00:00Z')")
+            .bind(&id).execute(&pool).await.unwrap();
+        let observed = response_version(&pool, "finishing", "Unchanged", None)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE messages SET completion_reason='completed' WHERE id='finishing'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            response_version(&pool, "finishing", "Unchanged", None)
+                .await
+                .unwrap_err(),
+            "stale_revision"
+        );
+        acknowledge(&pool, &id, &[observed], None).await.unwrap();
+        let state = metadata(&pool).await.unwrap().remove(0);
+        assert!(state.response_revision > state.read_revision);
+        let completed = response_version(&pool, "finishing", "Unchanged", Some("completed"))
+            .await
+            .unwrap();
+        acknowledge(&pool, &id, &[completed], None).await.unwrap();
+        let state = metadata(&pool).await.unwrap().remove(0);
+        assert_eq!(state.response_revision, state.read_revision);
     }
     #[tokio::test]
     async fn reading_a_later_window_preserves_unseen_earlier_responses() {

@@ -13,7 +13,7 @@ const invoke=mock(async (command:string,args:Record<string,unknown>={})=>{
   if(command==='db_list_conversations')return structuredClone(conversations);
   if(command==='db_conversation_metadata')return structuredClone(metadata);
   if(command==='db_get_message')return structuredClone(messages.find(m=>m.id===args.messageId)??null);
-  if(command==='db_conversation_response_version'){beforeVersion?.();const m=messages.find(m=>m.id===args.messageId);if(!m||m.content!==args.content)throw new Error('stale_revision');return revision;}
+  if(command==='db_conversation_response_version'){beforeVersion?.();const m=messages.find(m=>m.id===args.messageId);if(!m||m.content!==args.content||(m.completion_reason??null)!==args.completionReason)throw new Error('stale_revision');return revision;}
   if(command==='db_conversation_acknowledge'){const s=metadata.find(m=>m.conversation_id===args.conversationId)!;s.read_revision=Math.max(s.read_revision,...(args.observed as number[]));return;}
   if(command==='db_conversation_set_archives'){for(const id of args.ids as string[]){const state=metadata.find(m=>m.conversation_id===id)!;if(state.archived!==args.archived){state.archived=args.archived as boolean;state.revision++;}}return;}
   if(command==='db_conversation_action'){const input=args.input as {conversation_id:string;action:string;expected_revision:number};const s=metadata.find(m=>m.conversation_id===input.conversation_id)!;if(s.revision!==input.expected_revision)throw new Error('stale_revision');s.archived=input.action==='archive';s.revision++;return {outcome:'applied',conversation_id:s.conversation_id,revision:s.revision};}
@@ -26,7 +26,7 @@ beforeEach(()=>{
 });
 afterAll(()=>removeTauriRuntimeMock());
 test('desktop acknowledgment captures displayed bytes and keeps a changed response unread',async()=>{
-  const displayed={id:'synthetic-answer',conversation_id:c.id,task_id:'',role:'assistant' as const,content:'Observed',timestamp:c.created_at};
+  const displayed={id:'synthetic-answer',conversation_id:c.id,task_id:'',role:'assistant' as const,completion_reason:'completed' as const,content:'Observed',timestamp:c.created_at};
   beforeVersion=()=>{messages[0].content='Concurrent response';revision++;metadata[0].response_revision=revision;};
   await acknowledgeDisplayedConversation(c.id,[displayed]);expect(metadata[0].read_revision).toBe(0);expect(calls).not.toContain('db_conversation_acknowledge');
   beforeVersion=undefined;await acknowledgeDisplayedConversation(c.id,[{...displayed,content:'Concurrent response'}]);expect(metadata[0].read_revision).toBe(2);
@@ -43,4 +43,14 @@ test('desktop archive writes desired state and preserves unrelated concurrent ar
   await persistConversationArchives([c.id],true);expect(metadata[0].archived).toBe(true);expect(metadata[1].archived).toBe(true);
   const revision=metadata[0].revision;await persistConversationArchives([c.id],true);expect(metadata[0].revision).toBe(revision);
   await persistConversationArchives([c.id],false);expect(metadata[0].archived).toBe(false);expect(metadata[1].archived).toBe(true);
+});
+
+
+test('completion at identical text stays unread until its completed render is observed',async()=>{
+  messages[0].completion_reason=null;
+  const displayed={id:'synthetic-answer',conversation_id:c.id,task_id:'',role:'assistant' as const,content:'Observed',timestamp:c.created_at};
+  beforeVersion=()=>{messages[0].completion_reason='completed';revision++;metadata[0].response_revision=revision;};
+  await acknowledgeDisplayedConversation(c.id,[displayed]);expect(metadata[0].read_revision).toBe(0);expect(calls).not.toContain('db_conversation_acknowledge');
+  beforeVersion=undefined;await acknowledgeDisplayedConversation(c.id,[displayed]);expect(metadata[0].read_revision).toBe(0);
+  await acknowledgeDisplayedConversation(c.id,[{...displayed,completion_reason:'completed'}]);expect(metadata[0].read_revision).toBe(2);
 });

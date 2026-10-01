@@ -16,10 +16,16 @@ pub async fn db_conversation_response_version(
     pool: State<'_, DbPool>,
     message_id: String,
     content: String,
+    completion_reason: Option<String>,
 ) -> CommandResult<i64> {
-    management::response_version(&get_pool(&pool).await?, &message_id, &content)
-        .await
-        .map_err(command_error)
+    management::response_version(
+        &get_pool(&pool).await?,
+        &message_id,
+        &content,
+        completion_reason.as_deref(),
+    )
+    .await
+    .map_err(command_error)
 }
 #[tauri::command(rename_all = "camelCase")]
 pub async fn db_conversation_acknowledge(

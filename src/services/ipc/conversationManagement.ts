@@ -3,7 +3,7 @@ import type { DbMessage } from './conversations.types';
 import type { ConversationMetadata, ConversationActionInput, ConversationActionResult } from '../../types/generated/ipc';
 export type { ConversationMetadata, ConversationActionInput, ConversationActionResult };
 export const conversationMetadata = () => invoke<ConversationMetadata[]>('db_conversation_metadata');
-export const conversationResponseVersion = (messageId: string, content: string) => invoke<number>('db_conversation_response_version', { messageId, content });
+export const conversationResponseVersion = (messageId: string, content: string, completionReason?: string | null) => invoke<number>('db_conversation_response_version', { messageId, content, completionReason: completionReason ?? null });
 export const conversationAcknowledge = (conversationId: string, observed: number[], executeBefore?: string) => invoke<void>('db_conversation_acknowledge', { conversationId, observed, executeBefore: executeBefore ?? null });
 export const conversationAction = (input: ConversationActionInput) => invoke<ConversationActionResult>('db_conversation_action', { input });
 export const conversationImportArchives = (ids: string[]) => invoke<void>('db_conversation_import_archives', { ids });
