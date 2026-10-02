@@ -538,6 +538,7 @@
     "queueEditInProgress": "Warte, bis die Änderung der wartenden Nachricht abgeschlossen ist.",
     "queueEmptyMessage": "Die wartende Nachricht darf nicht leer sein.",
     "queueAssistantInterrupted": "Diese gespeicherte Anweisung wurde möglicherweise bereits ausgeführt. Prüfen Sie die Antwort und die Auswirkungen der Werkzeuge und entfernen Sie dann diesen Wiederherstellungseintrag, bevor Sie manuell fortfahren.",
+    "steerImagesSaveFailed": "Die Anweisung konnte nicht mit ihren Bildern gespeichert werden. Versuchen Sie, den Entwurf erneut zu senden.",
     "steerTurnEnded": "Die Anweisung wurde gespeichert, aber ihr Durchlauf endete vor der Übermittlung. Prüfen Sie sie, bevor Sie fortfahren.",
     "goalExecutorContextUnavailable": "Der Ausführungskontext des Ziels ist nicht verfügbar. Senden Sie vor dem Fortsetzen eine Nachricht in dieser Unterhaltung.",
     "queueInterrupted": "Die wartende Übermittlung wurde unterbrochen. Ihr Inhalt bleibt erhalten.",

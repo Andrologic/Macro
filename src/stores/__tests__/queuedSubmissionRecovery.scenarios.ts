@@ -169,6 +169,40 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       expect(restarted.getState().getConversationMessages('queued-conv').some((message: ChatMessage) => message.id === 'saved-user')).toBe(true);
     });
 
+    it('retains an image direction in the draft after image storage failure and retries without duplicate text', async () => {
+      const store = await prepare();
+      release(store);
+      const streaming = c.createDeferred<{ usage: null }>();
+      c.streamChatMock.mockImplementationOnce(() => streaming.promise);
+      await store.getState().sendMessage({ conversationId: 'queued-conv', content: 'Start work' });
+      await c.flushAsyncWork();
+      const options = c.getLatestStreamOptions<{ consumePendingSteers: () => unknown[] }>();
+      const images = [{ id: 'direction-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-09-22T00:00:00Z' }];
+      const payload = { conversationId: 'queued-conv', content: 'Inspect this image', images };
+      const storage = window.localStorage;
+      const originalSetItem = storage.setItem;
+      const usersBefore = c.createMessageMock.mock.calls.filter(call => call[1] === 'user').length;
+      storage.setItem = (key, value) => {
+        if (key === 'macro_chat_message_images') throw new Error('quota');
+        originalSetItem.call(storage, key, value);
+      };
+      try {
+        await expect(store.getState().submitDuringActiveTurn(payload, 'steer')).rejects.toThrow('images');
+        expect(options.consumePendingSteers()).toEqual([]);
+        expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(usersBefore);
+      } finally { storage.setItem = originalSetItem; }
+      expect(await store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
+      const savedUser = c.createMessageMock.mock.calls.filter(call => call[1] === 'user').at(-1)!;
+      expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(usersBefore + 1);
+      expect(JSON.parse(storage.getItem('macro_chat_message_images')!)[savedUser[3]!.id!]).toEqual(images);
+      expect(options.consumePendingSteers()).toMatchObject([{ role: 'user', content: [
+        { type: 'text', text: payload.content }, { type: 'image_url', image_url: { url: images[0].dataUrl } },
+      ] }]);
+      expect(options.consumePendingSteers()).toEqual([]);
+      streaming.resolve({ usage: null });
+      await c.flushAsyncWork();
+    });
+
     for (const outcome of ['success', 'failure', 'successor'] as const) it(`publishes steering only after durable save to its owner: ${outcome}`, async () => {
       const store = await prepare();
       release(store);

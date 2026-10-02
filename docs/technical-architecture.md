@@ -482,12 +482,18 @@ Leur runtime, la revalidation de contexte, les instructions du plan Architect et
 le panneau de récupération sont chargés à la demande pour préserver le budget du bundle initial. La capture
 du contenu et des sélections reste synchrone avant ces chargements.
 `chatQueuedSubmissions` conserve uniquement l'intention et le contenu acceptés,
-avec un identifiant repris comme `turn_id`. Le store garde l'entrée tant que le
-message utilisateur et ses images ne sont pas durables. Une reprise relit le
-transcript pour reconnaître ce tour avant tout nouvel envoi. Elle recharge les
+avec un identifiant repris comme `turn_id`. Le store garde l’entrée après la sauvegarde du message utilisateur et des images,
+jusqu’au lancement assistant. Un marqueur durable précède ce lancement. Une reprise
+relit le transcript pour réutiliser le message du même tour sans le dupliquer ;
+un lancement possible exige une vérification manuelle des effets avant toute suite. Elle recharge les
 configurations et les droits sur la cible capturée ; un changement de cible
 bloque la reprise. Le panneau commun de récupération porte l'action de réessai,
 indépendamment des préférences de notification et sans état parallèle dans `ChatZone`.
+
+Une direction avec images sauvegarde d’abord les images sous l’identifiant prévu
+du message, puis le texte. Un refus de sauvegarde des images conserve le brouillon
+sans créer de message utilisateur. Le runtime ne publie la direction qu’après
+confirmation de ces écritures et contrôle son tour propriétaire.
 
 `chatTurnRuntime` possède les identités de session, les promesses de stream,
 les instructions en attente et les propriétaires de persistance. Le record des

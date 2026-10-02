@@ -8417,6 +8417,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     : getQueueRuntime().then(queue => queue.drain(conversationId));
 
   const buildUserMessageForSend = async (params: {
+    id?: string;
     conversationId: string;
     turnId: string;
     taskId: string;
@@ -13515,15 +13516,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? { image_metadata: getImageContextMetadata(payload.images) }
           : {}),
       };
-      const userMessage = await buildUserMessageForSend({
-        conversationId: payload.conversationId,
-        turnId: runtime.turnId ?? createConversationTurnId(),
-        taskId: payload.taskId ?? conversation?.task_id ?? "",
-        content,
-        contextRefs,
-      });
+      // Save attachments first under a stable message ID. A rejected image write
+      // leaves the composer intact and cannot create a duplicate text on retry.
+      const messageId = crypto.randomUUID();
+      if (payload.images?.length) {
+        const next = { ...get().messageImagesByMessageId, [messageId]: payload.images };
+        if (!saveMessageImagesToStorage(next)) {
+          throw buildSendError(i18n.t('chat.steerImagesSaveFailed', 'The direction could not be saved with its images. Retry the draft.'));
+        }
+        set({ messageImagesByMessageId: next });
+      }
+      let userMessage: ChatMessage;
+      try {
+        userMessage = await buildUserMessageForSend({
+          id: messageId,
+          conversationId: payload.conversationId,
+          turnId: runtime.turnId ?? createConversationTurnId(),
+          taskId: payload.taskId ?? conversation?.task_id ?? "",
+          content,
+          contextRefs,
+        });
+      } catch (error) {
+        if (payload.images?.length) {
+          const remaining = { ...get().messageImagesByMessageId };
+          delete remaining[messageId];
+          if (saveMessageImagesToStorage(remaining)) set({ messageImagesByMessageId: remaining });
+        }
+        throw error;
+      }
       get().addMessage(userMessage);
-      if (payload.images?.length) get().setMessageImages(userMessage.id, payload.images);
       clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
       if (!turnRuntime.enqueueSteer(payload.conversationId, steerMessage, runtime)) {
         throw buildSendError(i18n.t('chat.steerTurnEnded', 'The direction was saved, but its turn ended before delivery. Review it before continuing.'));
