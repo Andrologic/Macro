@@ -26,7 +26,7 @@ export function createChatTurnRuntime(ports: {
   const generations = new Map<string, symbol>();
   const completions = new Map<string, ChatTurnIdentity>();
   const streams = new Map<string, Promise<void>>();
-  const steers = new Map<string, import("./streamingChat").StreamMessage[]>();
+  const steers = new Map<string, Array<{ sessionId: string | null; turnId: string | null; message: import("./streamingChat").StreamMessage }>>();
   const read = ports.state.read;
   const set = ports.state.project;
   const matches = (identity: ChatTurnIdentity, phase?: ConversationRuntimeState["phase"]) => {
@@ -141,18 +141,20 @@ export function createChatTurnRuntime(ports: {
         pending = next;
       }
     },
-    enqueueSteer: (id: string, message: import("./streamingChat").StreamMessage) => {
-      steers.set(id, [...(steers.get(id) ?? []), message]);
-    },
-    removeSteer: (id: string, message: import("./streamingChat").StreamMessage) => {
-      const remaining = (steers.get(id) ?? []).filter(item => item !== message);
-      if (remaining.length) steers.set(id, remaining); else steers.delete(id);
+    enqueueSteer: (id: string, message: import("./streamingChat").StreamMessage,
+      expected: Pick<ConversationRuntimeState, "sessionId" | "turnId"> = read(id)) => {
+      const current = read(id);
+      if (ports.state.isDeleted(id) || !isConversationRuntimeActive(current) ||
+          current.phase === 'persisting' || !expected.sessionId || !expected.turnId ||
+          current.sessionId !== expected.sessionId || current.turnId !== expected.turnId) return false;
+      steers.set(id, [...(steers.get(id) ?? []), { sessionId: expected.sessionId, turnId: expected.turnId, message }]);
+      return true;
     },
     consumeSteers: (identity: ChatTurnIdentity) => {
       if (!matches(identity, "streaming")) return [];
       const pending = steers.get(identity.conversationId) ?? [];
       steers.delete(identity.conversationId);
-      return pending;
+      return pending.filter(item => item.sessionId === identity.sessionId && item.turnId === identity.turnId).map(item => item.message);
     },
   };
 }

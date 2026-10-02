@@ -351,6 +351,10 @@ Dans une conversation rattachée à un projet, l'utilisateur peut activer Goal a
 
 Après chaque tour exécutant confirmé par une réponse assistant enregistrée, un agent distinct en lecture seule vérifie l'objectif avec des preuves structurées. Son résultat devient un artefact de la conversation dans les métadonnées du projet. `continue` relance automatiquement l'exécutant avec un retour borné ; `achieved` termine le but ; `needs_user` attend une réponse ; `cannot_progress` le met en pause en expliquant le blocage. Reprendre lance un nouveau tour sans saisie supplémentaire. Un message utilisateur, y compris un message mis en file, a priorité sur une continuation automatique. Une erreur technique ou un verdict invalide arrête la boucle et laisse une reprise contrôlée ; quatre tours utiles ne constituent pas une limite.
 
+Une continuation automatique conserve le mode, le modèle et les références autorisées du tour exécutant de sa conversation. La navigation et le brouillon d’une autre conversation ne modifient pas cette intention. Après redémarrage, la reprise utilise la sélection enregistrée de la conversation Chat ; si elle manque, un nouveau message utilisateur doit établir le contexte.
+
+Une instruction mise en file reste récupérable après sa sauvegarde tant que l’assistant n’a pas démarré. Réessayer reprend le message existant. Si le démarrage a pu avoir lieu, Macro demande de vérifier la réponse et les effets des outils avant de retirer l’entrée de récupération et de continuer manuellement. Une direction ne devient consommable qu’après sa sauvegarde, par le tour auquel elle était destinée. Si ce tour s’est terminé pendant la sauvegarde, Macro conserve le message et signale sa non-transmission.
+
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
 - il ne travaille pas par défaut sur un contexte d'exécution de projet

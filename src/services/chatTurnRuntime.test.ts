@@ -64,6 +64,18 @@ describe("chatTurnRuntime ownership", () => {
     expect(h.runtime.consumeSteers(b.identity)).toEqual([]);
   });
 
+  test("a successor cannot consume a direction owned by the previous turn", () => {
+    const h = setup();
+    const first = h.begin('a', 'first');
+    expect(h.runtime.enqueueSteer('a', { role: 'user', content: 'First only' }, first.identity)).toBe(true);
+    const successor = h.begin('a', 'successor');
+    expect(h.runtime.enqueueSteer('a', { role: 'user', content: 'Late first' }, first.identity)).toBe(false);
+    expect(h.runtime.consumeSteers(successor.identity)).toEqual([]);
+    expect(h.runtime.enqueueSteer('a', { role: 'user', content: 'Successor only' }, successor.identity)).toBe(true);
+    expect(h.runtime.consumeSteers(successor.identity)).toEqual([{ role: 'user', content: 'Successor only' }]);
+    expect(h.runtime.consumeSteers(successor.identity)).toEqual([]);
+  });
+
   test("stale completion cannot release or fail its successor", () => {
     const h = setup();
     const old = h.begin("a", "old").identity;

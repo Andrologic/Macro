@@ -36,6 +36,38 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
   });
 
+  it('retains a saved message when preparation fails and resumes it without another user write', async () => {
+    const f = fixture();
+    const prepare = f.ports.stream.prepare;
+    f.ports.stream.prepare = async () => { throw new Error('preparation failure'); };
+    await expect(f.run()).rejects.toMatchObject({ message: 'preparation failure' });
+    const saved = f.published.find(message => message.role === 'user')!;
+    f.ports.stream.prepare = prepare;
+    f.runtimes.clear();
+    const result = await sendMessage({ ...f.input, submissionTurnId: saved.turn_id!, persistedUserMessage: saved }, f.snapshot, f.ports);
+    expect(result.assistantMessageId).not.toBeNull();
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains recovery when a handoff observer stops the turn before the assistant starts', async () => {
+    const f = fixture();
+    let acknowledged = false;
+    f.ports.messages.beforeAssistantStart = () => f.stop();
+    f.ports.messages.onAssistantStarted = () => { acknowledged = true; };
+    expect((await f.run()).assistantMessageId).toBeNull();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+    expect(acknowledged).toBe(false);
+  });
+
+  it('does not start an assistant when the durable handoff marker cannot be saved', async () => {
+    const f = fixture();
+    f.ports.messages.beforeAssistantStart = () => { throw new Error('handoff storage unavailable'); };
+    await expect(f.run()).rejects.toMatchObject({ message: 'handoff storage unavailable' });
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+  });
+
   it('persists the captured turn and starts with its scoped configuration and context', async () => {
     const f = fixture();
     const scoped = { providerId: 'scoped', modelId: 'scoped-model', reasoningEffort: null } as const;
