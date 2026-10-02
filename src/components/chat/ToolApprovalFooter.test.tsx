@@ -178,6 +178,43 @@ describe('ToolApprovalFooter', () => {
     expect(onDeny).toHaveBeenCalledWith('Stay inside the repo only.');
   });
 
+  it('keeps the same request draft but resets it for every identity change', async () => {
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+    const onDeny = mock(() => undefined);
+    let approval = {
+      conversationId: 'conv-1', assistantMessageId: 'msg-1', toolCallId: 'tool-1',
+      toolId: 'terminal_run', actionGroup: 'escape' as const, riskLevel: 'balanced' as const,
+      summary: 'Run command', rememberKey: 'terminal', canApproveForConversation: false,
+    };
+    const render = async () => {
+      await act(async () => { root?.render(<ToolApprovalFooter pendingApproval={{ ...approval }}
+        onAllowOnce={() => {}} onAllowForConversation={() => {}} onDeny={onDeny} />); });
+    };
+    const click = async (label: string) => {
+      const button = Array.from(container?.querySelectorAll('button') ?? [])
+        .find((item) => item.textContent === label);
+      expect(button).toBeDefined();
+      await act(async () => { button?.click(); });
+    };
+    await render();
+    for (const field of ['toolCallId', 'assistantMessageId', 'conversationId'] as const) {
+      await click('Refuse');
+      await act(async () => { latestTextareaOnChange?.({ target: { value: '  synthetic refusal  ' } }); });
+      await render();
+      expect(container?.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('  synthetic refusal  ');
+      await click('Confirm denial');
+      expect(onDeny).toHaveBeenLastCalledWith('synthetic refusal');
+      approval = { ...approval, [field]: `${approval[field]}-next` };
+      await render();
+      expect(container?.querySelector('textarea')).toBeNull();
+      expect(container?.textContent).not.toContain('Allow for this conversation');
+      await click('Refuse');
+      expect(container?.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('');
+      await click('Cancel');
+    }
+    expect(onDeny).toHaveBeenCalledTimes(3);
+  });
+
   it('maps approval categories and risk icons for different request types', async () => {
     const { ToolApprovalFooter } = await loadToolApprovalFooter();
 
