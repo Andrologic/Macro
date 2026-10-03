@@ -2599,6 +2599,16 @@
     "slashMenuLabel": "Insertar contexto o comando"
   },
   "backup": {
+    "exclusions": "Se excluyen las carpetas de proyectos, su historial Git y las credenciales de proveedores. Guarde sus proyectos por separado.",
+    "limitsTitle": "Compatibilidad, límites y datos privados",
+    "limits": "Tamaño máximo: 256 MiB. Restaure con la misma versión de Macro. Se conservan las rutas de los proyectos; no se reasocian proyectos movidos ni se fusionan perfiles.",
+    "exportHelp": "Guardar los datos locales en un archivo nuevo al volver a iniciar.",
+    "restoreHelp": "Sustituir los datos locales por un archivo. Conservar el perfil anterior para recuperarlo.",
+    "desktopRequired": "Abra Macro en el escritorio para guardar o restaurar sus datos locales.",
+    "scheduledTitle": "Operación preparada",
+    "source": "Archivo que se restaurará",
+    "destination": "Destino del nuevo archivo",
+    "confirmReplace": "Preparar sustitución",
     "scheduled": "Operación preparada. Cierra Macro por completo y vuelve a abrirlo. No cambies esta sesión antes de salir.",
     "resultExported": "Copia de seguridad guardada.",
     "resultRestored": "Perfil restaurado. El perfil anterior se conserva en la ruta indicada abajo.",
@@ -2610,15 +2620,15 @@
     "startupTitle": "Es necesario recuperar el perfil",
     "startupRecovery": "No se pudo completar la restauración de los datos del navegador. Se conserva el archivo nativo de recuperación. Consulte el diagnóstico, libere almacenamiento local si es necesario y reinicie Macro para reintentar.",
     "title": "Copia de seguridad y restauración",
-    "scope": "Perfil local: conversaciones, adjuntos guardados, puntos de control del código, borradores y preferencias globales. Se excluyen las carpetas de proyectos y sus metadatos Git. Guarda una copia separada de los proyectos. Máximo 256 MiB; restaura con la misma versión de Macro.",
+    "scope": "Datos locales de Macro: conversaciones, adjuntos guardados, checkpoints de código, borradores, instrucciones en cola, respuestas de recuperación y preferencias generales.",
     "secrets": "Las credenciales de proveedores, variables de entorno y cabeceras MCP se excluyen de las exportaciones portátiles. Vuelve a conectar los proveedores tras restaurar. Las conversaciones y archivos siguen siendo datos privados; guarda el archivo en un lugar seguro.",
     "recovery": "Se requiere recuperación. Los datos originales se conservan.",
     "path": "Ruta absoluta del archivo de copia local",
     "export": "Preparar copia",
     "restore": "Restaurar copia",
     "confirmTitle": "Confirmar operación del perfil",
-    "confirmRestore": "En el próximo inicio, este archivo reemplazará tu perfil local. Macro lo valida primero y conserva el perfil anterior para recuperarlo. Detén las tareas y sal inmediatamente después de confirmar. ¿Restaurar este archivo?",
-    "confirmExport": "Detén las tareas en curso. Macro creará la copia en el próximo inicio, antes de abrir la base de datos y la configuración. ¿Preparar esta copia?",
+    "confirmRestore": "Al volver a iniciar, este archivo sustituirá los datos locales sin fusionarlos. Macro lo valida y guarda una copia de recuperación de los datos sustituidos. Las instrucciones en cola quedan en pausa. Detenga las tareas, confirme, cierre Macro de inmediato y vuelva a abrirlo.",
+    "confirmExport": "Detenga las tareas. Macro creará el archivo al volver a iniciar. Elija un archivo nuevo; los existentes no se sobrescriben. Tras confirmar, cierre sin modificar la sesión y vuelva a abrir Macro.",
     "confirm": "Confirmar"
   }
 }
