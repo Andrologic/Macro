@@ -86,6 +86,7 @@ import { formatConversationFilePage, readConversationFileBody } from "../service
 import {
   buildSpilledToolResultPreview,
   preserveToolResultContent,
+  ToolResultPreservationError,
   shouldSpillToolResult,
 } from "../services/toolResultArtifacts";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
@@ -5423,11 +5424,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return spilled.preview;
     } catch (error) {
       console.warn('[tool-output] Failed to persist recoverable output:', error);
-      return buildSpilledToolResultPreview({
+      throw new ToolResultPreservationError(buildSpilledToolResultPreview({
         toolName,
         result,
         artifactPath: null,
-      }).preview;
+      }).preview);
     }
   };
 

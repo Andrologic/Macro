@@ -1846,6 +1846,7 @@ describe("workspaceToolExecutor helpers", () => {
 
   it("validates every expected patch revision before changing the first file", async () => {
     const writes: string[] = [];
+    let nativeCalls = 0;
     const checkpoints: unknown[] = [];
     const files: Record<string, { content: string; revision: string }> = {
       "C:/dev/macro-web/src/a.ts": {
@@ -1863,6 +1864,7 @@ describe("workspaceToolExecutor helpers", () => {
         validateToolExecution: async () => ({ allowed: true }),
         executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
           if (toolId === "apply_patch") {
+            nativeCalls++;
             throw new Error(
               'Stale content for "web/src/b.ts": expected revision revision-b-stale but found revision-b-current.',
             );
@@ -1925,6 +1927,7 @@ describe("workspaceToolExecutor helpers", () => {
 
     expect(result).toContain('Stale content for "web/src/b.ts"');
     expect(writes).toEqual([]);
+    expect(nativeCalls).toBe(0);
     expect(checkpoints).toEqual([]);
   });
 
@@ -3938,3 +3941,39 @@ it("keeps each native observation bound to its own root in a multi-mount checkpo
     rmSync(temporary, {recursive: true, force: true});
   }
 });
+
+// Regression of the independent audit: actual workspace adapter plus dispatch.
+for (const scenario of ['lost', 'command-name-in-error', 'refused', 'unavailable'] as const) {
+  it(`keeps native Git mutation receipts distinct from pre-effect refusals: ${scenario}`, async () => {
+    let effects = 0, completions = 0, unknowns = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({ tauriModule: {
+      isTauriAvailable: () => true,
+      executeWorkspaceTool: async () => {
+        if (scenario === 'refused') return 'Error executing git_add: validation refused before mutation';
+        if (scenario === 'unavailable') throw new Error('unknown command tool_execute_workspace');
+        effects++;
+        throw new Error(scenario === 'lost' ? 'reply lost after effect' : 'tool_execute_workspace transport closed');
+      },
+    } } as Partial<MockAppState>);
+    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+      allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+      journal: { ...allowChatToolInvocationJournal,
+        complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
+        markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+      },
+      execute: async () => executeWorkspaceTool('git_add', { paths: ['a.txt'] }, 'Implement', { workspacePath: 'C:/work/synthetic', projectId: 'api' }),
+      preserve: async (_op, _name, _id, value) => value, boundError: async (_op, _name, _id, error) => error,
+    }, () => true, () => {});
+    const result = await dispatch('git_add', { paths: ['a.txt'] }, 'original');
+    const lost = scenario === 'lost' || scenario === 'command-name-in-error';
+    expect(effects).toBe(lost ? 1 : 0);
+    expect(completions).toBe(lost ? 0 : 1);
+    expect(unknowns).toBe(lost ? 1 : 0);
+    expect(result).toMatchObject({ errorKind: lost ? 'uncertain' : 'execution' });
+    if (lost) {
+      if (!result || typeof result === 'string') throw new Error('Expected structured outcome');
+      expect(JSON.parse(result.result)).toMatchObject({ outcome: 'unknown', invocation: { callId: 'original' },
+        instruction: expect.stringContaining('Inspect') });
+    }
+  });
+}

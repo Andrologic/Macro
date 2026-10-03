@@ -1,3 +1,4 @@
+import { ToolResultPreservationError } from './toolResultArtifacts';
 import { describe, expect, mock, test } from 'bun:test';
 import { createChatToolDispatch, classifyChatToolEffect, type ChatToolDispatchPorts, type ChatToolInvocationJournal } from './chatToolDispatch';
 import type { FrozenToolCallContext } from './chatStreamContracts';
@@ -252,3 +253,22 @@ test('explicit pre-effect denial remains a permission result', async () => {
   expect(f.events).toContain('complete');
   expect(f.events).not.toContain('unknown');
 });
+
+test('failed full-text preservation keeps typed media with the uncertain result', async () => {
+  const f = fixture();
+  const media = { type: 'image' as const, mimeType: 'image/png', data: 'AQID' };
+  f.execute.mockImplementation(async () => ({ kind: 'result', result: 'large output',
+    blocks: [{ type: 'text', text: 'large output' }, media] }));
+  f.preserve.mockImplementation(async () => { throw new ToolResultPreservationError('beginning... Full output unavailable ...end'); });
+  const result = await f.dispatch('mcp__synthetic__image', {}, 'media-call');
+  expect(result).toMatchObject({ errorKind: 'uncertain', blocks: [{ type: 'text', text: expect.stringContaining('Full output unavailable') }, media] });
+  expect(f.journal.complete).not.toHaveBeenCalled();
+});
+for (const errorKind of ['permission', 'validation'] as const) {
+  test(`failed diagnostic preservation does not reclassify a pre-effect ${errorKind} refusal`, async () => {
+    const f = fixture();
+    f.execute.mockImplementation(async () => ({ kind: 'result', result: 'Refused', isError: true, errorKind }));
+    f.preserve.mockImplementation(async () => { throw new ToolResultPreservationError('Refused'); });
+    expect(await f.dispatch('write', {}, 'refused')).toMatchObject({ errorKind, result: 'Refused' });
+  });
+}

@@ -101,8 +101,7 @@ const isUnknownCommandError = (error: unknown): boolean => {
     typeof maybe.message === "string" ? maybe.message.toLowerCase() : "";
   return (
     message.includes("unknown command") ||
-    message.includes("tool_validate_execution") ||
-    message.includes("tool_execute_workspace")
+    /command\s+['"`]?tool_(?:validate_execution|execute_workspace)['"`]?\s+not found/.test(message)
   );
 };
 
@@ -2133,6 +2132,20 @@ export const executeWorkspaceTool = async (
       toolName === "apply_patch");
   const virtualRootEnabled = virtualRootCandidate && !useMetadataWorkspace;
 
+  // A rejected mutation IPC has no confirmed result. Keep that fact across
+  // legacy error formatting and checkpoint wrappers; pre-dispatch checks and
+  // explicit backend refusal responses never set this flag.
+  let nativeMutationResultLost = false;
+  const invokeNativeTool = async (request: Parameters<typeof tauriIpc.executeWorkspaceTool>[0]) => {
+    try {
+      return await tauriIpc.executeWorkspaceTool(request);
+    } catch (error) {
+      if (isMutatingWorkspaceTool(request.toolId) && !isUnknownCommandError(error)) {
+        nativeMutationResultLost = true;
+      }
+      throw error;
+    }
+  };
   let nativeDiagnostics: unknown[] = [];
   const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
     const isReady = (item: unknown): item is Record<string, unknown> =>
@@ -2216,7 +2229,7 @@ export const executeWorkspaceTool = async (
               void tauriIpc.cancelWorkspaceTool(executionId).catch(() => false);
             }
           : undefined;
-      const executionPromise = tauriIpc.executeWorkspaceTool({
+      const executionPromise = invokeNativeTool({
         mode,
         toolId: backendToolName,
         args: backendArgs,
@@ -3240,6 +3253,8 @@ export const executeWorkspaceTool = async (
             allowOutsideWorkspace: false,
             workspacePath: patchTarget.candidate.workspacePath,
           });
+          const revisionConflict = expectedRevisionConflict(patchTarget.displayPath, expectedRevision, current.revision ?? null);
+          if (revisionConflict) return revisionConflict;
           expectedRevision = expectedRevision ?? current.revision ?? null;
           if (!expectedRevision) {
             return `Cannot safely patch ${patchTarget.displayPath}: the current revision is unavailable. Re-read the file and retry.`;
@@ -3763,7 +3778,7 @@ export const executeWorkspaceTool = async (
           target.relativePath,
           mode,
         );
-        const backendResult = await tauriIpc.executeWorkspaceTool({
+        const backendResult = await invokeNativeTool({
           mode,
           toolId: toolName,
           args: {
@@ -4353,6 +4368,8 @@ export const executeWorkspaceTool = async (
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
           workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
         });
+        const revisionConflict = expectedRevisionConflict(resolvedPath, expectedRevision, current.revision ?? null);
+        if (revisionConflict) return revisionConflict;
         expectedRevision = expectedRevision ?? current.revision ?? null;
         if (!expectedRevision) {
           return `Cannot safely patch ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
@@ -4814,6 +4831,7 @@ export const executeWorkspaceTool = async (
 
     return undefined;
   } catch (error) {
+    if (nativeMutationResultLost) throw error;
     return `Error executing ${toolName}: ${formatToolError(error)}`;
   }
 };

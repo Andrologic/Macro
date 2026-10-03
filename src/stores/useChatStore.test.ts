@@ -3369,9 +3369,22 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     citationPersistenceError = new Error('injected citation persistence failure');
 
-    const preview = String(
-      await onToolCall('grep', { query: 'needle' }, 'failed-large-output'),
-    );
+    const complete = allowChatToolInvocationJournal.complete;
+    const markUnknown = allowChatToolInvocationJournal.markUnknown;
+    let completions = 0, unknowns = 0;
+    allowChatToolInvocationJournal.complete = async input => { completions++; return complete(input); };
+    allowChatToolInvocationJournal.markUnknown = async input => { unknowns++; return markUnknown(input); };
+    let result;
+    try { result = await onToolCall('grep', { query: 'needle' }, 'failed-large-output'); }
+    finally { allowChatToolInvocationJournal.complete = complete; allowChatToolInvocationJournal.markUnknown = markUnknown; }
+    expect(result).toMatchObject({ errorKind: 'uncertain', isError: true });
+    expect(completions).toBe(0);
+    expect(unknowns).toBe(1);
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    const payload = JSON.parse(result.result);
+    expect(payload).toMatchObject({ outcome: 'unknown', invocation: { callId: 'failed-large-output' },
+      instruction: expect.stringContaining('Inspect') });
+    const preview: string = payload.diagnostic;
 
     expect(preview).toContain('Full output unavailable');
     expect(preview).not.toContain('tool-output://');
@@ -3449,15 +3462,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       }) as unknown as () => Promise<undefined>,
     );
 
-    let caught: unknown;
-    try {
-      await onToolCall('grep', { query: 'needle' }, 'large-error-call');
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect(caught).not.toBe(oversizedError);
-    const boundedMessage = caught instanceof Error ? caught.message : '';
+    const result = await onToolCall('grep', { query: 'needle' }, 'large-error-call');
+    expect(result).toMatchObject({ errorKind: 'uncertain' });
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    const boundedMessage: string = JSON.parse(result.result).diagnostic;
     expect(boundedMessage.startsWith('Error executing tool')).toBe(false);
     expect(boundedMessage).toContain('BEGIN-');
     expect(boundedMessage.trim().endsWith('-END')).toBe(true);
@@ -3515,13 +3523,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     citationPersistenceError = new Error('injected citation persistence failure');
 
-    let caught: unknown;
-    try {
-      await onToolCall('grep', { query: 'needle' }, 'failed-large-error');
-    } catch (error) {
-      caught = error;
-    }
-    const boundedMessage = caught instanceof Error ? caught.message : '';
+    const result = await onToolCall('grep', { query: 'needle' }, 'failed-large-error');
+    expect(result).toMatchObject({ errorKind: 'uncertain' });
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    const boundedMessage: string = JSON.parse(result.result).diagnostic;
     expect(boundedMessage).toContain('Full output unavailable');
     expect(boundedMessage).not.toContain('tool-output://');
     expect(citationRecords).toEqual([]);
@@ -3530,7 +3535,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
   });
 
-  it('leaves small tool execution errors untouched', async () => {
+  it('retains small tool error diagnostics without creating an artifact', async () => {
     const { onToolCall } = await startImplementToolConversation(
       'Inspecte une petite erreur.',
     );
@@ -3541,13 +3546,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       }) as unknown as () => Promise<undefined>,
     );
 
-    let caught: unknown;
-    try {
-      await onToolCall('grep', { query: 'needle' }, 'small-error-call');
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBe(smallError);
+    const result = await onToolCall('grep', { query: 'needle' }, 'small-error-call');
+    expect(result).toMatchObject({ errorKind: 'uncertain' });
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    expect(JSON.parse(result.result).diagnostic).toBe(smallError.message);
     expect(
       citationRecords.some((citation) =>
         citation.path?.startsWith('tool-output://') ?? false,

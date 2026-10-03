@@ -1,3 +1,5 @@
+import { formatToolExecutionError } from './ai/toolCallResolution';
+import { ToolResultPreservationError } from './toolResultArtifacts';
 import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { ToolCallResolution } from "./ai/contracts";
 import { normalizeArchitectToolId } from "./architectToolNames";
@@ -74,9 +76,10 @@ export function createChatToolDispatch(
     let normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
     const journalState: { localIntent: ToolInvocationIdentity | null } = { localIntent: null };
-    const uncertain = (reason: string): ToolCallResolution => ({
+    const uncertain = (reason: string, diagnostic?: string): ToolCallResolution => ({
       kind: 'result', isError: true, errorKind: 'uncertain',
       result: JSON.stringify({
+        ...(diagnostic ? { diagnostic } : {}),
         outcome: 'unknown', invocation: journalState.localIntent, toolName: normalizedName,
         reason, instruction: 'The effect may have occurred. Inspect the original invocation and its effects before retrying, including with a new call ID.',
       }),
@@ -127,9 +130,17 @@ export function createChatToolDispatch(
       let result: ToolCallResolution | string | void;
       try {
         result = await ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
-      } catch {
+      } catch (error) {
         await markUnknown();
-        return uncertain('The executor did not confirm its outcome.');
+        if (!isCurrent()) return ABORTED;
+        let bounded: unknown;
+        try {
+          bounded = await ports.boundError(operation, name, toolCallId, error);
+        } catch (preservationError) {
+          bounded = preservationError instanceof ToolResultPreservationError ? preservationError : undefined;
+        }
+        if (!isCurrent()) return ABORTED;
+        return uncertain('The executor did not confirm its outcome.', bounded === undefined ? undefined : formatToolExecutionError(bounded));
       }
       if (!isCurrent() || result === undefined ||
         (typeof result === 'object' && result?.kind === 'result' && result.errorKind === 'aborted')) {
@@ -184,7 +195,15 @@ export function createChatToolDispatch(
     } catch (error) {
       await markUnknown();
       if (!isCurrent()) return ABORTED;
-      if (journalState.localIntent) return refusal ?? uncertain('The tool result could not be preserved.');
+      if (journalState.localIntent) {
+        if (refusal) return refusal;
+        const failure = uncertain('The tool result could not be preserved.',
+          error instanceof ToolResultPreservationError ? error.preview : undefined);
+        // Losing the full text artifact must not discard already bounded media.
+        return typeof resolution === 'object' && resolution?.kind === 'result' && resolution.blocks
+          ? { ...failure, blocks: [{ type: 'text' as const, text: failure.result }, ...resolution.blocks.filter(block => block.type !== 'text')] }
+          : failure;
+      }
       throw await ports.boundError(operation, normalizedName, toolCallId, error);
     }
     if (!isCurrent()) {
