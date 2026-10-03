@@ -189,6 +189,7 @@ const registerWorkspaceToolExecutorMocks = (
   }));
 
   mock.module("./remoteKernelApi", () => ({
+    readRemoteWorkspaceCheckpointSnapshot: async () => { throw new Error("Unexpected remote snapshot read"); },
     canUseRemoteKernel: () => false,
     executeRemoteWorkspaceTool: async () => "",
     executeRemoteWorkspaceToolDetailed: async () => ({
@@ -1962,7 +1963,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "write",
       { path: "src/value.ts", content: "export const value = 'after';\n" },
       "Implement",
@@ -1973,6 +1974,8 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("Failed to record code checkpoint");
     expect(result).toContain("mutation was reverted");
@@ -2072,7 +2075,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -2108,6 +2111,8 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("Failed to record code checkpoint");
     expect(result).toContain("mutations were reverted");
@@ -3422,7 +3427,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "write",
       { path: "bin/run.sh", content: "#!/bin/sh\necho after\n" },
       "Implement",
@@ -3433,6 +3438,8 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("the mutation was reverted");
 
@@ -3796,6 +3803,7 @@ describe("conversation checkpoint diagnostics reach the next provider request", 
         const f = await lspConversationFixture({virtual, checkpointFailure: true});
         const {result} = await f.run(tool);
         expect(result.is_error).toBe(true);
+        expect(result.error_kind).toBe("uncertain");
         expect(result.content).toContain("reverted");
         expect(result.content).not.toContain("fixture-session");
         expect(f.state()).toMatchObject({content: "export const value: string = 'old';\n", filesystemWrites: 1});
@@ -4098,4 +4106,61 @@ for (const checkpoint of [false, true]) {
     expect(unknowns).toBe(1);
     expect(completions).toBe(0);
   });
+}
+
+function checkpointReceiptDispatch(tool: string, args: Record<string, unknown>, execute: () => Promise<string | undefined>) {
+  const counters = { completions: 0, unknowns: 0 };
+  const rows = new Set<string>();
+  const dispatch = createChatToolDispatch({ conversationId: 'checkpoint-conversation', turnId: 't', assistantMessageId: 'm', allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+    journal: { ...allowChatToolInvocationJournal,
+      record: async input => { const row = await allowChatToolInvocationJournal.record(input); const is_new = !rows.has(input.callId); rows.add(input.callId); return { ...row, is_new }; },
+      complete: async input => { counters.completions++; return allowChatToolInvocationJournal.complete(input); },
+      markUnknown: async input => { counters.unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+    },
+    execute, preserve: async (_o, _n, _c, result) => result, boundError: async (_o, _n, _c, error) => error,
+  }, () => true, () => {});
+  return { counters, invoke: () => dispatch(tool, args, 'checkpoint-original') };
+}
+for (const virtual of [false, true]) {
+it(`keeps a durable checkpoint receipt unknown after successful file compensation, virtual=${virtual}`, async()=>{
+  let content: string | null='old', revision='before', mutations=0, dbWrites=0;
+  const settings=new Map<string,string>();
+  const {executeWorkspaceTool}=await loadWorkspaceToolExecutor({tauriModule:{
+    isTauriAvailable:()=>true,
+    fsExists:async()=>content!==null,
+    fsReadFileWithOptions:async()=>({content,revision,is_binary:false,size:content?.length??0,encoding:'utf-8',language:'text'}),
+    fsDelete:async()=>{mutations++;content=null;revision='absent';},
+    fsWriteFile:async({path,content:next,expectedRevision}:{path:string;content:string;expectedRevision:string})=>{
+      expect(expectedRevision).toBe('absent'); mutations++; content=next;revision='restored';
+      return {path,bytes_written:next.length,created:true,revision};
+    },
+    dbGetAppSetting:async(key:string)=>settings.has(key)?{key,value_json:settings.get(key)}:null,
+    dbSetAppSetting:async({key,valueJson}:{key:string;valueJson:string})=>{
+      dbWrites++;settings.set(key,valueJson);throw new Error('checkpoint database receipt lost after commit');
+    },
+  }} as Partial<MockAppState>);
+  const {saveAgentCodeCheckpoints,loadAgentCodeCheckpoints,createAgentCodeCheckpoint}=await import('./agentCodeCheckpoints');
+  const args={path:virtual ? 'api/a.txt' : 'a.txt'};
+  const audit=checkpointReceiptDispatch('delete',args,()=>executeWorkspaceTool('delete',args,'Implement',{
+    workspacePath:'C:/work/synthetic',projectId:'api',
+    ...(virtual ? { virtualRootEnabled:true, projectMounts:[
+      {projectId:'api',mountName:'api',displayName:'API',workspacePath:'C:/work/synthetic'},
+      {projectId:'web',mountName:'web',displayName:'Web',workspacePath:'C:/work/other'},
+    ] } : {}), onCodeCheckpoint:async(checkpoint: {toolName: string; files: AgentCodeCheckpointFile[]})=>{
+      const saved=createAgentCodeCheckpoint([],{conversationId:'audit3-checkpoint',turnId:'audit3-t',assistantMessageId:'audit3-m',toolCallId:'audit3-original',toolName:checkpoint.toolName,files:checkpoint.files});
+      await saveAgentCodeCheckpoints('audit3-checkpoint',[saved]);
+    },
+  }));
+  const result=await audit.invoke();
+  const reloaded=await loadAgentCodeCheckpoints('audit3-checkpoint');
+  expect(content).toBe('old'); expect(mutations).toBe(2); expect(dbWrites).toBe(1);
+  expect(reloaded.length).toBe(1); expect(reloaded[0].files[0].after.exists).toBe(false);
+  // Restoring the file does not remove the checkpoint persisted before rejection.
+  expect(audit.counters).toEqual({completions:0,unknowns:1});
+  expect(result).toMatchObject({errorKind:'uncertain'});
+  await audit.invoke(); expect(mutations).toBe(2);expect(dbWrites).toBe(1);
+  if (!result || typeof result === 'string') throw new Error('Expected structured uncertainty');
+  expect(JSON.parse(result.result)).toMatchObject({outcome:'unknown',invocation:{callId:'checkpoint-original'},instruction:expect.stringContaining('Inspect')});
+});
+
 }

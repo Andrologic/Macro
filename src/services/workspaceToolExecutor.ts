@@ -2146,6 +2146,13 @@ export const executeWorkspaceTool = async (
       throw error;
     }
   };
+  // File compensation cannot prove that a rejected durable checkpoint save
+  // had no effect. Track its callback in every publication path as well.
+  const onCodeCheckpoint = options.onCodeCheckpoint;
+  if (onCodeCheckpoint) {
+    options = { ...options, onCodeCheckpoint: checkpoint =>
+      observeMutation(async () => { await onCodeCheckpoint(checkpoint); }) };
+  }
   const mutations: MutationFilesystem = {
     fsWriteFile: request => observeMutation(() => tauriIpc.fsWriteFile(request)),
     fsDelete: request => observeMutation(() => tauriIpc.fsDelete(request)),
