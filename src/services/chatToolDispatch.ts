@@ -74,6 +74,13 @@ export function createChatToolDispatch(
     let normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
     const journalState: { localIntent: ToolInvocationIdentity | null } = { localIntent: null };
+    const uncertain = (reason: string): ToolCallResolution => ({
+      kind: 'result', isError: true, errorKind: 'uncertain',
+      result: JSON.stringify({
+        outcome: 'unknown', invocation: journalState.localIntent, toolName: normalizedName,
+        reason, instruction: 'The effect may have occurred. Inspect the original invocation and its effects before retrying, including with a new call ID.',
+      }),
+    });
     const markUnknown = async () => {
       if (!journalState.localIntent) return;
       try { await ports.journal.markUnknown(journalState.localIntent); } catch { /* Pending becomes unknown on restart. */ }
@@ -120,15 +127,15 @@ export function createChatToolDispatch(
       let result: ToolCallResolution | string | void;
       try {
         result = await ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
-      } catch (error) {
+      } catch {
         await markUnknown();
-        throw error;
+        return uncertain('The executor did not confirm its outcome.');
       }
       if (!isCurrent() || result === undefined ||
         (typeof result === 'object' && result?.kind === 'result' && result.errorKind === 'aborted')) {
         await markUnknown();
         return result === undefined
-          ? journalFailure('Tool execution returned no confirmed result. Inspect its outcome before retrying.')
+          ? uncertain('The executor returned no confirmed result.')
           : ABORTED;
       }
       return result;
@@ -160,18 +167,24 @@ export function createChatToolDispatch(
       if (!isCurrent()) return ABORTED;
       throw bounded;
     }
+    if (typeof resolution === 'object' && resolution?.kind === 'result' && resolution.errorKind === 'uncertain') return resolution;
     if (!isCurrent()) {
       await markUnknown();
       // Preserve explicit denial without starting a new artifact write after Stop.
       return typeof resolution === "object" && resolution?.kind === "result" && resolution.errorKind === "permission"
         ? resolution : ABORTED;
     }
+    // A typed refusal confirms that no effect was dispatched, even if retaining
+    // its diagnostic later fails. Do not turn it into a possible mutation.
+    const refusal = typeof resolution === 'object' && resolution?.kind === 'result' &&
+      (resolution.errorKind === 'permission' || resolution.errorKind === 'validation') ? resolution : undefined;
     let preserved: ToolCallResolution | string | void;
     try {
       preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
     } catch (error) {
       await markUnknown();
       if (!isCurrent()) return ABORTED;
+      if (journalState.localIntent) return refusal ?? uncertain('The tool result could not be preserved.');
       throw await ports.boundError(operation, normalizedName, toolCallId, error);
     }
     if (!isCurrent()) {
@@ -181,7 +194,7 @@ export function createChatToolDispatch(
     if (journalState.localIntent) {
       if (preserved === undefined) {
         await markUnknown();
-        return journalFailure('Tool result could not be preserved. Inspect the outcome before retrying.');
+        return refusal ?? uncertain('The tool result could not be preserved.');
       }
       try {
         // Confirm the executor response after optional large-result preservation.
@@ -189,7 +202,7 @@ export function createChatToolDispatch(
         await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
       } catch {
         await markUnknown();
-        return journalFailure('Tool result was preserved, but its durable completion could not be confirmed. Inspect the outcome before retrying.');
+        return refusal ?? uncertain('The tool result was preserved, but durable completion could not be confirmed.');
       }
     }
     return normalizeLegacyToolExecutionResult(normalizedName, preserved);

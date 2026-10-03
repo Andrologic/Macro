@@ -75,7 +75,7 @@ describe('durable Chat tool dispatch', () => {
 
     const failed = fixture();
     failed.execute.mockImplementation(async () => { throw new Error('transport lost'); });
-    expect(failed.dispatch('write', {}, 'failure')).rejects.toThrow('transport lost');
+    expect(await failed.dispatch('write', {}, 'failure')).toMatchObject({ errorKind: 'uncertain' });
     await Promise.resolve();
     expect(failed.events).toContain('unknown');
     expect(failed.journal.complete).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe('durable Chat tool dispatch', () => {
   test('keeps an invocation unknown if result preservation fails or is interrupted', async () => {
     const failed = fixture();
     failed.preserve.mockImplementation(async () => { throw new Error('artifact write failed'); });
-    await expect(failed.dispatch('write', {}, 'preserve-failed')).rejects.toThrow('artifact write failed');
+    expect(await failed.dispatch('write', {}, 'preserve-failed')).toMatchObject({ errorKind: 'uncertain' });
     expect(failed.events).toEqual(['record:write:workspace_mutation', 'execute', 'unknown']);
     expect(failed.journal.complete).not.toHaveBeenCalled();
 
@@ -224,4 +224,31 @@ describe('durable Chat tool dispatch', () => {
       else Reflect.deleteProperty(globalThis, 'window');
     }
   });
+});
+
+for (const failure of ['throw', 'empty', 'preserve', 'receipt'] as const) {
+  test(`uncertain ${failure} retains original identity and never completes or replays`, async () => {
+    const f = fixture();
+    if (failure === 'throw') f.execute.mockImplementation(async () => { throw new Error('lost'); });
+    if (failure === 'empty') f.execute.mockImplementation(async () => undefined);
+    if (failure === 'preserve') f.preserve.mockImplementation(async () => undefined);
+    if (failure === 'receipt') f.journal.complete = async () => { throw new Error('lost'); };
+    const result = await f.dispatch('write', {}, 'original');
+    expect(result).toMatchObject({ errorKind: 'uncertain', isError: true });
+    if (!result || typeof result === 'string') throw new Error('Expected structured result');
+    expect(JSON.parse(result.result)).toMatchObject({ outcome: 'unknown', invocation: {
+      conversationId: 'conversation', turnId: 'turn', messageId: 'message', callId: 'original',
+    }, instruction: expect.stringContaining('Inspect') });
+    await f.dispatch('write', {}, 'original');
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(f.events).not.toContain('complete');
+  });
+}
+
+test('explicit pre-effect denial remains a permission result', async () => {
+  const f = fixture();
+  f.execute.mockImplementation(async () => ({ kind: 'result', result: 'Denied', isError: true, errorKind: 'permission' }));
+  expect(await f.dispatch('write', {}, 'denied')).toMatchObject({ errorKind: 'permission' });
+  expect(f.events).toContain('complete');
+  expect(f.events).not.toContain('unknown');
 });

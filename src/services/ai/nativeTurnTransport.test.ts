@@ -263,9 +263,9 @@ test('failed native submission offers one error fallback and stays unknown witho
   expect(submissions[0]).toMatchObject({ toolCallId: 'read-call', result: 'read succeeded',
     submissionId: expect.any(String), isError: false });
   expect(submissions[1]).toMatchObject({ toolCallId: 'read-call', submissionId: expect.any(String),
-    isError: true, errorKind: 'execution' });
+    isError: true, errorKind: 'uncertain' });
   expect(submissions[1].submissionId).not.toBe(submissions[0].submissionId);
-  expect(submissions[1].result).toContain('submission outcome unknown');
+  expect(JSON.parse(submissions[1].result)).toMatchObject({ outcome: 'unknown', invocation: { callId: 'read-call' } });
   expect(result.providerInputItems ?? []).toEqual([]);
   expect(traces.at(-1)).toMatchObject({ tool_call_id: 'read-call', status: 'running', recovery_state: 'unknown' });
   expect(live).not.toHaveBeenCalled();
@@ -299,7 +299,7 @@ for (const acceptedIndex of [0, 1]) {
     const accepted = submissions[acceptedIndex].result;
     expect(live).toEqual([accepted]);
     expect(notified).toEqual([accepted]);
-    expect(JSON.stringify(result.providerInputItems)).toContain(accepted);
+    expect(result.providerInputItems).toContainEqual(expect.objectContaining({ type: 'function_call_output', output: accepted }));
     expect(submissions).toHaveLength(2);
     expect(mutate).toHaveBeenCalledTimes(1);
   });
@@ -397,3 +397,19 @@ test('native cancellation during live-result callback skips later result notific
   expect(submissions.map(item => item.toolCallId)).toEqual(['read-call']);
   expect(notified).not.toHaveBeenCalled();
 });
+
+for (const providerType of ['copilot', 'chatgpt']) {
+  test(`${providerType} acceptance of an uncertain result does not certify the effect`, async () => {
+    doneAfter = 1;
+    const traces: ToolTrace[] = [];
+    const run = turn({ providerType, onToolCall: async () => ({ kind: 'result',
+      result: '{"outcome":"unknown","invocation":{"callId":"original"},"instruction":"Inspect before retrying"}',
+      isError: true, errorKind: 'uncertain',
+    }), onToolTrace: trace => traces.push(trace) });
+    await started;
+    request('original', 'mcp__fixture__read');
+    await run;
+    expect(submissions[0]).toMatchObject({ errorKind: 'uncertain', result: expect.stringContaining('original') });
+    expect(traces.at(-1)).toMatchObject({ status: 'done', recovery_state: 'unknown' });
+  });
+}
