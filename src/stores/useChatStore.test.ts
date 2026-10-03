@@ -3670,6 +3670,81 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
   registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
+  it('ordinary image send retains the draft on quota failure and retries once after storage reconstruction', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true; c.appState.mode = 'Chat';
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('image-recovery'), scope_mode: 'Chat' as const, task_id: null };
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+    const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
+    const local = await import('./chat/chatLocalSessionState');
+    const draft = { text: 'Inspect this diagram', images, contextRefs: [] };
+    local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
+    const storage = window.localStorage, setItem = storage.setItem;
+    storage.setItem = (key, value) => {
+      if (key === 'macro_chat_message_images') throw new Error('synthetic image quota');
+      setItem.call(storage, key, value);
+    };
+    try {
+      await expect(store.getState().sendMessage({ conversationId: conversation.id, content: draft.text, images }))
+        .rejects.toMatchObject({ message: expect.stringContaining('images') });
+    } finally { storage.setItem = setItem; }
+    expect(c.streamChatMock).not.toHaveBeenCalled();
+    expect(c.createMessageMock).not.toHaveBeenCalled();
+    const recovered = local.loadComposerDraftsFromStorage()['conversation:' + conversation.id];
+    expect(recovered).toEqual(draft);
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id,
+      messageImagesByMessageId: local.loadMessageImagesFromStorage() }));
+    const result = await store.getState().sendMessage({ conversationId: conversation.id, content: recovered.text, images: recovered.images });
+    await c.flushAsyncWork();
+    expect(result.status).toBe('sent');
+    expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    if (result.status !== 'sent') throw new Error('Expected accepted message');
+    expect(local.loadMessageImagesFromStorage()[result.userMessageId]).toEqual(images);
+    const options = c.getLatestStreamOptions<{ messages: Array<{ content: unknown }> }>();
+    expect(options.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))).toBe(true);
+  });
+
+  for (const stopAfterText of [false, true]) {
+    it(`ordinary image send keeps durable attachments when storage fails after text, stop=${stopAfterText}`, async () => {
+      const c = useChatStoreScenarioContext;
+      c.tauriAvailable = true; c.appState.mode = 'Chat';
+      const { useChatStore: store } = await c.loadChatStore();
+      const conversation = { ...c.createConversation('late-image-quota'), scope_mode: 'Chat' as const, task_id: null };
+      store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+      const local = await import('./chat/chatLocalSessionState');
+      const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
+      const storage = window.localStorage, setItem = storage.setItem;
+      const original = c.createMessageMock.getMockImplementation()!;
+      c.createMessageMock.mockImplementation(async (...args) => {
+        const message = await original(...args);
+        if (args[1] === 'user') {
+          expect(local.loadMessageImagesFromStorage()[message.id]).toEqual(images);
+          storage.setItem = (key, value) => {
+            if (key === 'macro_chat_message_images') throw new Error('late synthetic quota');
+            setItem.call(storage, key, value);
+          };
+          if (stopAfterText) store.getState().stopConversationStream(conversation.id);
+        }
+        return message;
+      });
+      try {
+        const result = await store.getState().sendMessage({ conversationId: conversation.id, content: 'Inspect', images });
+        await c.flushAsyncWork();
+        expect(result.status).toBe('sent');
+        expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+        expect(c.streamChatMock).toHaveBeenCalledTimes(stopAfterText ? 0 : 1);
+        if (result.status !== 'sent') throw new Error('Expected accepted message');
+        expect(local.loadMessageImagesFromStorage()[result.userMessageId]).toEqual(images);
+        if (stopAfterText) expect(result.assistantMessageId).toBeNull();
+      } finally {
+        storage.setItem = setItem;
+        c.createMessageMock.mockImplementation(original);
+      }
+    });
+  }
+
   registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });

@@ -96,6 +96,8 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;
+    /** Must fail before writing text or acknowledging the composer. */
+    saveImages?(messageId: string, images: SendImage[]): void;
     ensureLoaded(conversationId: string): Promise<void>;
     list(conversationId: string): readonly ChatMessage[];
     hasInterruptedApproval(conversationId: string): boolean;

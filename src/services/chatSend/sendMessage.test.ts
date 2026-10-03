@@ -332,3 +332,62 @@ it('a stale assistant write failure must not revert the successor task', async (
   expect(f.ports.tasks.rollbackDraft).not.toHaveBeenCalled();
   expect(f.task.draft).toBe(false);
 });
+
+const image = { id: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' };
+for (const mode of ['Chat', 'Implement'] as const) {
+  it(`${mode} image failure occurs before durable text, acknowledgement and launch`, async () => {
+    const f = fixture(mode);
+    f.ports.messages.saveImages = () => { throw new Error('quota'); };
+    await expect(sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'quota' });
+    expect(f.createMessage).not.toHaveBeenCalled();
+    expect(f.ports.projection.publishUser).not.toHaveBeenCalled();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+    expect(f.ports.tasks.finalizeDraft).not.toHaveBeenCalled();
+  });
+}
+it('checks image persistence before text and does not write images again after text is durable', async () => {
+  const f = fixture();
+  let imageId = '';
+  const original = f.createMessage.getMockImplementation()!;
+  f.ports.messages.saveImages = id => {
+    expect(f.createMessage).not.toHaveBeenCalled();
+    imageId = id;
+  };
+  f.createMessage.mockImplementation(async (...args) => {
+    if (args[1] === 'user') expect(args[3]?.id).toBe(imageId);
+    const saved = await original(...args);
+    // Storage becomes unavailable after the text commit. There must be no
+    // fallible image write in publication or before starting the provider.
+    f.ports.messages.saveImages = () => { throw new Error('late quota'); };
+    return saved;
+  });
+  expect((await sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).status).toBe('sent');
+  expect(imageId).not.toBe('');
+  expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+});
+it('stop during image saving keeps the draft unaccepted and starts no text write', async () => {
+  const f = fixture();
+  f.ports.messages.saveImages = () => f.stop();
+  expect((await sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).status).toBe('cancelled');
+  expect(f.createMessage).not.toHaveBeenCalled();
+  expect(f.ports.projection.publishUser).not.toHaveBeenCalled();
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
+
+it('stop after saving image and text acknowledges that message without a second write or provider start', async () => {
+  const f = fixture();
+  const original = f.createMessage.getMockImplementation()!;
+  let imageId = '';
+  f.ports.messages.saveImages = id => { imageId = id; };
+  f.createMessage.mockImplementation(async (...args) => {
+    const message = await original(...args);
+    f.stop();
+    return message;
+  });
+  const result = await sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports);
+  expect(imageId).not.toBe('');
+  expect(result).toMatchObject({ status: 'sent', assistantMessageId: null });
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+  expect(f.ports.projection.publishUser).toHaveBeenCalledTimes(1);
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});

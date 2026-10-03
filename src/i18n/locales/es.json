@@ -531,6 +531,7 @@
     "queueSaveFailed": "No se pudieron guardar los mensajes en cola. Mantén abierta esta sesión y vuelve a intentarlo.",
     "queuePlanUnavailable": "El plan original no está disponible para este mensaje en cola.",
     "queueContextChanged": "El destino del mensaje en cola ha cambiado. Restaura su contexto original antes de volver a intentarlo.",
+    "sendImagesSaveFailed": "No se pudo guardar el mensaje con sus imágenes. Vuelve a enviar el borrador.",
     "queueImagesSaveFailed": "El mensaje se ha guardado, pero sus imágenes aún deben guardarse. Vuelve a intentar el envío en cola.",
     "queueRecoveryTitle": "Los mensajes en cola requieren atención",
     "queueRecoveryDescription": "Se conservan {{count}} mensaje(s) en cola. Al reintentarlos, se reanudarán en su contexto original.",

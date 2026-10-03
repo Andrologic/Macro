@@ -54,9 +54,15 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   });
   const saveUser = async (current: SendLease) => {
     let message: ChatMessage;
+    const messageId = images?.length ? crypto.randomUUID() : undefined;
+    if (messageId && images?.length) {
+      if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
+      messages.saveImages(messageId, images);
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
+    }
     try {
       message = await createUserMessage(messages.persistence, {
-        conversationId, turnId: current.turnId, taskId: resolvedTaskId,
+        id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
       });
     } catch (error) {

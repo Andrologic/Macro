@@ -13552,6 +13552,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
+          saveImages: (messageId, images) => {
+            const next = { ...get().messageImagesByMessageId, [messageId]: images };
+            if (!saveMessageImagesToStorage(next)) {
+              throw buildSendError(i18n.t('chat.sendImagesSaveFailed', 'The message could not be saved with its images. Retry the draft.'));
+            }
+            set({ messageImagesByMessageId: next });
+          },
           onUserPersisted: queuedSubmission ? message => queueRuntime!.acknowledge(queuedSubmission, message) : undefined,
           ensureLoaded: ensureMessagesLoadedForConversation,
           list: getOrderedConversationMessages,
@@ -13620,7 +13627,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           publishUser: (message, context) => {
             get().addMessage(message);
-            if (context.images?.length) get().setMessageImages(message.id, context.images);
             for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
               const path = getFileRefPath(ref);
               useCitationsStore.getState().addCitation({
