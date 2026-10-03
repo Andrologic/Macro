@@ -1796,7 +1796,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -1833,6 +1833,9 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("disk full");
     expect(appContent).toBe("export const App = 'before';\n");
@@ -2197,7 +2200,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -2233,6 +2236,9 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("rollback failed");
     expect(result).toContain("b.ts changed externally");
@@ -2409,7 +2415,7 @@ describe("workspaceToolExecutor helpers", () => {
     ]);
   });
 
-  it("does not roll back a delete rejected before any mutation", async () => {
+  it("does not compensate an unacknowledged delete from its diagnostic alone", async () => {
     let rollbackWrites = 0;
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
@@ -2449,7 +2455,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "delete",
       { path: "src/obsolete.ts" },
       "Implement",
@@ -2458,6 +2464,9 @@ describe("workspaceToolExecutor helpers", () => {
         onCodeCheckpoint: async () => undefined,
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("revision conflict before delete");
     expect(result).not.toContain("rollback");
@@ -2946,7 +2955,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "write",
       { path: "web/src/value.ts", content: "export const value = 'after';\n" },
       "Implement",
@@ -2967,6 +2976,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain(
       'External modification detected for "web/src/value.ts"',
@@ -3032,7 +3044,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "edit",
       {
         path: "src/value.ts",
@@ -3046,6 +3058,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain(
       'External modification detected for "src/value.ts"',
@@ -3121,7 +3136,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "delete",
       { path: "src/obsolete.ts" },
       "Implement",
@@ -3131,6 +3146,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain(
       'External modification detected for "src/obsolete.ts"',
@@ -3245,7 +3263,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -3279,6 +3297,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("External modification detected");
     expect(result).toContain('"web/src/b.ts"');
@@ -3950,7 +3971,7 @@ for (const scenario of ['lost', 'command-name-in-error', 'refused', 'unavailable
       isTauriAvailable: () => true,
       executeWorkspaceTool: async () => {
         if (scenario === 'refused') return 'Error executing git_add: validation refused before mutation';
-        if (scenario === 'unavailable') throw new Error('unknown command tool_execute_workspace');
+        if (scenario === 'unavailable') throw new Error('Command tool_execute_workspace not found');
         effects++;
         throw new Error(scenario === 'lost' ? 'reply lost after effect' : 'tool_execute_workspace transport closed');
       },
@@ -3975,5 +3996,106 @@ for (const scenario of ['lost', 'command-name-in-error', 'refused', 'unavailable
       expect(JSON.parse(result.result)).toMatchObject({ outcome: 'unknown', invocation: { callId: 'original' },
         instruction: expect.stringContaining('Inspect') });
     }
+  });
+}
+
+// Exercise actual routing, checkpoint wrappers and dispatch with synthetic IPC.
+for (const virtual of [false, true]) {
+  for (const scenario of ['delete-checkpoint', 'write-legacy', 'patch-legacy', 'rollback-delete', 'rollback-write', 'write-diagnostic', 'delete-diagnostic', 'git-diagnostic', 'write-empty'] as const) {
+    it(`keeps lost mutation acknowledgements unknown across adapters: ${scenario}, virtual=${virtual}`, async () => {
+      let effects = 0, completions = 0, unknowns = 0, checkpoints = 0;
+      const diagnostic = scenario.endsWith('diagnostic') || scenario === 'write-empty';
+      const tool = scenario.startsWith('delete') ? 'delete' : scenario.startsWith('git') ? 'git_add'
+        : scenario === 'patch-legacy' ? 'apply_patch' : 'write';
+      const rollback = scenario.startsWith('rollback');
+      const path = virtual ? 'api/a.txt' : 'a.txt';
+      const args = tool === 'apply_patch' ? { patch_text: `*** Begin Patch\n*** Add File: ${path}\n+new\n*** End Patch` }
+        : tool === 'git_add' ? { repo_path: virtual ? 'api' : '.', paths: ['a.txt'] }
+        : { path, content: 'new' };
+      const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({ tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => {
+          if (!diagnostic) return 'UNSUPPORTED_WORKSPACE_TOOL';
+          effects++;
+          if (scenario === 'write-empty') return '';
+          throw new Error('reply lost after effect: unknown command in downstream diagnostic');
+        },
+        fsExists: async () => rollback && (scenario === 'rollback-write' || effects > 0),
+        fsWriteFile: async () => {
+          effects++;
+          if (!rollback || effects > 1) throw new Error('write acknowledgement lost');
+          return { path: 'a.txt', bytes_written: 3, created: scenario === 'rollback-delete', revision: 'applied' };
+        },
+        fsDelete: async () => { effects++; throw new Error('delete acknowledgement lost'); },
+        fsReadFileWithOptions: async () => ({ content: effects ? 'new' : 'old', revision: effects ? 'applied' : 'before', is_binary: false, language: 'text', size: 3, encoding: 'utf-8' }),
+      }} as Partial<MockAppState>);
+      const rows = new Set<string>();
+      const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+        allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+        journal: { ...allowChatToolInvocationJournal,
+          record: async input => { const recorded = await allowChatToolInvocationJournal.record(input); const is_new = !rows.has(input.callId); rows.add(input.callId); return { ...recorded, is_new }; },
+          complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
+          markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+        },
+        execute: async () => executeWorkspaceTool(tool, args, 'Implement', {
+          workspacePath: 'C:/dev/macro-api', projectId: 'api',
+          ...(virtual ? { virtualRootEnabled: true, groupId: 'macro-suite', projectMounts: [
+            { projectId: 'api', mountName: 'api', displayName: 'API', workspacePath: 'C:/dev/macro-api' },
+            { projectId: 'web', mountName: 'web', displayName: 'Web', workspacePath: 'C:/dev/macro-web' },
+          ] } : {}),
+          ...(!diagnostic && scenario !== 'patch-legacy' ? { onCodeCheckpoint: async () => { checkpoints++; if (rollback) throw new Error('checkpoint unavailable'); } } : {}),
+        }),
+        preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
+      }, () => true, () => {});
+      const result = await dispatch(tool, args, 'original');
+      expect(result).toMatchObject({ errorKind: 'uncertain' });
+      expect(completions).toBe(0);
+      expect(unknowns).toBe(1);
+      expect(effects).toBe(rollback ? 2 : 1);
+      expect(checkpoints).toBe(rollback ? 1 : 0);
+      await dispatch(tool, args, 'original');
+      expect(effects).toBe(rollback ? 2 : 1);
+    });
+  }
+}
+
+for (const message of ['Command tool_execute_workspace not found', 'Command tool_validate_execution not found', 'prefix Command tool_execute_workspace not found', 'Command tool_execute_workspace not found suffix']) {
+  it(`recognizes only the exact missing execution command: ${message}`, async () => {
+    let calls = 0, unknowns = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({ tauriModule: {
+      isTauriAvailable: () => true,
+      executeWorkspaceTool: async () => { calls++; throw message; },
+    }} as Partial<MockAppState>);
+    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+      journal: { ...allowChatToolInvocationJournal, markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); } },
+      execute: async () => executeWorkspaceTool('git_add', { paths: ['a.txt'] }, 'Implement', { workspacePath: 'C:/dev/macro-api' }),
+      preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
+    }, () => true, () => {});
+    expect(await dispatch('git_add', {}, 'original')).toMatchObject({ errorKind: message === 'Command tool_execute_workspace not found' ? 'execution' : 'uncertain' });
+    expect(unknowns).toBe(message === 'Command tool_execute_workspace not found' ? 0 : 1);
+    expect(calls).toBe(1);
+  });
+}
+
+for (const checkpoint of [false, true]) {
+  it(`propagates rejected remote mutation receipts without fallback, checkpoint=${checkpoint}`, async () => {
+    let effects = 0, unknowns = 0, completions = 0;
+    const lost = async () => { effects++; throw new Error('Command tool_execute_workspace not found'); };
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      projectGroups: [], standaloneProjects: [], tauriModule: { isTauriAvailable: () => false },
+      remoteKernelModule: { canUseRemoteKernel: () => true, executeRemoteWorkspaceTool: lost, executeRemoteWorkspaceToolDetailed: lost },
+    } as Partial<MockAppState>);
+    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['write'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+      journal: { ...allowChatToolInvocationJournal,
+        markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+        complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
+      },
+      execute: async () => executeWorkspaceTool('write', { path: 'a.txt', content: 'new' }, 'Implement', { workspacePath: '/synthetic', ...(checkpoint ? { onCodeCheckpoint: async () => {} } : {}) }),
+      preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
+    }, () => true, () => {});
+    expect(await dispatch('write', {}, 'original')).toMatchObject({ errorKind: 'uncertain' });
+    expect(effects).toBe(1);
+    expect(unknowns).toBe(1);
+    expect(completions).toBe(0);
   });
 }
