@@ -746,8 +746,7 @@ impl McpSession for ModernHttpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -840,8 +839,7 @@ impl McpSession for LegacyHttpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -936,7 +934,7 @@ async fn connect_stdio_transport(
             .or(Some(Duration::from_secs(5)));
             match RmcpModernStdioClient::probe(&probe_config).await {
                 Ok(McpModernProbeOutcome::Modern(probe)) => {
-                    probe.shutdown().await;
+                    probe.shutdown().await?;
                     let reason =
                         "The disposable sibling probe completed server/discover.".to_string();
                     let (session, era, version) =
@@ -1185,8 +1183,7 @@ async fn close_modern_client(
     for _ in 0..100 {
         match Arc::try_unwrap(client) {
             Ok(client) => {
-                client.shutdown().await;
-                return Ok(());
+                return client.shutdown().await;
             }
             Err(shared) => {
                 client = shared;
@@ -1293,8 +1290,7 @@ impl McpSession for LegacyRmcpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -1636,5 +1632,34 @@ mod tests {
         assert_ne!(first, rotated);
         assert!(first.starts_with("sha256:"));
         assert!(!first.contains("secret-one"));
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn cleanup_fixture_session(
+    adapter: &str,
+    behavior: super::service_shutdown::fixture::CloseBehavior,
+) -> (
+    Arc<dyn McpSession>,
+    super::service_shutdown::fixture::CloseControl,
+) {
+    macro_rules! session {
+        ($client:ty, $session:ident) => {{
+            let (client, control) = <$client>::cleanup_fixture(behavior).await;
+            (
+                Arc::new($session {
+                    client: Mutex::new(Some(Arc::new(client))),
+                    disabled_tools: vec![],
+                }) as Arc<dyn McpSession>,
+                control,
+            )
+        }};
+    }
+    match adapter {
+        "legacy-stdio" => session!(RmcpLegacyStdioClient, LegacyRmcpSession),
+        "modern-stdio" => session!(RmcpModernStdioClient, ModernRmcpSession),
+        "legacy-http" => session!(RmcpLegacyHttpClient, LegacyHttpSession),
+        "modern-http" => session!(RmcpModernHttpClient, ModernHttpSession),
+        _ => panic!("unknown adapter"),
     }
 }

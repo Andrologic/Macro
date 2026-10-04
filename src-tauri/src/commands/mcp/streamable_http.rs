@@ -53,7 +53,8 @@ use super::modern_adapter::{
 };
 use super::oauth::McpBearerTokenProvider;
 use super::result_format::normalize_tool_call_result;
-use super::runtime::McpOperationCancellation;
+use super::runtime::{McpOperationCancellation, McpRuntimeError};
+use super::service_shutdown::{TransportCleanup, SERVICE_CLOSE_BUDGET};
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
 
@@ -74,7 +75,6 @@ const KNOWN_LEGACY_PROTOCOL_VERSIONS: [&str; 5] = [
 
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
-const SERVICE_CLOSE_BUDGET: Duration = Duration::from_secs(10);
 const CANCEL_NOTIFICATION_BUDGET: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -652,10 +652,58 @@ pub(crate) struct GuardedStreamableHttpClient {
     endpoint: Arc<ValidatedEndpoint>,
     user_headers: Arc<HashMap<HeaderName, HeaderValue>>,
     request_head_timeout: Duration,
+    cleanup: Option<TransportCleanup>,
     bearer_token_provider: Option<Arc<dyn McpBearerTokenProvider>>,
 }
 
 impl GuardedStreamableHttpClient {
+    async fn delete_session_inner(
+        &self,
+        uri: Arc<str>,
+        session_id: Arc<str>,
+        auth_token: Option<String>,
+        custom_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Result<(), StreamableHttpError<AdapterError>> {
+        self.validate_transport_uri(&uri)?;
+        let auth_token = self.resolve_auth_token(auth_token).await?;
+        let headers = build_request_header_map(
+            &self.user_headers,
+            &custom_headers,
+            ForcedRequestHeaders {
+                accept: ACCEPT_MIME_TYPES,
+                json_content_type: false,
+                auth_token,
+                session_id: Some(session_id.to_string()),
+            },
+        )?;
+        let client = self.http.clone();
+        let headers_clone = headers.clone();
+        let mut response = self
+            .send_following_same_origin(
+                move |url| {
+                    let mut request = client.delete(url.as_str());
+                    for (name, value) in &headers_clone {
+                        request = request.header(name, value);
+                    }
+                    request
+                },
+                true,
+            )
+            .await?;
+        if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            return Ok(());
+        }
+        let status = response.status();
+        if !status.is_success() {
+            let body = collect_bounded_body(&mut response, MAX_HTTP_RESPONSE_BYTES).await?;
+            return Err(StreamableHttpError::UnexpectedServerResponse(
+                format!("DELETE returned HTTP {status} with {} bytes", body.len()).into(),
+            ));
+        }
+        collect_bounded_body(&mut response, MAX_HTTP_RESPONSE_BYTES).await?;
+        Ok(())
+    }
+
     pub(crate) fn new(
         endpoint: ValidatedEndpoint,
         user_headers: HashMap<HeaderName, HeaderValue>,
@@ -667,6 +715,7 @@ impl GuardedStreamableHttpClient {
             endpoint: Arc::new(endpoint),
             user_headers: Arc::new(user_headers),
             request_head_timeout: operation_timeout.unwrap_or(DEFAULT_OPERATION_TIMEOUT),
+            cleanup: None,
             bearer_token_provider: None,
         })
     }
@@ -1017,44 +1066,11 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         auth_token: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), StreamableHttpError<Self::Error>> {
-        self.validate_transport_uri(&uri)?;
-        let auth_token = self.resolve_auth_token(auth_token).await?;
-        let headers = build_request_header_map(
-            &self.user_headers,
-            &custom_headers,
-            ForcedRequestHeaders {
-                accept: ACCEPT_MIME_TYPES,
-                json_content_type: false,
-                auth_token,
-                session_id: Some(session_id.to_string()),
-            },
-        )?;
-        let client = self.http.clone();
-        let headers_clone = headers.clone();
-        let mut response = self
-            .send_following_same_origin(
-                move |url| {
-                    let mut request = client.delete(url.as_str());
-                    for (name, value) in &headers_clone {
-                        request = request.header(name, value);
-                    }
-                    request
-                },
-                true,
-            )
-            .await?;
-        if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
-            return Ok(());
+        let delete = self.delete_session_inner(uri, session_id, auth_token, custom_headers);
+        match &self.cleanup {
+            Some(cleanup) => cleanup.http_delete(delete).await,
+            None => delete.await,
         }
-        let status = response.status();
-        if !status.is_success() {
-            let body = collect_bounded_body(&mut response, MAX_HTTP_RESPONSE_BYTES).await?;
-            return Err(StreamableHttpError::UnexpectedServerResponse(
-                format!("DELETE returned HTTP {status} with {} bytes", body.len()).into(),
-            ));
-        }
-        collect_bounded_body(&mut response, MAX_HTTP_RESPONSE_BYTES).await?;
-        Ok(())
     }
 
     async fn get_stream_with_max_sse_event_size(
@@ -1593,29 +1609,12 @@ fn build_call_params(
     Ok(params)
 }
 
-async fn shutdown_service(
-    mut service: RunningService<RoleClient, ClosedCapabilityHttpClientHandler>,
-    server_name: &str,
-) {
-    match service.close_with_timeout(SERVICE_CLOSE_BUDGET).await {
-        Ok(Some(_)) => {}
-        Ok(None) => tracing::warn!(
-            server = %server_name,
-            "MCP HTTP service cleanup exceeded its close budget"
-        ),
-        Err(error) => tracing::warn!(
-            server = %server_name,
-            error = %error,
-            "MCP HTTP service task failed during shutdown"
-        ),
-    }
-}
-
 /// Persistent legacy-era Streamable HTTP client: performs `initialize`, keeps
 /// `Mcp-Session-Id`, and drains JSON or SSE-linked replies through the
 /// official SDK lifecycle.
 pub(crate) struct RmcpLegacyHttpClient {
     service: RunningService<RoleClient, ClosedCapabilityHttpClientHandler>,
+    cleanup: TransportCleanup,
     server_id: String,
     server_name: String,
     negotiated_version: String,
@@ -1623,17 +1622,43 @@ pub(crate) struct RmcpLegacyHttpClient {
 }
 
 impl RmcpLegacyHttpClient {
+    #[cfg(test)]
+    pub(super) async fn cleanup_fixture(
+        behavior: super::service_shutdown::fixture::CloseBehavior,
+    ) -> (Self, super::service_shutdown::fixture::CloseControl) {
+        let (service, cleanup, control) = super::service_shutdown::fixture::service(
+            ClosedCapabilityHttpClientHandler::legacy(),
+            false,
+            behavior,
+        )
+        .await;
+        (
+            Self {
+                service,
+                cleanup,
+                server_id: "test".to_owned(),
+                server_name: "cleanup-fixture".to_owned(),
+                operation_timeout: Duration::from_secs(2),
+                negotiated_version: "2025-11-25".to_owned(),
+            },
+            control,
+        )
+    }
+
     pub(crate) async fn connect(
-        client: GuardedStreamableHttpClient,
+        mut client: GuardedStreamableHttpClient,
         server_id: String,
         server_name: String,
         startup_timeout: Option<Duration>,
         operation_timeout: Option<Duration>,
     ) -> CommandResult<Self> {
+        let cleanup = TransportCleanup::default();
+        client.cleanup = Some(cleanup.clone());
         let transport = StreamableHttpClientTransport::with_client(
             client.clone(),
             http_transport_config(&client),
         );
+        let transport = cleanup.observe_with(transport);
         let handler = ClosedCapabilityHttpClientHandler::legacy();
         let startup = startup_timeout.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let handshake = handler.serve_with_lifecycle(transport, ClientLifecycleMode::Initialize);
@@ -1672,6 +1697,7 @@ impl RmcpLegacyHttpClient {
             )));
         }
         Ok(Self {
+            cleanup,
             service,
             server_id,
             server_name,
@@ -1812,8 +1838,8 @@ impl RmcpLegacyHttpClient {
         }
     }
 
-    pub(crate) async fn shutdown(self) {
-        shutdown_service(self.service, &self.server_name).await;
+    pub(crate) async fn shutdown(self) -> Result<(), McpRuntimeError> {
+        self.cleanup.shutdown(self.service, &self.server_name).await
     }
 }
 
@@ -1824,6 +1850,7 @@ impl_http_client_runtime_info!(RmcpLegacyHttpClient);
 /// metadata. It never sends `initialize`.
 pub(crate) struct RmcpModernHttpClient {
     service: RunningService<RoleClient, ClosedCapabilityHttpClientHandler>,
+    cleanup: TransportCleanup,
     server_id: String,
     server_name: String,
     metadata: McpModernServerMetadata,
@@ -1831,18 +1858,50 @@ pub(crate) struct RmcpModernHttpClient {
 }
 
 impl RmcpModernHttpClient {
+    #[cfg(test)]
+    pub(super) async fn cleanup_fixture(
+        behavior: super::service_shutdown::fixture::CloseBehavior,
+    ) -> (Self, super::service_shutdown::fixture::CloseControl) {
+        let (service, cleanup, control) = super::service_shutdown::fixture::service(
+            ClosedCapabilityHttpClientHandler::modern(),
+            true,
+            behavior,
+        )
+        .await;
+        (
+            Self {
+                service,
+                cleanup,
+                server_id: "test".to_owned(),
+                server_name: "cleanup-fixture".to_owned(),
+                operation_timeout: Duration::from_secs(2),
+                metadata: McpModernServerMetadata {
+                    negotiated_protocol_version: "2026-07-28".to_owned(),
+                    capabilities: serde_json::json!({}),
+                    server_info: None,
+                    instructions: None,
+                    meta: None,
+                },
+            },
+            control,
+        )
+    }
+
     pub(crate) async fn connect(
-        client: GuardedStreamableHttpClient,
+        mut client: GuardedStreamableHttpClient,
         server_id: String,
         server_name: String,
         startup_timeout: Option<Duration>,
         operation_timeout: Option<Duration>,
     ) -> CommandResult<Self> {
+        let cleanup = TransportCleanup::default();
+        client.cleanup = Some(cleanup.clone());
         let transport = StreamableHttpClientTransport::with_client(client.clone(), {
             let mut config = http_transport_config(&client);
             config.reinit_on_expired_session = false;
             config
         });
+        let transport = cleanup.observe_with(transport);
         let handler = ClosedCapabilityHttpClientHandler::modern();
         let startup = startup_timeout.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let handshake = handler.serve_with_lifecycle(
@@ -1898,6 +1957,7 @@ impl RmcpModernHttpClient {
                 .and_then(|value| serde_json::to_value(value).ok()),
         };
         Ok(Self {
+            cleanup,
             service,
             server_id,
             server_name,
@@ -2042,8 +2102,8 @@ impl RmcpModernHttpClient {
         }
     }
 
-    pub(crate) async fn shutdown(self) {
-        shutdown_service(self.service, &self.server_name).await;
+    pub(crate) async fn shutdown(self) -> Result<(), McpRuntimeError> {
+        self.cleanup.shutdown(self.service, &self.server_name).await
     }
 }
 
@@ -2202,6 +2262,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_http_delete_cleanup_result_is_preserved() {
+        // Exercise the guarded reqwest client and rmcp HTTP worker, including
+        // its internal DELETE timeout, against a local disposable fixture.
+        for outcome in ["success", "unsupported", "error", "timeout"] {
+            let delete_seen = Arc::new(tokio::sync::Notify::new());
+            let delete_signal = delete_seen.clone();
+            let release_delete = Arc::new(tokio::sync::Notify::new());
+            let delete_release = release_delete.clone();
+            let app = Router::new()
+                .route(
+                    "/mcp",
+                    post(fixture_post).delete(move || {
+                        let signal = delete_signal.clone();
+                        let release = delete_release.clone();
+                        async move {
+                            signal.notify_one();
+                            match outcome {
+                                "success" => reqwest::StatusCode::NO_CONTENT,
+                                "unsupported" => reqwest::StatusCode::METHOD_NOT_ALLOWED,
+                                "error" => reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                                _ => {
+                                    release.notified().await;
+                                    reqwest::StatusCode::NO_CONTENT
+                                }
+                            }
+                        }
+                    }),
+                )
+                .with_state(FixtureState {
+                    era: FixtureEra::Legacy,
+                    methods: Arc::new(StdMutex::new(vec![])),
+                });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint =
+                validate_endpoint(&format!("http://{}/mcp", listener.local_addr().unwrap()))
+                    .await
+                    .unwrap();
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
+            });
+            let transport = GuardedStreamableHttpClient::new(
+                endpoint,
+                HashMap::new(),
+                Some(Duration::from_secs(30)),
+            )
+            .unwrap();
+            let client = RmcpLegacyHttpClient::connect(
+                transport,
+                "test".into(),
+                "HTTP cleanup fixture".into(),
+                Some(Duration::from_secs(2)),
+                None,
+            )
+            .await
+            .unwrap();
+            let result = client.shutdown().await;
+            tokio::time::timeout(Duration::from_secs(1), delete_seen.notified())
+                .await
+                .unwrap();
+            let expected = match outcome {
+                "error" => Some("MCP_RUNTIME_CLOSE_FAILED"),
+                "timeout" => Some("MCP_RUNTIME_CLOSE_TIMEOUT"),
+                _ => None,
+            };
+            assert_eq!(
+                result.as_ref().err().map(|error| error.code),
+                expected,
+                "{outcome}"
+            );
+            let _ = stop.send(());
+            release_delete.notify_one();
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn endpoint_policy_accepts_loopback_and_rejects_private_literals() {
         assert!(validate_endpoint("http://127.0.0.1:43123/mcp")
             .await
@@ -2258,7 +2403,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(legacy_call.content, "legacy:ok");
-        legacy.shutdown().await;
+        legacy.shutdown().await.unwrap();
         let legacy_calls = legacy_methods
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2305,7 +2450,7 @@ mod tests {
             panic!("expected complete result");
         };
         assert_eq!(modern_call.content, "modern:ok");
-        modern.shutdown().await;
+        modern.shutdown().await.unwrap();
         let modern_calls = modern_methods
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

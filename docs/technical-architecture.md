@@ -531,7 +531,13 @@ le catalogue et les leases conversationnels. Une définition supprimée ou
 désactivée révoque la génération, annule les opérations et connexions en cours,
 et ferme la session avec un budget de 15 secondes. Le snapshot utilisé par
 Diagnostics conserve l'état `disconnected` après fermeture et `failed` avec
-l'erreur de nettoyage en cas d'échec ou de dépassement du budget. Une proposition
+l'erreur de nettoyage en cas d'échec ou de dépassement du budget. Les adaptateurs
+stdio et HTTP transmettent leurs timeouts internes (`MCP_RUNTIME_CLOSE_TIMEOUT`)
+et échecs de tâche ou de transport (`MCP_RUNTIME_CLOSE_FAILED`) au runtime.
+Le résultat du transport et de la suppression de session HTTP est conservé
+séparément, car le SDK peut seulement journaliser ces erreurs. Un budget
+expiré reste un échec observable même si le nettoyage se termine ensuite.
+Une proposition
 en attente d'approbation ne remplace pas la configuration effective.
 
 `mcp/toolDiscovery` décide, à partir de l'allowlist et du catalogue figés du tour, si le modèle reçoit les schémas MCP directs ou les fonctions `mcp_search` et `mcp_call`. La recherche est bornée et ne parcourt que les outils autorisés. Le dispatch conserve les identifiants trouvés pour ce tour ; `mcp_call` transmet ensuite l'identifiant et les arguments à l'exécuteur MCP existant, qui revalide la politique, l'approbation éventuelle et la génération. Les transports commun, natif et Copilot exposent les mêmes fonctions de découverte. Une récupération d'overflow conserve le catalogue initial ; elle ne crée pas de nouveaux droits.

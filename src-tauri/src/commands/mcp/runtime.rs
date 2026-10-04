@@ -2422,6 +2422,93 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn real_adapter_cleanup_results_reach_configuration_snapshot() {
+        use super::super::runtime_connector::cleanup_fixture_session;
+        use super::super::service_shutdown::fixture::CloseBehavior;
+        let mut checks = tokio::task::JoinSet::new();
+        for adapter in ["legacy-stdio", "modern-stdio", "legacy-http", "modern-http"] {
+            for behavior in [
+                CloseBehavior::Success,
+                CloseBehavior::Error,
+                CloseBehavior::Panic,
+                CloseBehavior::Timeout,
+            ] {
+                checks.spawn(async move {
+                    let (session, control) = cleanup_fixture_session(adapter, behavior).await;
+                    let manager = McpRuntimeManager::with_connector(Arc::new(UnavailableConnector));
+                    let key = McpRuntimeKey {
+                        server_id: "test".into(),
+                        project_id: None,
+                        project_ids: vec![],
+                        config_generation: 1,
+                    };
+                    // Install the real adapter session. Only the source mutation
+                    // is injected here; the native mutation path has its own
+                    // subprocess/configuration test below.
+                    let mut entry =
+                        RuntimeEntry::connecting(key.clone(), "configured".into(), Uuid::new_v4());
+                    entry.snapshot.status = McpRuntimeStatus::Ready;
+                    entry.session = Some(session);
+                    manager
+                        .state
+                        .lock()
+                        .await
+                        .entries
+                        .insert(LogicalRuntimeKey::from(&key), entry);
+                    let started = Instant::now();
+                    manager
+                        .invalidate_if_current(
+                            &key,
+                            &McpRuntimeError::new(
+                                "MCP_RUNTIME_SERVER_DISABLED",
+                                "fixture server was disabled",
+                            ),
+                        )
+                        .await;
+                    let snapshot = manager.snapshot().await.servers.remove(0);
+                    let (status, code) = match behavior {
+                        CloseBehavior::Success => (
+                            McpRuntimeStatus::Disconnected,
+                            "MCP_RUNTIME_SERVER_DISABLED",
+                        ),
+                        CloseBehavior::Timeout => {
+                            (McpRuntimeStatus::Failed, "MCP_RUNTIME_CLOSE_TIMEOUT")
+                        }
+                        _ => (McpRuntimeStatus::Failed, "MCP_RUNTIME_CLOSE_FAILED"),
+                    };
+                    assert_eq!(snapshot.status, status, "{adapter}: {behavior:?}");
+                    assert_eq!(
+                        snapshot.last_error_code.as_deref(),
+                        Some(code),
+                        "{adapter}: {behavior:?}"
+                    );
+                    assert!(snapshot.key.config_generation > key.config_generation);
+                    if !matches!(behavior, CloseBehavior::Success) {
+                        assert!(snapshot.last_error.unwrap().contains("cleanup failed"));
+                    }
+                    // In particular, the inner 10-second timeout must reach the
+                    // snapshot before the runtime's 15-second outer timeout.
+                    assert!(
+                        started.elapsed() < Duration::from_secs(14),
+                        "{adapter}: {behavior:?}"
+                    );
+                    control.finish().await;
+                    manager.reconcile_configuration().await;
+                    assert_eq!(
+                        manager.snapshot().await.servers[0]
+                            .last_error_code
+                            .as_deref(),
+                        Some(code)
+                    );
+                });
+            }
+        }
+        while let Some(result) = checks.join_next().await {
+            result.unwrap();
+        }
+    }
+
     async fn patch_mcp_configuration(
         manager: &crate::config::ConfigManager,
         scope: crate::config::ConfigScope,
