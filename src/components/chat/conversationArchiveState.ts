@@ -146,3 +146,19 @@ export const pruneConversationIdSet = (
   const validIds = new Set(validConversationIds);
   return new Set([...current].filter((conversationId) => validIds.has(conversationId)));
 };
+
+export const getConversationMenuPosition = (
+  anchor: { right: number; top: number; bottom: number },
+  menu: { width: number; height: number },
+  viewport: { width: number; height: number },
+): { top: number; left: number } => {
+  const margin = 8;
+  const gap = 4;
+  const clamp = (value: number, maximum: number) => Math.max(margin, Math.min(value, maximum));
+  const roomBelow = viewport.height - anchor.bottom - margin;
+  const openAbove = roomBelow < menu.height + gap && anchor.top > roomBelow;
+  return {
+    top: clamp(openAbove ? anchor.top - menu.height - gap : anchor.bottom + gap, viewport.height - menu.height - margin),
+    left: clamp(anchor.right - menu.width, viewport.width - menu.width - margin),
+  };
+};

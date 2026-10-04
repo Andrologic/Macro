@@ -1197,6 +1197,7 @@ const dbDeleteArchitectPlanConversationSyncMock = mock(async (conversationId: st
   architectPlanConversationSyncRecords.delete(conversationId);
 });
 const updateConversationDetailsMock = mock(async () => undefined);
+const renameConversationMock = mock(async (_id: string, _title: string) => undefined);
 const gitBranchListMock = mock(async (repoPath: string) => (
   gitBranchesByRepo[repoPath] ?? { local: [], remote: [], current: null }
 ));
@@ -1970,6 +1971,7 @@ const registerUseChatStoreMocks = async () => {
     dbMarkConversationReplayLaunched: dbMarkConversationReplayLaunchedMock,
     dbFinalizeConversationReplay: dbFinalizeConversationReplayMock,
     updateConversationDetails: updateConversationDetailsMock,
+    renameConversation: renameConversationMock,
     updateConversationAISelection: updateConversationAISelectionMock,
     updateConversationScope: updateConversationScopeMock,
   }));
@@ -2927,6 +2929,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbUpsertArchitectPlanConversationSyncMock.mockClear();
     dbDeleteArchitectPlanConversationSyncMock.mockClear();
     updateConversationDetailsMock.mockClear();
+    renameConversationMock.mockClear();
     gitBranchListMock.mockClear();
     createConversationMock.mockClear();
     createMessageMock.mockClear();
@@ -3018,6 +3021,131 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('preserves a manual Chat title chosen before the first message', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('manual-chat'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'manual-chat',
+    }));
+    await useChatStore.getState().renameConversation('manual-chat', 'Journal été');
+    await useChatStore.getState().sendMessage({ conversationId: 'manual-chat', content: 'QA_MARKDOWN' });
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations.find((c: Conversation) => c.id === 'manual-chat')?.title).toBe('Journal été');
+    expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+  });
+
+  it('discards a late automatic Chat title after a manual rename', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const metadata = createDeferred<string>();
+    const requested = createDeferred<void>();
+    queueSendChatNonStreamingImplementation(async () => { requested.resolve(); return metadata.promise; });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('late-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'late-title',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'late-title', content: 'Plan a release' });
+    await requested.promise;
+    await useChatStore.getState().renameConversation('late-title', 'Release choisie');
+    metadata.resolve(JSON.stringify({ title: 'Automatic release', description: 'Release work.' }));
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations.find((c: Conversation) => c.id === 'late-title')?.title).toBe('Release choisie');
+    expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+  });
+
+  it('still generates an automatic Chat title when no manual title was chosen', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('auto-chat'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'auto-chat',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'auto-chat', content: 'Refresh checkout' });
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations.find((c: Conversation) => c.id === 'auto-chat')?.title).toBe('Checkout refresh');
+    expect(updateConversationDetailsMock).toHaveBeenCalled();
+  });
+
+  it('preserves a default-looking manual title after reloading the store', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const first = await loadChatStore();
+    first.useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('reloaded-title'), scope_mode: 'Chat', title: 'Journal' }],
+      selectedConversationId: 'reloaded-title',
+    }));
+    await first.useChatStore.getState().renameConversation('reloaded-title', 'New Conversation');
+    expect(appSettingValues.get('conversation-manual-title:reloaded-title')).toBe(JSON.stringify({ version: 1 }));
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('reloaded-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'reloaded-title',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'reloaded-title', content: 'Refresh checkout' });
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations[0]?.title).toBe('New Conversation');
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+  });
+
+  it('serializes a manual rename after an already admitted automatic title write', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const writing = createDeferred<void>();
+    const release = createDeferred<void>();
+    updateConversationDetailsMock.mockImplementationOnce(async () => { writing.resolve(); await release.promise; });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('writing-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'writing-title',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'writing-title', content: 'Refresh checkout' });
+    await writing.promise;
+    const rename = useChatStore.getState().renameConversation('writing-title', 'Mon choix final');
+    await flushAsyncWork();
+    expect(renameConversationMock).not.toHaveBeenCalled();
+    release.resolve();
+    await rename;
+    await flushAsyncWork();
+    expect(renameConversationMock).toHaveBeenCalledWith('writing-title', 'Mon choix final');
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Mon choix final');
+  });
+
+  it('keeps automatic naming available after a failed manual rename', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    renameConversationMock.mockImplementationOnce(async () => { throw new Error('rename failed'); });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('failed-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'failed-title',
+    }));
+    await expect(useChatStore.getState().renameConversation('failed-title', 'Mon titre')).rejects.toThrow('rename failed');
+    expect(appSettingValues.has('conversation-manual-title:failed-title')).toBe(false);
+    await useChatStore.getState().sendMessage({ conversationId: 'failed-title', content: 'Refresh checkout' });
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
+  });
+
+  it('names a default Chat title from another language and falls back when metadata generation fails', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    queueSendChatNonStreamingImplementation(async () => { throw new Error('provider unavailable'); });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('localized-title'), scope_mode: 'Chat', title: 'Neues Gespräch' }],
+      selectedConversationId: 'localized-title',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'localized-title', content: 'Refresh checkout' });
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Refresh checkout');
+    expect(updateConversationDetailsMock).toHaveBeenCalled();
   });
 
   it('associates a newly selected conversation with its resolved context', async () => {

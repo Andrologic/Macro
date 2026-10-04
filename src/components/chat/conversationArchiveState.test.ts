@@ -6,6 +6,7 @@ import {
   commitArchivedConversationMutation,
   filterConversationsByQuery,
   getArchiveViewConversations,
+  getConversationMenuPosition,
   getChatOnlyConversations,
   normalizeConversationIdList,
   partitionPinnedConversations,
@@ -36,6 +37,18 @@ const createConversation = (overrides: Partial<Conversation>): Conversation => (
 });
 
 describe('conversationArchiveState', () => {
+  it('keeps conversation actions inside the viewport at the bottom and right edges', () => {
+    expect(getConversationMenuPosition(
+      { top: 670, bottom: 694, right: 1276 },
+      { width: 160, height: 208 },
+      { width: 1280, height: 720 },
+    )).toEqual({ top: 458, left: 1112 });
+    expect(getConversationMenuPosition(
+      { top: 15, bottom: 39, right: 35 },
+      { width: 160, height: 208 },
+      { width: 280, height: 720 },
+    )).toEqual({ top: 43, left: 8 });
+  });
   it('normalizes stored conversation ids', () => {
     expect(normalizeConversationIdList([' alpha ', '', 'beta', 'alpha', 12, null])).toEqual([
       'alpha',

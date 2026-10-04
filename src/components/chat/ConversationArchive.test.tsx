@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
+import { createDeferred } from '../../test-utils/deferred';
 import { createRoot, type Root } from 'react-dom/client';
 import { useChatStore } from '../../stores/useChatStore';
 import {
@@ -29,6 +30,8 @@ describe('ConversationArchive', () => {
   const initialChatState = useChatStore.getState();
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
+  const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+  const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
   let stateValues: Record<string, unknown> = {};
   let invokeMock = mock(async (
     _command?: string,
@@ -36,6 +39,11 @@ describe('ConversationArchive', () => {
   ): Promise<unknown> => undefined);
 
   beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() { return this.hasAttribute('data-conversation-actions-menu') ? 208 : this.classList.contains('overflow-y-auto') ? 600 : 80; },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return 280; } });
     stateValues = {};
     invokeMock = mock(async (
       command?: string,
@@ -93,6 +101,10 @@ describe('ConversationArchive', () => {
     useChatStore.setState(initialChatState, true);
     useConversationArchiveStore.setState({ archivedConversationIds: new Set() });
     removeTauriRuntimeMock();
+    if (heightDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', heightDescriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight');
+    if (widthDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widthDescriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, 'offsetWidth');
   });
 
   it('keeps multi-select compact until the header button activates its toolbar', async () => {
@@ -131,6 +143,27 @@ describe('ConversationArchive', () => {
     expect(toolbar?.querySelector('[aria-label="Archive"] span')?.className).toContain('sr-only');
     expect(toolbar?.querySelector('[aria-label="Delete"] span')?.className).toContain('sr-only');
     expect(toolbar?.querySelector('[aria-label="Cancel"] span')?.className).toContain('sr-only');
+    await act(async () => {
+      toolbar?.querySelector<HTMLButtonElement>('[aria-label="Select all"]')?.click();
+      await flushRender();
+    });
+    expect(toolbar?.querySelector<HTMLButtonElement>('[aria-label="Delete"]')?.disabled).toBe(false);
+    await act(async () => {
+      toolbar?.querySelector<HTMLButtonElement>('[aria-label="Delete"]')?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+        .find((button) => button.textContent?.trim() === 'Cancel')?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => {
+      toolbar?.querySelector<HTMLButtonElement>('[aria-label="Cancel"]')?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-multiselect-toolbar"]')).toBeNull();
   });
 
   it('shows the archive toggle in the header and switches to the archived view', async () => {
@@ -214,6 +247,167 @@ describe('ConversationArchive', () => {
 
     expect(selectConversation).toHaveBeenCalledWith('conversation-2');
     expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
+  });
+
+  it('keeps Archives open through asynchronous selection and restores the selected archive', async () => {
+    const loading = createDeferred<void>();
+    const active = useChatStore.getState().conversations[0];
+    const archived = { ...active, id: 'conversation-2', title: 'Conversation archivée' };
+    const selectConversation = mock(async (id: string) => {
+      useChatStore.setState({ selectedConversationId: id });
+      if (id === archived.id) await loading.promise;
+      return useChatStore.getState().selectedConversationId === id;
+    });
+    useChatStore.setState({ conversations: [active, archived], selectConversation });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, [archived.id]);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds([archived.id]);
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-archive-toggle"]')?.click();
+      await flushRender();
+    });
+    expect(selectConversation.mock.calls.map(([id]) => id)).toEqual([archived.id]);
+    await act(async () => {
+      loading.resolve();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-archive-toggle"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container?.textContent).toContain(archived.title);
+    expect(container?.textContent).not.toContain(active.title);
+
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')?.click();
+      await flushRender();
+    });
+    const restore = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Restore');
+    expect(restore).toBeDefined();
+    await act(async () => {
+      restore?.click();
+      await flushRender();
+    });
+    expect(useConversationArchiveStore.getState().archivedConversationIds.has(archived.id)).toBe(false);
+    expect(useChatStore.getState().selectedConversationId).toBe(archived.id);
+    expect(document.body.querySelector('[data-tour-id="chat-archive-toggle"]')?.getAttribute('aria-pressed')).toBe('false');
+    expect(stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]).toEqual([]);
+  });
+
+  it('renders conversation actions outside virtual rows and invokes Pin with a mouse click', async () => {
+    const active = useChatStore.getState().conversations[0];
+    const togglePinConversation = mock(async () => true);
+    useChatStore.setState({
+      conversations: [active, { ...active, id: 'conversation-2', title: 'Deuxième' }, { ...active, id: 'conversation-3', title: 'Troisième' }],
+      togglePinConversation,
+    });
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')?.click();
+      await flushRender();
+    });
+    const pin = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Pin');
+    expect(pin).toBeDefined();
+    expect(pin?.closest('[data-index]')).toBeNull();
+    expect(container?.contains(pin!)).toBe(false);
+    await act(async () => { pin?.click(); await flushRender(); });
+    expect(togglePinConversation).toHaveBeenCalledWith(active.id);
+    expect(document.body.querySelector('[data-conversation-actions-menu]')).toBeNull();
+  });
+
+  it('returns from Archives to the previous active conversation without a competing selection', async () => {
+    const active = useChatStore.getState().conversations[0];
+    const archived = { ...active, id: 'conversation-2', title: 'Archive' };
+    const loading = createDeferred<void>();
+    const selectConversation = mock(async (id: string) => {
+      useChatStore.setState({ selectedConversationId: id });
+      if (id === active.id) await loading.promise;
+      return useChatStore.getState().selectedConversationId === id;
+    });
+    useChatStore.setState({ conversations: [active, archived], selectConversation });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, [archived.id]);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds([archived.id]);
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    const toggle = container?.querySelector<HTMLButtonElement>('[data-tour-id="chat-archive-toggle"]');
+    await act(async () => { toggle?.click(); await flushRender(); });
+    expect(toggle?.getAttribute('aria-pressed')).toBe('true');
+    selectConversation.mockClear();
+    await act(async () => { toggle?.click(); await flushRender(); });
+    expect(selectConversation.mock.calls.map(([id]) => id)).toEqual([active.id]);
+    await act(async () => { loading.resolve(); await flushRender(); });
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+    expect(useChatStore.getState().selectedConversationId).toBe(active.id);
+  });
+
+  it('keeps a restored conversation archived when preference persistence fails', async () => {
+    const active = useChatStore.getState().conversations[0];
+    const archived = { ...active, id: 'conversation-2', title: 'Archive' };
+    useChatStore.setState({
+      conversations: [active, archived],
+      selectedConversationId: archived.id,
+      selectConversation: mock(async (id: string) => { useChatStore.setState({ selectedConversationId: id }); return true; }),
+    });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, [archived.id]);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds([archived.id]);
+    useViewFilterStore.setState({ chat: { version: 1, showArchived: true } });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    invokeMock.mockImplementation(async (command, payload) => {
+      if (command === 'state_set_value' && payload?.key === PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS) throw new Error('write failed');
+      return { schemaVersion: 1, values: structuredClone(stateValues) };
+    });
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')?.click();
+      await flushRender();
+    });
+    const restore = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === 'Restore');
+    await act(async () => { restore?.click(); await flushRender(); });
+    expect(useConversationArchiveStore.getState().archivedConversationIds.has(archived.id)).toBe(true);
+    expect(useChatStore.getState().selectedConversationId).toBe(archived.id);
+    expect(useViewFilterStore.getState().chat.showArchived).toBe(true);
+    expect(stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]).toEqual([archived.id]);
+  });
+
+  it('preserves a newer archive selection while a restoration write is pending', async () => {
+    const active = useChatStore.getState().conversations[0];
+    const archived = { ...active, id: 'conversation-2', title: 'Archive A' };
+    const other = { ...active, id: 'conversation-3', title: 'Archive B' };
+    const writing = createDeferred<void>();
+    const release = createDeferred<void>();
+    useChatStore.setState({
+      conversations: [active, archived, other],
+      selectedConversationId: archived.id,
+      selectConversation: mock(async (id: string) => { useChatStore.setState({ selectedConversationId: id }); return true; }),
+    });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, [archived.id, other.id]);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds([archived.id, other.id]);
+    useViewFilterStore.setState({ chat: { version: 1, showArchived: true } });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    invokeMock.mockImplementation(async (command, payload) => {
+      if (command === 'state_set_value') {
+        if (payload?.key === PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS) {
+          writing.resolve();
+          await release.promise;
+        }
+        stateValues[String(payload?.key)] = structuredClone(payload?.value);
+      }
+      return { schemaVersion: 1, values: structuredClone(stateValues) };
+    });
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')?.click();
+      await flushRender();
+    });
+    const restore = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === 'Restore');
+    await act(async () => { restore?.click(); await writing.promise; await flushRender(); });
+    await act(async () => { await useChatStore.getState().selectConversation(other.id); await flushRender(); });
+    await act(async () => { release.resolve(); await flushRender(); });
+    expect(useChatStore.getState().selectedConversationId).toBe(other.id);
+    expect(useViewFilterStore.getState().chat.showArchived).toBe(true);
+    expect(Array.from(useConversationArchiveStore.getState().archivedConversationIds)).toEqual([other.id]);
   });
 
   it('opens and closes search inside the existing compact header', async () => {
