@@ -186,7 +186,7 @@ export async function aiSubmitToolResult(params: {
   visibleContent?: string | null;
   interrupt?: boolean;
   isError?: boolean;
-  errorKind?: "validation" | "permission" | "execution" | "aborted";
+  errorKind?: "validation" | "permission" | "execution" | "aborted" | "uncertain";
 }): Promise<void> {
   return invoke("ai_submit_tool_result", {
     request: {

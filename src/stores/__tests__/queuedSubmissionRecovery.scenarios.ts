@@ -576,13 +576,21 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Image', images }, 'queue');
       const storage = window.localStorage;
       const setItem = storage.setItem;
-      storage.setItem = (key, value) => {
-        if (key === 'macro_chat_message_images') throw new Error('quota');
-        setItem.call(storage, key, value);
-      };
+      // Fail the queued acknowledgement after the text commit. The shared
+      // send path now saves images before text, so failing that earlier write
+      // would no longer exercise recovery of an already persisted message.
+      const original = c.createMessageMock.getMockImplementation()!;
+      c.createMessageMock.mockImplementation(async (...args) => {
+        const message = await original(...args);
+        if (args[1] === 'user') storage.setItem = (key, value) => {
+          if (key === 'macro_chat_message_images') throw new Error('quota');
+          setItem.call(storage, key, value);
+        };
+        return message;
+      });
       release(store);
       try { await store.getState().retryQueuedSubmissions('queued-conv'); }
-      finally { storage.setItem = setItem; }
+      finally { storage.setItem = setItem; c.createMessageMock.mockImplementation(original); }
       const [entry] = loadQueuedSubmissions();
       expect(entry.input.images).toEqual(images);
       expect(c.streamChatMock).not.toHaveBeenCalled();

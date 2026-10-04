@@ -526,6 +526,7 @@
     "queueSaveFailed": "저장하지 못했습니다. 세션을 열어 둔 채 다시 시도하세요.",
     "queuePlanUnavailable": "원래 계획을 사용할 수 없습니다.",
     "queueContextChanged": "전송 대상이 변경되었습니다. 원래 컨텍스트를 복원한 뒤 다시 시도하세요.",
+    "sendImagesSaveFailed": "메시지와 이미지를 저장하지 못했습니다. 초안에서 다시 전송하세요.",
     "queueImagesSaveFailed": "메시지는 저장되었습니다. 이미지 저장을 다시 시도하세요.",
     "queueRecoveryTitle": "대기 중인 전송을 확인하세요",
     "queueRecoveryDescription": "{{count}}개가 보존되어 있습니다. 다시 시도하면 원래 컨텍스트에서 재개됩니다.",

@@ -86,6 +86,7 @@ import { formatConversationFilePage, readConversationFileBody } from "../service
 import {
   buildSpilledToolResultPreview,
   preserveToolResultContent,
+  ToolResultPreservationError,
   shouldSpillToolResult,
 } from "../services/toolResultArtifacts";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
@@ -5428,11 +5429,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return spilled.preview;
     } catch (error) {
       console.warn('[tool-output] Failed to persist recoverable output:', error);
-      return buildSpilledToolResultPreview({
+      throw new ToolResultPreservationError(buildSpilledToolResultPreview({
         toolName,
         result,
         artifactPath: null,
-      }).preview;
+      }).preview);
     }
   };
 
@@ -13609,6 +13610,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
+          saveImages: (messageId, images) => {
+            const next = { ...get().messageImagesByMessageId, [messageId]: images };
+            if (!saveMessageImagesToStorage(next)) {
+              throw buildSendError(i18n.t('chat.sendImagesSaveFailed', 'The message could not be saved with its images. Retry the draft.'));
+            }
+            set({ messageImagesByMessageId: next });
+          },
           onUserPersisted: queuedSubmission ? message => queueRuntime!.acknowledge(queuedSubmission, message) : undefined,
           beforeAssistantStart: queuedSubmission ? () => queueRuntime!.beforeAssistantStart(queuedSubmission) : undefined,
           onAssistantStarted: queuedSubmission ? () => queueRuntime!.complete(queuedSubmission) : undefined,
@@ -13679,7 +13687,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           publishUser: (message, context) => {
             if (!getOrderedConversationMessages(message.conversation_id).some(item => item.id === message.id)) get().addMessage(message);
-            if (context.images?.length) get().setMessageImages(message.id, context.images);
             for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
               const path = getFileRefPath(ref);
               useCitationsStore.getState().addCitation({

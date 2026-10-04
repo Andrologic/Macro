@@ -54,13 +54,19 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   });
   const saveUser = async (current: SendLease) => {
     let message: ChatMessage;
+    if (input.persistedUserMessage && (input.persistedUserMessage.conversation_id !== conversationId ||
+        input.persistedUserMessage.turn_id !== current.turnId || input.persistedUserMessage.role !== 'user')) {
+      throw new Error('The saved message does not belong to this submission.');
+    }
+    const messageId = input.persistedUserMessage?.id ?? (images?.length ? crypto.randomUUID() : undefined);
+    if (messageId && images?.length) {
+      if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
+      messages.saveImages(messageId, images);
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
+    }
     try {
-      if (input.persistedUserMessage && (input.persistedUserMessage.conversation_id !== conversationId ||
-          input.persistedUserMessage.turn_id !== current.turnId || input.persistedUserMessage.role !== 'user')) {
-        throw new Error('The saved message does not belong to this submission.');
-      }
       message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
-        conversationId, turnId: current.turnId, taskId: resolvedTaskId,
+        id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
       });
     } catch (error) {
