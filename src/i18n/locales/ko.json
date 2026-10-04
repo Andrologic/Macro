@@ -1847,6 +1847,7 @@
     "totalChanges": "총 변경사항"
   },
   "providers": {
+    "backToProviders": "공급자 목록으로 돌아가기",
     "collectionTitle": "공급자",
     "collectionDescription": "구성된 연결을 관리합니다",
     "emptyDescription": "공급자를 추가하여 Macro를 AI 서비스에 연결하세요.",

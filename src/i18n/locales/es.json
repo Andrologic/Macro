@@ -1852,6 +1852,7 @@
     "totalChanges": "cambios totales"
   },
   "providers": {
+    "backToProviders": "Volver a los proveedores",
     "collectionTitle": "Proveedores",
     "collectionDescription": "Gestiona las conexiones configuradas",
     "emptyDescription": "Añade un proveedor para conectar Macro con un servicio de IA.",

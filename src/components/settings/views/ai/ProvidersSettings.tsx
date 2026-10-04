@@ -715,7 +715,7 @@ export const ProvidersSettings: React.FC = () => {
       <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
         <div className="flex items-center justify-between border-b border-border pb-4">
           <div className="flex items-center gap-2">
-            <button onClick={() => setEditingProvider(null)} className="rounded-full p-1 hover:bg-muted">
+            <button type="button" aria-label={t('providers.backToProviders', 'Back to providers')} onClick={() => setEditingProvider(null)} className="shrink-0 rounded-full p-1 hover:bg-muted">
               <Icon name="arrow-left" size={18} />
             </button>
             <h3 className="text-lg font-medium">

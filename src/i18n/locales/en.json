@@ -1876,6 +1876,7 @@
     "totalChanges": "total changes"
   },
   "providers": {
+    "backToProviders": "Back to providers",
     "macroAi": {
       "included": "AI included with the Macro beta",
       "dropdownNotice": "AI included with the beta"

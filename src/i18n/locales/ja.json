@@ -1847,6 +1847,7 @@
     "totalChanges": "合計の変更"
   },
   "providers": {
+    "backToProviders": "プロバイダー一覧に戻る",
     "collectionTitle": "プロバイダー",
     "collectionDescription": "設定済みの接続を管理します",
     "emptyDescription": "プロバイダーを追加して Macro を AI サービスに接続します。",
