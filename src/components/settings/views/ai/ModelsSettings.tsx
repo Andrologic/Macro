@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
@@ -7,6 +7,7 @@ import { SettingsEmptyState } from '../../../shared/SettingsEmptyState';
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
+import { DialogContext } from '../../../ui/Dialog';
 import { Input } from '../../../ui/Input';
 import { Switch } from '../../../ui/Switch';
 import {
@@ -119,6 +120,8 @@ const parseContextWindowInput = (value: string): number | null => {
 };
 
 export const ModelsSettings: React.FC = () => {
+  const dialogContext = useContext(DialogContext);
+  const manualModelMenuId = useId();
   const { t } = useTranslation();
   const setSettingsTab = useAppStore((state) => state.setSettingsTab);
   const { matches, query } = useSettingsSearch();
@@ -464,40 +467,53 @@ export const ModelsSettings: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!activeManualModelActions) {
-      manualModelActionsTriggerRef.current = null;
-      return;
-    }
+    if (!activeManualModelActions || !manualModelActionsRef.current) return;
+    const menu = manualModelActionsRef.current;
+    const trigger = manualModelActionsTriggerRef.current;
+    const closeAndRestoreFocus = () => {
+      setActiveManualModelActions(null);
+      trigger?.focus({ preventScroll: true });
+    };
+    const unregisterPortal = dialogContext?.registerPortal(menu);
+    const unregisterEscape = dialogContext?.registerEscapeHandler(closeAndRestoreFocus);
+    menu.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
 
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (manualModelActionsRef.current?.contains(target)) return;
-      if (manualModelActionsTriggerRef.current?.contains(target)) return;
+      if (menu.contains(target) || trigger?.contains(target)) return;
       setActiveManualModelActions(null);
     };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+    const handleFocusIn = (event: FocusEvent) => {
+      if (!menu.contains(event.target as Node) && event.target !== trigger) {
         setActiveManualModelActions(null);
       }
     };
-
-    const handleViewportChange = () => {
-      setActiveManualModelActions(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !dialogContext) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeAndRestoreFocus();
+      }
     };
-
     document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('focusin', handleFocusIn);
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('resize', handleViewportChange);
-    window.addEventListener('scroll', handleViewportChange, true);
+    window.addEventListener('resize', closeAndRestoreFocus);
+    window.addEventListener('scroll', closeAndRestoreFocus, true);
 
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('focusin', handleFocusIn);
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('resize', handleViewportChange);
-      window.removeEventListener('scroll', handleViewportChange, true);
+      window.removeEventListener('resize', closeAndRestoreFocus);
+      window.removeEventListener('scroll', closeAndRestoreFocus, true);
+      unregisterEscape?.();
+      unregisterPortal?.();
+      if (menu.contains(document.activeElement) || document.activeElement === document.body) {
+        trigger?.focus({ preventScroll: true });
+      }
     };
-  }, [activeManualModelActions]);
+  }, [activeManualModelActions, dialogContext]);
 
   if (providers.length === 0) {
     return (
@@ -958,6 +974,10 @@ export const ModelsSettings: React.FC = () => {
                                   : 'border-border/70 bg-background/60 text-muted-foreground hover:bg-accent hover:text-foreground'
                               )}
                               title={t('models.manualModelActions', 'Model actions')}
+                              aria-label={t('models.manualModelActions', 'Model actions')}
+                              aria-haspopup="menu"
+                              aria-expanded={activeManualModelActions?.providerId === provider.id && activeManualModelActions?.modelId === model.id}
+                              aria-controls={activeManualModelActions?.providerId === provider.id && activeManualModelActions?.modelId === model.id ? manualModelMenuId : undefined}
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -1018,7 +1038,20 @@ export const ModelsSettings: React.FC = () => {
         createPortal(
           <div
             ref={manualModelActionsRef}
+            id={manualModelMenuId}
             role="menu"
+            onKeyDown={(event) => {
+              const actions = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+              const index = actions.indexOf(document.activeElement as HTMLButtonElement);
+              let next: number;
+              if (event.key === 'ArrowDown') next = (index + 1) % actions.length;
+              else if (event.key === 'ArrowUp') next = (index - 1 + actions.length) % actions.length;
+              else if (event.key === 'Home') next = 0;
+              else if (event.key === 'End') next = actions.length - 1;
+              else return;
+              event.preventDefault();
+              actions[next]?.focus({ preventScroll: true });
+            }}
             aria-label={t('models.manualModelActions', 'Model actions')}
             style={{
               position: 'fixed',
