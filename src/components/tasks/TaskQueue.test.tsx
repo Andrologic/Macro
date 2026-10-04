@@ -602,6 +602,74 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Blocked task');
   });
 
+  it('uses the same ready group for the summary, section and filter', async () => {
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready item' }),
+      makeTask('working', 'InProgress', { title: 'Working item' }),
+      makeTask('waiting', 'AwaitingResponse', { title: 'Waiting item' }),
+      makeTask('reviewing', 'InReview', { title: 'Reviewing item' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Ready tasks', count: '1' },
+      { title: 'In progress', count: '2' },
+      { title: 'Needs reply', count: '1' },
+    ]);
+    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="Ready"]');
+    expect(readyFilter?.textContent?.replace(/\s/g, '')).toBe('Ready1');
+    expect(document.body.textContent).toContain('Working item');
+    expect(document.body.textContent).toContain('Waiting item');
+    await act(async () => { readyFilter?.click(); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(document.body.textContent).not.toContain('Working item');
+    expect(document.body.textContent).not.toContain('Waiting item');
+    expect(document.body.textContent).not.toContain('Reviewing item');
+  });
+
+  it('excludes drafts and archives from the ready counter, section and filter', async () => {
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready item' }),
+      makeTask('draft', 'Pending', { title: 'Draft item', draft: true, standalone_kind: 'manual_feature' }),
+      makeTask('archived', 'Pending', { title: 'Archived item', archived_at: '2026-01-01' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="Ready"]');
+    expect(readyFilter?.textContent).toBe('Ready1');
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Draft features', count: '1' }, { title: 'Ready tasks', count: '1' },
+    ]);
+    await act(async () => { readyFilter?.click(); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(document.body.textContent).not.toContain('Draft item');
+    expect(document.body.textContent).not.toContain('Archived item');
+  });
+
+  it('shows a rejected Direct restore and keeps the archived task visible', async () => {
+    seedTasks([makeTask('archived-direct', 'Completed', {
+      title: 'Archived Direct', standalone_kind: 'manual_feature', task_kind: 'direct',
+      archived_at: '2026-01-01', archive_reason: 'merged',
+    })]);
+    const restoreTask = mock(async () => { throw new Error('Direct-edit project already has an active task: Other Direct'); });
+    useTaskStore.setState({ restoreTask: restoreTask as never });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-archive-toggle"]')?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    const restore = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+      .find((button) => button.textContent?.trim() === 'Restore');
+    expect(restore).toBeDefined();
+    await act(async () => { restore?.click(); await flushRender(); });
+    expect(restoreTask).toHaveBeenCalledWith('archived-direct');
+    expect(notifyMock.error).toHaveBeenCalledWith(expect.stringContaining('Other Direct'));
+    expect(document.body.textContent).toContain('Archived Direct');
+    expect(useTaskStore.getState().tasks[0].archived_at).toBe('2026-01-01');
+  });
+
   it('keeps reply-required, blocked and failed tasks in separate filter groups', async () => {
     seedTasks([
       makeTask('waiting-task', 'AwaitingResponse', { title: 'Reply required task' }),
@@ -1824,7 +1892,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('keeps a newly created feature and its conversation through the real task refresh', async () => {
+  it.each(['feature', 'direct'] as const)('keeps a newly created %s and its conversation through the real task refresh', async (taskKind) => {
     const persistedTasks: Array<ReturnType<typeof makeTask>> = [];
     const persistedConversations: Array<Record<string, unknown>> = [];
     let concurrentRefresh: Promise<void> | null = null;
@@ -1890,12 +1958,14 @@ describe('TaskQueue', () => {
         persistedConversations.push(conversation);
         return conversation;
       }
+      if (command === 'git_status') return { branch: 'develop', is_clean: true, head_commit: { id: 'abc' } };
+      if (command === 'git_task_start_points') return { worktrees: [], branches: [] };
       if (command === 'db_list_conversations') return [...persistedConversations];
       if (command === 'db_list_conversation_citations') return [];
       if (command === 'workspace_create_manual_feature_draft') {
         persistedTasks.push(makeTask(String(payload?.taskId), 'Pending', {
           task_source: 'standalone', standalone_kind: 'manual_feature', draft: true,
-          conversation_id: payload?.conversationId, title: 'New feature',
+          conversation_id: payload?.conversationId, task_kind: taskKind, title: `New ${taskKind}`,
           assigned_branch: '', branch_name: '', execution_targets: [],
         }));
         return {};
@@ -1934,7 +2004,7 @@ describe('TaskQueue', () => {
       const findButton = (label: string) => Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])
         .find((button) => button.textContent?.includes(label));
       await act(async () => { findButton('Project One')?.click(); await flushRender(); });
-      await act(async () => { findButton('Feature')?.click(); await flushRender(); });
+      await act(async () => { findButton(taskKind === 'direct' ? 'Direct' : 'Feature')?.click(); await flushRender(); });
       expect({ disabled: findButton('Create task')?.disabled, dialog: dialog?.textContent }).toEqual({ disabled: false, dialog: expect.any(String) });
       await act(async () => { findButton('Create task')?.click(); await flushRender(); });
       expect(notifyMock.error.mock.calls).toEqual([]);
@@ -2111,6 +2181,54 @@ describe('TaskQueue', () => {
     const pending = JSON.parse(taskQueueAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]');
     expect(pending).toEqual([expect.objectContaining({ phase: 'task_deleting' })]);
     expect(pending[0].creationCommitted).toBeUndefined();
+  });
+
+  it.each(['direct', 'feature'] as const)('keeps %s creation choices and a durable error after selection fails', async (kind) => {
+    seedTasks([]);
+    useAppStore.setState({ projectGroups: [{ id: 'group-1', name: 'Project Group', isOpen: true,
+      projects: [{ ...makeProject('project-1', '/tmp/project-1', 'Project One', makeGitFlowSettings('develop', 'main')),
+        gitSetupState: 'ready' }],
+    }] as never });
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'git_status') return { branch: 'develop', is_clean: true, head_commit: { id: 'abc' } };
+      if (command === 'git_task_start_points') return { worktrees: [], branches: [] };
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined ? null : { key, value_json: value, updated_at: '2026-01-01' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        if ((taskQueueAppSettings.get(key) ?? null) !== (payload?.expectedValueJson ?? null)) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
+    const createManualFeatureDraft = mock(async () => undefined);
+    const deleteManualFeatureDraft = mock(async () => undefined);
+    useTaskStore.setState({ createManualFeatureDraft: createManualFeatureDraft as never,
+      deleteManualFeatureDraft: deleteManualFeatureDraft as never, activateTask: mock(async () => undefined) as never });
+    useChatStore.setState({ createConversation: mock(async () => ({ id: 'new-conversation' })) as never,
+      selectConversation: mock(async () => false) as never, deleteConversation: mock(async () => undefined) as never });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-create-task"]')?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const button = (text: string) => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+      .find((item) => item.textContent?.includes(text));
+    await act(async () => { button('Project One')?.click(); await flushRender(); });
+    await act(async () => { button(kind === 'direct' ? 'Direct' : 'Feature')?.click(); await flushRender(); });
+    expect(button('Create task')?.disabled).toBe(false);
+    await act(async () => { button('Create task')?.click(); await flushRender(); });
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('Impossible de sélectionner');
+    expect(button('Project One')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button(kind === 'direct' ? 'Direct' : 'Feature')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('Create task')?.disabled).toBe(false);
+    expect(deleteManualFeatureDraft).toHaveBeenCalledTimes(1);
+    await act(async () => { useTaskStore.setState({ lastError: null }); await flushRender(); });
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('Impossible de sélectionner');
   });
 
   it('opens task creation for a direct project without loading Git start points', async () => {
