@@ -1,3 +1,5 @@
+import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
+import { registerConflictAssistantContext, clearConflictAssistantContext, type VerifiedConflictAssistantContext } from '../services/conflictAssistantContext';
 import { createLifecycleScope } from '../services/lifecycleScope';
 import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -5,6 +7,7 @@ import type {
   AgentType,
   AppMode,
   Conversation,
+  ChatMessage,
   MCPServer,
   PlanNode,
   ProjectGroup,
@@ -33,6 +36,7 @@ import { registerReplayAndEditingScenarios } from './__tests__/replayAndEditing.
 import { registerSendRuntimeAndDeletionScenarios } from './__tests__/sendRuntimeAndDeletion.scenarios';
 import { registerConversationSelectionScenarios } from './__tests__/conversationSelection.scenarios';
 import { registerQuestionnaireNavigationScenarios } from './__tests__/questionnaireNavigation.scenarios';
+const conflictGitStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
 const actualTauriIpc = await import('../services/tauriIpc');
 const actualConfigurationClient = await import('../services/configurationClient');
 let actualResolveProjectExecutionContext: typeof import('../services/projectExecutionContext').resolveProjectExecutionContext;
@@ -1850,6 +1854,7 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
+    gitStatus: conflictGitStatusMock,
     isTauriAvailable: () => tauriAvailable,
     stateGetSnapshot: stateGetSnapshotMock,
     stateSetValue: stateSetValueMock,
@@ -2752,6 +2757,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   let releasePlanRuntimePorts: (() => void) | undefined;
 
   beforeEach(async () => {
+    conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+    clearConflictAssistantContext('debug-conv');
+    clearConflictAssistantContext('conflict-store');
     await registerUseChatStoreMocks();
     // Isolated stores bypass main.tsx, which installs Plans ports before bootstrap.
     releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appState.getProjectById });
@@ -3018,6 +3026,107 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+
+  const setupConflictConversation = async () => {
+    const { useChatStore } = await loadChatStore();
+    appState.mode = 'Implement'; appState.selectedTaskId = null;
+    appState.selectedProjectId = 'project-1'; appState.selectedGroupId = 'group-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+    conflictGitStatusMock.mockClear();
+    useChatStore.setState({ conversations: [{ ...createConversation('conflict-store'), scope_mode: 'Implement' }],
+      selectedConversationId: 'conflict-store', messages: [], isLoading: false, isStreaming: false,
+      sendState: 'idle', lastError: null, abortController: null, composerContextRefs: [],
+    });
+    const context: VerifiedConflictAssistantContext = {
+      conversationId: 'conflict-store', projectId: 'project-1', groupId: 'group-1', kind: 'code',
+      repositories: [{ projectId: 'project-1', projectPath: '/repos/web', repoPath: '/repos/web', branch: 'feature/api',
+        head: 'abc', conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+    };
+    registerConflictAssistantContext(context);
+    return useChatStore;
+  };
+
+  it('sends every conflict inspection with a read-only profile and only the confirmed repository', async () => {
+    const chat = await setupConflictConversation();
+    try {
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      for (const content of ['Inspect this conflict', 'Explain the proposed edit']) {
+        const result = await chat.getState().sendMessage({ conversationId: 'conflict-store', content, internalAgentProfile: 'default_executor' });
+        expect(result.status).toBe('sent');
+        const options = getLatestStreamOptions<{ allowedToolIds: string[]; internalAgentProfile: string; workspacePath: string; projectMounts: Array<{ projectId: string; workspacePath: string; isReadOnly: boolean }> }>();
+        expect(options.internalAgentProfile).toBe('repo_auditor');
+        expect(options.allowedToolIds).toContain('git_status');
+        expect(options.allowedToolIds).not.toContain('apply_patch');
+        expect(options.allowedToolIds).not.toContain('git_merge');
+        expect(options.allowedToolIds).not.toContain('terminal_run');
+        expect(options.workspacePath).toBe('/repos/web');
+        expect(options.projectMounts).toHaveLength(1);
+        expect(options.projectMounts[0]).toEqual(expect.objectContaining({ projectId: 'project-1', workspacePath: '/repos/web', isReadOnly: true }));
+        chat.getState().stopStreaming();
+        await flushAsyncWork();
+      }
+      expect(conflictGitStatusMock.mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(chat.getState().messages.filter((message: ChatMessage) => message.role === 'user').every((message: ChatMessage) => !message.task_id)).toBe(true);
+    } finally { clearConflictAssistantContext('conflict-store'); }
+  });
+
+
+  it('captures a queued conflict inspection and refuses departure after the context becomes foreign', async () => {
+    const chat = await setupConflictConversation();
+    try {
+      chat.setState({ conversationRuntimeById: { 'conflict-store': { phase: 'streaming', sessionId: 'active', turnId: 'active' } } });
+      const accepted = await chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Inspect later', internalAgentProfile: 'default_executor' }, 'queue');
+      expect(accepted).toBe('queued');
+      expect(loadQueuedSubmissions()).toHaveLength(1);
+      expect(loadQueuedSubmissions()[0]?.input.internalAgentProfile).toBe('repo_auditor');
+      appState.selectedTaskId = 'foreign';
+      await expect(chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Steer' }, 'steer')).rejects.toThrow('another task');
+      chat.setState({ conversationRuntimeById: {}, isStreaming: false });
+      await chat.getState().retryQueuedSubmissions('conflict-store');
+      expect(streamChatMock).not.toHaveBeenCalled();
+      expect(chat.getState().messages).toEqual([]);
+      expect(chat.getState().queuedSubmissionPreviews).toHaveLength(1);
+    } finally { clearConflictAssistantContext('conflict-store'); }
+  });
+
+
+  it('refuses an active-turn submission without a valid conflict context', async () => {
+    const chat = await setupConflictConversation();
+    clearConflictAssistantContext('conflict-store');
+    chat.setState({ conversationRuntimeById: { 'conflict-store': { phase: 'streaming', sessionId: 'active', turnId: 'active' } } });
+    await expect(chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Inspect' }, 'queue')).rejects.toThrow('verified Git context');
+    expect(loadQueuedSubmissions()).toEqual([]);
+    expect(streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects foreign task payloads and selection before persisting or launching a conflict send', async () => {
+    const chat = await setupConflictConversation();
+    try {
+      await expect(chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect', taskId: 'foreign' })).rejects.toThrow('cannot send into a task');
+      appState.selectedTaskId = 'foreign';
+      await expect(chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect' })).rejects.toThrow('another task');
+      expect(streamChatMock).not.toHaveBeenCalled();
+      expect(chat.getState().messages).toEqual([]);
+    } finally { clearConflictAssistantContext('conflict-store'); }
+  });
+
+  it('rejects a context changed during native verification and after a reload loses its authority', async () => {
+    const chat = await setupConflictConversation();
+    try {
+      conflictGitStatusMock.mockImplementation(async () => {
+        appState.selectedProjectId = 'foreign';
+        return { branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true };
+      });
+      await expect(chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect' })).rejects.toThrow('changed during verification');
+      expect(chat.getState().messages).toEqual([]);
+      clearConflictAssistantContext('conflict-store');
+      appState.selectedProjectId = 'project-1';
+      await expect(chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect' })).rejects.toThrow('verified Git context');
+      expect(streamChatMock).not.toHaveBeenCalled();
+    } finally { clearConflictAssistantContext('conflict-store'); }
   });
 
   it('associates a newly selected conversation with its resolved context', async () => {

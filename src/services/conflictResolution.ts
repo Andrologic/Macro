@@ -178,12 +178,12 @@ export const buildMacroConflictAssistantPrompt = (params: {
   return [
     'I need help resolving @macro metadata sync blockers in Macro.',
     'Do not touch unrelated code branch history.',
-    'Resolve only the metadata worktree issues below and keep the workflow safe for an explicit retry.',
+    'Inspect only the metadata worktree issues below and propose a resolution for an explicit retry.',
     '',
     'Affected repositories:',
     formatPromptEntries(entries),
     '',
-    'Act directly with the available Macro tools to resolve safe blockers. If a tool needs approval or a blocker is unsafe to modify automatically, explain exactly what remains.',
+    'Use read-only repository tools. Describe the edits and explicit Git actions for me to review and apply. Do not change files or history.',
   ].join('\n');
 };
 

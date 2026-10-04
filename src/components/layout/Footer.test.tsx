@@ -1485,7 +1485,7 @@ describe('Footer', () => {
     expect(document.body.textContent).not.toContain('{{count}}');
     expect(findButtonByText(container!, 'Stash and retry')).not.toBeNull();
     expect(findButtonByText(container!, 'Discard local changes')).not.toBeNull();
-    expect(findButtonByText(container!, 'Open conflict assistant')).not.toBeNull();
+    expect(findButtonByText(container!, 'Open conflict assistant in Implement')).not.toBeNull();
   });
 
   it('opens the conflict assistant when the corresponding modal action is clicked', async () => {
@@ -1527,7 +1527,7 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     act(() => {
-      findButtonByText(container!, 'Open conflict assistant')?.click();
+      findButtonByText(container!, 'Open conflict assistant in Implement')?.click();
     });
     await flushAsyncWork();
 
@@ -1540,7 +1540,7 @@ describe('Footer', () => {
     expect(options.prompt).toContain('docs/cli.md');
     expect(options.prompt).toContain('src/cascade.ml');
     expect(options.prompt).not.toContain('@macro metadata');
-    expect(options.scope).toEqual({ projectId: 'project-b', groupId: null });
+    expect(options.context).toEqual({ kind: 'code', repositories: [{ projectId: 'project-b', repoPath: '/repo/web', branch: 'feature-b', upstreamBranch: 'origin/feature-b', taskId: undefined }] });
     expect(notifyInfoMock).toHaveBeenCalledWith(
       'AI conflict assistant started',
       { category: 'git_sync_attention_required' }

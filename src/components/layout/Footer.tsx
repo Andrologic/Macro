@@ -709,7 +709,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                 disabled={Boolean(action)}
                 onClick={onOpenConflictAssistant}
               >
-                {t('footer.sync.openConflictAssistant', 'Open conflict assistant')}
+                {t('footer.sync.openConflictAssistant', 'Open conflict assistant in Implement')}
               </Button>
             )}
             {!shouldCloseOnly && (
@@ -1576,7 +1576,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   );
 
   const openAiConflictAssistant = async () => {
-    const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
+    const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories.filter(repo => repo.state === 'conflict' || repo.reason === 'diverged') : scopeProjects.map((project) => ({
       repoPath: project.path,
       projectId: project.id,
       worktreePath: macroSnapshot?.worktree_path || null,
@@ -1589,6 +1589,9 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     try {
       await openConflictAssistant({
         prompt: buildMacroConflictAssistantPrompt({ repositories }),
+        context: { kind: 'metadata', repositories: repositories.map(repo => ({
+          projectId: repo.projectId ?? '', repoPath: repo.repoPath, worktreePath: repo.worktreePath,
+        })) },
       });
       notify.info(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'), {
         category: 'git_sync_attention_required',
@@ -2011,7 +2014,11 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       await openConflictAssistant({
         prompt: buildCodeConflictAssistantPrompt({ repositories }),
         internalAgentProfile: 'repo_auditor',
-        scope: { projectId: project.id, groupId: null },
+        context: { kind: 'code', repositories: [{
+          projectId: project.id, repoPath: project.path, branch: repositories[0]!.branch,
+          upstreamBranch: repositories[0]!.upstreamBranch,
+          taskId: useAppStore.getState().selectedTaskId ?? undefined,
+        }] },
       });
       setCodeDivergenceResolution(null);
       notify.info(
@@ -2360,6 +2367,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                   : t('common.close', 'Close')
               }
               onRetry={() => void handleRetryMacroSync()}
+              useAiAssistantLabel={t('footer.sync.openConflictAssistant', 'Open conflict assistant in Implement')}
               onUseAiAssistant={canUseMacroAssistant ? () => void openAiConflictAssistant() : undefined}
             />
         </Dialog>

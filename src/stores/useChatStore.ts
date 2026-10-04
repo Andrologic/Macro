@@ -1,3 +1,4 @@
+import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
@@ -1637,7 +1638,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const resolveConversationExecutionContext = (conversationId: string) => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
-    return resolveProjectExecutionContext({
+    const base = resolveProjectExecutionContext({
       mode: appState.mode,
       projects: [
         ...(appState.standaloneProjects ?? []),
@@ -1660,6 +1661,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
           )
         : undefined,
     });
+    const conflict = getConflictAssistantContext(conversationId);
+    return conflict ? scopeConflictAssistantExecutionContext(base, conflict) : base;
+  };
+
+  const conflictAssistantSelection = (conversationId: string) => {
+    const app = useAppStore.getState();
+    return {
+      mode: app.mode, selectedTaskId: app.selectedTaskId, selectedProjectId: app.selectedProjectId,
+      selectedGroupId: app.selectedGroupId, selectedConversationId: get().selectedConversationId,
+      conversation: get().conversations.find(conversation => conversation.id === conversationId),
+      projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+      groups: app.projectGroups,
+    };
+  };
+  const assertImplementConversationContext = (conversationId: string) => {
+    const conversation = get().conversations.find(conversation => conversation.id === conversationId);
+    if (conversation?.scope_mode === 'Implement' && !conversation.task_id && !getConflictAssistantContext(conversationId)) {
+      throw buildSendError('Open the conflict assistant from a verified Git context before sending.');
+    }
+  };
+  const assertConflictAssistantSend = async (conversationId: string, taskId?: string | null) => {
+    const conflict = getConflictAssistantContext(conversationId);
+    assertImplementConversationContext(conversationId);
+    if (!conflict) return;
+    if (taskId) throw buildSendError('A conflict inspection cannot send into a task.');
+    await revalidateConflictAssistantContext(conflict, conflictAssistantSelection(conversationId), tauriIpc, useTaskStore.getState().tasks);
+    if (!isConflictAssistantContextAllowed(conflict, conflictAssistantSelection(conversationId))) {
+      throw buildSendError('Conflict context changed during verification.');
+    }
   };
 
   const resolveConversationImplementTask = (
@@ -8450,6 +8480,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const prepareAssistantStreamLaunch = async (params: PrepareAssistantStreamParams) => {
     const capturedRuntime = turnRuntime.read(params.conversationId);
+    assertImplementConversationContext(params.conversationId);
+    const conflict = getConflictAssistantContext(params.conversationId);
+    if (conflict) {
+      await assertConflictAssistantSend(params.conversationId, params.resolvedTaskId);
+      if (params.modeAtSend !== 'Implement') throw buildSendError('Conflict inspection requires Implement mode.');
+      params = { ...params, internalAgentProfile: 'repo_auditor',
+        executionContext: scopeConflictAssistantExecutionContext(params.executionContext ?? resolveConversationExecutionContext(params.conversationId), conflict),
+        ...(params.turnCapabilities ? { turnCapabilities: {
+          ...params.turnCapabilities, internalAgentProfile: 'repo_auditor',
+          allowedToolIds: filterToolIdsForInternalAgentProfile(params.turnCapabilities.allowedToolIds, 'repo_auditor'),
+          mcpTools: [], mcpServers: [], skillToolIds: [], runnableSkillToolIds: [],
+        } } : {}),
+      };
+    }
     const isCurrent = () => (capturedRuntime.phase === "preparing" || capturedRuntime.phase === "overflow_recovery") &&
       turnRuntime.read(params.conversationId) === capturedRuntime &&
       !capturedRuntime.abortController?.signal.aborted && !deletedConversationIds.has(params.conversationId);
@@ -12696,6 +12740,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       deletedConversationIds.add(conversationId);
+      clearConflictAssistantContext(conversationId);
       pendingConversationDeletionIds.add(conversationId);
       turnRuntime.forget(conversationId);
       let deletionSagaGeneration: string;
@@ -13432,6 +13477,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     submitDuringActiveTurn: async (payload, behavior) => {
+      assertImplementConversationContext(payload.conversationId);
+      if (getConflictAssistantContext(payload.conversationId)) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
+      if (getConflictAssistantContext(payload.conversationId)) payload = { ...payload, internalAgentProfile: 'repo_auditor' };
       const runtime = getConversationRuntimeSnapshot(
         get().conversationRuntimeById,
         payload.conversationId,
@@ -13530,7 +13578,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
-      const queuedExecutionContext = queuedSubmission
+      const conflict = getConflictAssistantContext(payload.conversationId);
+      if (conflict) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
+      if (conflict && queuedSubmission && (queuedSubmission.intent.mode !== 'Implement' ||
+        queuedSubmission.intent.conversationTaskId || queuedSubmission.intent.selectedTaskId)) {
+        throw buildSendError('The queued conflict inspection cannot target another task or mode.');
+      }
+      if (conflict) payload = { ...payload, internalAgentProfile: 'repo_auditor' };
+      const queuedExecutionContext = conflict ? resolveConversationExecutionContext(payload.conversationId) : queuedSubmission
         ? await revalidateQueuedExecutionContext(queuedSubmission) : undefined;
       const provider = useProviderStore.getState();
       let snapshot: ChatSendSnapshot = queuedSubmission
@@ -13562,6 +13617,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           assertCanSend: (id) => {
             if (queuedSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
               throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+            }
+            assertImplementConversationContext(id);
+            if (conflict && !isConflictAssistantContextAllowed(conflict, conflictAssistantSelection(id))) {
+              throw buildSendError('Conflict context changed before sending.');
             }
             assertConversationRuntimeAvailableForSend(id);
           },
