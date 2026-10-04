@@ -77,9 +77,9 @@ export const SettingsModal: React.FC = () => {
 
           {/* Content Area */}
           <SettingsSearchProvider key={activeTab?.id}>
-            <div className="flex-1 flex flex-col bg-background/50 min-h-0">
-              <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30">
-                <div>
+            <div className="flex-1 flex flex-col bg-background/50 min-h-0 min-w-0">
+              <header className="min-h-16 border-b border-border flex items-center justify-between gap-3 px-4 md:px-8 py-3 md:py-0 bg-card/30">
+                <div className="min-w-0">
                   <h3 className="text-lg font-semibold text-foreground">
                     {activeTab && t(activeTab.labelKey, activeTab.label)}
                   </h3>
@@ -91,14 +91,14 @@ export const SettingsModal: React.FC = () => {
                   type="button"
                   aria-label={t('common.close', 'Close')}
                   onClick={closeSettings}
-                  className="p-2 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
+                  className="shrink-0 p-2 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
                 >
                   <Icon name="x" size={20} />
                 </button>
               </header>
 
-              <div className="flex-1 overflow-y-auto p-4 md:p-6">
-                <div className="max-w-3xl mx-auto animate-fade-in">
+              <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 md:p-6">
+                <div className="min-w-0 max-w-3xl mx-auto animate-fade-in">
                   {activeTab && <SettingsContent contribution={activeTab} />}
                 </div>
               </div>

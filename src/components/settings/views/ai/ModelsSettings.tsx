@@ -573,8 +573,8 @@ export const ModelsSettings: React.FC = () => {
           </div>
 
           {activeMetadataModelConfig?.mode === 'dedicated' && (
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className="space-y-1.5">
+            <div className="grid min-w-0 gap-3 xl:grid-cols-3">
+              <label className="min-w-0 space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('settings.providers', 'AI Providers')}
                 </span>
@@ -601,7 +601,7 @@ export const ModelsSettings: React.FC = () => {
                   ))}
                 </select>
               </label>
-              <label className="space-y-1.5">
+              <label className="min-w-0 space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('chat.selectModel', 'Select a model')}
                 </span>
@@ -667,6 +667,7 @@ export const ModelsSettings: React.FC = () => {
       </section>
 
       <SettingsCollectionHeader
+        wrapActions
         title={t('models.collectionTitle', 'Models')}
         description={t('models.collectionDescription', 'Manage models by provider')}
         searchPlaceholder={t('models.searchPlaceholder', 'Search models...')}
@@ -730,8 +731,8 @@ export const ModelsSettings: React.FC = () => {
               className="bg-card border border-border rounded-xl px-4 overflow-hidden"
             >
               <AccordionTrigger className="hover:no-underline py-4">
-                <div className="flex items-center justify-between w-full pr-4">
-                  <div className="flex items-center gap-3">
+                <div className="flex min-w-0 items-center justify-between w-full pr-4">
+                  <div className="flex min-w-0 items-center gap-3">
                     <div
                       className={cn(
                         'w-8 h-8 rounded-md flex items-center justify-center',
@@ -742,8 +743,8 @@ export const ModelsSettings: React.FC = () => {
                     >
                       <Icon name="cpu" size={16} />
                     </div>
-                    <div className="text-left">
-                      <div className="font-medium text-sm flex items-center gap-2">
+                    <div className="min-w-0 break-words text-left">
+                      <div className="font-medium text-sm flex flex-wrap items-center gap-2">
                         {provider.name}
                         {!provider.isEnabled && (
                           <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
@@ -764,7 +765,7 @@ export const ModelsSettings: React.FC = () => {
 
               <AccordionContent className="pt-0 pb-4">
                 <div className="border-t border-border pt-4">
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
                         variant="secondary"
@@ -797,7 +798,7 @@ export const ModelsSettings: React.FC = () => {
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button
                         variant="secondary"
                         size="sm"
@@ -866,9 +867,9 @@ export const ModelsSettings: React.FC = () => {
                     {filteredModels.map((model) => (
                       <div
                         key={model.id}
-                        className="flex items-center justify-between gap-3 p-3 rounded-md border border-border/60 bg-muted/20 hover:bg-muted/40 transition-colors"
+                        className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-md border border-border/60 bg-muted/20 hover:bg-muted/40 transition-colors"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1 basis-48">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-medium text-foreground">
                               {model.name || model.id}
@@ -884,7 +885,7 @@ export const ModelsSettings: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          <div className="text-xs text-muted-foreground mt-0.5 font-mono">
+                          <div className="break-all text-xs text-muted-foreground mt-0.5 font-mono">
                             {model.id}
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -913,7 +914,7 @@ export const ModelsSettings: React.FC = () => {
                             </button>
                           </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
+                        <div className="flex flex-wrap shrink-0 items-center gap-1.5">
                           <Switch
                             checked={model.isEnabled !== false}
                             aria-label={t('common.enable', 'Enable')}
