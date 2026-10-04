@@ -2179,7 +2179,8 @@
       }
     }
   },
-  "prompts": { "title": "System-Prompts", "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.", "restoreAll": "Alle wiederherstellen", "saveFailed": "System-Prompts konnten nicht gespeichert werden." },
+  "prompts": {
+    "loadFailed": "Systemprompts konnten nicht geladen werden. Vor dem Speichern erneut versuchen.", "title": "System-Prompts", "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.", "restoreAll": "Alle wiederherstellen", "saveFailed": "System-Prompts konnten nicht gespeichert werden." },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",
     "settingsSaved": "Einstellungen gespeichert",

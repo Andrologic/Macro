@@ -5,7 +5,8 @@ import {
   PROMPT_PREFERENCE_DEFINITIONS,
   PROMPT_PREFERENCE_KEYS,
   getDefaultPromptForPreferenceKey,
-  loadPreferences,
+  loadPersistedPreference,
+  savePreferences,
   type PromptPreferenceKey,
 } from '../../../services/preferences';
 
@@ -47,34 +48,85 @@ export const createDefaultPromptState = (): PromptState =>
 
 const DEFAULT_PROMPT_STATE = createDefaultPromptState();
 
+// A reopened window must read after the save started in the previous window.
+let pendingPromptSave: Promise<void> | null = null;
+
 const usePromptState = (enabled: boolean) => {
   const [prompts, setPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
   const [savedPrompts, setSavedPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
   const touchedKeys = useRef(new Set<PromptEditorKey>());
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const savingRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    void loadPreferences<Partial<PromptState>>([...PROMPT_EDITOR_KEYS]).then((stored) => {
-      if (cancelled) return;
-      const loaded = { ...DEFAULT_PROMPT_STATE, ...stored };
-      setSavedPrompts(loaded);
-      setPrompts((current) => Object.fromEntries(
-        PROMPT_EDITOR_KEYS.map((key) => [key, touchedKeys.current.has(key) ? current[key] : loaded[key]])
-      ) as PromptState);
-    });
+    const load = async () => {
+      try {
+        // A failed save can be partial; read the actual values in either case.
+        await pendingPromptSave?.catch(() => undefined);
+        const entries = await Promise.all(PROMPT_EDITOR_KEYS.map(async (key) => {
+          const stored = await loadPersistedPreference<string>(key);
+          return [key, stored ?? getDefaultPromptValue(key)];
+        }));
+        if (cancelled) return;
+        const loaded = Object.fromEntries(entries) as PromptState;
+        setSavedPrompts(loaded);
+        setPrompts((current) => Object.fromEntries(
+          PROMPT_EDITOR_KEYS.map((key) => [key, touchedKeys.current.has(key) ? current[key] : loaded[key]])
+        ) as PromptState);
+        setLoadState('ready');
+      } catch {
+        if (!cancelled) setLoadState('error');
+      }
+    };
+    void load();
     return () => { cancelled = true; };
-  }, [enabled]);
+  }, [enabled, loadAttempt]);
+
+  useEffect(() => {
+    if (!saveSuccess) return;
+    const timer = setTimeout(() => setSaveSuccess(false), 3000);
+    return () => clearTimeout(timer);
+  }, [saveSuccess]);
+
+  const save = async () => {
+    if (loadState !== 'ready' || savingRef.current || pendingPromptSave) return;
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveSuccess(false);
+    const snapshot = prompts;
+    const operation = savePreferences(snapshot);
+    pendingPromptSave = operation;
+    try {
+      await operation;
+      setSavedPrompts(snapshot);
+      setSaveSuccess(true);
+    } finally {
+      pendingPromptSave = null;
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+  };
+  const retryLoad = () => {
+    setLoadState('loading');
+    setLoadAttempt((attempt) => attempt + 1);
+  };
 
   const changePrompt = (key: PromptEditorKey, value: string) => {
+    setSaveSuccess(false);
     touchedKeys.current.add(key);
     setPrompts((current) => ({ ...current, [key]: value }));
   };
   const restoreAll = () => {
+    setSaveSuccess(false);
     PROMPT_EDITOR_KEYS.forEach((key) => touchedKeys.current.add(key));
     setPrompts(createDefaultPromptState());
   };
-  return { prompts, savedPrompts, setSavedPrompts, changePrompt, restoreAll };
+  return { prompts, savedPrompts, changePrompt, restoreAll, loadState, retryLoad, save, isSaving, saveSuccess };
 };
 
 const PromptDraftContext = createContext<ReturnType<typeof usePromptState> | null>(null);

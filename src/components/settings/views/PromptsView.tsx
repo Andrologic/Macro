@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { savePreferences } from '../../../services/preferences';
 import {
   PROMPT_EDITOR_DEFINITIONS,
   PROMPT_EDITOR_KEYS,
@@ -15,9 +14,7 @@ import { notify } from '../../ui/toastService';
 
 export const PromptsView: React.FC = () => {
   const { t } = useTranslation();
-  const { prompts, savedPrompts, setSavedPrompts, changePrompt, restoreAll } = usePromptDraft();
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  const { prompts, savedPrompts, changePrompt, restoreAll, loadState, retryLoad, save, isSaving, saveSuccess } = usePromptDraft();
 
   const hasAnyModifiedPrompt = useMemo(
     () =>
@@ -29,20 +26,13 @@ export const PromptsView: React.FC = () => {
     [prompts, savedPrompts]
   );
   const handleSave = async () => {
-    setIsSaving(true);
-    setSaveSuccess(false);
-
     try {
-      await savePreferences(prompts);
-      setSavedPrompts(prompts);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+      await save();
     } catch (error) {
       notify.error(t('prompts.saveFailed', 'Unable to save system prompts.'), {
         description: error instanceof Error ? error.message : undefined,
       });
-    } finally {
-      setIsSaving(false);
+
     }
   };
 
@@ -113,7 +103,7 @@ export const PromptsView: React.FC = () => {
             <button
               type="button"
               onClick={handleSave}
-              disabled={isSaving || !isDirty}
+              disabled={loadState !== 'ready' || isSaving || !isDirty}
               className={cn(
                 'px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2',
                 saveSuccess
@@ -130,11 +120,21 @@ export const PromptsView: React.FC = () => {
               ) : (
                 <Icon name="edit" size={14} />
               )}
-              {saveSuccess ? t('common.saved', 'Saved') : t('common.saveChanges', 'Save Changes')}
+              {saveSuccess && !isDirty ? t('common.saved', 'Saved') : t('common.saveChanges', 'Save Changes')}
             </button>
           </div>
         }
       />
+
+      {loadState === 'loading' && <p role="status">{t('common.loading', 'Loading...')}</p>}
+      {loadState === 'error' && (
+        <div role="alert" className="space-y-2 text-sm text-destructive">
+          <p>{t('prompts.loadFailed', 'Unable to load system prompts. Retry before saving.')}</p>
+          <button type="button" onClick={retryLoad} className="rounded-md border border-border px-3 py-1.5">
+            {t('common.retry', 'Retry')}
+          </button>
+        </div>
+      )}
 
       <div className="space-y-6 bg-card/40 p-5 rounded-xl border border-border/50">
         {PROMPT_EDITOR_DEFINITIONS.map((definition, index) => (
