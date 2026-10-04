@@ -360,7 +360,7 @@ import {
   type MessageImageAttachment,
   type PersistedComposerDraft,
 } from "./chat/chatLocalSessionState";
-import type { QueuedSubmission } from "./chat/chatQueuedSubmissions";
+import { captureQueuedSubmission, type QueuedSubmission } from "./chat/chatQueuedSubmissions";
 import type { QueuedSubmissionPreview, QueuedSubmissionRuntime } from "./chat/chatQueuedSubmissionRuntime";
 import {
   buildConversationRuntimePatch,
@@ -1017,7 +1017,9 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
-  }, queuedSubmission?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
+    persistedUserMessage?: ChatMessage;
+  }, queuedSubmission?: QueuedSubmission, continuation?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
+  sendGoalContinuation: (conversationId: string, content: string) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
     behavior: ActiveTurnSubmissionBehavior,
@@ -1365,6 +1367,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     cancelTransport: cancelStream,
     settled: (id) => { void drainQueuedSubmissions(id); },
   });
+  const continuationIntents = new Map<string, QueuedSubmission>();
   let queueRuntime: QueuedSubmissionRuntime | undefined;
   let queueRuntimeLoading: Promise<QueuedSubmissionRuntime> | undefined;
   const getQueueRuntime = (): Promise<QueuedSubmissionRuntime> => queueRuntimeLoading ??= import("./chat/chatQueuedSubmissionRuntime").then(({ createQueuedSubmissionRuntime }) => {
@@ -1374,8 +1377,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, id)),
       cancelled: id => deletedConversationIds.has(id) || isAppShutdownGateActive(),
       read: id => loadConversationMessages(chatPersistenceAdapters, { conversationId: id, conversations: get().conversations }),
-      send: entry => get().sendMessage(entry.input, entry),
-      publish: message => get().addMessage(message),
+      send: (entry, saved) => get().sendMessage({ ...entry.input, persistedUserMessage: saved }, entry),
+      publish: message => {
+        if (!getOrderedConversationMessages(message.conversation_id).some(item => item.id === message.id)) get().addMessage(message);
+      },
       saveImages: (id, images) => {
         const next = { ...get().messageImagesByMessageId, [id]: images };
         if (!saveMessageImagesToStorage(next)) return false;
@@ -8412,6 +8417,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     : getQueueRuntime().then(queue => queue.drain(conversationId));
 
   const buildUserMessageForSend = async (params: {
+    id?: string;
     conversationId: string;
     turnId: string;
     taskId: string;
@@ -11948,6 +11954,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         stopConversationRuntimeLocally(conversationId);
       });
       turnRuntime.reset();
+      continuationIntents.clear();
       set({
         ...buildMessageState([]),
         messageLoadStatusByConversationId: {},
@@ -12698,6 +12705,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       deletedConversationIds.add(conversationId);
       pendingConversationDeletionIds.add(conversationId);
       turnRuntime.forget(conversationId);
+      continuationIntents.delete(conversationId);
       let deletionSagaGeneration: string;
       stopConversationRuntimeLocally(conversationId);
       try {
@@ -12783,6 +12791,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deletedConversationIds.add(conversationId);
         pendingConversationDeletionIds.add(conversationId);
         turnRuntime.forget(conversationId);
+        continuationIntents.delete(conversationId);
         stopConversationRuntimeLocally(conversationId);
       });
       const deletionSagaGenerations = new Map<string, string>();
@@ -12883,6 +12892,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     completeLinkedTaskConversationDeletion: async (conversationId) => {
       deletedConversationIds.add(conversationId);
       turnRuntime.forget(conversationId);
+      continuationIntents.delete(conversationId);
       stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
@@ -13506,10 +13516,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? { image_metadata: getImageContextMetadata(payload.images) }
           : {}),
       };
-      turnRuntime.enqueueSteer(payload.conversationId, steerMessage);
+      // Save attachments first under a stable message ID. A rejected image write
+      // leaves the composer intact and cannot create a duplicate text on retry.
+      const messageId = crypto.randomUUID();
+      if (payload.images?.length) {
+        const next = { ...get().messageImagesByMessageId, [messageId]: payload.images };
+        if (!saveMessageImagesToStorage(next)) {
+          throw buildSendError(i18n.t('chat.steerImagesSaveFailed', 'The direction could not be saved with its images. Retry the draft.'));
+        }
+        set({ messageImagesByMessageId: next });
+      }
       let userMessage: ChatMessage;
       try {
         userMessage = await buildUserMessageForSend({
+          id: messageId,
           conversationId: payload.conversationId,
           turnId: runtime.turnId ?? createConversationTurnId(),
           taskId: payload.taskId ?? conversation?.task_id ?? "",
@@ -13517,27 +13537,64 @@ export const useChatStore = create<ChatStore>((set, get) => {
           contextRefs,
         });
       } catch (error) {
-        turnRuntime.removeSteer(payload.conversationId, steerMessage);
+        if (payload.images?.length) {
+          const remaining = { ...get().messageImagesByMessageId };
+          delete remaining[messageId];
+          if (saveMessageImagesToStorage(remaining)) set({ messageImagesByMessageId: remaining });
+        }
         throw error;
       }
       get().addMessage(userMessage);
-      if (payload.images?.length) get().setMessageImages(userMessage.id, payload.images);
       clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
+      if (!turnRuntime.enqueueSteer(payload.conversationId, steerMessage, runtime)) {
+        throw buildSendError(i18n.t('chat.steerTurnEnded', 'The direction was saved, but its turn ended before delivery. Review it before continuing.'));
+      }
       return "steered";
     },
 
-    sendMessage: async (payload, queuedSubmission) => {
+    sendGoalContinuation: async (conversationId, content) => {
+      let captured = continuationIntents.get(conversationId);
+      if (!captured) {
+        const conversation = get().conversations.find(item => item.id === conversationId);
+        // A resumed Goal may have no live predecessor. Its persisted Chat identity
+        // is sufficient; global selections and an unrelated composer never are.
+        if (!conversation || conversation.scope_mode !== 'Chat' || !conversation.provider_id || !conversation.model_id) {
+          throw buildSendError(i18n.t('chat.goalExecutorContextUnavailable', 'The Goal executor context is unavailable. Send a message in this conversation before resuming.'));
+        }
+        const app = useAppStore.getState();
+        const tasks = useTaskStore.getState();
+        captured = captureQueuedSubmission(createConversationTurnId(), { conversationId, content, contextRefs: [] }, {
+          mode: 'Chat', agentType: null, conversationTaskId: null, selectedTaskId: '',
+          executionContext: resolveProjectExecutionContext({
+            mode: 'Chat', projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+            projectGroups: app.projectGroups, tasks: tasks.tasks, conversations: get().conversations, conversationId,
+            selectedGroupId: conversation.group_id ?? null, selectedProjectId: conversation.project_id,
+            selectedTaskId: null, branchWorktrees: tasks.branchWorktrees,
+          }),
+          composerContextRefs: [], composerRevision: -1,
+          provider: { selectedProviderId: conversation.provider_id, selectedModelId: conversation.model_id,
+            selectedReasoningEffort: conversation.reasoning_effort ?? null, isLoading: false, providerConfigs: [] },
+        });
+      }
+      const intent = structuredClone(captured);
+      intent.id = createConversationTurnId();
+      intent.input = { ...intent.input, conversationId, content, images: undefined };
+      return get().sendMessage(intent.input, undefined, intent);
+    },
+
+    sendMessage: async (payload, queuedSubmission, continuation) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
-      const queuedExecutionContext = queuedSubmission
-        ? await revalidateQueuedExecutionContext(queuedSubmission) : undefined;
+      const deferredSubmission = queuedSubmission ?? continuation;
+      const queuedExecutionContext = deferredSubmission
+        ? await revalidateQueuedExecutionContext(deferredSubmission) : undefined;
       const provider = useProviderStore.getState();
-      let snapshot: ChatSendSnapshot = queuedSubmission
-        ? { ...queuedSubmission.intent, composerRevision: -1,
+      let snapshot: ChatSendSnapshot = deferredSubmission
+        ? { ...deferredSubmission.intent, composerRevision: -1,
             executionContext: queuedExecutionContext!,
             modelSelectionCaptured: true,
-            provider: { ...queuedSubmission.intent.provider,
+            provider: { ...deferredSubmission.intent.provider,
               isLoading: provider.isLoading,
               providerConfigs: provider.providerConfigs.map(config => ({ ...config })) } }
         : captureSendSnapshot(payload.conversationId);
@@ -13548,11 +13605,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
       if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
-      return sendChatMessage({ ...payload, submissionTurnId: queuedSubmission?.id }, snapshot, {
+      return sendChatMessage({ ...payload, submissionTurnId: deferredSubmission?.id }, snapshot, {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
           onUserPersisted: queuedSubmission ? message => queueRuntime!.acknowledge(queuedSubmission, message) : undefined,
+          beforeAssistantStart: queuedSubmission ? () => queueRuntime!.beforeAssistantStart(queuedSubmission) : undefined,
+          onAssistantStarted: queuedSubmission ? () => queueRuntime!.complete(queuedSubmission) : undefined,
           ensureLoaded: ensureMessagesLoadedForConversation,
           list: getOrderedConversationMessages,
           hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
@@ -13560,12 +13619,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         preparation: {
           assertCanSend: (id) => {
-            if (queuedSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
+            if (deferredSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
               throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
             }
             assertConversationRuntimeAvailableForSend(id);
           },
-          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(queuedSubmission &&
+          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(deferredSubmission &&
             useConversationArchiveStore.getState().archivedConversationIds.has(id)),
           createSessionId: createConversationSessionId,
           createTurnId: createConversationTurnId,
@@ -13616,10 +13675,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         projection: {
           persistSelection: (mode, id) => {
-            if (!queuedSubmission) persistSelectionForContext(mode, id);
+            if (!deferredSubmission) persistSelectionForContext(mode, id);
           },
           publishUser: (message, context) => {
-            get().addMessage(message);
+            if (!getOrderedConversationMessages(message.conversation_id).some(item => item.id === message.id)) get().addMessage(message);
             if (context.images?.length) get().setMessageImages(message.id, context.images);
             for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
               const path = getFileRefPath(ref);
@@ -13644,7 +13703,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
           timeline: (phase, context) => devLogger.info("Provider stream timeline", { phase, ...context }),
         },
         stream: {
-          prepare: prepareAssistantStreamLaunch,
+          prepare: (request) => {
+            continuationIntents.set(request.conversationId, captureQueuedSubmission(
+              deferredSubmission?.id ?? createConversationTurnId(),
+              { ...payload, conversationId: request.conversationId, contextRefs: payload.contextRefs ?? snapshot.composerContextRefs },
+              { ...snapshot, mode: request.modeAtSend, agentType: request.agentTypeAtSend ?? null,
+                provider: { ...snapshot.provider, selectedProviderId: request.providerId,
+                  selectedModelId: request.modelId, selectedReasoningEffort: request.reasoningEffort ?? null } },
+            ));
+            return prepareAssistantStreamLaunch(request);
+          },
           start: (request, launch) => startAssistantStream({
             ...launch,
             ...request,
@@ -14401,6 +14469,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         runtime?.abortController?.abort();
       });
       turnRuntime.reset();
+      continuationIntents.clear();
       deletedConversationIds.clear();
       pendingConversationDeletionIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);

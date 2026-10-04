@@ -55,7 +55,11 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   const saveUser = async (current: SendLease) => {
     let message: ChatMessage;
     try {
-      message = await createUserMessage(messages.persistence, {
+      if (input.persistedUserMessage && (input.persistedUserMessage.conversation_id !== conversationId ||
+          input.persistedUserMessage.turn_id !== current.turnId || input.persistedUserMessage.role !== 'user')) {
+        throw new Error('The saved message does not belong to this submission.');
+      }
+      message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
         conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
       });
@@ -217,13 +221,17 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
       assistantMessageId = assistant.id;
       projection.publishAssistant(assistant, mode, agentType);
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       setPreparing(conversationId, current, assistant.id);
       timeline('provider_stream_start_requested', { conversationId, providerId, providerType: providerForUse.providerType });
+      messages.beforeAssistantStart?.();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       stream.start({
         ...request, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
+      messages.onAssistantStarted?.();
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
       if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);

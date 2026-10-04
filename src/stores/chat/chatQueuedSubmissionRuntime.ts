@@ -10,7 +10,7 @@ interface QueuePorts {
   blocked(id: string): boolean;
   cancelled(id: string): boolean;
   read(id: string): Promise<ChatMessage[]>;
-  send(entry: QueuedSubmission): Promise<ChatSendResult>;
+  send(entry: QueuedSubmission, saved?: ChatMessage): Promise<ChatSendResult>;
   publish(message: ChatMessage): void;
   saveImages(messageId: string, images: SendImage[]): boolean;
   recovery(value: QueuedSubmissionRecoveries): void;
@@ -36,7 +36,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   };
   publishRecovery();
   const mutating = new Set<string>();
-  const pendingEntry = async (id: string): Promise<QueuedSubmission> => {
+  const pendingEntry = async (id: string, allowSaved = false): Promise<QueuedSubmission> => {
     const entry = entries.find(candidate => candidate.id === id);
     if (!entry || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId) || mutating.has(id)) {
       throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
@@ -44,7 +44,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     mutating.add(id);
     try {
       const persisted = await ports.read(entry.input.conversationId);
-      if (persisted.some(message => message.role === 'user' && message.turn_id === id)) {
+      if (!allowSaved && persisted.some(message => message.role === 'user' && message.turn_id === id)) {
         throw new Error(i18n.t('chat.queueAlreadySent', 'This message was already saved. Retry recovery instead.'));
       }
       if (!entries.includes(entry) || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)) {
@@ -82,7 +82,11 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     if (entry.input.images?.length && !ports.saveImages(message.id, entry.input.images)) {
       throw new Error(i18n.t('chat.queueImagesSaveFailed', 'The message is saved, but its images still need saving. Retry the queued submission.'));
     }
-    persist(entries.filter(candidate => candidate.id !== entry.id));
+  };
+  const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
+  const beforeAssistantStart = (entry: QueuedSubmission) => {
+    if (!entries.some(candidate => candidate.id === entry.id)) throw new Error('The queued submission is no longer available.');
+    persist(entries.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true } : candidate));
   };
   const drain = async (id: string): Promise<void> => {
     if (draining.has(id) || paused.has(id) || ports.blocked(id)) return;
@@ -97,11 +101,18 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       if (saved) {
         ports.publish(saved);
         acknowledge(next, saved);
+      }
+      const assistant = persisted.find(message => message.role === 'assistant' && message.turn_id === next.id);
+      if (assistant?.completion_reason === 'completed') {
+        complete(next);
+      } else if (next.assistantStartAttempted || assistant) {
+        throw new Error(i18n.t('chat.queueAssistantInterrupted',
+          'This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.'));
       } else {
         attempted.set(next.id, id);
         publishRecovery();
-        const result = await ports.send(next);
-        if (result.status === 'cancelled') throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
+        const result = await ports.send(next, saved);
+        if (result.status === 'cancelled' || !result.assistantMessageId) throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
       }
       continueQueue = true;
     } catch (error) {
@@ -120,6 +131,8 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       queueMicrotask(() => void drain(entry.input.conversationId));
     },
     acknowledge,
+    beforeAssistantStart,
+    complete,
     pause,
     drain,
     async retry(id: string) {
@@ -139,7 +152,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       } finally { mutating.delete(id); }
     },
     async removeEntry(id: string) {
-      const entry = await pendingEntry(id);
+      const entry = await pendingEntry(id, true);
       try {
         persist(entries.filter(candidate => candidate.id !== id));
         if (!entries.some(candidate => candidate.input.conversationId === entry.input.conversationId)) {
