@@ -759,7 +759,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                         <p className="text-sm text-foreground">{tool.name}</p>
                         <p className="text-xs text-muted-foreground truncate">{tool.description}</p>
                       </div>
-                      <Switch checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
+                      <Switch aria-label={tool.name} checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
                       {tooltip && <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10"><div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">{tooltip}</div></div>}
                     </div>
                   );
