@@ -23,6 +23,7 @@ const NOT_CONNECTED: &str = "MCP_RUNTIME_NOT_CONNECTED";
 const OPERATION_CANCELLED: &str = "MCP_RUNTIME_OPERATION_CANCELLED";
 const PENDING_CANCELLATION_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_PENDING_CANCELLATIONS: usize = 1_024;
+const CONFIGURATION_CLOSE_BUDGET: Duration = Duration::from_secs(15);
 
 pub(crate) type McpFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, McpRuntimeError>> + Send + 'a>>;
@@ -147,6 +148,10 @@ pub(crate) struct McpConnectionRequest {
 }
 
 pub(crate) trait McpConnector: Send + Sync {
+    fn configuration_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
+
     fn acquire_authority<'a>(&'a self) -> McpFuture<'a, Option<McpAuthorityGuard>> {
         Box::pin(async { Ok(None) })
     }
@@ -217,6 +222,7 @@ struct RuntimeEntry {
     catalog: Option<McpCatalogDto>,
     concurrency: Arc<Semaphore>,
     connect_attempt_id: Uuid,
+    connection_cancellation: Arc<McpOperationCancellation>,
 }
 
 impl RuntimeEntry {
@@ -242,6 +248,7 @@ impl RuntimeEntry {
             catalog: None,
             concurrency: Arc::new(Semaphore::new(1)),
             connect_attempt_id,
+            connection_cancellation: Arc::new(McpOperationCancellation::default()),
         }
     }
 }
@@ -313,6 +320,8 @@ pub struct McpRuntimeManager {
     operations: Arc<StdMutex<OperationRegistry>>,
     interaction: McpInteractionBroker,
     shutting_down: Arc<AtomicBool>,
+    configuration_observer_started: Arc<AtomicBool>,
+    configuration_observer_stop: Arc<Notify>,
 }
 
 impl Default for McpRuntimeManager {
@@ -335,7 +344,82 @@ impl McpRuntimeManager {
             operations: Arc::new(StdMutex::new(OperationRegistry::default())),
             interaction: McpInteractionBroker::default(),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            configuration_observer_started: Arc::new(AtomicBool::new(false)),
+            configuration_observer_stop: Arc::new(Notify::new()),
         }
+    }
+
+    fn observe_configuration_changes(&self) {
+        let Some(mut changes) = self.connector.configuration_changes() else {
+            return;
+        };
+        if self
+            .configuration_observer_started
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let state = Arc::downgrade(&self.state);
+        let operations = Arc::downgrade(&self.operations);
+        let connector = self.connector.clone();
+        let interaction = self.interaction.clone();
+        let shutting_down = self.shutting_down.clone();
+        let started = self.configuration_observer_started.clone();
+        let stop = self.configuration_observer_stop.clone();
+        tokio::spawn(async move {
+            loop {
+                let notified = stop.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if shutting_down.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::select! {
+                    _ = &mut notified => break,
+                    result = changes.changed() => if result.is_err() { break; },
+                }
+                let (Some(state), Some(operations)) = (state.upgrade(), operations.upgrade())
+                else {
+                    break;
+                };
+                let runtime = Self {
+                    connector: connector.clone(),
+                    state,
+                    operations,
+                    interaction: interaction.clone(),
+                    shutting_down: shutting_down.clone(),
+                    configuration_observer_started: started.clone(),
+                    configuration_observer_stop: stop.clone(),
+                };
+                runtime.reconcile_configuration().await;
+            }
+        });
+    }
+
+    async fn reconcile_configuration(&self) {
+        // Check all scopes against effective native configuration. Unchanged
+        // fingerprints retain their generations, catalogs and conversation leases.
+        let keys = {
+            let state = self.state.lock().await;
+            state
+                .entries
+                .values()
+                .filter(|entry| {
+                    entry.config_fingerprint != "invalid"
+                        && entry.snapshot.status != McpRuntimeStatus::Disconnected
+                })
+                .map(|entry| entry.snapshot.key.clone())
+                .collect::<Vec<_>>()
+        };
+        futures::future::join_all(keys.iter().map(|key| async move {
+            match self.connector.acquire_authority().await {
+                Ok(_authority) => {
+                    let _ = self.ensure_current_config(key).await;
+                }
+                Err(error) => self.invalidate_if_current(key, &error).await,
+            }
+        }))
+        .await;
     }
 
     pub(crate) fn interaction_broker(&self) -> &McpInteractionBroker {
@@ -368,6 +452,7 @@ impl McpRuntimeManager {
         selector: McpRuntimeSelector,
     ) -> Result<McpRuntimeServerSnapshot, McpRuntimeError> {
         validate_selector(&selector)?;
+        self.observe_configuration_changes();
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(McpRuntimeError::new(
                 "MCP_RUNTIME_SHUTTING_DOWN",
@@ -402,7 +487,7 @@ impl McpRuntimeManager {
         }
         let key;
         let connect_attempt_id = Uuid::new_v4();
-        let retired_session = {
+        let (retired_session, connection_cancellation) = {
             let mut state = self.state.lock().await;
             if self.shutting_down.load(Ordering::Acquire) {
                 return Err(McpRuntimeError::new(
@@ -467,20 +552,28 @@ impl McpRuntimeManager {
                     connect_attempt_id,
                 ),
             );
-            retired
+            let cancellation = state
+                .entries
+                .get(&logical_key)
+                .expect("inserted runtime entry")
+                .connection_cancellation
+                .clone();
+            (retired, cancellation)
         };
 
         if let Some(session) = retired_session {
             let _ = session.close().await;
         }
 
-        let connection = self
-            .connector
-            .connect(&McpConnectionRequest {
-                key: key.clone(),
-                config_fingerprint: config_fingerprint.clone(),
-            })
-            .await;
+        let request = McpConnectionRequest {
+            key: key.clone(),
+            config_fingerprint: config_fingerprint.clone(),
+        };
+        let connection = tokio::select! {
+            result = self.connector.connect(&request) => result,
+            _ = connection_cancellation.cancelled() => Err(McpRuntimeError::new(
+                "MCP_RUNTIME_CONNECT_ABORTED", "The MCP connection was invalidated while starting.")),
+        };
         let _authority = match self.connector.acquire_authority().await {
             Ok(authority) => authority,
             Err(error) => {
@@ -950,8 +1043,21 @@ impl McpRuntimeManager {
                 key: key.clone(),
                 config_fingerprint: config_fingerprint.clone(),
             };
+            let cancellation = {
+                let state = self.state.lock().await;
+                let Some(entry) = state.entries.get(&logical_key) else {
+                    return;
+                };
+                entry.connection_cancellation.clone()
+            };
             let connection =
-                match tokio::time::timeout(remaining, self.connector.connect(&request)).await {
+                match tokio::time::timeout(remaining, async {
+                    tokio::select! {
+                        result = self.connector.connect(&request) => result,
+                        _ = cancellation.cancelled() => Err(McpRuntimeError::new(
+                            "MCP_RUNTIME_CONNECT_ABORTED", "The MCP reconnect was invalidated while starting.")),
+                    }
+                }).await {
                     Ok(result) => result,
                     Err(_) => {
                         last_error = "MCP reconnect exceeded its 30-second circuit budget.".into();
@@ -1053,6 +1159,7 @@ impl McpRuntimeManager {
     pub async fn shutdown_all(&self) {
         self.interaction.shutdown();
         self.shutting_down.store(true, Ordering::Release);
+        self.configuration_observer_stop.notify_waiters();
         let sessions = {
             let mut state = self.state.lock().await;
             let keys = state.entries.keys().cloned().collect::<Vec<_>>();
@@ -1063,6 +1170,7 @@ impl McpRuntimeManager {
                 .entries
                 .values_mut()
                 .filter_map(|entry| {
+                    entry.connection_cancellation.cancel();
                     entry.snapshot.status = McpRuntimeStatus::Disconnected;
                     entry.snapshot.last_error_code = None;
                     entry.snapshot.last_error = None;
@@ -1191,6 +1299,7 @@ impl McpRuntimeManager {
                 return;
             }
             self.cancel_operations_for(&logical_key);
+            entry.connection_cancellation.cancel();
             if let Some(next_generation) = entry.snapshot.key.config_generation.checked_add(1) {
                 entry.snapshot.key.config_generation = next_generation;
             }
@@ -1204,10 +1313,36 @@ impl McpRuntimeManager {
             entry.snapshot.updated_at = now();
             entry.config_fingerprint = "invalid".to_string();
             entry.catalog = None;
-            entry.session.take()
+            (entry.snapshot.key.clone(), entry.session.take())
         };
-        if let Some(session) = session {
-            let _ = session.close().await;
+        let (revoked_key, session) = session;
+        let close_error = if let Some(session) = session {
+            match tokio::time::timeout(CONFIGURATION_CLOSE_BUDGET, session.close()).await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some(McpRuntimeError::new(
+                    "MCP_RUNTIME_CLOSE_TIMEOUT",
+                    "MCP session cleanup exceeded its 15-second budget.",
+                )),
+            }
+        } else {
+            None
+        };
+        let mut state = self.state.lock().await;
+        if let Some(entry) = state.entries.get_mut(&logical_key) {
+            if entry.snapshot.key == revoked_key && entry.config_fingerprint == "invalid" {
+                if let Some(close_error) = close_error {
+                    entry.snapshot.last_error_code = Some(close_error.code.to_string());
+                    entry.snapshot.last_error =
+                        Some(format!("{error}; cleanup failed: {close_error}"));
+                } else if matches!(
+                    error.code,
+                    "MCP_RUNTIME_SERVER_NOT_FOUND" | "MCP_RUNTIME_SERVER_DISABLED"
+                ) {
+                    entry.snapshot.status = McpRuntimeStatus::Disconnected;
+                }
+                entry.snapshot.updated_at = now();
+            }
         }
     }
 
@@ -1381,6 +1516,8 @@ mod tests {
         block_lists: AtomicBool,
         block_calls: AtomicBool,
         fail_lists: AtomicBool,
+        fail_close: AtomicBool,
+        block_close: AtomicBool,
         closed: AtomicBool,
         list_started: Notify,
         call_started: Notify,
@@ -1448,6 +1585,15 @@ mod tests {
         fn close<'a>(&'a self) -> McpFuture<'a, ()> {
             Box::pin(async move {
                 self.close_calls.fetch_add(1, Ordering::SeqCst);
+                if self.block_close.load(Ordering::SeqCst) {
+                    std::future::pending::<()>().await;
+                }
+                if self.fail_close.load(Ordering::SeqCst) {
+                    return Err(McpRuntimeError::new(
+                        "MCP_RUNTIME_TEST_CLOSE_FAILED",
+                        "synthetic close failure",
+                    ));
+                }
                 Ok(())
             })
         }
@@ -2167,6 +2313,439 @@ mod tests {
             manager.snapshot().await.servers[0].status,
             McpRuntimeStatus::Disconnected
         );
+    }
+
+    #[tokio::test]
+    async fn configuration_reconciliation_cancels_invalid_operations_and_preserves_unchanged_leases(
+    ) {
+        let session = Arc::new(FakeSession::default());
+        let (manager, connector) = manager(session.clone());
+        let key = connected_key(&manager).await;
+        let catalog = manager.refresh_catalog(&key).await.unwrap();
+        manager.reconcile_configuration().await;
+        assert_eq!(manager.snapshot().await.servers[0].key, key);
+        assert_eq!(
+            manager.refresh_catalog(&key).await.unwrap().key,
+            catalog.key
+        );
+        assert_eq!(session.close_calls.load(Ordering::SeqCst), 0);
+
+        session.block_calls.store(true, Ordering::SeqCst);
+        let calling = manager.clone();
+        let call_key = key.clone();
+        let call = tokio::spawn(async move {
+            calling
+                .call_tool(
+                    &call_key,
+                    "echo",
+                    serde_json::json!({}),
+                    "configuration-call".into(),
+                )
+                .await
+        });
+        session.call_started.notified().await;
+        connector.fingerprint_error.store(true, Ordering::SeqCst);
+        manager.reconcile_configuration().await;
+        assert_eq!(call.await.unwrap().unwrap_err().code, OPERATION_CANCELLED);
+        assert!(manager.active_operation_ids().await.is_empty());
+        assert_eq!(session.close_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            manager.refresh_catalog(&key).await.unwrap_err().code,
+            STALE_GENERATION
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_reconciliation_aborts_a_pending_connection() {
+        let session = Arc::new(FakeSession::default());
+        let (manager, connector) = manager(session);
+        connector.block_connect.store(true, Ordering::SeqCst);
+        let connecting = manager.clone();
+        let task = tokio::spawn(async move { connecting.connect(selector()).await });
+        connector.connect_started.notified().await;
+        connector.fingerprint_error.store(true, Ordering::SeqCst);
+        manager.reconcile_configuration().await;
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("connection must abort without releasing its handshake")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            manager.snapshot().await.servers[0].status,
+            McpRuntimeStatus::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_cleanup_failure_is_visible_in_the_diagnostic_snapshot() {
+        let session = Arc::new(FakeSession::default());
+        let (manager, connector) = manager(session.clone());
+        let key = connected_key(&manager).await;
+        session.fail_close.store(true, Ordering::SeqCst);
+        connector.fingerprint_error.store(true, Ordering::SeqCst);
+        manager.reconcile_configuration().await;
+        let snapshot = manager.snapshot().await.servers.remove(0);
+        assert_eq!(snapshot.status, McpRuntimeStatus::Failed);
+        assert_eq!(
+            snapshot.last_error_code.as_deref(),
+            Some("MCP_RUNTIME_TEST_CLOSE_FAILED")
+        );
+        assert!(snapshot.last_error.unwrap().contains("cleanup failed"));
+        assert!(snapshot.key.config_generation > key.config_generation);
+        // An unrelated mutation must not overwrite the cleanup diagnostic.
+        manager.reconcile_configuration().await;
+        assert_eq!(session.close_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            manager.snapshot().await.servers[0].last_error_code,
+            snapshot.last_error_code
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_cleanup_has_a_bounded_wait() {
+        let session = Arc::new(FakeSession::default());
+        let (manager, connector) = manager(session.clone());
+        connected_key(&manager).await;
+        session.block_close.store(true, Ordering::SeqCst);
+        connector.fingerprint_error.store(true, Ordering::SeqCst);
+        tokio::time::timeout(
+            CONFIGURATION_CLOSE_BUDGET + Duration::from_secs(2),
+            manager.reconcile_configuration(),
+        )
+        .await
+        .expect("cleanup must finish within its budget");
+        let snapshot = manager.snapshot().await.servers.remove(0);
+        assert_eq!(snapshot.status, McpRuntimeStatus::Failed);
+        assert_eq!(
+            snapshot.last_error_code.as_deref(),
+            Some("MCP_RUNTIME_CLOSE_TIMEOUT")
+        );
+    }
+
+    async fn patch_mcp_configuration(
+        manager: &crate::config::ConfigManager,
+        scope: crate::config::ConfigScope,
+        servers: serde_json::Value,
+        source: crate::config::ConfigChangeSource,
+    ) -> crate::config::ConfigPatchResult {
+        use crate::config::{ConfigDocumentKind, ConfigPatchRequest, JsonPatchOperation};
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, scope.clone())
+            .await
+            .unwrap();
+        manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope,
+                expected_etag: document.etag,
+                source,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/mcpServers".into(),
+                    from: None,
+                    value: Some(servers),
+                }],
+            })
+            .await
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn process_is_running(pid: i32) -> bool {
+        // The PID is written by our confined synthetic child. Signal zero only checks existence.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_configuration_mutations_close_stdio_processes_without_an_mcp_operation() {
+        use super::super::runtime_connector::ConfiguredMcpConnector;
+        use crate::config::{ConfigChangeSource, ConfigDocumentKind, ConfigManager, ConfigScope};
+        // No global manager, network server or application runtime is needed.
+        for mutation in [
+            "disable",
+            "remove",
+            "approve",
+            "reload",
+            "remove-with-override",
+        ] {
+            let remove = mutation.starts_with("remove");
+            let overridden = mutation == "remove-with-override";
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("synthetic_mcp.py");
+            std::fs::write(&script, r#"
+import json, os, sys
+with open(sys.argv[1], 'a') as file:
+    file.write(str(os.getpid()) + '\n')
+for line in sys.stdin:
+    message = json.loads(line)
+    if 'id' not in message:
+        continue
+    method = message.get('method')
+    result = {}
+    if method == 'initialize':
+        result = {'protocolVersion': message['params']['protocolVersion'], 'capabilities': {}, 'serverInfo': {'name': 'synthetic', 'version': '1'}}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'echo', 'inputSchema': {'type': 'object'}}]}
+    elif method == 'tools/call':
+        result = {'content': [{'type': 'text', 'text': 'synthetic-result'}]}
+    print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
+"#).unwrap();
+            let config = ConfigManager::initialize(directory.path().join("config"))
+                .await
+                .unwrap();
+            let definition = |name: &str| {
+                serde_json::json!({
+                    "name": name, "enabled": true,
+                    "transport": {"type": "stdio", "command": "python3", "args": [script, directory.path().join(format!("{name}.pids"))], "env": {}},
+                    "startupTimeoutMs": 5000, "operationTimeoutMs": 5000
+                })
+            };
+            let mut servers =
+                serde_json::json!({"retired": definition("retired"), "kept": definition("kept")});
+            patch_mcp_configuration(
+                &config,
+                ConfigScope::User,
+                servers.clone(),
+                ConfigChangeSource::UserInterface,
+            )
+            .await;
+            let project = directory.path().join("metadata");
+            config
+                .register_project_root("project", project)
+                .await
+                .unwrap();
+            // Project-only server remains effective when the global entry disappears.
+            let mut project_servers =
+                serde_json::json!({"project_only": definition("project_only")});
+            if overridden {
+                project_servers["retired"] = definition("retired");
+            }
+            patch_mcp_configuration(
+                &config,
+                ConfigScope::Project {
+                    project_id: "project".into(),
+                },
+                project_servers,
+                ConfigChangeSource::UserInterface,
+            )
+            .await;
+            let runtime = McpRuntimeManager::with_connector(Arc::new(
+                ConfiguredMcpConnector::with_config_manager(config.clone()),
+            ));
+            let global = runtime
+                .connect(McpRuntimeSelector {
+                    server_id: "retired".into(),
+                    project_ids: vec![],
+                })
+                .await
+                .unwrap();
+            let scoped = runtime
+                .connect(McpRuntimeSelector {
+                    server_id: "retired".into(),
+                    project_ids: vec!["project".into()],
+                })
+                .await
+                .unwrap();
+            let kept = runtime
+                .connect(McpRuntimeSelector {
+                    server_id: "kept".into(),
+                    project_ids: vec!["project".into()],
+                })
+                .await
+                .unwrap();
+            let project_only = runtime
+                .connect(McpRuntimeSelector {
+                    server_id: "project_only".into(),
+                    project_ids: vec!["project".into()],
+                })
+                .await
+                .unwrap();
+            runtime.refresh_catalog(&kept.key).await.unwrap();
+            let pids = |name: &str| {
+                std::fs::read_to_string(directory.path().join(format!("{name}.pids")))
+                    .unwrap()
+                    .lines()
+                    .map(|pid| pid.parse::<i32>().unwrap())
+                    .collect::<Vec<_>>()
+            };
+            let retired_pids = pids("retired");
+            assert_eq!(retired_pids.len(), 2);
+            let invalid_pids = if overridden {
+                &retired_pids[..1]
+            } else {
+                &retired_pids[..]
+            };
+            assert!(retired_pids.iter().all(|pid| process_is_running(*pid)));
+            let mut proposal = servers.clone();
+            proposal["retired"]["enabled"] = serde_json::json!(false);
+            let pending = patch_mcp_configuration(
+                &config,
+                ConfigScope::User,
+                proposal,
+                ConfigChangeSource::Agent,
+            )
+            .await;
+            assert_eq!(pending.status, "pendingApproval");
+            runtime.reconcile_configuration().await;
+            assert!(runtime
+                .snapshot()
+                .await
+                .servers
+                .iter()
+                .all(|server| server.status == McpRuntimeStatus::Ready));
+            assert!(retired_pids.iter().all(|pid| process_is_running(*pid)));
+            config
+                .reject_pending_change(&pending.pending_change.unwrap().id, true)
+                .await
+                .unwrap();
+            runtime.reconcile_configuration().await;
+            if remove {
+                servers.as_object_mut().unwrap().remove("retired");
+            } else {
+                servers["retired"]["enabled"] = serde_json::json!(false);
+            }
+            match mutation {
+                "approve" => {
+                    let pending = patch_mcp_configuration(
+                        &config,
+                        ConfigScope::User,
+                        servers,
+                        ConfigChangeSource::Agent,
+                    )
+                    .await;
+                    config
+                        .accept_pending_change(&pending.pending_change.unwrap().id)
+                        .await
+                        .unwrap();
+                }
+                "reload" => {
+                    let mut document = config
+                        .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+                        .await
+                        .unwrap();
+                    document.value["mcpServers"] = servers;
+                    std::fs::write(
+                        &document.file_path,
+                        serde_json::to_vec(&document.value).unwrap(),
+                    )
+                    .unwrap();
+                    config
+                        .reload(
+                            ConfigDocumentKind::Tools,
+                            ConfigScope::User,
+                            ConfigChangeSource::UserInterface,
+                        )
+                        .await
+                        .unwrap();
+                }
+                _ => {
+                    patch_mcp_configuration(
+                        &config,
+                        ConfigScope::User,
+                        servers,
+                        ConfigChangeSource::UserInterface,
+                    )
+                    .await;
+                }
+            }
+            // No connect, refresh, call or disconnect after the config mutation.
+            tokio::time::timeout(CONFIGURATION_CLOSE_BUDGET + Duration::from_secs(2), async {
+                loop {
+                    let snapshot = runtime.snapshot().await;
+                    if invalid_pids.iter().all(|pid| !process_is_running(*pid))
+                        && snapshot
+                            .servers
+                            .iter()
+                            .filter(|s| {
+                                s.key.server_id == "retired"
+                                    && (!overridden || s.key.project_ids.is_empty())
+                            })
+                            .all(|s| s.status == McpRuntimeStatus::Disconnected)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("invalid processes must close without another MCP operation");
+            let snapshot = runtime.snapshot().await;
+            let invalid_sessions = if overridden {
+                vec![&global]
+            } else {
+                vec![&global, &scoped]
+            };
+            for initial in invalid_sessions {
+                let server = snapshot
+                    .servers
+                    .iter()
+                    .find(|s| {
+                        s.key.server_id == initial.key.server_id
+                            && s.key.project_ids == initial.key.project_ids
+                    })
+                    .unwrap();
+                assert!(server.key.config_generation > initial.key.config_generation);
+                assert_eq!(
+                    server.last_error_code.as_deref(),
+                    Some(if remove {
+                        "MCP_RUNTIME_SERVER_NOT_FOUND"
+                    } else {
+                        "MCP_RUNTIME_SERVER_DISABLED"
+                    })
+                );
+            }
+            let mut valid_sessions = vec![&kept, &project_only];
+            if overridden {
+                valid_sessions.push(&scoped);
+            }
+            for initial in &valid_sessions {
+                assert_eq!(
+                    snapshot
+                        .servers
+                        .iter()
+                        .find(|s| s.key == initial.key)
+                        .unwrap()
+                        .status,
+                    McpRuntimeStatus::Ready
+                );
+            }
+            assert!(pids("kept")
+                .iter()
+                .chain(pids("project_only").iter())
+                .all(|pid| process_is_running(*pid)));
+            // Still-valid opaque conversation leases can dispatch on the original generation.
+            for initial in valid_sessions {
+                assert!(
+                    !runtime
+                        .call_tool(
+                            &initial.key,
+                            "echo",
+                            serde_json::json!({}),
+                            format!("kept-lease-{}", initial.key.server_id)
+                        )
+                        .await
+                        .unwrap()
+                        .is_error
+                );
+            }
+            if overridden {
+                assert!(process_is_running(retired_pids[1]));
+            }
+            runtime.shutdown_all().await;
+            assert!(pids("kept")
+                .iter()
+                .chain(pids("project_only").iter())
+                .all(|pid| !process_is_running(*pid)));
+            assert!(
+                config
+                    .effective_user_document(ConfigDocumentKind::Tools)
+                    .await["mcpServers"]
+                    .get("retired")
+                    .is_none()
+                    || !remove
+            );
+        }
     }
 
     #[tokio::test]
