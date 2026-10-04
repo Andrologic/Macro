@@ -189,6 +189,7 @@ const registerWorkspaceToolExecutorMocks = (
   }));
 
   mock.module("./remoteKernelApi", () => ({
+    readRemoteWorkspaceCheckpointSnapshot: async () => { throw new Error("Unexpected remote snapshot read"); },
     canUseRemoteKernel: () => false,
     executeRemoteWorkspaceTool: async () => "",
     executeRemoteWorkspaceToolDetailed: async () => ({
@@ -1796,7 +1797,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -1833,6 +1834,9 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("disk full");
     expect(appContent).toBe("export const App = 'before';\n");
@@ -1846,6 +1850,7 @@ describe("workspaceToolExecutor helpers", () => {
 
   it("validates every expected patch revision before changing the first file", async () => {
     const writes: string[] = [];
+    let nativeCalls = 0;
     const checkpoints: unknown[] = [];
     const files: Record<string, { content: string; revision: string }> = {
       "C:/dev/macro-web/src/a.ts": {
@@ -1863,6 +1868,7 @@ describe("workspaceToolExecutor helpers", () => {
         validateToolExecution: async () => ({ allowed: true }),
         executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
           if (toolId === "apply_patch") {
+            nativeCalls++;
             throw new Error(
               'Stale content for "web/src/b.ts": expected revision revision-b-stale but found revision-b-current.',
             );
@@ -1925,6 +1931,7 @@ describe("workspaceToolExecutor helpers", () => {
 
     expect(result).toContain('Stale content for "web/src/b.ts"');
     expect(writes).toEqual([]);
+    expect(nativeCalls).toBe(0);
     expect(checkpoints).toEqual([]);
   });
 
@@ -1956,7 +1963,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "write",
       { path: "src/value.ts", content: "export const value = 'after';\n" },
       "Implement",
@@ -1967,6 +1974,8 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("Failed to record code checkpoint");
     expect(result).toContain("mutation was reverted");
@@ -2066,7 +2075,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -2102,6 +2111,8 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("Failed to record code checkpoint");
     expect(result).toContain("mutations were reverted");
@@ -2194,7 +2205,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -2230,6 +2241,9 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("rollback failed");
     expect(result).toContain("b.ts changed externally");
@@ -2406,7 +2420,7 @@ describe("workspaceToolExecutor helpers", () => {
     ]);
   });
 
-  it("does not roll back a delete rejected before any mutation", async () => {
+  it("does not compensate an unacknowledged delete from its diagnostic alone", async () => {
     let rollbackWrites = 0;
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
@@ -2446,7 +2460,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "delete",
       { path: "src/obsolete.ts" },
       "Implement",
@@ -2455,6 +2469,9 @@ describe("workspaceToolExecutor helpers", () => {
         onCodeCheckpoint: async () => undefined,
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("revision conflict before delete");
     expect(result).not.toContain("rollback");
@@ -2943,7 +2960,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "write",
       { path: "web/src/value.ts", content: "export const value = 'after';\n" },
       "Implement",
@@ -2964,6 +2981,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain(
       'External modification detected for "web/src/value.ts"',
@@ -3029,7 +3049,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "edit",
       {
         path: "src/value.ts",
@@ -3043,6 +3063,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain(
       'External modification detected for "src/value.ts"',
@@ -3118,7 +3141,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "delete",
       { path: "src/obsolete.ts" },
       "Implement",
@@ -3128,6 +3151,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain(
       'External modification detected for "src/obsolete.ts"',
@@ -3242,7 +3268,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "apply_patch",
       {
         patch_text: [
@@ -3276,6 +3302,9 @@ describe("workspaceToolExecutor helpers", () => {
           checkpoints.push(checkpoint),
       },
     );
+    // A rejected mutation/compensation IPC cannot prove a pre-effect refusal.
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("External modification detected");
     expect(result).toContain('"web/src/b.ts"');
@@ -3398,7 +3427,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool(
+    const execution = executeWorkspaceTool(
       "write",
       { path: "bin/run.sh", content: "#!/bin/sh\necho after\n" },
       "Implement",
@@ -3409,6 +3438,8 @@ describe("workspaceToolExecutor helpers", () => {
         },
       },
     );
+    await expect(execution).rejects.toBeInstanceOf(Error);
+    const result = await execution.catch((error: unknown) => String(error));
 
     expect(result).toContain("the mutation was reverted");
 
@@ -3772,6 +3803,7 @@ describe("conversation checkpoint diagnostics reach the next provider request", 
         const f = await lspConversationFixture({virtual, checkpointFailure: true});
         const {result} = await f.run(tool);
         expect(result.is_error).toBe(true);
+        expect(result.error_kind).toBe("uncertain");
         expect(result.content).toContain("reverted");
         expect(result.content).not.toContain("fixture-session");
         expect(f.state()).toMatchObject({content: "export const value: string = 'old';\n", filesystemWrites: 1});
@@ -3938,3 +3970,197 @@ it("keeps each native observation bound to its own root in a multi-mount checkpo
     rmSync(temporary, {recursive: true, force: true});
   }
 });
+
+// Regression of the independent audit: actual workspace adapter plus dispatch.
+for (const scenario of ['lost', 'command-name-in-error', 'refused', 'unavailable'] as const) {
+  it(`keeps native Git mutation receipts distinct from pre-effect refusals: ${scenario}`, async () => {
+    let effects = 0, completions = 0, unknowns = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({ tauriModule: {
+      isTauriAvailable: () => true,
+      executeWorkspaceTool: async () => {
+        if (scenario === 'refused') return 'Error executing git_add: validation refused before mutation';
+        if (scenario === 'unavailable') throw new Error('Command tool_execute_workspace not found');
+        effects++;
+        throw new Error(scenario === 'lost' ? 'reply lost after effect' : 'tool_execute_workspace transport closed');
+      },
+    } } as Partial<MockAppState>);
+    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+      allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+      journal: { ...allowChatToolInvocationJournal,
+        complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
+        markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+      },
+      execute: async () => executeWorkspaceTool('git_add', { paths: ['a.txt'] }, 'Implement', { workspacePath: 'C:/work/synthetic', projectId: 'api' }),
+      preserve: async (_op, _name, _id, value) => value, boundError: async (_op, _name, _id, error) => error,
+    }, () => true, () => {});
+    const result = await dispatch('git_add', { paths: ['a.txt'] }, 'original');
+    const lost = scenario === 'lost' || scenario === 'command-name-in-error';
+    expect(effects).toBe(lost ? 1 : 0);
+    expect(completions).toBe(lost ? 0 : 1);
+    expect(unknowns).toBe(lost ? 1 : 0);
+    expect(result).toMatchObject({ errorKind: lost ? 'uncertain' : 'execution' });
+    if (lost) {
+      if (!result || typeof result === 'string') throw new Error('Expected structured outcome');
+      expect(JSON.parse(result.result)).toMatchObject({ outcome: 'unknown', invocation: { callId: 'original' },
+        instruction: expect.stringContaining('Inspect') });
+    }
+  });
+}
+
+// Exercise actual routing, checkpoint wrappers and dispatch with synthetic IPC.
+for (const virtual of [false, true]) {
+  for (const scenario of ['delete-checkpoint', 'write-legacy', 'patch-legacy', 'rollback-delete', 'rollback-write', 'write-diagnostic', 'delete-diagnostic', 'git-diagnostic', 'write-empty'] as const) {
+    it(`keeps lost mutation acknowledgements unknown across adapters: ${scenario}, virtual=${virtual}`, async () => {
+      let effects = 0, completions = 0, unknowns = 0, checkpoints = 0;
+      const diagnostic = scenario.endsWith('diagnostic') || scenario === 'write-empty';
+      const tool = scenario.startsWith('delete') ? 'delete' : scenario.startsWith('git') ? 'git_add'
+        : scenario === 'patch-legacy' ? 'apply_patch' : 'write';
+      const rollback = scenario.startsWith('rollback');
+      const path = virtual ? 'api/a.txt' : 'a.txt';
+      const args = tool === 'apply_patch' ? { patch_text: `*** Begin Patch\n*** Add File: ${path}\n+new\n*** End Patch` }
+        : tool === 'git_add' ? { repo_path: virtual ? 'api' : '.', paths: ['a.txt'] }
+        : { path, content: 'new' };
+      const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({ tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => {
+          if (!diagnostic) return 'UNSUPPORTED_WORKSPACE_TOOL';
+          effects++;
+          if (scenario === 'write-empty') return '';
+          throw new Error('reply lost after effect: unknown command in downstream diagnostic');
+        },
+        fsExists: async () => rollback && (scenario === 'rollback-write' || effects > 0),
+        fsWriteFile: async () => {
+          effects++;
+          if (!rollback || effects > 1) throw new Error('write acknowledgement lost');
+          return { path: 'a.txt', bytes_written: 3, created: scenario === 'rollback-delete', revision: 'applied' };
+        },
+        fsDelete: async () => { effects++; throw new Error('delete acknowledgement lost'); },
+        fsReadFileWithOptions: async () => ({ content: effects ? 'new' : 'old', revision: effects ? 'applied' : 'before', is_binary: false, language: 'text', size: 3, encoding: 'utf-8' }),
+      }} as Partial<MockAppState>);
+      const rows = new Set<string>();
+      const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm',
+        allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+        journal: { ...allowChatToolInvocationJournal,
+          record: async input => { const recorded = await allowChatToolInvocationJournal.record(input); const is_new = !rows.has(input.callId); rows.add(input.callId); return { ...recorded, is_new }; },
+          complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
+          markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+        },
+        execute: async () => executeWorkspaceTool(tool, args, 'Implement', {
+          workspacePath: 'C:/dev/macro-api', projectId: 'api',
+          ...(virtual ? { virtualRootEnabled: true, groupId: 'macro-suite', projectMounts: [
+            { projectId: 'api', mountName: 'api', displayName: 'API', workspacePath: 'C:/dev/macro-api' },
+            { projectId: 'web', mountName: 'web', displayName: 'Web', workspacePath: 'C:/dev/macro-web' },
+          ] } : {}),
+          ...(!diagnostic && scenario !== 'patch-legacy' ? { onCodeCheckpoint: async () => { checkpoints++; if (rollback) throw new Error('checkpoint unavailable'); } } : {}),
+        }),
+        preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
+      }, () => true, () => {});
+      const result = await dispatch(tool, args, 'original');
+      expect(result).toMatchObject({ errorKind: 'uncertain' });
+      expect(completions).toBe(0);
+      expect(unknowns).toBe(1);
+      expect(effects).toBe(rollback ? 2 : 1);
+      expect(checkpoints).toBe(rollback ? 1 : 0);
+      await dispatch(tool, args, 'original');
+      expect(effects).toBe(rollback ? 2 : 1);
+    });
+  }
+}
+
+for (const message of ['Command tool_execute_workspace not found', 'Command tool_validate_execution not found', 'prefix Command tool_execute_workspace not found', 'Command tool_execute_workspace not found suffix']) {
+  it(`recognizes only the exact missing execution command: ${message}`, async () => {
+    let calls = 0, unknowns = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({ tauriModule: {
+      isTauriAvailable: () => true,
+      executeWorkspaceTool: async () => { calls++; throw message; },
+    }} as Partial<MockAppState>);
+    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['git_add'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+      journal: { ...allowChatToolInvocationJournal, markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); } },
+      execute: async () => executeWorkspaceTool('git_add', { paths: ['a.txt'] }, 'Implement', { workspacePath: 'C:/dev/macro-api' }),
+      preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
+    }, () => true, () => {});
+    expect(await dispatch('git_add', {}, 'original')).toMatchObject({ errorKind: message === 'Command tool_execute_workspace not found' ? 'execution' : 'uncertain' });
+    expect(unknowns).toBe(message === 'Command tool_execute_workspace not found' ? 0 : 1);
+    expect(calls).toBe(1);
+  });
+}
+
+for (const checkpoint of [false, true]) {
+  it(`propagates rejected remote mutation receipts without fallback, checkpoint=${checkpoint}`, async () => {
+    let effects = 0, unknowns = 0, completions = 0;
+    const lost = async () => { effects++; throw new Error('Command tool_execute_workspace not found'); };
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      projectGroups: [], standaloneProjects: [], tauriModule: { isTauriAvailable: () => false },
+      remoteKernelModule: { canUseRemoteKernel: () => true, executeRemoteWorkspaceTool: lost, executeRemoteWorkspaceToolDetailed: lost },
+    } as Partial<MockAppState>);
+    const dispatch = createChatToolDispatch({ conversationId: 'c', turnId: 't', assistantMessageId: 'm', allowedToolIds: ['write'], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+      journal: { ...allowChatToolInvocationJournal,
+        markUnknown: async input => { unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+        complete: async input => { completions++; return allowChatToolInvocationJournal.complete(input); },
+      },
+      execute: async () => executeWorkspaceTool('write', { path: 'a.txt', content: 'new' }, 'Implement', { workspacePath: '/synthetic', ...(checkpoint ? { onCodeCheckpoint: async () => {} } : {}) }),
+      preserve: async (_o, _n, _c, r) => r, boundError: async (_o, _n, _c, e) => e,
+    }, () => true, () => {});
+    expect(await dispatch('write', {}, 'original')).toMatchObject({ errorKind: 'uncertain' });
+    expect(effects).toBe(1);
+    expect(unknowns).toBe(1);
+    expect(completions).toBe(0);
+  });
+}
+
+function checkpointReceiptDispatch(tool: string, args: Record<string, unknown>, execute: () => Promise<string | undefined>) {
+  const counters = { completions: 0, unknowns: 0 };
+  const rows = new Set<string>();
+  const dispatch = createChatToolDispatch({ conversationId: 'checkpoint-conversation', turnId: 't', assistantMessageId: 'm', allowedToolIds: [tool], signal: new AbortController().signal } as unknown as FrozenToolCallContext, {
+    journal: { ...allowChatToolInvocationJournal,
+      record: async input => { const row = await allowChatToolInvocationJournal.record(input); const is_new = !rows.has(input.callId); rows.add(input.callId); return { ...row, is_new }; },
+      complete: async input => { counters.completions++; return allowChatToolInvocationJournal.complete(input); },
+      markUnknown: async input => { counters.unknowns++; return allowChatToolInvocationJournal.markUnknown(input); },
+    },
+    execute, preserve: async (_o, _n, _c, result) => result, boundError: async (_o, _n, _c, error) => error,
+  }, () => true, () => {});
+  return { counters, invoke: () => dispatch(tool, args, 'checkpoint-original') };
+}
+for (const virtual of [false, true]) {
+it(`keeps a durable checkpoint receipt unknown after successful file compensation, virtual=${virtual}`, async()=>{
+  let content: string | null='old', revision='before', mutations=0, dbWrites=0;
+  const settings=new Map<string,string>();
+  const {executeWorkspaceTool}=await loadWorkspaceToolExecutor({tauriModule:{
+    isTauriAvailable:()=>true,
+    fsExists:async()=>content!==null,
+    fsReadFileWithOptions:async()=>({content,revision,is_binary:false,size:content?.length??0,encoding:'utf-8',language:'text'}),
+    fsDelete:async()=>{mutations++;content=null;revision='absent';},
+    fsWriteFile:async({path,content:next,expectedRevision}:{path:string;content:string;expectedRevision:string})=>{
+      expect(expectedRevision).toBe('absent'); mutations++; content=next;revision='restored';
+      return {path,bytes_written:next.length,created:true,revision};
+    },
+    dbGetAppSetting:async(key:string)=>settings.has(key)?{key,value_json:settings.get(key)}:null,
+    dbSetAppSetting:async({key,valueJson}:{key:string;valueJson:string})=>{
+      dbWrites++;settings.set(key,valueJson);throw new Error('checkpoint database receipt lost after commit');
+    },
+  }} as Partial<MockAppState>);
+  const {saveAgentCodeCheckpoints,loadAgentCodeCheckpoints,createAgentCodeCheckpoint}=await import('./agentCodeCheckpoints');
+  const args={path:virtual ? 'api/a.txt' : 'a.txt'};
+  const audit=checkpointReceiptDispatch('delete',args,()=>executeWorkspaceTool('delete',args,'Implement',{
+    workspacePath:'C:/work/synthetic',projectId:'api',
+    ...(virtual ? { virtualRootEnabled:true, projectMounts:[
+      {projectId:'api',mountName:'api',displayName:'API',workspacePath:'C:/work/synthetic'},
+      {projectId:'web',mountName:'web',displayName:'Web',workspacePath:'C:/work/other'},
+    ] } : {}), onCodeCheckpoint:async(checkpoint: {toolName: string; files: AgentCodeCheckpointFile[]})=>{
+      const saved=createAgentCodeCheckpoint([],{conversationId:'audit3-checkpoint',turnId:'audit3-t',assistantMessageId:'audit3-m',toolCallId:'audit3-original',toolName:checkpoint.toolName,files:checkpoint.files});
+      await saveAgentCodeCheckpoints('audit3-checkpoint',[saved]);
+    },
+  }));
+  const result=await audit.invoke();
+  const reloaded=await loadAgentCodeCheckpoints('audit3-checkpoint');
+  expect(content).toBe('old'); expect(mutations).toBe(2); expect(dbWrites).toBe(1);
+  expect(reloaded.length).toBe(1); expect(reloaded[0].files[0].after.exists).toBe(false);
+  // Restoring the file does not remove the checkpoint persisted before rejection.
+  expect(audit.counters).toEqual({completions:0,unknowns:1});
+  expect(result).toMatchObject({errorKind:'uncertain'});
+  await audit.invoke(); expect(mutations).toBe(2);expect(dbWrites).toBe(1);
+  if (!result || typeof result === 'string') throw new Error('Expected structured uncertainty');
+  expect(JSON.parse(result.result)).toMatchObject({outcome:'unknown',invocation:{callId:'checkpoint-original'},instruction:expect.stringContaining('Inspect')});
+});
+
+}
