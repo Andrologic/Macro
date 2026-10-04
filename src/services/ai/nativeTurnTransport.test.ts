@@ -1,4 +1,5 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
+import { resolveChatErrorPresentation, buildProviderErrorTranscriptMarkdown } from '../chatErrorPresentation';
 import type { ToolTrace } from '../../types';
 import fixture from '../../../src-tauri/src/commands/mcp/fixtures/typed-result.json';
 import { normalizeToolResultBlocks, readTypedToolResult } from '../../shared/toolResultContent';
@@ -396,4 +397,35 @@ test('native cancellation during live-result callback skips later result notific
   await expect(run).rejects.toMatchObject({ name: 'AbortError' });
   expect(submissions.map(item => item.toolCallId)).toEqual(['read-call']);
   expect(notified).not.toHaveBeenCalled();
+});
+
+for (const [status, kind, retryable] of [
+  [400, 'unknown', false], [401, 'auth', false], [403, 'auth', false],
+  [408, 'provider_overloaded', true], [429, 'rate_limited', true],
+  [502, 'provider_overloaded', true], [503, 'provider_overloaded', true],
+  [504, 'provider_overloaded', true],
+] as const) {
+  test(`native HTTP ${status} survives event classification and presentation`, async () => {
+    const run = turn({ providerId: 'fixture-openai', providerType: 'openai' });
+    const rejected = run.catch(error => error);
+    await started;
+    emit('ai:error', { request_id: 'another-request', message: 'Ignored', status: 401 });
+    expect(handlers.has('ai:error')).toBe(true);
+    emit('ai:error', { request_id: requestId, message: `Provider error ${status}: Service unavailable`, status });
+    const error = await rejected;
+    expect(error).toMatchObject({ status, kind, retryable });
+    const presentation = resolveChatErrorPresentation(error);
+    expect(presentation).toMatchObject({ origin: 'provider', displayTarget: 'transcript', status, kind, retryable });
+    expect(buildProviderErrorTranscriptMarkdown(presentation)).toContain(`Statut HTTP: \`${status}\``);
+    if (status === 503) expect(presentation.suggestedAction).toContain('Relance dans quelques instants');
+    expect(handlers.size).toBe(0);
+  });
+}
+
+test('native legacy provider errors remain compatible without HTTP status', async () => {
+  const run = turn({});
+  const rejected = run.catch(error => error);
+  await started;
+  emit('ai:error', { request_id: requestId, message: 'Legacy provider failure' });
+  expect(await rejected).toMatchObject({ kind: 'unknown', retryable: false, status: undefined });
 });

@@ -756,6 +756,7 @@
       "binaryFileRejected": "{{file}} contient des données binaires ou UTF-8 non valides.",
       "conversationRequired": "Sélectionnez une tâche ou un plan avant de joindre des fichiers.",
       "urlPreviewFailedTitle": "Impossible de récupérer l’aperçu de l’URL",
+      "urlPreviewBlockedDescription": "Pour des raisons de sécurité, les aperçus ne peuvent pas accéder aux adresses réseau locales, privées, réservées ou link-local. Utilise une URL publique.",
       "clipboardEmptyTitle": "Le presse-papiers est vide",
       "clipboardReadFailedTitle": "Impossible de lire le presse-papiers",
       "previewUnavailable": "Aperçu indisponible",

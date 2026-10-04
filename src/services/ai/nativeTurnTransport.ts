@@ -439,7 +439,7 @@ export const streamNativeTurnViaTauri = async (params: {
           }),
           ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            finish(() => reject(classifyProviderError(event.payload.message)));
+            finish(() => reject(classifyProviderError(event.payload.message, event.payload.status)));
           }),
         ]);
 

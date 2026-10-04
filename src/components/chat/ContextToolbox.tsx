@@ -7,6 +7,7 @@ import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
+import { toServiceError } from '../../services/contracts/errors';
 import { getWebSearchSettings } from '../../services/webSearchSettings';
 import { compareLocalized, formatRelativeTimeShort } from '../../i18n/format';
 import { cn } from '../../utils/cn';
@@ -322,7 +323,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       notify.error(
         t('chat.contextToolbox.urlPreviewFailedTitle', 'Could not fetch URL preview'),
         {
-          description: normalizedUrl,
+          description: toServiceError(error).code === 'WEB_FETCH_DESTINATION_BLOCKED'
+            ? t('chat.contextToolbox.urlPreviewBlockedDescription', 'For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.')
+            : normalizedUrl,
         }
       );
       await addContextCitationAndReveal({

@@ -728,6 +728,7 @@
       "binaryFileRejected": "{{file}}에 바이너리 데이터 또는 잘못된 UTF-8이 포함되어 있습니다.",
       "conversationRequired": "파일을 첨부하기 전에 작업 또는 계획을 선택하세요.",
       "urlPreviewFailedTitle": "URL 미리보기를 가져올 수 없습니다",
+      "urlPreviewBlockedDescription": "보안을 위해 미리보기는 로컬, 사설, 예약 또는 링크 로컬 네트워크 주소에 접근할 수 없습니다. 공개 URL을 사용하세요.",
       "clipboardEmptyTitle": "클립보드가 비어 있습니다",
       "clipboardReadFailedTitle": "클립보드를 읽을 수 없습니다",
       "previewUnavailable": "미리보기를 사용할 수 없음",

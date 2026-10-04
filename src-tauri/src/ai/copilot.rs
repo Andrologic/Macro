@@ -2018,6 +2018,7 @@ pub async fn stream_chat(
                 AiStreamErrorEvent {
                     request_id: task_request_id.clone(),
                     message,
+                    status: None,
                 },
             );
         }

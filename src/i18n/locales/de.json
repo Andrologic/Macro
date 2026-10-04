@@ -729,6 +729,7 @@
       "binaryFileRejected": "{{file}} enthält Binärdaten oder ungültiges UTF-8.",
       "conversationRequired": "Wählen Sie eine Aufgabe oder einen Plan aus, bevor Sie Dateien anhängen.",
       "urlPreviewFailedTitle": "URL-Vorschau konnte nicht geladen werden",
+      "urlPreviewBlockedDescription": "Aus Sicherheitsgründen können Vorschauen nicht auf lokale, private, reservierte oder Link-Local-Netzwerkadressen zugreifen. Verwende eine öffentliche URL.",
       "clipboardEmptyTitle": "Die Zwischenablage ist leer",
       "clipboardReadFailedTitle": "Die Zwischenablage konnte nicht gelesen werden",
       "previewUnavailable": "Vorschau nicht verfügbar",
