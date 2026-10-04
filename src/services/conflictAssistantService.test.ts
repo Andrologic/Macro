@@ -137,6 +137,21 @@ describe("conflictAssistantService", () => {
     );
   });
 
+  it("binds the recovery draft to its explicit project instead of current global focus", async () => {
+    appStoreState.selectedProjectId = "unrelated-project";
+    appStoreState.selectedGroupId = "unrelated-group";
+    const moduleId = "./conflictAssistantService.ts?explicit-scope";
+    const { openConflictAssistant } = await import(moduleId);
+    await openConflictAssistant({
+      prompt: "Inspect code conflicts.",
+      scope: { projectId: "conflicted-project", groupId: null },
+    });
+    expect(createConversationMock).toHaveBeenCalledWith(
+      "Resolve merge conflicts", null, "conflicted-project", null,
+    );
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
   it("creates a fresh conversation on each call", async () => {
     let counter = 0;
     createConversationMock.mockImplementation(async () => ({

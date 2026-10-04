@@ -186,3 +186,29 @@ export const buildMacroConflictAssistantPrompt = (params: {
     'Act directly with the available Macro tools to resolve safe blockers. If a tool needs approval or a blocker is unsafe to modify automatically, explain exactly what remains.',
   ].join('\n');
 };
+
+export interface CodeConflictRepository {
+  repoPath: string;
+  branch: string;
+  upstreamBranch: string;
+  mergeInProgress: boolean;
+  conflictFiles: string[];
+}
+
+export const buildCodeConflictAssistantPrompt = (params: {
+  repositories: CodeConflictRepository[];
+}): string => [
+  'Help me inspect code branch conflicts in Macro.',
+  'Use the read-only repository tools to explain the conflict and propose a resolution.',
+  'Do not change files, start a merge, commit, or rewrite history. Describe the edits and explicit Git actions for me to review and apply.',
+  'If no merge is in progress, these files were detected by preflight checks. Do not claim they contain conflict markers yet.',
+  '',
+  ...params.repositories.map((repository) => [
+    `Repository: ${repository.repoPath}`,
+    `Code branch: ${repository.branch}`,
+    `Upstream: ${repository.upstreamBranch}`,
+    `Merge in progress: ${repository.mergeInProgress ? 'yes' : 'no'}`,
+    'Conflict files:',
+    ...Array.from(new Set(repository.conflictFiles)).map((file) => `- ${file}`),
+  ].join('\n')),
+].join('\n');

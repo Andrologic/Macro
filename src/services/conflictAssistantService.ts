@@ -6,6 +6,7 @@ export interface ConflictAssistantOptions {
   prompt: string;
   internalAgentProfile?: InternalAgentProfile;
   conversationTitle?: string;
+  scope?: { projectId: string; groupId: string | null };
 }
 
 const DEFAULT_CONFLICT_ASSISTANT_TITLE = 'Resolve merge conflicts';
@@ -51,8 +52,8 @@ export const openConflictAssistant = async (
   const conversation = await chatStore.createConversation(
     title,
     null,
-    appState.selectedProjectId,
-    appState.selectedGroupId
+    options.scope?.projectId ?? appState.selectedProjectId,
+    options.scope ? options.scope.groupId : appState.selectedGroupId
   );
 
   pendingConflictAssistantProfiles.set(
