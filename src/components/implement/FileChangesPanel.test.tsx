@@ -4378,7 +4378,7 @@ describe('FileChangesPanel', () => {
   it('does not block task review on an unrelated unsupported global project', async () => {
     seedStores(buildRepository(false));
     const taskProject = useAppStore.getState().getProjectById('project-1');
-    const unrelatedProject = { ...taskProject!, id: 'unrelated', path: 'wsl://Ubuntu/repo' };
+    const unrelatedProject = { ...taskProject!, id: 'unrelated', path: '//wsl.localhost/Ubuntu/repo', pathKind: 'wsl' as const };
     useAppStore.setState({
       selectedGroupId: null,
       selectedProjectId: unrelatedProject.id,
