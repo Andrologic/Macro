@@ -95,11 +95,13 @@ export const buildPlanFinalizationTaskTitle = (plan: {
 }): string => `Finalize plan: ${plan.label || plan.title}`;
 
 const isActionablePlanFinalizationNode = (
-  node: Pick<PlanNode, 'id' | 'archivedAt'>
-): boolean => Boolean(node.id.trim()) && !node.archivedAt;
+  node: Pick<PlanNode, 'id' | 'status' | 'archivedAt' | 'archiveReason'>
+): boolean => Boolean(node.id.trim()) && (
+  !node.archivedAt || (node.status === 'completed' && node.archiveReason === 'merged')
+);
 
 export const derivePlanFinalizationDependencyState = (
-  nodes: Array<Pick<PlanNode, 'id' | 'dependencies' | 'status' | 'archivedAt'>>
+  nodes: Array<Pick<PlanNode, 'id' | 'dependencies' | 'status' | 'archivedAt' | 'archiveReason'>>
 ): PlanFinalizationDependencyState => {
   const actionableNodes = nodes.filter(isActionablePlanFinalizationNode);
   const actionableNodeIds = actionableNodes.map((node) => node.id);
