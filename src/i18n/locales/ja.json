@@ -728,6 +728,7 @@
       "binaryFileRejected": "{{file}}にはバイナリデータまたは無効なUTF-8が含まれています。",
       "conversationRequired": "ファイルを添付する前にタスクまたはプランを選択してください。",
       "urlPreviewFailedTitle": "URL プレビューを取得できませんでした",
+      "urlPreviewBlockedDescription": "セキュリティ上の理由から、プレビューはローカル、プライベート、予約済み、リンクローカルのネットワークアドレスにアクセスできません。公開 URL を使用してください。",
       "clipboardEmptyTitle": "クリップボードは空です",
       "clipboardReadFailedTitle": "クリップボードを読み取れませんでした",
       "previewUnavailable": "プレビューを利用できません",

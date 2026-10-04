@@ -757,6 +757,7 @@
       "binaryFileRejected": "{{file}} contains binary or invalid UTF-8 data.",
       "conversationRequired": "Select a task or plan before attaching files.",
       "urlPreviewFailedTitle": "Could not fetch URL preview",
+      "urlPreviewBlockedDescription": "For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.",
       "clipboardEmptyTitle": "Clipboard is empty",
       "clipboardReadFailedTitle": "Could not read clipboard",
       "previewUnavailable": "Preview unavailable",

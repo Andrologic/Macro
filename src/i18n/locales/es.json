@@ -733,6 +733,7 @@
       "binaryFileRejected": "{{file}} contiene datos binarios o UTF-8 no válido.",
       "conversationRequired": "Selecciona una tarea o un plan antes de adjuntar archivos.",
       "urlPreviewFailedTitle": "No se pudo obtener la vista previa de la URL",
+      "urlPreviewBlockedDescription": "Por seguridad, las vistas previas no pueden acceder a direcciones de red locales, privadas, reservadas o de enlace local. Usa una URL pública.",
       "clipboardEmptyTitle": "El portapapeles está vacío",
       "clipboardReadFailedTitle": "No se pudo leer el portapapeles",
       "previewUnavailable": "Vista previa no disponible",
