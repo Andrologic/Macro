@@ -843,11 +843,13 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             archiveWriteCommitted = true;
           },
           onCommitted: async () => {
-            if (archiveMutationVersionRef.current !== mutationVersion) return;
-            const selectionUnchanged = useChatStore.getState().selectedConversationId === selectedConversationId;
+            // Every committed archive owns its draft cleanup, even when a newer
+            // mutation now owns the selection and view.
             if (shouldArchive) {
               normalizedIds.forEach(discardComposerDraftForConversation);
             }
+            if (archiveMutationVersionRef.current !== mutationVersion) return;
+            const selectionUnchanged = useChatStore.getState().selectedConversationId === selectedConversationId;
             if (selectionUnchanged && shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
               const fallbackConversation = chatConversations.find(
                 (conversation) =>

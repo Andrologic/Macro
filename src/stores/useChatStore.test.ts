@@ -3023,6 +3023,114 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
+  it('retains automatic naming after a failed rename while metadata is pending', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const metadata = createDeferred<string>();
+    const requested = createDeferred<void>();
+    queueSendChatNonStreamingImplementation(async () => { requested.resolve(); return metadata.promise; });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('audit-failed-late'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'audit-failed-late',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'audit-failed-late', content: 'Refresh checkout' });
+    await requested.promise;
+    renameConversationMock.mockImplementationOnce(async () => { throw new Error('rename failed'); });
+    await expect(useChatStore.getState().renameConversation('audit-failed-late', 'Mon titre')).rejects.toThrow('rename failed');
+    expect(appSettingValues.has('conversation-manual-title:audit-failed-late')).toBe(false);
+    metadata.resolve(JSON.stringify({ title: 'Checkout refresh', description: 'Checkout changes.' }));
+    await flushAsyncWork();
+    const title = useChatStore.getState().conversations[0]?.title;
+    expect(title).toBe('Checkout refresh');
+    expect(updateConversationDetailsMock).toHaveBeenCalledTimes(1);
+  });
+
+  for (const renameSucceeds of [false, true]) {
+    it(`settles a ${renameSucceeds ? 'successful' : 'failed'} rename before applying metadata returned during its write`, async () => {
+      appState.mode = 'Chat';
+      tauriAvailable = true;
+      const metadata = createDeferred<string>();
+      const requested = createDeferred<void>();
+      const writing = createDeferred<void>();
+      const release = createDeferred<void>();
+      queueSendChatNonStreamingImplementation(async () => { requested.resolve(); return metadata.promise; });
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{ ...createConversation('overlapping-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+        selectedConversationId: 'overlapping-title',
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'overlapping-title', content: 'Refresh checkout' });
+      await requested.promise;
+      renameConversationMock.mockImplementationOnce(async () => {
+        writing.resolve();
+        await release.promise;
+        if (!renameSucceeds) throw new Error('rename failed');
+      });
+      const rename = useChatStore.getState().renameConversation('overlapping-title', 'Mon titre').catch((error: unknown) => error);
+      await writing.promise;
+      metadata.resolve(JSON.stringify({ title: 'Checkout refresh', description: 'Checkout changes.' }));
+      await flushAsyncWork();
+      expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+      release.resolve();
+      const result = await rename;
+      if (!renameSucceeds) expect(result).toBeInstanceOf(Error);
+      await flushAsyncWork();
+      expect(useChatStore.getState().conversations[0]?.title).toBe(renameSucceeds ? 'Mon titre' : 'Checkout refresh');
+      expect(updateConversationDetailsMock).toHaveBeenCalledTimes(renameSucceeds ? 0 : 1);
+    });
+  }
+
+  it('preserves a later successful rename after an earlier attempt fails during metadata generation', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const metadata = createDeferred<string>();
+    const requested = createDeferred<void>();
+    queueSendChatNonStreamingImplementation(async () => { requested.resolve(); return metadata.promise; });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('retried-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'retried-title',
+    }));
+    await useChatStore.getState().sendMessage({ conversationId: 'retried-title', content: 'Refresh checkout' });
+    await requested.promise;
+    renameConversationMock.mockImplementationOnce(async () => { throw new Error('rename failed'); });
+    await expect(useChatStore.getState().renameConversation('retried-title', 'Premier titre')).rejects.toThrow('rename failed');
+    await useChatStore.getState().renameConversation('retried-title', 'Titre confirmé');
+    metadata.resolve(JSON.stringify({ title: 'Checkout refresh', description: 'Checkout changes.' }));
+    await flushAsyncWork();
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Titre confirmé');
+    expect(updateConversationDetailsMock).not.toHaveBeenCalled();
+  });
+
+  it('waits for a failed pending rename before reading the manual-title marker for the first message', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const writing = createDeferred<void>();
+    const release = createDeferred<void>();
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('pending-title'), scope_mode: 'Chat', title: 'New Conversation' }],
+      selectedConversationId: 'pending-title',
+    }));
+    renameConversationMock.mockImplementationOnce(async () => {
+      writing.resolve();
+      await release.promise;
+      throw new Error('rename failed');
+    });
+    const rename = useChatStore.getState().renameConversation('pending-title', 'Mon titre').catch((error: unknown) => error);
+    await writing.promise;
+    expect(appSettingValues.has('conversation-manual-title:pending-title')).toBe(true);
+    await useChatStore.getState().sendMessage({ conversationId: 'pending-title', content: 'Refresh checkout' });
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    release.resolve();
+    expect(await rename).toBeInstanceOf(Error);
+    await flushAsyncWork();
+    expect(appSettingValues.has('conversation-manual-title:pending-title')).toBe(false);
+    expect(useChatStore.getState().conversations[0]?.title).toBe('Checkout refresh');
+    expect(updateConversationDetailsMock).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves a manual Chat title chosen before the first message', async () => {
     appState.mode = 'Chat';
     tauriAvailable = true;

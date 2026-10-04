@@ -107,6 +107,63 @@ describe('ConversationArchive', () => {
     else Reflect.deleteProperty(HTMLElement.prototype, 'offsetWidth');
   });
 
+  it.each([false, true])('cleans committed overlapping archives and preserves drafts on failure: %s', async (failSecondWrite) => {
+    const active = useChatStore.getState().conversations[0];
+    const first = { ...active, id: 'audit-a', title: 'Audit A' };
+    const second = { ...active, id: 'audit-b', title: 'Audit B' };
+    const writing = createDeferred<void>();
+    const release = createDeferred<void>();
+    const discard = mock((id: string) => initialChatState.discardComposerDraftForConversation(id));
+    useChatStore.setState({
+      conversations: [first, second, active],
+      discardComposerDraftForConversation: discard,
+      composerDraftsByContextKey: {
+        'conversation:audit-a': { text: 'Brouillon A', images: [], contextRefs: [] },
+        'conversation:audit-b': { text: 'Brouillon B', images: [], contextRefs: [] },
+      },
+    });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    let archiveWrites = 0;
+    invokeMock.mockImplementation(async (command, payload) => {
+      if (command === 'state_set_value') {
+        if (payload?.key === PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS && ++archiveWrites === 1) {
+          writing.resolve(); await release.promise;
+        }
+        if (payload?.key === PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS && archiveWrites === 2 && failSecondWrite) {
+          throw new Error('second archive write failed');
+        }
+        stateValues[String(payload?.key)] = structuredClone(payload?.value);
+      }
+      return { schemaVersion: 1, values: structuredClone(stateValues) };
+    });
+    const archive = async (name: string) => {
+      const row = Array.from(container!.querySelectorAll('[data-index]')).find((row) => row.textContent?.includes(name));
+      expect(row).toBeDefined();
+      await act(async () => {
+        row?.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')?.click();
+        await flushRender();
+      });
+      const command = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-conversation-actions-menu] button'))
+        .find((button) => button.textContent?.trim() === 'Archive');
+      expect(command).toBeDefined();
+      await act(async () => { command?.click(); await flushRender(); });
+    };
+    await archive('Audit A'); await writing.promise;
+    await archive('Audit B');
+    await act(async () => { release.resolve(); await flushRender(); });
+    const expectedArchivedIds = failSecondWrite ? ['audit-a'] : ['audit-a', 'audit-b'];
+    expect(stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]).toEqual(expectedArchivedIds);
+    expect(Array.from(useConversationArchiveStore.getState().archivedConversationIds)).toEqual(expectedArchivedIds);
+    expect(useChatStore.getState().getComposerDraftForContext('conversation:audit-a')).toBeNull();
+    if (failSecondWrite) {
+      expect(useChatStore.getState().getComposerDraftForContext('conversation:audit-b')?.text).toBe('Brouillon B');
+    } else {
+      expect(useChatStore.getState().getComposerDraftForContext('conversation:audit-b')).toBeNull();
+    }
+    expect(discard.mock.calls.map(([id]) => id)).toEqual(expectedArchivedIds);
+    expect(useChatStore.getState().selectedConversationId).toBe(active.id);
+  });
+
   it('keeps multi-select compact until the header button activates its toolbar', async () => {
     await act(async () => {
       root?.render(<ConversationArchive />);
