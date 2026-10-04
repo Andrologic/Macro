@@ -1852,6 +1852,7 @@
     "totalChanges": "cambios totales"
   },
   "providers": {
+    "backToProviders": "Volver a los proveedores",
     "collectionTitle": "Proveedores",
     "collectionDescription": "Gestiona las conexiones configuradas",
     "emptyDescription": "Añade un proveedor para conectar Macro con un servicio de IA.",
@@ -2182,7 +2183,8 @@
       }
     }
   },
-  "prompts": { "title": "Prompts del sistema", "description": "Personaliza los prompts base de los modos y los perfiles internos usados durante la planificación, la revisión y la auditoría del repositorio.", "restoreAll": "Restaurar todo", "saveFailed": "No se pudieron guardar los prompts del sistema." },
+  "prompts": {
+    "loadFailed": "No se pudieron cargar las instrucciones del sistema. Reinténtalo antes de guardar.", "title": "Prompts del sistema", "description": "Personaliza los prompts base de los modos y los perfiles internos usados durante la planificación, la revisión y la auditoría del repositorio.", "restoreAll": "Restaurar todo", "saveFailed": "No se pudieron guardar los prompts del sistema." },
   "toast": {
     "languageChanged": "Idioma cambiado a {{language}}",
     "settingsSaved": "Configuración guardada",

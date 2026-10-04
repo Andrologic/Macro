@@ -1876,6 +1876,7 @@
     "totalChanges": "total changes"
   },
   "providers": {
+    "backToProviders": "Back to providers",
     "macroAi": {
       "included": "AI included with the Macro beta",
       "dropdownNotice": "AI included with the beta"
@@ -2251,7 +2252,8 @@
       }
     }
   },
-  "prompts": { "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
+  "prompts": {
+    "loadFailed": "Unable to load system prompts. Retry before saving.", "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
     "settingsSaved": "Settings saved",

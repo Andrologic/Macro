@@ -1875,6 +1875,7 @@
     "totalChanges": "changements totaux"
   },
   "providers": {
+    "backToProviders": "Retour aux fournisseurs",
     "macroAi": {
       "included": "IA incluse avec la bêta de Macro",
       "dropdownNotice": "IA incluse avec la bêta"
@@ -2205,7 +2206,8 @@
       }
     }
   },
-  "prompts": { "title": "Prompts système", "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.", "restoreAll": "Tout restaurer", "saveFailed": "Impossible d’enregistrer les prompts système." },
+  "prompts": {
+    "loadFailed": "Impossible de charger les invites système. Réessayez avant d’enregistrer.", "title": "Prompts système", "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.", "restoreAll": "Tout restaurer", "saveFailed": "Impossible d’enregistrer les prompts système." },
   "toast": {
     "languageChanged": "La langue a été modifiée en {{language}}",
     "settingsSaved": "Paramètres enregistrés",

@@ -1847,6 +1847,7 @@
     "totalChanges": "총 변경사항"
   },
   "providers": {
+    "backToProviders": "공급자 목록으로 돌아가기",
     "collectionTitle": "공급자",
     "collectionDescription": "구성된 연결을 관리합니다",
     "emptyDescription": "공급자를 추가하여 Macro를 AI 서비스에 연결하세요.",
@@ -2177,7 +2178,8 @@
     "logoutFailed": "로그아웃하지 못했습니다.",
     "saveFailed": "제공업체를 저장하지 못했습니다."
   },
-  "prompts": { "title": "시스템 프롬프트", "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.", "restoreAll": "모두 복원", "saveFailed": "시스템 프롬프트를 저장하지 못했습니다." },
+  "prompts": {
+    "loadFailed": "시스템 프롬프트를 불러올 수 없습니다. 저장하기 전에 다시 시도하세요.", "title": "시스템 프롬프트", "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.", "restoreAll": "모두 복원", "saveFailed": "시스템 프롬프트를 저장하지 못했습니다." },
   "toast": {
     "languageChanged": "언어가 다음으로 변경되었습니다.{{language}}",
     "settingsSaved": "설정이 저장되었습니다.",
