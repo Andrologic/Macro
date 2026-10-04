@@ -253,7 +253,7 @@ const hasDisallowedGitBranchCharacter = (branchName: string): boolean =>
 export const isValidGitBranchName = (branchName: string): boolean => {
   const normalized = branchName;
   if (!normalized || normalized.startsWith('-') || normalized.startsWith('/') || normalized.endsWith('/')) return false;
-  if (normalized === '@') return false;
+  if (normalized === 'HEAD') return false;
   if (normalized.endsWith('.')) return false;
   if (normalized.endsWith('.lock')) return false;
   if (hasDisallowedGitBranchCharacter(normalized)) return false;

@@ -56,7 +56,7 @@ describe('architectGitNaming', () => {
   });
 
   it('checks literal branch names against Git without repairing invalid input', () => {
-    const names = ['main', 'develop', 'feature/café', 'topic/-part', 'topic/a.b',
+    const names = ['HEAD', '@', 'main', 'develop', 'feature/café', 'topic/-part', 'topic/a.b',
       'branch invalid', 'topic..bad', 'topic.lock', 'topic.lock/next', 'topic@{1}',
       '-topic', '/topic', 'topic/', 'topic//part', 'topic\\part', '.topic',
       'topic/.part', 'topic.', 'topic~1', 'topic^', 'topic:part', 'topic?',
