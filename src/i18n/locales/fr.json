@@ -371,6 +371,46 @@
     "cpu": "Processeur",
     "memory": "Mémoire",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "Aucun remote configuré",
+          "body": "Ajoutez l’URL du remote origin pour synchroniser ce dépôt. Vous pouvez aussi continuer à travailler localement."
+        },
+        "missing_upstream": {
+          "title": "Aucune branche de suivi configurée",
+          "body": "Publiez la branche de code sur origin pour définir sa branche de suivi, puis réessayez. La publication envoie vos commits locaux au dépôt distant."
+        },
+        "remote_unavailable": {
+          "title": "Dépôt distant inaccessible",
+          "body": "Vérifiez l’URL du remote origin et vos droits d’accès, puis réessayez. Corrigez l’URL d’un remote existant dans votre client Git."
+        },
+        "auth": {
+          "title": "Authentification Git nécessaire",
+          "body": "Vérifiez vos identifiants Git et vos droits d’accès au dépôt, puis réessayez."
+        },
+        "network": {
+          "title": "Connexion au dépôt distant impossible",
+          "body": "Vérifiez votre connexion et l’URL du remote origin, puis réessayez."
+        },
+        "local_changes": {
+          "title": "Des fichiers locaux empêchent le pull",
+          "body": "Conservez vos modifications. Relisez-les ou mettez-les de côté avant de réessayer le pull."
+        },
+        "divergence": {
+          "title": "Les branches ont divergé",
+          "body": "Actualisez l’état de la branche et choisissez une fusion ou un rebase pour intégrer les commits distants."
+        },
+        "unknown": {
+          "title": "La synchronisation Git a échoué",
+          "body": "Consultez les détails techniques, corrigez le problème signalé, puis réessayez."
+        }
+      },
+      "publishCodeBranch": "Publier la branche de code",
+      "configureAndRetry": "Configurer et réessayer",
+      "remoteConfigurationFailed": "La configuration du remote a échoué. Vérifiez l’URL et les détails techniques.",
+      "originUrl": "URL du remote origin",
+      "metadataNeedsAttention": "La synchronisation du code est terminée. Celle des métadonnées demande une intervention.",
+      "reviewRecovery": "Examiner la reprise",
       "done": "Terminé.",
       "macroClean": "@macro clean",
       "macroPending": "@macro pending",
@@ -466,6 +506,8 @@
       "from": "depuis",
       "preflightAvailable": "Synchronisation disponible",
       "preflightConflicts": "Conflits détectés",
+      "preflightUnavailable": "Indisponible",
+      "conflictContextChanged": "La branche a changé. Actualisez avant d’ouvrir l’assistant.",
       "preflightBlockedByLocalChanges": "Bloqué par des changements locaux",
       "preflightChecking": "Vérification de la synchronisation",
       "preflightFailed": "Échec de la vérification",
@@ -493,6 +535,8 @@
       "localChangesBadge": "changements locaux",
       "mergeInProgressBadge": "fusion en cours",
       "conflictedFiles": "{{count}} fichiers en conflit",
+      "conflictedFiles_one": "{{count}} fichier en conflit",
+      "conflictedFiles_other": "{{count}} fichiers en conflit",
       "stashAndRetry": "Mettre de côté et réessayer",
       "discardLocalChanges": "Supprimer les changements locaux",
       "openConflictAssistant": "Ouvrir l’assistant de conflits",

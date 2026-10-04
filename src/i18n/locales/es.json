@@ -348,6 +348,50 @@
     "cpu": "CPU",
     "memory": "Memoria",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "No hay un remoto configurado",
+          "body": "Añade la URL de origin para sincronizar este repositorio. También puedes seguir trabajando localmente."
+        },
+        "missing_upstream": {
+          "title": "No hay una rama de seguimiento configurada",
+          "body": "Publica la rama de código en origin para definir su seguimiento y vuelve a intentarlo. La publicación envía tus commits locales al remoto."
+        },
+        "remote_unavailable": {
+          "title": "El repositorio remoto no está disponible",
+          "body": "Comprueba la URL de origin y tus permisos. Corrige una URL existente en tu cliente Git y vuelve a intentarlo."
+        },
+        "auth": {
+          "title": "Se requiere autenticación Git",
+          "body": "Comprueba tus credenciales Git y los permisos del repositorio y vuelve a intentarlo."
+        },
+        "network": {
+          "title": "No se puede conectar con el remoto",
+          "body": "Comprueba tu conexión y la URL de origin y vuelve a intentarlo."
+        },
+        "local_changes": {
+          "title": "Los archivos locales impiden el pull",
+          "body": "Conserva tus cambios. Revísalos o guárdalos con stash antes de volver a intentar el pull."
+        },
+        "divergence": {
+          "title": "Las ramas han divergido",
+          "body": "Actualiza el estado de la rama y elige merge o rebase para integrar los commits remotos."
+        },
+        "unknown": {
+          "title": "La sincronización Git ha fallado",
+          "body": "Consulta los detalles técnicos, corrige el problema y vuelve a intentarlo."
+        }
+      },
+      "publishCodeBranch": "Publicar rama de código",
+      "configureAndRetry": "Configurar y reintentar",
+      "remoteConfigurationFailed": "No se pudo configurar el remoto. Revisa la URL y los detalles técnicos.",
+      "originUrl": "URL de origin",
+      "metadataNeedsAttention": "El código está sincronizado. Los metadatos requieren atención.",
+      "reviewRecovery": "Revisar recuperación",
+      "conflictedFiles_other": "{{count}} archivos en conflicto",
+      "conflictedFiles_one": "{{count}} archivo en conflicto",
+      "conflictContextChanged": "La rama ha cambiado. Actualiza antes de abrir el asistente.",
+      "preflightUnavailable": "No disponible",
       "done": "Hecho.",
       "macroClean": "@macro limpio",
       "macroPending": "@macro pendiente",

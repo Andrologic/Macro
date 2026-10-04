@@ -343,6 +343,50 @@
     "cpu": "CPU",
     "memory": "メモリ",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "リモートが設定されていません",
+          "body": "このリポジトリを同期するには origin の URL を追加してください。ローカルで作業を続けることもできます。"
+        },
+        "missing_upstream": {
+          "title": "追跡ブランチが設定されていません",
+          "body": "コードブランチを origin に公開して追跡先を設定し、再試行してください。公開するとローカルのコミットがリモートに送信されます。"
+        },
+        "remote_unavailable": {
+          "title": "リモートリポジトリにアクセスできません",
+          "body": "origin の URL とアクセス権を確認してください。既存の URL は Git クライアントで修正してから再試行してください。"
+        },
+        "auth": {
+          "title": "Git 認証が必要です",
+          "body": "Git の認証情報とリポジトリへのアクセス権を確認して再試行してください。"
+        },
+        "network": {
+          "title": "リモートに接続できません",
+          "body": "接続と origin の URL を確認して再試行してください。"
+        },
+        "local_changes": {
+          "title": "ローカルファイルが pull を妨げています",
+          "body": "変更を保持してください。変更を確認するか stash で退避してから pull を再試行してください。"
+        },
+        "divergence": {
+          "title": "ブランチが分岐しています",
+          "body": "ブランチの状態を更新し、merge または rebase でリモートのコミットを統合してください。"
+        },
+        "unknown": {
+          "title": "Git の同期に失敗しました",
+          "body": "技術的な詳細を確認し、問題を修正して再試行してください。"
+        }
+      },
+      "publishCodeBranch": "コードブランチを公開",
+      "configureAndRetry": "設定して再試行",
+      "remoteConfigurationFailed": "リモートの設定に失敗しました。URL と技術的な詳細を確認してください。",
+      "originUrl": "origin の URL",
+      "metadataNeedsAttention": "コードの同期は完了しました。メタデータの同期には対応が必要です。",
+      "reviewRecovery": "復旧手順を確認",
+      "conflictedFiles_other": "競合ファイル {{count}} 件",
+      "conflictedFiles_one": "競合ファイル {{count}} 件",
+      "conflictContextChanged": "ブランチが変更されました。アシスタントを開く前に更新してください。",
+      "preflightUnavailable": "利用不可",
       "done": "終わり。",
       "macroClean": "@macroクリーン",
       "macroPending": "@macro保留中",
