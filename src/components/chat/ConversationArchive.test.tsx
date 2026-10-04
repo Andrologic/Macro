@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { act } from 'react';
+import { act, useState } from 'react';
+import { SettingsModal } from '../settings/SettingsModal';
+import { Dialog } from '../ui/Dialog';
+import { useAppStore } from '../../stores/useAppStore';
+import { settingsRegistry } from '../../composition/settings/registry';
+import { useGlobalShortcuts } from '../../hooks/useGlobalShortcuts';
 import { createDeferred } from '../../test-utils/deferred';
 import { createRoot, type Root } from 'react-dom/client';
 import { useChatStore } from '../../stores/useChatStore';
@@ -28,11 +33,13 @@ const flushRender = async () => {
 
 describe('ConversationArchive', () => {
   const initialChatState = useChatStore.getState();
+  const initialAppState = useAppStore.getState();
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
   const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
   const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
   let stateValues: Record<string, unknown> = {};
+  let restoreSettingsContribution: (() => void) | undefined;
   let invokeMock = mock(async (
     _command?: string,
     _payload?: Record<string, unknown>,
@@ -44,6 +51,7 @@ describe('ConversationArchive', () => {
       get() { return this.hasAttribute('data-conversation-actions-menu') ? 208 : this.classList.contains('overflow-y-auto') ? 600 : 80; },
     });
     Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return 280; } });
+    useAppStore.setState({ settingsOpen: false, mode: 'Chat' });
     stateValues = {};
     invokeMock = mock(async (
       command?: string,
@@ -95,10 +103,13 @@ describe('ConversationArchive', () => {
       root?.unmount();
       await flushRender();
     });
+    restoreSettingsContribution?.();
+    restoreSettingsContribution = undefined;
     container?.remove();
     container = null;
     root = null;
     useChatStore.setState(initialChatState, true);
+    useAppStore.setState(initialAppState, true);
     useConversationArchiveStore.setState({ archivedConversationIds: new Set() });
     removeTauriRuntimeMock();
     if (heightDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', heightDescriptor);
@@ -375,6 +386,83 @@ describe('ConversationArchive', () => {
     await act(async () => { pin?.click(); await flushRender(); });
     expect(togglePinConversation).toHaveBeenCalledWith(active.id);
     expect(document.body.querySelector('[data-conversation-actions-menu]')).toBeNull();
+  });
+
+  it.each([false, true])('closes the portal for Mod+, Settings and restores keyboard focus, menu focused: %s', async (focusMenu) => {
+    removeTauriRuntimeMock();
+    // Exercise the real Settings shell and Dialog without loading unrelated settings services.
+    const general = settingsRegistry.get('general', { settingsOpen: true })!;
+    settingsRegistry.setActive('general', false);
+    const unregister = settingsRegistry.register({
+      ...general, id: 'history-test', owner: 'test.history', order: -1, load: undefined,
+      component: () => <button>Settings control</button>,
+    });
+    restoreSettingsContribution = () => { unregister(); settingsRegistry.setActive('general', true); };
+    const Scene = () => {
+      useGlobalShortcuts();
+      return <><ConversationArchive /><SettingsModal /></>;
+    };
+    await act(async () => { root?.render(<Scene />); await flushRender(); });
+    const trigger = container!.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')!;
+    await act(async () => { trigger.focus(); trigger.click(); await flushRender(); });
+    const menu = document.body.querySelector<HTMLElement>('[data-conversation-actions-menu]')!;
+    const backdrop = menu.previousElementSibling!;
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.className).toContain('z-[80]');
+    if (focusMenu) menu.querySelector<HTMLButtonElement>('button')!.focus();
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ',', bubbles: true, cancelable: true,
+        metaKey: navigator.platform.toLowerCase().includes('mac'),
+        ctrlKey: !navigator.platform.toLowerCase().includes('mac'),
+      }));
+      await flushRender();
+    });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(useAppStore.getState().settingsOpen).toBe(true);
+    expect(dialog).not.toBeNull();
+    expect(menu.isConnected).toBe(false);
+    expect(backdrop.isConnected).toBe(false);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await flushRender();
+    });
+    await act(async () => { await flushRender(); });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement === trigger).toBe(true);
+    await act(async () => { trigger.click(); await flushRender(); });
+    document.body.querySelector<HTMLButtonElement>('[data-conversation-actions-menu] button')!.focus();
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-conversation-actions-menu]')).toBeNull();
+    expect(document.activeElement === trigger).toBe(true);
+  });
+
+  it('closes actions for any Dialog without stealing its initial or restored focus', async () => {
+    const Scene = () => {
+      const [open, setOpen] = useState(false);
+      return <><ConversationArchive /><button onClick={() => setOpen(true)}>Open dialog</button>
+        {open && <Dialog title="Other dialog" onClose={() => setOpen(false)}><button>Dialog action</button></Dialog>}
+      </>;
+    };
+    await act(async () => { root?.render(<Scene />); await flushRender(); });
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')!.click();
+      await flushRender();
+    });
+    const opener = Array.from(container!.querySelectorAll('button')).find((button) => button.textContent === 'Open dialog')!;
+    await act(async () => { opener.focus(); opener.click(); await flushRender(); });
+    expect(document.body.querySelector('[data-conversation-actions-menu]')).toBeNull();
+    expect(document.activeElement?.textContent).toBe('Dialog action');
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await flushRender();
+    });
+    expect(document.activeElement === opener).toBe(true);
   });
 
   it('returns from Archives to the previous active conversation without a competing selection', async () => {

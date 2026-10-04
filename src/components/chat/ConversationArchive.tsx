@@ -10,6 +10,7 @@ import { PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { hasOpenDialog } from '../ui/dialogPresence';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
@@ -126,6 +127,24 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const [returnFocusAfterDialog, setReturnFocusAfterDialog] = useState(false);
+
+  useEffect(() => {
+    if (!returnFocusAfterDialog) return;
+    const restore = () => {
+      if (hasOpenDialog()) return;
+      // Dialog may have saved a menu button that was removed when it opened.
+      // Only repair that lost focus; leave another dialog's or control's focus alone.
+      if (document.activeElement === document.body || !document.activeElement?.isConnected) {
+        menuTriggerRef.current?.focus();
+      }
+      setReturnFocusAfterDialog(false);
+    };
+    const observer = new MutationObserver(restore);
+    observer.observe(document.body, { childList: true });
+    restore();
+    return () => observer.disconnect();
+  }, [returnFocusAfterDialog]);
 
   useLayoutEffect(() => {
     if (!showMenu) return;
@@ -138,12 +157,26 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
       { width: window.innerWidth, height: window.innerHeight },
     ));
     const close = () => setShowMenu(false);
+    let menuHadFocus = menu.contains(document.activeElement);
+    const closeForDialog = () => {
+      if (!hasOpenDialog()) return;
+      if (menuHadFocus) setReturnFocusAfterDialog(true);
+      close();
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (hasOpenDialog()) closeForDialog();
+      else menuHadFocus = event.target instanceof Node && menu.contains(event.target);
+    };
+    const dialogObserver = new MutationObserver(closeForDialog);
+    dialogObserver.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('focusin', onFocusIn);
+    closeForDialog();
     const onScroll = (event: Event) => {
       if (event.target instanceof Node && menu.contains(event.target)) return;
       close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || hasOpenDialog()) return;
       event.preventDefault();
       setShowMenu(false);
       trigger.focus();
@@ -152,6 +185,8 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('keydown', onKeyDown);
     return () => {
+      dialogObserver.disconnect();
+      document.removeEventListener('focusin', onFocusIn);
       window.removeEventListener('resize', close);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('keydown', onKeyDown);
