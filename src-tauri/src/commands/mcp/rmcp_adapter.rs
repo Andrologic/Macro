@@ -331,15 +331,14 @@ impl Transport<RoleClient> for ContainedStdioTransport {
     async fn close(&mut self) -> Result<(), Self::Error> {
         // Dropping stdin sends EOF so well-behaved servers exit on their own.
         self.stdin.lock().await.take();
-        match tokio::time::timeout(TRANSPORT_VOLUNTARY_EXIT_GRACE, self.process.wait()).await {
-            Ok(status) => {
-                status?;
-            }
-            Err(_) => {
-                // No voluntary exit after EOF: hard-stop the whole group now.
-                self.process.terminate_with_grace(Duration::ZERO).await?;
-            }
+        if let Ok(status) =
+            tokio::time::timeout(TRANSPORT_VOLUNTARY_EXIT_GRACE, self.process.wait()).await
+        {
+            status?;
         }
+        // The leader can exit on EOF while detached descendants remain. Always
+        // verify tree cleanup here so inspection errors reach the runtime.
+        self.process.terminate_with_grace(Duration::ZERO).await?;
         Ok(())
     }
 }
