@@ -432,6 +432,7 @@ const buildSyntheticPlanFinalizationNode = (params: {
     targetBranch: string;
   } | null;
   nodes: PlanNode[];
+  translate: Parameters<typeof buildPlanFinalizationTaskTitle>[1];
 }): PlanNode | null => {
   if (!params.activePlanContext || params.nodes.length === 0) {
     return null;
@@ -449,7 +450,7 @@ const buildSyntheticPlanFinalizationNode = (params: {
 
   return {
     id: buildPlanFinalizationTaskId(params.activePlanContext.id),
-    title: buildPlanFinalizationTaskTitle(params.activePlanContext),
+    title: buildPlanFinalizationTaskTitle(params.activePlanContext, params.translate),
     description: PLAN_FINALIZATION_TASK_DESCRIPTION,
     type: 'milestone',
     status: isCompletedPlan ? 'completed' : dependencyState.isComplete ? 'pending' : 'blocked',
@@ -1276,8 +1277,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       const createdCount = (provision.createdPlanBranch ? 1 : 0) + provision.createdFeatureBranches.length;
       notify.success(
         createdCount > 0
-          ? `Plan validated — ${createdCount} branch${createdCount > 1 ? 'es' : ''} provisioned.`
-          : 'Plan validated — branches already up to date.'
+          ? t('architect.planValidationBranchesCreated', 'Plan validated. {{count}} branches provisioned.', { count: createdCount })
+          : t('architect.planValidationBranchesCurrent', 'Plan validated. Branches are already up to date.')
       );
     } catch (err) {
       notify.error(err instanceof Error ? err.message : 'Failed to validate plan.');
@@ -1307,6 +1308,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     const syntheticFinalizationNode = buildSyntheticPlanFinalizationNode({
       activePlanContext,
       nodes: scopedNodes,
+      translate: t,
     });
     const nodes = syntheticFinalizationNode
       ? [...scopedNodes, syntheticFinalizationNode]
@@ -1474,7 +1476,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectRegistry, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
+  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectRegistry, selectedGroupId, selectedProjectId, showResolvingSkeleton, t]);
 
   const graphNodeById = useMemo(
     () => new Map(layoutData.nodes.map((node) => [node.id, node])),

@@ -35,6 +35,12 @@ let notifyMock!: {
   dismiss: ReturnType<typeof mock>;
 };
 
+import { createInstance } from 'i18next';
+import fr from '../../i18n/locales/fr.json';
+const frenchTranslator = createInstance();
+await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: fr } } });
+let frenchFinalization = false;
+
 const translationMock = createTranslationMock({
   'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
   'errors.degraded.worktree.checkedOut.body':
@@ -47,6 +53,15 @@ const translationMock = createTranslationMock({
   'errors.degraded.worktree.missingBase.nextStep':
     'Create the branch or update the project Git workflow settings, then retry.',
 });
+
+const originalTranslate = translationMock.t;
+translationMock.t = (key, fallbackOrOptions, maybeOptions) => {
+  if (frenchFinalization && key === 'architect.finalizationTaskTitle') {
+    const options = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : maybeOptions;
+    return frenchTranslator.t(key, { ...options });
+  }
+  return originalTranslate(key, fallbackOrOptions, maybeOptions);
+};
 
 const createNotifyMock = () => ({
   info: mock(() => 'toast-info'),
@@ -419,6 +434,7 @@ describe('TaskQueue', () => {
   };
 
   beforeEach(async () => {
+    frenchFinalization = false;
     useViewFilterStore.setState({
       implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS },
       isHydrated: true,
@@ -2875,6 +2891,24 @@ describe('TaskQueue', () => {
 
     expect(getTaskCardNextAction()?.textContent).toContain('Next: unblock task dependencies');
     expect(getTaskCardNextAction()?.textContent).not.toContain('answer the pending request');
+  });
+
+  it('displays the finalization card in French while retaining its task identity and technical title', async () => {
+    frenchFinalization = true;
+    const task = makeTask('plan-finalization:plan-1', 'Pending', {
+      title: 'Finalize plan: Plan été',
+      task_source: 'plan_finalization',
+      plan_id: 'plan-1',
+      plan_title: 'Plan été',
+      assigned_branch: 'develop',
+    });
+    seedTasks([task]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(document.body.textContent).toContain('Finaliser le plan : Plan été');
+    expect(document.body.textContent).not.toContain('Finalize plan: Plan été');
+    expect(useTaskStore.getState().tasks[0].id).toBe(task.id);
+    expect(useTaskStore.getState().tasks[0].title).toBe('Finalize plan: Plan été');
+    expect(useTaskStore.getState().tasks[0].task_source).toBe('plan_finalization');
   });
 
   it('renders the synthetic plan finalization task in the operational status summary', async () => {

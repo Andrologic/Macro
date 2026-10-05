@@ -1,5 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
+import { createInstance } from 'i18next';
+import fr from '../../i18n/locales/fr.json';
+const frenchTranslator = createInstance();
+await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: fr } } });
+let frenchValidation = false;
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PlanNodeArtifactContract, ProjectGitFlowSettings, TaskStatus } from '../../types';
@@ -249,8 +254,12 @@ const translationMock = {
     fallbackOrOptions?: string | { defaultValue?: string },
     maybeOptions?: { defaultValue?: string },
   ) => {
+    const options = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : maybeOptions;
+    if (frenchValidation && (key.startsWith('architect.planValidation') || key === 'architect.finalizationTaskTitle')) {
+      return frenchTranslator.t(key, { ...options });
+    }
     if (typeof fallbackOrOptions === 'string') {
-      return fallbackOrOptions;
+      return Object.entries(options ?? {}).reduce((value, [token, replacement]) => value.replaceAll(`{{${token}}}`, String(replacement)), fallbackOrOptions);
     }
     return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
   },
@@ -340,6 +349,7 @@ const loadStrategyGraphModule = async () => {
 
   mock.module('react-i18next', () => ({
     useTranslation: () => translationMock,
+    initReactI18next: { type: '3rdParty', init: () => undefined },
   }));
 
   mock.module('../../stores/useAppStore', () => ({
@@ -623,6 +633,7 @@ describe('StrategyGraph', () => {
   });
 
   beforeEach(() => {
+    frenchValidation = false;
     validatePlanAndProvisionBranchesMock.mockClear();
     applyStrategyMutationPreviewMock.mockClear();
     persistArchitectPlanStrategyPreviewMock.mockClear();
@@ -2996,4 +3007,30 @@ describe('StrategyGraph', () => {
     expect(useChatStore.getState().selectedConversationId).toBeNull();
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);
   });
+  for (const count of [0, 1, 3]) {
+    it(`reports the actual ${count} provisioned branches in French without changing validation actions`, async () => {
+      frenchValidation = true;
+      seedStores('Pending', { includeConversation: false, selectedConversationId: null });
+      useAppStore.setState({ activePlanContext: { id: 'plan-1', title: 'Plan One', description: '', status: 'draft', targetBranch: 'develop' } });
+      validatePlanAndProvisionBranchesMock.mockResolvedValueOnce({
+        plan: { id: 'plan-1', nodes: [], predictedBranches: [] },
+        provision: {
+          createdPlanBranch: count > 0,
+          createdFeatureBranches: Array.from({ length: Math.max(0, count - 1) }, (_, index) => ({ branchName: `feature/task-${index}` })),
+        },
+      });
+      act(() => { root?.render(<StrategyGraph />); });
+      await flushRender();
+      const button = Array.from(document.body.querySelectorAll('button')).find(candidate => candidate.textContent?.includes('Validate Plan'))!;
+      act(() => button.click());
+      await flushRender();
+      expect(validatePlanAndProvisionBranchesMock).toHaveBeenCalledWith({ branchName: 'develop', planId: 'plan-1' });
+      expect(useTaskStore.getState().refreshFromPlan).toHaveBeenCalledTimes(1);
+      expect(useAppStore.getState().mode).toBe('Implement');
+      expect(notifySuccessMock).toHaveBeenCalledWith(count === 0
+        ? 'Plan validé. Les branches sont déjà à jour.'
+        : `Plan validé. ${count} ${count === 1 ? 'branche préparée' : 'branches préparées'}.`);
+    });
+  }
+
 });
