@@ -11,6 +11,7 @@ import type {
 import type {
   ArchitectPlanRecord,
   ArchitectPlanSummary,
+  ArchitectPlanActivationPayload,
 } from "./architectPlanService";
 import type {
   ArchitectPlanGitFlowMetadata,
@@ -21,7 +22,10 @@ import {
   hasPersistedArchitectStrategy,
   isArchitectPlanStrategyMutable,
   isArchitectPlanReplicaDivergenceError,
+  getArchitectPlanActivationPayload,
 } from "./architectPlanService";
+import { buildArchitectPlanConversationTranscriptParams } from "./architectPlanReadService";
+import type { ToolCallResolution } from "./ai/contracts";
 import { persistArchitectPlanStrategyPreview } from "./architectPlanRuntimeService";
 import { isCanonicalArchitectPlan } from "./architectPlanPresentation";
 import {
@@ -121,7 +125,11 @@ interface ArchitectToolAppState {
       targetBranch?: string | null;
       persistActiveSelection?: boolean;
     },
-  ) => Promise<boolean>;
+  ) => Promise<boolean | null>;
+  consumeArchitectPlanActivationPayload?: (params: {
+    planId: string;
+    targetBranch: string;
+  }) => ArchitectPlanActivationPayload | null;
   setStrategyMutationPreview: (preview: StrategyMutationPreview | null) => void;
 }
 
@@ -136,7 +144,11 @@ interface ArchitectToolTaskState {
   refreshFromPlan: () => Promise<void>;
 }
 
-interface EnsureArchitectConversationForPlanParams {
+type ArchitectConversationTranscriptParams = Partial<ReturnType<
+  typeof buildArchitectPlanConversationTranscriptParams
+>>;
+
+interface EnsureArchitectConversationForPlanParams extends ArchitectConversationTranscriptParams {
   plan: ArchitectPlanRecord;
   targetBranch: string;
   fallbackProjectId?: string;
@@ -178,6 +190,7 @@ interface ArchitectToolCreatePlanInput {
 }
 
 interface ArchitectToolPlanService {
+  getArchitectPlanActivationPayload?: typeof getArchitectPlanActivationPayload;
   createArchitectPlan: (
     input: ArchitectToolCreatePlanInput,
   ) => Promise<ArchitectPlanRecord>;
@@ -702,32 +715,30 @@ const hydratePlanContext = async (params: {
     params.targetBranch,
     params.planId,
   );
-  if (!plan || plan.status === "deleted") return;
+  if (!plan || plan.status === "deleted") {
+    throw new Error(`Architect plan ${params.planId} is unavailable for reconciliation.`);
+  }
 
   const appStore = params.getAppState();
   const activated = await appStore.activateArchitectPlan(plan.id, {
     targetBranch: params.targetBranch,
     persistActiveSelection: false,
   });
+  if (activated === null) return;
   if (!activated) {
-    return;
+    throw new Error(`Architect plan ${plan.id} could not be activated for reconciliation.`);
   }
 
   const latestAppStore = params.getAppState();
-  const plansIndex = await params.planService.listArchitectPlans(
-    params.targetBranch,
-    true,
-    true,
-  );
-  const conversationId = plan.conversationId;
-  const hasSharedConversation = Boolean(
-    conversationId &&
-      plansIndex.plans.some(
-        (candidate) =>
-          candidate.id !== plan.id && candidate.conversationId === conversationId,
-      ),
-  );
-
+  const activationPayload = latestAppStore.consumeArchitectPlanActivationPayload?.({
+    planId: plan.id,
+    targetBranch: params.targetBranch,
+  }) ?? await (params.planService.getArchitectPlanActivationPayload ?? getArchitectPlanActivationPayload)(params.targetBranch, plan.id);
+  if (!activationPayload || activationPayload.plan.id !== plan.id ||
+      activationPayload.targetBranch !== params.targetBranch) {
+    throw new Error(`Architect activation head is unavailable for plan ${plan.id}.`);
+  }
+  const transcriptParams = buildArchitectPlanConversationTranscriptParams(activationPayload);
   const fallbackGroupId = latestAppStore.selectedGroupId;
   const fallbackGroupProjectId =
     getFocusedProjectForGroup(
@@ -747,11 +758,12 @@ const hydratePlanContext = async (params: {
     null;
 
   await params.ensureArchitectConversationForPlan({
-    plan,
-    targetBranch: params.targetBranch,
+    plan: activationPayload.plan,
+    targetBranch: activationPayload.targetBranch,
     fallbackProjectId: fallbackProjectId ?? undefined,
     fallbackGroupId: fallbackGroupId ?? undefined,
-    sharedConversation: hasSharedConversation,
+    sharedConversation: activationPayload.sharedConversation,
+    ...transcriptParams,
   });
 };
 
@@ -969,6 +981,32 @@ const resolveStrategyForPlan = async (params: {
   };
 };
 
+type AppliedStrategyDecision = Extract<StrategyMutationDecision, { outcome: "applied" }> & {
+  followUpFailures: Array<{ stage: string; message: string }>;
+};
+type RuntimeStrategyMutationDecision = Exclude<StrategyMutationDecision, { outcome: "applied" }> | AppliedStrategyDecision;
+
+const formatStrategyMutationResult = (
+  decision: AppliedStrategyDecision,
+  savedResult: string,
+): string | ToolCallResolution => {
+  if (decision.followUpFailures.length === 0) return savedResult;
+  const result = [
+    `Strategy saved for plan ${decision.plan.id}, but follow-up operations failed.`,
+    'Reselect the plan to retry transcript reconciliation and reload its tasks. Do not regenerate or reapply the strategy to retry these operations.',
+    savedResult,
+    'Follow-up context:',
+    JSON.stringify({
+      mutation_status: 'applied',
+      plan_id: decision.plan.id,
+      target_branch: decision.plan.targetBranch,
+      follow_up_failures: decision.followUpFailures,
+      recovery_action: 'reselect_plan',
+    }, null, 2),
+  ].join('\n\n');
+  return { kind: 'result', result, isError: true, errorKind: 'execution', toString: () => result };
+};
+
 const executeStrategyMutation = async (params: {
   assistantMessageId: string;
   source: "strategy_generate" | "strategy_update";
@@ -993,7 +1031,7 @@ const executeStrategyMutation = async (params: {
     restoredTranscript: boolean;
     createdConversation: boolean;
   }>;
-}): Promise<StrategyMutationDecision> => {
+}): Promise<RuntimeStrategyMutationDecision> => {
   const repairAttemptKey = [
     params.assistantMessageId,
     params.activePlan.id,
@@ -1052,31 +1090,37 @@ const executeStrategyMutation = async (params: {
       },
       params.strategyService.guardDeps,
     );
-    params.getAppState().setStrategyMutationPreview(null);
-    await (params.strategyService.persistPreview ?? persistArchitectPlanStrategyPreview)({
-      branchName: params.targetBranch,
-      plan,
-      preview: null,
-    });
-    try {
-      await hydratePlanContext({
-        targetBranch: params.targetBranch,
-        planId: plan.id,
-        planService: params.planService,
-        getAppState: params.getAppState,
-        ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
-      });
-    } catch (error) {
-      if (!hasPostWriteReplicaWarning(plan) || !isArchitectPlanReplicaDivergenceError(error)) {
-        throw error;
+    const followUpFailures: AppliedStrategyDecision['followUpFailures'] = [];
+    const followUp = async (stage: string, run: () => Promise<void>) => {
+      try {
+        await run();
+      } catch (error) {
+        if (error instanceof Error && error.message === "Tool execution aborted") throw error;
+        followUpFailures.push({
+          stage,
+          message: error instanceof Error ? error.message :
+            typeof error === 'object' && error !== null && 'message' in error
+              ? String(error.message) : String(error),
+        });
       }
-    }
-    await params.getTaskState().refreshFromPlan();
-    return {
-      outcome: "applied",
-      preview,
-      plan,
     };
+    await followUp('clear_strategy_preview', async () => {
+      params.getAppState().setStrategyMutationPreview(null);
+      await (params.strategyService.persistPreview ?? persistArchitectPlanStrategyPreview)({
+        branchName: params.targetBranch,
+        plan,
+        preview: null,
+      });
+    });
+    await followUp('reconcile_plan_conversation', () => hydratePlanContext({
+      targetBranch: params.targetBranch,
+      planId: plan.id,
+      planService: params.planService,
+      getAppState: params.getAppState,
+      ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
+    }));
+    await followUp('refresh_tasks', () => params.getTaskState().refreshFromPlan());
+    return { outcome: "applied", preview, plan, followUpFailures };
   }
 
   if (!repairAttempted) {
@@ -1132,6 +1176,7 @@ const bindArchitectTurn = (params: ArchitectToolRuntimeDependencies): ArchitectT
       ...planService,
       createArchitectPlan: guard(planService.createArchitectPlan),
       getArchitectPlan: guard(planService.getArchitectPlan),
+      getArchitectPlanActivationPayload: guard(planService.getArchitectPlanActivationPayload ?? getArchitectPlanActivationPayload),
       isArchitectPlanSlugAvailable: guard(planService.isArchitectPlanSlugAvailable),
       listArchitectPlans: guard(planService.listArchitectPlans),
       updateArchitectPlan: guard(planService.updateArchitectPlan),
@@ -1156,14 +1201,14 @@ const bindArchitectTurn = (params: ArchitectToolRuntimeDependencies): ArchitectT
         selectedProjectId: context.projectId,
         selectedGroupId: context.groupId,
         activateArchitectPlan: async (planId, options) => {
-          if (!canProject()) return false;
+          if (!canProject()) return null;
           const activated = await live.activateArchitectPlan(planId, options);
           assertCurrent();
           if (activated) {
             activePlanId = planId;
             targetBranch = options?.targetBranch ?? targetBranch;
           }
-          return activated && canProject();
+          return canProject() ? activated : null;
         },
         setStrategyMutationPreview: (preview) => {
           if (canProject()) live.setStrategyMutationPreview(preview);
@@ -1185,7 +1230,7 @@ const bindArchitectTurn = (params: ArchitectToolRuntimeDependencies): ArchitectT
 
 export const handleArchitectToolCall = async (
   params: ArchitectToolRuntimeDependencies,
-): Promise<string | undefined> => {
+): Promise<string | ToolCallResolution | undefined> => {
   params = bindArchitectTurn(params);
   const {
     toolName,
@@ -1545,7 +1590,7 @@ export const handleArchitectToolCall = async (
       return formatArchitectStrategyMutationPreviewToolResult(decision.preview);
     }
 
-    return formatArchitectStrategyGenerateToolResult({
+    return formatStrategyMutationResult(decision, formatArchitectStrategyGenerateToolResult({
       planId: activePlanId,
       planTitle: decision.plan.label || decision.plan.title,
       planDescription: decision.plan.description,
@@ -1554,7 +1599,7 @@ export const handleArchitectToolCall = async (
       resolvedProjectIds: decision.preview.resolvedProjectIds,
       targetBranchesByProjectId: decision.preview.targetBranchesByProjectId,
       plan: decision.plan,
-    });
+    }));
   }
 
   if (toolName === "strategy_get") {
@@ -1834,12 +1879,12 @@ export const handleArchitectToolCall = async (
       return formatArchitectStrategyMutationPreviewToolResult(decision.preview);
     }
 
-    return formatArchitectStrategyUpdateToolResult({
+    return formatStrategyMutationResult(decision, formatArchitectStrategyUpdateToolResult({
       planId: activePlanId,
       planNodes: decision.plan.nodes,
       predictedBranches: decision.plan.predictedBranches,
       plan: decision.plan,
-    });
+    }));
   }
 
   if (toolName === "strategy_delete") {

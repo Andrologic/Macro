@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { AppMode, ChatMessage, Conversation } from '../../types';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
+import { buildArchitectPlanConversationTranscriptParams } from '../../services/architectPlanReadService';
 import { createDeferred } from '../../test-utils/deferred';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -94,6 +95,148 @@ export const registerArchitectLifecycleScenarios = (
         branchName: 'develop',
         planId: 'plan-early-guard',
       });
+    });
+
+    it('reconciles the exact activation transcript through the public plan action', async () => {
+      context.tauriAvailable = true;
+      const plan = createPlan();
+      architectPlans.set(plan.id, plan);
+      const transcript = [createTranscriptEntry({ id: 'head-message', content: 'Saved plan request' })];
+      architectPlanMessages.set(plan.id, transcript);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('conv-1')] }));
+      const payload = {
+        plan, targetBranch: 'develop', conversationId: 'conv-1', sharedConversation: false,
+        resolutionMode: 'full' as const, chatMessages: [], chatMessagesLoaded: false,
+        chatTranscriptRevision: 'head-revision', chatMessageCount: 1,
+        replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+      };
+      getArchitectPlanChatTranscriptMock.mockImplementationOnce(async () => ({
+        messages: transcript, transcriptRevision: 'head-revision', messageCount: 1,
+      }));
+
+      const result = await useChatStore.getState().ensureArchitectConversationForPlan({
+        plan, targetBranch: 'develop', ...buildArchitectPlanConversationTranscriptParams(payload),
+      });
+
+      expect(result.restoredTranscript).toBe(true);
+      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith('develop', plan.id, {
+        replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+        expectedTranscriptRevision: 'head-revision', expectedMessageCount: 1,
+      });
+      expect(useChatStore.getState().getConversationMessages('conv-1').map((message: ChatMessage) => message.content))
+        .toEqual(['Saved plan request']);
+      expect(dbUpsertArchitectPlanConversationSyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        transcript_revision: 'head-revision', message_count: 1,
+      }));
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    });
+
+    it('uses an activation conversation hint instead of a stale plan association', async () => {
+      const plan = createPlan({ conversationId: 'stale-conversation' });
+      architectPlans.set(plan.id, plan);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('head-conversation')] }));
+      const result = await useChatStore.getState().ensureArchitectConversationForPlan({
+        plan, targetBranch: 'develop', conversationIdHint: 'head-conversation',
+        chatMessagesHint: [], chatMessagesLoaded: true, chatMessageCount: 0,
+      });
+      expect(result.conversationId).toBe('head-conversation');
+      expect(createConversationMock).not.toHaveBeenCalled();
+      expect(getArchitectPlanChatTranscriptMock).not.toHaveBeenCalled();
+    });
+
+    it('restores a loaded activation transcript without a replica fetch', async () => {
+      const plan = createPlan();
+      architectPlans.set(plan.id, plan);
+      const transcript = [createTranscriptEntry({ id: 'loaded-message', content: 'Already loaded request' })];
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('conv-1')] }));
+      const result = await useChatStore.getState().ensureArchitectConversationForPlan({
+        plan, targetBranch: 'develop', conversationIdHint: 'conv-1',
+        chatMessagesHint: transcript, chatMessagesLoaded: true, chatMessageCount: 1,
+        chatTranscriptRevision: 'loaded-revision',
+      });
+      expect(result.restoredTranscript).toBe(true);
+      expect(getArchitectPlanChatTranscriptMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().getConversationMessages('conv-1')[0]?.content).toBe('Already loaded request');
+    });
+
+    it('reselects a saved plan after a replica refusal without regenerating or duplicating its strategy', async () => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ nodes: [{
+        id: 'saved-node', title: 'Saved task', type: 'task', status: 'pending', dependencies: [],
+        todos: [{ id: 'saved-todo', title: 'Check the result', status: 'pending' }],
+        artifactContracts: [{ id: 'saved-contract', title: 'Handoff', kind: 'text', required: true }],
+      }] });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const savedNodes = structuredClone(plan.nodes);
+      const transcript = [createTranscriptEntry({ id: 'saved-message', content: 'Persisted request' })];
+      architectPlanMessages.set(plan.id, transcript);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('conv-1')] }));
+      const params = {
+        plan, targetBranch: 'develop', conversationIdHint: 'conv-1',
+        chatMessagesHint: [], chatMessagesLoaded: false, chatMessageCount: 1,
+        chatTranscriptRevision: 'replica-revision', replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+      };
+      getArchitectPlanChatTranscriptMock.mockImplementationOnce(async () => { throw new Error('replica revision conflict'); });
+      await expect(useChatStore.getState().ensureArchitectConversationForPlan(params)).rejects.toThrow('replica revision conflict');
+      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith('develop', plan.id, {
+        replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+        expectedTranscriptRevision: 'replica-revision', expectedMessageCount: 1,
+      });
+      expect(importMessagesMock).not.toHaveBeenCalled();
+      expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      expect(architectPlans.get(plan.id)?.nodes).toEqual(savedNodes);
+
+      getArchitectPlanChatTranscriptMock.mockImplementationOnce(async () => ({
+        messages: transcript, transcriptRevision: 'replica-revision', messageCount: 1,
+      }));
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
+        plan, targetBranch: 'develop', conversationId: 'conv-1', sharedConversation: false,
+        resolutionMode: 'full' as const, chatMessages: [], chatMessagesLoaded: false,
+        chatTranscriptRevision: 'replica-revision', chatMessageCount: 1,
+        replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+      }));
+      await appState.activateArchitectPlan(plan.id, { targetBranch: 'develop' });
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe('conv-1');
+      expect(useChatStore.getState().getConversationMessages('conv-1').map((message: ChatMessage) => message.id))
+        .toEqual(['saved-message']);
+      const recoveredAgain = await useChatStore.getState().ensureArchitectConversationForPlan({
+        ...params, chatMessagesHint: transcript, chatMessagesLoaded: true,
+      });
+      expect(recoveredAgain.restoredTranscript).toBe(false);
+      expect(useChatStore.getState().getConversationMessages('conv-1')).toHaveLength(1);
+      expect(architectPlans.get(plan.id)?.nodes).toEqual(savedNodes);
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('preserves a divergent local transcript and refuses to overwrite its replica', async () => {
+      context.tauriAvailable = true;
+      const plan = createPlan();
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [createTranscriptEntry({ id: 'message-1', content: 'Replica request' })]);
+      const { useChatStore } = await loadChatStore();
+      const localMessage = {
+        id: 'message-1', task_id: '', conversation_id: 'conv-1', role: 'user' as const,
+        content: 'Different local request', timestamp: '2026-03-19T00:01:00.000Z',
+      };
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('conv-1')], messages: [localMessage] }));
+      await expect(useChatStore.getState().ensureArchitectConversationForPlan({
+        plan, targetBranch: 'develop', chatMessagesLoaded: false, chatMessageCount: 1,
+        replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+      })).rejects.toThrow('diverge de la réplique');
+      expect(useChatStore.getState().getConversationMessages('conv-1')[0]?.content).toBe('Different local request');
+      expect(importMessagesMock).not.toHaveBeenCalled();
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+      expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
     });
 
     it('restores a plan transcript into an existing empty conversation', async () => {
