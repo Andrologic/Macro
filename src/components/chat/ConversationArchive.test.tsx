@@ -205,7 +205,9 @@ describe('ConversationArchive', () => {
     expect(selectConversation).toHaveBeenCalledTimes(2);
     await act(async () => { menuButton?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(2);
-    expect(container?.textContent).toContain('Export JSON');
+    const exportButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[data-conversation-actions-menu] button'))
+      .find((button) => button.textContent?.trim() === 'Export JSON');
+    expect(exportButton).toBeDefined();
     await act(async () => { row?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(3);
   });
