@@ -105,7 +105,7 @@ const removeConversationIdsFromSet = (
   idsToRemove: ReadonlySet<string>
 ): Set<string> => new Set([...current].filter((conversationId) => !idsToRemove.has(conversationId)));
 
-const ConversationItem: React.FC<ConversationItemProps> = ({
+export const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isCurrentConversation,
   isRunning,
@@ -218,6 +218,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         tabIndex={0}
         onClick={onActivate}
         onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             onActivate();
