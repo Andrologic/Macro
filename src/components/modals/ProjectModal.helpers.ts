@@ -1,3 +1,4 @@
+import { fsListDir } from '../../services/tauriIpc';
 import { normalizeProjectPathIdentity } from '../../services/projectRegistry';
 import { resolveProjectGitFlowSettings } from '../../services/architectGitNaming';
 import type {
@@ -281,3 +282,8 @@ export const getAcceptedActionsAfterDecliningPrompt = (
   activeProjectSetupPrompt.kind === 'create_develop'
     ? pendingProjectSetupPrompt.acceptedActions
     : [];
+
+/** Check a user-selected folder before proposing Git setup, including folders outside the current workspace. */
+export const validateExistingProjectDirectory = async (path: string): Promise<void> => {
+  await fsListDir({ path, workspacePath: path, allowOutsideWorkspace: true, recursive: true, maxDepth: 0 });
+};

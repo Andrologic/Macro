@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
 
 let importCounter = 0;
+let fsListDirMock = mock(async (_params: Record<string, unknown>) => []);
 let previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
 let createProjectMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
 let createProjectWithGitSetupMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
@@ -40,6 +41,7 @@ const loadProjectModal = async () => {
     open: mock(async () => null),
     save: mock(async () => null),
   }));
+  mock.module('../../services/tauriIpc', () => ({ fsListDir: (params: Record<string, unknown>) => fsListDirMock(params) }));
   mock.module('../../services', () => ({
     services: {
       previewProjectGitSetup: (data: { path: string; requestId?: string }) => previewProjectGitSetupMock(data),
@@ -122,7 +124,7 @@ const changeInput = async (placeholder: string, value: string) => {
 };
 
 const clickLabelContaining = async (text: string) => {
-  const label = Array.from(document.body.querySelectorAll('label')).find((candidate) =>
+  const label = Array.from(document.body.querySelectorAll<HTMLLabelElement>('label')).find((candidate) =>
     candidate.textContent?.includes(text)
   );
   expect(label).toBeDefined();
@@ -145,6 +147,7 @@ describe('ProjectModal', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    fsListDirMock = mock(async (_params: Record<string, unknown>) => []);
     previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
     createProjectMock = mock(async (payload: Record<string, unknown>) =>
       buildProject({
@@ -285,9 +288,71 @@ describe('ProjectModal', () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain('This folder is already attached to "API"');
+    expect(document.body.textContent?.match(/This folder is already attached to API/g)).toHaveLength(1);
+    expect(fsListDirMock).not.toHaveBeenCalled();
+    expect(document.body.querySelector('input[aria-invalid="true"]')?.getAttribute('aria-describedby')).toBe(document.body.querySelector('[role="alert"]')?.id);
     expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
     expect(createProjectMock).not.toHaveBeenCalled();
+  });
+
+  for (const [code, message] of [
+    ['FilesystemNotFound', 'This folder does not exist. Choose an existing folder.'],
+    ['FilesystemIsFile', 'This path is not a folder. Choose an existing folder.'],
+    ['Io', 'Unable to read this folder. Check the path and access permissions.'],
+  ]) {
+    it(`rejects ${code} before opening Git choices`, async () => {
+      fsListDirMock = mock(async () => { throw { code, message: 'Native technical error' }; });
+      await renderModal();
+      await selectExistingRepoSource();
+      await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/missing');
+      await act(async () => { findButton('Add existing repository').click(); });
+      expect(document.body.querySelector('[role="alert"]')?.textContent).toBe(message);
+      expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
+      expect(createProjectMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('shows one duplicate error for a new repository without creating it', async () => {
+    useAppStore.setState({ standaloneProjects: [buildProject({ name: 'API', path: 'C:/work/api' })] });
+    await renderModal();
+    await changeInput('e.g. Backend API', 'API');
+    await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
+    await act(async () => findButton('Create repository').click());
+    expect(document.body.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('This folder is already attached to API.');
+    expect(createNewProjectRepoMock).not.toHaveBeenCalled();
+  });
+
+  it('links required-field errors to their inputs', async () => {
+    await renderModal();
+    await act(async () => findButton('Create repository').click());
+    const invalid = document.body.querySelector('input[aria-invalid="true"]')!;
+    expect(document.getElementById(invalid.getAttribute('aria-describedby')!)?.textContent).toContain('Project name is required');
+  });
+
+  it('checks a selected directory before preview and preserves the existing setup workflow', async () => {
+    await renderModal();
+    await selectExistingRepoSource();
+    await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/other/valid');
+    previewProjectGitSetupMock = mock(async () => {
+      expect(fsListDirMock).toHaveBeenCalledWith({ path: 'C:/other/valid', workspacePath: 'C:/other/valid', allowOutsideWorkspace: true, recursive: true, maxDepth: 0 });
+      return buildDetection();
+    });
+    await act(async () => findButton('Add existing repository').click());
+    expect(previewProjectGitSetupMock).toHaveBeenCalledTimes(1);
+    expect(createProjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('associates project labels with each ordinary field', async () => {
+    await renderModal();
+    for (const label of Array.from(document.body.querySelectorAll<HTMLLabelElement>('label[for]'))) {
+      expect(document.getElementById(label.htmlFor)?.tagName).toBe('INPUT');
+    }
+    expect(document.body.querySelectorAll<HTMLLabelElement>('label[for]')).toHaveLength(3);
+    await selectExistingRepoSource();
+    const label = Array.from(document.body.querySelectorAll<HTMLLabelElement>('label')).find(el => el.textContent?.includes('Existing project folder'))!;
+    expect(document.getElementById(label.htmlFor)?.getAttribute('placeholder')).toBe('e.g. C:/dev/mobile-suite/backend');
   });
 
   it('keeps the modal open while a Git preview is running', async () => {

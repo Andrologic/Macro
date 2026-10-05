@@ -41,6 +41,26 @@ describe('architect project navigator model', () => {
     ]);
   });
 
+  it('excludes archived projects from active scopes and preserves the registry for restoration', () => {
+    const archived = { ...project('archived'), status: 'archived' as const };
+    const active = { ...project('active'), status: 'active' as const, isReadOnly: true };
+    const registry = {
+      standaloneProjects: [archived, active],
+      projectGroups: [
+        { id: 'archive-group', name: 'Archive', isOpen: true, projects: [archived] },
+        { id: 'mixed', name: 'Mixed', isOpen: true, projects: [archived, active] },
+      ],
+    };
+    const scopes = buildArchitectNavigatorScopes(registry);
+    expect(scopes.map(scope => scope.id)).toEqual(['group:mixed', 'project:active']);
+    expect(scopes[0].projectIds).toEqual(['active']);
+    expect(scopes[0].projects[0].isReadOnly).toBe(true);
+    expect(registry.projectGroups[0].projects).toEqual([archived]);
+    expect(buildArchitectNavigatorScopes({
+      standaloneProjects: [{ ...archived, status: 'active' }], projectGroups: [],
+    })[0].projectIds).toEqual(['archived']);
+  });
+
   it('shows a multi-project plan once under its canonical group', () => {
     const scopes = buildArchitectNavigatorScopes({
       projectGroups: [{
