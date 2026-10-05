@@ -658,6 +658,8 @@ L'IA doit :
 - organiser cette stratégie pour maximiser le parallélisme lorsque cela reste sans risque
 - maintenir chaque unité d'exécution à une taille limitée pour réduire la confusion de l'IA et les changements trop larges
 
+Si la stratégie est enregistrée mais que l'activation du plan ou la synchronisation de sa conversation échoue, le résultat signale la sauvegarde effective et l'échec du suivi. L'utilisateur sélectionne à nouveau le plan pour reprendre cette synchronisation, sans générer une nouvelle stratégie. Les nœuds, les todos et les contrats sauvegardés sont conservés. Un transcript local divergent reste intact et bloque la réconciliation.
+
 ### 11.3 Validation du plan
 
 Lorsqu'un plan est valide :
@@ -967,7 +969,10 @@ en lecture seule pendant ses échanges. Avant chaque envoi, y compris un envoi
 différé, Macro vérifie à nouveau la sélection, la tâche éventuelle, le chemin,
 la branche et le commit courant. Un changement incompatible conserve la
 demande et refuse son départ. Après redémarrage, l'utilisateur rouvre
-l'inspection depuis le diagnostic Git pour rétablir ce contexte vérifié.
+l'inspection depuis le diagnostic Git. Une nouvelle conversation reçoit alors
+un contexte vérifié. L'ancienne demande en attente reste conservée dans sa
+conversation d'origine et ne retrouve pas automatiquement l'autorisation
+d'envoi ; l'utilisateur doit reprendre sa demande dans la nouvelle inspection.
 
 Si le nettoyage échoue après l'intégration, une nouvelle tentative reprend les ressources restantes sans recréer les worktrees déjà supprimés. Un nouveau commit sur la branche source ou une cible ayant divergé du résultat enregistré bloque cette reprise.
 
