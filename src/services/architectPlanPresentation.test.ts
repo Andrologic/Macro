@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
+import i18n from '../i18n';
+import en from '../i18n/locales/en.json';
+import fr from '../i18n/locales/fr.json';
+
 import {
   DEFAULT_NEW_PLAN_LABEL,
   getDefaultNewPlanLabelNumber,
@@ -13,6 +17,10 @@ import {
   isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from './architectPlanPresentation';
+
+i18n.addResourceBundle('en', 'translation', en, true, true);
+i18n.addResourceBundle('fr', 'translation', fr, true, true);
+afterEach(async () => { await i18n.changeLanguage('en'); });
 
 describe('architectPlanPresentation', () => {
   it('uses llm-name-first presentation for canonical plans', () => {
@@ -60,9 +68,9 @@ describe('architectPlanPresentation', () => {
     expect(isDefaultNewPlanBaseLabel(DEFAULT_NEW_PLAN_LABEL)).toBe(true);
     expect(getDefaultNewPlanLabelNumber('new plan')).toBe(0);
     expect(getDefaultNewPlanLabelNumber('new plan 2')).toBe(2);
-    expect(getArchitectPlanPrimaryName(plan)).toBe('new plan 2');
+    expect(getArchitectPlanPrimaryName(plan)).toBe('New plan 2');
     expect(getArchitectPlanSecondaryLabel(plan)).toBeNull();
-    expect(getArchitectPlanDisplayName(plan)).toBe('new plan 2');
+    expect(getArchitectPlanDisplayName(plan)).toBe('New plan 2');
     expect(getArchitectPlanConversationTitle(plan)).toBe('Plan - new plan 2');
     expect(
       getNextDefaultNewPlanLabel([
@@ -73,6 +81,22 @@ describe('architectPlanPresentation', () => {
     ).toBe('new plan 3');
     expect(getNextDefaultNewPlanLabel([])).toBe('new plan');
     expect(getNextDefaultNewPlanLabel([{ label: 'new plan' }])).toBe('new plan 2');
+  });
+
+  it('localizes only provisional display names and preserves editable values and stored titles', async () => {
+    const plan = { id: '123', title: '123', slug: '123', label: 'new plan 2' };
+    await i18n.changeLanguage('fr');
+    expect(getArchitectPlanPrimaryName(plan)).toBe('Nouveau plan 2');
+    expect(getArchitectPlanDisplayName(plan)).toBe('Nouveau plan 2');
+    expect(getArchitectPlanDisplayName({ ...plan, label: 'new plan' })).toBe('Nouveau plan');
+    expect(getArchitectPlanEditableName(plan)).toBe('new plan 2');
+    expect(getArchitectPlanConversationTitle(plan)).toBe('Plan - new plan 2');
+    expect(getNextDefaultNewPlanLabel([plan])).toBe('new plan 3');
+    expect(getArchitectPlanDisplayName({ ...plan, label: 'Mon titre manuel' })).toBe('Mon titre manuel - 123');
+    expect(getArchitectPlanDisplayName({ ...plan, title: 'new plan 2' })).toBe('new plan 2');
+    expect(plan).toEqual({ id: '123', title: '123', slug: '123', label: 'new plan 2' });
+    await i18n.changeLanguage('en');
+    expect(getArchitectPlanDisplayName(plan)).toBe('New plan 2');
   });
 
   it('derives compact lifecycle phases without using conversation id alone', () => {

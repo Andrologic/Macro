@@ -739,6 +739,14 @@
       "clipboardReadFailedTitle": "Die Zwischenablage konnte nicht gelesen werden",
       "previewUnavailable": "Vorschau nicht verfügbar",
       "removeFromContext": "Aus dem Kontext entfernen",
+      "toolDescriptions": {
+        "web_search": "Im Web nach Informationen mit Quellenangaben suchen",
+        "web_fetch": "Eine bestimmte URL direkt abrufen und lesen",
+        "question": "Eine blockierende strukturierte Frage mit geführten Antworten stellen",
+        "read_file": "Angehängte Dateien und Kontextdokumente in diesem Chat lesen",
+        "terminal_create_session": "Einzeln genehmigte Befehle auf dem Computer ausführen",
+        "mark_source_passage": "Interessante und von der KI verwendete Textstellen erfassen"
+      },
       "toolsUnavailableWarning": "Für den aktuell ausgewählten Anbieter oder das aktuell ausgewählte Modell sind keine Tools verfügbar. Wählen Sie ein Modell mit nativer Tool-Call-Unterstützung aus, um diese zu aktivieren.",
       "builtInTools": "Integrierte Tools",
       "noToolsEnabled": "Keine Tools aktiviert",
@@ -748,6 +756,8 @@
       "webFetchDisabledTooltip": "Aktivieren Sie Web Fetch unter Einstellungen > Extras > Websuche",
       "nativeToolTooltip": "Das ausgewählte Modell unterstützt keine nativen Toolaufrufe.",
       "sourceSummary": "{{interesting}} gefunden • {{used}} gebraucht • {{total}} Passagen",
+      "sourceSummary_one": "{{interesting}} gefunden • {{used}} gebraucht • {{total}} Passage",
+      "sourceSummary_other": "{{interesting}} gefunden • {{used}} gebraucht • {{total}} Passagen",
       "collectionDisabledTitle": "Sammlung deaktiviert",
       "collectionDisabledDescription": "Aktivieren Sie das Quellen-Tool, um neue Passagen zu speichern.",
       "sourceSearchPlaceholder": "Quellen durchsuchen",
@@ -1129,6 +1139,10 @@
       "maxTurnsLabel": "Maximale Agent-Turns",
       "maxTurnsDescription": "Maximale Anzahl von KI/Tool-Zyklen, bevor Macro die Agent-Schleife stoppt und einen Hinweis im Chat anzeigt."
     },
+    "themeDark": "Dunkel",
+    "themeLight": "Hell",
+    "notificationChannelsUnsupportedDesc": "Desktop-Benachrichtigungen sind in dieser Umgebung nicht verfügbar. Wählen Sie Benachrichtigungen in der App oder deaktivieren Sie die Zustellung.",
+    "desktopNotificationsUnsupportedHint": "Desktop-Benachrichtigungen sind in dieser Umgebung nicht verfügbar. Macro verwendet Benachrichtigungen in der App.",
     "theme": "Thema",
     "zoom": "Zoomen",
     "zoom_auto": "Automatisch",
@@ -1772,6 +1786,7 @@
     "noStrategyDescription": "Besprich den Plan im Architect-Chat und verwende dann Strategie generieren, um diesen Graphen zu erstellen.",
     "noBranchesMatchingFilters": "Keine Branch passt zu den aktuellen Filtern.",
     "planCompleted": "Plan abgeschlossen",
+    "newPlanPlaceholder": "Neuer Plan",
     "planValidated": "Plan validiert",
     "validatingPlan": "Validierung...",
     "noActivePlan": "Kein aktiver Plan",
@@ -2186,6 +2201,12 @@
     }
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architect-Modus",
+        "description": "Basis-Systemprompt für Architect-Unterhaltungen."
+      }
+    },
     "loadFailed": "Systemprompts konnten nicht geladen werden. Vor dem Speichern erneut versuchen.", "title": "System-Prompts", "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.", "restoreAll": "Alle wiederherstellen", "saveFailed": "System-Prompts konnten nicht gespeichert werden." },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",

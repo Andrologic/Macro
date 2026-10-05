@@ -198,7 +198,7 @@ export const AppearanceView: React.FC = () => {
                  <span className="text-sm font-semibold text-foreground block truncate">{theme.name}</span>
                  <span className="text-xs text-muted-foreground capitalize flex items-center gap-1">
                     {theme.type === 'dark' ? <Icon name="moon" size={10} /> : <Icon name="sun" size={10} />}
-                    {theme.type}
+                    {theme.type === 'dark' ? t('settings.themeDark') : t('settings.themeLight')}
                  </span>
               </div>
             </button>

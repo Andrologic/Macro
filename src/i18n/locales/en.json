@@ -767,6 +767,14 @@
       "clipboardReadFailedTitle": "Could not read clipboard",
       "previewUnavailable": "Preview unavailable",
       "removeFromContext": "Remove from context",
+      "toolDescriptions": {
+        "web_search": "Search the web for information with citations",
+        "web_fetch": "Fetch and read a specific URL directly",
+        "question": "Ask the user a structured blocking question with guided answers",
+        "read_file": "Read attached files and context documents in this chat",
+        "terminal_create_session": "Run individually approved commands on the computer",
+        "mark_source_passage": "Track interesting passages and passages used by the AI"
+      },
       "toolsUnavailableWarning": "Tools are unavailable for the currently selected provider or model. Select a model with native tool calling support to enable them.",
       "builtInTools": "Built-in Tools",
       "noToolsEnabled": "No tools enabled",
@@ -776,6 +784,8 @@
       "webFetchDisabledTooltip": "Enable Web Fetch in Settings > Tools > Web Search",
       "nativeToolTooltip": "The selected model does not support native tool calls.",
       "sourceSummary": "{{interesting}} found • {{used}} used • {{total}} passages",
+      "sourceSummary_one": "{{interesting}} found • {{used}} used • {{total}} passage",
+      "sourceSummary_other": "{{interesting}} found • {{used}} used • {{total}} passages",
       "collectionDisabledTitle": "Collection disabled",
       "collectionDisabledDescription": "Enable the Sources tool to save new passages.",
       "sourceSearchPlaceholder": "Search sources",
@@ -1251,6 +1261,10 @@
       "maxTurnsLabel": "Max agent turns",
       "maxTurnsDescription": "Maximum AI/tool cycles before Macro stops the agent loop and shows a chat notice."
     },
+    "themeDark": "Dark",
+    "themeLight": "Light",
+    "notificationChannelsUnsupportedDesc": "Desktop delivery is unavailable in this runtime. Choose in-app toast or off.",
+    "desktopNotificationsUnsupportedHint": "Desktop notifications are unavailable in this runtime. Notification delivery falls back to in-app toasts.",
     "theme": "Theme",
     "zoom": "Zoom",
     "zoom_auto": "Auto",
@@ -1800,6 +1814,7 @@
     "noStrategyDescription": "Discuss the plan in Architect chat, then use Generate Strategy to create this graph.",
     "noBranchesMatchingFilters": "No branches match the current filters.",
     "planCompleted": "Plan completed",
+    "newPlanPlaceholder": "New plan",
     "planValidated": "Plan validated",
     "validatingPlan": "Validating...",
     "noActivePlan": "No active plan",
@@ -2259,6 +2274,12 @@
     }
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architect Mode",
+        "description": "Base system prompt for Architect conversations."
+      }
+    },
     "loadFailed": "Unable to load system prompts. Retry before saving.", "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
