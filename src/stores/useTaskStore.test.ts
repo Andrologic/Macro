@@ -540,6 +540,7 @@ beforeEach(() => {
   gitWorkflowSessions.clear();
   foreignWorkflowRepositories.clear();
   gitWorkflowMock.mockClear();
+  workspaceRestoreManualFeatureMock.mockClear();
   chatStoreConversations = [];
   chatStoreRuntimeById = {};
   dbGetAppSettingMock.mockClear();
@@ -1940,6 +1941,27 @@ describe('useTaskStore merge workflow review loading', () => {
         })],
       }),
     ]);
+  });
+
+  it('preserves the archived Direct and selection when native restoration rejects admission', async () => {
+    const task = buildStandaloneTask({ id: 'archived-direct', task_source: 'standalone',
+      standalone_kind: 'manual_feature', task_kind: 'direct', draft: false,
+      status: 'Completed', archived_at: '2026-01-01', archive_reason: 'merged' });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refresh = mock(async () => undefined);
+    const activate = mock(async () => undefined);
+    const { useAppStore } = await import('./useAppStore');
+    const selectedBefore = useAppStore.getState().selectedTaskId;
+    useTaskStore.setState({ tasks: [task], refreshFromPlan: refresh, activateTask: activate });
+    workspaceRestoreManualFeatureMock.mockImplementationOnce(async () => {
+      throw new Error('Direct-edit project already has an active task: Other Direct');
+    });
+    await expect(useTaskStore.getState().restoreTask(task.id)).rejects.toThrow('Other Direct');
+    expect(useTaskStore.getState().lastError).toContain('Other Direct');
+    expect(useTaskStore.getState().getTaskById(task.id)).toBe(task);
+    expect(useAppStore.getState().selectedTaskId).toBe(selectedBefore);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
   });
 
   it('blocks restore and a second cleanup while archived worktree cleanup is running', async () => {

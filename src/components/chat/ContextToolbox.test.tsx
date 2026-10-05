@@ -478,26 +478,6 @@ const loadContextToolbox = async () => {
     ),
   }));
 
-  mock.module('../ui/Switch', () => ({
-    Switch: ({
-      checked,
-      disabled,
-      onCheckedChange,
-    }: {
-      checked?: boolean;
-      disabled?: boolean;
-      onCheckedChange?: (checked: boolean) => void;
-    }) => (
-      <button
-        type="button"
-        role="switch"
-        aria-checked={Boolean(checked)}
-        disabled={disabled}
-        onClick={() => onCheckedChange?.(!checked)}
-      />
-    ),
-  }));
-
   mock.module('../ui/toastService', () => ({
     notify: {
       error: notifyErrorMock,
@@ -692,6 +672,22 @@ describe('ContextToolbox', () => {
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
     expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
+  });
+
+  it('names all six tool switches and preserves their activation state', async () => {
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await act(async () => { findButtonByText(container!, 'Tools').click(); });
+    const switches = container!.querySelectorAll<HTMLButtonElement>('[role="switch"]');
+    expect(switches).toHaveLength(6);
+    for (const [index, control] of Array.from(switches).entries()) {
+      expect(control.getAttribute('aria-label')).toBe(chatTools[index].name);
+      expect(control.getAttribute('aria-checked')).toBe('true');
+    }
+    const enabled = Array.from(switches).find((control) => !control.disabled)!;
+    const index = Array.from(switches).indexOf(enabled);
+    await act(async () => { enabled.click(); });
+    expect(toggleChatToolMock).toHaveBeenCalledWith(chatTools[index].id);
   });
 
   it('offers only conversations in the current project as explicit sources', async () => {

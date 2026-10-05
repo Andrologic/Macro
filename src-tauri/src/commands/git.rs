@@ -1539,7 +1539,13 @@ fn build_macro_sync_dto(
 ) -> Result<MacroBranchSyncDto> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     let conflicted_files = gather_macro_conflicted_files(repo)?;
-    let is_dirty = !statuses.is_empty();
+    // Match workspace metadata diagnostics: the root lock is operational state.
+    let is_dirty = statuses.iter().any(|entry| {
+        entry
+            .path()
+            .map(|path| path.trim_start_matches("./") != ".workspace.json.lock")
+            .unwrap_or(true)
+    });
     let has_origin = repo.find_remote(DEFAULT_REMOTE_NAME).is_ok();
 
     let mut has_upstream = false;
@@ -16924,6 +16930,36 @@ mod tests {
         assert_eq!(diagnostic.state, "failed");
         assert_eq!(diagnostic.reason, Some("missing_origin"));
         assert_eq!(diagnostic.next_action, Some("configure_remote"));
+    }
+
+    #[test]
+    fn macro_sync_ignores_only_the_internal_workspace_lock() {
+        let (temp, repo) = init_macro_repo();
+        repo.remote(DEFAULT_REMOTE_NAME, "https://example.invalid/repo.git")
+            .unwrap();
+        fs::write(temp.path().join(".workspace.json.lock"), "").unwrap();
+
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(!dto.is_dirty);
+        assert_eq!(dto.reason.as_deref(), Some("missing_upstream"));
+        assert_eq!(dto.next_action.as_deref(), Some("push"));
+
+        fs::write(temp.path().join("workspace.json"), "{}\n").unwrap();
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(dto.is_dirty);
+        assert_eq!(dto.reason.as_deref(), Some("dirty"));
+        assert_eq!(dto.next_action.as_deref(), Some("commit"));
+    }
+
+    #[test]
+    fn macro_sync_preserves_nested_lock_names() {
+        let (temp, repo) = init_macro_repo();
+        repo.remote(DEFAULT_REMOTE_NAME, "https://example.invalid/repo.git")
+            .unwrap();
+        fs::create_dir(temp.path().join("nested")).unwrap();
+        fs::write(temp.path().join("nested/.workspace.json.lock"), "data").unwrap();
+        let dto = build_macro_sync_dto(&repo, temp.path(), false, None, None, None).unwrap();
+        assert!(dto.is_dirty);
     }
 
     #[test]

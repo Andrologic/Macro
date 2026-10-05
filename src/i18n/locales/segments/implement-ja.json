@@ -24,6 +24,7 @@
   "selectTaskForValidation": "変更を検証するタスクを選択してください",
   "activeCount": "{{count}}アクティブ",
   "noTasks": "まだタスクはありません",
+  "otherTasks": "その他のタスク",
   "readyTasks": "準備ができたタスク",
   "noReadyTasks": "現在実行可能なタスクはありません。",
   "blockedTasks": "ブロックされたタスク",

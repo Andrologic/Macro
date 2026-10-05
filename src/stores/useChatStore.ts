@@ -1,3 +1,4 @@
+import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
@@ -56,6 +57,9 @@ import {
 import { toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
 import i18n from "../i18n";
+import { SUPPORTED_LANGUAGE_CODES } from "../i18n/languages";
+import { loadTranslation } from "../i18n/resources";
+import { createKeyedSerialQueue } from "../services/serialQueue";
 import {
   isContextOverflowErrorLike,
 } from "../services/contextOverflow";
@@ -1354,6 +1358,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
+  const enqueueConversationMetadataWrite = createKeyedSerialQueue<string>();
+  const manuallyRenamedConversationIds = new Set<string>();
+  const manualConversationTitleKey = (id: string) => `conversation-manual-title:${id}`;
+  // A conversation can retain its creation language after the UI language changes.
+  let defaultChatTitles: Promise<Set<string>> | undefined;
+  const isDefaultChatTitle = async (title: string) => {
+    defaultChatTitles ??= Promise.all(SUPPORTED_LANGUAGE_CODES.map(loadTranslation))
+      .then((translations) => new Set([
+        'New Conversation',
+        ...translations.map((translation) => translation.chat.newConversation),
+      ]));
+    return (await defaultChatTitles).has(title.trim());
+  };
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const turnRuntime = createChatTurnRuntime({
@@ -1643,7 +1660,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const resolveConversationExecutionContext = (conversationId: string) => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
-    return resolveProjectExecutionContext({
+    const base = resolveProjectExecutionContext({
       mode: appState.mode,
       projects: [
         ...(appState.standaloneProjects ?? []),
@@ -1666,6 +1683,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
           )
         : undefined,
     });
+    const conflict = getConflictAssistantContext(conversationId);
+    return conflict ? scopeConflictAssistantExecutionContext(base, conflict) : base;
+  };
+
+  const conflictAssistantSelection = (conversationId: string) => {
+    const app = useAppStore.getState();
+    return {
+      mode: app.mode, selectedTaskId: app.selectedTaskId, selectedProjectId: app.selectedProjectId,
+      selectedGroupId: app.selectedGroupId, selectedConversationId: get().selectedConversationId,
+      conversation: get().conversations.find(conversation => conversation.id === conversationId),
+      projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+      groups: app.projectGroups,
+    };
+  };
+  const assertImplementConversationContext = (conversationId: string) => {
+    const conversation = get().conversations.find(conversation => conversation.id === conversationId);
+    if (conversation?.scope_mode === 'Implement' && !conversation.task_id && !getConflictAssistantContext(conversationId)) {
+      throw buildSendError('Open the conflict assistant from a verified Git context before sending.');
+    }
+  };
+  const assertConflictAssistantSend = async (conversationId: string, taskId?: string | null) => {
+    const conflict = getConflictAssistantContext(conversationId);
+    assertImplementConversationContext(conversationId);
+    if (!conflict) return;
+    if (taskId) throw buildSendError('A conflict inspection cannot send into a task.');
+    await revalidateConflictAssistantContext(conflict, conflictAssistantSelection(conversationId), tauriIpc, useTaskStore.getState().tasks);
+    if (!isConflictAssistantContextAllowed(conflict, conflictAssistantSelection(conversationId))) {
+      throw buildSendError('Conflict context changed during verification.');
+    }
   };
 
   const resolveConversationImplementTask = (
@@ -8255,10 +8301,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       architectPlan,
     } = params;
 
+    const initialConversation = get().conversations.find((conversation) => conversation.id === conversationId);
+    const protectChatTitle = !architectPlan && initialConversation?.scope_mode === "Chat";
+    const canApplyChatTitle = () => !protectChatTitle || (
+      !manuallyRenamedConversationIds.has(conversationId) &&
+      get().conversations.some((conversation) => conversation.id === conversationId && conversation.title === initialConversation?.title)
+    );
+
     if (metadataGenerationInFlight.has(conversationId)) return;
     metadataGenerationInFlight.add(conversationId);
 
     try {
+      if (protectChatTitle) {
+        // Read the durable marker after earlier renames settle, including their
+        // rollback on failure. A tentative rename must not cancel auto naming.
+        const canGenerate = await enqueueConversationMetadataWrite(conversationId, async () => {
+          if (!canApplyChatTitle() || deletedConversationIds.has(conversationId)) return false;
+          if (!(await isDefaultChatTitle(initialConversation.title))) return false;
+          if (tauriIpc.isTauriAvailable() && await tauriIpc.dbGetAppSetting(manualConversationTitleKey(conversationId))) return false;
+          return canApplyChatTitle();
+        });
+        if (!canGenerate) return;
+      }
       const metadataProviderContext =
         await resolveMetadataGenerationProviderContext({
           providerId,
@@ -8322,7 +8386,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         description: getConversationFallbackDescription(firstUserContent),
       }));
 
-      await persistConversationMetadata(conversationId, metadata);
+      if (protectChatTitle) {
+        await enqueueConversationMetadataWrite(conversationId, async () => {
+          if (!canApplyChatTitle() || deletedConversationIds.has(conversationId)) return;
+          await persistConversationMetadata(conversationId, metadata);
+        });
+      } else {
+        await persistConversationMetadata(conversationId, metadata);
+      }
     } catch (error) {
       console.warn("Failed to update conversation metadata:", error);
     } finally {
@@ -8457,6 +8528,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const prepareAssistantStreamLaunch = async (params: PrepareAssistantStreamParams) => {
     const capturedRuntime = turnRuntime.read(params.conversationId);
+    assertImplementConversationContext(params.conversationId);
+    const conflict = getConflictAssistantContext(params.conversationId);
+    if (conflict) {
+      await assertConflictAssistantSend(params.conversationId, params.resolvedTaskId);
+      if (params.modeAtSend !== 'Implement') throw buildSendError('Conflict inspection requires Implement mode.');
+      params = { ...params, internalAgentProfile: 'repo_auditor',
+        executionContext: scopeConflictAssistantExecutionContext(params.executionContext ?? resolveConversationExecutionContext(params.conversationId), conflict),
+        ...(params.turnCapabilities ? { turnCapabilities: {
+          ...params.turnCapabilities, internalAgentProfile: 'repo_auditor',
+          allowedToolIds: filterToolIdsForInternalAgentProfile(params.turnCapabilities.allowedToolIds, 'repo_auditor'),
+          mcpTools: [], mcpServers: [], skillToolIds: [], runnableSkillToolIds: [],
+        } } : {}),
+      };
+    }
     const isCurrent = () => (capturedRuntime.phase === "preparing" || capturedRuntime.phase === "overflow_recovery") &&
       turnRuntime.read(params.conversationId) === capturedRuntime &&
       !capturedRuntime.abortController?.signal.aborted && !deletedConversationIds.has(params.conversationId);
@@ -12588,16 +12673,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     renameConversation: async (conversationId, title) => {
-      await renamePersistedConversation(
-        chatPersistenceAdapters,
-        conversationId,
-        title,
+      const isChatConversation = get().conversations.some(
+        (conversation) => conversation.id === conversationId && conversation.scope_mode === "Chat",
       );
-      set((state) => ({
-        conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, title } : conv,
-        ),
-      }));
+      const writeRename = async () => {
+        await renamePersistedConversation(chatPersistenceAdapters, conversationId, title);
+        set((state) => ({
+          conversations: state.conversations.map((conv) =>
+            conv.id === conversationId ? { ...conv, title } : conv,
+          ),
+        }));
+      };
+      if (!isChatConversation) {
+        await writeRename();
+        return;
+      }
+      await enqueueConversationMetadataWrite(conversationId, async () => {
+        if (deletedConversationIds.has(conversationId)) return;
+        const persistManualTitle = tauriIpc.isTauriAvailable();
+        const markerKey = manualConversationTitleKey(conversationId);
+        const previousMarker = persistManualTitle ? await tauriIpc.dbGetAppSetting(markerKey) : null;
+        if (persistManualTitle) {
+          await tauriIpc.dbSetAppSetting({ key: markerKey, valueJson: JSON.stringify({ version: 1 }) });
+        }
+        try {
+          await writeRename();
+          manuallyRenamedConversationIds.add(conversationId);
+        } catch (error) {
+          if (persistManualTitle && !previousMarker) await tauriIpc.dbDeleteAppSetting(markerKey);
+          throw error;
+        }
+      });
     },
 
     clearSelectedConversation: () => {
@@ -12704,6 +12810,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       deletedConversationIds.add(conversationId);
+      clearConflictAssistantContext(conversationId);
       pendingConversationDeletionIds.add(conversationId);
       turnRuntime.forget(conversationId);
       continuationIntents.delete(conversationId);
@@ -13443,6 +13550,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     submitDuringActiveTurn: async (payload, behavior) => {
+      assertImplementConversationContext(payload.conversationId);
+      if (getConflictAssistantContext(payload.conversationId)) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
+      if (getConflictAssistantContext(payload.conversationId)) payload = { ...payload, internalAgentProfile: 'repo_auditor' };
       const runtime = getConversationRuntimeSnapshot(
         get().conversationRuntimeById,
         payload.conversationId,
@@ -13588,7 +13698,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
       const deferredSubmission = queuedSubmission ?? continuation;
-      const queuedExecutionContext = deferredSubmission
+      const conflict = getConflictAssistantContext(payload.conversationId);
+      if (conflict) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
+      if (conflict && deferredSubmission && (deferredSubmission.intent.mode !== 'Implement' ||
+        deferredSubmission.intent.conversationTaskId || deferredSubmission.intent.selectedTaskId)) {
+        throw buildSendError('The deferred conflict inspection cannot target another task or mode.');
+      }
+      if (conflict) payload = { ...payload, internalAgentProfile: 'repo_auditor' };
+      const queuedExecutionContext = conflict ? resolveConversationExecutionContext(payload.conversationId) : deferredSubmission
         ? await revalidateQueuedExecutionContext(deferredSubmission) : undefined;
       const provider = useProviderStore.getState();
       let snapshot: ChatSendSnapshot = deferredSubmission
@@ -13629,6 +13746,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           assertCanSend: (id) => {
             if (deferredSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
               throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+            }
+            assertImplementConversationContext(id);
+            if (conflict && !isConflictAssistantContextAllowed(conflict, conflictAssistantSelection(id))) {
+              throw buildSendError('Conflict context changed before sending.');
             }
             assertConversationRuntimeAvailableForSend(id);
           },

@@ -20,6 +20,7 @@
   "selectTaskForValidation": "Select a task to validate changes",
   "activeCount": "{{count}} active",
   "noTasks": "No tasks yet",
+  "otherTasks": "Other tasks",
   "readyTasks": "Ready tasks",
   "noReadyTasks": "No task is currently runnable.",
   "blockedTasks": "Blocked tasks",

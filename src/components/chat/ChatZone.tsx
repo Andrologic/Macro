@@ -77,6 +77,7 @@ import {
   clearConflictAssistantInternalAgentProfile,
   getConflictAssistantInternalAgentProfile,
 } from '../../services/conflictAssistantService';
+import { getConflictAssistantContext, isConflictAssistantContextAllowed } from '../../services/conflictAssistantContext';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -2162,7 +2163,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isImplementComposerInKickoffMode =
     selectedTaskRequiresKickoff && currentMessages.length === 0;
-  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
+  const conflictAssistantContext = useMemo(
+    () => selectedConversationId ? getConflictAssistantContext(selectedConversationId) : undefined,
+    [selectedConversationId]
+  );
+  const hasVerifiedConflictContext = useMemo(() => isConflictAssistantContextAllowed(conflictAssistantContext, {
+    mode, selectedTaskId, selectedProjectId, selectedGroupId, selectedConversationId,
+    conversation: currentConversation ? {
+      id: currentConversation.id, scope_mode: currentConversation.scope_mode, task_id: currentConversation.task_id,
+      project_id: currentConversation.project_id, group_id: currentConversation.group_id,
+    } : null,
+    projects: [...standaloneProjects, ...projectGroups.flatMap(group => group.projects)],
+    groups: projectGroups,
+  }), [conflictAssistantContext, mode, selectedTaskId, selectedProjectId, selectedGroupId,
+    selectedConversationId, currentConversation, standaloneProjects, projectGroups]);
+  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask && !hasVerifiedConflictContext;
+  const isConflictContextInvalid = Boolean(conflictAssistantContext) && !hasVerifiedConflictContext;
   const isSelectedConversationArchived = useConversationArchiveStore((state) =>
     mode === 'Chat' && selectedConversationId
       ? state.archivedConversationIds.has(selectedConversationId)
@@ -2178,6 +2194,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
+    isConflictContextInvalid ||
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
@@ -2255,7 +2272,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Implement') {
       return {
         icon: 'check-square' as const,
-        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || t('implement.selectTaskShort', 'Select a task')}`,
+        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -2267,6 +2284,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    hasVerifiedConflictContext,
     activePlanContext,
     focusedProjectName,
     isModeProjectWorkspaceMissing,
@@ -3832,7 +3850,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
-              {mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
+              {hasVerifiedConflictContext && conflictAssistantContext ? (
+                <div className="mt-0.5 truncate text-xs text-muted-foreground" data-testid="conflict-assistant-context">
+                  {t('footer.sync.conflictReadOnly', 'Read-only conflict inspection')} · {conflictAssistantContext.kind === 'metadata' ? '@macro' : t('footer.sync.remoteNeededCode', 'code')} · {conflictAssistantContext.repositories.map(repo => `${projectNameById.get(repo.projectId) ?? repo.projectId}: ${repo.branch}`).join(', ')}
+                </div>
+              ) : mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
                 <div
                   className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground"
                   data-testid="implement-active-task-context"

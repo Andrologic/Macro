@@ -529,6 +529,23 @@ message assistant : une ancienne sauvegarde ne peut pas écraser celle de Stop.
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
 MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
+Le gestionnaire natif notifie le runtime après les mutations sous son verrou
+MCP, y compris les rechargements et les décisions d'approbation. Le runtime
+revalide les empreintes de configuration effectives de chaque scope sans
+attendre un nouvel appel d'outil. Une empreinte inchangée conserve la session,
+le catalogue et les leases conversationnels. Une définition supprimée ou
+désactivée révoque la génération, annule les opérations et connexions en cours,
+et ferme la session avec un budget de 15 secondes. Le snapshot utilisé par
+Diagnostics conserve l'état `disconnected` après fermeture et `failed` avec
+l'erreur de nettoyage en cas d'échec ou de dépassement du budget. Les adaptateurs
+stdio et HTTP transmettent leurs timeouts internes (`MCP_RUNTIME_CLOSE_TIMEOUT`)
+et échecs de tâche ou de transport (`MCP_RUNTIME_CLOSE_FAILED`) au runtime.
+Le résultat du transport et de la suppression de session HTTP est conservé
+séparément, car le SDK peut seulement journaliser ces erreurs. Un budget
+expiré reste un échec observable même si le nettoyage se termine ensuite.
+Une proposition
+en attente d'approbation ne remplace pas la configuration effective.
+
 `mcp/toolDiscovery` décide, à partir de l'allowlist et du catalogue figés du tour, si le modèle reçoit les schémas MCP directs ou les fonctions `mcp_search` et `mcp_call`. La recherche est bornée et ne parcourt que les outils autorisés. Le dispatch conserve les identifiants trouvés pour ce tour ; `mcp_call` transmet ensuite l'identifiant et les arguments à l'exécuteur MCP existant, qui revalide la politique, l'approbation éventuelle et la génération. Les transports commun, natif et Copilot exposent les mêmes fonctions de découverte. Une récupération d'overflow conserve le catalogue initial ; elle ne crée pas de nouveaux droits.
 La récupération d'overflow transmet les capacités capturées à la préparation :
 type d'agent, allowlist, catalogue et clé MCP, risque et réglages d'outils. Elle
@@ -1240,7 +1257,7 @@ Pour le travail planifié, Macro utilise une branche d'intégration dédiée au 
 
 Cette branche sert de point de convergence avant le merge final vers la branche de base.
 
-Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles non archivées de la stratégie et n'est pas persistée comme un nœud Architect.
+Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles de la stratégie encore actives ou terminées puis archivées avec le motif `merged`. Les nœuds retirés ou annulés restent exclus. Le catalogue conserve la finalisation et le résumé du plan après l'archivage automatique de toutes ses tâches, jusqu'à la fin du cycle du plan. Cette tâche synthétique n'est pas persistée comme un nœud Architect.
 
 ### 12.3 Branches de feature
 
