@@ -5,6 +5,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import {
   applyArchiveViewSelection,
   ConversationArchive,
+  ConversationItem,
   resolveArchiveViewSelection,
 } from './ConversationArchive';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
@@ -93,6 +94,40 @@ describe('ConversationArchive', () => {
     useChatStore.setState(initialChatState, true);
     useConversationArchiveStore.setState({ archivedConversationIds: new Set() });
     removeTauriRuntimeMock();
+  });
+
+  it('activates only the focused row and leaves nested keyboard actions alone', async () => {
+    const selectConversation = mock(async () => true);
+    useChatStore.setState({ selectConversation });
+    await act(async () => {
+      root?.render(<ConversationItem conversation={useChatStore.getState().conversations[0]}
+        isCurrentConversation={false} isRunning={false} isChecked={false} isPinned={false}
+        isMultiSelectMode={false} isArchivedView={false}
+        onActivate={() => { void selectConversation(); }} onToggleSelection={() => {}}
+        onPin={() => {}} onArchiveToggle={() => {}} onDeleteComplete={async () => {}} />);
+      await flushRender();
+    });
+    const row = container?.querySelector<HTMLElement>('[role="button"]');
+    const menuButton = row?.querySelector<HTMLButtonElement>('button');
+    expect(row).not.toBeNull();
+    expect(menuButton).not.toBeNull();
+    for (const key of ['Enter', ' ']) {
+      const nestedEvent = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      await act(async () => { menuButton?.dispatchEvent(nestedEvent); });
+      expect(nestedEvent.defaultPrevented).toBe(false);
+      expect(selectConversation).not.toHaveBeenCalled();
+    }
+    for (const key of ['Enter', ' ']) {
+      const rowEvent = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      await act(async () => { row?.dispatchEvent(rowEvent); });
+      expect(rowEvent.defaultPrevented).toBe(true);
+    }
+    expect(selectConversation).toHaveBeenCalledTimes(2);
+    await act(async () => { menuButton?.click(); });
+    expect(selectConversation).toHaveBeenCalledTimes(2);
+    expect(container?.textContent).toContain('Export JSON');
+    await act(async () => { row?.click(); });
+    expect(selectConversation).toHaveBeenCalledTimes(3);
   });
 
   it('keeps multi-select compact until the header button activates its toolbar', async () => {

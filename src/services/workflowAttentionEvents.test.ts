@@ -425,6 +425,41 @@ describe('workflow attention events', () => {
     ).toEqual([]);
   });
 
+  it('keeps ambiguous legacy reviews visible and resolves durable selections exactly', () => {
+    const previous = ['plan-a', 'plan-b'].map((plan) => ({
+      ...makeTask(`task:v1:develop:${plan}:shared-node`, 'InProgress'),
+      node_id: 'shared-node',
+      conversation_id: null,
+    }));
+    const next = previous.map((task) => ({ ...task, status: 'InReview' as const }));
+    const conversations = [makeConversation('legacy', { task_id: 'shared-node' })];
+    const context: WorkflowAttentionContext = {
+      ...backgroundContext,
+      mode: 'Implement',
+      selectedTaskId: 'shared-node',
+      tasks: next,
+    };
+    const expected = next.map((task) => ({
+      kind: 'review' as const,
+      key: `workflow-attention:review:${task.id}`,
+      taskId: task.id,
+      taskTitle: task.title,
+      conversationId: null,
+      catalogScope: { selectedGroupId: null, selectedProjectId: null },
+      catalogLoadId: null,
+    }));
+
+    expect(detectNewReviewAttentionEvents(previous, next, context, conversations)).toEqual(expected);
+    expect(detectNewReviewAttentionEvents(previous, next, {
+      ...context, selectedTaskId: next[0].id,
+    }, conversations)).toEqual([expected[1]]);
+    expect(detectNewReviewAttentionEvents(previous, next, {
+      ...context, selectedTaskId: next[0].id, appForeground: false,
+    }, conversations)).toEqual(expected);
+    expect(detectNewReviewAttentionEvents(next, next, context, conversations)).toEqual([]);
+    expect(detectNewReviewAttentionEvents([], next, context, conversations)).toEqual([]);
+  });
+
   it('does not notify when a questionnaire is resolved', () => {
     const conversation = makeConversation('resolved');
     const message = makeQuestionnaireMessage(conversation.id);

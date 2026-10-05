@@ -1,6 +1,7 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 
 import type { ChatMessage, Conversation, ToolTrace } from "../types";
+import { mapDbConversationToConversation } from "./chatDbMappers";
 import type {
   DbChatBootstrapSnapshot,
   DbConversation,
@@ -199,6 +200,75 @@ describe("chatPersistenceService", () => {
 
     expect(result[0]?.task_id).toBe("task-1");
     expect(result[0]?.content).toBe("Answer");
+  });
+
+  it("indexes conversations once per transcript load and preserves message attachments", async () => {
+    const conversations = [
+      dbConversation(),
+      dbConversation({ id: "conv-2", task_id: "task-2" }),
+      dbConversation({ id: "conv-null", task_id: null }),
+    ].map(mapDbConversationToConversation);
+    const messages = [
+      dbMessage({ id: "user-1", role: "user", content: "Question" }),
+      dbMessage({ id: "assistant-2", conversation_id: "conv-2", content: "Answer" }),
+      dbMessage({ id: "missing", conversation_id: "conv-missing" }),
+      dbMessage({ id: "null-task", conversation_id: "conv-null" }),
+      dbMessage({ id: "assistant-1", provider_input_items_json: '[{"id":"input-1"}]' }),
+    ];
+    const listMessages = mock(async () => messages);
+    const persistence = adapters({ ipc: { listMessages } });
+    const indexTraversal = spyOn(conversations, "map");
+
+    try {
+      const result = await loadConversationMessages(persistence, {
+        conversationId: "conv-1",
+        conversations,
+      });
+
+      expect(indexTraversal).toHaveBeenCalledTimes(1);
+      expect(listMessages).toHaveBeenCalledWith("conv-1");
+      expect(result.map(({ id, conversation_id, task_id, role, content }) => ({
+        id, conversation_id, task_id, role, content,
+      }))).toEqual([
+        { id: "user-1", conversation_id: "conv-1", task_id: "task-1", role: "user", content: "Question" },
+        { id: "assistant-2", conversation_id: "conv-2", task_id: "task-2", role: "assistant", content: "Answer" },
+        { id: "missing", conversation_id: "conv-missing", task_id: "", role: "assistant", content: "Hello" },
+        { id: "null-task", conversation_id: "conv-null", task_id: "", role: "assistant", content: "Hello" },
+        { id: "assistant-1", conversation_id: "conv-1", task_id: "task-1", role: "assistant", content: "Hello" },
+      ]);
+      expect(result[4]?.provider_input_items).toEqual([{ id: "input-1" }]);
+      expect(result[4]?.turn_id).toBe("turn-1");
+      expect(result[4]?.timestamp).toBe(messages[4]?.created_at);
+
+      conversations[0].task_id = "task-updated";
+      const reloaded = await loadConversationMessages(persistence, {
+        conversationId: "conv-1",
+        conversations,
+      });
+      expect(indexTraversal).toHaveBeenCalledTimes(2);
+      expect(listMessages).toHaveBeenCalledTimes(2);
+      expect(reloaded[0]?.task_id).toBe("task-updated");
+      expect(reloaded[4]?.task_id).toBe("task-updated");
+    } finally {
+      indexTraversal.mockRestore();
+    }
+  });
+
+  it("preserves transcript load failures without indexing conversations", async () => {
+    const error = new Error("transcript unavailable");
+    const conversations: Conversation[] = [];
+    const indexTraversal = spyOn(conversations, "map");
+    const listMessages = mock(async (): Promise<DbMessage[]> => { throw error; });
+
+    try {
+      await expect(loadConversationMessages(adapters({ ipc: { listMessages } }), {
+        conversationId: "conv-1",
+        conversations,
+      })).rejects.toBe(error);
+      expect(indexTraversal).not.toHaveBeenCalled();
+    } finally {
+      indexTraversal.mockRestore();
+    }
   });
 
   it("creates deterministic non-Tauri user and assistant messages", async () => {
