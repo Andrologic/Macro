@@ -3074,6 +3074,53 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
 
+  it('revalidates a queued conflict inspection and preserves its images without restoring mutation rights', async () => {
+    const chat = await setupConflictConversation();
+    const images = [{ id: 'conflict-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-09-22T00:00:00Z' }];
+    try {
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      chat.setState({ conversationRuntimeById: { 'conflict-store': { phase: 'streaming', sessionId: 'active', turnId: 'active' } } });
+      await chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Inspect later with this image', images, internalAgentProfile: 'default_executor' }, 'queue');
+      const entry = loadQueuedSubmissions()[0]!;
+      expect(entry.intent.executionContext.projectMounts[0]?.isReadOnly).toBeUndefined();
+      conflictGitStatusMock.mockClear();
+      chat.setState({ conversationRuntimeById: {}, isStreaming: false });
+      await chat.getState().retryQueuedSubmissions('conflict-store');
+      expect(streamChatMock).toHaveBeenCalledTimes(1);
+      const options = getLatestStreamOptions<{ allowedToolIds: string[]; internalAgentProfile: string; workspacePath: string; projectMounts: Array<{ isReadOnly: boolean }> }>();
+      expect(options.internalAgentProfile).toBe('repo_auditor');
+      expect(options.workspacePath).toBe('/repos/web');
+      expect(options.projectMounts).toHaveLength(1);
+      expect(options.projectMounts[0]?.isReadOnly).toBe(true);
+      expect(options.allowedToolIds).toContain('git_status');
+      for (const tool of ['apply_patch', 'git_merge', 'terminal_run']) expect(options.allowedToolIds).not.toContain(tool);
+      expect(conflictGitStatusMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      const users = chat.getState().messages.filter((message: ChatMessage) => message.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]?.turn_id).toBe(entry.id);
+      expect(users[0]?.task_id).toBeFalsy();
+      expect(chat.getState().getMessageImages(users[0]!.id)).toEqual(images);
+      expect(loadQueuedSubmissions()).toEqual([]);
+    } finally { clearConflictAssistantContext('conflict-store'); }
+  });
+
+  it.each(['changed-head', 'revoked-context'] as const)('retains a queued inspection before persistence when its Git authority becomes %s', async (change) => {
+    const chat = await setupConflictConversation();
+    try {
+      chat.setState({ conversationRuntimeById: { 'conflict-store': { phase: 'streaming', sessionId: 'active', turnId: 'active' } } });
+      await chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Inspect this conflict later' }, 'queue');
+      const entry = loadQueuedSubmissions()[0]!;
+      if (change === 'changed-head') conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'new-head' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+      else clearConflictAssistantContext('conflict-store');
+      chat.setState({ conversationRuntimeById: {}, isStreaming: false });
+      await chat.getState().retryQueuedSubmissions('conflict-store');
+      expect(streamChatMock).not.toHaveBeenCalled();
+      expect(chat.getState().messages).toEqual([]);
+      expect(loadQueuedSubmissions()).toEqual([entry]);
+      expect(chat.getState().queuedSubmissionPreviews).toHaveLength(1);
+    } finally { clearConflictAssistantContext('conflict-store'); }
+  });
+
   it('captures a queued conflict inspection and refuses departure after the context becomes foreign', async () => {
     const chat = await setupConflictConversation();
     try {
