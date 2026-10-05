@@ -945,6 +945,13 @@ interface ChatStore {
     fallbackProjectId?: string;
     fallbackGroupId?: string;
     sharedConversation?: boolean;
+    conversationIdHint?: string | null;
+    chatMessagesHint?: ArchitectPlanActivationPayload["chatMessages"];
+    chatMessagesLoaded?: boolean;
+    chatTranscriptRevision?: string | null;
+    chatMessageCount?: number;
+    replicaScopeKey?: string | null;
+    replicaProjectId?: string | null;
   }) => Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
@@ -12307,6 +12314,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       fallbackProjectId,
       fallbackGroupId,
       sharedConversation = false,
+      ...transcriptParams
     }) => {
       const selectionAtStart = get();
       const appAtStart = useAppStore.getState();
@@ -12316,6 +12324,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         fallbackProjectId,
         fallbackGroupId,
         sharedConversation,
+        ...transcriptParams,
       });
 
       if (get().selectionRequestId !== selectionAtStart.selectionRequestId ||
