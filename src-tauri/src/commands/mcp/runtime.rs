@@ -2543,6 +2543,191 @@ mod tests {
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn voluntary_stdio_eof_checks_detached_descendants_and_reports_incomplete_inspection() {
+        use super::super::runtime_connector::ConfiguredMcpConnector;
+        use crate::config::{ConfigChangeSource, ConfigManager, ConfigScope};
+
+        // Keep a fallback independent of containment inspection, including on
+        // assertion failure. These PIDs belong only to this short-lived fixture.
+        struct FixtureProcesses(std::path::PathBuf);
+        impl FixtureProcesses {
+            fn terminate(&self) {
+                if let Ok(contents) = std::fs::read_to_string(&self.0) {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
+                        for name in ["leader", "descendant"] {
+                            if let Some(pid) = value[name].as_i64() {
+                                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        impl Drop for FixtureProcesses {
+            fn drop(&mut self) {
+                self.terminate();
+            }
+        }
+
+        for fail_inspection in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let identities = directory.path().join("identities.json");
+            let processes = FixtureProcesses(identities.clone());
+            let eof = directory.path().join("eof");
+            let script = directory.path().join("eof_mcp.py");
+            std::fs::write(
+                &script,
+                r#"
+import fcntl, json, os, subprocess, sys
+
+# The inherited marker is the same fault-injection boundary exercised by the
+# process manager tests. The Rust guard also owns these PIDs so an incomplete
+# inventory cannot leave an undiscovered descendant behind after the test.
+marker = None
+prefix = 'macro-process-' + os.environ['MACRO_PROCESS_CONTAINMENT_ID'] + '-'
+for fd in os.listdir('/dev/fd'):
+    try:
+        path = fcntl.fcntl(int(fd), fcntl.F_GETPATH, bytes(1024)).split(b'\0', 1)[0].decode()
+        if os.path.basename(path).startswith(prefix):
+            marker = path
+            break
+    except OSError:
+        pass
+assert marker is not None
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    start_new_session=True, close_fds=False)
+with open(sys.argv[1], 'w') as file:
+    json.dump({'leader': os.getpid(), 'descendant': child.pid, 'marker': marker}, file)
+for line in sys.stdin:
+    message = json.loads(line)
+    if 'id' not in message:
+        continue
+    result = {}
+    if message.get('method') == 'initialize':
+        result = {'protocolVersion': message['params']['protocolVersion'], 'capabilities': {},
+            'serverInfo': {'name': 'eof-fixture', 'version': '1'}}
+    print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
+with open(sys.argv[2], 'w') as file:
+    file.write('voluntary EOF')
+os._exit(0)
+"#,
+            )
+            .unwrap();
+            let config = ConfigManager::initialize(directory.path().join("config"))
+                .await
+                .unwrap();
+            let mut servers = serde_json::json!({"test": {
+                "name": "EOF fixture", "enabled": true, "protocol": {"mode": "legacy"},
+                "transport": {"type": "stdio", "command": "python3",
+                    "args": [script, identities, eof], "env": {}},
+                "startupTimeoutMs": 5000, "operationTimeoutMs": 5000
+            }});
+            patch_mcp_configuration(
+                &config,
+                ConfigScope::User,
+                servers.clone(),
+                ConfigChangeSource::UserInterface,
+            )
+            .await;
+            let runtime = McpRuntimeManager::with_connector(Arc::new(
+                ConfiguredMcpConnector::with_config_manager(config.clone()),
+            ));
+            let initial = runtime
+                .connect(McpRuntimeSelector {
+                    server_id: "test".into(),
+                    project_ids: vec![],
+                })
+                .await
+                .unwrap();
+            let identity: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&identities).unwrap()).unwrap();
+            let leader = identity["leader"].as_i64().unwrap() as i32;
+            let descendant = identity["descendant"].as_i64().unwrap() as i32;
+            assert!(process_is_running(leader));
+            assert!(process_is_running(descendant));
+            assert_ne!(unsafe { libc::getpgid(leader) }, unsafe {
+                libc::getpgid(descendant)
+            });
+            if fail_inspection {
+                // Unlink only this fixture's marker to make lsof fail. The
+                // test guard handles descendants missed by this partial scan.
+                std::fs::remove_file(identity["marker"].as_str().unwrap()).unwrap();
+            }
+            servers["test"]["enabled"] = serde_json::json!(false);
+            patch_mcp_configuration(
+                &config,
+                ConfigScope::User,
+                servers,
+                ConfigChangeSource::UserInterface,
+            )
+            .await;
+            let snapshot =
+                tokio::time::timeout(CONFIGURATION_CLOSE_BUDGET + Duration::from_secs(2), async {
+                    loop {
+                        let server = runtime.snapshot().await.servers.remove(0);
+                        if server.key != initial.key
+                            && server.last_error_code.as_deref()
+                                == Some(if fail_inspection {
+                                    "MCP_RUNTIME_CLOSE_FAILED"
+                                } else {
+                                    "MCP_RUNTIME_SERVER_DISABLED"
+                                })
+                            && server.status
+                                == if fail_inspection {
+                                    McpRuntimeStatus::Failed
+                                } else {
+                                    McpRuntimeStatus::Disconnected
+                                }
+                            && !process_is_running(leader)
+                            && (fail_inspection || !process_is_running(descendant))
+                        {
+                            break server;
+                        }
+                        if server.last_error_code.as_deref() == Some("MCP_RUNTIME_CLOSE_FAILED") || server.status == McpRuntimeStatus::Disconnected {
+                            eprintln!("EOF state: injected={fail_inspection}, {server:?}");
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("EOF cleanup incomplete: {error}; injected={fail_inspection}, leader={leader}, descendant={descendant}, eof={}, leader_running={}, descendant_running={}",
+                        eof.exists(), process_is_running(leader), process_is_running(descendant));
+                });
+            assert_eq!(std::fs::read_to_string(&eof).unwrap(), "voluntary EOF");
+            assert!(snapshot.key.config_generation > initial.key.config_generation);
+            if fail_inspection {
+                assert!(snapshot
+                    .last_error
+                    .unwrap()
+                    .contains("Process tree inspection was incomplete"));
+            }
+            eprintln!("EOF cleanup: injected={fail_inspection}, leader={leader}, descendant={descendant}, descendant_before_fallback={}, status={:?}, code={:?}",
+                process_is_running(descendant), snapshot.status, snapshot.last_error_code);
+            // An incomplete inventory reports failure; it cannot promise that
+            // an undiscovered detached child was killed. Clean up that fixture
+            // explicitly and verify absence independently of the adapter.
+            if fail_inspection {
+                processes.terminate();
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while process_is_running(leader) || process_is_running(descendant) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("no fixture processes may survive the test");
+            eprintln!("EOF fixture processes absent: leader={leader}, descendant={descendant}");
+            runtime.shutdown_all().await;
+            // Both PIDs are gone, so the fallback must not signal reused PIDs.
+            std::fs::remove_file(&identities).unwrap();
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn native_configuration_mutations_close_stdio_processes_without_an_mcp_operation() {
