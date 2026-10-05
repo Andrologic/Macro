@@ -16,6 +16,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 - Preserved user text across conversation transports, images before accepting a send, deferred submissions, Goal continuations, and uncertain tool outcomes after failures.
 - Kept plan finalization available after completed tasks are archived, and preserved task-creation choices and errors after a rejected operation.
 - Kept task reviews tied to the selected task across project filters, and made saved Architect strategy changes distinguishable from failed follow-up operations.
+- Kept the task checklist available during review so work can resume after a merge is blocked by an open todo.
 - Stabilized Chat archive navigation and preserved manually chosen conversation titles during automatic naming.
 - Closed obsolete MCP connections after configuration changes and retained cleanup failure diagnostics.
 - Improved keyboard focus and accessible labels in dialogs, project navigation, Git actions, and settings, and preserved prompt drafts during settings navigation.

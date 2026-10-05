@@ -9,6 +9,10 @@ const setComposerDraftMock = mock((..._args: unknown[]) => undefined);
 const selectConversationMock = mock(async (..._args: unknown[]) => true);
 const sendMessageMock = mock(async () => undefined);
 
+const taskCatalog = { tasks: [] as Array<{ id: string; branch_name: string; project_id: string }> };
+const listTasksMock = mock(async () => taskCatalog);
+const worktreeInspectMock = mock(async () => ({ status: 'ready', worktreePath: '/worktrees/api', branchName: 'feature/api' }));
+
 const nativeStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
 const switchProjectContextMock = mock(async (id: string) => {
   appStoreState.selectedProjectId = id;
@@ -50,6 +54,9 @@ describe("conflictAssistantService", () => {
     clearConflictAssistantContext('repo-auditor-conv');
     switchProjectContextMock.mockClear();
     nativeStatusMock.mockClear();
+    listTasksMock.mockClear();
+    taskCatalog.tasks = [];
+    worktreeInspectMock.mockClear();
     appStoreState.standaloneProjects = [{ id: 'project-1', path: '/repo/api' }];
     appStoreState.projectGroups = [];
     nativeStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
@@ -66,8 +73,8 @@ describe("conflictAssistantService", () => {
     appStoreState.selectedGroupId = null;
     appStoreState.selectedTaskId = null;
 
-    mock.module('./tauriIpc', () => ({ gitStatus: nativeStatusMock, macroBranchStatus: mock(async ({ workspacePath }: { workspacePath: string }) => ({ branch: '@macro', worktree_path: workspacePath + '/metadata', state: 'conflict' })) }));
-    mock.module('../stores/useTaskStore', () => ({ useTaskStore: { getState: () => ({ tasks: [] }) } }));
+    mock.module('./tauriIpc', () => ({ gitStatus: nativeStatusMock, gitWorktreeInspect: worktreeInspectMock, macroBranchStatus: mock(async ({ workspacePath }: { workspacePath: string }) => ({ branch: '@macro', worktree_path: workspacePath + '/metadata', state: 'conflict' })) }));
+    mock.module('./index', () => ({ services: { listTasks: listTasksMock } }));
     mock.module("../stores/useAppStore", () => ({
       useAppStore: createStoreHook(appStoreState),
     }));
@@ -249,6 +256,32 @@ describe("conflictAssistantService", () => {
     clearConflictAssistantInternalAgentProfile('repo-auditor-conv');
     expect(getConflictAssistantInternalAgentProfile('repo-auditor-conv')).toBe('repo_auditor');
     expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('verifies worktree task identities through the service catalog on every opening', async () => {
+    taskCatalog.tasks = [{ id: 'task-api', branch_name: 'feature/api', project_id: 'project-1' }];
+    const moduleId = './conflictAssistantService.ts?catalog-worktree';
+    const { openConflictAssistant } = await import(moduleId);
+    const { getConflictAssistantContext } = await import('./conflictAssistantContext');
+    const options = { prompt: 'Inspect conflicts', context: { kind: 'code' as const, repositories: [{
+      projectId: 'project-1', repoPath: '/worktrees/api', branch: 'feature/api', taskId: 'task-api',
+    }] } };
+    await openConflictAssistant(options);
+    expect(listTasksMock).toHaveBeenCalledTimes(1);
+    expect(worktreeInspectMock).toHaveBeenCalledWith({ repoPath: '/repo/api', taskId: 'task-api', branchName: 'feature/api', readOnly: true });
+    expect(nativeStatusMock).toHaveBeenCalledWith('/worktrees/api');
+    expect(getConflictAssistantContext('repo-auditor-conv')?.repositories[0]).toMatchObject({
+      taskId: 'task-api', repoPath: '/worktrees/api', branch: 'feature/api', head: 'abc',
+    });
+    expect(createConversationMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+
+    taskCatalog.tasks = [{ id: 'different-task', branch_name: 'feature/api', project_id: 'project-1' }];
+    await expect(openConflictAssistant(options)).rejects.toThrow('no verified task identity');
+    expect(listTasksMock).toHaveBeenCalledTimes(2);
+    expect(worktreeInspectMock).toHaveBeenCalledTimes(1);
+    expect(createConversationMock).toHaveBeenCalledTimes(1);
+    expect(switchProjectContextMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid context before switching mode or creating a conversation', async () => {
