@@ -24,6 +24,7 @@
   "selectTaskForValidation": "변경 사항을 검증할 작업을 선택하세요.",
   "activeCount": "{{count}}활동적인",
   "noTasks": "아직 할 일이 없습니다.",
+  "otherTasks": "기타 작업",
   "readyTasks": "준비된 작업",
   "noReadyTasks": "현재 실행 가능한 작업이 없습니다.",
   "blockedTasks": "차단된 작업",

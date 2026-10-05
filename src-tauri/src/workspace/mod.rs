@@ -2361,7 +2361,7 @@ pub async fn get_metadata(
 fn is_active_direct_feature_for_projects(
     feature: &ManualFeatureDto,
     selected_project_ids: &[String],
-    direct_edit_project_ids: &HashSet<String>,
+    non_git_direct_project_ids: &HashSet<String>,
 ) -> bool {
     let targets_repository_root = feature.execution_targets.iter().any(|target| {
         target.execution_mode.as_deref() == Some("direct")
@@ -2372,7 +2372,7 @@ fn is_active_direct_feature_for_projects(
         || feature
             .project_ids
             .iter()
-            .any(|project_id| direct_edit_project_ids.contains(project_id));
+            .any(|project_id| non_git_direct_project_ids.contains(project_id));
     let overlaps_selected_projects = feature
         .project_ids
         .iter()
@@ -2423,10 +2423,23 @@ fn assert_direct_feature_admission(state: &WorkspaceState, task_id: &str) -> Res
     if direct_project_ids.is_empty() {
         return Ok(());
     }
+    let non_git_direct_project_ids = direct_project_ids
+        .iter()
+        .filter(|id| {
+            find_project_by_id_in_state(state, id).is_some_and(|project| {
+                project.direct_edit && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT
+            })
+        })
+        .cloned()
+        .collect::<HashSet<_>>();
     let project_ids = direct_project_ids.iter().cloned().collect::<Vec<_>>();
     if let Some(other) = state.manual_features.iter().find(|other| {
         other.id != task_id
-            && is_active_direct_feature_for_projects(other, &project_ids, &direct_project_ids)
+            && is_active_direct_feature_for_projects(
+                other,
+                &project_ids,
+                &non_git_direct_project_ids,
+            )
     }) {
         return Err(BackendError::Validation(format!(
             "Direct-edit project already has an active task: {}",
@@ -12950,6 +12963,149 @@ mod tests {
             &["project-git".to_string()],
             &HashSet::new(),
         ));
+    }
+
+    #[tokio::test]
+    async fn direct_admission_distinguishes_git_drafts_and_restoration_conflicts() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("git-project");
+        let repo = init_git_repo(&project_path, "develop", &["main"]);
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let head = head_commit.id().to_string();
+        let mut index = repo.index().unwrap();
+        index.read_tree(&head_commit.tree().unwrap()).unwrap();
+        index.write().unwrap();
+        drop(index);
+        drop(head_commit);
+        drop(repo);
+        let mut project = make_project("project-git", project_path.to_string_lossy().as_ref());
+        project.git_setup_state = PROJECT_GIT_SETUP_READY.to_string();
+        project.direct_edit = false;
+        persist_sanitized_state(
+            temp.path(),
+            &metadata_root,
+            WorkspaceState {
+                standalone_projects: vec![project],
+                ..WorkspaceState::default()
+            },
+            "seed_git_project",
+        )
+        .await
+        .unwrap();
+        for kind in ["feature", "bugfix", "hotfix"] {
+            create_manual_feature_draft(
+                temp.path(),
+                &metadata_root,
+                kind,
+                kind,
+                &["project-git".to_string()],
+                &[],
+                Some("develop"),
+                Some(kind),
+                None,
+                kind,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "direct",
+            "direct",
+            &["project-git".to_string()],
+            &[],
+            Some("develop"),
+            Some("Direct"),
+            None,
+            "direct",
+            Some("develop"),
+            Some(&head),
+        )
+        .await
+        .expect("Git drafts do not reserve the repository root");
+        finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "direct",
+            None,
+            "Direct",
+            "Description",
+            "direct",
+            "direct",
+        )
+        .await
+        .unwrap();
+        update_standalone_task_status(temp.path(), &metadata_root, "direct", "Completed")
+            .await
+            .unwrap();
+        archive_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "direct",
+            Some("merged"),
+            Some("2026-01-01"),
+        )
+        .await
+        .unwrap();
+        let restored = restore_manual_feature(temp.path(), &metadata_root, "direct")
+            .await
+            .expect("Feature, Bugfix and Hotfix drafts do not block a Direct restore");
+        assert_eq!(restored.status, "Pending");
+        assert!(restored.archived_at.is_none());
+        archive_manual_feature(temp.path(), &metadata_root, "direct", None, None)
+            .await
+            .unwrap();
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "other-direct",
+            "other-direct",
+            &["project-git".to_string()],
+            &[],
+            Some("develop"),
+            Some("Other Direct"),
+            None,
+            "direct",
+            Some("develop"),
+            Some(&head),
+        )
+        .await
+        .unwrap();
+        let error = restore_manual_feature(temp.path(), &metadata_root, "direct")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Other Direct"));
+        let state = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .unwrap();
+        assert!(state
+            .manual_features
+            .iter()
+            .find(|task| task.id == "direct")
+            .unwrap()
+            .archived_at
+            .is_some());
+        let create_error = create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "third-direct",
+            "third-direct",
+            &["project-git".to_string()],
+            &[],
+            Some("develop"),
+            None,
+            None,
+            "direct",
+            Some("develop"),
+            Some(&head),
+        )
+        .await
+        .unwrap_err();
+        assert!(create_error.to_string().contains("Other Direct"));
     }
 
     #[test]

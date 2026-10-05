@@ -1240,7 +1240,7 @@ Pour le travail planifié, Macro utilise une branche d'intégration dédiée au 
 
 Cette branche sert de point de convergence avant le merge final vers la branche de base.
 
-Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles non archivées de la stratégie et n'est pas persistée comme un nœud Architect.
+Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles de la stratégie encore actives ou terminées puis archivées avec le motif `merged`. Les nœuds retirés ou annulés restent exclus. Le catalogue conserve la finalisation et le résumé du plan après l'archivage automatique de toutes ses tâches, jusqu'à la fin du cycle du plan. Cette tâche synthétique n'est pas persistée comme un nœud Architect.
 
 ### 12.3 Branches de feature
 

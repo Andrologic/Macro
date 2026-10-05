@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { ProjectGitFlowSettings } from '../types';
+import type { PlanNode, ProjectGitFlowSettings } from '../types';
+import { buildImplementTaskCatalog } from './implementTaskCatalog';
 import { toBranchWorktreeKey } from './implementTaskDerivation';
 import {
   buildPlanIntegrationWorktreePath,
@@ -1706,6 +1707,98 @@ describe('architectGitFlowService', () => {
     });
     expect(review.repositories[1]?.blockingReason).toBeNull();
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['removed', 'initial'],
+    ['cancelled', 'initial'],
+    ['removed', 'resumed'],
+    ['cancelled', 'resumed'],
+  ] as const)('finalizes a ready catalog with a pending %s archive, %s attempt', async (archiveReason, attempt) => {
+    currentPlan = {
+      ...currentPlan,
+      status: 'in_progress',
+      nodes: currentPlan.nodes.map((node: PlanNode) => ({
+        ...node,
+        status: 'completed',
+        archivedAt: '2026-03-07T01:00:00.000Z',
+        archiveReason: 'merged',
+      })),
+    };
+    if (attempt === 'resumed') {
+      gitPrepareGuardedBranchSyncMock.mockImplementationOnce(async () => {
+        throw new Error('interrupted before branch sync');
+      });
+      await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+        branchName: 'feature/implement', planId: 'plan-1',
+      })).rejects.toThrow('interrupted before branch sync');
+      expect(readPersistedLifecycleSagas()).toEqual([
+        expect.objectContaining({ operation: 'finalize', phase: 'prepared' }),
+      ]);
+      expect(gitMergeMock).not.toHaveBeenCalled();
+      architectGitFlowService = createArchitectGitFlowService(gitFlowDependencies);
+    }
+    currentPlan = {
+      ...currentPlan,
+      nodes: [
+        ...currentPlan.nodes,
+        {
+          id: 'excluded-task', title: 'Excluded task', type: 'task', status: 'pending',
+          dependencies: [], projectId: 'web',
+          archivedAt: '2026-03-07T01:00:00.000Z', archiveReason,
+        },
+      ],
+    };
+    const catalog = buildImplementTaskCatalog({ plans: [currentPlan], fallbackTasks: [] });
+    expect(catalog.tasks.filter((task) => !task.archived_at)).toEqual([
+      expect.objectContaining({ task_source: 'plan_finalization', is_ready: true }),
+    ]);
+
+    const result = await architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement', planId: 'plan-1',
+    });
+
+    expect(gitMergeMock).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/web', branchName: 'plan/checkout', intoBranch: 'develop',
+    }));
+    expect(result.plan.status).toBe('archived');
+    expect(result.plan.nodes.find((node) => node.id === 'excluded-task')).toMatchObject({
+      status: 'pending', archiveReason, archivedAt: '2026-03-07T01:00:00.000Z',
+    });
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('blocks resumed finalization when the reloaded plan has an active incomplete task', async () => {
+    gitPrepareGuardedBranchSyncMock.mockImplementationOnce(async () => {
+      throw new Error('interrupted before branch sync');
+    });
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement', planId: 'plan-1',
+    })).rejects.toThrow('interrupted before branch sync');
+    expect(readPersistedLifecycleSagas()).toEqual([
+      expect.objectContaining({ operation: 'finalize', phase: 'prepared' }),
+    ]);
+    currentPlan = {
+      ...currentPlan,
+      nodes: currentPlan.nodes.map((node: PlanNode, index: number) =>
+        index === 0 ? { ...node, status: 'pending' } : node
+      ),
+    };
+    const catalog = buildImplementTaskCatalog({ plans: [currentPlan], fallbackTasks: [] });
+    expect(catalog.tasks.find((task) => task.task_source === 'plan_finalization')?.is_ready)
+      .toBe(false);
+    architectGitFlowService = createArchitectGitFlowService(gitFlowDependencies);
+    gitPrepareGuardedBranchSyncMock.mockClear();
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement', planId: 'plan-1',
+    })).rejects.toThrow('tasks are incomplete: Build checkout UI');
+
+    expect(gitPrepareGuardedBranchSyncMock).not.toHaveBeenCalled();
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
 
   it('blocks finalization before any mutation when plan tasks are incomplete', async () => {

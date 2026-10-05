@@ -24,6 +24,7 @@
   "selectTaskForValidation": "Wählen Sie eine Aufgabe aus, um Änderungen zu validieren",
   "activeCount": "{{count}} aktiv",
   "noTasks": "Noch keine Aufgaben",
+  "otherTasks": "Andere Aufgaben",
   "readyTasks": "Bereite Aufgaben",
   "noReadyTasks": "Derzeit ist keine Aufgabe ausführbar.",
   "blockedTasks": "Blockierte Aufgaben",

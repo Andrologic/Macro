@@ -318,7 +318,7 @@ describe('plan completion contracts', () => {
     ports.commitArchitectPlanMetadataForTask = mock(async () => {});
     await archiveTaskMergeWorkflow(ports, architect, [], false);
     expect(ports.publishCompletedPlan).toHaveBeenCalledWith(expect.objectContaining({ nodes: [
-      expect.objectContaining({ id: task.id, title: 'Newest title', status: 'completed' }), plan.nodes[1],
+      expect.objectContaining({ id: task.id, title: 'Newest title', status: 'completed', archiveReason: 'merged', archivedAt: expect.any(String), mergedAt: expect.any(String) }), plan.nodes[1],
     ] }));
     expect(ports.writeArchitectTaskExecution).toHaveBeenCalledTimes(1);
   });
