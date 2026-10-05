@@ -1,7 +1,7 @@
 import type { InternalAgentProfile } from "./internalAgentProfile";
 import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
-import { useTaskStore } from '../stores/useTaskStore';
+import { services } from './index';
 import { buildCodeConflictAssistantPrompt, buildMacroConflictAssistantPrompt } from './conflictResolution';
 import { getConflictAssistantContext, clearConflictAssistantContext, registerConflictAssistantContext, verifyConflictAssistantRepositories, getConflictAssistantGroupId, type ConflictAssistantContextRequest } from './conflictAssistantContext';
 import { useChatStore } from '../stores/useChatStore';
@@ -43,8 +43,11 @@ export const openConflictAssistant = async (
   const appState = useAppStore.getState();
   const initialSelection = [appState.mode, appState.selectedTaskId, appState.selectedProjectId, appState.selectedGroupId];
   const projects = [...(appState.standaloneProjects ?? []), ...(appState.projectGroups ?? []).flatMap(group => group.projects)];
+  const needsTaskIdentity = options.context?.kind === 'code' && options.context.repositories.some(repository =>
+    projects.some(project => project.id === repository.projectId && project.path !== repository.repoPath));
+  const tasks = needsTaskIdentity ? (await services.listTasks()).tasks : [];
   const repositories = options.context
-    ? await verifyConflictAssistantRepositories(options.context, projects, tauriIpc, useTaskStore.getState().tasks)
+    ? await verifyConflictAssistantRepositories(options.context, projects, tauriIpc, tasks)
     : undefined;
   if (repositories) {
     const current = useAppStore.getState();

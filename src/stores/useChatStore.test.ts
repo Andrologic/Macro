@@ -2,7 +2,7 @@ import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
 import { registerConflictAssistantContext, clearConflictAssistantContext, type VerifiedConflictAssistantContext } from '../services/conflictAssistantContext';
 import { createLifecycleScope } from '../services/lifecycleScope';
 import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type {
   AgentType,
   AppMode,
@@ -3262,6 +3262,162 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await flushAsyncWork();
     expect(useChatStore.getState().conversations[0]?.title).toBe('Refresh checkout');
     expect(updateConversationDetailsMock).toHaveBeenCalled();
+  });
+
+  it('resumes the same Implement conversation after a todo-gated merge and completes the task without reloading or duplicating the message', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    tauriAvailable = true;
+    const { installTauriRuntimeMock } = await import('../test-utils/tauriRuntime');
+    installTauriRuntimeMock();
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
+    const todo = { id: 'todo-1', title: 'Close the checkout checklist', status: 'pending' as const };
+    architectPlans.set('plan-1', createPlan({ status: 'in_progress', targetBranch: 'develop', nodes: [{
+      id: 'task-1', title: 'Implement checkout', description: 'Ship the checkout flow.', type: 'task',
+      status: 'in-progress', dependencies: [], assignedBranch: 'feature/implement-checkout',
+      projectId: 'project-1', projectIds: ['project-1'], todos: [todo],
+    }] }));
+
+    const ipc = await import('../services/tauriIpc');
+    let receipt: Awaited<ReturnType<typeof ipc.gitWorkflow>> = null;
+    const gitWorkflow = mock(async (input: Parameters<typeof ipc.gitWorkflow>[0]) => {
+      if (input.action === 'inspect') return receipt;
+      receipt = { taskId: input.taskId, sessionId: 'session-checkout', sourceBranch: input.sourceBranch,
+        targetBranch: input.targetBranch, sourceCommit: 'source', targetCommit: 'target',
+        integratedCommit: 'integrated', status: 'integrated', output: 'Merge integrated.' };
+      return receipt;
+    });
+    const { getToolModePolicy } = await import('../services/toolModePolicy');
+    mock.module('../services/tauriIpc', () => ({ ...ipc,
+      getToolModePolicy: async (mode: AppMode) => {
+        const policy = getToolModePolicy(mode);
+        return { allowed_tool_ids: policy.allowedToolIds, enforce_macro_only_writes: policy.enforceMacroOnlyWrites };
+      },
+      configGetSnapshot: async () => ({ projectEffective: {} }),
+      gitWorkflow, gitWorkflowCleanup: mock(async () => undefined),
+      gitStatus: async (path: string) => ({ branch: path === '/worktrees/task-1' ? 'feature/implement-checkout' : 'plan/plan-1',
+        is_clean: true, staged_files: [], unstaged_files: [], untracked_files: [], conflicted_files: [],
+        ahead: 1, behind: 1, has_origin: false, has_upstream: false }),
+      gitWorktreeInspect: async (input: Parameters<typeof ipc.gitWorktreeInspect>[0]) => ({
+        taskId: input.taskId, worktreePath: '/worktrees/task-1', branchName: input.branchName, status: 'ready', isDirty: false }),
+      gitBranchWorktreeCreate: async (input: Parameters<typeof ipc.gitBranchWorktreeCreate>[0]) => ({
+        worktreeKey: input.worktreeKey, worktreePath: '/worktrees/plan-1', branchName: input.branchName, status: 'reused' }),
+      gitWorktreeRemove: async () => ({ removed: true, removedPath: '/worktrees/task-1' }),
+      gitCheckout: async () => undefined,
+      gitDiff: async () => 'diff --git a/checkout.ts b/checkout.ts',
+      gitMergeCheck: async () => ({ mergeable: true, conflictFiles: [], hasChanges: true, ahead: 1, behind: 1 }),
+      gitRebaseCheck: async () => ({ rebaseable: true, conflictFiles: [], output: '' }),
+      gitBranchList: async () => ({ local: [{ name: 'feature/implement-checkout', is_head: true, commit: 'source' }], remote: [], current: 'feature/implement-checkout' }),
+    }));
+    const plans = await import('../services/architectPlanService');
+    mock.module('../services/architectPlanService', () => ({ ...plans,
+      mutateArchitectPlanTaskStatus: async (input: Parameters<typeof plans.mutateArchitectPlanTaskStatus>[0], derive: Parameters<typeof plans.mutateArchitectPlanTaskStatus>[1]) => {
+        const current = architectPlans.get(input.planId)!;
+        const next = { ...current, ...derive(current) };
+        architectPlans.set(input.planId, next);
+        return next;
+      },
+      writeArchitectTaskExecution: async () => undefined,
+      commitArchitectPlanMetadata: async () => undefined,
+    }));
+
+    // Keep durable runtime writes real while storing files in memory.
+    fsExistsMock.mockImplementation(async () => false);
+    const runtimeFiles = new Map<string, { content: string; revision: string }>();
+    const runtimeFileKey = (input: { workspacePath?: string | null; path: string }) => `${input.workspacePath}:${input.path}`;
+    releasePlanRuntimePorts?.();
+    releasePlanRuntimePorts = installArchitectPlanRuntimePorts({
+      getProjectById: appState.getProjectById,
+      tauri: { ...ipc,
+        fsReadFileWithOptions: async input => {
+          const file = runtimeFiles.get(runtimeFileKey(input));
+          if (!file) throw Object.assign(new Error('File not found'), { code: 'FilesystemNotFound' });
+          return { ...file, language: 'json', is_binary: false, size: file.content.length, encoding: 'utf-8' };
+        },
+        fsWriteFile: async input => {
+          const key = runtimeFileKey(input);
+          const previous = runtimeFiles.get(key);
+          expect(input.expectedRevision).toBe(previous?.revision ?? 'absent');
+          runtimeFiles.set(key, { content: input.content, revision: `${runtimeFiles.size}-${input.content.length}` });
+          return { path: input.path, bytes_written: input.content.length, created: !previous, skipped: false };
+        },
+      },
+    });
+
+    // Import a fresh real task store, then connect both stores to the same state.
+    // Only Git, metadata persistence and provider transport use synthetic ports.
+    const realTaskModulePath = './useTaskStore.ts?conversation8';
+    const taskModule: typeof import('./useTaskStore') = await import(realTaskModulePath);
+    const tasks = taskModule.useTaskStore;
+    const task = createImplementTask({ status: 'InReview', conversation_id: 'implement-conv',
+      plan_storage_branch: 'develop', plan_target_branch: 'develop', todos: [todo],
+      execution_targets: [{ projectId: 'project-1', executionMode: 'git', branchName: 'feature/implement-checkout',
+        worktreeKey: 'task-1-project-1', repoPath: '/repos/web', planBranchName: 'plan/plan-1', targetBranchName: 'develop' }],
+    }) as unknown as ReturnType<typeof tasks.getState>['tasks'][number];
+    tasks.setState({ tasks: [task], branchWorktrees: { 'task-1-project-1': '/worktrees/task-1' } });
+    const taskState = spyOn(useTaskStoreMock, 'getState').mockImplementation(() => tasks.getState() as unknown as typeof taskStoreState);
+    const stopTaskUpdates = tasks.subscribe((next, previous) => taskStoreSubscribers.forEach(listener =>
+      listener(next as unknown as typeof taskStoreState, previous as unknown as typeof taskStoreState)));
+    const { services } = await import('../services');
+    const catalog = spyOn(services, 'listTasks').mockImplementation(async () => {
+      const node = architectPlans.get('plan-1')!.nodes[0]!;
+      return { tasks: [{ ...task, status: node.status === 'completed' ? 'Completed' : 'InReview',
+        todos: node.todos, archived_at: node.archivedAt ?? null, archive_reason: node.archiveReason ?? null,
+        merged_at: node.mergedAt ?? null }], plans: [], hasStandaloneTasks: false, source: 'architect' };
+    });
+    const previousExecutionContextMode = useRealProjectExecutionContextForTest;
+    await useChatStoreScenarioContext.enableRealProjectExecutionContext();
+    const chatModule: typeof import('./useChatStore') = await loadChatStore();
+    const chat = chatModule.useChatStore;
+    setImplementStoreState(chat, { conversationId: 'implement-conv', taskId: 'task-1' });
+    const canonicalChat = await import('./useChatStore');
+    const chatState = canonicalChat.useChatStore === chat ? null : spyOn(canonicalChat.useChatStore, 'getState').mockImplementation(() => chat.getState());
+    try {
+      const beforeRuntime = chat.getState().conversationRuntimeById['implement-conv'];
+      await expect(tasks.getState().finishTask('task-1')).rejects.toThrow(todo.title);
+      expect(tasks.getState().lastError).toContain(todo.title);
+      expect(tasks.getState().getTaskById('task-1')?.status).toBe('InReview');
+      expect(tasks.getState().getMergeWorkflowRuntime('task-1')).toBeNull();
+      expect(chat.getState().conversationRuntimeById['implement-conv']).toBe(beforeRuntime);
+      expect(gitWorkflow).not.toHaveBeenCalled();
+      expect(runtimeFiles.size).toBe(0);
+
+      const content = 'Ferme le todo de la checklist, puis reprenons la fusion.';
+      const result = await chat.getState().sendMessage({ conversationId: 'implement-conv', taskId: 'task-1', content });
+      expect(result.status).toBe('sent');
+      expect(streamChatMock).toHaveBeenCalledTimes(1);
+      const options = getLatestStreamOptions<{ internalAgentProfile: string; workspacePath: string; allowedToolIds: string[] }>();
+      expect(options.internalAgentProfile).toBe('task_reviewer');
+      expect(options.allowedToolIds).toContain('task_todo_get');
+      expect(options.allowedToolIds).toContain('task_todo_update');
+      expect(options.allowedToolIds).not.toContain('git_merge');
+      expect(options.allowedToolIds).not.toContain('git_commit');
+      expect(options.workspacePath).toBe('/worktrees/task-1');
+      const users = chat.getState().getConversationMessages('implement-conv').filter(message => message.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({ id: result.userMessageId, content, conversation_id: 'implement-conv', task_id: 'task-1' });
+      expect(createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+      expect(chat.getState().selectedConversationId).toBe('implement-conv');
+
+      const update = await getLatestArchitectToolHandler()('task_todo_update', {
+        operations: [{ action: 'set_status', todo_id: todo.id, status: 'done' }],
+      });
+      expect(String(update)).toContain('1/1 todos done');
+      expect(architectPlans.get('plan-1')!.nodes[0]!.todos![0]!.status).toBe('done');
+      chat.getState().stopStreaming();
+      await flushAsyncWork();
+      await tasks.getState().finishTask('task-1');
+      expect(gitWorkflow.mock.calls.some(([input]) => input.action === 'merge_commit')).toBe(true);
+      expect(tasks.getState().getTaskById('task-1')?.status).toBe('Completed');
+      expect(tasks.getState().getMergeWorkflowRuntime('task-1')).toBeNull();
+      expect(runtimeFiles.size).toBeGreaterThan(0);
+      for (const file of runtimeFiles.values()) expect(JSON.parse(file.content).mergeWorkflows).toEqual({});
+      expect(chat.getState().getConversationMessages('implement-conv').filter(message => message.role === 'user')).toEqual(users);
+    } finally {
+      useRealProjectExecutionContextForTest = previousExecutionContextMode;
+      stopTaskUpdates(); taskState.mockRestore(); catalog.mockRestore(); chatState?.mockRestore();
+    }
   });
 
   const setupConflictConversation = async () => {

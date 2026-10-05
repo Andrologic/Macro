@@ -7462,10 +7462,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const uniqueToolIds = filterStrategyMutationToolsForActivePlan(
         Array.from(new Set(toolIds)),
       );
+      const providerToolIds = filterForSelectedProvider(uniqueToolIds);
       const filteredToolIds = filterToolIdsForInternalAgentProfile(
-        filterForSelectedProvider(uniqueToolIds),
+        providerToolIds,
         internalAgentProfile,
       );
+      // Review must be able to close the task checklist that blocks completion.
+      // Retain mode/provider admission above and risk/task restrictions below.
+      if (mode === "Implement" && internalAgentProfile === "task_reviewer") {
+        for (const toolId of ["task_todo_get", "task_todo_update"]) {
+          if (providerToolIds.includes(toolId) && !filteredToolIds.includes(toolId)) {
+            filteredToolIds.push(toolId);
+          }
+        }
+      }
       const riskFilteredToolIds = filterDeniedToolIdsForRiskLevel(
         filteredToolIds,
         riskLevel,
