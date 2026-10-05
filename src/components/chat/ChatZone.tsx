@@ -1,3 +1,4 @@
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
@@ -2272,7 +2273,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Implement') {
       return {
         icon: 'check-square' as const,
-        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
+        title: `${t('header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -2291,7 +2292,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode,
     projectScopeLabel,
     selectedGlobalProjectName,
-    selectedTask?.title,
+    selectedTask,
     t,
   ]);
 

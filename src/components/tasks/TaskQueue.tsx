@@ -1,3 +1,4 @@
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { WorktreeDiagnosticsDialog } from './WorktreeDiagnosticsDialog';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -531,7 +532,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
           <div className="min-w-0 flex-1">
             <h3 className="pr-3 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
-              {task.title}
+              {getPlanFinalizationTaskDisplayTitle(task, t)}
             </h3>
           </div>
         </div>
