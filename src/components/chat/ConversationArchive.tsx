@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -9,6 +10,7 @@ import { PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { hasOpenDialog } from '../ui/dialogPresence';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
@@ -21,6 +23,7 @@ import {
   commitArchivedConversationMutation,
   filterConversationsByQuery,
   getArchiveViewConversations,
+  getConversationMenuPosition,
   getChatOnlyConversations,
   normalizeConversationIdList,
   partitionPinnedConversations,
@@ -121,6 +124,74 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const [returnFocusAfterDialog, setReturnFocusAfterDialog] = useState(false);
+
+  useEffect(() => {
+    if (!returnFocusAfterDialog) return;
+    const restore = () => {
+      if (hasOpenDialog()) return;
+      // Dialog may have saved a menu button that was removed when it opened.
+      // Only repair that lost focus; leave another dialog's or control's focus alone.
+      if (document.activeElement === document.body || !document.activeElement?.isConnected) {
+        menuTriggerRef.current?.focus();
+      }
+      setReturnFocusAfterDialog(false);
+    };
+    const observer = new MutationObserver(restore);
+    observer.observe(document.body, { childList: true });
+    restore();
+    return () => observer.disconnect();
+  }, [returnFocusAfterDialog]);
+
+  useLayoutEffect(() => {
+    if (!showMenu) return;
+    const trigger = menuTriggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+    setMenuPosition(getConversationMenuPosition(
+      trigger.getBoundingClientRect(),
+      { width: menu.offsetWidth, height: menu.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+    ));
+    const close = () => setShowMenu(false);
+    let menuHadFocus = menu.contains(document.activeElement);
+    const closeForDialog = () => {
+      if (!hasOpenDialog()) return;
+      if (menuHadFocus) setReturnFocusAfterDialog(true);
+      close();
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (hasOpenDialog()) closeForDialog();
+      else menuHadFocus = event.target instanceof Node && menu.contains(event.target);
+    };
+    const dialogObserver = new MutationObserver(closeForDialog);
+    dialogObserver.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('focusin', onFocusIn);
+    closeForDialog();
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && menu.contains(event.target)) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || hasOpenDialog()) return;
+      event.preventDefault();
+      setShowMenu(false);
+      trigger.focus();
+    };
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      dialogObserver.disconnect();
+      document.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showMenu]);
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -280,8 +351,10 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 event.stopPropagation();
                 setShowMenu((current) => !current);
               }}
+              ref={menuTriggerRef}
               disabled={isDeleting}
-              className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-expanded={showMenu}
+              className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               aria-label={t('chat.conversationActions', 'Conversation actions')}
             >
               <Icon name="more-vertical" size={12} className="text-muted-foreground" />
@@ -289,11 +362,14 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
           )}
         </div>
       </div>
-      {showMenu && !isMultiSelectMode && (
+      {showMenu && !isMultiSelectMode && createPortal(
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+          <div className="fixed inset-0 z-[79]" onClick={() => setShowMenu(false)} />
           <div
-            className="absolute right-2 top-full z-50 mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1"
+            ref={menuRef}
+            data-conversation-actions-menu
+            style={{ ...menuPosition, maxHeight: 'calc(100vh - 16px)', maxWidth: 'calc(100vw - 16px)' }}
+            className="fixed z-[80] w-40 overflow-y-auto bg-card border border-border rounded-lg shadow-lg py-1"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -368,7 +444,8 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
               {t('common.delete', 'Delete')}
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
       <ConfirmPromptModal
@@ -459,6 +536,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   );
   const previousActiveConversationIdRef = useRef<string | null>(null);
   const archiveMutationVersionRef = useRef(0);
+  // Selection publishes its id before async restoration finishes. Reconcile only
+  // after the archive workflow has committed its view and selection together.
+  const archiveSelectionPendingRef = useRef(0);
+  const [archiveSelectionVersion, setArchiveSelectionVersion] = useState(0);
   const archivePersistenceRef = useRef<Promise<void>>(Promise.resolve());
   const archivedIdsRef = useRef<Set<string>>(new Set());
 
@@ -616,7 +697,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   );
 
   useEffect(() => {
-    if (!areViewFiltersHydrated || !isArchiveHydrated) return;
+    if (!areViewFiltersHydrated || !isArchiveHydrated || archiveSelectionPendingRef.current > 0) return;
     const selectionMatchesView = selectedConversationId
       ? archivedIds.has(selectedConversationId) === showArchived
       : archiveSourceConversations.length === 0;
@@ -635,6 +716,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     );
   }, [
     archiveSourceConversations.length,
+    archiveSelectionVersion,
     archivedIds,
     areViewFiltersHydrated,
     chatConversations,
@@ -779,6 +861,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         return false;
       }
 
+      archiveSelectionPendingRef.current += 1;
       archivedIdsRef.current = nextArchivedIds;
       replaceSharedArchivedConversationIds(nextArchivedIds);
 
@@ -787,65 +870,74 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         return areConversationIdSetsEqual(current, next) ? current : next;
       });
 
-      return commitArchivedConversationMutation({
-        write: async () => {
-          if (!(await persistArchivedConversationIds(nextArchivedIds))) {
-            throw new Error('archive preference write failed');
-          }
-          archiveWriteCommitted = true;
-        },
-        onCommitted: async () => {
-          if (shouldArchive) {
-            normalizedIds.forEach(discardComposerDraftForConversation);
-          }
-          if (shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
-            const fallbackConversation = chatConversations.find(
-              (conversation) =>
-                conversation.id !== selectedConversationId && !nextArchivedIds.has(conversation.id),
+      try {
+        return await commitArchivedConversationMutation({
+          write: async () => {
+            if (!(await persistArchivedConversationIds(nextArchivedIds))) {
+              throw new Error('archive preference write failed');
+            }
+            archiveWriteCommitted = true;
+          },
+          onCommitted: async () => {
+            // Every committed archive owns its draft cleanup, even when a newer
+            // mutation now owns the selection and view.
+            if (shouldArchive) {
+              normalizedIds.forEach(discardComposerDraftForConversation);
+            }
+            if (archiveMutationVersionRef.current !== mutationVersion) return;
+            const selectionUnchanged = useChatStore.getState().selectedConversationId === selectedConversationId;
+            if (selectionUnchanged && shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
+              const fallbackConversation = chatConversations.find(
+                (conversation) =>
+                  conversation.id !== selectedConversationId && !nextArchivedIds.has(conversation.id),
+              );
+              if (fallbackConversation && !(await selectConversation(fallbackConversation.id))) {
+                throw new Error('Unable to select the replacement conversation.');
+              }
+              if (!fallbackConversation) {
+                clearSelectedConversation();
+              }
+            }
+            if (selectionUnchanged && !shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
+              previousActiveConversationIdRef.current = selectedConversationId;
+              setChatShowArchived(false);
+            }
+            notify.success(
+              shouldArchive
+                ? normalizedIds.length === 1
+                  ? t('chat.conversationArchived', 'Conversation archived')
+                  : t('chat.conversationsArchived', '{{count}} conversations archived', {
+                      count: normalizedIds.length,
+                    })
+                : normalizedIds.length === 1
+                  ? t('chat.conversationRestored', 'Conversation restored')
+                  : t('chat.conversationsRestored', '{{count}} conversations restored', {
+                      count: normalizedIds.length,
+                    })
             );
-            if (fallbackConversation && !(await selectConversation(fallbackConversation.id))) {
-              throw new Error('Unable to select the replacement conversation.');
+          },
+          onFailure: async (error) => {
+            if (
+              archiveMutationVersionRef.current === mutationVersion &&
+              areConversationIdSetsEqual(archivedIdsRef.current, nextArchivedIds)
+            ) {
+              archivedIdsRef.current = previousArchivedIds;
+              replaceSharedArchivedConversationIds(previousArchivedIds);
+              if (archiveWriteCommitted) {
+                await persistArchivedConversationIds(previousArchivedIds);
+              }
             }
-            if (!fallbackConversation) {
-              clearSelectedConversation();
+            if (!(error instanceof Error && error.message === 'archive preference write failed')) {
+              notify.error(t('chat.archiveConversationFailed', 'Unable to update the archived conversation.'), {
+                description: error instanceof Error ? error.message : undefined,
+              });
             }
-          }
-          if (!shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
-            previousActiveConversationIdRef.current = selectedConversationId;
-            setChatShowArchived(false);
-          }
-          notify.success(
-            shouldArchive
-              ? normalizedIds.length === 1
-                ? t('chat.conversationArchived', 'Conversation archived')
-                : t('chat.conversationsArchived', '{{count}} conversations archived', {
-                    count: normalizedIds.length,
-                  })
-              : normalizedIds.length === 1
-                ? t('chat.conversationRestored', 'Conversation restored')
-                : t('chat.conversationsRestored', '{{count}} conversations restored', {
-                    count: normalizedIds.length,
-                  })
-          );
-        },
-        onFailure: async (error) => {
-          if (
-            archiveMutationVersionRef.current === mutationVersion &&
-            archivedIdsRef.current === nextArchivedIds
-          ) {
-            archivedIdsRef.current = previousArchivedIds;
-            replaceSharedArchivedConversationIds(previousArchivedIds);
-            if (archiveWriteCommitted) {
-              await persistArchivedConversationIds(previousArchivedIds);
-            }
-          }
-          if (!(error instanceof Error && error.message === 'archive preference write failed')) {
-            notify.error(t('chat.archiveConversationFailed', 'Unable to update the archived conversation.'), {
-              description: error instanceof Error ? error.message : undefined,
-            });
-          }
-        },
-      });
+          },
+        });
+      } finally {
+        archiveSelectionPendingRef.current -= 1;
+        setArchiveSelectionVersion((version) => version + 1);
+      }
     },
     [
       chatConversations,
@@ -948,9 +1040,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   }, [createConversation, exitMultiSelectMode, setChatShowArchived, showArchived, t]);
 
   const handleToggleArchivedView = useCallback(async () => {
-    if (isArchiveViewSwitching) {
+    if (isArchiveViewSwitching || archiveSelectionPendingRef.current > 0) {
       return;
     }
+    archiveSelectionPendingRef.current += 1;
     setIsArchiveViewSwitching(true);
     exitMultiSelectMode();
     try {
@@ -991,7 +1084,13 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       ) {
         setChatShowArchived(false);
       }
+    } catch (error) {
+      notify.error(t('chat.archiveConversationFailed', 'Unable to update the archived conversation.'), {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
+      archiveSelectionPendingRef.current -= 1;
+      setArchiveSelectionVersion((version) => version + 1);
       setIsArchiveViewSwitching(false);
     }
   }, [
@@ -1004,6 +1103,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     selectedConversationId,
     showArchived,
     setChatShowArchived,
+    t,
   ]);
 
   const archiveButtonLabel = showArchived
@@ -1093,22 +1193,22 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             className="px-3 py-2 border-b border-border"
             data-tour-id="chat-multiselect-toolbar"
           >
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 truncate text-xs font-medium text-muted-foreground">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="min-w-0 max-w-full truncate text-xs font-medium text-muted-foreground">
                 {selectedCountLabel}
               </span>
-              <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
+              <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
                 <button
                   onClick={handleToggleSelectAll}
                   type="button"
-                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 min-w-0 max-w-full items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={visibleConversationIds.length === 0 || isBulkDeleting}
                   title={selectAllLabel}
                   aria-label={selectAllLabel}
                   aria-pressed={isAllVisibleSelected}
                 >
                   <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={14} />
-                  <span>{selectAllLabel}</span>
+                  <span className="truncate">{selectAllLabel}</span>
                 </button>
 
                 <button

@@ -56,6 +56,9 @@ import {
 import { toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
 import i18n from "../i18n";
+import { SUPPORTED_LANGUAGE_CODES } from "../i18n/languages";
+import { loadTranslation } from "../i18n/resources";
+import { createKeyedSerialQueue } from "../services/serialQueue";
 import {
   isContextOverflowErrorLike,
 } from "../services/contextOverflow";
@@ -1354,6 +1357,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
+  const enqueueConversationMetadataWrite = createKeyedSerialQueue<string>();
+  const manuallyRenamedConversationIds = new Set<string>();
+  const manualConversationTitleKey = (id: string) => `conversation-manual-title:${id}`;
+  // A conversation can retain its creation language after the UI language changes.
+  let defaultChatTitles: Promise<Set<string>> | undefined;
+  const isDefaultChatTitle = async (title: string) => {
+    defaultChatTitles ??= Promise.all(SUPPORTED_LANGUAGE_CODES.map(loadTranslation))
+      .then((translations) => new Set([
+        'New Conversation',
+        ...translations.map((translation) => translation.chat.newConversation),
+      ]));
+    return (await defaultChatTitles).has(title.trim());
+  };
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const turnRuntime = createChatTurnRuntime({
@@ -8255,10 +8271,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       architectPlan,
     } = params;
 
+    const initialConversation = get().conversations.find((conversation) => conversation.id === conversationId);
+    const protectChatTitle = !architectPlan && initialConversation?.scope_mode === "Chat";
+    const canApplyChatTitle = () => !protectChatTitle || (
+      !manuallyRenamedConversationIds.has(conversationId) &&
+      get().conversations.some((conversation) => conversation.id === conversationId && conversation.title === initialConversation?.title)
+    );
+
     if (metadataGenerationInFlight.has(conversationId)) return;
     metadataGenerationInFlight.add(conversationId);
 
     try {
+      if (protectChatTitle) {
+        // Read the durable marker after earlier renames settle, including their
+        // rollback on failure. A tentative rename must not cancel auto naming.
+        const canGenerate = await enqueueConversationMetadataWrite(conversationId, async () => {
+          if (!canApplyChatTitle() || deletedConversationIds.has(conversationId)) return false;
+          if (!(await isDefaultChatTitle(initialConversation.title))) return false;
+          if (tauriIpc.isTauriAvailable() && await tauriIpc.dbGetAppSetting(manualConversationTitleKey(conversationId))) return false;
+          return canApplyChatTitle();
+        });
+        if (!canGenerate) return;
+      }
       const metadataProviderContext =
         await resolveMetadataGenerationProviderContext({
           providerId,
@@ -8322,7 +8356,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         description: getConversationFallbackDescription(firstUserContent),
       }));
 
-      await persistConversationMetadata(conversationId, metadata);
+      if (protectChatTitle) {
+        await enqueueConversationMetadataWrite(conversationId, async () => {
+          if (!canApplyChatTitle() || deletedConversationIds.has(conversationId)) return;
+          await persistConversationMetadata(conversationId, metadata);
+        });
+      } else {
+        await persistConversationMetadata(conversationId, metadata);
+      }
     } catch (error) {
       console.warn("Failed to update conversation metadata:", error);
     } finally {
@@ -12588,16 +12629,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     renameConversation: async (conversationId, title) => {
-      await renamePersistedConversation(
-        chatPersistenceAdapters,
-        conversationId,
-        title,
+      const isChatConversation = get().conversations.some(
+        (conversation) => conversation.id === conversationId && conversation.scope_mode === "Chat",
       );
-      set((state) => ({
-        conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, title } : conv,
-        ),
-      }));
+      const writeRename = async () => {
+        await renamePersistedConversation(chatPersistenceAdapters, conversationId, title);
+        set((state) => ({
+          conversations: state.conversations.map((conv) =>
+            conv.id === conversationId ? { ...conv, title } : conv,
+          ),
+        }));
+      };
+      if (!isChatConversation) {
+        await writeRename();
+        return;
+      }
+      await enqueueConversationMetadataWrite(conversationId, async () => {
+        if (deletedConversationIds.has(conversationId)) return;
+        const persistManualTitle = tauriIpc.isTauriAvailable();
+        const markerKey = manualConversationTitleKey(conversationId);
+        const previousMarker = persistManualTitle ? await tauriIpc.dbGetAppSetting(markerKey) : null;
+        if (persistManualTitle) {
+          await tauriIpc.dbSetAppSetting({ key: markerKey, valueJson: JSON.stringify({ version: 1 }) });
+        }
+        try {
+          await writeRename();
+          manuallyRenamedConversationIds.add(conversationId);
+        } catch (error) {
+          if (persistManualTitle && !previousMarker) await tauriIpc.dbDeleteAppSetting(markerKey);
+          throw error;
+        }
+      });
     },
 
     clearSelectedConversation: () => {
