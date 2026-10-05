@@ -136,12 +136,15 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
       // Dialog may have saved a menu button that was removed when it opened.
       // Only repair that lost focus; leave another dialog's or control's focus alone.
       if (document.activeElement === document.body || !document.activeElement?.isConnected) {
-        menuTriggerRef.current?.focus();
+        const trigger = menuTriggerRef.current;
+        // The portal can disappear before Dialog releases the inert background.
+        if (trigger?.closest('[inert]')) return;
+        trigger?.focus();
       }
       setReturnFocusAfterDialog(false);
     };
     const observer = new MutationObserver(restore);
-    observer.observe(document.body, { childList: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['inert'] });
     restore();
     return () => observer.disconnect();
   }, [returnFocusAfterDialog]);

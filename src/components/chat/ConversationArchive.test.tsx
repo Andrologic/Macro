@@ -479,6 +479,26 @@ describe('ConversationArchive', () => {
     expect(document.activeElement === trigger).toBe(true);
   });
 
+  it('restores a closed menu trigger after the application background stops being inert', async () => {
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    const trigger = container!.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')!;
+    await act(async () => { trigger.focus(); trigger.click(); await flushRender(); });
+    document.body.querySelector<HTMLButtonElement>('[data-conversation-actions-menu] button')!.focus();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true');
+    const control = document.createElement('button'); dialog.appendChild(control);
+    await act(async () => {
+      container!.setAttribute('inert', ''); document.body.appendChild(dialog); control.focus();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-conversation-actions-menu]')).toBeNull();
+    await act(async () => { dialog.remove(); await flushRender(); });
+    expect(container!.hasAttribute('inert')).toBe(true);
+    expect(document.activeElement === trigger).toBe(false);
+    await act(async () => { container!.removeAttribute('inert'); await flushRender(); });
+    expect(document.activeElement === trigger).toBe(true);
+  });
+
   it('closes actions for any Dialog without stealing its initial or restored focus', async () => {
     const Scene = () => {
       const [open, setOpen] = useState(false);
