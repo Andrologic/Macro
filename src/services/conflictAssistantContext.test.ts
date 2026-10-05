@@ -1,3 +1,4 @@
+import { createGitCommitDto } from '../test-utils/gitCommit';
 import { describe, expect, it, mock } from 'bun:test';
 import {
   verifyConflictAssistantRepositories, isConflictAssistantContextAllowed,
@@ -9,7 +10,7 @@ import type { ProjectExecutionContext } from './projectExecutionContext';
 const projects = [{ id: 'api', path: '/repo/api' }, { id: 'web', path: '/repo/web' }];
 const request = { kind: 'code' as const, repositories: [{ projectId: 'api', repoPath: '/repo/api', branch: 'feature/api', upstreamBranch: 'origin/feature/api' }] };
 const status = (branch = 'feature/api', conflicts = ['src/api.ts']) => ({
-  branch, head_commit: { hash: 'abc' }, conflicted_files: conflicts, merge_in_progress: conflicts.length > 0,
+  branch, head_commit: createGitCommitDto(), conflicted_files: conflicts, merge_in_progress: conflicts.length > 0,
   ahead: 2, behind: 1, has_upstream: true,
 });
 const ports = () => ({
@@ -49,6 +50,8 @@ describe('verified conflict assistant context', () => {
     git.gitStatus = mock(async () => status('develop')) as unknown as typeof git.gitStatus;
     await expect(context(git)).rejects.toThrow('branch changed');
     git.gitStatus = mock(async () => ({ ...status(), head_commit: null })) as unknown as typeof git.gitStatus;
+    await expect(context(git)).rejects.toThrow('HEAD');
+    git.gitStatus = mock(async () => ({ ...status(), head_commit: { ...createGitCommitDto(), id: '' } })) as unknown as typeof git.gitStatus;
     await expect(context(git)).rejects.toThrow('HEAD');
   });
 
@@ -119,11 +122,29 @@ describe('verified conflict assistant context', () => {
     ]) expect(isConflictAssistantContextAllowed(verified, { ...state, ...patch })).toBe(false);
   });
 
+  it.each(['code', 'metadata'] as const)('captures the complete %s HEAD and rejects another commit with the same display hash', async kind => {
+    const git = ports();
+    const branch = kind === 'metadata' ? '@macro' : 'feature/api';
+    git.gitStatus = mock(async () => status(branch)) as unknown as typeof git.gitStatus;
+    const opening = kind === 'metadata'
+      ? { kind, repositories: [{ projectId: 'api', repoPath: '/repo/api', worktreePath: '/metadata/api' }] }
+      : request;
+    const verified: VerifiedConflictAssistantContext = { ...await context(), kind,
+      repositories: await verifyConflictAssistantRepositories(opening, projects, git) };
+    expect(verified.repositories[0]?.head).toBe(createGitCommitDto().id);
+    await revalidateConflictAssistantContext(verified, selection(), git, []);
+    const differentCommit = createGitCommitDto('abcdef0123452222222222222222222222222222');
+    expect(differentCommit.id).not.toBe(createGitCommitDto().id);
+    expect(differentCommit.hash).toBe(createGitCommitDto().hash);
+    git.gitStatus = mock(async () => ({ ...status(branch), head_commit: differentCommit })) as unknown as typeof git.gitStatus;
+    await expect(revalidateConflictAssistantContext(verified, selection(), git, [])).rejects.toThrow('repository changed');
+  });
+
   it('revalidates HEAD and conflict existence before every send', async () => {
     const git = ports();
     const verified = await context(git);
     await revalidateConflictAssistantContext(verified, selection(), git, []);
-    git.gitStatus = mock(async () => ({ ...status(), head_commit: { hash: 'different' } })) as unknown as typeof git.gitStatus;
+    git.gitStatus = mock(async () => ({ ...status(), head_commit: createGitCommitDto('9876543210123333333333333333333333333333') })) as unknown as typeof git.gitStatus;
     await expect(revalidateConflictAssistantContext(verified, selection(), git, [])).rejects.toThrow('repository changed');
     git.gitStatus = mock(async () => ({ ...status(), conflicted_files: ['src/new-conflict.ts'] })) as unknown as typeof git.gitStatus;
     await expect(revalidateConflictAssistantContext(verified, selection(), git, [])).rejects.toThrow('repository changed');

@@ -1,3 +1,5 @@
+import { SERVICE_ERROR_CODES } from './contracts/errors';
+import { createGitCommitDto } from '../test-utils/gitCommit';
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 const setModeMock = mock(() => undefined);
@@ -13,7 +15,7 @@ const taskCatalog = { tasks: [] as Array<{ id: string; branch_name: string; proj
 const listTasksMock = mock(async () => taskCatalog);
 const worktreeInspectMock = mock(async () => ({ status: 'ready', worktreePath: '/worktrees/api', branchName: 'feature/api' }));
 
-const nativeStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+const nativeStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
 const switchProjectContextMock = mock(async (id: string) => {
   appStoreState.selectedProjectId = id;
   appStoreState.selectedGroupId = appStoreState.projectGroups.find(group => group.projects.some(project => project.id === id))?.id ?? null;
@@ -59,7 +61,7 @@ describe("conflictAssistantService", () => {
     worktreeInspectMock.mockClear();
     appStoreState.standaloneProjects = [{ id: 'project-1', path: '/repo/api' }];
     appStoreState.projectGroups = [];
-    nativeStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+    nativeStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
     setModeMock.mockClear();
     setSelectedTaskMock.mockClear();
     createConversationMock.mockClear();
@@ -271,7 +273,7 @@ describe("conflictAssistantService", () => {
     expect(worktreeInspectMock).toHaveBeenCalledWith({ repoPath: '/repo/api', taskId: 'task-api', branchName: 'feature/api', readOnly: true });
     expect(nativeStatusMock).toHaveBeenCalledWith('/worktrees/api');
     expect(getConflictAssistantContext('repo-auditor-conv')?.repositories[0]).toMatchObject({
-      taskId: 'task-api', repoPath: '/worktrees/api', branch: 'feature/api', head: 'abc',
+      taskId: 'task-api', repoPath: '/worktrees/api', branch: 'feature/api', head: createGitCommitDto().id,
     });
     expect(createConversationMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock).not.toHaveBeenCalled();
@@ -284,6 +286,42 @@ describe("conflictAssistantService", () => {
     expect(switchProjectContextMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['code', 'metadata'] as const)('rejects opening %s inspection when only the display hash is available', async kind => {
+    nativeStatusMock.mockImplementationOnce(async () => ({
+      branch: kind === 'code' ? 'feature/api' : '@macro', head_commit: { ...createGitCommitDto(), id: '' },
+      conflicted_files: ['src/api.ts'], merge_in_progress: true,
+    }));
+    const moduleId = `./conflictAssistantService.ts?missing-head-${kind}`;
+    const { openConflictAssistant } = await import(moduleId);
+    await expect(openConflictAssistant({ prompt: 'Inspect', context: { kind, repositories: [{
+      projectId: 'project-1', repoPath: '/repo/api', branch: 'feature/api',
+    }] } })).rejects.toThrow('HEAD is unavailable');
+    expect(setModeMock).not.toHaveBeenCalled();
+    expect(createConversationMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['verification', 'opening'] as const)('preserves the refusal and diagnostic stage when the selection changes during %s', async stage => {
+    if (stage === 'verification') {
+      nativeStatusMock.mockImplementationOnce(async () => {
+        appStoreState.selectedTaskId = 'foreign-task';
+        return { branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true };
+      });
+    } else {
+      switchProjectContextMock.mockImplementationOnce(async id => {
+        appStoreState.selectedProjectId = id;
+        appStoreState.selectedGroupId = 'foreign-group';
+      });
+    }
+    const moduleId = `./conflictAssistantService.ts?changed-context-${stage}`;
+    const { openConflictAssistant } = await import(moduleId);
+    await expect(openConflictAssistant({ prompt: 'Inspect', context: { kind: 'code', repositories: [{
+      projectId: 'project-1', repoPath: '/repo/api', branch: 'feature/api',
+    }] } })).rejects.toMatchObject({ code: SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED, details: { stage } });
+    expect(setModeMock).not.toHaveBeenCalled();
+    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid context before switching mode or creating a conversation', async () => {
     const { openConflictAssistant } = await import(`./conflictAssistantService.ts?${'invalid-code'}`);
     await expect(openConflictAssistant({ prompt: 'Draft', context: { kind: 'code', repositories: [{ projectId: 'unknown', repoPath: '/foreign', branch: 'feature/api' }] } })).rejects.toThrow('registered');
@@ -294,7 +332,7 @@ describe("conflictAssistantService", () => {
   it('binds a grouped metadata draft to native @macro worktrees and verified files', async () => {
     appStoreState.standaloneProjects = [];
     appStoreState.projectGroups = [{ id: 'group-1', projects: [{ id: 'project-1', path: '/repo/api' }, { id: 'project-2', path: '/repo/web' }] }];
-    nativeStatusMock.mockImplementation(async () => ({ branch: '@macro', head_commit: { hash: 'abc' }, conflicted_files: ['workspace.json'], merge_in_progress: true }));
+    nativeStatusMock.mockImplementation(async () => ({ branch: '@macro', head_commit: createGitCommitDto(), conflicted_files: ['workspace.json'], merge_in_progress: true }));
     const moduleId = './conflictAssistantService.ts?metadata-group';
     const { openConflictAssistant } = await import(moduleId);
     const { getConflictAssistantContext } = await import('./conflictAssistantContext');
@@ -303,6 +341,7 @@ describe("conflictAssistantService", () => {
     ] } });
     expect(createConversationMock).toHaveBeenCalledWith('Resolve merge conflicts', null, 'project-1', 'group-1');
     expect(getConflictAssistantContext('repo-auditor-conv')?.repositories.map(repo => repo.repoPath)).toEqual(['/repo/api/metadata', '/repo/web/metadata']);
+    expect(getConflictAssistantContext('repo-auditor-conv')?.repositories.every(repo => repo.head === createGitCommitDto().id)).toBe(true);
     expect(setComposerDraftMock.mock.calls[0]?.[1]).toContain('workspace.json');
     expect(setComposerDraftMock.mock.calls[0]?.[1]).toContain('read-only');
     expect(setComposerDraftMock.mock.calls[0]?.[1]).not.toContain('Stale metadata');

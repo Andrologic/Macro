@@ -35,6 +35,7 @@ import { NotificationCenterPopover } from './NotificationCenterPopover';
 import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
   presentMetadataSyncIssue,
+  presentServiceError,
   resolveDegradedErrorPresentation,
 } from '../../services/degradedErrorPresentation';
 import { cn } from '../../utils/cn';
@@ -1598,8 +1599,9 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       });
       setShowConflictModal(false);
     } catch (error) {
+      const failure = resolveDegradedErrorPresentation(presentServiceError(error), (key, options) => String(t(key, options)));
       notify.error(t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'), {
-        description: toServiceError(error).message,
+        description: [failure.body, failure.nextStep].filter(Boolean).join(' '),
         category: 'git_sync_attention_required',
       });
     }
@@ -2026,10 +2028,11 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
         { category: 'git_sync_attention_required' }
       );
     } catch (error) {
+      const failure = resolveDegradedErrorPresentation(presentServiceError(error), (key, options) => String(t(key, options)));
       notify.error(
         t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'),
         {
-          description: toServiceError(error).message,
+          description: [failure.body, failure.nextStep].filter(Boolean).join(' '),
           category: 'git_sync_attention_required',
         }
       );

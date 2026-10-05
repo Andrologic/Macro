@@ -376,6 +376,19 @@ export const presentServiceError = (
   const message = serviceErrorMessage(normalized);
   const lower = message.toLowerCase();
 
+  if (normalized.code === SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED) {
+    return {
+      title: title('errors.degraded.service.conflictAssistantContextChanged.title'),
+      body: body('errors.degraded.service.conflictAssistantContextChanged.body'),
+      nextStep: nextStep('errors.degraded.service.conflictAssistantContextChanged.nextStep'),
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
+
   if (normalized.code === SERVICE_ERROR_CODES.GIT_OBJECT_MISSING) {
     const worktreeUnmodified = (
       normalized.details as Record<string, unknown> | undefined

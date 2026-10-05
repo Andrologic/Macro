@@ -1,3 +1,4 @@
+import { MacroServiceError, SERVICE_ERROR_CODES } from './contracts/errors';
 import { describe, expect, it } from 'bun:test';
 import {
   presentGitFlowBlockingIssue,
@@ -11,6 +12,18 @@ import {
 } from './degradedErrorPresentation';
 
 describe('degradedErrorPresentation', () => {
+  it('separates changed conflict context copy from its technical diagnostic identities', () => {
+    const details = { stage: 'verification', taskId: 'task-api', projectId: 'project-1', repoPath: '/repo/api' };
+    const error = new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED, 'Conflict assistant context changed.', details);
+    const presentation = presentServiceError(error);
+    expect(presentation.body.key).toBe('errors.degraded.service.conflictAssistantContextChanged.body');
+    expect(presentation.nextStep?.key).toBe('errors.degraded.service.conflictAssistantContextChanged.nextStep');
+    expect(presentation.primaryAction).toBe('retry');
+    expect(JSON.parse(presentation.technicalDetails!)).toEqual(details);
+    expect(error.details).toBe(details);
+    expect(error.code).toBe('CONFLICT_ASSISTANT_CONTEXT_CHANGED');
+  });
+
   it('presents missing metadata replicas as repairable blockers', () => {
     const presentation = presentReplicaIssue({
       reason: 'missing_replica',

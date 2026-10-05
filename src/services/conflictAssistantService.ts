@@ -1,3 +1,4 @@
+import { MacroServiceError, SERVICE_ERROR_CODES } from './contracts/errors';
 import type { InternalAgentProfile } from "./internalAgentProfile";
 import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
@@ -52,7 +53,8 @@ export const openConflictAssistant = async (
   if (repositories) {
     const current = useAppStore.getState();
     if ([current.mode, current.selectedTaskId, current.selectedProjectId, current.selectedGroupId].some((value, index) => value !== initialSelection[index])) {
-      throw new Error('Selection changed while verifying the conflict context.');
+      throw new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED,
+        'Conflict assistant context changed.', { stage: 'verification' });
     }
   }
   const scope = repositories ? {
@@ -64,7 +66,8 @@ export const openConflictAssistant = async (
     const current = useAppStore.getState();
     if (current.mode !== initialSelection[0] || current.selectedProjectId !== scope.projectId || current.selectedGroupId !== scope.groupId ||
       (current.selectedTaskId !== null && current.selectedTaskId !== initialSelection[1])) {
-      throw new Error('Selection changed while opening the conflict context.');
+      throw new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED,
+        'Conflict assistant context changed.', { stage: 'opening' });
     }
     if (options.context?.kind === 'code') prompt = buildCodeConflictAssistantPrompt({
       repositories: repositories.map(repo => ({ ...repo, upstreamBranch: repo.upstreamBranch ?? '' })),
