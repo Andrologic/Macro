@@ -1,3 +1,5 @@
+import i18n from '../i18n';
+
 interface ArchitectPlanPresentationShape {
   id: string;
   slug?: string | null;
@@ -70,11 +72,17 @@ export const isCanonicalArchitectPlan = (plan: ArchitectPlanPresentationShape): 
   return title === plan.id;
 };
 
-export const getArchitectPlanPrimaryName = (plan: ArchitectPlanPresentationShape): string => {
+export const getArchitectPlanPrimaryName = (
+  plan: ArchitectPlanPresentationShape,
+  localizePlaceholder = true
+): string => {
   const label = trimToNull(plan.label);
   const slug = trimToNull(plan.slug);
   if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(label)) {
-    return label || DEFAULT_NEW_PLAN_LABEL;
+    if (!localizePlaceholder) return label || DEFAULT_NEW_PLAN_LABEL;
+    const number = getDefaultNewPlanLabelNumber(label);
+    const placeholder = i18n.t('architect.newPlanPlaceholder', 'New plan');
+    return number ? `${placeholder} ${number}` : placeholder;
   }
 
   if (isCanonicalArchitectPlan(plan)) {
@@ -99,8 +107,11 @@ export const getArchitectPlanSecondaryLabel = (
   return label ? plan.id : null;
 };
 
-export const getArchitectPlanDisplayName = (plan: ArchitectPlanPresentationShape): string => {
-  const primary = getArchitectPlanPrimaryName(plan);
+export const getArchitectPlanDisplayName = (
+  plan: ArchitectPlanPresentationShape,
+  localizePlaceholder = true
+): string => {
+  const primary = getArchitectPlanPrimaryName(plan, localizePlaceholder);
   const secondary = getArchitectPlanSecondaryLabel(plan);
   return secondary ? `${primary} - ${secondary}` : primary;
 };
@@ -114,7 +125,7 @@ export const getArchitectPlanEditableName = (plan: ArchitectPlanPresentationShap
 };
 
 export const getArchitectPlanConversationTitle = (plan: ArchitectPlanPresentationShape): string =>
-  `Plan - ${getArchitectPlanDisplayName(plan)}`;
+  `Plan - ${getArchitectPlanDisplayName(plan, false)}`;
 
 const normalizeCount = (value?: number | null): number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0

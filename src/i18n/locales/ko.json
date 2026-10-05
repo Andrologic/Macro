@@ -783,6 +783,14 @@
       "clipboardReadFailedTitle": "클립보드를 읽을 수 없습니다",
       "previewUnavailable": "미리보기를 사용할 수 없음",
       "removeFromContext": "컨텍스트에서 제거",
+      "toolDescriptions": {
+        "web_search": "출처를 인용하여 웹에서 정보 검색",
+        "web_fetch": "지정된 URL을 직접 가져와 읽기",
+        "question": "응답을 기다리는 구조화된 질문을 선택지와 함께 제시",
+        "read_file": "이 채팅에 첨부된 파일과 맥락 문서 읽기",
+        "terminal_create_session": "개별적으로 승인된 명령을 컴퓨터에서 실행",
+        "mark_source_passage": "관심 있는 구절과 AI가 사용한 구절 기록"
+      },
       "toolsUnavailableWarning": "현재 선택한 제공업체 또는 모델에서는 도구를 사용할 수 없습니다. 활성화하려면 기본 도구 호출 지원이 포함된 모델을 선택하세요.",
       "builtInTools": "내장 도구",
       "noToolsEnabled": "활성화된 도구가 없습니다.",
@@ -792,6 +800,8 @@
       "webFetchDisabledTooltip": "설정 > 도구 > 웹 검색에서 Web Fetch를 활성화하세요.",
       "nativeToolTooltip": "선택한 모델은 기본 도구 호출을 지원하지 않습니다.",
       "sourceSummary": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
+      "sourceSummary_one": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
+      "sourceSummary_other": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
       "collectionDisabledTitle": "컬렉션이 비활성화되었습니다.",
       "collectionDisabledDescription": "새로운 구절을 저장하려면 소스 도구를 활성화하세요.",
       "sourceSearchPlaceholder": "소스 검색",
@@ -1173,6 +1183,10 @@
       "maxTurnsLabel": "최대 에이전트 턴",
       "maxTurnsDescription": "Macro가 에이전트 루프를 중지하고 채팅에 안내를 표시하기 전까지의 최대 AI/도구 사이클 수입니다."
     },
+    "themeDark": "어두움",
+    "themeLight": "밝음",
+    "notificationChannelsUnsupportedDesc": "이 환경에서는 데스크톱 알림을 사용할 수 없습니다. 앱 내 알림을 선택하거나 알림을 끄세요.",
+    "desktopNotificationsUnsupportedHint": "이 환경에서는 데스크톱 알림을 사용할 수 없습니다. Macro는 앱 내 알림을 사용합니다.",
     "theme": "주제",
     "zoom": "줌",
     "zoom_auto": "자동",
@@ -1821,6 +1835,7 @@
     "noStrategyDescription": "Architect 채팅에서 계획을 논의한 다음 전략 생성을 사용해 이 그래프를 만드세요.",
     "noBranchesMatchingFilters": "현재 필터와 일치하는 브랜치가 없습니다.",
     "planCompleted": "계획 완료",
+    "newPlanPlaceholder": "새 계획",
     "planValidated": "계획이 검증됨",
     "validatingPlan": "검증 중...",
     "noActivePlan": "활성 계획 없음",
@@ -2235,6 +2250,12 @@
     "saveFailed": "제공업체를 저장하지 못했습니다."
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architect 모드",
+        "description": "Architect 대화에 사용하는 기본 시스템 프롬프트."
+      }
+    },
     "loadFailed": "시스템 프롬프트를 불러올 수 없습니다. 저장하기 전에 다시 시도하세요.", "title": "시스템 프롬프트", "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.", "restoreAll": "모두 복원", "saveFailed": "시스템 프롬프트를 저장하지 못했습니다." },
   "toast": {
     "languageChanged": "언어가 다음으로 변경되었습니다.{{language}}",

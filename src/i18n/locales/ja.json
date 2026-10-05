@@ -783,6 +783,14 @@
       "clipboardReadFailedTitle": "クリップボードを読み取れませんでした",
       "previewUnavailable": "プレビューを利用できません",
       "removeFromContext": "コンテキストから削除",
+      "toolDescriptions": {
+        "web_search": "引用付きでWeb上の情報を検索する",
+        "web_fetch": "指定したURLを直接取得して読む",
+        "question": "回答を待つ構造化された質問を選択肢付きで提示する",
+        "read_file": "このチャットに添付されたファイルとコンテキスト文書を読む",
+        "terminal_create_session": "個別に承認されたコマンドをコンピューターで実行する",
+        "mark_source_passage": "重要な箇所とAIが使用した箇所を記録する"
+      },
       "toolsUnavailableWarning": "現在選択されているプロバイダーまたはモデルではツールを使用できません。ネイティブ ツール呼び出しサポートを有効にするには、サポートを備えたモデルを選択します。",
       "builtInTools": "内蔵ツール",
       "noToolsEnabled": "有効なツールはありません",
@@ -792,6 +800,8 @@
       "webFetchDisabledTooltip": "[設定] > [ツール] > [ウェブ検索] で Web Fetch を有効にします。",
       "nativeToolTooltip": "選択したモデルはネイティブ ツール呼び出しをサポートしていません。",
       "sourceSummary": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
+      "sourceSummary_one": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
+      "sourceSummary_other": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
       "collectionDisabledTitle": "収集が無効になっています",
       "collectionDisabledDescription": "新しいパッセージを保存するには、ソース ツールを有効にします。",
       "sourceSearchPlaceholder": "ソースを検索する",
@@ -1173,6 +1183,10 @@
       "maxTurnsLabel": "エージェント最大ターン数",
       "maxTurnsDescription": "Macro がエージェントループを停止し、チャットに通知を表示するまでの AI/ツール サイクルの最大数。"
     },
+    "themeDark": "ダーク",
+    "themeLight": "ライト",
+    "notificationChannelsUnsupportedDesc": "この環境ではデスクトップ通知を利用できません。アプリ内通知を選択するか、通知をオフにしてください。",
+    "desktopNotificationsUnsupportedHint": "この環境ではデスクトップ通知を利用できません。Macroはアプリ内通知を使用します。",
     "theme": "テーマ",
     "zoom": "ズーム",
     "zoom_auto": "自動",
@@ -1821,6 +1835,7 @@
     "noStrategyDescription": "Architect チャットでプランについて話し合い、戦略を生成を使ってこのグラフを作成します。",
     "noBranchesMatchingFilters": "現在のフィルターに一致するブランチはありません。",
     "planCompleted": "計画が完了しました",
+    "newPlanPlaceholder": "新しいプラン",
     "planValidated": "計画が検証されました",
     "validatingPlan": "検証中...",
     "noActivePlan": "有効なプランはありません",
@@ -2235,6 +2250,12 @@
     "saveFailed": "プロバイダーの保存に失敗しました"
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architectモード",
+        "description": "Architectの会話に使用する基本システムプロンプト。"
+      }
+    },
     "loadFailed": "システムプロンプトを読み込めませんでした。保存する前に再試行してください。", "title": "システムプロンプト", "description": "プラン、レビュー、リポジトリ監査で使用する各モードの基本プロンプトと内部プロファイルをカスタマイズします。", "restoreAll": "すべて復元", "saveFailed": "システムプロンプトを保存できませんでした。" },
   "toast": {
     "languageChanged": "言語が次のように変更されました{{language}}",

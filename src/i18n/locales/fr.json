@@ -305,10 +305,11 @@
       },
       "architect-strategy": {
         "title": "Stratégie et branches",
-        "body": "Le panneau droit montre la stratégie. Le switch Graph / Branches aide à passer d'une vue dépendances à une vue exécution Git.",
+        "body": "Le panneau droit montre la stratégie. Le sélecteur Graph / Branches permet de passer des dépendances à l’exécution Git.",
         "points": [
           "Graph : dépendances et ordre logique.",
-          "Branches : travail regroupé par branche fonctionnelle."
+          "Branches : travail regroupé par branche fonctionnelle.",
+          "Ouvrir l'explorateur de graphiques affiche une vue agrandie de la stratégie."
         ]
       },
       "architect-validate": {
@@ -344,16 +345,16 @@
         "body": "Le panneau gauche gère l'historique : nouveau chat, recherche, multi-sélection, épinglage, archive, export et suppression."
       },
       "chat-toolbox": {
-        "title": "Toolbox",
+        "title": "Boîte à outils",
         "body": "Le panneau droit est la boîte à contexte. Tu peux joindre des fichiers, ajouter une URL, coller du texte, activer des outils et retrouver les sources citées."
       },
       "chat-models": {
         "title": "Fournisseur, modèle et raisonnement",
-        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Settings."
+        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Paramètres."
       },
       "composer": {
-        "title": "Composer et envoyer",
-        "body": "Le composer accepte texte, mentions et images collées. Le bouton flèche envoie, ou stoppe la génération quand une réponse est en cours."
+        "title": "Rédiger et envoyer",
+        "body": "La zone de rédaction accepte du texte, des mentions et des images collées. La flèche envoie le message. Pendant un tour actif, elle permet d’orienter ce tour ou de mettre le message en file pour le suivant. Le bouton Arrêter interrompt le tour actif."
       },
       "footer": {
         "title": "Barre Git et notifications",
@@ -811,6 +812,14 @@
       "clipboardReadFailedTitle": "Impossible de lire le presse-papiers",
       "previewUnavailable": "Aperçu indisponible",
       "removeFromContext": "Retirer du contexte",
+      "toolDescriptions": {
+        "web_search": "Rechercher des informations sur le Web avec des citations",
+        "web_fetch": "Récupérer et lire directement une URL précise",
+        "question": "Poser une question bloquante structurée avec des réponses guidées",
+        "read_file": "Lire les fichiers joints et les documents de contexte de cette conversation",
+        "terminal_create_session": "Exécuter sur l’ordinateur des commandes approuvées individuellement",
+        "mark_source_passage": "Suivre les passages intéressants et ceux utilisés par l’IA"
+      },
       "toolsUnavailableWarning": "Les tools ne sont pas disponibles pour le provider ou le modèle actuellement sélectionné. Sélectionnez un modèle compatible avec le tool calling natif pour les activer.",
       "builtInTools": "Outils intégrés",
       "noToolsEnabled": "Aucun outil activé",
@@ -820,6 +829,8 @@
       "webFetchDisabledTooltip": "Activez Web Fetch dans Paramètres > Outils > Recherche sur le Web",
       "nativeToolTooltip": "Le modèle sélectionné ne prend pas en charge les appels d'outils natifs.",
       "sourceSummary": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passages",
+      "sourceSummary_one": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passage",
+      "sourceSummary_other": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passages",
       "collectionDisabledTitle": "Collecte désactivée",
       "collectionDisabledDescription": "Activez l'outil Sources pour enregistrer de nouveaux passages.",
       "sourceSearchPlaceholder": "Sources de recherche",
@@ -1107,7 +1118,7 @@
       "skills": "Gérer les skills réutilisables et leurs sources",
       "prompts": "Personnaliser les prompts système utilisés par Macro",
       "architect": "Configurer les modèles de nommage des cibles et des branches d’Architect",
-      "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
+      "shortcuts": "Configurer les raccourcis clavier",
       "diagnostics": "Générer et vérifier un rapport d’assistance local",
       "providers": "Configurer les clés API et les points de terminaison",
       "models": "Gérer les paramètres des modèles disponibles",
@@ -1201,6 +1212,10 @@
       "maxTurnsLabel": "Tours agent max",
       "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro arrête la boucle agent et affiche une notice dans le chat."
     },
+    "themeDark": "Sombre",
+    "themeLight": "Clair",
+    "notificationChannelsUnsupportedDesc": "Les notifications de bureau sont indisponibles dans cet environnement. Choisissez les notifications intégrées ou désactivez la diffusion.",
+    "desktopNotificationsUnsupportedHint": "Les notifications de bureau sont indisponibles dans cet environnement. Macro utilise les notifications intégrées à l’application.",
     "theme": "Thème",
     "zoom": "Zoomer",
     "zoom_auto": "Automatique",
@@ -1667,7 +1682,7 @@
       "nameLabel": "Nom du plan",
       "nameRequired": "Le nom du plan est obligatoire.",
       "namePlaceholder": "par ex. Révision de l'authentification",
-      "labelLabel": "Etiquette du plan",
+      "labelLabel": "Étiquette du plan",
       "labelRequired": "L’étiquette du plan est requise.",
       "labelPlaceholder": "par ex. Révision de l'authentification",
       "descriptionLabel": "Descriptif",
@@ -1849,6 +1864,7 @@
     "noStrategyDescription": "Discutez du plan dans le chat Architect, puis utilisez Générer la stratégie pour créer ce graphe.",
     "noBranchesMatchingFilters": "Aucune branche ne correspond aux filtres actuels.",
     "planCompleted": "Plan terminé",
+    "newPlanPlaceholder": "Nouveau plan",
     "planValidated": "Plan validé",
     "validatingPlan": "Validation...",
     "noActivePlan": "Aucun plan actif",
@@ -2263,6 +2279,12 @@
     }
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Mode Architect",
+        "description": "Invite système de base pour les conversations Architect."
+      }
+    },
     "loadFailed": "Impossible de charger les invites système. Réessayez avant d’enregistrer.", "title": "Prompts système", "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.", "restoreAll": "Tout restaurer", "saveFailed": "Impossible d’enregistrer les prompts système." },
   "toast": {
     "languageChanged": "La langue a été modifiée en {{language}}",

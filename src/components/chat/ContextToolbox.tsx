@@ -36,6 +36,15 @@ type ToolboxTab = 'context' | 'tools' | 'sources';
 type SourceFilter = 'all' | 'interesting' | 'used';
 type SourceSort = 'recent' | 'title' | 'source';
 
+const TOOL_DESCRIPTION_KEYS: Record<string, string> = {
+  web_search: 'chat.contextToolbox.toolDescriptions.web_search',
+  web_fetch: 'chat.contextToolbox.toolDescriptions.web_fetch',
+  question: 'chat.contextToolbox.toolDescriptions.question',
+  read_file: 'chat.contextToolbox.toolDescriptions.read_file',
+  terminal_create_session: 'chat.contextToolbox.toolDescriptions.terminal_create_session',
+  mark_source_passage: 'chat.contextToolbox.toolDescriptions.mark_source_passage',
+};
+
 const createManualMessageId = (): string =>
   `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -760,7 +769,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0"><Icon name={tool.icon as any} size={12} className="text-primary" /></div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-foreground">{tool.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{tool.description}</p>
+                        <p className="text-xs text-muted-foreground truncate">{TOOL_DESCRIPTION_KEYS[tool.id] ? t(TOOL_DESCRIPTION_KEYS[tool.id], tool.description) : tool.description}</p>
                       </div>
                       <Switch aria-label={tool.name} checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
                       {tooltip && <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10"><div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">{tooltip}</div></div>}
@@ -776,7 +785,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2"><Icon name="book-open" size={12} />{t('chat.contextToolbox.tabs.sources', 'Sources')}</h3>
-              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount })}</span>
+              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount, count: sourcePassageCount })}</span>
             </div>
             {!isChatToolEnabled('mark_source_passage') && <div className="rounded-md border border-muted bg-muted/50 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground"><span className="font-medium">{t('chat.contextToolbox.collectionDisabledTitle', 'Collection disabled')}</span> {t('chat.contextToolbox.collectionDisabledDescription', 'Enable the Sources tool to save new passages.')}</p></div>}
             <div className="space-y-2">

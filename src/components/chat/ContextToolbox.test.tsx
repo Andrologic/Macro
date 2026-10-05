@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
+import fr from '../../i18n/locales/fr.json';
+import { createInstance } from 'i18next';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+
+const frenchI18n = createInstance();
+await frenchI18n.init({ lng: 'fr', resources: { fr: { translation: fr } }, interpolation: { escapeValue: false } });
+let frenchToolDescriptions = false;
 
 type MockCitation = {
   id: string;
@@ -368,6 +374,10 @@ const loadContextToolbox = async () => {
         fallbackOrOptions?: string | { defaultValue?: string },
         maybeOptions?: { defaultValue?: string },
       ) => {
+        if (frenchToolDescriptions && (_key.startsWith('chat.contextToolbox.toolDescriptions.') || _key === 'chat.contextToolbox.sourceSummary')) {
+          const values = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : maybeOptions;
+          return frenchI18n.t(_key, { ...values });
+        }
         if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
         return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
       },
@@ -483,6 +493,7 @@ describe('ContextToolbox', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    frenchToolDescriptions = false;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -732,6 +743,33 @@ describe('ContextToolbox', () => {
     expect(alreadyAddedButton).toBeTruthy();
     expect(alreadyAddedButton.disabled).toBe(true);
     expect(alreadyAddedButton.querySelector('[data-icon="check"]')).toBeTruthy();
+  });
+
+  it('shows French descriptions for the six Chat tools without changing their names', async () => {
+    frenchToolDescriptions = true;
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => root?.render(<ContextToolbox />));
+    await act(async () => { findButtonByText(container!, 'Tools').click(); });
+    for (const tool of chatTools) {
+      expect(container?.textContent).toContain(tool.name);
+      expect(container?.textContent).toContain(fr.chat.contextToolbox.toolDescriptions[tool.id as keyof typeof fr.chat.contextToolbox.toolDescriptions]);
+      expect(container?.textContent).not.toContain(tool.description);
+    }
+  });
+
+  it('uses singular and plural French passage summaries', async () => {
+    frenchToolDescriptions = true;
+    sourceCitations = createInitialSourceCitations().slice(0, 1);
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => root?.render(<ContextToolbox />));
+    await act(async () => { findButtonByText(container!, 'Sources').click(); });
+    expect(container?.textContent).toContain('1 passage');
+    expect(container?.textContent).not.toContain('1 passages');
+    await act(async () => {
+      sourceCitations = createInitialSourceCitations();
+      emitCitationChange();
+    });
+    expect(container?.textContent).toContain('2 passages');
   });
 
   it('disables Web Fetch in the Chat tools list when URL fetching is disabled globally', async () => {
