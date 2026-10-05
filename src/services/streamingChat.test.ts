@@ -4566,9 +4566,25 @@ describe('streamingChat transport lifetime', () => {
       expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
       expect(result?.hiddenContext ?? '').not.toContain('rejected result');
       expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
-      expect(JSON.stringify(result?.providerInputItems)).toContain('result submission failed');
+      const acceptedOutput = result?.providerInputItems?.find((item): item is { type: string; call_id: string; output: string } => (
+        typeof item === 'object' && item !== null &&
+        'type' in item && item.type === 'function_call_output' &&
+        'call_id' in item && item.call_id === 'rejected-question' &&
+        'output' in item && typeof item.output === 'string'
+      ));
+      expect(acceptedOutput).toMatchObject({ type: 'function_call_output', call_id: 'rejected-question' });
+      expect(JSON.parse(acceptedOutput!.output)).toMatchObject({
+        outcome: 'unknown',
+        invocation: { callId: 'rejected-question' },
+        toolName: 'question',
+        reason: 'The provider did not confirm result acceptance.',
+        instruction: 'The tool has already run. Inspect its original result and effects before retrying, including with a new call ID.',
+      });
     }
-    expect(result?.toolTraces?.[0]).toMatchObject({ status: 'done', recovery_state: 'completed' });
+    expect(result?.toolTraces?.[0]).toMatchObject({
+      status: 'done',
+      recovery_state: bridgeAcceptsFirst ? 'completed' : 'unknown',
+    });
   });
 
   for (const acceptedByBridge of [true, false]) it(`keeps only bridge-accepted native interrupt context when completion races submission (${acceptedByBridge})`, async () => {
