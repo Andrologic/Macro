@@ -13,6 +13,8 @@ export interface QueuedSubmission {
   id: string;
   input: ChatSendInput;
   intent: QueuedSendIntent;
+  /** Written before handing control to the assistant. An interrupted handoff is never replayed. */
+  assistantStartAttempted?: boolean;
 }
 
 export function captureQueuedSubmission(
@@ -63,7 +65,8 @@ function parseQueue(raw: string): QueuedSubmission[] {
   const ids = new Set<string>();
   for (const entry of entries) {
     if (!record(entry) || !text(entry.id) || !entry.id || ids.has(entry.id) ||
-      !record(entry.input) || !record(entry.intent)) throw new Error('Invalid queued submission. Original data preserved.');
+      !record(entry.input) || !record(entry.intent) ||
+      (entry.assistantStartAttempted !== undefined && typeof entry.assistantStartAttempted !== 'boolean')) throw new Error('Invalid queued submission. Original data preserved.');
     ids.add(entry.id);
     const input = entry.input;
     const intent = entry.intent;

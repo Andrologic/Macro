@@ -111,7 +111,7 @@ export const streamNativeTurnViaTauri = async (params: {
       isError?: boolean;
       errorKind?: ToolResult['error_kind'];
     };
-    type NativeSubmission = { id: string; result: string; items: unknown[]; hiddenContext?: string };
+    type NativeSubmission = { uncertain: boolean; id: string; result: string; items: unknown[]; hiddenContext?: string };
     type NativeRequest = {
       toolName: string;
       toolCallId: string;
@@ -142,7 +142,7 @@ export const streamNativeTurnViaTauri = async (params: {
     };
     const submitResult = async (request: NativeRequest, outcome: NativeOutcome) => {
       const submission: NativeSubmission = {
-        id: createStreamingRequestId(), result: outcome.result,
+        id: createStreamingRequestId(), result: outcome.result, uncertain: outcome.errorKind === 'uncertain',
         hiddenContext: outcome.hiddenContext,
         items: [
           { type: 'function_call', call_id: request.toolCallId, name: request.toolName, arguments: JSON.stringify(request.args) },
@@ -171,16 +171,20 @@ export const streamNativeTurnViaTauri = async (params: {
       void (async () => {
         try {
           await submitResult(request, request.outcome!);
-        } catch (error) {
+        } catch {
           if (stopped() || deferredDonePayload) return;
           // The tool has already run. Submit an error once, without running it again;
           // only the bridge receipt can decide which submission was accepted.
           try {
-            await submitResult(request, {
-              result: `Error executing tool ${request.toolName}: ${formatToolExecutionError(error)}`,
-              isError: true,
-              errorKind: 'execution',
-            });
+            const previous = request.outcome!;
+            await submitResult(request, previous.errorKind === 'uncertain' || previous.errorKind === 'permission' || previous.errorKind === 'validation'
+              ? previous
+              : {
+                result: JSON.stringify({ outcome: 'unknown', invocation: { callId: request.toolCallId },
+                  toolName: request.toolName, reason: 'The provider did not confirm result acceptance.',
+                  instruction: 'The tool has already run. Inspect its original result and effects before retrying, including with a new call ID.' }),
+                isError: true, errorKind: 'uncertain',
+              });
           } catch (fallbackError) {
             if (stopped()) return;
             submissionChannelFailed = true;
@@ -337,7 +341,7 @@ export const streamNativeTurnViaTauri = async (params: {
         if (stopped()) return;
         emitToolTrace({
           tool_call_id: request.toolCallId, tool_name: request.toolName,
-          detail: request.detail, status: 'done', recovery_state: 'completed',
+          detail: request.detail, status: 'done', recovery_state: submission.uncertain ? 'unknown' : 'completed',
           execution_mode: request.safeRead ? 'parallel' : 'sequential',
           batch_id: requestId, order: request.order, completed_at_ms: Date.now(),
         });
@@ -439,7 +443,7 @@ export const streamNativeTurnViaTauri = async (params: {
           }),
           ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            finish(() => reject(classifyProviderError(event.payload.message)));
+            finish(() => reject(classifyProviderError(event.payload.message, event.payload.status)));
           }),
         ]);
 

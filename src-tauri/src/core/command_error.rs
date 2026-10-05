@@ -44,6 +44,9 @@ pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
 
 impl CommandError {
     pub fn code(&self) -> Option<&'static str> {
+        if self.message.starts_with("Web fetch destination blocked:") {
+            return Some("WEB_FETCH_DESTINATION_BLOCKED");
+        }
         if self.message.contains("Revision conflict:") {
             return Some("REVISION_CONFLICT");
         }

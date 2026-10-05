@@ -713,9 +713,9 @@ export const ProvidersSettings: React.FC = () => {
 
     return (
       <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-        <div className="flex items-center justify-between border-b border-border pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
           <div className="flex items-center gap-2">
-            <button onClick={() => setEditingProvider(null)} className="rounded-full p-1 hover:bg-muted">
+            <button type="button" aria-label={t('providers.backToProviders', 'Back to providers')} onClick={() => setEditingProvider(null)} className="shrink-0 rounded-full p-1 hover:bg-muted">
               <Icon name="arrow-left" size={18} />
             </button>
             <h3 className="text-lg font-medium">
@@ -960,7 +960,7 @@ export const ProvidersSettings: React.FC = () => {
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-3 pt-4">
+          <div className="flex flex-wrap items-center justify-end gap-3 pt-4">
             {showLinkedFields && (
               <Button
                 variant="secondary"
@@ -1005,6 +1005,7 @@ export const ProvidersSettings: React.FC = () => {
       {providerConfigs.length > 0 ? (
         <>
           <SettingsCollectionHeader
+            wrapActions
             title={t('providers.collectionTitle', 'Providers')}
             description={t(
               'providers.collectionDescription',
@@ -1162,14 +1163,14 @@ export const ProvidersSettings: React.FC = () => {
 
             return (
               <div key={provider.id} className="rounded-xl border border-border bg-card">
-                <div className="flex items-center justify-between p-4">
-                  <div className="flex items-center gap-4">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 p-4">
+                  <div className="flex min-w-0 flex-1 basis-64 items-center gap-4">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                       <Icon name="cpu" size={20} />
                     </div>
-                    <div>
+                    <div className="min-w-0 break-words">
                       <h4 className="font-medium text-foreground">{provider.name}</h4>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-2 break-all text-xs text-muted-foreground">
                         <span>{getProviderTypeLabel(provider.providerType)}</span>
                         <span>•</span>
                         <span>{provider.baseUrl}</span>
@@ -1181,7 +1182,7 @@ export const ProvidersSettings: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 flex-wrap items-center gap-3">
                     <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
                       <div className={cn('h-2 w-2 rounded-full', status.dot)} />
                       <span className={cn('text-xs font-medium', status.text)}>{status.label}</span>
@@ -1462,11 +1463,11 @@ export const ProvidersSettings: React.FC = () => {
 
           return (
             <div key={provider.id} className="rounded-xl border border-border bg-card">
-              <div className="flex items-center justify-between p-4">
-                <div className="flex items-center gap-4">
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 p-4">
+                <div className="flex min-w-0 flex-1 basis-64 items-center gap-4">
                   <div
                     className={cn(
-                      'flex h-10 w-10 items-center justify-center rounded-lg',
+                      'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
                       provider.isEnabled
                         ? 'bg-primary/10 text-primary'
                         : 'bg-muted text-muted-foreground'
@@ -1478,9 +1479,9 @@ export const ProvidersSettings: React.FC = () => {
                       <Icon name="cpu" size={20} />
                     )}
                   </div>
-                  <div>
+                  <div className="min-w-0 break-words">
                     <h4 className="font-medium text-foreground">{provider.name}</h4>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-2 break-all text-xs text-muted-foreground">
                       {isManagedMacroAi ? (
                         <span>
                           {t('providers.macroAi.included', 'AI included with the Macro beta')}
@@ -1496,7 +1497,7 @@ export const ProvidersSettings: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-3">
                   <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
                     <div className={cn('h-2 w-2 rounded-full', status.dot)} />
                     <span className={cn('text-xs font-medium', status.text)}>{status.label}</span>

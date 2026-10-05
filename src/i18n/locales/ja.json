@@ -571,6 +571,7 @@
     "queueSaveFailed": "保存失敗。閉じずに再試行。",
     "queuePlanUnavailable": "元のプラン利用不可",
     "queueContextChanged": "送信先変更。元に戻して再試行。",
+    "sendImagesSaveFailed": "画像付きのメッセージを保存できませんでした。下書きから再送信してください。",
     "queueImagesSaveFailed": "本文は保存済み。画像は要再試行。",
     "queueRecoveryTitle": "待機中の送信",
     "queueRecoveryDescription": "{{count}}件保持。元のコンテキストで再試行。",
@@ -581,6 +582,10 @@
     "queueAlreadySent": "このメッセージは保存済みです。復旧を再試行してください。",
     "queueEditInProgress": "待機中のメッセージの変更が完了するまでお待ちください。",
     "queueEmptyMessage": "待機中のメッセージを空にすることはできません。",
+    "queueAssistantInterrupted": "保存済みの指示は実行が始まっている可能性があります。応答とツールの影響を確認し、この復元項目を削除してから手動で続行してください。",
+    "steerImagesSaveFailed": "指示と画像を保存できませんでした。下書きの送信を再試行してください。",
+    "steerTurnEnded": "指示は保存されましたが、送信前にターンが終了しました。続行する前に確認してください。",
+    "goalExecutorContextUnavailable": "目標の実行コンテキストを利用できません。再開する前にこの会話でメッセージを送信してください。",
     "queueInterrupted": "送信中断。内容は保持。",
     "queueUnavailable": "この会話には追加不可",
     "secondaryAction": "別の操作",
@@ -773,6 +778,7 @@
       "binaryFileRejected": "{{file}}にはバイナリデータまたは無効なUTF-8が含まれています。",
       "conversationRequired": "ファイルを添付する前にタスクまたはプランを選択してください。",
       "urlPreviewFailedTitle": "URL プレビューを取得できませんでした",
+      "urlPreviewBlockedDescription": "セキュリティ上の理由から、プレビューはローカル、プライベート、予約済み、リンクローカルのネットワークアドレスにアクセスできません。公開 URL を使用してください。",
       "clipboardEmptyTitle": "クリップボードは空です",
       "clipboardReadFailedTitle": "クリップボードを読み取れませんでした",
       "previewUnavailable": "プレビューを利用できません",
@@ -1892,6 +1898,7 @@
     "totalChanges": "合計の変更"
   },
   "providers": {
+    "backToProviders": "プロバイダー一覧に戻る",
     "collectionTitle": "プロバイダー",
     "collectionDescription": "設定済みの接続を管理します",
     "emptyDescription": "プロバイダーを追加して Macro を AI サービスに接続します。",
@@ -2222,7 +2229,8 @@
     "logoutFailed": "ログアウトに失敗しました",
     "saveFailed": "プロバイダーの保存に失敗しました"
   },
-  "prompts": { "title": "システムプロンプト", "description": "プラン、レビュー、リポジトリ監査で使用する各モードの基本プロンプトと内部プロファイルをカスタマイズします。", "restoreAll": "すべて復元", "saveFailed": "システムプロンプトを保存できませんでした。" },
+  "prompts": {
+    "loadFailed": "システムプロンプトを読み込めませんでした。保存する前に再試行してください。", "title": "システムプロンプト", "description": "プラン、レビュー、リポジトリ監査で使用する各モードの基本プロンプトと内部プロファイルをカスタマイズします。", "restoreAll": "すべて復元", "saveFailed": "システムプロンプトを保存できませんでした。" },
   "toast": {
     "languageChanged": "言語が次のように変更されました{{language}}",
     "settingsSaved": "設定が保存されました",

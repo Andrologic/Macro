@@ -1,4 +1,5 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
+import { resolveChatErrorPresentation, buildProviderErrorTranscriptMarkdown } from '../chatErrorPresentation';
 import type { ToolTrace } from '../../types';
 import fixture from '../../../src-tauri/src/commands/mcp/fixtures/typed-result.json';
 import { normalizeToolResultBlocks, readTypedToolResult } from '../../shared/toolResultContent';
@@ -263,9 +264,9 @@ test('failed native submission offers one error fallback and stays unknown witho
   expect(submissions[0]).toMatchObject({ toolCallId: 'read-call', result: 'read succeeded',
     submissionId: expect.any(String), isError: false });
   expect(submissions[1]).toMatchObject({ toolCallId: 'read-call', submissionId: expect.any(String),
-    isError: true, errorKind: 'execution' });
+    isError: true, errorKind: 'uncertain' });
   expect(submissions[1].submissionId).not.toBe(submissions[0].submissionId);
-  expect(submissions[1].result).toContain('submission outcome unknown');
+  expect(JSON.parse(submissions[1].result)).toMatchObject({ outcome: 'unknown', invocation: { callId: 'read-call' } });
   expect(result.providerInputItems ?? []).toEqual([]);
   expect(traces.at(-1)).toMatchObject({ tool_call_id: 'read-call', status: 'running', recovery_state: 'unknown' });
   expect(live).not.toHaveBeenCalled();
@@ -299,7 +300,7 @@ for (const acceptedIndex of [0, 1]) {
     const accepted = submissions[acceptedIndex].result;
     expect(live).toEqual([accepted]);
     expect(notified).toEqual([accepted]);
-    expect(JSON.stringify(result.providerInputItems)).toContain(accepted);
+    expect(result.providerInputItems).toContainEqual(expect.objectContaining({ type: 'function_call_output', output: accepted }));
     expect(submissions).toHaveLength(2);
     expect(mutate).toHaveBeenCalledTimes(1);
   });
@@ -397,3 +398,49 @@ test('native cancellation during live-result callback skips later result notific
   expect(submissions.map(item => item.toolCallId)).toEqual(['read-call']);
   expect(notified).not.toHaveBeenCalled();
 });
+
+for (const [status, kind, retryable] of [
+  [400, 'unknown', false], [401, 'auth', false], [403, 'auth', false],
+  [408, 'provider_overloaded', true], [429, 'rate_limited', true],
+  [502, 'provider_overloaded', true], [503, 'provider_overloaded', true],
+  [504, 'provider_overloaded', true],
+] as const) {
+  test(`native HTTP ${status} survives event classification and presentation`, async () => {
+    const run = turn({ providerId: 'fixture-openai', providerType: 'openai' });
+    const rejected = run.catch(error => error);
+    await started;
+    emit('ai:error', { request_id: 'another-request', message: 'Ignored', status: 401 });
+    expect(handlers.has('ai:error')).toBe(true);
+    emit('ai:error', { request_id: requestId, message: `Provider error ${status}: Service unavailable`, status });
+    const error = await rejected;
+    expect(error).toMatchObject({ status, kind, retryable });
+    const presentation = resolveChatErrorPresentation(error);
+    expect(presentation).toMatchObject({ origin: 'provider', displayTarget: 'transcript', status, kind, retryable });
+    expect(buildProviderErrorTranscriptMarkdown(presentation)).toContain(`Statut HTTP: \`${status}\``);
+    if (status === 503) expect(presentation.suggestedAction).toContain('Relance dans quelques instants');
+    expect(handlers.size).toBe(0);
+  });
+}
+
+test('native legacy provider errors remain compatible without HTTP status', async () => {
+  const run = turn({});
+  const rejected = run.catch(error => error);
+  await started;
+  emit('ai:error', { request_id: requestId, message: 'Legacy provider failure' });
+  expect(await rejected).toMatchObject({ kind: 'unknown', retryable: false, status: undefined });
+});
+for (const providerType of ['copilot', 'chatgpt']) {
+  test(`${providerType} acceptance of an uncertain result does not certify the effect`, async () => {
+    doneAfter = 1;
+    const traces: ToolTrace[] = [];
+    const run = turn({ providerType, onToolCall: async () => ({ kind: 'result',
+      result: '{"outcome":"unknown","invocation":{"callId":"original"},"instruction":"Inspect before retrying"}',
+      isError: true, errorKind: 'uncertain',
+    }), onToolTrace: trace => traces.push(trace) });
+    await started;
+    request('original', 'mcp__fixture__read');
+    await run;
+    expect(submissions[0]).toMatchObject({ errorKind: 'uncertain', result: expect.stringContaining('original') });
+    expect(traces.at(-1)).toMatchObject({ status: 'done', recovery_state: 'unknown' });
+  });
+}

@@ -3,7 +3,7 @@ import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
 import type { WebSearchOptions } from '../webSearch';
 
-export type ToolErrorKind = 'validation' | 'execution' | 'permission' | 'aborted';
+export type ToolErrorKind = 'validation' | 'execution' | 'permission' | 'aborted' | 'uncertain';
 
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
