@@ -57,7 +57,7 @@ export function isRepeatedToolCallLoop(messages: StreamMessage[], call: ToolCall
 
 export interface ToolBatchAccumulator {
   beginToolTrace(id: string, name: string, detail?: string, metadata?: Pick<ToolTrace, 'execution_mode' | 'batch_id' | 'order'>): void;
-  completeToolTrace(id: string): void;
+  completeToolTrace(id: string, recoveryState?: 'unknown'): void;
   addHiddenToolContext(id: string, name: string, detail: string | undefined, result: string): void;
   addHiddenContextBlock(block: string | undefined): void;
   appendSystemChunk(chunk: string, includeInHiddenContext?: boolean): void;
@@ -139,7 +139,7 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
     throwIfToolAborted(options.signal);
     accumulator.addHiddenToolContext(call.id, name, detail, resolution.result);
     throwIfToolAborted(options.signal);
-    accumulator.completeToolTrace(call.id);
+    accumulator.completeToolTrace(call.id, errorKind === 'uncertain' ? 'unknown' : undefined);
     throwIfToolAborted(options.signal);
     if (notifyResult) options.onToolResult?.(name, resolution.result);
     throwIfToolAborted(options.signal);

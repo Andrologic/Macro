@@ -175,7 +175,7 @@ export const registerArchitectStrategyScenarios = (
             },
           ],
         }),
-      ).rejects.toThrow('outside this plan');
+      ).resolves.toMatchObject({ kind: 'result', isError: true, errorKind: 'uncertain', result: expect.stringContaining('outside this plan') });
       expect(updateArchitectPlanMock).not.toHaveBeenCalled();
       expect(architectPlans.get(plan.id)?.projectIds).toEqual(['project-1']);
     });

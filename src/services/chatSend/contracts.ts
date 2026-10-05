@@ -31,6 +31,8 @@ export interface ChatSendInput {
   contextRefs?: ChatMessage['context_refs'];
   /** Stable identity used to reconcile a deferred send after a restart. */
   submissionTurnId?: string;
+  /** Resume preparation for this durable user message, without appending it again. */
+  persistedUserMessage?: ChatMessage;
 }
 
 export interface ArchitectPlanAtSend { planId: string; targetBranch: string }
@@ -96,6 +98,10 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;
+    beforeAssistantStart?(): void;
+    onAssistantStarted?(): void;
+    /** Must fail before writing text or acknowledging the composer. */
+    saveImages?(messageId: string, images: SendImage[]): void;
     ensureLoaded(conversationId: string): Promise<void>;
     list(conversationId: string): readonly ChatMessage[];
     hasInterruptedApproval(conversationId: string): boolean;

@@ -76,7 +76,9 @@ export const createStreamAccumulator = (
       tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
       detail: trace.detail ?? existingTrace?.detail,
       status,
-      recovery_state: status === 'done' || status === 'denied'
+      recovery_state: trace.recovery_state === 'unknown' || (existingTrace?.status === 'done' && existingTrace.recovery_state === 'unknown')
+        ? 'unknown'
+        : status === 'done' || status === 'denied'
         ? 'completed'
         : trace.recovery_state ?? existingTrace?.recovery_state,
       visible_offset:
@@ -154,12 +156,13 @@ export const createStreamAccumulator = (
         started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
       });
     },
-    completeToolTrace(toolCallId: string) {
+    completeToolTrace(toolCallId: string, recoveryState?: 'unknown') {
       const existingTrace = toolTraces.get(toolCallId);
       if (!existingTrace || isProtectedToolTraceStatus(existingTrace.status)) return;
       upsertToolTrace({
         ...existingTrace,
         status: 'done',
+        recovery_state: recoveryState,
         completed_at_ms: Date.now(),
       });
     },
