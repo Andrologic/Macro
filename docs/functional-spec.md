@@ -920,11 +920,20 @@ Chaque tâche complétée doit se conclure par :
 - une validation utilisateur
 - la génération d'un commit
 
+La review reste liée à la tâche sélectionnée et à tous ses dépôts concernés.
+Changer le filtre global de projet ne retire pas de dépôt de cette review et
+ne réinitialise pas les validations déjà acquises pour la même tâche.
+
 ### 15.2 Validation à l'échelle du plan
 
 Lorsque toutes les tâches d'un plan sont terminées, Macro doit imposer une validation globale du plan avant merge du plan vers la branche de base configurée.
 
 Cette validation est distincte de la review tâche par tâche.
+
+L'archivage automatique des tâches terminées après leur intégration conserve
+leur contribution à la finalisation du plan. Les tâches retirées ou annulées
+restent exclues. La finalisation reste accessible tant que le plan attend son
+intégration et disparaît lorsque le plan est archivé.
 
 ### 15.3 Génération des commits
 
@@ -951,6 +960,14 @@ Macro doit supporter une résolution automatique assistée par IA des merge conf
 Cette résolution automatique ne concerne que les conflits issus des merges pilotés par le logiciel et non les situations externes arbitraires.
 
 Chaque résolution est liée à sa tâche et à une session de fusion vérifiée. Une fusion externe ou appartenant à une autre tâche reste intacte. Une actualisation du statut conserve le brouillon du fichier ; le rechargement du contenu et le changement de fichier demandent confirmation si des modifications ne sont pas enregistrées. Choisir un côté supprimé conserve une intention de suppression jusqu'à l'enregistrement, distincte d'un fichier vide.
+
+Le diagnostic Git peut aussi ouvrir une conversation d'inspection sans tâche
+active. Elle se limite aux dépôts et conflits vérifiés et conserve des outils
+en lecture seule pendant ses échanges. Avant chaque envoi, y compris un envoi
+différé, Macro vérifie à nouveau la sélection, la tâche éventuelle, le chemin,
+la branche et le commit courant. Un changement incompatible conserve la
+demande et refuse son départ. Après redémarrage, l'utilisateur rouvre
+l'inspection depuis le diagnostic Git pour rétablir ce contexte vérifié.
 
 Si le nettoyage échoue après l'intégration, une nouvelle tentative reprend les ressources restantes sans recréer les worktrees déjà supprimés. Un nouveau commit sur la branche source ou une cible ayant divergé du résultat enregistré bloque cette reprise.
 
