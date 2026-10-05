@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildMacroConflictAssistantPrompt,
+  buildCodeConflictAssistantPrompt,
   buildPlanFinalizationConflictAssistantPrompt,
   describeMacroNextStep,
   describePlanFinalizationNextStep,
@@ -123,6 +124,20 @@ describe('conflictResolution', () => {
     expect(prompt).toContain('@macro metadata sync blockers');
     expect(prompt).toContain('/repos/web');
     expect(prompt).toContain('macro/state.json');
+  });
+
+  it('describes code conflicts with a read-only inspection contract', () => {
+    const prompt = buildCodeConflictAssistantPrompt({ repositories: [{
+      repoPath: '/repos/app', branch: 'develop', upstreamBranch: 'origin/develop',
+      mergeInProgress: false, conflictFiles: ['app.txt', 'other.txt', 'app.txt'],
+    }] });
+    expect(prompt).toContain('Code branch: develop');
+    expect(prompt).toContain('Upstream: origin/develop');
+    expect(prompt).toContain('Merge in progress: no');
+    expect(prompt).toContain('preflight checks');
+    expect(prompt).toContain('read-only');
+    expect(prompt).not.toContain('@macro');
+    expect(prompt.split('- app.txt')).toHaveLength(2);
   });
 
   it('describes next steps for plan and @macro workflows', () => {

@@ -344,6 +344,50 @@
     "cpu": "CPU",
     "memory": "Erinnerung",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "Kein Remote konfiguriert",
+          "body": "Füge die Origin-URL hinzu, um dieses Repository zu synchronisieren. Du kannst auch lokal weiterarbeiten."
+        },
+        "missing_upstream": {
+          "title": "Kein Tracking-Branch konfiguriert",
+          "body": "Veröffentliche den Code-Branch auf origin und versuche es erneut. Dabei werden deine lokalen Commits an das Remote gesendet."
+        },
+        "remote_unavailable": {
+          "title": "Remote-Repository nicht verfügbar",
+          "body": "Prüfe die Origin-URL und deine Zugriffsrechte. Korrigiere eine bestehende URL in deinem Git-Client und versuche es erneut."
+        },
+        "auth": {
+          "title": "Git-Authentifizierung erforderlich",
+          "body": "Prüfe deine Git-Zugangsdaten und Zugriffsrechte und versuche es erneut."
+        },
+        "network": {
+          "title": "Remote nicht erreichbar",
+          "body": "Prüfe deine Verbindung und die Origin-URL und versuche es erneut."
+        },
+        "local_changes": {
+          "title": "Lokale Dateien verhindern den Pull",
+          "body": "Behalte deine Änderungen. Prüfe sie oder sichere sie mit Stash, bevor du den Pull wiederholst."
+        },
+        "divergence": {
+          "title": "Branches sind auseinandergegangen",
+          "body": "Aktualisiere den Branch-Status und wähle Merge oder Rebase zur Integration der Remote-Commits."
+        },
+        "unknown": {
+          "title": "Git-Synchronisierung fehlgeschlagen",
+          "body": "Prüfe die technischen Details, behebe das Problem und versuche es erneut."
+        }
+      },
+      "publishCodeBranch": "Code-Branch veröffentlichen",
+      "configureAndRetry": "Konfigurieren und wiederholen",
+      "remoteConfigurationFailed": "Remote-Konfiguration fehlgeschlagen. URL und technische Details prüfen.",
+      "originUrl": "Origin-URL",
+      "metadataNeedsAttention": "Der Code ist synchronisiert. Die Metadaten benötigen Aufmerksamkeit.",
+      "reviewRecovery": "Wiederaufnahme prüfen",
+      "conflictedFiles_other": "{{count}} Dateien mit Konflikten",
+      "conflictedFiles_one": "{{count}} Datei mit Konflikt",
+      "conflictContextChanged": "Der Branch hat sich geändert. Vor dem Öffnen aktualisieren.",
+      "preflightUnavailable": "Nicht verfügbar",
       "done": "Fertig.",
       "macroClean": "@macro sauber",
       "macroPending": "@macro ausstehend",
@@ -468,7 +512,8 @@
       "conflictedFiles": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Konfliktassistent in Implement öffnen",
+      "conflictReadOnly": "Schreibgeschützte Konfliktprüfung",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",

@@ -343,6 +343,50 @@
     "cpu": "CPU",
     "memory": "메모리",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "원격이 설정되지 않았습니다",
+          "body": "이 저장소를 동기화하려면 origin URL을 추가하세요. 로컬에서 계속 작업할 수도 있습니다."
+        },
+        "missing_upstream": {
+          "title": "추적 브랜치가 설정되지 않았습니다",
+          "body": "코드 브랜치를 origin에 게시해 추적 대상을 설정한 후 다시 시도하세요. 게시하면 로컬 커밋이 원격으로 전송됩니다."
+        },
+        "remote_unavailable": {
+          "title": "원격 저장소에 접근할 수 없습니다",
+          "body": "origin URL과 접근 권한을 확인하세요. 기존 URL은 Git 클라이언트에서 수정한 후 다시 시도하세요."
+        },
+        "auth": {
+          "title": "Git 인증이 필요합니다",
+          "body": "Git 인증 정보와 저장소 접근 권한을 확인한 후 다시 시도하세요."
+        },
+        "network": {
+          "title": "원격에 연결할 수 없습니다",
+          "body": "연결 상태와 origin URL을 확인한 후 다시 시도하세요."
+        },
+        "local_changes": {
+          "title": "로컬 파일 때문에 pull할 수 없습니다",
+          "body": "변경 사항을 보존하세요. 검토하거나 stash로 임시 저장한 후 pull을 다시 시도하세요."
+        },
+        "divergence": {
+          "title": "브랜치가 분기되었습니다",
+          "body": "브랜치 상태를 새로 고침하고 merge 또는 rebase로 원격 커밋을 통합하세요."
+        },
+        "unknown": {
+          "title": "Git 동기화에 실패했습니다",
+          "body": "기술 세부 정보를 검토하고 문제를 해결한 후 다시 시도하세요."
+        }
+      },
+      "publishCodeBranch": "코드 브랜치 게시",
+      "configureAndRetry": "설정 후 다시 시도",
+      "remoteConfigurationFailed": "원격 설정에 실패했습니다. URL과 기술 세부 정보를 확인하세요.",
+      "originUrl": "origin URL",
+      "metadataNeedsAttention": "코드 동기화가 완료되었습니다. 메타데이터 동기화에는 조치가 필요합니다.",
+      "reviewRecovery": "복구 검토",
+      "conflictedFiles_other": "충돌 파일 {{count}}개",
+      "conflictedFiles_one": "충돌 파일 {{count}}개",
+      "conflictContextChanged": "브랜치가 변경되었습니다. 도우미를 열기 전에 새로 고침하세요.",
+      "preflightUnavailable": "사용 불가",
       "done": "완료.",
       "macroClean": "@macro 클린",
       "macroPending": "@macro 보류 중",
@@ -467,7 +511,8 @@
       "conflictedFiles": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Implement에서 충돌 도우미 열기",
+      "conflictReadOnly": "읽기 전용 충돌 검사",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",

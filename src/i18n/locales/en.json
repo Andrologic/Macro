@@ -372,6 +372,46 @@
     "cpu": "CPU",
     "memory": "Memory",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "No remote configured",
+          "body": "Add the origin URL to synchronize this repository. You can also keep working locally."
+        },
+        "missing_upstream": {
+          "title": "No tracking branch configured",
+          "body": "Publish the code branch to origin to set its upstream, then retry. Publishing sends your local commits to the remote."
+        },
+        "remote_unavailable": {
+          "title": "Remote repository unavailable",
+          "body": "Check the origin URL and your access to the repository, then retry. Correct an existing remote URL in your Git client."
+        },
+        "auth": {
+          "title": "Git authentication required",
+          "body": "Check your Git credentials and repository permissions, then retry."
+        },
+        "network": {
+          "title": "Cannot reach the remote",
+          "body": "Check your connection and the origin URL, then retry."
+        },
+        "local_changes": {
+          "title": "Local files prevent the pull",
+          "body": "Keep your edits. Review them or stash them before retrying the pull."
+        },
+        "divergence": {
+          "title": "Branches have diverged",
+          "body": "Refresh the branch status and choose merge or rebase to integrate the remote commits."
+        },
+        "unknown": {
+          "title": "Git synchronization failed",
+          "body": "Review the technical details, fix the reported issue, then retry."
+        }
+      },
+      "publishCodeBranch": "Publish code branch",
+      "configureAndRetry": "Configure and retry",
+      "remoteConfigurationFailed": "Remote configuration failed. Review the URL and technical details.",
+      "originUrl": "Origin URL",
+      "metadataNeedsAttention": "Code sync completed. Metadata sync needs attention.",
+      "reviewRecovery": "Review recovery",
       "done": "Done.",
       "macroClean": "@macro clean",
       "macroPending": "@macro pending",
@@ -467,6 +507,8 @@
       "from": "from",
       "preflightAvailable": "Sync available",
       "preflightConflicts": "Conflicts detected",
+      "preflightUnavailable": "Unavailable",
+      "conflictContextChanged": "The branch changed. Refresh before opening the assistant.",
       "preflightBlockedByLocalChanges": "Blocked by local changes",
       "preflightChecking": "Checking sync status",
       "preflightFailed": "Sync check failed",
@@ -494,9 +536,12 @@
       "localChangesBadge": "local changes",
       "mergeInProgressBadge": "merge in progress",
       "conflictedFiles": "{{count}} conflicted files",
+      "conflictedFiles_one": "{{count}} conflicted file",
+      "conflictedFiles_other": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Open conflict assistant in Implement",
+      "conflictReadOnly": "Read-only conflict inspection",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",
