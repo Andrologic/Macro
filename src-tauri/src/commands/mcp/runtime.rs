@@ -1298,6 +1298,12 @@ impl McpRuntimeManager {
             if connect_attempt_id.is_some_and(|attempt_id| entry.connect_attempt_id != attempt_id) {
                 return;
             }
+            // Invalidation already revoked this generation and took its session.
+            // Keep both a pending close's publication key and its final diagnostic
+            // until a valid connection installs a new configuration fingerprint.
+            if entry.config_fingerprint == "invalid" {
+                return;
+            }
             self.cancel_operations_for(&logical_key);
             entry.connection_cancellation.cancel();
             if let Some(next_generation) = entry.snapshot.key.config_generation.checked_add(1) {
@@ -1518,6 +1524,8 @@ mod tests {
         fail_lists: AtomicBool,
         fail_close: AtomicBool,
         block_close: AtomicBool,
+        close_started: Notify,
+        close_release: Notify,
         closed: AtomicBool,
         list_started: Notify,
         call_started: Notify,
@@ -1585,8 +1593,9 @@ mod tests {
         fn close<'a>(&'a self) -> McpFuture<'a, ()> {
             Box::pin(async move {
                 self.close_calls.fetch_add(1, Ordering::SeqCst);
+                self.close_started.notify_one();
                 if self.block_close.load(Ordering::SeqCst) {
-                    std::future::pending::<()>().await;
+                    self.close_release.notified().await;
                 }
                 if self.fail_close.load(Ordering::SeqCst) {
                     return Err(McpRuntimeError::new(
@@ -2423,9 +2432,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_invalidation_during_close_preserves_result_and_valid_reconnection() {
+        let mut checks = tokio::task::JoinSet::new();
+        for timeout in [false, true] {
+            for reconnect in [false, true] {
+                checks.spawn(async move {
+                    let session = Arc::new(FakeSession::default());
+                    let (manager, connector) = manager(session.clone());
+                    let initial = connected_key(&manager).await;
+                    session.block_close.store(true, Ordering::SeqCst);
+                    session.fail_close.store(true, Ordering::SeqCst);
+                    connector.fingerprint_error.store(true, Ordering::SeqCst);
+                    let closing_manager = manager.clone();
+                    let closing = tokio::spawn(async move {
+                        closing_manager.reconcile_configuration().await;
+                    });
+                    tokio::time::timeout(Duration::from_secs(1), session.close_started.notified())
+                        .await
+                        .expect("invalidation must take the session and start closing");
+                    let revoked = manager.snapshot().await.servers.remove(0);
+                    assert!(revoked.key.config_generation > initial.config_generation);
+
+                    // The session is already taken, but its close result has
+                    // not been published. Neither rejection may revoke it again.
+                    assert_eq!(
+                        manager.connect(selector()).await.unwrap_err().code,
+                        "MCP_RUNTIME_CONFIG_INVALID"
+                    );
+                    manager
+                        .invalidate_server("test", "repeated secret invalidation")
+                        .await;
+                    assert_eq!(
+                        serde_json::to_value(manager.snapshot().await.servers.remove(0)).unwrap(),
+                        serde_json::to_value(&revoked).unwrap()
+                    );
+                    assert_eq!(session.close_calls.load(Ordering::SeqCst), 1);
+
+                    let ready = if reconnect {
+                        connector.fingerprint_error.store(false, Ordering::SeqCst);
+                        let ready = manager.connect(selector()).await.unwrap();
+                        assert!(ready.key.config_generation > revoked.key.config_generation);
+                        assert_eq!(ready.status, McpRuntimeStatus::Ready);
+                        Some(ready)
+                    } else {
+                        None
+                    };
+                    if !timeout {
+                        session.close_release.notify_one();
+                    }
+                    tokio::time::timeout(
+                        CONFIGURATION_CLOSE_BUDGET + Duration::from_secs(2),
+                        closing,
+                    )
+                    .await
+                    .expect("close must finish within its budget")
+                    .unwrap();
+                    let snapshot = manager.snapshot().await.servers.remove(0);
+                    if let Some(ready) = ready {
+                        // The old close failure/timeout cannot overwrite a real
+                        // reconnection on a valid definition and fresh generation.
+                        assert_eq!(
+                            serde_json::to_value(&snapshot).unwrap(),
+                            serde_json::to_value(&ready).unwrap()
+                        );
+                        manager
+                            .call_tool(
+                                &ready.key,
+                                "echo",
+                                serde_json::json!({}),
+                                "restored-definition".into(),
+                            )
+                            .await
+                            .unwrap();
+                        session.block_close.store(false, Ordering::SeqCst);
+                        session.fail_close.store(false, Ordering::SeqCst);
+                        manager.disconnect(&ready.key).await.unwrap();
+                    } else {
+                        assert_eq!(snapshot.key, revoked.key);
+                        assert_eq!(snapshot.status, McpRuntimeStatus::Failed);
+                        assert_eq!(
+                            snapshot.last_error_code.as_deref(),
+                            Some(if timeout {
+                                "MCP_RUNTIME_CLOSE_TIMEOUT"
+                            } else {
+                                "MCP_RUNTIME_TEST_CLOSE_FAILED"
+                            })
+                        );
+                        assert_eq!(
+                            manager.connect(selector()).await.unwrap_err().code,
+                            "MCP_RUNTIME_CONFIG_INVALID"
+                        );
+                        manager
+                            .invalidate_server("test", "invalidation after close")
+                            .await;
+                        assert_eq!(
+                            serde_json::to_value(manager.snapshot().await.servers.remove(0))
+                                .unwrap(),
+                            serde_json::to_value(&snapshot).unwrap()
+                        );
+                    }
+                    assert_eq!(
+                        manager.refresh_catalog(&initial).await.unwrap_err().code,
+                        STALE_GENERATION
+                    );
+                    assert_eq!(
+                        connector.connect_calls.load(Ordering::SeqCst),
+                        if reconnect { 2 } else { 1 }
+                    );
+                });
+            }
+        }
+        while let Some(result) = checks.join_next().await {
+            result.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn real_adapter_cleanup_results_reach_configuration_snapshot() {
         use super::super::runtime_connector::cleanup_fixture_session;
         use super::super::service_shutdown::fixture::CloseBehavior;
+        struct InvalidDefinitionConnector(&'static str);
+        impl McpConnector for InvalidDefinitionConnector {
+            fn config_fingerprint<'a>(
+                &'a self,
+                _selector: &'a McpRuntimeSelector,
+            ) -> McpFuture<'a, String> {
+                Box::pin(async move {
+                    Err(McpRuntimeError::new(
+                        self.0,
+                        "fixture definition is unavailable",
+                    ))
+                })
+            }
+            fn connect<'a>(
+                &'a self,
+                _request: &'a McpConnectionRequest,
+            ) -> McpFuture<'a, McpConnectedSession> {
+                Box::pin(async { panic!("a rejected definition must not create a session") })
+            }
+        }
         let mut checks = tokio::task::JoinSet::new();
         for adapter in ["legacy-stdio", "modern-stdio", "legacy-http", "modern-http"] {
             for behavior in [
@@ -2434,74 +2579,102 @@ mod tests {
                 CloseBehavior::Panic,
                 CloseBehavior::Timeout,
             ] {
-                checks.spawn(async move {
-                    let (session, control) = cleanup_fixture_session(adapter, behavior).await;
-                    let manager = McpRuntimeManager::with_connector(Arc::new(UnavailableConnector));
-                    let key = McpRuntimeKey {
-                        server_id: "test".into(),
-                        project_id: None,
-                        project_ids: vec![],
-                        config_generation: 1,
-                    };
-                    // Install the real adapter session. Only the source mutation
-                    // is injected here; the native mutation path has its own
-                    // subprocess/configuration test below.
-                    let mut entry =
-                        RuntimeEntry::connecting(key.clone(), "configured".into(), Uuid::new_v4());
-                    entry.snapshot.status = McpRuntimeStatus::Ready;
-                    entry.session = Some(session);
-                    manager
-                        .state
-                        .lock()
-                        .await
-                        .entries
-                        .insert(LogicalRuntimeKey::from(&key), entry);
-                    let started = Instant::now();
-                    manager
-                        .invalidate_if_current(
-                            &key,
-                            &McpRuntimeError::new(
-                                "MCP_RUNTIME_SERVER_DISABLED",
-                                "fixture server was disabled",
-                            ),
-                        )
-                        .await;
-                    let snapshot = manager.snapshot().await.servers.remove(0);
-                    let (status, code) = match behavior {
-                        CloseBehavior::Success => (
-                            McpRuntimeStatus::Disconnected,
-                            "MCP_RUNTIME_SERVER_DISABLED",
-                        ),
-                        CloseBehavior::Timeout => {
-                            (McpRuntimeStatus::Failed, "MCP_RUNTIME_CLOSE_TIMEOUT")
+                for rejection in [
+                    "MCP_RUNTIME_SERVER_DISABLED",
+                    "MCP_RUNTIME_SERVER_NOT_FOUND",
+                ] {
+                    checks.spawn(async move {
+                        let (session, control) = cleanup_fixture_session(adapter, behavior).await;
+                        let manager = McpRuntimeManager::with_connector(Arc::new(
+                            InvalidDefinitionConnector(rejection),
+                        ));
+                        let key = McpRuntimeKey {
+                            server_id: "test".into(),
+                            project_id: None,
+                            project_ids: vec![],
+                            config_generation: 1,
+                        };
+                        // Install the real adapter session. Only the source mutation
+                        // is injected here; the native mutation path has its own
+                        // subprocess/configuration test below.
+                        let mut entry = RuntimeEntry::connecting(
+                            key.clone(),
+                            "configured".into(),
+                            Uuid::new_v4(),
+                        );
+                        entry.snapshot.status = McpRuntimeStatus::Ready;
+                        entry.session = Some(session);
+                        manager
+                            .state
+                            .lock()
+                            .await
+                            .entries
+                            .insert(LogicalRuntimeKey::from(&key), entry);
+                        let started = Instant::now();
+                        manager
+                            .invalidate_if_current(
+                                &key,
+                                &McpRuntimeError::new(
+                                    rejection,
+                                    "fixture definition was invalidated",
+                                ),
+                            )
+                            .await;
+                        let snapshot = manager.snapshot().await.servers.remove(0);
+                        let (status, code) = match behavior {
+                            CloseBehavior::Success => (McpRuntimeStatus::Disconnected, rejection),
+                            CloseBehavior::Timeout => {
+                                (McpRuntimeStatus::Failed, "MCP_RUNTIME_CLOSE_TIMEOUT")
+                            }
+                            _ => (McpRuntimeStatus::Failed, "MCP_RUNTIME_CLOSE_FAILED"),
+                        };
+                        assert_eq!(snapshot.status, status, "{adapter}: {behavior:?}");
+                        assert_eq!(
+                            snapshot.last_error_code.as_deref(),
+                            Some(code),
+                            "{adapter}: {behavior:?}"
+                        );
+                        assert!(snapshot.key.config_generation > key.config_generation);
+                        if !matches!(behavior, CloseBehavior::Success) {
+                            assert!(snapshot.last_error.unwrap().contains("cleanup failed"));
                         }
-                        _ => (McpRuntimeStatus::Failed, "MCP_RUNTIME_CLOSE_FAILED"),
-                    };
-                    assert_eq!(snapshot.status, status, "{adapter}: {behavior:?}");
-                    assert_eq!(
-                        snapshot.last_error_code.as_deref(),
-                        Some(code),
-                        "{adapter}: {behavior:?}"
-                    );
-                    assert!(snapshot.key.config_generation > key.config_generation);
-                    if !matches!(behavior, CloseBehavior::Success) {
-                        assert!(snapshot.last_error.unwrap().contains("cleanup failed"));
-                    }
-                    // In particular, the inner 10-second timeout must reach the
-                    // snapshot before the runtime's 15-second outer timeout.
-                    assert!(
-                        started.elapsed() < Duration::from_secs(14),
-                        "{adapter}: {behavior:?}"
-                    );
-                    control.finish().await;
-                    manager.reconcile_configuration().await;
-                    assert_eq!(
-                        manager.snapshot().await.servers[0]
-                            .last_error_code
-                            .as_deref(),
-                        Some(code)
-                    );
-                });
+                        // In particular, the inner 10-second timeout must reach the
+                        // snapshot before the runtime's 15-second outer timeout.
+                        assert!(
+                            started.elapsed() < Duration::from_secs(14),
+                            "{adapter}: {behavior:?}"
+                        );
+                        control.finish().await;
+                        let diagnostic = manager.snapshot().await.servers.remove(0);
+                        assert_eq!(
+                            manager
+                                .connect(McpRuntimeSelector {
+                                    server_id: key.server_id.clone(),
+                                    project_ids: key.project_ids.clone(),
+                                })
+                                .await
+                                .unwrap_err()
+                                .code,
+                            rejection
+                        );
+                        manager
+                            .invalidate_server("test", "repeated invalidation")
+                            .await;
+                        assert_eq!(
+                            serde_json::to_value(manager.snapshot().await.servers.remove(0))
+                                .unwrap(),
+                            serde_json::to_value(&diagnostic).unwrap(),
+                            "{adapter}: {behavior:?}: {rejection}"
+                        );
+                        manager.reconcile_configuration().await;
+                        assert_eq!(
+                            manager.snapshot().await.servers[0]
+                                .last_error_code
+                                .as_deref(),
+                            Some(code)
+                        );
+                    });
+                }
             }
         }
         while let Some(result) = checks.join_next().await {
@@ -2687,15 +2860,12 @@ os._exit(0)
                         {
                             break server;
                         }
-                        if server.last_error_code.as_deref() == Some("MCP_RUNTIME_CLOSE_FAILED") || server.status == McpRuntimeStatus::Disconnected {
-                            eprintln!("EOF state: injected={fail_inspection}, {server:?}");
-                        }
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                 })
                 .await
                 .unwrap_or_else(|error| {
-                    panic!("EOF cleanup incomplete: {error}; injected={fail_inspection}, leader={leader}, descendant={descendant}, eof={}, leader_running={}, descendant_running={}",
+                    panic!("EOF cleanup incomplete: {error}; injected={fail_inspection}, leader={leader}, descendant={descendant}, eof={}, leader_pid_exists={}, descendant_pid_exists={}",
                         eof.exists(), process_is_running(leader), process_is_running(descendant));
                 });
             assert_eq!(std::fs::read_to_string(&eof).unwrap(), "voluntary EOF");
@@ -2706,8 +2876,25 @@ os._exit(0)
                     .unwrap()
                     .contains("Process tree inspection was incomplete"));
             }
-            eprintln!("EOF cleanup: injected={fail_inspection}, leader={leader}, descendant={descendant}, descendant_before_fallback={}, status={:?}, code={:?}",
-                process_is_running(descendant), snapshot.status, snapshot.last_error_code);
+            let mut inspection = crate::core::process::background_tokio_command("/bin/ps");
+            inspection
+                .args(["-o", "stat=", "-p", &descendant.to_string()])
+                .kill_on_drop(true);
+            let state = tokio::time::timeout(Duration::from_secs(1), inspection.output())
+                .await
+                .expect("fixture state inspection must be bounded")
+                .unwrap();
+            assert!(
+                state.status.success()
+                    || (state.status.code() == Some(1)
+                        && state.stdout.is_empty()
+                        && state.stderr.is_empty()),
+                "{state:?}"
+            );
+            let state = String::from_utf8(state.stdout).unwrap();
+            let state = state.trim();
+            eprintln!("EOF cleanup: injected={fail_inspection}, leader={leader}, descendant={descendant}, descendant_os_state={state:?}, zombie={}, status={:?}, code={:?}",
+                state.starts_with('Z'), snapshot.status, snapshot.last_error_code);
             // An incomplete inventory reports failure; it cannot promise that
             // an undiscovered detached child was killed. Clean up that fixture
             // explicitly and verify absence independently of the adapter.
