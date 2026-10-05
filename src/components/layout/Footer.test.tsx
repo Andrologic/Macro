@@ -1,3 +1,6 @@
+import en from '../../i18n/locales/en.json';
+import fr from '../../i18n/locales/fr.json';
+import { MacroServiceError, SERVICE_ERROR_CODES } from '../../services/contracts/errors';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
@@ -434,6 +437,8 @@ const loadFooter = async () => {
       dismissLabel,
       onRetry,
       onDismiss,
+      onUseAiAssistant,
+      useAiAssistantLabel,
     }: {
       title: string;
       description: string;
@@ -441,12 +446,15 @@ const loadFooter = async () => {
       dismissLabel?: string;
       onRetry?: () => void;
       onDismiss?: () => void;
+      onUseAiAssistant?: () => void;
+      useAiAssistantLabel?: string;
     }) => (
       <div data-testid="conflict-panel">
         <h3>{title}</h3>
         <p>{description}</p>
         {onDismiss && <button onClick={onDismiss}>{dismissLabel || 'Close'}</button>}
         {onRetry && <button onClick={onRetry}>{retryLabel || 'Retry'}</button>}
+        {onUseAiAssistant && <button onClick={onUseAiAssistant}>{useAiAssistantLabel}</button>}
       </div>
     ),
   }));
@@ -1486,6 +1494,54 @@ describe('Footer', () => {
     expect(findButtonByText(container!, 'Stash and retry')).not.toBeNull();
     expect(findButtonByText(container!, 'Discard local changes')).not.toBeNull();
     expect(findButtonByText(container!, 'Open conflict assistant in Implement')).not.toBeNull();
+  });
+
+  it.each([
+    ['code', 'fr', 'opening'], ['code', 'en', 'opening'],
+    ['metadata', 'fr', 'verification'], ['metadata', 'en', 'verification'],
+  ] as const)('presents %s assistant context refusals in %s', async (kind, language, stage) => {
+    const copy = language === 'fr' ? fr : en;
+    const diagnosticCopy = copy.errors.degraded.service.conflictAssistantContextChanged;
+    const error = new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED,
+      'Conflict assistant context changed.', { stage, projectId: 'project-a' });
+    openConflictAssistantMock.mockImplementation(async () => { throw error; });
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    macroStatusByPath = { '/repo/api': buildMacroStatus(0, 0), '/repo/web': buildMacroStatus(0, 0), '/repo/docs': buildMacroStatus(0, 0) };
+    if (kind === 'metadata') {
+      macroStatusByPath['/repo/api'] = { ...buildMacroStatus(5, 4), state: 'conflict', reason: 'merge_conflict',
+        next_action: 'resolve_conflict', conflicted_files: ['plan.json'] };
+    } else {
+      appState.selectedProjectId = 'project-b';
+      gitStatusByPath['/repo/web'] = buildGitStatus('feature-b', 4, 3);
+      gitMergeCheckMock.mockImplementation(async () => ({ mergeable: false, conflictFiles: ['src/api.ts'], hasChanges: true, ahead: 4, behind: 3 }));
+      gitRebaseCheckMock.mockImplementation(async () => ({ rebaseable: false, conflictFiles: ['src/api.ts'], output: 'conflict' }));
+    }
+    const { Footer } = await loadFooter();
+    installReactI18nextMock(createTranslationMock({
+      'footer.sync.aiConflictAssistantStartFailed': copy.footer.sync.aiConflictAssistantStartFailed,
+      'errors.degraded.service.conflictAssistantContextChanged.title': diagnosticCopy.title,
+      'errors.degraded.service.conflictAssistantContextChanged.body': diagnosticCopy.body,
+      'errors.degraded.service.conflictAssistantContextChanged.nextStep': diagnosticCopy.nextStep,
+    }));
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    if (kind === 'code') {
+      act(() => { findButtonByIcon(container!, 'arrow-down')?.click(); });
+    } else {
+      act(() => { findButtonByText(container!, 'Resolve')?.click(); });
+    }
+    await flushAsyncWork();
+    act(() => { findButtonByText(container!, 'Open conflict assistant in Implement')?.click(); });
+    await flushAsyncWork();
+    expect(openConflictAssistantMock).toHaveBeenCalledTimes(1);
+    expect(openConflictAssistantMock.mock.calls[0]?.[0].context.kind).toBe(kind);
+    expect(notifyErrorMock).toHaveBeenCalledWith(copy.footer.sync.aiConflictAssistantStartFailed, {
+      description: `${diagnosticCopy.body} ${diagnosticCopy.nextStep}`, category: 'git_sync_attention_required',
+    });
+    expect(notifyInfoMock).not.toHaveBeenCalled();
+    expect(error.details).toEqual({ stage, projectId: 'project-a' });
   });
 
   it('opens the conflict assistant when the corresponding modal action is clicked', async () => {

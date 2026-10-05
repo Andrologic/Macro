@@ -98,7 +98,7 @@ export const verifyConflictAssistantRepositories = async (
     const status = await ports.gitStatus(repoPath);
     const branch = request.kind === 'metadata' ? '@macro' : requested.branch;
     if (!branch || status.branch !== branch) throw new Error('Conflict branch changed.');
-    if (!status.head_commit?.hash) throw new Error('Conflict repository HEAD is unavailable.');
+    if (!status.head_commit?.id) throw new Error('Conflict repository HEAD is unavailable.');
     const conflicts = [...(status.conflicted_files ?? []), ...(status.conflictedFiles ?? [])];
     if (!conflicts.length) {
       if (request.kind === 'metadata') {
@@ -115,7 +115,7 @@ export const verifyConflictAssistantRepositories = async (
         if (!conflicts.length) throw new Error('Code conflicts could not be verified.');
       }
     }
-    return { projectId: project.id, projectPath: project.path, repoPath, branch, head: status.head_commit.hash, conflictFiles: Array.from(new Set(conflicts)),
+    return { projectId: project.id, projectPath: project.path, repoPath, branch, head: status.head_commit.id, conflictFiles: Array.from(new Set(conflicts)),
       mergeInProgress: Boolean(status.merge_in_progress || status.mergeInProgress),
       ...(requested.upstreamBranch ? { upstreamBranch: requested.upstreamBranch } : {}),
       ...(requested.taskId ? { taskId: requested.taskId } : {}) };

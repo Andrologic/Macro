@@ -1,3 +1,4 @@
+import { createGitCommitDto } from '../test-utils/gitCommit';
 import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
 import { registerConflictAssistantContext, clearConflictAssistantContext, type VerifiedConflictAssistantContext } from '../services/conflictAssistantContext';
 import { createLifecycleScope } from '../services/lifecycleScope';
@@ -36,7 +37,7 @@ import { registerReplayAndEditingScenarios } from './__tests__/replayAndEditing.
 import { registerSendRuntimeAndDeletionScenarios } from './__tests__/sendRuntimeAndDeletion.scenarios';
 import { registerConversationSelectionScenarios } from './__tests__/conversationSelection.scenarios';
 import { registerQuestionnaireNavigationScenarios } from './__tests__/questionnaireNavigation.scenarios';
-const conflictGitStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+const conflictGitStatusMock = mock(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
 const actualTauriIpc = await import('../services/tauriIpc');
 const actualConfigurationClient = await import('../services/configurationClient');
 let actualResolveProjectExecutionContext: typeof import('../services/projectExecutionContext').resolveProjectExecutionContext;
@@ -2759,7 +2760,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   let releasePlanRuntimePorts: (() => void) | undefined;
 
   beforeEach(async () => {
-    conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+    conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
     clearConflictAssistantContext('debug-conv');
     clearConflictAssistantContext('conflict-store');
     await registerUseChatStoreMocks();
@@ -3425,7 +3426,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Implement'; appState.selectedTaskId = null;
     appState.selectedProjectId = 'project-1'; appState.selectedGroupId = 'group-1';
     providerState.selectedSupportsNativeToolCalling = () => true;
-    conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+    conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
     conflictGitStatusMock.mockClear();
     useChatStore.setState({ conversations: [{ ...createConversation('conflict-store'), scope_mode: 'Implement' }],
       selectedConversationId: 'conflict-store', messages: [], isLoading: false, isStreaming: false,
@@ -3434,7 +3435,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const context: VerifiedConflictAssistantContext = {
       conversationId: 'conflict-store', projectId: 'project-1', groupId: 'group-1', kind: 'code',
       repositories: [{ projectId: 'project-1', projectPath: '/repos/web', repoPath: '/repos/web', branch: 'feature/api',
-        head: 'abc', conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+        head: createGitCommitDto().id, conflictFiles: ['src/api.ts'], mergeInProgress: true }],
     };
     registerConflictAssistantContext(context);
     return useChatStore;
@@ -3464,6 +3465,19 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     } finally { clearConflictAssistantContext('conflict-store'); }
   });
 
+
+  it('refuses an immediate inspection after a complete HEAD change hidden by its display prefix', async () => {
+    const chat = await setupConflictConversation();
+    try {
+      conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api',
+        head_commit: createGitCommitDto('abcdef0123452222222222222222222222222222'),
+        conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+      await expect(chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect the changed commit' })).rejects.toThrow('repository changed');
+      expect(streamChatMock).not.toHaveBeenCalled();
+      expect(chat.getState().messages).toEqual([]);
+      expect(createMessageMock).not.toHaveBeenCalled();
+    } finally { clearConflictAssistantContext('conflict-store'); }
+  });
 
   it('revalidates a queued conflict inspection and preserves its images without restoring mutation rights', async () => {
     const chat = await setupConflictConversation();
@@ -3501,7 +3515,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       chat.setState({ conversationRuntimeById: { 'conflict-store': { phase: 'streaming', sessionId: 'active', turnId: 'active' } } });
       await chat.getState().submitDuringActiveTurn({ conversationId: 'conflict-store', content: 'Inspect this conflict later' }, 'queue');
       const entry = loadQueuedSubmissions()[0]!;
-      if (change === 'changed-head') conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: { hash: 'new-head' }, conflicted_files: ['src/api.ts'], merge_in_progress: true }));
+      if (change === 'changed-head') conflictGitStatusMock.mockImplementation(async () => ({ branch: 'feature/api', head_commit: createGitCommitDto('abcdef0123452222222222222222222222222222'), conflicted_files: ['src/api.ts'], merge_in_progress: true }));
       else clearConflictAssistantContext('conflict-store');
       chat.setState({ conversationRuntimeById: {}, isStreaming: false });
       await chat.getState().retryQueuedSubmissions('conflict-store');
@@ -3556,7 +3570,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     try {
       conflictGitStatusMock.mockImplementation(async () => {
         appState.selectedProjectId = 'foreign';
-        return { branch: 'feature/api', head_commit: { hash: 'abc' }, conflicted_files: ['src/api.ts'], merge_in_progress: true };
+        return { branch: 'feature/api', head_commit: createGitCommitDto(), conflicted_files: ['src/api.ts'], merge_in_progress: true };
       });
       await expect(chat.getState().sendMessage({ conversationId: 'conflict-store', content: 'Inspect' })).rejects.toThrow('changed during verification');
       expect(chat.getState().messages).toEqual([]);

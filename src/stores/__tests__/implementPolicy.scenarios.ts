@@ -1,3 +1,4 @@
+import { createGitCommitDto } from '../../test-utils/gitCommit';
 import { registerConflictAssistantContext, clearConflictAssistantContext } from '../../services/conflictAssistantContext';
 import { describe, expect, it } from 'bun:test';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
@@ -181,7 +182,7 @@ export const registerImplementPolicyScenarios = (
       registerConflictAssistantContext({
         conversationId: 'debug-conv', projectId: 'project-1', groupId: 'group-1', kind: 'code',
         repositories: [{ projectId: 'project-1', projectPath: '/repos/web', repoPath: '/repos/web', branch: 'feature/api',
-          head: 'abc', conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+          head: createGitCommitDto().id, conflictFiles: ['src/api.ts'], mergeInProgress: true }],
       });
       await useChatStore.getState().sendMessage({
         conversationId: 'debug-conv',
