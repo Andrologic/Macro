@@ -331,9 +331,13 @@ Le moteur Implement utilise encore les enregistrements d’exécution historique
 
 `src/services/agsdl` contient la projection du graphe, les modifications
 atomiques par pointeurs JSON et les exemples. `src/stores/agsdl/tools.ts`
-orchestre les outils de lecture et de modification du document. Le lecteur de
-référence 0.1.0 est fourni sous sa licence dans `src/vendor/agsdl`, avec des
-adaptations Web Crypto/Uint8Array documentées. Le sérialiseur conserve les jetons
+orchestre les outils de lecture et de modification du document. Les lecteurs de
+référence 0.2.0 et 0.1.0 sont fournis sous leur licence dans `src/vendor/agsdl`,
+avec leurs adaptations navigateur documentées. Le dispatch dépend du contrat
+explicite ; le lecteur 0.1.0 reste réservé aux documents historiques. Le rapport
+0.2.0 conserve sa portée statique et son JSON sans perte numérique. Les
+métadonnées Macro de conception et de présentation vivent dans l’enveloppe du
+plan pour respecter le schéma fermé 0.2.0. Voir [AgSDL 0.2.0](agsdl-020.md). Le sérialiseur conserve les jetons
 numériques et les valeurs opaques ; les objets de projection JavaScript ne sont
 pas utilisés pour réécrire le document entier. Une mutation d’outil vérifie la
 conversation propriétaire, le statut brouillon et la révision lue. Ces outils

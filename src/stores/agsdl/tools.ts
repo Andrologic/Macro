@@ -3,7 +3,7 @@ import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
 import { list, object, readDocument, sourceAt, text, pointerPart, scanSource } from "../../services/agsdl/document";
 import { AGSDL_EXAMPLES, createExampleDocument, type AgsdlExample } from "../../services/agsdl/examples";
 import type { AgsdlChange } from "../../types/agsdl";
-import { readDesign, updateDesignMetadata, type DesignMetadata, type AgsdlDisplayMetadata } from "../../services/agsdl/design";
+import { readDesign, updateDesignMetadata, validDisplayMetadata, type DesignMetadata, type AgsdlDisplayMetadata } from "../../services/agsdl/design";
 import { useProviderStore } from "../useProviderStore";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
@@ -68,17 +68,10 @@ function outline02(source: string, doc: Record<string, unknown>) {
 }
 
 
-const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-const displayFields = ["title", "description", "macroGroup", "macroTaskId", "macroLegacyNodeId", "macroStatus"];
-function validDisplay(value: unknown): value is AgsdlDisplayMetadata {
-  if (!isRecord(value) || (value.title !== undefined && typeof value.title !== "string")) return false;
-  if (value.cards === undefined) return true;
-  return isRecord(value.cards) && Object.values(value.cards).every(card => isRecord(card) && displayFields.every(field => card[field] === undefined || typeof card[field] === "string"));
-}
 /** Merge supplied display fields without changing source identities or discarding unknown metadata. */
 export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDisplayMetadata | undefined, update: unknown): AgsdlDisplayMetadata {
   if (readDocument(source).contract !== "agsdl-0.2.0") throw new Error("display_json requires AgSDL 0.2.0.");
-  if (!validDisplay(update) || (previous !== undefined && !validDisplay(previous))) throw new Error("The display metadata is malformed. Its original contents have been preserved.");
+  if (!validDisplayMetadata(update) || (previous !== undefined && !validDisplayMetadata(previous))) throw new Error("The display metadata is malformed. Its original contents have been preserved.");
   const next = { ...structuredClone(previous), ...structuredClone(update) };
   if (update.cards !== undefined) {
     const parsed = scanSource(source);

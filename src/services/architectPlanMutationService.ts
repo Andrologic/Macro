@@ -1,5 +1,6 @@
 import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import type { PlanNode, PredictedBranch } from '../types';
+import { updateDesignMetadata, validDisplayMetadata } from './agsdl/design';
 import { devLogger } from '../utils/devLogger';
 import { isCanonicalArchitectPlan } from './architectPlanPresentation';
 import { type ValidProjectRegistrySnapshot } from './validProjectRegistry';
@@ -88,7 +89,15 @@ const assertAgsdlEditorDocument = (
       Object.values(document.annexes).some((value) => typeof value !== 'string')) {
     throw new Error('Invalid AgSDL editor document.');
   }
-  if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('')).length > 1024 * 1024) {
+  if (document.design !== undefined) updateDesignMetadata(undefined, document.design);
+  if (document.display !== undefined && !validDisplayMetadata(document.display)) {
+    throw new Error('Invalid AgSDL display metadata.');
+  }
+  if (document.migration !== undefined && (!document.migration || typeof document.migration !== 'object' || document.migration.version !== 1 || !['macro-legacy-plan', 'agsdl-0.1.0'].includes(document.migration.from) || !Array.isArray(document.migration.issues) || document.migration.issues.some(issue => typeof issue !== 'string'))) {
+    throw new Error('Invalid AgSDL migration metadata.');
+  }
+  const metadata = JSON.stringify({ design: document.design, display: document.display, migration: document.migration });
+  if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('') + metadata).length > 1024 * 1024) {
     throw new Error('AgSDL inputs exceed the 1 MiB editor limit.');
   }
 };
@@ -264,9 +273,7 @@ export const migrateArchitectPlanToAgsdl = async (
     if (existing.missingProjectIds?.length) {
       throw new Error('Restore the missing project replicas before converting this plan.');
     }
-    if (new TextEncoder().encode(agsdl.source).length > 1024 * 1024) {
-      throw new Error('The converted plan exceeds the 1 MiB AgSDL limit. The original plan was preserved.');
-    }
+    assertAgsdlEditorDocument(agsdl);
     const next = { ...existing, agsdl, revision: (existing.revision || 1) + 1 };
     const scopes = dedupeScopes([
       ...replicaSet.expectedScopes,

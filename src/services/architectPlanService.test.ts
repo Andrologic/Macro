@@ -2390,6 +2390,14 @@ describe('architectPlanService', () => {
     }
   });
 
+  it('rejects an oversized converted envelope before changing the legacy replicas', async () => {
+    const created = await service.createArchitectPlan({ branchName, planId: 'migration-oversized-envelope', label: 'Migration',
+      nodes: [{ id: 'one', title: 'Check', description: 'x'.repeat(400_000), type: 'task', status: 'pending', dependencies: [], todos: [] }] });
+    const before = await service.getArchitectPlan(branchName, created.id);
+    await expect(service.migrateArchitectPlanToAgsdl(branchName, created.id)).rejects.toThrow('1 MiB');
+    expect(await service.getArchitectPlan(branchName, created.id)).toEqual(before);
+  });
+
   it('creates an AgSDL blueprint snapshot atomically with its source and annexes', async () => {
     const agsdl = { source: '{ "opaque":900719925474099312345 }', annexes: { guidance: 'Synthetic release guidance' } };
     const created = await service.createArchitectPlan({ branchName, planId: 'blueprint-snapshot', label: 'Release blueprint', setActive: false, agsdl });
@@ -2399,6 +2407,26 @@ describe('architectPlanService', () => {
     const listing = await service.listArchitectPlans(branchName);
     expect(listing.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
     expect(listing.activePlanId).not.toBe(created.id);
+  });
+
+  it('persists 0.2 design intent outside the unchanged closed source and includes metadata in size limits', async () => {
+    const source = '{"contract":"agsdl-0.2.0","id":"release","agents":{},"configurations":{},"bindings":{}}';
+    const design = { version: 1 as const, kind: 'blueprint' as const, purpose: 'Vérifier la release.', context: '', rules: [], requirements: [] };
+    const agsdl = { source, annexes: {}, design, display: { title: 'Release' } };
+    const created = await service.createArchitectPlan({ branchName, planId: 'edition-020', label: 'Release', setActive: false, agsdl });
+    expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    expect(JSON.parse(created.agsdl!.source).annotations).toBeUndefined();
+    await expect(service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
+      agsdl: { ...agsdl, design: { ...design, context: 'é'.repeat(1024 * 1024) } } })).rejects.toThrow('1 MiB');
+    expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    await expect(service.createArchitectPlan({ branchName, planId: 'invalid-design', label: 'Invalid',
+      agsdl: { ...agsdl, design: { ...design, rules: [{ id: '', title: 'Invalid', instructions: '' }] } } })).rejects.toThrow('design metadata');
+    expect(await service.getArchitectPlan(branchName, 'invalid-design')).toBeNull();
+    for (const display of [{ title: 42 }, { cards: { '/agents/checklist': { title: {} } } }]) {
+      await expect(service.updateArchitectPlan({ branchName, planId: created.id, expectedAgsdlRevision: 1,
+        agsdl: { ...agsdl, display: display as unknown as NonNullable<ArchitectPlanRecord['agsdl']>['display'] } })).rejects.toThrow('display metadata');
+      expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    }
   });
 
   it('rejects oversized initial AgSDL before creating a plan or reserving its id', async () => {

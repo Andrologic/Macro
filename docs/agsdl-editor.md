@@ -110,19 +110,23 @@ pas un historique durable de toutes les versions du système.
 
 La modale d’édition d’un agent permet de choisir un fournisseur et un modèle
 configurés dans Macro lorsqu’une configuration AgSDL unique peut être identifiée.
-Le moteur déclaré est Macro. L’ancien alias de moteur `macro` en version `1`
-est converti en `macro/desktop` lors de la sauvegarde ; les autres données de
-configuration restent en place. Les configurations importées étrangères ou ambiguës restent
+Le moteur déclaré est Macro. En 0.2.0, la configuration référence un binding
+`macro/agent-engine` en version `1`, implémenté par `macro/desktop` en version `1`.
+Le lecteur historique conserve ses règles d’édition, dont la conversion de l’alias
+`macro` en `macro/desktop` lors de la sauvegarde d’une configuration 0.1.0. Les configurations importées étrangères ou ambiguës restent
 préservées et doivent être préparées par l’agent avant cette édition. Les outils
-et MCP restent des autorisations déclarées, indépendantes du choix du modèle.
+et MCP restent des déclarations indépendantes du choix du modèle. Ces déclarations
+ne confèrent aucune autorisation d’exécution.
 Cette version ne lance pas les systèmes AgSDL et n’ajoute pas de mode orchestrateur.
 
 ## Conversion des plans existants
 
-La conversion ajoute un document AgSDL 0.1.0 descriptif, avec des agents et leurs
-instructions. Une ressource réservée conserve intégralement les nœuds, les todos,
+La conversion des nouveaux imports de plans ajoute un document AgSDL 0.2.0
+descriptif, avec des agents et leurs instructions. L’enveloppe Macro conserve
+les données originales et les limites de conversion. Les documents 0.1.0 déjà
+présents gardent leur édition. Les données conservées comprennent les nœuds, les todos,
 les contrats d’artefacts et les branches prédictives. Les dépendances héritées
-sont affichées comme telles : elles ne prouvent pas un transfert de données.
+restent dans l’enveloppe de migration ; elles ne prouvent pas un transfert de données.
 Aucun graphe séquentiel n’est inventé pour remplacer des dépendances arbitraires.
 L’agent peut ensuite préciser les interfaces et construire le processus AgSDL.
 
@@ -147,8 +151,10 @@ révision. Les valeurs opaques et les jetons numériques sont conservés par le
 sérialiseur sans perte. Les diagnostics structurels ne certifient pas la capacité
 à exécuter le système.
 
-Le lecteur de référence provient du tag AgSDL `v0.1.0`. Sa provenance, sa licence
-et ses adaptations sont décrites dans
+Les nouveaux documents utilisent AgSDL `v0.2.0`. Le lecteur `v0.1.0` reste
+disponible pour les sources historiques. Le [contrat 0.2.0](agsdl-020.md) décrit
+les nouvelles déclarations et les limites de cette adaptation. La provenance,
+la licence et les adaptations des lecteurs sont décrites dans
 [`src/vendor/agsdl/NOTICE.md`](../src/vendor/agsdl/NOTICE.md).
 
 ```sh
@@ -163,8 +169,9 @@ statut n’est déduit du titre du bloc ou du statut enregistré dans la migrati
 
 Pour les cartes legacy, le lien utilise l’identifiant original du nœud. Pour
 un document natif, `macroTaskId` doit référencer l’identifiant exact de la tâche
-dans les annotations de la déclaration, ou dans
-`ControlFlow.annotations.macroSteps[stepId]` pour une étape. Le lien est limité
+dans `agsdl.display.cards[path]` pour les documents 0.2.0.
+Pour un document historique 0.1.0, le lien reste dans les annotations de la
+déclaration ou dans `ControlFlow.annotations.macroSteps[stepId]` pour une étape. Le lien est limité
 au même plan et à la même branche ; les tâches archivées et les liens ambigus
 sont ignorés. Sans lien, le bloc conserve son icône habituelle. Un groupe replié
 ne s’affiche terminé que si tous ses membres sont liés et terminés.
