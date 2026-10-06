@@ -7,6 +7,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::PublicExecutionDiagnostic>("execution")?;
     registry.add::<ipc_contracts::execution::RunListRequest>("execution")?;
     registry.add::<ipc_contracts::execution::RunPage>("execution")?;
+    registry.add::<ipc_contracts::execution::HostCompileJob>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelChoice>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelCatalogue>("execution")?;
     registry.add::<ipc_contracts::execution::PublicStartReceipt>("execution")?;

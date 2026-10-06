@@ -12,6 +12,7 @@ const LABEL: &str = "agsdl-runtime-host";
 const ENTRY: &str = "agsdl-runtime-host.html";
 struct Incarnation {
     generation: String,
+    compiler: crate::agsdl_host_compiler::CompileBroker,
     live: AtomicBool,
     ready: AtomicBool,
     loads: AtomicUsize,
@@ -27,6 +28,39 @@ struct OwnedHost {
 pub(crate) struct HostState(Mutex<Option<OwnedHost>>);
 
 impl HostState {
+    pub(crate) async fn compile(
+        &self,
+        source: repository::dto::EngineSourceRevision,
+        authored_source: String,
+        registry_json: String,
+    ) -> Result<crate::agsdl_host_compiler::CompileReceipt> {
+        let host = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Host not installed"))?;
+        if !host.live.load(Ordering::SeqCst) || !host.ready.load(Ordering::SeqCst) {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "",
+                "Compiler host is not ready",
+            ));
+        }
+        let receipt = host
+            .compiler
+            .compile(&host.generation, source, authored_source, registry_json)
+            .await?;
+        if !host.live.load(Ordering::SeqCst) || receipt.generation != host.generation {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "",
+                "Compiler host was revoked",
+            ));
+        }
+        Ok(receipt)
+    }
     /// Called only by native capture after the durable start receipt. There is no
     /// IPC that lets a caller claim an arbitrary system or choose its epoch.
     pub(crate) fn attach_owner(&self, caller: &Webview, owner: EngineOwner) -> Result<()> {
@@ -88,6 +122,7 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool) {
         return;
     }
     host.ready.store(false, Ordering::SeqCst);
+    host.compiler.close();
     // The same lock fences attach_owner. Any completed attachment is included;
     // attachments reaching the lock later observe live=false and cannot succeed.
     let owners = host
@@ -118,6 +153,7 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool) {
 pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
     let incarnation = Arc::new(Incarnation {
         generation: uuid::Uuid::new_v4().to_string(),
+        compiler: Default::default(),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(false),
         loads: AtomicUsize::new(0),
@@ -200,6 +236,7 @@ mod tests {
     fn physical_resource_cannot_be_replaced_by_a_matching_generation_string() {
         let first = Arc::new(Incarnation {
             generation: "same".into(),
+            compiler: Default::default(),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
@@ -207,6 +244,7 @@ mod tests {
         });
         let forged = Arc::new(Incarnation {
             generation: "same".into(),
+            compiler: Default::default(),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
@@ -223,4 +261,37 @@ mod tests {
             .get::<HostResource>(id)
             .is_err());
     }
+}
+
+#[tauri::command]
+pub(crate) async fn execution_host_next_compile(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<crate::agsdl_host_compiler::HostCompileJob> {
+    let host = state.authenticate(&webview)?;
+    let job = host.compiler.next().await?;
+    state.authenticate(&webview)?;
+    Ok(job)
+}
+#[tauri::command]
+pub(crate) fn execution_host_complete_compile(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    ticket: String,
+    result_json: String,
+) -> Result<()> {
+    let host = state.authenticate(&webview)?;
+    host.compiler
+        .complete(&host.generation, &ticket, result_json)
+}
+
+#[tauri::command]
+pub(crate) fn execution_host_failed(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+) -> Result<()> {
+    let host = state.authenticate(&webview)?;
+    retire(&host, database.inner());
+    Ok(())
 }

@@ -193,6 +193,27 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
         "Validation belongs to another durable input",
     )?;
     validate_outcome(&request.outcome)?;
+    if let EngineOutcome::Failed { code, error_json } = &request.outcome {
+        // Vocabulary comes from the pinned official schema, not backend diagnostic codes.
+        let schema: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/vendor/agsdl/v0.2/schema.json"
+        )))?;
+        let portable: Value = serde_json::from_str(error_json)?;
+        require(
+            schema
+                .pointer("/$defs/Error/properties/code/enum")
+                .and_then(Value::as_array)
+                .is_some_and(|codes| codes.iter().any(|value| value.as_str() == Some(code)))
+                && portable
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str)
+                    == Some(code),
+            "Terminal failure contradicts the portable AgSDL error vocabulary",
+        )?;
+    }
+
     let raw: String = sqlx::query_scalar(
         "SELECT receipt_json FROM engine_response_closures WHERE system_id=? AND activation_id=?",
     )

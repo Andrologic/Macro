@@ -653,5 +653,5 @@ export type {
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
 
-export { listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
+export { executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
 export { httpReleaseWebviewResource } from "./ipc/httpResources";

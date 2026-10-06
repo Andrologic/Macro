@@ -98,6 +98,7 @@ pub mod config;
 pub mod core;
 mod agsdl_host;
 mod agsdl_host_catalogue;
+mod agsdl_host_compiler;
 mod db;
 mod dev_overrides;
 mod diagnostics;
@@ -794,6 +795,9 @@ pub fn run() {
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
             agsdl_host::execution_host_ready,
+            agsdl_host::execution_host_failed,
+            agsdl_host::execution_host_next_compile,
+            agsdl_host::execution_host_complete_compile,
             commands::agsdl_execution::execution_model_choices,
             commands::agsdl_execution::execution_list_runs,
             commands::agsdl_execution::execution_find_start,

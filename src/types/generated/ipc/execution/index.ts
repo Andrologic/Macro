@@ -19,6 +19,7 @@ export type { EngineStopState } from '../EngineStopState';
 export type { EngineValue } from '../EngineValue';
 export type { EngineVersions } from '../EngineVersions';
 export type { EngineWork } from '../EngineWork';
+export type { HostCompileJob } from '../HostCompileJob';
 export type { NativeModelCatalogue } from '../NativeModelCatalogue';
 export type { NativeModelChoice } from '../NativeModelChoice';
 export type { NativeModelEdition } from '../NativeModelEdition';

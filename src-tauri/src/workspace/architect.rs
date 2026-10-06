@@ -662,6 +662,23 @@ async fn resolve_project_scopes(
     scoped_project_ids_hint: &[String],
 ) -> Result<Vec<ArchitectRuntimeScope>> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
+    resolve_project_scopes_observed(
+        workspace_path,
+        metadata_root,
+        scoped_project_ids_hint,
+        &state,
+        true,
+    )
+    .await
+}
+
+async fn resolve_project_scopes_observed(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    scoped_project_ids_hint: &[String],
+    state: &super::WorkspaceState,
+    allow_repair: bool,
+) -> Result<Vec<ArchitectRuntimeScope>> {
     let mut scopes = Vec::new();
     let mut seen_scope_keys = HashSet::new();
     let normalized_scope_hint = normalize_project_id_hint(scoped_project_ids_hint);
@@ -714,7 +731,13 @@ async fn resolve_project_scopes(
                     source: "project".to_string(),
                 };
                 if git_setup_state != "ready" {
-                    return Ok::<_, BackendError>(vec![direct_scope]);
+                    return Ok::<_, BackendError>(
+                        if allow_repair || direct_metadata_root.is_dir() {
+                            vec![direct_scope]
+                        } else {
+                            Vec::new()
+                        },
+                    );
                 }
                 let mut project_scopes = Vec::new();
                 if direct_metadata_root.exists() {
@@ -725,7 +748,18 @@ async fn resolve_project_scopes(
                 let metadata_root_result = tokio::task::spawn_blocking({
                     let git_state = git_state.clone();
                     let repo_path = resolved_repo_path.clone();
-                    move || git_state.resolve_macro_metadata_root(&repo_path)
+                    move || {
+                        if allow_repair {
+                            git_state.resolve_macro_metadata_root(&repo_path)
+                        } else {
+                            crate::git::find_existing_macro_metadata_worktree_root(&repo_path)
+                                .ok_or_else(|| {
+                                    BackendError::Validation(
+                                        "Execution metadata worktree is unavailable".into(),
+                                    )
+                                })
+                        }
+                    }
                 })
                 .await
                 .map_err(|error| BackendError::Internal {
@@ -2699,6 +2733,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execution_source_capture_does_not_recover_a_corrupt_registry() {
+        let temp = TempDir::new().unwrap();
+        let metadata = temp.path().join(".macro");
+        std_fs::create_dir_all(&metadata).unwrap();
+        std_fs::write(metadata.join("workspace.json"), b"{corrupt").unwrap();
+        let backup = serde_json::to_vec(&WorkspaceState::default()).unwrap();
+        std_fs::write(metadata.join("workspace.json.bak"), &backup).unwrap();
+        assert!(read_execution_registry(&metadata).await.is_err());
+        assert_eq!(
+            std_fs::read(metadata.join("workspace.json")).unwrap(),
+            b"{corrupt"
+        );
+        assert_eq!(
+            std_fs::read(metadata.join("workspace.json.bak")).unwrap(),
+            backup
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_source_capture_does_not_create_a_missing_metadata_worktree() {
+        let temp = TempDir::new().unwrap();
+        let repo_path = temp.path().join("project");
+        let repo = init_repo(&repo_path);
+        let mut state = WorkspaceState::default();
+        let mut registered = project("project", &repo_path.to_string_lossy());
+        registered.git_setup_state = "ready".into();
+        state.standalone_projects.push(registered);
+        let before = repo.worktrees().unwrap().len();
+        assert!(crate::git::find_existing_macro_metadata_worktree_root(&repo_path).is_none());
+        assert!(resolve_project_scopes_observed(
+            temp.path(),
+            &temp.path().join(".macro"),
+            &["project".into()],
+            &state,
+            false
+        )
+        .await
+        .is_err());
+        assert_eq!(repo.worktrees().unwrap().len(), before);
+        assert!(crate::git::find_existing_macro_metadata_worktree_root(&repo_path).is_none());
+        assert!(!repo_path.join(".macro").exists());
+    }
+
+    #[tokio::test]
     async fn execution_source_capture_checks_registered_roots_and_multi_project_membership() {
         use crate::db::agsdl_execution::dto::{EngineSourceOwner, EngineSourceRevision};
         use sha2::{Digest, Sha256};
@@ -2878,6 +2956,28 @@ pub(crate) async fn lock_execution_source(
     .await
 }
 
+async fn read_execution_registry(
+    metadata_root: &Path,
+) -> crate::db::agsdl_execution::Result<super::WorkspaceState> {
+    use crate::db::agsdl_execution::failure;
+    let bytes = tokio::fs::read(super::workspace_state_path(metadata_root))
+        .await
+        .map_err(|_| {
+            failure(
+                "SOURCE_UNAVAILABLE",
+                "source.owner",
+                "Canonical project registry is unavailable",
+            )
+        })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        failure(
+            "SOURCE_UNAVAILABLE",
+            "source.owner",
+            "Canonical project registry is invalid",
+        )
+    })
+}
+
 pub(crate) async fn lock_execution_source_owner(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -2928,22 +3028,7 @@ pub(crate) async fn lock_execution_source_owner(
     }
     // Project identity comes from the native workspace registry, not the
     // caller's hint that resolve_project_scopes may attach to workspace roots.
-    let state = super::load_raw_state(metadata_root)
-        .await
-        .map_err(|_| {
-            failure(
-                "SOURCE_UNAVAILABLE",
-                "source.owner",
-                "Cannot read project registry",
-            )
-        })?
-        .ok_or_else(|| {
-            failure(
-                "SOURCE_UNAVAILABLE",
-                "source.owner",
-                "Project registry is absent",
-            )
-        })?;
+    let state = read_execution_registry(metadata_root).await?;
     let requested_projects = HashSet::from([owner.project_id.clone()]);
     let initial_projects = collect_workspace_state_project_paths(&state, Some(&requested_projects));
     if initial_projects.is_empty() {
@@ -2953,10 +3038,12 @@ pub(crate) async fn lock_execution_source_owner(
             "Project is absent from native metadata",
         ));
     }
-    let scopes = resolve_project_scopes(
+    let scopes = resolve_project_scopes_observed(
         workspace_path,
         metadata_root,
         std::slice::from_ref(&owner.project_id),
+        &state,
+        false,
     )
     .await
     .map_err(|_| {
@@ -3045,22 +3132,7 @@ pub(crate) async fn lock_execution_source_owner(
                     "Cannot lock project registry",
                 )
             })?;
-    let current = super::load_raw_state(metadata_root)
-        .await
-        .map_err(|_| {
-            failure(
-                "SOURCE_UNAVAILABLE",
-                "source.owner",
-                "Cannot recheck project registry",
-            )
-        })?
-        .ok_or_else(|| {
-            failure(
-                "CORRELATION",
-                "source.owner",
-                "Project registry disappeared",
-            )
-        })?;
+    let current = read_execution_registry(metadata_root).await?;
     if collect_workspace_state_project_paths(&current, Some(&requested_projects))
         != initial_projects
     {

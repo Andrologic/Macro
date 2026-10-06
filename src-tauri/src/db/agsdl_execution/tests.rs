@@ -1493,6 +1493,14 @@ async fn targeted_stop_between_prepare_and_commit_removes_the_retained_successor
         .await
         .unwrap();
     assert!(terminal.outgoing.is_empty());
+    let projection = read_projection(&pool, &runtime.system_start_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        projection.activations[0].stop_state,
+        EngineStopState::Confirmed { .. }
+    ));
+
     assert!(prepared::commit(&pool, "generation", &runtime, &id)
         .await
         .unwrap()
@@ -1571,4 +1579,23 @@ async fn condition_route_uses_frozen_declaration_and_retains_exact_input_origin(
         },
     };
     assert!(prepared::target(&snapshot, &request).is_err());
+}
+
+#[tokio::test]
+async fn prepared_failure_rejects_backend_diagnostics_and_mismatched_portable_codes() {
+    let (_temp, pool, _runtime, mut request) = prepared_fixture().await;
+    request.outcome = EngineOutcome::Failed {
+        code: "STOP_PENDING".into(),
+        error_json: r#"{"error":{"code":"STOP_PENDING","message":"","details":[]}}"#.into(),
+    };
+    assert!(prepared::prepare(&pool, "generation", request.clone())
+        .await
+        .is_err());
+    request.outcome = EngineOutcome::Failed {
+        code: "OUTPUT_CONSTRAINT".into(),
+        error_json: r#"{"error":{"code":"CALL_RESULT","message":"","details":[]}}"#.into(),
+    };
+    assert!(prepared::prepare(&pool, "generation", request)
+        .await
+        .is_err());
 }

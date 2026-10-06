@@ -150,6 +150,7 @@ export type { GoalEvidence } from './GoalEvidence';
 export type { GoalStatus } from './GoalStatus';
 export type { GoalVerdict } from './GoalVerdict';
 export type { GoalVerdictKind } from './GoalVerdictKind';
+export type { HostCompileJob } from './HostCompileJob';
 export type { ImportGitRepoRequest } from './ImportGitRepoRequest';
 export type { ImportMessageInput } from './ImportMessageInput';
 export type { InsertConversationCompactionEventInput } from './InsertConversationCompactionEventInput';

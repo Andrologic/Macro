@@ -1,7 +1,7 @@
 import { invoke } from '../tauriRuntimeBridge';
 import type {
   PublicSnapshot as PublicSnapshotWire, PublicStartReceipt as PublicStartReceiptWire, PublicProjection as PublicProjectionWire, PublicEventPage as PublicEventPageWire, PublicStopState as PublicStopStateWire,
-  RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
+  HostCompileJob, RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
 } from '../../types/generated/ipc';
 import type {
   SourceOwner, SystemStartId, Sequence, StartRequest, StopRequest, PublicStartReceipt, PublicSnapshot,
@@ -54,4 +54,16 @@ export function readExecutionDiagnostic(request: DiagnosticRequest): Promise<Pub
 }
 export function executionModelChoices(): Promise<NativeModelCatalogue> {
   return invoke<NativeModelCatalogue>('execution_model_choices');
+}
+
+/** Private mailbox. Native caller resources and generation authenticate each operation. */
+export function executionHostNextCompile(): Promise<HostCompileJob> {
+  return invoke<HostCompileJob>('execution_host_next_compile');
+}
+export function executionHostCompleteCompile(ticket: string, resultJson: string): Promise<void> {
+  return invoke<void>('execution_host_complete_compile', { ticket, resultJson });
+}
+
+export function executionHostFailed(): Promise<void> {
+  return invoke<void>('execution_host_failed');
 }

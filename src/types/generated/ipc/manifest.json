@@ -1221,6 +1221,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "HostCompileJob",
+      "origin": "macro_lib::agsdl_host_compiler::HostCompileJob",
+      "path": "HostCompileJob.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",

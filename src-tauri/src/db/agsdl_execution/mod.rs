@@ -1144,6 +1144,18 @@ async fn commit_terminal_on(
             evidence_json: evidence_json.clone(),
         };
     }
+    if !matches!(commit.outcome, EngineOutcome::Stopped { .. }) {
+        if let EngineStopState::Requested { request_id }
+        | EngineStopState::Uncertain { request_id, .. } = &a.stop_state
+        {
+            // Natural completion may win the outcome while a concurrent Stop still
+            // suppresses continuation. The same closed-effect proof settles the request.
+            a.stop_state = EngineStopState::Confirmed {
+                request_id: request_id.clone(),
+                evidence_json: commit.termination_evidence_json.clone(),
+            };
+        }
+    }
     for delivery in &commit.outgoing {
         require(
             delivery.work.flow_invocation_id == commit.work.flow_invocation_id,
