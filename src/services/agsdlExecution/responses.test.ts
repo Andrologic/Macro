@@ -2,14 +2,14 @@ import { describe, expect, it } from 'bun:test';
 import { ExactResponseCollection } from './responses';
 import { contextFixture, id, json } from './conformanceFixtures';
 import { encode } from './exact';
-import type { ProviderAttemptId, TypedPublication, VisibleResponseMessage } from './contracts';
+import type { ExecutionContext, ProviderAttemptId, Sequence, TypedPublication, VisibleResponseMessage } from './contracts';
 
 const context = contextFixture();
 const interfaceJson = json('{"outputMediaTypes":["text/plain","application/json"],"results":{"report":{"required":true,"mediaTypes":["application/json"],"valueSchema":{"type":"integer","enum":[9007199254740993]}}}}');
 const stepJson = json('{"type":"agent","agent":"worker","decision":{"binding":"publication","choices":["done","retry"]},"next":{"done":[],"retry":[]}}');
 const contractJson = encode({ protocol: 'macro-agsdl-publication/1', registryVersion: context.registryVersion, agent: 'worker', step: ['work'], interface: { outputMediaTypes: ['text/plain', 'application/json'], results: { report: { required: true, mediaTypes: ['application/json'], valueSchema: { type: 'integer', enum: [] } } } }, choices: ['done', 'retry'], decisionBinding: {} }).replace('"enum":[]', '"enum":[9007199254740993]') as typeof interfaceJson;
-function collector(publication = true, providerAttempts: readonly ProviderAttemptId[] = [id('attempt')]) {
-  return new ExactResponseCollection({ context, providerAttempts, interfaceJson: publication ? interfaceJson : json('{}'), stepJson: publication ? stepJson : json('{"type":"agent","agent":"worker"}'), publicationContractJson: publication ? contractJson : null });
+function collector(publication = true, providerAttempts: readonly ProviderAttemptId[] = [id('attempt')], capturedContext: ExecutionContext = context) {
+  return new ExactResponseCollection({ context: capturedContext, providerAttempts, interfaceJson: publication ? interfaceJson : json('{}'), stepJson: publication ? stepJson : json('{"type":"agent","agent":"worker"}'), publicationContractJson: publication ? contractJson : null });
 }
 const message = (sequence = '1', messageId = 'm1', textParts = ['visible']): VisibleResponseMessage => ({ context, providerAttemptId: id('attempt'), sequence: id(sequence), messageId: id(messageId), textParts });
 const publication = (sequence = '2', changes: Partial<TypedPublication> = {}): TypedPublication => ({ context, providerAttemptId: id('attempt'), publicationId: 'publication-1', sequence: id(sequence), contractJson, resultsJson: json('{"report":{"value":9007199254740993.0,"mediaType":"application/json"}}'), choice: 'done', ...changes });
@@ -80,6 +80,65 @@ describe('attributed ordered response collection', () => {
     for (const cursor of ['0', '1', '2', '02']) await expect(collection.close(context, id(cursor))).rejects.toThrow();
     for (const sequence of ['0', '01', '-1', '1e0']) await expect(collector(false).append(message(sequence))).rejects.toThrow();
     await expect(collector(false).append(message('01'))).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/sequence' });
+  });
+  it('rejects non-string Message sequences before signing and leaves the position unused', async () => {
+    const omitted = { ...message() };
+    delete (omitted as { sequence?: Sequence }).sequence;
+    const malformed = [omitted, ...[0, 1, 1n, undefined, Object('1'), '0'].map(sequence => ({ ...message(), sequence }))];
+    for (const event of malformed) {
+      const collection = collector(false);
+      await expect(collection.append(event as VisibleResponseMessage)).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/sequence' });
+      expect(await collection.append(message())).toBe('accepted');
+      expect((await collection.close(context, id('1'))).text).toBe('visible');
+    }
+  });
+  it('rejects non-string publication sequences before signing and leaves the position unused', async () => {
+    const omitted = { ...publication('1') };
+    delete (omitted as { sequence?: Sequence }).sequence;
+    const malformed = [omitted, ...[0, 1, 1n, undefined, Object('1'), '0'].map(sequence => ({ ...publication('1'), sequence }))];
+    for (const event of malformed) {
+      const collection = collector();
+      await expect(collection.publish(event as TypedPublication)).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/sequence' });
+      expect(await collection.publish(publication('1'))).toBe('accepted');
+      expect((await collection.close(context, id('1'))).choice).toBe('done');
+    }
+  });
+  it('rejects non-string cursors without closing or consuming later valid emissions', async () => {
+    for (const cursor of [0, 0n, undefined, Object('0')]) {
+      const collection = collector(false);
+      await expect(collection.close(context, cursor as Sequence)).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/cursor' });
+      expect(await collection.append(message())).toBe('accepted');
+      expect((await collection.close(context, id('1'))).cursor).toBe(id('1'));
+    }
+    const closed = collector(false);
+    await closed.close(context, id('0'));
+    await expect(closed.close(context, 0 as unknown as Sequence)).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/cursor' });
+  });
+  it('requires primitive canonical epochs at capture and on every attribution envelope', async () => {
+    const omitted = { ...context, owner: { ...context.owner } };
+    delete (omitted.owner as { ownerEpoch?: unknown }).ownerEpoch;
+    const malformed = [omitted, ...[3, 3n, undefined, Object('3'), '', '03', '-1'].map(ownerEpoch => ({ ...context, owner: { ...context.owner, ownerEpoch } }))];
+    for (const supplied of malformed) {
+      const invalidContext = supplied as ExecutionContext;
+      await expect(Promise.resolve().then(() => collector(false, [id('attempt')], invalidContext))).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/ownerEpoch' });
+      const collection = collector();
+      await expect(collection.append({ ...message(), context: invalidContext })).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/ownerEpoch' });
+      await expect(collection.publish({ ...publication('1'), context: invalidContext })).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/ownerEpoch' });
+      await expect(collection.close(invalidContext, id('0'))).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/ownerEpoch' });
+      expect(await collection.publish(publication('1'))).toBe('accepted');
+      expect((await collection.close(context, id('1'))).choice).toBe('done');
+    }
+  });
+  it('retains enormous canonical identifiers exactly while still rejecting actual sequence holes', async () => {
+    const enormous = '90071992547409931234567890123456789012345678901234567890';
+    const capturedContext = { ...context, owner: { ...context.owner, ownerEpoch: id<'ownerEpoch'>(enormous) } };
+    const collection = collector(false, [id('attempt')], capturedContext);
+    await collection.append({ ...message(), context: capturedContext });
+    expect((await collection.close(capturedContext, id('1'))).text).toBe('visible');
+    const hole = collector(false);
+    expect(await hole.append(message(enormous))).toBe('accepted');
+    expect(await hole.append(message(enormous))).toBe('duplicate');
+    await expect(hole.close(context, id(enormous))).rejects.toThrow('Emission cursor contains a hole');
   });
   it('closes once, retains its result and rejects all late emissions', async () => {
     const collection = collector(false);

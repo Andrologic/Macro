@@ -168,6 +168,10 @@ L'adaptateur reçoit ce contrat lors de la configuration de son canal de
 publication typé. Une publication transporte `TypedPublication` avec ce contrat
 exact, son attribution au work et à une tentative fournisseur enregistrée,
 son identité stable, sa séquence d'émission, `resultsJson` et un choix ou `null`.
+Le canal doit conserver `resultsJson` comme chaîne exacte, ou lire les arguments
+provider bruts avec le scanner exact avant la publication. Un callback qui a déjà
+converti les arguments en nombres JavaScript peut avoir perdu la précision ;
+`toDispatchValue` ne détecte pas une perte survenue avant son entrée.
 Aucune phrase de sortie ne devient une publication. Un résultat doit être nommé
 par l'Interface, respecter son format et son `valueSchema`. Le choix doit être
 déclaré. Plusieurs publications peuvent compléter des résultats distincts,
@@ -179,9 +183,12 @@ identifiant inconnu donnent `CORRELATION` avant toute insertion. Une collection
 sans tentative peut fermer sans émission ; elle ne peut accepter aucun événement.
 La clôture vérifie son contexte sans prendre l'identité d'une émission fournisseur.
 
-Les séquences sont canoniques, positives et communes aux Messages et publications.
-Elles commencent à `1`. Les événements peuvent arriver dans le désordre, mais la
-fermeture exige la continuité jusqu'au curseur inclus. `0` ferme une collection
+Séquences, curseurs et epochs exigent une chaîne primitive décimale canonique.
+Les `number`, `bigint`, objets `String` et valeurs omises ou `undefined` sont refusés
+avant signature ou insertion, sans consommer la séquence. Les pointeurs d'erreur
+sont `/sequence`, `/cursor` et `/ownerEpoch`. Les séquences sont positives et
+communes aux Messages et publications. Elles commencent à `1`. Les événements
+peuvent arriver dans le désordre, mais la fermeture exige la continuité jusqu'au curseur inclus. `0` ferme une collection
 vide. Les retransmissions identiques avant fermeture sont idempotentes. Les
 conflits, trous, mauvaises attributions et émissions après fermeture échouent
 avec `CORRELATION`. Une fermeture répétée au même curseur conserve le résultat.

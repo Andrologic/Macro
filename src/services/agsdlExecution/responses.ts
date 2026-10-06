@@ -24,13 +24,14 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   private readonly publications = new Map<string, TypedPublication>();
   private closed: { text: string; resultsJson: ExactJsonText; choice: string | null; cursor: Sequence } | null = null;
   private bytes = 0;
-  private sequence(value: Sequence, pointer = '/sequence'): void {
+  private sequence(value: Sequence, pointer = '/sequence', positive = false): void {
     try { compareSequence(value, value); }
     catch { fail('CORRELATION', pointer, 'Invalid canonical emission sequence.'); }
+    if (positive && value === '0') fail('CORRELATION', pointer, 'Emission sequence must be positive.');
   }
   constructor(options: ResponseCollectionOptions) {
-    this.options = clone(options);
     this.sequence(options.context.owner.ownerEpoch as unknown as Sequence, '/ownerEpoch');
+    this.options = clone(options);
     if (!options.context.registryVersion || !options.context.work.agentInstanceId || [options.context.work.systemStartId, options.context.work.flowInvocationId, options.context.work.activationId, options.context.work.agentInstanceId].some(value => typeof value !== 'string' || value === '') || options.providerAttempts.some(attempt => typeof attempt !== 'string' || attempt === '')) fail('CORRELATION', '', 'Collection identities must be explicit and nonempty.');
     if (options.context.work.step !== null && !shape(options.context.work.step, schema.$defs.StepAddress)) fail('CORRELATION', '/step', 'Invalid work address.');
     if (new Set(options.providerAttempts).size !== options.providerAttempts.length) fail('CORRELATION', '', 'Repeated registered provider attempt.');
@@ -51,6 +52,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   private correlateContext(context: ExecutionContext): void {
     const expected = this.options.context;
     if (!context || !context.owner || !context.work || context.work.step !== null && !Array.isArray(context.work.step)) fail('CORRELATION', '', 'Invalid response attribution envelope.');
+    this.sequence(context.owner.ownerEpoch as unknown as Sequence, '/ownerEpoch');
     if (!sameWork(context.work, expected.work) || context.owner.systemStartId !== context.work.systemStartId || context.owner.systemStartId !== expected.owner.systemStartId || context.owner.ownerEpoch !== expected.owner.ownerEpoch || context.registryVersion !== expected.registryVersion || !equal(decode(context.permissionsJson), decode(expected.permissionsJson)) || !equal(decode(context.scopeJson), decode(expected.scopeJson))) fail('CORRELATION', '', 'Response is not attributed to the current work.');
   }
   private correlateEvent(event: Pick<VisibleResponseMessage, 'context' | 'providerAttemptId'>): void {
@@ -60,8 +62,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   }
   private inspect(sequence: Sequence, identity: string, signature: ExactJsonText, kind: 'message' | 'publication'): 'accepted' | 'duplicate' {
     if (this.closed) fail('CORRELATION', '', 'Response collection is closed.');
-    this.sequence(sequence);
-    if (typeof identity !== 'string' || !identity || compareSequence(sequence, '0' as Sequence) <= 0) fail('CORRELATION', '', 'Emission identity and positive canonical sequence are required.');
+    if (typeof identity !== 'string' || !identity) fail('CORRELATION', '', 'Emission identity is required.');
     const retained = this.events.get(sequence);
     if (retained) {
       if (retained.identity === identity && retained.kind === kind && equal(decode(retained.signature), decode(signature))) return 'duplicate';
@@ -72,6 +73,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   }
   async append(message: VisibleResponseMessage): Promise<'accepted' | 'duplicate'> {
     this.correlateEvent(message);
+    this.sequence(message.sequence, '/sequence', true);
     if (!Array.isArray(message.textParts) || message.textParts.some(part => typeof part !== 'string')) fail('CORRELATION', '', 'Visible parts must be attributed text.');
     const signature = encode(message as unknown as ExactObject);
     const status = this.inspect(message.sequence, message.messageId, signature, 'message');
@@ -86,6 +88,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   }
   async publish(publication: TypedPublication): Promise<'accepted' | 'duplicate'> {
     this.correlateEvent(publication);
+    this.sequence(publication.sequence, '/sequence', true);
     if (this.options.publicationContractJson === null || !equal(decode(publication.contractJson), decode(this.options.publicationContractJson))) fail('CORRELATION', '', 'Publication requires the explicit captured registry protocol.');
     const signature = encode(publication as unknown as ExactObject);
     const status = this.inspect(publication.sequence, publication.publicationId, signature, 'publication');
