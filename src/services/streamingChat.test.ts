@@ -74,6 +74,7 @@ import type {
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
+const actualTauriHttp = await import('./tauriHttp');
 const actualWebSearch = await import('./webSearch');
 
 const loadStreamingChat = async (
@@ -112,6 +113,10 @@ const loadStreamingChat = async (
       mock(async () => {
         throw new Error('HTTP fetch should not be called in streamingChat unit tests.');
       }),
+  }));
+  mock.module('./tauriHttp', () => ({
+    ...actualTauriHttp,
+    tauriFetch: fetchImpl ?? mock(async () => { throw new Error('HTTP fetch should not be called in streamingChat unit tests.'); }),
   }));
   mock.module('../stores/useProviderStore', () => ({
     isLinkedProviderType: (providerType?: string | null) =>
@@ -665,7 +670,7 @@ describe('streamingChat SSE stream handling', () => {
     );
   });
 
-  it('rejects an idle stream before cancelling its reader', async () => {
+  it('reports an idle stream after cancelling its reader', async () => {
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       cancel() {
@@ -5106,4 +5111,43 @@ it('fetch cleanup joins its own receipt with the failed transport receipt', asyn
   confirmCleanup();
   await failure.whenStopped;
   expect(failure.stopped).toBe(true);
+});
+
+for (const phase of ['done', 'abort'] as const) {
+  it(`preserves the first typed reader cancellation after HTTP ${phase}`, async () => {
+    const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+    let confirm!: () => void;
+    const owner = new StreamStopUnconfirmedError('Reader cleanup pending', new Promise<void>(resolve => { confirm = resolve; }));
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n' + (phase === 'done' ? 'data: [DONE]\n\n' : ''))); },
+      cancel() { cancellations++; throw owner; },
+    });
+    const { streamChat } = await loadStreamingChat(mock(async () => new Response(body)));
+    const controller = new AbortController();
+    await expect(streamChat({ sessionId: `reader-${phase}`, providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: controller.signal,
+      onToken() {}, onComplete() {}, onError() {},
+      onGenerationAttemptProgress: (attempt: import('./ai/contracts').GenerationAttempt) => { if (phase === 'abort' && attempt.rawText) controller.abort(); },
+    })).rejects.toBe(owner);
+    expect(cancellations).toBe(1);
+    expect(owner.stopped).toBe(false);
+    confirm();
+    await owner.whenStopped;
+  });
+}
+
+it('joins pending reader cancellation before reporting its idle timeout', async () => {
+  let confirm!: () => void;
+  let cancelling!: () => void;
+  const cancelled = new Promise<void>(resolve => { confirm = resolve; });
+  const started = new Promise<void>(resolve => { cancelling = resolve; });
+  const stream = new ReadableStream<Uint8Array>({ cancel() { cancelling(); return cancelled; } });
+  const pending = readStreamChunkWithIdleTimeout(stream.getReader(), 1);
+  let ended = false;
+  void pending.then(() => { ended = true; }, () => { ended = true; });
+  await started;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(ended).toBe(false);
+  confirm();
+  await expect(pending).rejects.toMatchObject({ kind: 'stream_idle_timeout' });
 });

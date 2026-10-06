@@ -5,7 +5,7 @@ import type { ToolCallingAdapter } from './toolCallingLoop';
 import { ProviderRuntimeError, classifyReasoningRejection, extractProviderErrorMessage, extractSseProviderError } from './providerErrors';
 import { resolveChatCompletionProviderProfile, buildChatCompletionMessages, validateChatCompletionMessageSequence, applyToolsToChatCompletionsRequest, chatCompletionMessagesHaveToolHistory, hasReplayableReasoningContent, appendReasoningDetails, buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem } from './chatCompletionsCodec';
 import { applyReasoningToChatCompletionsRequest, shouldRequestProviderReasoning } from '../providerProtocolProfiles';
-import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_STREAM_IDLE_TIMEOUT_MS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, fetchWithTimeout, readStreamChunkWithIdleTimeout } from './httpTransport';
+import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_STREAM_IDLE_TIMEOUT_MS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, fetchWithTimeout, readStreamChunkWithIdleTimeout, cancelStreamReader } from './httpTransport';
 import { createSseEventParser, extractSseData } from './sse';
 import { getValidToolCalls, hasCompleteToolCallBatch } from './toolCallProtocol';
 import { logStreamingDiagnostic, classifyProviderDiagnosticCategory, emitStreamTimeline } from './streamDiagnostics';
@@ -374,11 +374,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
         while (true) {
           // Check if the stream was cancelled
           if (options.signal?.aborted) {
-            try {
-              await reader.cancel();
-            } catch (e) {
-              // Ignore cancel errors
-            }
+            await cancelStreamReader(reader);
             throw new DOMException('Aborted', 'AbortError');
           }
 
@@ -414,16 +410,14 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             }
           }
           if (receivedDone) {
-            await reader.cancel().catch(() => {
-              // Ignore cancellation errors after a terminal SSE marker.
-            });
+            await cancelStreamReader(reader);
             break;
           }
         }
         consecutiveStreamRetryCount = 0;
       } catch (error) {
         try {
-          await reader.cancel();
+          await cancelStreamReader(reader, error);
         } catch (secondary) {
           if (error instanceof StreamStopUnconfirmedError || secondary instanceof StreamStopUnconfirmedError) {
             throw combineStreamErrors(error, secondary);
@@ -511,7 +505,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
       return err;
     },
     dispose: () => withStreamCleanup(async () => {
-      await activeResources.reader?.cancel();
+      if (activeResources.reader) await cancelStreamReader(activeResources.reader);
     }, () => {
       sourceOptions.signal?.removeEventListener('abort', abort);
       activeResources.reader = null;

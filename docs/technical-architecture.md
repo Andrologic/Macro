@@ -1799,6 +1799,15 @@ préservent les erreurs d’arrêt typées avant toute classification ou nouvell
 requête. Goal conserve tous les reçus observés par callback, même si le stream
 rejette ensuite une autre erreur ; ses lectures lancées restent jointes. Une
 exception d’observateur ou de logger natif ne court-circuite pas la finalisation.
+Le fetch HTTP Macro utilise le même port `RuntimeInvoke` pour Tauri natif et son
+bridge navigateur. Les commandes du plugin HTTP conservent leurs contrôles de
+scope et les options client. Le propriétaire du corps joint les IPC de lecture
+et de libération déjà lancés : fermer le reader JavaScript ou retirer la ressource
+Tauri ne prouve pas la fin d’une lecture qui possède encore sa réponse native.
+Le premier échec de cancellation reste typé sur `[DONE]`, abort et timeout ; une
+seconde cancellation JavaScript réussie ne le remplace pas. Un EOF reçu ou une
+lecture terminée et son cleanup confirmé permettent la libération. Une réponse
+IPC perdue reste incertaine, sans preuve fabriquée à partir de son rejet.
 Les lectures parallèles génériques et les ports Goal natifs attendent leurs
 opérations déjà lancées, puis révoquent les sorties tardives.
 

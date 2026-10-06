@@ -1,4 +1,4 @@
-import { StreamStopUnconfirmedError, withStreamCleanup } from "./streamCancellation";
+import { StreamStopUnconfirmedError, combineStreamErrors, preserveStreamStopError, withStreamCleanup } from "./streamCancellation";
 import {
   ProviderRuntimeError,
 } from './providerErrors';
@@ -96,46 +96,54 @@ export const fetchWithTimeout = async (
   });
 };
 
+/** JS reader closure is not proof when the underlying cancellation rejects. */
+export const cancelStreamReader = async (reader: ReadableStreamDefaultReader<Uint8Array>, readFailure?: unknown): Promise<void> => {
+  try { await reader.cancel(); }
+  catch (error) {
+    if (error instanceof StreamStopUnconfirmedError) throw error;
+    // An errored JS stream rethrows its read error without invoking cancel.
+    // Macro wraps lost IPC receipts before exposing them as a read failure.
+    if (readFailure !== undefined && error === readFailure) return;
+    throw preserveStreamStopError(new StreamStopUnconfirmedError('HTTP reader cleanup was not confirmed.'), error);
+  }
+};
+
 export const readStreamChunkWithIdleTimeout = async (
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
   signal?: AbortSignal
 ): ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']> => {
-  if (signal?.aborted) {
-    throw new DOMException('Aborted', 'AbortError');
-  }
-
   let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
   let abortHandler: (() => void) | undefined;
+  let cancellation: Promise<never> | undefined;
   return withStreamCleanup(async () => {
-    const idleTimeout = new Promise<never>((_, reject) => {
-      timeoutId = globalThis.setTimeout(() => {
-        const error = new ProviderRuntimeError('Provider stream stalled before sending more data', {
-          kind: 'stream_idle_timeout',
-          retryable: true,
-        });
-        reject(error);
-        void reader.cancel().catch(() => {
-          // Ignore cancellation errors while closing an idle stream.
-        });
-      }, timeoutMs);
-    });
-    const abort = new Promise<never>((_, reject) => {
-      abortHandler = () => {
-        void reader.cancel().catch(() => {
-          // Ignore cancellation errors while aborting a stream.
-        });
-        reject(new DOMException('Aborted', 'AbortError'));
-      };
-      signal?.addEventListener('abort', abortHandler, { once: true });
-    });
-    return await Promise.race([reader.read(), idleTimeout, abort]);
+    let interrupt!: (reason: unknown) => void;
+    const interrupted = new Promise<never>((_, reject) => { interrupt = reject; });
+    const cancel = (reason: Error) => {
+      if (cancellation) return;
+      cancellation = (async () => { await cancelStreamReader(reader); throw reason; })();
+      void cancellation.catch(interrupt);
+    };
+    timeoutId = globalThis.setTimeout(() => cancel(new ProviderRuntimeError('Provider stream stalled before sending more data', {
+      kind: 'stream_idle_timeout', retryable: true,
+    })), timeoutMs);
+    abortHandler = () => cancel(new DOMException('Aborted', 'AbortError'));
+    signal?.addEventListener('abort', abortHandler, { once: true });
+    if (signal?.aborted) abortHandler();
+    try {
+      const result = await Promise.race([reader.read(), interrupted]);
+      // cancel() may resolve the JS read before its physical cleanup finishes.
+      if (cancellation) await cancellation;
+      return result;
+    } catch (error) {
+      if (cancellation) {
+        try { await cancellation; }
+        catch (secondary) { throw combineStreamErrors(error, secondary); }
+      }
+      throw error;
+    }
   }, () => {
-    if (timeoutId !== undefined) {
-      globalThis.clearTimeout(timeoutId);
-    }
-    if (abortHandler) {
-      signal?.removeEventListener('abort', abortHandler);
-    }
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+    if (abortHandler) signal?.removeEventListener('abort', abortHandler);
   });
 };
