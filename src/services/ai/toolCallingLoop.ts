@@ -6,7 +6,7 @@ import { normalizeChatMaxTurns } from '../chatTurnLimits';
 import type { GenerationAttempt, StreamMessage, StreamingChatOptions, StreamingTurnResult, ToolCall, ToolResult, StreamCompletionReason } from './contracts';
 import { createStreamAccumulator } from './streamAccumulator';
 import { cloneStreamMessage, cloneProviderInputItems } from './jsonValues';
-import { collectAllowedTools } from './toolDefinitions';
+import { buildNativePublicationTool, collectAllowedTools, NATIVE_PUBLICATION_TOOL_ID } from './toolDefinitions';
 import { modelAllowedToolIds, MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import { runToolBatch } from './toolCallRunner';
 import { getValidToolCalls } from './toolCallProtocol';
@@ -60,6 +60,16 @@ export async function runToolCallingLoop(
     skillToolIds: options.skillToolIds,
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
+  if (options.nativeExecution?.publication) {
+    if (options.executionPolicy !== 'native-serial' || !options.onRawToolCall) {
+      throw new Error('Publication requires the native execution profile and exact argument collector.');
+    }
+    if (allowedTools.has(NATIVE_PUBLICATION_TOOL_ID)) {
+      throw new Error('Publication identity collides with a captured tool.');
+    }
+    allowedTools.add(NATIVE_PUBLICATION_TOOL_ID);
+    tools.push(buildNativePublicationTool(options.nativeExecution.publication.choices));
+  }
   const schemas = new Map<string, JsonSchema>();
   for (const name of allowedTools) {
     const entry = getMacroToolRegistryEntry(name);

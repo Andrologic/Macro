@@ -247,3 +247,27 @@ export const normalizeNativeProviderTools = (
   providerType.trim().toLowerCase() === 'copilot'
     ? withCopilotBuiltInToolOverrides(tools)
     : tools;
+
+/** Publication is consumed by the authenticated host before ordinary argument parsing. */
+export const NATIVE_PUBLICATION_TOOL_ID = 'macro_agsdl_publish';
+export function buildNativePublicationTool(choices: readonly string[]): unknown {
+  if (choices.some(choice => !choice) || new Set(choices).size !== choices.length) {
+    throw new Error('Captured publication choices are invalid.');
+  }
+  return {
+    type: 'function',
+    function: {
+      name: NATIVE_PUBLICATION_TOOL_ID,
+      description: 'Publish declared inline results and the selected decision for this activation. Visible assistant text is collected separately.',
+      parameters: {
+        type: 'object',
+        properties: {
+          results: { type: 'object', description: 'Named AgSDL inline Content Source values, as declared by the Agent interface.' },
+          ...(choices.length ? { choice: { type: 'string', enum: [...choices] } } : {}),
+        },
+        required: choices.length ? ['choice'] : [],
+        additionalProperties: false,
+      },
+    },
+  };
+}

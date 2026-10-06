@@ -128,3 +128,34 @@ describe("tool availability at the model boundary", () => {
     expect(results[0].error_kind).toBe(scenario.startsWith("invalid") ? "validation" : "permission");
   });
 });
+
+it.each(['{"results":{"large":{"value":9007199254740993}}}', '{ malformed publication'])('passes publication arguments unchanged to the native collector: %s', async raw => {
+  const seen: string[] = [];
+  const options: StreamingChatOptions = {
+    providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
+    messages: [], allowedToolIds: [], maxTurns: 1, executionPolicy: 'native-serial',
+    onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+    nativeExecution: {
+      publication: { choices: ['done'] },
+      beforeRequest: async () => 'registered', requestEnded: async () => undefined, visibleMessage: async () => undefined,
+    },
+    onRawToolCall: async call => { seen.push(call.function.arguments); return { kind: 'result', result: 'Retained' }; },
+  };
+  await runToolCallingLoop(options, {
+    kind: 'native',
+    streamTurn: async ({ tools }) => {
+      expect(names(tools)).toEqual(['macro_agsdl_publish']);
+      if (seen.length) return { result: { content: 'Done', toolCalls: [] }, projectAssistant: () => ({ items: [] }) };
+      return { result: { content: '', toolCalls: [{ id: 'publication', type: 'function', function: {
+        name: 'macro_agsdl_publish', arguments: raw,
+      } }] }, projectAssistant: () => ({ items: [] }) };
+    },
+    projectTool: result => result.content, afterToolResults: () => undefined,
+  }, createStreamAccumulator(options));
+  expect(seen).toEqual([raw]);
+  const ordinary = { ...options, executionPolicy: undefined };
+  await expect(runToolCallingLoop(ordinary, {
+    kind: 'generic', streamTurn: async () => { throw new Error('Unexpected provider request'); },
+    projectTool: result => result.content, afterToolResults: () => undefined,
+  }, createStreamAccumulator(ordinary))).rejects.toThrow('Publication requires the native execution profile');
+});

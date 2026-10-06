@@ -124,6 +124,8 @@ export interface StreamingChatOptions {
   /** Provisional Agent checkpoint; durability belongs to the terminal transaction. */
   onExecutionMessages?: (messages: readonly StreamMessage[]) => void;
   nativeExecution?: {
+    /** Captured publication protocol, offered only to the resident native profile. */
+    publication?: { readonly choices: readonly string[] };
     beforeRequest(requestId: string): Promise<'registered' | 'duplicate'>;
     requestEnded(requestId: string): Promise<void>;
     visibleMessage(requestId: string, text: string): Promise<void>;
