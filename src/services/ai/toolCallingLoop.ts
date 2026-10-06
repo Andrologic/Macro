@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "./streamCancellation";
 import type { ProviderTurnState } from '../../types';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../../domains/chat/prompts';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
@@ -133,7 +134,11 @@ export async function runToolCallingLoop(
           },
         });
       } catch (error) {
-        await recordAttempt(interruptedAttempt());
+        try { await recordAttempt(interruptedAttempt()); }
+        catch (secondary) {
+          if (error instanceof StreamStopUnconfirmedError) throw preserveStreamStopError(error, secondary);
+          throw secondary;
+        }
         throw error;
       }
       if (options.signal?.aborted) {

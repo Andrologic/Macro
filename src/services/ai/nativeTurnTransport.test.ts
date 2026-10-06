@@ -601,3 +601,73 @@ for (const event of ['ai:error', 'ai:done']) {
     expect(activeStreamResourcesBySessionId.has('failed-event-receipt')).toBe(false);
   });
 }
+
+for (const phase of ['flush', 'projection'] as const) {
+  test(`real native terminal ownership survives generation-attempt ${phase} failure`, async () => {
+    const { streamChat } = await import('../streamingChat');
+    const { runAssistantStream } = await import('../chatStreamOrchestrator');
+    const { createChatTurnRuntime } = await import('../chatTurnRuntime');
+    const { executeChatAgentTerminal } = await import('../chatAgentTerminal');
+    const { EMPTY_CONVERSATION_RUNTIME } = await import('../../domains/chat/runtimeState');
+    const { cancelStream } = await import('./streamResources');
+    const controller = new AbortController();
+    const proof = deferred<void>();
+    const terminalReceipt = new StreamStopUnconfirmedError('Terminal run receipt pending', proof.promise);
+    const diagnostic = new Error('Generation attempt projection failed');
+    let state: import('../../types').ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId: `attempt-${phase}`, turnId: 'turn', assistantMessageId: 'assistant', abortController: controller };
+    const settled = mock(() => {});
+    const owner = createChatTurnRuntime({ state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false }, cancelTransport: cancelStream, settled });
+    const session = { id: 'terminal', project_id: null, status: 'idle' } as import('../tauriIpc').TerminalSessionDto;
+    const terminal = { cachedSession: () => session, readSession: async () => session, createSession: async () => session,
+      runCommand: async () => { throw terminalReceipt; }, killSession: async () => session };
+    const running = runAssistantStream({ sessionId: `attempt-${phase}`, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], allowedToolIds: ['terminal_run'], signal: controller.signal,
+      onToolCall: (_name, args) => executeChatAgentTerminal(terminal, 'terminal_run', args, controller.signal),
+      onGenerationAttemptsUpdate: phase === 'projection' ? async () => { await Promise.resolve(); throw diagnostic; } : undefined,
+      lifecycle: { appendTokenChunk: () => { if (phase === 'flush') throw diagnostic; }, onComplete: () => {}, onError: () => { state = { ...state, phase: 'error', abortController: null }; } }, streamChatImpl: streamChat,
+    });
+    void running.catch(() => {});
+    owner.track('conversation', running);
+    await started;
+    emit('ai:stream', { request_id: requestId, delta: 'partial' });
+    request('terminal-call', 'terminal_run', { session_id: 'terminal', command: 'synthetic' });
+    const failure = await running.catch(error => error);
+    expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(failure.secondaryErrors).toContain(diagnostic);
+    expect(terminalReceipt.stopped).toBe(false);
+    expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+    expect(settled).not.toHaveBeenCalled();
+    proof.resolve();
+    await failure.whenStopped;
+    await owner.stop('conversation');
+    owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false });
+    await cancelStream(`attempt-${phase}`);
+  });
+}
+
+test('native diagnostic exceptions cannot replace an outstanding tool receipt or skip native cleanup', async () => {
+  const proof = deferred<void>();
+  const toolOwner = new StreamStopUnconfirmedError('Read receipt pending', proof.promise);
+  const diagnostic = new Error('Native delta observer failed');
+  const loggerFailure = new Error('Native logger failed');
+  const { devLogger } = await import('../../utils/devLogger');
+  const originalWarn = devLogger.warn;
+  const tool = deferred<string>();
+  const running = turn({ sessionId: 'diagnostic-owner', onDelta: () => { throw diagnostic; }, onToolCall: () => tool.promise });
+  void running.catch(() => {});
+  await started;
+  request('read-call', 'read', { path: 'fixture' });
+  devLogger.warn = () => { throw loggerFailure; };
+  try { emit('ai:stream', { request_id: requestId, delta: 'partial' }); }
+  finally { devLogger.warn = originalWarn; }
+  tool.reject(toolOwner);
+  const failure = await running.catch(error => error);
+  expect(cancelCount).toBe(1);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(failure.secondaryErrors).toContain(diagnostic);
+  expect(failure.secondaryErrors).toContain(loggerFailure);
+  expect(failure.stopped).toBe(false);
+  proof.resolve();
+  await failure.whenStopped;
+  const { cancelStream } = await import('./streamResources');
+  await cancelStream('diagnostic-owner');
+});

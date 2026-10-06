@@ -442,7 +442,7 @@ it('retains the Goal owner until every uncertain read receipt arrives', async ()
   confirmFirst();
   await expectStillOwned(pending);
   confirmSecond();
-  await expect(pending).rejects.toBe(failures[0]);
+  await expect(pending).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
 });
 
 
@@ -479,3 +479,46 @@ for (const source of ['stream', 'read'] as const) {
     runtime.dispose();
   });
 }
+
+it('retains all Goal callback receipts despite a later ordinary stream failure', async () => {
+  let first!: () => void;
+  let second!: () => void;
+  const one = new StreamStopUnconfirmedError('First owner', new Promise<void>(resolve => { first = resolve; }));
+  const two = new StreamStopUnconfirmedError('Second owner', new Promise<void>(resolve => { second = resolve; }));
+  const diagnostic = new Error('Stream observer failed');
+  const executor = createGoalAuditProviderExecutor({
+    resolveProvider: () => ({ providerId: 'provider', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'model' }),
+    resolveChildConversation: resolvedChild,
+    executeReadTool: async () => 'unused',
+    stream: async options => { options.onError(one); options.onError(two); options.onError(diagnostic); throw diagnostic; },
+  });
+  const pending = executor.execute({ childRunId: 'child', parentConversationId: 'parent', depth: 1, input: input(), signal: new AbortController().signal });
+  await expectStillOwned(pending);
+  first();
+  await expectStillOwned(pending);
+  second();
+  const failure = await pending.catch(error => error);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(failure.secondaryErrors).toContain(diagnostic);
+});
+
+it('observes failed Goal progress diagnostics without abandoning an outstanding read receipt', async () => {
+  let confirm!: () => void;
+  const owner = new StreamStopUnconfirmedError('Read owner', new Promise<void>(resolve => { confirm = resolve; }));
+  const diagnostic = new Error('Progress failed');
+  const executor = createGoalAuditProviderExecutor({
+    resolveProvider: () => ({ providerId: 'provider', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'model' }),
+    resolveChildConversation: resolvedChild,
+    executeReadTool: async (_name, _args, id) => { if (id === 'owned') throw owner; throw new Error('Finite read failure'); },
+    stream: async options => {
+      await Promise.all(['owned', 'finite'].map(id => Promise.resolve(options.onToolCall!('read', {}, id)).catch(() => {})));
+      options.onComplete({ visibleContent: '{}', toolTraces: [] });
+    },
+  });
+  const pending = executor.execute({ childRunId: 'child', parentConversationId: 'parent', depth: 1, input: input(), signal: new AbortController().signal,
+    onProgress: event => { if (event.kind === 'tool_failed') throw diagnostic; } });
+  await expectStillOwned(pending);
+  confirm();
+  await expect(pending).rejects.toBe(owner);
+  expect(owner.secondaryErrors).toContain(diagnostic);
+});

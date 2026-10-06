@@ -1,4 +1,4 @@
-import { StreamStopUnconfirmedError, preserveStreamStopError, reportStreamError } from "./ai/streamCancellation";
+import { StreamStopUnconfirmedError, combineStreamErrors, reportStreamError } from "./ai/streamCancellation";
 import { runToolCallingLoop } from './ai/toolCallingLoop';
 import { createNativeAdapter } from './ai/nativeAdapter';
 import { createChatCompletionsAdapter } from './ai/chatCompletionsAdapter';
@@ -128,12 +128,10 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
       failure = error;
     }
   } finally {
-    try { transport.dispose(); }
+    try { await transport.dispose(); }
     catch (secondary) {
+      failure = failed ? combineStreamErrors(failure, secondary) : secondary;
       failed = true;
-      failure = failure instanceof StreamStopUnconfirmedError
-        ? preserveStreamStopError(failure, secondary)
-        : secondary;
     }
   }
   if (failed) throw failure;

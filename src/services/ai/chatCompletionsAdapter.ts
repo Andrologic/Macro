@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, combineStreamErrors, withStreamCleanup } from "./streamCancellation";
 import type { StreamingChatOptions, ToolCall, StreamCompletionReason } from './contracts';
 import type { ReasoningEffort } from '../../types';
 import type { ToolCallingAdapter } from './toolCallingLoop';
@@ -138,6 +139,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
 
           response = candidateResponse;
         } catch (error) {
+          if (error instanceof StreamStopUnconfirmedError) throw error;
           logStreamingDiagnostic('error', 'provider_request_failed', {
             request_id: genericRequestId,
             provider_id: providerId,
@@ -422,13 +424,15 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
       } catch (error) {
         try {
           await reader.cancel();
-        } catch {
-          // Ignore cancel errors during stream retry cleanup.
+        } catch (secondary) {
+          if (error instanceof StreamStopUnconfirmedError || secondary instanceof StreamStopUnconfirmedError) {
+            throw combineStreamErrors(error, secondary);
+          }
         }
         activeResources.reader = null;
         activeResources.stream = null;
 
-        if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (error instanceof StreamStopUnconfirmedError || (error instanceof Error && error.name === 'AbortError')) throw error;
 
         const runtimeError =
           error instanceof ProviderRuntimeError
@@ -506,12 +510,13 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
       }
       return err;
     },
-    dispose: () => {
+    dispose: () => withStreamCleanup(async () => {
+      await activeResources.reader?.cancel();
+    }, () => {
       sourceOptions.signal?.removeEventListener('abort', abort);
-      void activeResources.reader?.cancel().catch(() => undefined);
       activeResources.reader = null;
       activeResources.stream = null;
       if (!resources) pruneActiveStreamResources(sessionId, activeResources);
-    },
+    }),
   };
 }

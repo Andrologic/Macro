@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import type { ReasoningTransportMode } from '../types';
 import type { StreamingChatOptions } from './ai/contracts';
@@ -122,7 +123,8 @@ describe('streamingChat module loading lifetime', () => {
     const pending = deferred<Execution>();
     const runtime = execution();
     const finish = deferred<void>();
-    runtime.streamChat.mockImplementation(async () => finish.promise);
+    const dispatched = deferred<void>();
+    runtime.streamChat.mockImplementation(async () => { dispatched.resolve(); await finish.promise; });
     const service = createStreamingChatService(() => pending.promise);
     const first = service.streamChat(options());
     cancelStream('pending');
@@ -130,8 +132,7 @@ describe('streamingChat module loading lifetime', () => {
     const secondOwner = activeStreamResourcesBySessionId.get('pending');
     await first;
     pending.resolve(runtime);
-    await Promise.resolve();
-    await Promise.resolve();
+    await dispatched.promise;
     expect(runtime.streamChat).toHaveBeenCalledTimes(1);
     expect(activeStreamResourcesBySessionId.get('pending')).toBe(secondOwner);
     finish.resolve();
@@ -221,4 +222,60 @@ describe('streamingChat module loading lifetime', () => {
     await Promise.resolve();
     expect(runtime.sendChatNonStreaming).not.toHaveBeenCalled();
   });
+});
+
+for (const nonStreaming of [false, true]) {
+  it(`retains a runtime receipt through public service cleanup (${nonStreaming})`, async () => {
+    const proof = deferred<void>();
+    const owner = new StreamStopUnconfirmedError('Runtime still owned', proof.promise);
+    const cleanup = new Error('Listener cleanup failed');
+    const controller = new AbortController();
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.removeEventListener = () => { throw cleanup; };
+    const runtime = execution();
+    runtime.streamChat.mockImplementation(async () => { throw owner; });
+    runtime.sendChatNonStreaming.mockImplementation(async () => { throw owner; });
+    const service = createStreamingChatService(async () => runtime);
+    const input = { ...options(), signal: controller.signal };
+    const pending = nonStreaming ? service.sendChatNonStreaming(input) : service.streamChat(input);
+    await expect(pending).rejects.toBe(owner);
+    expect(owner.secondaryErrors).toContain(cleanup);
+    expect(owner.stopped).toBe(false);
+    controller.signal.removeEventListener = remove;
+    activeStreamResourcesBySessionId.clear();
+    proof.resolve();
+    await owner.whenStopped;
+  });
+
+  it(`joins an async loading error observer and retains its receipt (${nonStreaming})`, async () => {
+    const saving = deferred<void>();
+    const owner = new StreamStopUnconfirmedError('Observer still owned');
+    const service = createStreamingChatService(async () => { throw new Error('Import failed'); });
+    const input = { ...options(), onError: async () => { await saving.promise; throw owner; } };
+    const pending = nonStreaming ? service.sendChatNonStreaming(input) : service.streamChat(input);
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(settled).toBe(false);
+    saving.resolve();
+    await expect(pending).rejects.toBe(owner);
+  });
+}
+
+it('joins asynchronous completion after loading abort and preserves its owner through error reporting', async () => {
+  const loading = deferred<Execution>();
+  const saving = deferred<void>();
+  const owner = new StreamStopUnconfirmedError('Completion still owned');
+  const diagnostic = new Error('Error observer failed');
+  const service = createStreamingChatService(() => loading.promise);
+  const pending = service.streamChat({ ...options(), onComplete: async () => { await saving.promise; throw owner; }, onError: async () => { throw diagnostic; } });
+  let settled = false;
+  void pending.then(() => { settled = true; }, () => { settled = true; });
+  await cancelStream('pending');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(settled).toBe(false);
+  saving.resolve();
+  await expect(pending).rejects.toBe(owner);
+  expect(owner.secondaryErrors).toContain(diagnostic);
+  loading.resolve(execution());
 });

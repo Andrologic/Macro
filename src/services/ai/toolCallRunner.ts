@@ -1,4 +1,4 @@
-import { StreamStopUnconfirmedError } from "./streamCancellation";
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "./streamCancellation";
 import type { JsonSchema } from '../../shared/macroToolRegistry';
 import type { ToolTrace } from '../../types';
 import { validateToolArguments, formatToolArgumentValidationError } from '../toolArgumentValidation';
@@ -212,11 +212,18 @@ async function runParallelReadGroup(params: ToolBatchParams & { orderOffset: num
   const outcomes = await Promise.all(settled);
   const failures = outcomes.filter(outcome => outcome.status === 'rejected');
   const uncertain = failures.map(outcome => outcome.reason).filter((error): error is StreamStopUnconfirmedError => error instanceof StreamStopUnconfirmedError);
-  if (uncertain.length === 1) throw uncertain[0];
-  if (uncertain.length > 1) throw new StreamStopUnconfirmedError(
-    uncertain.map(error => error.message).join('; '),
-    Promise.all(uncertain.map(error => error.whenStopped)).then(() => undefined),
-  );
+  if (failure instanceof StreamStopUnconfirmedError) uncertain.push(failure);
+  const owners = [...new Set(uncertain)];
+  if (owners.length) {
+    let owner = owners[0];
+    for (const next of owners.slice(1)) owner = preserveStreamStopError(owner, next);
+    for (const diagnostic of [failure, ...failures.map(outcome => outcome.reason)]) {
+      if (diagnostic !== undefined && !(diagnostic instanceof StreamStopUnconfirmedError)) {
+        owner = preserveStreamStopError(owner, diagnostic);
+      }
+    }
+    throw owner;
+  }
   if (failure !== undefined) throw failure;
   throwIfToolAborted(options.signal);
   if (failures.length) throw failures[0].reason;

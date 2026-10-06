@@ -44,10 +44,27 @@ export const reportStreamError = async (
   try {
     await report(normalized);
   } catch (secondary) {
-    if (normalized instanceof StreamStopUnconfirmedError) {
-      throw preserveStreamStopError(normalized, secondary);
-    }
-    throw secondary;
+    throw combineStreamErrors(normalized, secondary);
   }
   if (normalized instanceof StreamStopUnconfirmedError) throw normalized;
+};
+
+/** Select a failure without losing an owner supplied by either operation. */
+export const combineStreamErrors = (primary: unknown, secondary: unknown): unknown => {
+  if (primary instanceof StreamStopUnconfirmedError) return preserveStreamStopError(primary, secondary);
+  if (secondary instanceof StreamStopUnconfirmedError) return preserveStreamStopError(secondary, primary);
+  return secondary;
+};
+
+/** Cleanup must run, but cannot replace the receipt from the work it closes. */
+export const withStreamCleanup = async <T>(run: () => Promise<T>, cleanup: () => void | Promise<void>): Promise<T> => {
+  let value!: T;
+  let failed = false;
+  let failure: unknown;
+  try { value = await run(); }
+  catch (error) { failed = true; failure = error; }
+  try { await cleanup(); }
+  catch (error) { failure = failed ? combineStreamErrors(failure, error) : error; failed = true; }
+  if (failed) throw failure;
+  return value;
 };

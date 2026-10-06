@@ -1792,6 +1792,13 @@ attend toutes leurs confirmations. Les observateurs d’erreur du transport
 respectent la même priorité, y compris pour la génération sans streaming. Un
 rejet du reçu Goal reste un arrêt non confirmé : son diagnostic est conservé,
 mais le créneau ne se libère pas sur ce rejet.
+Le diagnostic d’une tentative interrompue conserve aussi le reçu initial si son
+flush ou sa projection échoue. Le service public joint ses callbacks de chargement
+et sélectionne son erreur après le cleanup. Les normalisations HTTP et fournisseur
+préservent les erreurs d’arrêt typées avant toute classification ou nouvelle
+requête. Goal conserve tous les reçus observés par callback, même si le stream
+rejette ensuite une autre erreur ; ses lectures lancées restent jointes. Une
+exception d’observateur ou de logger natif ne court-circuite pas la finalisation.
 Les lectures parallèles génériques et les ports Goal natifs attendent leurs
 opérations déjà lancées, puis révoquent les sorties tardives.
 

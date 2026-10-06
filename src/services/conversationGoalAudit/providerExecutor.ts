@@ -1,4 +1,4 @@
-import { StreamStopUnconfirmedError } from "../ai/streamCancellation";
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "../ai/streamCancellation";
 import type { StreamingChatOptions, StreamCompletionResult } from "../streamingChat";
 import { streamChat } from "../streamingChat";
 import { stripThinkingBlocksForModel } from "../ai/chatCompletionsCodec";
@@ -161,8 +161,11 @@ export const createGoalAuditProviderExecutor = (
       input.profile,
     );
     const allowed = new Set<string>(allowedToolIds);
+    const diagnosticFailures: unknown[] = [];
     const emitProgress = (event: SubagentProgressEvent) => {
-      if (!signal.aborted) onProgress?.(event);
+      if (signal.aborted) return;
+      try { onProgress?.(event); }
+      catch (error) { diagnosticFailures.push(error); }
     };
     const assertReadToolBinding = () => {
       if (!hasValidChildBinding(childConversation, readToolContext.runId, readToolContext.parentConversationId, selection) ||
@@ -174,11 +177,12 @@ export const createGoalAuditProviderExecutor = (
     const readFailures: unknown[] = [];
     let completion: StreamCompletionResult | undefined;
     let failure: Error | undefined;
+    const reportedFailures: Error[] = [];
     let streamFailed = false;
     let streamFailure: unknown;
     try {
-      await awaitOwned(signal, async () => {
-        await (ports.stream ?? streamChat)({
+      if (signal.aborted) throw abortError();
+      await (ports.stream ?? streamChat)({
           sessionId: request.childRunId,
           conversationId: readToolContext.childConversationId,
           internalAgentProfile: "goal_auditor",
@@ -209,7 +213,7 @@ export const createGoalAuditProviderExecutor = (
             emitProgress({ kind: "tool_started", message: name });
             if (signal.aborted) return { kind: "result", result: "Audit cancelled.", isError: true };
             assertReadToolBinding();
-            const work = Promise.resolve(ports.executeReadTool(name, args, id, signal, readToolContext));
+            const work = (async () => ports.executeReadTool(name, args, id, signal, readToolContext))();
             readWork.add(work);
             void work.catch(error => {
               readFailures.push(error);
@@ -220,24 +224,32 @@ export const createGoalAuditProviderExecutor = (
           },
           onToolResult: (name) => emitProgress({ kind: "tool_finished", message: name }),
           onComplete: (result) => { if (!signal.aborted) completion = result; },
-          onError: (error) => { if (!signal.aborted || error instanceof StreamStopUnconfirmedError) failure = error; },
+          onError: (error) => {
+            reportedFailures.push(error);
+            if (!signal.aborted || error instanceof StreamStopUnconfirmedError) failure = error;
+          },
         });
-        if (failure instanceof StreamStopUnconfirmedError) throw failure;
-      });
     } catch (error) {
       streamFailed = true;
       streamFailure = error;
     }
     // A provider can finish while an already-dispatched read still ignores Stop.
     while (readWork.size) await Promise.all(Array.from(readWork, work => work.then(() => undefined, () => undefined)));
-    const uncertainReads = readFailures.filter((error): error is StreamStopUnconfirmedError => error instanceof StreamStopUnconfirmedError);
-    if (uncertainReads.length) {
-      await Promise.all(uncertainReads.map(awaitStopReceipt));
-      throw uncertainReads[0];
+    const failures = [...reportedFailures, ...readFailures, ...diagnosticFailures, ...(streamFailed ? [streamFailure] : [])];
+    const owners = [...new Set(failures.filter((error): error is StreamStopUnconfirmedError => error instanceof StreamStopUnconfirmedError))];
+    if (owners.length) {
+      let owner = owners[0];
+      for (const next of owners.slice(1)) owner = preserveStreamStopError(owner, next);
+      for (const diagnostic of failures) {
+        if (!(diagnostic instanceof StreamStopUnconfirmedError)) owner = preserveStreamStopError(owner, diagnostic);
+      }
+      await awaitStopReceipt(owner);
+      throw owner;
     }
     // Finite failures stay in the tool response and progress diagnostics.
     // They are not evidence of a still-running executor.
     if (streamFailed) throw streamFailure;
+    if (diagnosticFailures.length) throw diagnosticFailures[0];
     if (signal.aborted) throw abortError();
     if (failure) throw failure;
     if (!completion) throw new Error("Goal auditor provider completed without a result.");

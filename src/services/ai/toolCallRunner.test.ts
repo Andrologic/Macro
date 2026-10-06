@@ -408,3 +408,24 @@ it('joins every uncertain parallel read receipt before confirming Stop', async (
   await failure.whenStopped;
   expect(failure.stopped).toBe(true);
 });
+
+it('joins a publication owner with a later read owner before releasing the batch', async () => {
+  let first!: () => void;
+  let second!: () => void;
+  const projection = new StreamStopUnconfirmedError('Projection owner', new Promise<void>(resolve => { first = resolve; }));
+  const read = new StreamStopUnconfirmedError('Read owner', new Promise<void>(resolve => { second = resolve; }));
+  const acc = accumulator();
+  acc.completeToolTrace = () => { throw projection; };
+  const pending = run([call('read', 'one'), call('grep', 'two')], options(async (_name, _args, id) => {
+    if (id === 'two') throw read;
+    return 'first result';
+  }), acc);
+  const failure = await pending.catch(error => error);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  first();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(failure.stopped).toBe(false);
+  second();
+  await failure.whenStopped;
+  expect(failure.stopped).toBe(true);
+});

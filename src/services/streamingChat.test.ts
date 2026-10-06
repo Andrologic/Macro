@@ -5068,3 +5068,42 @@ it('preserves a generic tool receipt when its async error observer also fails', 
   confirm();
   await receipt.whenStopped;
 });
+
+it('does not normalize a generic transport receipt into a retryable network error', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  let confirm!: () => void;
+  const owner = new StreamStopUnconfirmedError('Unsupported reasoning effort: local transport owner pending', new Promise<void>(resolve => { confirm = resolve; }));
+  const fetchImpl = mock(async () => { throw owner; });
+  const { streamChat } = await loadStreamingChat(fetchImpl);
+  const errors: Error[] = [];
+  await expect(streamChat({ sessionId: 'generic-transport-owner', providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], reasoningEffort: 'high',
+    onToken() {}, onComplete() {}, onError: (error: Error) => { errors.push(error); },
+  })).rejects.toBe(owner);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(errors).toEqual([owner]);
+  expect(owner.stopped).toBe(false);
+  confirm();
+  await owner.whenStopped;
+});
+
+it('fetch cleanup joins its own receipt with the failed transport receipt', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  const { fetchWithTimeout } = await import('./ai/httpTransport');
+  let confirmTransport!: () => void;
+  let confirmCleanup!: () => void;
+  const transport = new StreamStopUnconfirmedError('Transport pending', new Promise<void>(resolve => { confirmTransport = resolve; }));
+  const cleanup = new StreamStopUnconfirmedError('Cleanup pending', new Promise<void>(resolve => { confirmCleanup = resolve; }));
+  const fetchImpl = mock(async () => { throw transport; });
+  await loadStreamingChat(fetchImpl);
+  const controller = new AbortController();
+  controller.signal.removeEventListener = () => { throw cleanup; };
+  const failure = await fetchWithTimeout('https://example.invalid', {}, 1000, controller.signal).catch(error => error);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  confirmTransport();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(failure.stopped).toBe(false);
+  confirmCleanup();
+  await failure.whenStopped;
+  expect(failure.stopped).toBe(true);
+});
