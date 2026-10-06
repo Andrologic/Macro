@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
@@ -84,6 +84,7 @@ const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
 export const ProjectGitFlowModal: React.FC = () => {
   const { t } = useTranslation();
   const formId = useId();
+  const accessToggleRef = useRef<HTMLButtonElement>(null);
   const projectId = useAppStore((state) => state.projectGitFlowModalProjectId);
   const getProjectById = useAppStore((state) => state.getProjectById);
   const updateProjectGitFlow = useAppStore((state) => state.updateProjectGitFlow);
@@ -699,6 +700,7 @@ export const ProjectGitFlowModal: React.FC = () => {
                 {project.gitSetupState === 'ready' || project.directEdit ? (
                   <button
                     type="button"
+                    ref={accessToggleRef}
                     onClick={() => void handleToggleAccess()}
                     disabled={isAccessSaving}
                     className={cn(
@@ -877,6 +879,7 @@ export const ProjectGitFlowModal: React.FC = () => {
       {accessPreview && (
         <ConfirmPromptModal
           isOpen
+          returnFocusRef={accessToggleRef}
           title={t('projects.readOnlyImpactTitle', 'Switch to read-only?')}
           description={t(
             'projects.readOnlyImpactDescription',

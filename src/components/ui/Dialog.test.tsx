@@ -548,6 +548,98 @@ describe('Dialog', () => {
     expect(remainingDialogs[0]?.contains(document.activeElement)).toBe(true);
   });
 
+
+  it('returns to an explicit target after focus loss and falls back if it is unavailable', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    let openChild: () => void = () => undefined;
+    const DeferredConfirmation = () => {
+      const targetRef = useRef<HTMLButtonElement>(null);
+      const [childOpen, setChildOpen] = useState(false);
+      openChild = () => setChildOpen(true);
+      return (
+        <Dialog title="Parent" onClose={() => undefined}>
+          <button type="button">Parent fallback</button>
+          <button type="button" ref={targetRef}>Explicit target</button>
+          <ConfirmPromptModal
+            isOpen={childOpen}
+            title="Child"
+            returnFocusRef={targetRef}
+            onCancel={() => setChildOpen(false)}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      );
+    };
+
+    for (const availability of ['usable', 'disabled', 'detached', 'hidden']) {
+      await act(async () => root?.render(<DeferredConfirmation key={availability} />));
+      const parent = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+      const [fallback, target] = parent.querySelectorAll<HTMLButtonElement>('button');
+      target.focus();
+      target.blur();
+      expect(document.activeElement === document.body).toBe(true);
+      await act(async () => openChild());
+      if (availability === 'disabled') target.disabled = true;
+      if (availability === 'detached') target.remove();
+      if (availability === 'hidden') target.hidden = true;
+      await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      })));
+      expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect(document.activeElement === (availability === 'usable' ? target : fallback)).toBe(true);
+      await act(async () => root?.render(null));
+    }
+  });
+
+  it('keeps focus in the topmost dialog when an older child with a return target closes', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    let closeChild: () => void = () => undefined;
+    let openIndependent: () => void = () => undefined;
+    const ThreeDialogs = () => {
+      const targetRef = useRef<HTMLButtonElement>(null);
+      const [childOpen, setChildOpen] = useState(true);
+      const [independentOpen, setIndependentOpen] = useState(false);
+      closeChild = () => setChildOpen(false);
+      openIndependent = () => setIndependentOpen(true);
+      return (
+        <>
+          <Dialog title="Parent" onClose={() => undefined}>
+            <button ref={targetRef} type="button">Parent target</button>
+            <ConfirmPromptModal
+              isOpen={childOpen}
+              title="Child"
+              returnFocusRef={targetRef}
+              onCancel={closeChild}
+              onConfirm={() => undefined}
+            />
+          </Dialog>
+          {independentOpen && (
+            <Dialog title="Independent" backdropClassName="z-[100]" onClose={() => setIndependentOpen(false)}>
+              <button type="button">Independent action</button>
+            </Dialog>
+          )}
+        </>
+      );
+    };
+    await act(async () => root?.render(<ThreeDialogs />));
+    await act(async () => openIndependent());
+    const dialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(dialogs).toHaveLength(3);
+    const topmostButton = dialogs[2].querySelector<HTMLButtonElement>('button')!;
+    expect(document.activeElement === topmostButton).toBe(true);
+    expect(dialogs[0].parentElement?.hasAttribute('inert')).toBe(true);
+    expect(dialogs[1].parentElement?.hasAttribute('inert')).toBe(true);
+    await act(async () => closeChild());
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+    expect(document.activeElement === topmostButton).toBe(true);
+    expect(dialogs[0].parentElement?.hasAttribute('inert')).toBe(true);
+    expect(dialogs[2].parentElement?.hasAttribute('inert')).toBe(false);
+  });
+
   it('closes a newer independent confirmation before an older nested stack', async () => {
     container = document.createElement('div');
     document.body.appendChild(container);

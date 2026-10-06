@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useAppStore } from '../../stores/useAppStore';
-import type { Project, ProjectGitFlowDetection } from '../../types';
+import type { Project, ProjectAccessChangePreview, ProjectGitFlowDetection } from '../../types';
 
 let importCounter = 0;
 const previewProjectGitSetupMock = mock(async (): Promise<ProjectGitFlowDetection> => ({
@@ -26,6 +26,24 @@ const updateProjectGitFlowWithSetupMock = mock(async () => ({
   project: {} as Project,
   detection: await previewProjectGitSetupMock(),
 }));
+
+const accessPreview: ProjectAccessChangePreview = {
+  projectId: 'project-1',
+  targetReadOnly: true,
+  canApply: true,
+  requiresConfirmation: true,
+  blockingReasons: [],
+  migrationSummary: {
+    plans: { count: 1, labels: ['Plan'] },
+    manualFeatures: { count: 0, labels: [] },
+    tasks: { count: 1, labels: ['Task'] },
+    worktrees: { count: 0, labels: [] },
+    predictedBranches: { count: 0, labels: [] },
+    planNodes: { count: 0, labels: [] },
+    executionTargets: { count: 1, labels: ['Project'] },
+  },
+};
+const previewProjectAccessChangeMock = mock(async () => accessPreview);
 
 const project: Project = {
   id: 'project-1',
@@ -51,6 +69,7 @@ const loadModal = async () => {
   mock.module('../../services', () => ({
     services: {
       previewProjectGitSetup: previewProjectGitSetupMock,
+      previewProjectAccessChange: previewProjectAccessChangeMock,
     },
   }));
   mock.module('../ui/toastService', () => ({
@@ -68,6 +87,7 @@ describe('ProjectGitFlowModal', () => {
 
   beforeEach(() => {
     previewProjectGitSetupMock.mockClear();
+    previewProjectAccessChangeMock.mockClear();
     updateProjectGitFlowWithSetupMock.mockClear();
     useAppStore.setState({
       projectGitFlowModalProjectId: project.id,
@@ -133,6 +153,66 @@ describe('ProjectGitFlowModal', () => {
     await act(async () => root.render(null));
     expect(document.activeElement).toBe(opener);
     opener.remove();
+  });
+
+
+  it('restores the access trigger after a deferred preview is cancelled and can reopen it', async () => {
+    const editableProject: Project = { ...project, gitSetupState: 'ready', isReadOnly: false, userReadOnly: false };
+    useAppStore.setState({ getProjectById: () => editableProject });
+    const { ProjectGitFlowModal } = await loadModal();
+    await act(async () => root.render(<ProjectGitFlowModal />));
+    const parent = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    const trigger = Array.from(parent.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent?.trim() === 'Make read-only')!;
+
+    for (const cancellation of ['Escape', 'Cancel']) {
+      let resolvePreview!: (value: ProjectAccessChangePreview) => void;
+      previewProjectAccessChangeMock.mockImplementationOnce(() => new Promise(resolve => {
+        resolvePreview = resolve;
+      }));
+      trigger.focus();
+      expect(document.activeElement).toBe(trigger);
+      // Happy DOM does not perform the browser's Enter default action; click uses the public DOM API.
+      await act(async () => trigger.click());
+      expect(trigger.disabled).toBe(true);
+      expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      // Happy DOM also ignores blur() on disabled buttons. Simulate native focus loss with
+      // public DOM APIs only; the transient enabling is test-only and runs without any click.
+      if (document.activeElement === trigger) {
+        trigger.disabled = false;
+        trigger.blur();
+        trigger.disabled = true;
+      }
+      expect(document.activeElement === document.body).toBe(true);
+      expect(trigger.disabled).toBe(true);
+
+      await act(async () => resolvePreview(accessPreview));
+      expect(trigger.disabled).toBe(false);
+      const dialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+      expect(dialogs).toHaveLength(2);
+      expect(dialogs[0]).toBe(parent);
+      expect(parent.parentElement?.hasAttribute('inert')).toBe(true);
+      const childButtons = dialogs[1].querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+      childButtons[0].focus();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+      expect(document.activeElement).toBe(childButtons[childButtons.length - 1]);
+
+      await act(async () => {
+        if (cancellation === 'Escape') {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        } else {
+          childButtons[0].click();
+        }
+      });
+      expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+      expect([document.activeElement === trigger, document.activeElement?.getAttribute('aria-label')]).toEqual([true, null]);
+      expect(parent.parentElement?.hasAttribute('inert')).toBe(false);
+      expect(useAppStore.getState().getProjectById(project.id)).toBe(editableProject);
+      expect(useAppStore.getState().updateProjectAccess).not.toHaveBeenCalled();
+      expect(useAppStore.getState().closeProjectGitFlowModal).not.toHaveBeenCalled();
+    }
+    expect(previewProjectAccessChangeMock).toHaveBeenCalledTimes(2);
+    expect(previewProjectAccessChangeMock).toHaveBeenCalledWith({ projectId: project.id, targetReadOnly: true });
   });
 
   it('persists a ready Git detection even when no setup prompt is required', async () => {
