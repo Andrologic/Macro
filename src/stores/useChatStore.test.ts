@@ -18,6 +18,7 @@ import {
 } from '../services/architectPlanService';
 import type { AgsdlEditorDocument } from '../types/agsdl';
 import { createDeferred } from '../test-utils/deferred';
+import { allowChatToolInvocationJournal } from '../test-utils/chatToolInvocationJournal';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
@@ -894,7 +895,17 @@ const sendChatNonStreamingMock = mock((async (
     sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
   return implementation(...args);
 }) as SendChatNonStreaming);
-const streamChatMock = mock(async () => ({ usage: null }));
+let syntheticToolCallId = 0;
+const streamChatMock = mock(async (options: {
+  onToolCall?: (name: string, args: Record<string, unknown>, id?: string) => Promise<unknown>;
+}) => {
+  if (options.onToolCall) {
+    const onToolCall = options.onToolCall;
+    options.onToolCall = (name, args, id) =>
+      onToolCall(name, args, id ?? `store-test-tool-call-${++syntheticToolCallId}`);
+  }
+  return { usage: null };
+});
 const executeWorkspaceToolMock = mock(async () => undefined);
 const estimateChatCompletionSerializedPayloadTokensMock = mock(
   (params: { messages: unknown[] }) =>
@@ -1148,6 +1159,19 @@ const dbDeleteAppSettingMock = mock(async (key: string) =>
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
+const getConversationMock = mock(async (id: string) =>
+  chatSnapshotConversations.find((conversation) => conversation.id === id) ?? null
+);
+const getConversationSourceSnapshotMock = mock(async (targetId: string, sourceId: string) => {
+  const target = chatSnapshotConversations.find((conversation) => conversation.id === targetId);
+  const source = chatSnapshotConversations.find((conversation) => conversation.id === sourceId);
+  if (!target || !source || target.project_id !== source.project_id) return null;
+  return {
+    target_project_id: target.project_id,
+    conversation: source,
+    messages: chatSnapshotMessages.filter((message) => message.conversation_id === sourceId),
+  };
+});
 const dbGetArchitectPlanConversationSyncMock = mock(
   async (conversationId: string) =>
     architectPlanConversationSyncRecords.get(conversationId) ?? null
@@ -1538,6 +1562,12 @@ useTaskStoreMock.subscribe = (
 const registerUseChatStoreMocks = async () => {
   mock.restore();
 
+  // The store scenarios exercise tool policy and execution. Dispatch and
+  // SQLite reservation failures have focused tests in chatToolDispatch.test.ts.
+  mock.module('../services/chatToolInvocationJournal', () => ({
+    chatToolInvocationJournal: allowChatToolInvocationJournal,
+  }));
+
   // Scoped configuration has focused tests of its own. Keep this broad chat
   // suite on its existing preference harness so native-only tests do not need
   // to emulate the complete configuration IPC surface.
@@ -1905,6 +1935,8 @@ const registerUseChatStoreMocks = async () => {
     getChatSnapshot: getChatSnapshotMock,
     importMessages: importMessagesMock,
     listMessages: listMessagesMock,
+    getConversation: getConversationMock,
+    getConversationSourceSnapshot: getConversationSourceSnapshotMock,
     dbGetArchitectPlanConversationSync: dbGetArchitectPlanConversationSyncMock,
     dbGetArchitectPlanConversationSyncForPlan:
       dbGetArchitectPlanConversationSyncForPlanMock,
@@ -2902,6 +2934,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getChatSnapshotMock.mockClear();
     getChatBootstrapSnapshotMock.mockClear();
     listMessagesMock.mockClear();
+    getConversationSourceSnapshotMock.mockClear();
     dbGetArchitectPlanConversationSyncMock.mockClear();
     dbGetArchitectPlanConversationSyncForPlanMock.mockClear();
     dbUpsertArchitectPlanConversationSyncMock.mockClear();
@@ -2998,6 +3031,22 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('associates a newly selected conversation with its resolved context', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      ...createIdleChatStoreState(),
+      activeContextKey: 'Chat::none::none::none',
+    });
+
+    const conversation = await useChatStore.getState().createConversation('Journal', null, null);
+
+    expect(useChatStore.getState().selectedConversationId).toBe(conversation.id);
+    expect(useChatStore.getState().selectedConversationContextKey).toBe('Chat::none::none::none');
   });
 
   it('stops hydration before replay recovery or publication after a delayed snapshot', async () => {

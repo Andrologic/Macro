@@ -65,6 +65,8 @@ mock.module('../tauriIpc', () => ({ ...ipc,
     if (scenario !== 'empty-steer-abort') emit('ai:stream', { request_id: submission.requestId, delta: `Response ${requests.length}` });
     emit('ai:done', { request_id: submission.requestId,
       output_text: scenario === 'native-interrupt' ? 'Choose' : scenario === 'empty-steer-abort' ? '' : `Response ${requests.length}`,
+      hidden_context: scenario === 'native-interrupt' ? '<questionnaire_context>fixture</questionnaire_context>' : undefined,
+      accepted_submission_ids: submissions.filter(item => item.requestId === submission.requestId).map(item => item.submissionId).filter((id): id is string => !!id),
       completion_reason: isRecovery() ? scenario : guidedRecovery() && requests.length === 2 ? 'length' : 'completed',
       tool_calls: isRecovery() || (isGuided() && scenario !== 'guided-native-satisfied' && requests.length === 1) ? [unexecutedCall] : [],
     });
@@ -78,6 +80,55 @@ const { parseDbProviderInputItems } = await import('../chatDbMappers');
 const { buildFunctionCallOutputProviderInputItem } = await import('./responsesCodec');
 const blocks = normalizeToolResultBlocks(fixture.content);
 const ids = (items: unknown[], type: string) => items.filter(isRecord).filter(item => item.type === type).map(item => item.call_id);
+
+test('native requests expose discovery tools and reject direct hidden MCP calls', async () => {
+  scenario = 'completed'; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
+  const tools = Array.from({ length: 13 }, (_, index) => ({
+    id: index === 0 ? 'mcp__fixture__read' : `mcp__fixture__tool_${index}`,
+    name: index === 0 ? 'read' : `tool_${index}`, serverId: 'fixture',
+    inputSchema: { type: 'object', properties: {} },
+  }));
+  const handler = mock(async () => 'unexpected');
+  const options: StreamingChatOptions = {
+    providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
+    messages: [], allowedToolIds: tools.map(tool => tool.id), mcpTools: tools,
+    onToken() {}, onComplete() {}, onError(error) { throw error; }, onToolCall: handler,
+  };
+  const accumulator = createStreamAccumulator(options);
+  const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
+  await runToolCallingLoop(options, adapter, accumulator);
+  expect(requests[0].allowedToolIds).toEqual(['mcp_search', 'mcp_call']);
+  expect((requests[0].tools as Array<{ function: { name: string } }>).map(tool => tool.function.name)).toEqual(['mcp_search', 'mcp_call']);
+  expect(handler).not.toHaveBeenCalled();
+  expect(submissions.length).toBeGreaterThanOrEqual(2);
+  expect(submissions.every(item => item.isError)).toBe(true);
+});
+
+test('native cancellation from a live context observer emits no later provider update', async () => {
+  scenario = 'completed'; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
+  const live: LiveStreamContextSnapshot[] = [];
+  let lateSnapshots = 0;
+  const options: StreamingChatOptions = {
+    providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture',
+    messages: [], signal: controller.signal, allowedToolIds: ['mcp__fixture__read'],
+    mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
+    onToken() {}, onComplete() {}, onError(error) { throw error; },
+    onToolCall: async () => 'confirmed',
+    onLiveContextUpdate: context => {
+      if (controller.signal.aborted) lateSnapshots += 1;
+      live.push(context);
+      if (ids(context.providerInputItems ?? [], 'function_call_output').includes('turn-1-call-0')) controller.abort();
+    },
+  };
+  const accumulator = createStreamAccumulator(options);
+  const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
+  const result = await runToolCallingLoop(options, adapter, accumulator);
+  // The second result can already be in flight when the confirmed first result is observed.
+  expect(submissions.map(item => item.toolCallId)).toEqual(['turn-1-call-0', 'turn-1-call-1']);
+  expect(live.some(snapshot => snapshot.hiddenContext?.includes('turn-1-call-0'))).toBe(true);
+  expect(ids(result.providerInputItems ?? [], 'function_call_output')).toEqual(['turn-1-call-0']);
+  expect(lateSnapshots).toBe(0);
+});
 
 for (const mode of scenarios) {
   test(`${mode}: native executed pairs survive the loop, persistence and reload exactly once`, async () => {
@@ -113,12 +164,19 @@ for (const mode of scenarios) {
     await persistAssistantCompletionResult({ isTauriAvailable: () => true, ipc: { ...ipc,
       updateMessage: async (_id, _text, persistenceOptions) => { stored = JSON.stringify(persistenceOptions?.providerInputItems); },
     } }, { assistantMessageId: 'fixture-message', result });
-    const restored = parseDbProviderInputItems(stored)!;
+    const restored = parseDbProviderInputItems(stored) ?? [];
     const turns = mode === 'guided-multiple' || mode === 'guided-limit' ? 3 : isSteer() || mode === 'guided-abort' || guidedRecovery() ? 2 : 1;
-    const expectedIds = Array.from({ length: turns }, (_, turn) => [0, 1].map(index => `turn-${turn + 1}-call-${index}`)).flat();
+    const expectedIds = Array.from({ length: turns }, (_, turn) => {
+      // Cancellation before ai:done leaves the whole turn without an acceptance receipt.
+      const abortedSubmit = (mode === 'initial-abort' && turn === 0)
+        || (mode.endsWith('abort') && mode !== 'initial-abort' && turn === 1 && mode !== 'guided-stop-before-response');
+      return (abortedSubmit ? [] : [0, 1]).map(index => `turn-${turn + 1}-call-${index}`);
+    }).flat();
     expect(ids(restored, 'function_call')).toEqual(expectedIds);
     expect(ids(restored, 'function_call_output')).toEqual(expectedIds);
-    expect(submissions.map(item => item.toolCallId)).toEqual(expectedIds);
+    const attemptedIds = Array.from({ length: turns }, (_, turn) => [0, 1].map(index => `turn-${turn + 1}-call-${index}`)).flat();
+    expect(submissions.map(item => item.toolCallId)).toEqual(attemptedIds);
+    expect(expectedIds.every(id => attemptedIds.includes(id))).toBe(true);
     const typed = restored.map(readTypedToolResult).filter(item => item !== undefined);
     const typedIds = mode === 'native-interrupt' ? expectedIds.slice(0, 1) : expectedIds;
     expect(typed.map(item => item.blocks)).toEqual(typedIds.map(() => blocks));

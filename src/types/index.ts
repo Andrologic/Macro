@@ -25,6 +25,16 @@ export type ChatCompletionReason =
   | 'tool_turn_limit'
   | 'post_tool_empty_fallback'
   | (string & {});
+export interface GenerationAttempt {
+  id: string;
+  status: 'completed' | 'partial' | 'abandoned';
+  /** Text emitted by this provider request, before overlap removal. */
+  rawText: string;
+  /** Portion accepted into the assistant response. */
+  acceptedText: string;
+  /** Null means the provider did not report an attributable cost. */
+  costUsd: number | null;
+}
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
@@ -260,7 +270,7 @@ export interface WorkspaceFileReference {
 }
 
 // Context references for chat composer (nodes, branches, skills, files, sources)
-export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'agsdl';
+export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'agsdl' | 'conversation';
 
 export interface AgsdlSelectionReference {
   id: string;
@@ -276,12 +286,16 @@ export interface AgsdlSelectionReference {
   diagnostic?: string;
 }
 
+export interface ConversationContextSource {
+  conversationId: string;
+}
+
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation | AgsdlSelectionReference;
+  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation | AgsdlSelectionReference | ConversationContextSource;
 }
 
 export interface PersistedContextReference {
@@ -301,6 +315,8 @@ export interface PersistedContextReference {
   snippet?: string;
   sourceLabel?: string;
   url?: string;
+  conversationId?: string;
+  sourceUpdatedAt?: string;
 }
 
 // Activity indicator for projects
@@ -774,6 +790,8 @@ export interface ToolTrace {
   order?: number;
   started_at_ms?: number;
   completed_at_ms?: number;
+  /** Reconciled after loading a persisted trace; never proof that an effect did not occur. */
+  recovery_state?: 'completed' | 'live' | 'replayable' | 'unknown';
 }
 
 export interface PendingToolApproval {
@@ -1193,6 +1211,7 @@ export interface ConversationGoalRecord {
   revision: number;
   status: ConversationGoalStatus;
   objective: string;
+  successCriteria?: string[];
   providerId: string | null;
   modelId: string | null;
   reasoningEffort: ReasoningEffort | null;
@@ -1276,6 +1295,7 @@ export interface ChatMessage {
   provider_turn_state?: ProviderTurnState;
   context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
+  generation_attempts?: GenerationAttempt[];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 }

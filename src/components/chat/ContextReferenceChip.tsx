@@ -10,6 +10,7 @@ const KIND_CONFIG: Record<ContextRefKind, { label: string; icon: IconName; color
   'file': { label: 'File', icon: 'file-text', color: 'text-blue-400', bg: 'bg-blue-400/10' },
   'agsdl': { label: 'AgSDL', icon: 'network', color: 'text-primary', bg: 'bg-primary/10' },
   'source': { label: 'Source', icon: 'book-open', color: 'text-primary', bg: 'bg-primary/10' },
+  'conversation': { label: 'Chat', icon: 'message-square', color: 'text-primary', bg: 'bg-primary/10' },
 };
 
 interface ContextReferenceChipProps {

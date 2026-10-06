@@ -410,6 +410,68 @@ fn apply_patch_hunks_to_content_updates_expected_lines() {
     assert_eq!(updated, "export const value = 1;\nconsole.info(value);\n");
 }
 
+#[test]
+fn apply_patch_rejects_malformed_sections_before_execution() {
+    for (patch, expected) in [
+        ("*** Begin Patch\n*** Add File: notes.md\n+hello", "footer"),
+        (
+            "*** Begin Patch\n*** Add File: notes.md\nhello\n*** End Patch",
+            "expected '+' prefix",
+        ),
+        (
+            "*** Begin Patch\n*** Update File: notes.md\n@@\n?old\n*** End Patch",
+            "expected ' ', '+', or '-'",
+        ),
+    ] {
+        let error = parse_apply_patch(patch).expect_err("malformed patch must fail");
+        assert!(
+            error.message.contains(expected),
+            "unexpected error: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn apply_patch_hunks_advance_past_the_first_repeated_block() {
+    let parsed = parse_apply_patch(
+        "*** Begin Patch\n*** Update File: repeated.txt\n@@\n-old\n+first\n@@\n-old\n+second\n*** End Patch",
+    )
+    .expect("parse repeated-block patch");
+    let ParsedPatchOperation::Update { path, hunks } = &parsed[0] else {
+        panic!("expected update operation");
+    };
+    let updated = apply_patch_hunks_to_content(path, "old\nbetween\nold\n", hunks)
+        .expect("apply ordered hunks");
+    assert_eq!(updated, "first\nbetween\nsecond\n");
+}
+
+#[tokio::test]
+async fn apply_patch_rejects_stale_context_without_partial_writes() {
+    let workspace = TempDir::new().expect("workspace");
+    let target = workspace.path().join("target.txt");
+    fs::write(&target, "current\n").expect("seed target");
+
+    let error = execute_workspace_tool(
+        workspace.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        GitState::new(),
+        "Implement".into(),
+        "apply_patch".into(),
+        json!({"patch_text": "*** Begin Patch\n*** Add File: created.txt\n+new\n*** Update File: target.txt\n@@\n-old\n+updated\n*** End Patch"}),
+        None, None, None, None, None,
+    )
+    .await
+    .expect_err("stale context must reject the whole patch");
+
+    assert!(error.message.contains("could not be applied cleanly"));
+    assert_eq!(
+        fs::read_to_string(target).expect("read target"),
+        "current\n"
+    );
+    assert!(!workspace.path().join("created.txt").exists());
+}
+
 #[tokio::test]
 async fn execute_workspace_read_returns_a_resumable_bounded_page() {
     let workspace = TempDir::new().expect("workspace");

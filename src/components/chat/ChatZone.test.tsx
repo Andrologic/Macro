@@ -78,6 +78,8 @@ export type MockChatState = {
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
+  activeContextKey: string | null;
+  selectedConversationContextKey: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
   conversationCompactionStatusById: Record<
     string,
@@ -444,6 +446,35 @@ const loadChatZoneModule = async () => {
         provider.authStatus === 'authenticated'),
   }));
 
+  mock.module('../../composition/goalProductComposition', () => ({
+    conversationGoalProductFlow: {
+      hydrate: async () => undefined,
+      loadCurrent: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      reserveUserTurn: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      releaseUserTurn: () => undefined,
+      reconcileQueuedTurns: () => undefined,
+      activate: async (id: string, objective: string, providerId: string | null, modelId: string | null,
+        reasoningEffort: import('../../types').ReasoningEffort | null) =>
+        useConversationGoalStore.getState().activateGoal({ conversationId: id, objective, providerId, modelId, reasoningEffort }),
+      status: async (id: string, status: import('../../types').ConversationGoalOperationalStatus, reason: string | null = null,
+        expected?: { goalId: string; revision: number }) => {
+        const current = useConversationGoalStore.getState().goalsByConversationId[id];
+        if (!current || (expected && (current.goalId !== expected.goalId || current.revision !== expected.revision))) return null;
+        useConversationGoalStore.getState().setOperationalStatus(id, status, reason);
+        return useConversationGoalStore.getState().goalsByConversationId[id];
+      },
+      pause: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'paused'),
+      resume: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'active_ready'),
+      stop: async (id: string) => useConversationGoalStore.getState().clearGoal(id),
+      track: () => undefined,
+    },
+  }));
+  mock.module('../../composition/goalArtifactComposition', () => ({
+    listConversationGoalAuditArtifacts: async () => [],
+    readGoalAuditArtifact: async () => '',
+    saveGoalAuditArtifact: async () => null,
+  }));
+
   mock.module('../../stores/useShortcutsStore', () => ({
     useShortcutsStore,
   }));
@@ -667,7 +698,7 @@ const buildConversation = (): MockConversation => ({
   title: 'New Conversation',
   scope_mode: 'Chat',
   task_id: null,
-  project_id: null,
+  project_id: 'project-1',
   group_id: null,
 });
 
@@ -681,6 +712,15 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   tool_traces: [],
   ...overrides,
 });
+
+const installUnresolvedJournalMock = () => installTauriRuntimeMock(async (command) =>
+  command === 'db_list_unresolved_tool_invocations'
+    ? [{
+        conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
+        tool_name: 'old_tool', status: 'unknown',
+      }]
+    : undefined
+);
 
 export const buildCompactionEvent = (
   overrides: Partial<
@@ -811,6 +851,8 @@ const resetState = () => {
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
     hydrationStatus: 'ready',
     restoreStatus: 'ready',
+    activeContextKey: 'Chat::scope-a',
+    selectedConversationContextKey: 'Chat::scope-a',
     isLoading: false,
     isStreaming: false,
     sendState: 'idle',
@@ -818,7 +860,7 @@ const resetState = () => {
     toolApprovalRecoveryError: null,
     dismissToolApprovalRecoveryError: mock(() => undefined),
     stopStreaming: mock(() => undefined),
-    sendMessage: mock(async () => ({ status: 'sent' })),
+    sendMessage: mock(async () => ({ status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' })),
     submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
@@ -1131,7 +1173,9 @@ describe('ChatZone', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
-    installTauriRuntimeMock();
+    installTauriRuntimeMock(async (command) =>
+      command === 'db_list_unresolved_tool_invocations' ? [] : undefined
+    );
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback: FrameRequestCallback) =>
         setTimeout(() => callback(performance.now()), 0) as unknown as number;
@@ -1302,6 +1346,42 @@ describe('ChatZone', () => {
     expect(first?.style.transform).toBe('translateY(2700px)');
     expect(last?.style.transform).toBe('translateY(7312px)');
     expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
+  it('hides the previous conversation journal while a new context resolves', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'resolving' };
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the previous journal hidden when context resolution fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error', activeContextKey: 'Chat::scope-b' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the selected conversation journal visible if provider restoration fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('old_tool');
+  });
+
+  it('hides a selected conversation outside the active mode', async () => {
+    installUnresolvedJournalMock();
+    chatState = {
+      ...chatState,
+      conversations: [{ ...buildConversation(), scope_mode: 'Implement' }],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
   });
 
   it('renders the first user message when the selected conversation has messages', async () => {
@@ -2177,11 +2257,44 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Finish the authentication migration',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
     expect(
       requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
     ).toContain('Finish the authentication migration');
+  });
+
+  it('shows an explicit Goal error when send returns no assistant response', async () => {
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'sent' as const, turnId: 'turn-without-response', assistantMessageId: null })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']).toMatchObject({
+      status: 'error',
+      lastError: 'The executor turn did not return a saved assistant response.',
+    });
+  });
+
+  it('keeps a Goal paused when its original send finishes after Pause', async () => {
+    const sending = createDeferred<{ status: 'sent'; turnId: string; assistantMessageId: string }>();
+    chatState = { ...chatState, sendMessage: mock(() => sending.promise) };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    await act(async () => {
+      requireContainer().querySelector<HTMLButtonElement>('button[aria-label="Pause"]')?.click();
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
+    await act(async () => {
+      sending.resolve({ status: 'sent', turnId: 'turn-late', assistantMessageId: 'assistant-late' });
+      await sending.promise;
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
   });
 
   it('keeps the Goal control outside the composer and removes the command', async () => {
@@ -2556,7 +2669,7 @@ describe('ChatZone', () => {
       providerId: 'provider-1',
       modelId: 'model-1',
       reasoningEffort: 'high',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2611,7 +2724,7 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Ship the CSV export end to end',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2915,6 +3028,25 @@ describe('ChatZone', () => {
     expect(fileChip?.textContent).toContain('File');
     expect(fileChip?.textContent).toContain('src/App.tsx');
     expect(requireContainer().textContent).not.toContain('[file: src/App.tsx]');
+  });
+
+  it('shows the frozen cited conversation excerpts on a sent user message', async () => {
+    chatState = {
+      ...chatState,
+      messages: [buildMessage({
+        id: 'msg-cited', role: 'user', content: 'What did we decide?',
+        context_refs: [{
+          id: 'source-conv', conversationId: 'source-conv', kind: 'conversation',
+          title: 'Earlier discussion', sourceUpdatedAt: '2026-09-28T12:00:00Z',
+          snippet: '[message_id=source-msg; role=user; at=2026-09-28T11:00:00Z]\nReview every release.',
+        }],
+      })],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const details = requireContainer().querySelector('details');
+    expect(details?.textContent).toContain('Earlier discussion');
+    expect(details?.textContent).toContain('message_id=source-msg');
+    expect(details?.textContent).toContain('Review every release.');
   });
 
   it('moves message editing into the composer and saves bracket text', async () => {

@@ -58,6 +58,8 @@ pub enum BridgeSendEvent {
         content: String,
         reasoning_summary: Option<String>,
         hidden_context: Option<String>,
+        #[serde(default)]
+        accepted_submission_ids: Vec<String>,
         tool_traces: Option<Vec<AiToolTrace>>,
         completion_reason: Option<String>,
     },
@@ -159,6 +161,9 @@ pub struct CopilotToolRequestEvent {
 pub struct CopilotToolResultRequest {
     pub request_id: String,
     pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub submission_id: Option<String>,
     pub result: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -178,6 +183,9 @@ pub struct BridgeToolResultMessage {
     message_type: &'static str,
     pub request_id: String,
     pub tool_call_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub submission_id: Option<String>,
     pub result: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -195,6 +203,7 @@ impl From<CopilotToolResultRequest> for BridgeToolResultMessage {
             message_type: "tool_result",
             request_id: request.request_id,
             tool_call_id: request.tool_call_id,
+            submission_id: request.submission_id,
             result: request.result,
             blocks: request.blocks,
             hidden_context: request.hidden_context,
@@ -217,6 +226,7 @@ mod tests {
                 "type": "done",
                 "content": "Final answer.",
                 "reasoning_summary": "Reasoning shown to the user.",
+                "accepted_submission_ids": ["submission-1"],
                 "completion_reason": "length"
             }"#,
         )
@@ -226,6 +236,7 @@ mod tests {
             BridgeSendEvent::Done {
                 content,
                 reasoning_summary,
+                accepted_submission_ids,
                 completion_reason,
                 ..
             } => {
@@ -235,6 +246,7 @@ mod tests {
                     Some("Reasoning shown to the user.")
                 );
                 assert_eq!(completion_reason.as_deref(), Some("length"));
+                assert_eq!(accepted_submission_ids, vec!["submission-1"]);
             }
             _ => panic!("expected done event"),
         }
@@ -247,13 +259,14 @@ mod tests {
         ))
         .unwrap();
         let request: CopilotToolResultRequest = serde_json::from_value(serde_json::json!({
-            "request_id":"fixture", "tool_call_id":"call", "result":"partial result",
+            "request_id":"fixture", "tool_call_id":"call", "submission_id":"submission-1", "result":"partial result",
             "blocks":fixture["content"], "is_error":true
         }))
         .unwrap();
         let payload = serde_json::to_value(BridgeToolResultMessage::from(request)).unwrap();
         assert_eq!(payload["blocks"], fixture["content"]);
         assert_eq!(payload["is_error"], true);
+        assert_eq!(payload["submission_id"], "submission-1");
     }
 
     #[test]

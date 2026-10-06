@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import { collectAllowedTools, getFunctionToolName } from "./toolDefinitions";
 import { applyEditingStrategyToToolIds } from "../aiEditingStrategy";
 import { getImplementAgentToolPolicy, getToolModePolicy } from "../toolModePolicy";
@@ -19,6 +19,54 @@ describe("tool availability at the model boundary", () => {
     expect(tools).toEqual(ids.map(id => toFunctionToolShape(requireMacroToolRegistryEntry(id))));
     expect(names(collect(["agsdl_get"]))).toEqual(["agsdl_get"]);
     expect(names(collect([]))).toEqual([]);
+  });
+
+  it('refuses a provider batch with a missing call ID before any tool runs', async () => {
+    const handler = mock(() => 'unexpected');
+    const options: StreamingChatOptions = {
+      providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
+      messages: [], allowedToolIds: ['read'], maxTurns: 1,
+      onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+      onToolCall: handler,
+    };
+    await expect(runToolCallingLoop(options, {
+      kind: 'generic',
+      streamTurn: async () => ({
+        result: { content: '', toolCalls: [{ id: '', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+        projectAssistant: () => ({ items: [] }),
+      }),
+      projectTool: result => result.content,
+      afterToolResults: () => undefined,
+    }, createStreamAccumulator(options))).rejects.toThrow('without a stable call ID');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('offers bounded MCP discovery on the common transport and rejects hidden direct calls', async () => {
+    const mcpTools = Array.from({ length: 13 }, (_, index) => ({
+      id: `mcp__fixture__tool_${index}`, serverId: 'fixture', name: `tool_${index}`,
+      inputSchema: { type: 'object', properties: {} },
+    }));
+    const handler = mock(() => 'unexpected');
+    const options: StreamingChatOptions = {
+      providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
+      messages: [], allowedToolIds: mcpTools.map(tool => tool.id), mcpTools, maxTurns: 1,
+      onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+      onToolCall: handler,
+    };
+    const results: ToolResult[] = [];
+    await runToolCallingLoop(options, {
+      kind: 'generic',
+      streamTurn: async ({ tools }) => {
+        expect(names(tools)).toEqual(['mcp_search', 'mcp_call']);
+        return { result: { content: '', toolCalls: [{ id: 'direct', type: 'function', function: {
+          name: mcpTools[0].id, arguments: '{}',
+        } }] }, projectAssistant: () => ({ items: [] }) };
+      },
+      projectTool: result => { results.push(result); return { output: result.content }; },
+      afterToolResults: () => undefined,
+    }, createStreamAccumulator(options));
+    expect(results[0].error_kind).toBe('permission');
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("keeps permitted write/edit when a patch-first model cannot use apply_patch", () => {

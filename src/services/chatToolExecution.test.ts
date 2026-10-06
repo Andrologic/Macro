@@ -10,6 +10,7 @@ import { handleDeferredArchitectToolCall } from "./deferredArchitectTool";
 import type { ArchitectPlanRecord } from "./architectPlanService";
 import { createChatTurnRuntime } from "./chatTurnRuntime";
 import { createChatToolDispatch } from "./chatToolDispatch";
+import { allowChatToolInvocationJournal } from "../test-utils/chatToolInvocationJournal";
 import type { ConversationRuntimeState } from "../types";
 import { buildMCPToolId } from "./mcp/identifiers";
 
@@ -337,6 +338,48 @@ describe("durable tool approvals", () => {
     expect(await changed).toMatchObject({ errorKind: "permission" });
     expect(f.ports.handlers.mcp).toHaveBeenCalledTimes(1);
   });
+
+  test('revalidates the MCP schema after approval', async () => {
+    const tool = buildMCPToolId('server', 'inspect');
+    const f = setup(tool, 'balanced');
+    const current = { id: tool, name: 'inspect', serverId: 'server', enabled: true, inputSchema: { type: 'object', properties: { query: { type: 'string' } } } };
+    f.operation.mcpServers = [{ id: 'server', name: 'Server', category: 'other', status: 'online', description: '', icon: 'terminal', tools: [current] }];
+    const pending = f.run({ query: 'docs' });
+    await checkpoint();
+    f.ports.policy.mcpRuntime = () => ({ servers: [], tools: [{ ...current, inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }] });
+    f.resolve({ kind: 'allow_once' });
+    expect(await pending).toMatchObject({ errorKind: 'permission' });
+    expect(f.ports.handlers.mcp).not.toHaveBeenCalled();
+  });
+
+  test('searches a large MCP catalog and routes a found tool through approval', async () => {
+    const target = buildMCPToolId('server', 'archive');
+    const f = setup(target, 'balanced');
+    const tools = Array.from({ length: 14 }, (_, index) => ({
+      id: index === 13 ? target : buildMCPToolId('server', `tool_${index}`),
+      name: index === 13 ? 'archive' : `tool_${index}`, serverId: 'server', enabled: true,
+      description: index === 13 ? 'Read archived records' : 'Read current records',
+      inputSchema: { type: 'object', properties: {} },
+    }));
+    f.operation.allowedToolIds = tools.slice(1).map(tool => tool.id);
+    f.operation.mcpServers = [{ id: 'server', name: 'Server', category: 'other', status: 'online', description: '', icon: 'terminal', tools }];
+    const dispatch = createChatToolDispatch(f.operation, {
+      journal: allowChatToolInvocationJournal,
+      execute: f.execute,
+      preserve: async (_operation, _name, _callId, resolution) => resolution,
+      boundError: async (_operation, _name, _callId, error) => error,
+    }, () => true, () => undefined, tools);
+    expect(await dispatch('mcp_call', { tool_id: target, arguments: {} }, 'early')).toMatchObject({ errorKind: 'validation' });
+    expect(await dispatch(tools[0].id, {}, 'direct')).toMatchObject({ errorKind: 'permission' });
+    expect(String(await dispatch('mcp_search', { query: 'archive' }, 'search'))).toContain(target);
+    expect(String(await dispatch('mcp_search', { query: 'tool_0' }, 'denied'))).not.toContain(tools[0].id);
+    const pending = dispatch('mcp_call', { tool_id: target, arguments: {} }, 'call');
+    await checkpoint();
+    expect(f.pending.get('conversation')?.toolId).toBe(target);
+    f.resolve({ kind: 'allow_once' });
+    expect(await pending).toBe('mcp result');
+    expect(f.ports.handlers.mcp).toHaveBeenCalledWith(target, {}, f.operation.mcpServers, { projectIds: ['project'], signal: f.abort.signal });
+  });
 });
 
 describe("agent terminal isolation", () => {
@@ -499,6 +542,7 @@ test("a tool suspended in an old attempt cannot execute after the same turn is r
   const gate = deferred<boolean>();
   f.ports.policy.isSourceToolEnabled = () => gate.promise;
   const dispatch = createChatToolDispatch(f.operation, {
+    journal: allowChatToolInvocationJournal,
     execute: f.execute, preserve: async (_op, _name, _id, value) => value,
     boundError: async (_op, _name, _id, error) => error,
   }, acceptsOld, () => {});

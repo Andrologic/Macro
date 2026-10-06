@@ -519,6 +519,8 @@ ni mock de store. L'adaptateur capture les sélections UI avant la première
 attente ; le runtime reçoit ensuite ce snapshot, ses dépendances et les
 opérations de projection séparément.
 
+Une référence de conversation conserve l'identifiant de la source dans le brouillon ou la file. Juste avant la persistance du message utilisateur, `conversationContextSource` refuse une source encore active et lit un snapshot natif cohérent : la cible, la source et les messages sont lus dans la même transaction SQLite, avec vérification du projet commun avant le retour des messages. La sélection retient au plus trois passages de 850 caractères par source ; elle cherche les mots entiers dans les 4 000 premiers caractères et les 500 premiers mots d'au moins trois caractères de chaque message candidat. L'identifiant des messages, leur rôle, leur date et la date de mise à jour de la conversation accompagnent les extraits figés dans `context_refs_json`. Une édition concurrente peut être retenue avant ou après sa validation, mais ne mélange pas deux états du transcript. La préparation de requête ne recherche pas de nouveaux passages : elle injecte ces extraits en les marquant comme matériau non fiable. Une soumission en file relit et revalide la source à son départ. Le snapshot ne contient que les messages encore présents après un retour en arrière.
+
 Les soumissions différées utilisent le stockage local de récupération du chat.
 Leur runtime, la revalidation de contexte, les instructions du plan Architect et
 le panneau de récupération sont chargés à la demande pour préserver le budget du bundle initial. La capture
@@ -540,10 +542,32 @@ forme le point de raccord des transports. `claimStream` attribue une identité
 de tentative distincte lors d'une récupération du même tour. Un stream remplacé ne libère pas son
 successeur et l'attente de fin suit les remplacements dus à la récupération.
 
+Cette identité de stream ne désigne pas une requête modèle. `toolCallingLoop`
+attribue un identifiant distinct à chaque requête fournisseur, y compris les
+renvois internes des transports HTTP et natif ; le
+message assistant conserve son texte brut, le texte accepté et un coût
+`null` tant qu'aucun coût par tentative n'est attribuable. Avant une écriture
+partielle, `chatStreamOrchestrator` vide les tokens en attente et la boucle publie
+le texte accepté, y compris le suffixe d'une continuation. Un échec de cette
+écriture intermédiaire est journalisé sans devenir une erreur fournisseur. Quand
+un utilisateur arrête le stream, la tentative en cours, suivie en mémoire au fil
+des tokens ou dès l'envoi de la requête, rejoint le message avant sa sauvegarde
+partielle. Si la préparation après un dépassement de contexte échoue, Macro
+garde les tentatives déjà enregistrées sur le message assistant. Quand
+une récupération de dépassement de contexte remplace le stream sur le même
+message, ses nouvelles tentatives s'ajoutent aux précédentes par identifiant.
+Si le tour aboutit, l'écriture finale réessaie de sauvegarder la réponse et ses
+tentatives. Son échec utilise la récupération de réponse non sauvegardée, qui
+retransmet aussi les tentatives. Un crash pendant un tour fournisseur ou après un échec d'écriture
+intermédiaire peut laisser ses derniers tokens et sa tentative hors de SQLite.
+`chatPersistenceService` sérialise les écritures partielles et finales par
+message assistant : une ancienne sauvegarde ne peut pas écraser celle de Stop.
+
 `chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
 MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
+`mcp/toolDiscovery` décide, à partir de l'allowlist et du catalogue figés du tour, si le modèle reçoit les schémas MCP directs ou les fonctions `mcp_search` et `mcp_call`. La recherche est bornée et ne parcourt que les outils autorisés. Le dispatch conserve les identifiants trouvés pour ce tour ; `mcp_call` transmet ensuite l'identifiant et les arguments à l'exécuteur MCP existant, qui revalide la politique, l'approbation éventuelle et la génération. Les transports commun, natif et Copilot exposent les mêmes fonctions de découverte. Une récupération d'overflow conserve le catalogue initial ; elle ne crée pas de nouveaux droits.
 La récupération d'overflow transmet les capacités capturées à la préparation :
 type d'agent, allowlist, catalogue et clé MCP, risque et réglages d'outils. Elle
 reconstruit le contexte compacté sans résoudre une nouvelle génération MCP ni
@@ -745,7 +769,76 @@ inutilisée. La façade `tauriIpc.ts` et les réexports Rust de `commands` pourr
 pas être déduit d'une recherche d'imports nommés uniquement.
 
 
-### 7.4 Boucle d'outils et compatibilité des providers
+### 7.4 Courtier et hôte de formulaires MCP
+
+Le runtime persistant ouvre un port IPC typé seulement lorsqu'un hôte UI
+s'enregistre avec `mcp_runtime_open_interaction_port`. En l'absence de port, une
+requête échoue avec `MCP_INTERACTION_NO_HOST`. Le bail du port et les identifiants
+de serveur, de génération, d'opération et de demande lient chaque réponse à son
+appel. Le courtier limite les demandes simultanées, leur taille, le nombre de
+prompts et le délai de réponse. La fermeture du port, l'annulation de l'opération
+et l'arrêt du runtime retirent les demandes en attente. Les réponses `accept`,
+`decline` et `cancel` ont un contrat typé ; `cancel` est transmis au serveur
+dans `inputResponses`, tandis que l'annulation externe interrompt l'appel.
+
+Les chemins stdio et HTTP modernes traitent `input_required` lorsque toutes les
+demandes sont des formulaires `elicitation/create`. Ils conservent `requestState`
+en mémoire dans le backend et le retransmettent tel quel avec `inputResponses` au tour MCP suivant.
+Le schéma de formulaire plat est vérifié avant remise au port et conservé avec
+la demande en attente ; chaque `accept`, y compris depuis un IPC hostile, est
+validé contre ses champs, obligations, choix et contraintes avant continuation.
+Les schémas non pris en charge échouent fermés. Une valeur `requestState` non
+chaîne ou dépassant 128 Kio est refusée sans journalisation ; un tour contenant uniquement `requestState` se poursuit sans hôte UI et sans
+`inputResponses`. Aucun appel n'est relancé après une erreur de transport. Le
+runtime s'arrête après quatre continuations. L'hôte de formulaires est monté
+au niveau global de l'application Tauri, indépendamment de la conversation
+active. Sa modale et ses erreurs prennent la priorité sur les autres modales
+de l'application. Il ouvre un bail unique, conserve en mémoire une file de demandes bornée
+par le courtier, affiche l'identité du serveur et l'opération, puis demande une
+revue explicite des valeurs avant `accept`. `decline` et `cancel` restent deux
+réponses distinctes. La fermeture de l'hôte vide la file et révoque le bail.
+Le délai absolu accompagne chaque demande ; pendant qu'une file existe, l'hôte
+interroge les seuls identifiants encore en attente pour retirer rapidement les
+appels annulés ailleurs. Aucune valeur saisie, réponse ni donnée `requestState` n'est enregistrée
+dans l'historique. Les formulaires qui semblent demander
+un secret n'affichent aucun champ et ne proposent pas `accept` ; l'interface
+rappelle aussi de ne jamais saisir de secret. Une détection textuelle ne peut
+pas établir à elle seule qu'une saisie arbitraire n'est pas sensible.
+
+Chaque `tools/call` moderne stdio ou HTTP ajoute `elicitation: {form: {}}` à
+`_meta.io.modelcontextprotocol/clientCapabilities` uniquement si le courtier
+a un port vivant. rmcp fusionne ces capacités avec les métadonnées de découverte
+existantes, dont la version du protocole et l'identité du client. Aucun mode URL
+n'est annoncé. Le validateur Rust accepte les formats MCP usuels ; pour `email`,
+il applique un sous-ensemble ASCII conservateur.
+
+Le chemin HTTP moderne utilise la même boucle de continuation que stdio,
+avec le contexte d'opération fourni par le runtime et le même courtier IPC.
+Les réponses restent liées au serveur, aux projets, à la génération et à
+l'opération. Chaque continuation transmet les arguments initiaux, l'état opaque
+et les réponses validées. La boucle vérifie aussi l'annulation avant de rendre
+un résultat final, même si le transport vient de recevoir sa réponse.
+Une erreur HTTP ou d'authentification arrête l'appel.
+Les redirections de `tools/call`, même de même origine, sont refusées pour éviter
+le rejeu d'une mutation potentiellement acceptée. La récupération automatique
+de session du SDK est désactivée pour le client HTTP moderne ; le runtime peut
+reconnecter une session, mais ne rejoue pas l'appel interrompu.
+
+Le SDK rmcp expose les paramètres URL, mais le courtier et l'hôte de Macro
+valident seulement des formulaires. Un parcours URL demanderait un contrat
+séparé d'ouverture, de confirmation et d'annulation, ainsi qu'une politique
+pour les destinations et les flux d'authentification. Il reste reporté : aucune
+capacité URL n'est annoncée et toute demande URL échoue explicitement.
+Les handlers legacy répondent encore `-32601` à `elicitation/create`.
+Leurs requêtes serveur ne suivent pas la continuation `input_required` moderne ;
+leur prise en charge exige d'abord une corrélation avec l'appel et sa durée de vie.
+Ce lot couvre donc les formulaires HTTP modernes, sans activer URL ni legacy.
+
+Les mécanismes du client rmcp de Codex ont servi de référence pour la liaison
+à la requête, l'annulation et la séparation entre reprise de connexion et reprise
+d'un appel. Aucun code de ce client n'est incorporé.
+
+### 7.5 Boucle d'outils et compatibilité des providers
 
 Les résultats MCP conservent des blocs typés dans l’historique. Le
 [contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
@@ -1015,6 +1108,19 @@ une demande restaurée. Tant qu'une demande live reste visible pendant la
 revalidation ou la clôture durable, un refus révoque l'autorisation avant le
 dispatch. Les approbations MCP exposent l'identité protocolaire et un aperçu des
 arguments, avec champs sensibles masqués et troncature signalée.
+
+La colonne `messages.generation_attempts_json` stocke les tentatives déjà
+observées par le runtime. `toolTraceState` reclasse les traces au rechargement
+et dès qu'un flux se termine ou s'interrompt : `done` et `denied` sont clos,
+une trace non résolue devient `unknown`, et seul le marqueur d'approbation
+restauré rend cette demande `replayable`. `live` exige un flux propriétaire
+encore actif. Ces états décrivent la preuve disponible pour la trace, pas une
+garantie d'exécution unique de l'effet externe.
+`streamAccumulator` laisse une trace sans résultat confirmé en `running` avec
+`recovery_state=unknown` à la fin du tour. Le rendu des anciens marqueurs
+`[TOOL]` exige `[TOOL_DONE]` pour afficher une fin confirmée.
+Le transport natif ne marque une trace `done` que si le backend a confirmé la
+remise du résultat, y compris lorsque la remise d'une erreur est nécessaire.
 
 ### 10.2 Persistance locale frontend
 
@@ -1289,6 +1395,8 @@ Avant exécution d'un outil, Macro peut valider :
 - si le chemin cible est autorisé
 - si les restrictions metadata doivent s'appliquer
 
+Seuls les outils intégrés explicitement classés comme lectures du workspace ou de Git peuvent s'exécuter ensemble. `runToolBatch` et le transport natif/Copilot partagent ce contrat : trois lectures actives au maximum, résultats et contexte fournisseur publiés dans l'ordre initial, puis passage aux appels suivants. Le pont Copilot relaie aussi ses inspections Git au frontend lorsqu'il dispose de ce canal, afin qu'elles traversent le même planificateur ; sans canal frontend, ses inspections Git seules peuvent encore passer par le tool host confiné. Les autres appels gardent leur ordre séquentiel et séparent les groupes ; les outils MCP restent hors de cette liste tant que leurs effets ne sont pas déclarés et vérifiés. Une annulation empêche la publication tardive d'un résultat, sans supposer qu'un transport puisse arrêter instantanément une opération de lecture déjà partie. Les résultats déjà confirmés restent dans l'historique du tour ; une soumission native encore sans accusé de réception au moment de l'annulation n'y est pas présentée comme un succès.
+
 ### 13.3 Exécution de workspace tools
 
 La couche d'exécution d'outils encapsule :
@@ -1312,6 +1420,13 @@ Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible
 Les remplacements atomiques conservent les bits de permission Unix de la cible. Un nouveau fichier commençant par un shebang reçoit les bits exécutables, conformément au comportement de l'outil `write` d'Oh My Pi. Les checkpoints enregistrent également le mode Unix et le réappliquent lors d'un replay ou d'une compensation ; une restauration ne doit donc pas transformer silencieusement un script exécutable en fichier ordinaire. Sous WSL, cette garantie est appliquée au fichier temporaire avant la dernière validation de révision et le renommage.
 
 Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
+
+L'état d'une mutation headless est interrogeable par `execution_id` via
+`/tools/executions/{execution_id}` dans ce protocole. Cette capacité existe
+pour l'invocation distante suivie par `remoteKernelApi` ; l'identifiant n'est
+pas relié au `ToolTrace` SQLite et aucune interrogation générale des outils
+desktop, MCP ou terminaux n'est déduite de `recovery_state`. Une intention
+distante encore `pending` après redémarrage reste indéterminée.
 
 ### 13.5 Sorties bornées et reprise
 
@@ -1493,6 +1608,62 @@ La surface complète reste supportée par le desktop local via Tauri IPC.
 
 ## 15. Streaming IA et orchestration conversationnelle
 
+Le journal SQLite `tool_invocations` prépare le raccordement du streaming. La
+commande `db_record_tool_invocation` crée, avant dispatch, une intention liée à
+la conversation et identifiée par tour, message et appel. Le backend calcule une
+empreinte SHA-256 du JSON canonique des arguments sans conserver leur contenu.
+L'insertion et la clôture utilisent `synchronous=FULL` sur leur connexion SQLite
+avant de confirmer le commit ; la connexion revient à `NORMAL` après succès.
+Un second enregistrement de même identité est idempotent si le nom, la classe
+d'effet, l'empreinte et l'identifiant distant concordent ; sinon il échoue.
+La réponse porte `is_new=true` seulement lors de la première insertion ; le
+futur appelant ne doit dispatcher que dans ce cas. Une nouvelle lecture de
+`pending`, `unknown` ou `completed` renvoie `is_new=false` et n'autorise pas un
+second effet. L'identifiant de reçu peut être partagé entre deux invocations
+distinctes ; sa cohérence est vérifiée à l'intérieur de chaque identité.
+`db_complete_tool_invocation` exige un identifiant de reçu que le futur appelant
+ne doit fournir qu'après confirmation du résultat par le transport. Le journal
+ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encore
+`pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
+clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
+automatiquement. La suppression de conversation efface les entrées par cascade.
+La garantie est un dispatch au plus une fois par identité, pas une exécution
+exactement une fois : une interruption après l'écriture initiale peut laisser
+l'effet non exécuté. Supprimer un tour ne supprime pas son journal, afin de ne
+pas autoriser à nouveau un effet potentiel portant la même identité. Une
+restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
+l'archive ; le futur transport doit donc vérifier son propre identifiant
+d'idempotence avant toute reprise depuis une sauvegarde.
+Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
+l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin n'est écrit
+qu'après la réponse de l'exécuteur et le traitement éventuel d'un gros résultat.
+`completed` prouve cette réponse et, si l'écriture de l'artefact a réussi, sa
+conservation. L'échec de cette écriture peut produire un simple aperçu ; le
+journal v7 ne conserve aucun résultat brut et ne garantit pas la reconstruction
+d'une réponse courte. Il ne prouve pas non plus
+l'acceptation par le fournisseur Copilot ; la trace UI reste `unknown` tant que
+ce reçu fournisseur manque. Une annulation, une exception de transport ou un
+échec explicite du traitement du résultat laisse
+l'intention locale `unknown`, sans rejeu automatique. Le mode frontend-only
+distant conserve son chemin d'exécution sans écrire dans le journal SQLite
+`tool_invocations`. Pour `write`, `edit`, `delete`, `apply_patch` et les mutations
+Git prises en charge, `remoteKernelApi` utilise déjà l'`invocationId` composé
+de la conversation, du tour et de l'appel, une intention conservée dans le
+stockage du navigateur, un `execution_id` et le journal du noyau distant pour
+retrouver un résultat perdu. Cette identité ne contient pas l'identifiant du
+message et l'intention navigateur est effacée après une réponse confirmée :
+un second dispatch du même appel peut obtenir un nouvel `execution_id` et
+répéter l'effet. Ce défaut préexistant n'est pas couvert par le journal local.
+Les lectures et les autres outils distants ne bénéficient pas non plus du
+journal SQLite du Chat. Le raccordement de l'`execution_id` au journal de
+conversation exige un contrat distant de réservation préalable et de reçu,
+ainsi qu'une politique de rétention ; aucune correspondance
+n'est déduite de l'identifiant d'appel local. L'UI des invocations inconnues
+relève d'un lot séparé.
+La validation d'une sauvegarde compare d'abord son schéma à la version déclarée
+avant de migrer sa copie temporaire, ce qui accepte les archives antérieures à
+la migration du journal sans assouplir le contrôle des objets SQLite existants.
+
 ### 15.1 Chat streaming
 
 `streamingChat.ts` conserve la façade publique, les estimateurs synchrones et
@@ -1527,6 +1698,17 @@ accepte le premier, puis refuse les suivants.
 
 `streamAccumulator.ts` garde l'ordre d'insertion des traces et leur contexte
 visible/caché. La priorité des statuts protégés vient de `toolTraceState.ts`.
+Pour les outils relayés par Copilot, chaque résultat proposé, y compris une
+erreur de secours, porte son propre `submission_id`. Le bridge ne place cet
+identifiant dans `accepted_submission_ids` qu'après avoir résolu la réponse du
+canal. Le transport natif utilise ces identifiants à `ai:done` pour conserver
+les traces et les éléments rejouables des seuls résultats acceptés. Le
+`hidden_context` durable
+provient du même événement du bridge ; les blocs d'outils relayés émis par le
+SDK exigent aussi un reçu de remise accepté. L'accusé de l'écriture IPC ne suffit pas.
+Une fin reçue pendant une remise attend au plus cinq secondes la réponse IPC,
+puis les remises sans preuve d'acceptation restent d'issue inconnue. Cette
+classification n'implique aucune reprise exactement une fois des effets externes.
 L'approbation, la persistance et l'identité de tentative restent aux modules
 Chat. Chaque transport nettoie ses propres ressources, y compris les listeners
 acquis après un échec partiel, sans toucher à celles d'une requête suivante.
@@ -1610,7 +1792,19 @@ Le socle est séparé en quatre couches :
 
 La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
 
-Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+Le coordinateur `goal_auditor` est assemblé avec le transport fournisseur et le journal durable par ports injectés. Le profil lecture seule est appliqué aux outils du tour enfant. Le journal IPC enregistre chaque transition et sa projection dans `agent_runs` en une transaction SQLite, avec idempotence par `(runId, sequence)`. La conversation enfant est réservée et liée au run avant le streaming. Le parcours produit déclenche l'audit après une réponse assistant enregistrée et terminée pour le tour exécutant attendu.
+
+Le runtime attend la confirmation de `queued` avant de planifier l'enfant, celle de `running` avant son exécution et celle de la transition terminale avant tout verdict applicable. Une écriture refusée ou non confirmée échoue localement sans appliquer le verdict. Les attentes du journal sont annulables et bornées à dix secondes par défaut ; l'insertion SQLite de `queued` vérifie immédiatement la profondeur du parent. L'annulation ne peut pas annuler rétroactivement un effet IPC déjà lancé : le port doit traiter le signal et réconcilier un résultat tardif éventuel à partir de l'identifiant du run. Le port de verdict doit respecter le signal et la révision attendue pour éviter un effet tardif après annulation.
+
+Si l'annulation interrompt l'attente d'une écriture `queued` ou terminale non confirmée, le résultat reste un échec du journal : aucun état `cancelled` durable n'est alors garanti. L'identifiant du run permet d'inspecter l'état avant une nouvelle tentative.
+
+Si un adaptateur asynchrone retarde `registerRun`, le coordinateur borne aussi son attente à dix secondes et l'interrompt à l'annulation. Une panne ou un délai du port échoue sans créer de tour enfant ; une annulation conserve son motif. Si l'inscription aboutit après le résultat, le coordinateur rappelle `releaseRun` ; l'adaptateur asynchrone doit fournir ce nettoyage idempotent et reste responsable d'un appel qui ne se termine jamais. Le journal Tauri enregistre ce descripteur de façon synchrone. Après la fin du cycle, le coordinateur libère le run en mémoire et les données transitoires du journal durable ; SQLite conserve les transitions et leurs contrôles de rejeu.
+
+La migration SQLite 9 conserve les buts courants et remplacés, leur révision, leurs critères de réussite et les champs opérationnels affichés dans le bandeau. Chaque couple `(conversationId, executorTurnId)` ne peut avoir qu'un audit ; ce dernier conserve son run courant et l'historique des runs de reprise. L'écriture `queued` et la revendication de l'audit partagent une transaction SQLite : elles exigent un tour assistant du parent et un run `goal_auditor`, puis sont confirmées avant `running`. Le verdict exige la transition terminale `completed`, l'identité de l'audit et du run, la même sortie durable et la révision courante du but. La mise à jour du but et celle de l'audit partagent une transaction SQLite.
+
+Au redémarrage, le backend marque les audits restés `queued` ou `running` comme `interrupted`, après la réconciliation des runs. Une reprise explicite du même audit reste possible par le contrat natif, mais le bouton Reprendre du parcours produit lance un nouveau tour exécutant. Le claim place le but en statut `auditing` sans changer sa révision ; `update_goal` refuse ce statut afin qu'une mise à jour cosmétique ne rende pas le verdict stale. Le port frontend vérifie le signal avant et après l'IPC de verdict ; une annulation arrivée après un commit SQLite ne peut pas annuler ce commit. L'objectif libre est enregistré comme critère de référence si aucun critère distinct n'est fourni, et le verdict exige des preuves structurées.
+
+La désactivation d'un but courant utilise `(conversationId, goalId, expectedRevision)` et empêche sa réapparition après redémarrage. Le bandeau est réhydraté depuis le but courant natif ; Pause, édition, Reprendre et Stop utilisent la révision native avant de publier l'état dans le store. Les champs `lastExecutorTurnAt`, `awaitingUserSinceAt`, `executorTurnCount` et `lastError` sont lus directement. Les résultats d'audit sont des artefacts rattachés au but et à sa conversation de projet, écrits et récupérés par le journal de mutations des métadonnées existant. Le verdict natif appliqué permet de reconstruire un artefact manquant sans créer de plan fictif. Les listes utilisateur et le bootstrap de conversation excluent les enfants internes identifiés par leur run `goal_auditor`, pour que la restauration d’une tâche retrouve son exécuteur. Les snapshots complets et la lecture directe conservent ces enfants et leurs messages. La suppression du parent supprime ses enfants d’évaluation dans la même transaction ; Stop conserve les historiques.
 
 ---
 

@@ -93,26 +93,69 @@ impl RemoteUi {
                 format!("Failed to serialize options: {err}"),
             )
         })?;
+        let is_mcp_channel = ws_payload.cmd == "mcp_runtime_open_interaction_port";
+        let closed_lease_id = if ws_payload.cmd == "mcp_runtime_close_interaction_port" {
+            ws_payload
+                .args
+                .as_ref()
+                .and_then(|args| args.get("leaseId"))
+        } else {
+            None
+        };
+        let closed_lease_json = serde_json::to_string(&closed_lease_id).map_err(|err| {
+            Error::PluginInitialization("tauri-remote-ui".to_owned(), err.to_string())
+        })?;
+        let channel_setup = if is_mcp_channel {
+            format!(
+                r#"
+                const callbackId = window.__TAURI_INTERNALS__.transformCallback((frame) => {{
+                    window.__TAURI_INTERNALS__.invoke("plugin:tauri-remote-ui|complete_rpc", {{
+                        sessionId: "{session_id}", id: {id}, status: "success",
+                        payload: frame, mcpChannelMessage: true
+                    }}).catch(() => window.__TAURI_INTERNALS__.unregisterCallback(callbackId));
+                }});
+                const invokeArgs = {{ channel: `__CHANNEL__:${{callbackId}}` }};
+                "#,
+                session_id = session_id,
+                id = ws_payload.id,
+            )
+        } else {
+            format!("const callbackId = null; const invokeArgs = {args_json};")
+        };
         let js = format!(
             r#"
-            window.__TAURI_INTERNALS__.invoke({cmd}, {args}, {opts})
+            (() => {{
+            {channel_setup}
+            window.__TAURI_INTERNALS__.invoke({cmd}, invokeArgs, {opts})
                 .then((res) => {{
                     return window.__TAURI_INTERNALS__.invoke("plugin:tauri-remote-ui|complete_rpc", {{
                         sessionId: "{session_id}",
                         id: {id},
-                        status: "{success}", payload: res
+                        status: "{success}", payload: res,
+                        mcpChannelCallbackId: callbackId,
+                        closedLeaseId: {closed_lease_json}
+                    }}).catch((err) => {{
+                        if (callbackId !== null) {{
+                            window.__TAURI_INTERNALS__.unregisterCallback(callbackId);
+                            return window.__TAURI_INTERNALS__.invoke("mcp_runtime_close_interaction_port", {{ leaseId: res }});
+                        }}
+                        throw err;
                     }});
                 }}, (err) => {{
+                    if (callbackId !== null) window.__TAURI_INTERNALS__.unregisterCallback(callbackId);
                     return window.__TAURI_INTERNALS__.invoke("plugin:tauri-remote-ui|complete_rpc", {{
                         sessionId: "{session_id}",
                         id: {id},
-                        status: "{error}", payload: err
+                        status: "{error}", payload: err,
+                        mcpChannelCallbackId: callbackId
                     }});
                 }}).catch((err) => console.error("Remote UI RPC completion failed", err));
+            }})();
             "#,
             cmd = cmd_json,
-            args = args_json,
             opts = opts_json,
+            channel_setup = channel_setup,
+            closed_lease_json = closed_lease_json,
             session_id = session_id,
             id = ws_payload.id,
             success = RpcStatus::Success.as_str(),
@@ -120,9 +163,17 @@ impl RemoteUi {
         );
         let pending = self.app.state::<PendingRpcs>();
         let key = (session_id.to_string(), ws_payload.id);
-        pending.insert(key.clone(), session)?;
+        pending.insert(key.clone(), session.clone())?;
+        if is_mcp_channel {
+            self.app
+                .state::<McpChannelPorts>()
+                .begin(key.clone(), session)?;
+        }
         if let Err(err) = window.eval(js) {
             pending.take(&key);
+            if is_mcp_channel {
+                self.app.state::<McpChannelPorts>().remove(&key);
+            }
             return Err(err);
         }
         Ok(())
@@ -157,6 +208,115 @@ impl RemoteUi {
 
 type WsSender = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
 pub(crate) type PendingRpcs = RpcRegistry<WsSender>;
+
+struct McpChannelPort {
+    recipient: WsSender,
+    lease_id: Option<String>,
+    callback_id: Option<u32>,
+}
+
+/// Browser-only transport registrations. The MCP broker still owns the lease and pending forms.
+#[derive(Default)]
+pub(crate) struct McpChannelPorts(std::sync::Mutex<HashMap<(String, usize), McpChannelPort>>);
+
+impl McpChannelPorts {
+    fn begin(&self, key: (String, usize), recipient: WsSender) -> Result<(), Error> {
+        let mut ports = self.0.lock().expect("MCP channel registry poisoned");
+        if ports.contains_key(&key) {
+            return Err(Error::PluginInitialization(
+                "tauri-remote-ui".into(),
+                "Duplicate MCP channel RPC id".into(),
+            ));
+        }
+        ports.insert(
+            key,
+            McpChannelPort {
+                recipient,
+                lease_id: None,
+                callback_id: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn activate(&self, key: &(String, usize), lease_id: String, callback_id: u32) -> bool {
+        let mut ports = self.0.lock().expect("MCP channel registry poisoned");
+        let Some(port) = ports.get_mut(key) else {
+            return false;
+        };
+        port.lease_id = Some(lease_id);
+        port.callback_id = Some(callback_id);
+        true
+    }
+
+    fn recipient(&self, key: &(String, usize)) -> Option<WsSender> {
+        self.0
+            .lock()
+            .expect("MCP channel registry poisoned")
+            .get(key)
+            .map(|port| port.recipient.clone())
+    }
+
+    fn remove(&self, key: &(String, usize)) -> Option<McpChannelPort> {
+        self.0
+            .lock()
+            .expect("MCP channel registry poisoned")
+            .remove(key)
+    }
+
+    fn remove_lease(&self, session_id: &str, lease_id: &str) -> Option<McpChannelPort> {
+        let mut ports = self.0.lock().expect("MCP channel registry poisoned");
+        let key = ports.iter().find_map(|(key, port)| {
+            (key.0 == session_id && port.lease_id.as_deref() == Some(lease_id)).then(|| key.clone())
+        })?;
+        ports.remove(&key)
+    }
+
+    pub(crate) fn cleanup_session(&self, app: &AppHandle, label: &str, session_id: u64) {
+        self.cleanup_where(app, label, |key, _| key.0 == session_id.to_string());
+    }
+
+    pub(crate) fn cleanup_recipient(&self, app: &AppHandle, label: &str, recipient: &WsSender) {
+        self.cleanup_where(app, label, |_, port| {
+            Arc::ptr_eq(&port.recipient, recipient)
+        });
+    }
+
+    fn cleanup_where(
+        &self,
+        app: &AppHandle,
+        label: &str,
+        matches: impl Fn(&(String, usize), &McpChannelPort) -> bool,
+    ) {
+        let ports = {
+            let mut registry = self.0.lock().expect("MCP channel registry poisoned");
+            let keys: Vec<_> = registry
+                .iter()
+                .filter_map(|(key, port)| matches(key, port).then(|| key.clone()))
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| registry.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        let Some(window) = app.get_webview_window(label) else {
+            return;
+        };
+        for port in ports {
+            if let Some(callback_id) = port.callback_id {
+                let _ = window.eval(format!(
+                    "window.__TAURI_INTERNALS__.unregisterCallback({callback_id})"
+                ));
+            }
+            if let Some(lease_id) = port.lease_id {
+                if let Ok(lease_json) = serde_json::to_string(&lease_id) {
+                    let _ = window.eval(format!(
+                        "window.__TAURI_INTERNALS__.invoke('mcp_runtime_close_interaction_port', {{ leaseId: {lease_json} }}).catch(() => undefined)"
+                    ));
+                }
+            }
+        }
+    }
+}
 
 // Registration is synchronous: completion never depends on Tauri's pending
 // event-listener queue. Taking a recipient also consumes the request atomically.
@@ -223,21 +383,110 @@ pub(crate) async fn complete_rpc(
     id: usize,
     status: RpcStatus,
     payload: Option<serde_json::Value>,
+    mcp_channel_message: Option<bool>,
+    mcp_channel_callback_id: Option<u32>,
+    closed_lease_id: Option<String>,
 ) -> Result<(), String> {
     if webview.label() != remote_ui.read().await.rpc_server.primary_window_label() {
         return Err("RPC completion must originate from the primary host webview".into());
     }
-    if let Some(session) = pending.take(&(session_id, id)) {
+    let key = (session_id.clone(), id);
+    let channels = webview.state::<McpChannelPorts>();
+    if mcp_channel_message == Some(true) {
+        let session = channels
+            .recipient(&key)
+            .ok_or("MCP browser channel is closed")?;
+        let owner = remote_ui.read().await;
+        if !owner
+            .rpc_server
+            .ws_handle_is_current(webview.label(), &session)
+        {
+            drop(owner);
+            channels.cleanup_where(webview.app_handle(), webview.label(), |candidate, _| {
+                candidate == &key
+            });
+            return Err("MCP browser channel session was replaced".into());
+        }
+        let sent = session
+            .lock()
+            .await
+            .send(Message::text(
+                json!({"mcpChannelId": id, "frame": payload}).to_string(),
+            ))
+            .await;
+        drop(owner);
+        if let Err(err) = sent {
+            channels.cleanup_where(webview.app_handle(), webview.label(), |candidate, _| {
+                candidate == &key
+            });
+            return Err(format!("MCP channel send failed: {err}"));
+        }
+        return Ok(());
+    }
+    let session = pending.take(&key);
+    if let Some(callback_id) = mcp_channel_callback_id {
+        if status == RpcStatus::Success {
+            let lease_id = payload
+                .as_ref()
+                .and_then(|value| value.as_str())
+                .ok_or("MCP channel open returned no lease")?;
+            if session.is_none() || !channels.activate(&key, lease_id.to_owned(), callback_id) {
+                if let Ok(lease_json) = serde_json::to_string(lease_id) {
+                    let _ = webview.eval(format!(
+                        "window.__TAURI_INTERNALS__.unregisterCallback({callback_id}); window.__TAURI_INTERNALS__.invoke('mcp_runtime_close_interaction_port', {{ leaseId: {lease_json} }}).catch(() => undefined)"
+                    ));
+                }
+                return Err("MCP browser channel session ended before the port opened".into());
+            }
+        } else {
+            channels.remove(&key);
+        }
+    }
+    if let Some(session) = session {
         // Preserve the existing wire envelope: payload is a JSON string.
         let payload = json!({"status": status, "payload": payload}).to_string();
-        session
+        let owner = remote_ui.read().await;
+        if !owner
+            .rpc_server
+            .ws_handle_is_current(webview.label(), &session)
+        {
+            drop(owner);
+            if mcp_channel_callback_id.is_some() {
+                channels.cleanup_where(webview.app_handle(), webview.label(), |candidate, _| {
+                    candidate == &key
+                });
+            }
+            return Err("Remote UI session was replaced before RPC completion".into());
+        }
+        let sent = session
             .lock()
             .await
             .send(Message::text(
                 json!({"id": id, "payload": payload}).to_string(),
             ))
-            .await
-            .map_err(|err| format!("WS send message failed: {err}"))?;
+            .await;
+        drop(owner);
+        if let Err(err) = sent {
+            if mcp_channel_callback_id.is_some() {
+                channels.cleanup_where(webview.app_handle(), webview.label(), |candidate, _| {
+                    candidate == &key
+                });
+            }
+            return Err(format!("WS send message failed: {err}"));
+        }
+        if status == RpcStatus::Success {
+            if let Some(lease_id) = closed_lease_id {
+                if let Some(port) = channels.remove_lease(&session_id, &lease_id) {
+                    if let Some(callback_id) = port.callback_id {
+                        let _ = webview.eval(format!(
+                            "window.__TAURI_INTERNALS__.unregisterCallback({callback_id})"
+                        ));
+                    }
+                }
+            }
+        }
+    } else if mcp_channel_callback_id.is_some() {
+        return Err("MCP browser channel session ended before the port opened".into());
     }
     Ok(())
 }

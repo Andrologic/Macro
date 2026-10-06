@@ -1,7 +1,7 @@
 import type { ContextRefKind } from '../../types';
 
 /** Stable references stay readable in exported plain text. Legacy markers still load. */
-export const COMPOSER_REFERENCE_PATTERN = /\[(skill|file|source|plan-node|predicted-branch|agsdl):\s*([^\]]+)\](?:\(macro-context:\/\/([^/]+)\/([^)]*)\))?/gi;
+export const COMPOSER_REFERENCE_PATTERN = /\[(skill|file|source|plan-node|predicted-branch|agsdl|conversation):\s*([^\]]+)\](?:\(macro-context:\/\/([^/]+)\/([^)]*)\))?/gi;
 
 export function referenceText(kind: ContextRefKind, id: string, title: string): string {
   return `[${kind}: ${title.replaceAll(']', '］') }](macro-context://${kind}/${encodeURIComponent(id).replace(/[()]/g, char => `%${char.charCodeAt(0).toString(16)}`)})`;

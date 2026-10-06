@@ -195,6 +195,20 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.createMessage).toHaveBeenCalledWith('conversation-1', 'user', expect.any(String), expect.objectContaining({ hiddenContext: 'hidden', providerInputItems: [{ item: 1 }], turnId: 'turn-1' }));
   });
 
+  it('persists resolved conversation passages from the captured composer snapshot', async () => {
+    const f = fixture();
+    f.snapshot.composerContextRefs = [{
+      id: 'source-conv', conversationId: 'source-conv', kind: 'conversation',
+      title: 'Earlier discussion', snippet: '[message_id=source-msg] Review every release.',
+      sourceUpdatedAt: '2026-09-28T12:00:00Z',
+    }];
+    await sendMessage(f.input, f.snapshot, f.ports);
+    expect(f.createMessage.mock.calls[0]?.[3]?.contextRefs).toEqual(f.snapshot.composerContextRefs);
+    expect(f.ports.projection.publishUser).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      contextRefs: f.snapshot.composerContextRefs, clearComposerRevision: 3,
+    }));
+  });
+
   it('normalizes persistence failures without launching an assistant', async () => {
     const f = fixture(); f.createMessage.mockRejectedValue(new Error('Disk full'));
     await expect(f.run()).rejects.toMatchObject({ message: 'Failed to save the message before sending: Disk full' });

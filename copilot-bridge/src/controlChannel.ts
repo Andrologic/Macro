@@ -258,6 +258,7 @@ export class BridgeControlChannel {
       visibleContent:
         typeof message.visible_content === 'string' ? message.visible_content : undefined,
       interrupt: message.interrupt === true,
+      ...(message.submission_id ? { submissionId: message.submission_id } : {}),
     });
   }
 

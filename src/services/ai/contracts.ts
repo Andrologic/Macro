@@ -1,4 +1,4 @@
-import type { AppMode, ChatCompletionReason, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
+import type { AppMode, ChatCompletionReason, GenerationAttempt, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
 import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
 import type { WebSearchOptions } from '../webSearch';
@@ -47,7 +47,10 @@ export interface StreamCompletionResult {
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   completionReason?: StreamCompletionReason;
+  generationAttempts?: GenerationAttempt[];
 }
+
+export type { GenerationAttempt } from '../../types';
 
 export interface LiveStreamContextSnapshot {
   version: number;
@@ -134,6 +137,8 @@ export interface StreamingChatOptions {
   onTimeline?: (event: StreamTimelineEvent) => void;
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
   onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
+  onGenerationAttemptsUpdate?: (attempts: GenerationAttempt[]) => Promise<void> | void;
+  onGenerationAttemptProgress?: (attempt: GenerationAttempt) => void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;

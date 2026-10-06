@@ -1,6 +1,7 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 
 import type { ChatMessage, Conversation, ToolTrace } from "../types";
+import { mapDbConversationToConversation } from "./chatDbMappers";
 import type {
   DbChatBootstrapSnapshot,
   DbConversation,
@@ -119,6 +120,18 @@ const adapters = (params?: {
 });
 
 describe("chatPersistenceService", () => {
+  it("loads generation attempts separately from the accepted assistant response", async () => {
+    const attempts = [{ id: 'attempt-1', status: 'abandoned' as const, rawText: 'discarded', acceptedText: '', costUsd: null }];
+    const snapshot: DbChatBootstrapSnapshot = {
+      conversations: [dbConversation()],
+      messages_by_conversation_id: {
+        'conv-1': [dbMessage({ content: 'accepted', generation_attempts_json: JSON.stringify(attempts) })],
+      },
+    };
+    const loaded = await loadChatBootstrapSnapshot(adapters({ ipc: baseIpc({ getChatBootstrapSnapshot: async () => snapshot }) }));
+    expect(loaded.messages[0]?.content).toBe('accepted');
+    expect(loaded.messages[0]?.generation_attempts).toEqual(attempts);
+  });
   it("loads bootstrap snapshots and maps conversations/messages", async () => {
     const snapshot: DbChatBootstrapSnapshot = {
       conversations: [dbConversation({ message_count: 1 })],
@@ -189,6 +202,75 @@ describe("chatPersistenceService", () => {
     expect(result[0]?.content).toBe("Answer");
   });
 
+  it("indexes conversations once per transcript load and preserves message attachments", async () => {
+    const conversations = [
+      dbConversation(),
+      dbConversation({ id: "conv-2", task_id: "task-2" }),
+      dbConversation({ id: "conv-null", task_id: null }),
+    ].map(mapDbConversationToConversation);
+    const messages = [
+      dbMessage({ id: "user-1", role: "user", content: "Question" }),
+      dbMessage({ id: "assistant-2", conversation_id: "conv-2", content: "Answer" }),
+      dbMessage({ id: "missing", conversation_id: "conv-missing" }),
+      dbMessage({ id: "null-task", conversation_id: "conv-null" }),
+      dbMessage({ id: "assistant-1", provider_input_items_json: '[{"id":"input-1"}]' }),
+    ];
+    const listMessages = mock(async () => messages);
+    const persistence = adapters({ ipc: { listMessages } });
+    const indexTraversal = spyOn(conversations, "map");
+
+    try {
+      const result = await loadConversationMessages(persistence, {
+        conversationId: "conv-1",
+        conversations,
+      });
+
+      expect(indexTraversal).toHaveBeenCalledTimes(1);
+      expect(listMessages).toHaveBeenCalledWith("conv-1");
+      expect(result.map(({ id, conversation_id, task_id, role, content }) => ({
+        id, conversation_id, task_id, role, content,
+      }))).toEqual([
+        { id: "user-1", conversation_id: "conv-1", task_id: "task-1", role: "user", content: "Question" },
+        { id: "assistant-2", conversation_id: "conv-2", task_id: "task-2", role: "assistant", content: "Answer" },
+        { id: "missing", conversation_id: "conv-missing", task_id: "", role: "assistant", content: "Hello" },
+        { id: "null-task", conversation_id: "conv-null", task_id: "", role: "assistant", content: "Hello" },
+        { id: "assistant-1", conversation_id: "conv-1", task_id: "task-1", role: "assistant", content: "Hello" },
+      ]);
+      expect(result[4]?.provider_input_items).toEqual([{ id: "input-1" }]);
+      expect(result[4]?.turn_id).toBe("turn-1");
+      expect(result[4]?.timestamp).toBe(messages[4]?.created_at);
+
+      conversations[0].task_id = "task-updated";
+      const reloaded = await loadConversationMessages(persistence, {
+        conversationId: "conv-1",
+        conversations,
+      });
+      expect(indexTraversal).toHaveBeenCalledTimes(2);
+      expect(listMessages).toHaveBeenCalledTimes(2);
+      expect(reloaded[0]?.task_id).toBe("task-updated");
+      expect(reloaded[4]?.task_id).toBe("task-updated");
+    } finally {
+      indexTraversal.mockRestore();
+    }
+  });
+
+  it("preserves transcript load failures without indexing conversations", async () => {
+    const error = new Error("transcript unavailable");
+    const conversations: Conversation[] = [];
+    const indexTraversal = spyOn(conversations, "map");
+    const listMessages = mock(async (): Promise<DbMessage[]> => { throw error; });
+
+    try {
+      await expect(loadConversationMessages(adapters({ ipc: { listMessages } }), {
+        conversationId: "conv-1",
+        conversations,
+      })).rejects.toBe(error);
+      expect(indexTraversal).not.toHaveBeenCalled();
+    } finally {
+      indexTraversal.mockRestore();
+    }
+  });
+
   it("creates deterministic non-Tauri user and assistant messages", async () => {
     const nonTauri = adapters({ available: false });
 
@@ -251,7 +333,7 @@ describe("chatPersistenceService", () => {
     );
 
     expect(assistant.id).toBe("msg-1778925600000-abc123-assistant");
-    expect(assistant.tool_traces).toEqual([trace]);
+    expect(assistant.tool_traces).toEqual([{ ...trace, recovery_state: "completed" }]);
     expect(assistant.provider_input_items).toEqual([{ id: "provider-item" }]);
     expect(ipc.createMessage).toHaveBeenCalledWith(
       "conv-1",
@@ -310,6 +392,54 @@ describe("chatPersistenceService", () => {
       providerTurnState: undefined,
       completionReason: "tool_turn_limit",
     });
+  });
+
+  it("serializes partial and final writes for one assistant message", async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const writes: Array<{ content: string; attempts?: ChatMessage["generation_attempts"] }> = [];
+    let callCount = 0;
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async (_id, content, options) => {
+      if (++callCount === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      writes.push({ content, attempts: options?.generationAttempts });
+    });
+    const persistence = { ...adapters(), ipc: baseIpc({ updateMessage }) };
+    const firstAttempt = { id: "first", status: "completed" as const, rawText: "old", acceptedText: "old", costUsd: null };
+    const stoppedAttempt = { id: "stopped", status: "partial" as const, rawText: "stop", acceptedText: "stop", costUsd: null };
+
+    const first = persistAssistantPartialResult(persistence, chatMessage({ content: "old", generation_attempts: [firstAttempt] }));
+    await started;
+    const stopped = persistAssistantPartialResult(persistence, chatMessage({ content: "stop", generation_attempts: [firstAttempt, stoppedAttempt] }));
+    const final = persistAssistantCompletionResult(persistence, {
+      assistantMessageId: "message-1",
+      persistedAssistant: chatMessage(),
+      result: { visibleContent: "final", toolTraces: [], generationAttempts: [firstAttempt, stoppedAttempt] },
+    });
+    await Promise.resolve();
+    expect(updateMessage).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([first, stopped, final]);
+    expect(writes.map((write) => write.content)).toEqual(["old", "stop", "final"]);
+    expect(writes.at(-1)?.attempts).toEqual([firstAttempt, stoppedAttempt]);
+  });
+
+  it("continues the assistant write queue after a failed checkpoint", async () => {
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async () => undefined);
+    updateMessage.mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+    const persistence = { ...adapters(), ipc: baseIpc({ updateMessage }) };
+    await expect(persistAssistantPartialResult(persistence, chatMessage({ content: "partial" }))).rejects.toThrow("SQLITE_BUSY");
+    await persistAssistantCompletionResult(persistence, {
+      assistantMessageId: "message-1",
+      result: { visibleContent: "final", toolTraces: [] },
+    });
+    expect(updateMessage).toHaveBeenCalledTimes(2);
+    expect(updateMessage).toHaveBeenLastCalledWith("message-1", "final", expect.any(Object));
   });
 
   it("delegates conversation rename and delete operations only when Tauri is available", async () => {

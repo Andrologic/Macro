@@ -53,3 +53,21 @@ it('transmits only AgSDL context when message editing preserves preceding metada
   expect(model).not.toContain('Preserved message metadata');
   expect(submissionHiddenContext(refs, hidden)).toBe(hidden);
 });
+
+
+it('preserves conversation and AgSDL identities through the shared composer contract', () => {
+  const selection: AgsdlSelectionReference = { id: 'agent', conversationId: 'target', branchName: 'develop', planId: 'plan', document: 'agsdl', version: 'v1', persistedRevision: 1, path: '/agents/helper', title: 'Prior work' };
+  const refs: ContextReference[] = [
+    { id: 'source', kind: 'conversation', title: 'Prior work', data: { conversationId: 'source' } },
+    { id: 'agent', kind: 'agsdl', title: 'Prior work', data: selection },
+  ];
+  const snapshot = captureComposerSnapshot({ text: 'Compare', images: [], contextRefs: refs });
+  const persisted = persistableContextRefs(snapshot.contextRefs)!;
+  expect(persisted[0]).toMatchObject({ id: 'source', kind: 'conversation', conversationId: 'source' });
+  expect(persisted[1].agsdl).toEqual(selection);
+  const markers = refs.map(ref => referenceText(ref.kind, ref.id, ref.title)).join(' ');
+  const matches = [...markers.matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))];
+  expect(matches.map(match => [match[1], referenceId(match)])).toEqual([
+    ['conversation', 'source'], ['agsdl', 'agent'],
+  ]);
+});

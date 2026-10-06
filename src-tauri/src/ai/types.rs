@@ -118,6 +118,9 @@ pub struct AiStreamDoneEvent {
     pub hidden_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub accepted_submission_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub completion_reason: Option<String>,
 }
 

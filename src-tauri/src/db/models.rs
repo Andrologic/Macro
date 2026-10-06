@@ -167,6 +167,7 @@ pub struct Message {
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
     pub completion_reason: Option<String>,
+    pub generation_attempts_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +227,13 @@ pub struct ConversationCompactionStateRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ChatSnapshot {
     pub conversations: Vec<Conversation>,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ConversationSourceSnapshot {
+    pub target_project_id: Option<String>,
+    pub conversation: Conversation,
     pub messages: Vec<Message>,
 }
 
@@ -429,6 +437,7 @@ pub struct CreateMessageInput {
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
     pub completion_reason: Option<String>,
+    pub generation_attempts_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]

@@ -15,6 +15,7 @@ fn output_omission_matches_the_generated_contract() {
         reasoning_summary: None,
         tool_traces: None,
         hidden_context: None,
+        accepted_submission_ids: None,
         completion_reason: None,
     };
     let mut value = serde_json::to_value(&event).unwrap();

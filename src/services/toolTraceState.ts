@@ -30,6 +30,24 @@ export const isToolTrace = (value: unknown): value is ToolTrace =>
   typeof (value as ToolTrace).tool_name === "string" &&
   isToolTraceStatus((value as ToolTrace).status);
 
+export const classifyToolTraceRecovery = (
+  trace: ToolTrace,
+  evidence: { live?: boolean; approvalRecovered?: boolean } = {},
+): NonNullable<ToolTrace['recovery_state']> => {
+  if (trace.status === 'done' || trace.status === 'denied') return 'completed';
+  if (evidence.live) return 'live';
+  if (trace.status === 'pending_approval' && evidence.approvalRecovered) return 'replayable';
+  return 'unknown';
+};
+
+export const settleToolTraceRecovery = (traces: ToolTrace[]): ToolTrace[] =>
+  traces.map((trace) => ({
+    ...trace,
+    recovery_state: trace.recovery_state === 'replayable' && trace.status === 'pending_approval'
+      ? 'replayable'
+      : classifyToolTraceRecovery(trace),
+  }));
+
 export const parseToolTracesJson = (
   raw: string | null,
 ): ToolTrace[] | undefined => {
@@ -39,7 +57,9 @@ export const parseToolTracesJson = (
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return undefined;
     const traces = parsed.filter(isToolTrace);
-    return traces.length > 0 ? traces : undefined;
+    return traces.length > 0
+      ? traces.map((trace) => ({ ...trace, recovery_state: classifyToolTraceRecovery(trace) }))
+      : undefined;
   } catch {
     return undefined;
   }

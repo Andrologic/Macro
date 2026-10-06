@@ -8,6 +8,7 @@ import {
 import { normalizeBranchName, sanitizeId } from './architectPlanReadModel';
 import { normalizeProjectRegistryPath } from './validProjectRegistry';
 import { recordMacroMetadataMutation } from './macroMetadataCoordinator';
+import { sanitizeId as sanitizeArtifactId } from '../domains/plans/artifactContracts';
 
 type Transport = Pick<typeof tauriIpc,
   'isTauriAvailable' | 'dbGetAppSetting' | 'dbCompareAndSwapAppSetting' |
@@ -25,10 +26,18 @@ export interface ArtifactMutationPayload { files: ArtifactFileMutation[] }
 export const isArtifactMutation = (
   entry: ArchitectPlanMutationJournalEntry,
 ): entry is ArchitectPlanMutationJournalEntry<ArtifactMutationPayload> => {
-  if (entry.operation !== 'artifacts' || entry.branchName !== normalizeBranchName(entry.branchName) ||
+  if (entry.operation !== 'artifacts') return false;
+  const goalScope = entry.goalArtifactScope;
+  if (goalScope) {
+    if (goalScope.conversationId !== sanitizeArtifactId(goalScope.conversationId) ||
+      goalScope.goalId !== sanitizeArtifactId(goalScope.goalId) ||
+      entry.branchName !== normalizeBranchName(entry.branchName) || entry.planId !== goalScope.goalId) return false;
+  } else if (entry.branchName !== normalizeBranchName(entry.branchName) ||
     entry.planId !== sanitizeId(entry.planId)) return false;
   const files = (entry.payload as Partial<ArtifactMutationPayload> | null)?.files;
-  const root = `branches/${entry.branchName}/plans/${entry.planId}/`;
+  const root = goalScope
+    ? `branches/${entry.branchName}/goals/${goalScope.conversationId}/${goalScope.goalId}/artifacts/`
+    : `branches/${entry.branchName}/plans/${entry.planId}/`;
   const owners = new Set(entry.workspaceKey.split('|'));
   const keys = new Set<string>();
   return Array.isArray(files) && files.length > 0 && files.every((file) => {
@@ -40,8 +49,10 @@ export const isArtifactMutation = (
     return owners.has(normalizeProjectRegistryPath(file.workspacePath) || '') &&
       (file.workspaceScope === 'metadata' || file.workspaceScope === 'direct') &&
       file.path.startsWith(root) && !file.path.split('/').some((part) => part === '.' || part === '..') &&
-      (relativePath === 'manifest.json' || relativePath === 'artifacts/index.json' ||
-        /^artifacts\/tasks\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\.(md|json|txt)$/.test(relativePath)) &&
+      (goalScope
+        ? relativePath === 'index.json' || /^[a-zA-Z0-9._-]+\.(md|json|txt)$/.test(relativePath)
+        : relativePath === 'manifest.json' || relativePath === 'artifacts/index.json' ||
+          /^artifacts\/tasks\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\.(md|json|txt)$/.test(relativePath)) &&
       (file.before === null || typeof file.before === 'string') && typeof file.after === 'string';
   });
 };
@@ -89,8 +100,8 @@ export const recoverArtifactMutation = async (
   } else {
     for (const workspacePath of new Set(entry.payload.files
       .filter((file) => file.workspaceScope === 'metadata').map((file) => file.workspacePath))) {
-      recordMacroMetadataMutation({ workspacePath, kind: 'task_metadata', entityId: entry.planId,
-        label: 'task artifacts', importance: 'light' });
+      recordMacroMetadataMutation({ workspacePath, kind: entry.goalArtifactScope ? 'chat_synced' : 'task_metadata', entityId: entry.planId,
+        label: entry.goalArtifactScope ? 'goal audit artifacts' : 'task artifacts', importance: 'light' });
     }
   }
   await removeArchitectPlanMutationJournal(entry.id, transport);
@@ -100,12 +111,13 @@ export const recoverArtifactMutation = async (
 export const persistArtifactMutation = async (params: {
   branchName: string;
   planId: string;
+  goalArtifactScope?: { conversationId: string; goalId: string };
   workspaceKey: string;
   files: ArtifactFileMutation[];
 }, transport: Transport = tauriIpc): Promise<void> => {
   const now = new Date().toISOString();
   const entry: ArchitectPlanMutationJournalEntry<ArtifactMutationPayload> = {
-    branchName: params.branchName, planId: params.planId, workspaceKey: params.workspaceKey,
+    branchName: params.branchName, planId: params.planId, goalArtifactScope: params.goalArtifactScope, workspaceKey: params.workspaceKey,
     id: createArchitectPlanMutationId({ ...params, operation: 'artifacts' }),
     operation: 'artifacts', phase: 'prepared', payload: { files: params.files },
     createdAt: now, updatedAt: now,

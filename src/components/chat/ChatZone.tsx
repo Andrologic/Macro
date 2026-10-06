@@ -54,6 +54,7 @@ import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { GenerationAttemptDetails } from './GenerationAttemptDetails';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
@@ -116,9 +117,13 @@ import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation
 import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
+import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
+import { isTauriAvailable } from '../../services/ipc/runtime';
+import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
+import { UnresolvedToolInvocationsNotice } from './UnresolvedToolInvocationsNotice';
 import {
   CONVERSATION_ATTACHMENT_ACCEPT,
   CONVERSATION_ATTACHMENT_EXTENSIONS,
@@ -503,6 +508,9 @@ const buildSnapshotContextRefData = (
   ref: PersistedContextReference,
 ): ContextReference['data'] => {
   if (ref.kind === 'agsdl' && ref.agsdl) return ref.agsdl;
+  if (ref.kind === 'conversation') {
+    return { conversationId: ref.conversationId ?? ref.id };
+  }
   if (ref.kind === 'skill') {
     return {
       id: ref.id,
@@ -786,6 +794,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
+  const citedConversations = message.context_refs?.filter(
+    (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
+  ) ?? [];
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const architectActionMessage =
@@ -884,6 +895,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                     completionReason={message.completion_reason}
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
+                  <GenerationAttemptDetails attempts={message.generation_attempts} />
                   {hasAssistantPersistenceFailure && (
                     <div
                       data-chat-unsaved-assistant-response={message.persistence_state}
@@ -953,7 +965,25 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
                 </Suspense>
               ) : (
-                <UserMessageContent content={message.content} hiddenContext={message.hidden_context} contextRefs={message.context_refs} />
+                <>
+                  <UserMessageContent content={message.content} hiddenContext={message.hidden_context} contextRefs={message.context_refs} />
+                  {message.role === 'user' && citedConversations.length > 0 && (
+                    <details className="mt-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        {t('chat.conversationSourcesUsed', '{{count}} cited conversation sources', { count: citedConversations.length })}
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {citedConversations.map((ref) => (
+                          <div key={ref.id} className="border-t border-border/50 pt-2">
+                            <div className="font-medium">{ref.title}</div>
+                            <div className="text-[10px] text-muted-foreground">{ref.conversationId} · {ref.sourceUpdatedAt}</div>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-sans text-xs text-foreground/80">{ref.snippet}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </>
               )}
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
@@ -1170,6 +1200,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages,
     selectedConversationId,
     activeContextKey,
+    selectedConversationContextKey,
     selectedConversationRuntime,
     standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
@@ -1229,6 +1260,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
     activeContextKey: state.activeContextKey,
+    selectedConversationContextKey: state.selectedConversationContextKey,
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
@@ -1301,20 +1333,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const {
     activeConversationGoal,
-    activateConversationGoal,
-    beginConversationGoalEdit,
-    settleConversationGoalEdit,
-    setConversationGoalStatus,
-    clearConversationGoal,
+    hydrateConversationGoal,
   } = useConversationGoalStore(useShallow((state) => ({
     activeConversationGoal: selectedConversationId
       ? state.goalsByConversationId[selectedConversationId] ?? null
       : null,
-    activateConversationGoal: state.activateGoal,
-    beginConversationGoalEdit: state.beginGoalEdit,
-    settleConversationGoalEdit: state.settleGoalEdit,
-    setConversationGoalStatus: state.setOperationalStatus,
-    clearConversationGoal: state.clearGoal,
+    hydrateConversationGoal: state.hydrateGoal,
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
@@ -1986,6 +2010,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
+  useEffect(() => {
+    if (!selectedConversationId || !isTauriAvailable()) return;
+    let active = true;
+    conversationGoalProductFlow.reconcileQueuedTurns(selectedConversationId);
+    void conversationGoalProductFlow.hydrate(selectedConversationId).catch((error) => {
+      if (active) notify.error(t('goal.loadFailed', 'Could not load Goal'), { description: toServiceError(error).message });
+    });
+    return () => { active = false; };
+  }, [selectedConversationId, hydrateConversationGoal, t]);
+
   const selectedTaskTodoState = useMemo(
     () => (selectedTask ? getPlanNodeTodoState(selectedTask) : null),
     [selectedTask]
@@ -2599,7 +2633,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
-    let goalActivated = false;
+    let activatedGoal: Awaited<ReturnType<typeof conversationGoalProductFlow.activate>> | null = null;
 
     try {
       conversationId = await ensureConversation();
@@ -2618,14 +2652,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
 
       if (params?.goalObjective) {
-        activateConversationGoal({
-          conversationId,
-          objective: params.goalObjective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-        });
-        goalActivated = true;
+        if (!useChatStore.getState().conversations.find((item) => item.id === conversationId)?.project_id) {
+          throw new Error('Goal requires a conversation attached to a project.');
+        }
+        activatedGoal = await conversationGoalProductFlow.activate(conversationId, params.goalObjective,
+          selectedProviderId, selectedModelId, selectedReasoningEffort);
       }
 
       const content = buildImplementKickoffPrompt({
@@ -2659,11 +2690,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         images: kickoffSnapshot.images,
         contextRefs: persistableContextRefs(kickoffSnapshot.contextRefs) ?? [],
       });
-      if (goalActivated) {
-        setConversationGoalStatus(
-          conversationId,
-          result.status === 'sent' ? 'executor_running' : 'paused',
-        );
+      if (activatedGoal) {
+        if (result.status === 'sent' && result.assistantMessageId) {
+          const goal = await conversationGoalProductFlow.status(conversationId, 'executor_running', null, activatedGoal);
+          if (goal) conversationGoalProductFlow.track(conversationId, result.turnId, result.assistantMessageId, goal.goalId);
+        } else await conversationGoalProductFlow.status(conversationId, 'paused', null, activatedGoal);
       }
       if (result.status !== 'sent') {
         delete executionKickoffByConversationRef.current[conversationId];
@@ -2704,12 +2735,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch (error) {
       if (conversationId) {
         delete executionKickoffByConversationRef.current[conversationId];
-        if (goalActivated) {
-          setConversationGoalStatus(
-            conversationId,
-            'error',
-            toServiceError(error).message,
-          );
+        if (activatedGoal) {
+          await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, activatedGoal);
         }
       }
       throw error;
@@ -2719,7 +2746,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [
     agsdlT,
     ensureConversation,
-    activateConversationGoal,
     clearComposerDraftForContext,
     clearComposerContextRefs,
     composerDraftContextKey,
@@ -2737,7 +2763,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     sendMessage,
     saveComposerDraftForContext,
     setComposerImages,
-    setConversationGoalStatus,
     startTask,
     resetPromptHistoryNavigation,
     runtimeCapabilities.implementExecution,
@@ -3051,11 +3076,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           `conversation:${submittedConversationId}`,
         ]),
       ];
+      const queueGoal = useConversationGoalStore.getState().goalsByConversationId[submittedConversationId];
+      const queueForGoal = (activeBehaviorOverride ?? activeTurnSendBehavior) === 'queue' &&
+        queueGoal && !['paused', 'error', 'achieved'].includes(queueGoal.status);
+      let goalTurnReserved = false;
       try {
+        if (queueForGoal) {
+          await conversationGoalProductFlow.reserveUserTurn(submittedConversationId);
+          goalTurnReserved = true;
+        }
         const internalAgentProfile = getConflictAssistantInternalAgentProfile(
           submittedConversationId,
         );
-        await submitDuringActiveTurn(
+        const submission = await submitDuringActiveTurn(
           {
             conversationId: submittedConversationId,
             content: text,
@@ -3063,10 +3096,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             contextRefs: capturedRefs ?? [],
             taskId: implementTaskIdForSend,
             images: snapshot.images,
+            composerContextRefs: submittedDraft.savedDraftContextRefs,
             ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
+        if (submission === 'queued' && queueForGoal) {
+          conversationGoalProductFlow.reconcileQueuedTurns(submittedConversationId);
+        }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
@@ -3099,6 +3136,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           description: toServiceError(error).message,
         });
       } finally {
+        if (goalTurnReserved) conversationGoalProductFlow.releaseUserTurn(submittedConversationId);
         activeTurnSubmissionInFlightRef.current = false;
       }
       return;
@@ -3162,31 +3200,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const imagesForMessage = snapshot.images;
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
-    let tracksGoalTurn = false;
-    let goalEditTransactionId: string | null = null;
+    let trackedGoal: import('../../types').ConversationGoalRecord | null = null;
+    let pendingGoalEdit: import('../../types').ConversationGoalRecord | null = null;
+    let userTurnReserved = false;
 
     if (goalCommand?.kind === 'activate') {
-      if (goalComposerEditSession) {
-        const transaction = beginConversationGoalEdit({
-          conversationId,
-          objective: goalCommand.objective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-          expectedGoalId: goalComposerEditSession.goalId,
-        });
-        if (!transaction) return;
-        goalEditTransactionId = transaction.transactionId;
-      } else {
-        activateConversationGoal({
-          conversationId,
-          objective: goalCommand.objective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-        });
+      if (!useChatStore.getState().conversations.find((item) => item.id === conversationId)?.project_id) {
+        notify.warning(t('goal.projectRequired', 'Goal requires a project conversation'));
+        return;
       }
-      tracksGoalTurn = true;
+      try {
+        const previous = await conversationGoalProductFlow.loadCurrent(conversationId);
+        if (goalComposerEditSession && previous?.goalId !== goalComposerEditSession.goalId) return;
+        if (goalComposerEditSession && previous) pendingGoalEdit = previous;
+        else trackedGoal = await conversationGoalProductFlow.activate(conversationId, goalCommand.objective,
+          selectedProviderId, selectedModelId, selectedReasoningEffort, previous ?? undefined);
+      } catch (error) {
+        notify.error(t('goal.saveFailed', 'Could not save Goal'), { description: toServiceError(error).message });
+        return;
+      }
     } else {
       const currentGoal = useConversationGoalStore.getState()
         .goalsByConversationId[conversationId];
@@ -3196,7 +3228,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         currentGoal.status !== 'achieved' &&
         currentGoal.status !== 'error'
       ) {
-        tracksGoalTurn = true;
+        trackedGoal = currentGoal;
       }
     }
 
@@ -3244,6 +3276,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
 
     try {
+      if (trackedGoal || pendingGoalEdit) {
+        const current = await conversationGoalProductFlow.reserveUserTurn(conversationId);
+        userTurnReserved = true;
+        if (trackedGoal && (current?.goalId !== trackedGoal.goalId ||
+            ['paused', 'error', 'achieved'].includes(current.status))) trackedGoal = null;
+        else if (trackedGoal) trackedGoal = current;
+        if (pendingGoalEdit && current?.goalId !== pendingGoalEdit.goalId) pendingGoalEdit = null;
+        else if (pendingGoalEdit) pendingGoalEdit = current;
+      }
+      if (goalComposerEditSession && !pendingGoalEdit) return;
       const sendPromise = sendMessage({
         onUserMessagePublished: () => { transaction.accept(); finishPendingDraft(true); },
         conversationId,
@@ -3273,12 +3315,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
       const result = await sendPromise;
       if (result.status === 'sent') {
-        if (goalEditTransactionId) {
-          if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
-            setConversationGoalStatus(conversationId, 'executor_running');
+        if (pendingGoalEdit && goalCommand?.kind === 'activate') {
+          try {
+            trackedGoal = await conversationGoalProductFlow.activate(conversationId, goalCommand.objective,
+              selectedProviderId, selectedModelId, selectedReasoningEffort, pendingGoalEdit);
+          } catch (error) {
+            notify.error(t('goal.saveFailed', 'Could not save Goal'), { description: toServiceError(error).message });
           }
-        } else if (tracksGoalTurn) {
-          setConversationGoalStatus(conversationId, 'executor_running');
+        }
+        if (trackedGoal) {
+          if (result.assistantMessageId) {
+            const goal = await conversationGoalProductFlow.status(conversationId, 'executor_running', null, trackedGoal);
+            if (goal) conversationGoalProductFlow.track(conversationId, result.turnId, result.assistantMessageId, goal.goalId);
+          } else {
+            await conversationGoalProductFlow.status(conversationId, 'error',
+              'The executor turn did not return a saved assistant response.', trackedGoal);
+          }
         }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(conversationId);
@@ -3300,39 +3352,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           finishPendingDraft(true);
         }
         resetPromptHistoryNavigation();
-      } else if (goalEditTransactionId) {
-        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
-      } else if (tracksGoalTurn) {
-        setConversationGoalStatus(conversationId, 'paused');
+      } else if (trackedGoal) {
+        await conversationGoalProductFlow.status(conversationId, 'paused', null, trackedGoal);
         if (clearsComposerImmediately) restoreSentDraft();
       } else if (clearsComposerImmediately) {
         restoreSentDraft();
       }
     } catch (error) {
-      if (goalEditTransactionId) {
-        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
-      } else if (tracksGoalTurn) {
-        setConversationGoalStatus(
-          conversationId,
-          'error',
-          toServiceError(error).message,
-        );
+      if (trackedGoal) {
+        await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, trackedGoal);
       }
       if (clearsComposerImmediately) restoreSentDraft();
       // Keep the draft intact. The visible error feedback comes from the chat store.
+    } finally {
+      if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
   };
 
   const handlePauseGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
-    setConversationGoalStatus(selectedConversationId, 'paused');
-  }, [isBusySending, selectedConversationId, setConversationGoalStatus, stopStreaming]);
+    void conversationGoalProductFlow.pause(selectedConversationId).catch((error) =>
+      notify.error(t('goal.pauseFailed', 'Could not pause Goal'), { description: toServiceError(error).message }));
+  }, [isBusySending, selectedConversationId, stopStreaming, t]);
 
   const handleResumeGoal = useCallback(() => {
     if (!selectedConversationId) return;
-    setConversationGoalStatus(selectedConversationId, 'active_ready');
-  }, [selectedConversationId, setConversationGoalStatus]);
+    void conversationGoalProductFlow.resume(selectedConversationId).catch((error) =>
+      notify.error(t('goal.resumeFailed', 'Could not resume Goal'), { description: toServiceError(error).message }));
+  }, [selectedConversationId, t]);
 
   const handleEditGoal = useCallback(() => {
     if (
@@ -3387,54 +3435,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const handleStopGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
-    clearConversationGoal(selectedConversationId);
-  }, [clearConversationGoal, isBusySending, selectedConversationId, stopStreaming]);
+    void conversationGoalProductFlow.stop(selectedConversationId).catch((error) =>
+      notify.error(t('goal.stopFailed', 'Could not stop Goal'), { description: toServiceError(error).message }));
+  }, [isBusySending, selectedConversationId, stopStreaming, t]);
 
   const handleStopStreaming = useCallback(() => {
     if (
       selectedConversationId &&
       activeConversationGoal?.status === 'executor_running'
     ) {
-      setConversationGoalStatus(selectedConversationId, 'paused');
+      void conversationGoalProductFlow.pause(selectedConversationId);
     }
     stopStreaming();
   }, [
     activeConversationGoal?.status,
     selectedConversationId,
-    setConversationGoalStatus,
     stopStreaming,
-  ]);
-
-  useEffect(() => {
-    if (
-      !selectedConversationId ||
-      activeConversationGoal?.status !== 'executor_running' ||
-      isTranscriptActivityActive
-    ) {
-      return;
-    }
-
-    if (selectedConversationRuntime.phase === 'error') {
-      setConversationGoalStatus(
-        selectedConversationId,
-        'error',
-        selectedConversationRuntime.lastError ?? t(
-          'goal.executionFailed',
-          'The executor turn failed.',
-        ),
-      );
-      return;
-    }
-
-    setConversationGoalStatus(selectedConversationId, 'audit_pending');
-  }, [
-    activeConversationGoal?.status,
-    isTranscriptActivityActive,
-    selectedConversationId,
-    selectedConversationRuntime.lastError,
-    selectedConversationRuntime.phase,
-    setConversationGoalStatus,
-    t,
   ]);
 
   const speechDictation = useSpeechDictation({
@@ -3899,6 +3915,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
           <div className="flex items-center gap-2">
             {mode === 'Implement' && <TaskArtifactsButton />}
+            {currentConversation?.project_id && (
+              <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
+                projectId={currentConversation.project_id}
+                conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
+                refreshKey={activeConversationGoal?.revision ?? 0} />
+            )}
             {shouldShowContextIndicator && selectedConversationId && (
               <Suspense fallback={null}>
                 <ContextWindowIndicator
@@ -3919,6 +3941,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {headerActions}
           </div>
         </header>
+
+        <UnresolvedToolInvocationsNotice
+          conversationId={
+            hydrationStatus === 'ready' &&
+            (restoreStatus === 'ready' ||
+              (restoreStatus === 'error' &&
+                activeContextKey !== null &&
+                selectedConversationContextKey === activeContextKey)) &&
+            currentConversation?.scope_mode === mode
+              ? selectedConversationId : null
+          }
+          phase={selectedConversationRuntime.phase}
+          activeTurnId={selectedConversationRuntime.turnId ?? null}
+        />
 
         {activeConversationGoal && (
           <Suspense fallback={null}>

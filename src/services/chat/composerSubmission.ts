@@ -28,11 +28,15 @@ export const persistableContextRefs = (
       typeof ref.data === "object"
         ? (ref.data as Citation)
         : null;
+    const conversation =
+      ref.kind === "conversation" && ref.data && typeof ref.data === "object" &&
+      "conversationId" in ref.data ? ref.data : null;
     return {
       id: ref.id,
       kind: ref.kind,
       title: ref.title,
       subtitle: ref.subtitle,
+      ...(conversation ? { conversationId: conversation.conversationId } : {}),
       ...(ref.kind === "agsdl" ? { agsdl: ref.data as import("../../types").AgsdlSelectionReference } : {}),
       ...(skill
         ? {

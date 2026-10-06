@@ -2,21 +2,38 @@
 //! These reexports expose data shapes, not application execution or transport authority.
 
 pub mod db {
+    pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
+    pub use crate::db::conversation_goals::{
+        ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
+        ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,
+        DeactivateConversationGoalInput, GoalAuditStatus, GoalCasOutcome, GoalCriterionResult,
+        GoalCriterionStatus, GoalEvidence, GoalStatus, GoalVerdict, GoalVerdictKind,
+        ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
+    };
+    pub use crate::db::goal_audit_children::ReserveGoalAuditChildSelection;
+    pub use crate::db::goal_audit_transitions::{
+        GoalAuditTransition, RecordGoalAuditTransitionInput,
+    };
     pub use crate::db::models::{
         AgentRun, AgentRunStatus, AgentRunUsageInput, AiModel, AppSettingRecord,
         ArchitectPlanConversationSyncRecord, CancelAgentRunInput, ChatBootstrapSnapshot,
         ChatSnapshot, CompareAndSwapAppSettingResult, CompleteAgentRunInput, Conversation,
-        ConversationCitation, ConversationCompactionStateRecord, ConversationToolboxStateRecord,
-        CreateAgentRunInput, CreateConversationInput, CreateGitRepositoryInput,
-        CreateGitWorktreeInput, CreateMessageInput, FailAgentRunInput, GitRepositoryRecord,
-        GitWorktreeRecord, ImportMessageInput, InsertConversationCompactionEventInput, Message,
-        MessageSearchPage, MessageSearchResult, ProjectContextStateRecord,
-        ProjectRegistryDbRepairReport, ProviderAuthMetadata, ProviderConfig, ProviderModelInput,
-        ProviderSettings, ReconcileProjectRegistryInput, SessionContextStateRecord,
-        SpeechProviderConfig, TerminalTabRecord, TimeOutAgentRunInput, UpdateProviderConfigInput,
-        UpsertArchitectPlanConversationSyncInput, UpsertConversationCitationInput,
-        UpsertConversationCompactionStateInput, UpsertConversationToolboxStateInput,
-        UpsertProjectContextStateInput, UpsertSessionContextStateInput,
+        ConversationCitation, ConversationCompactionStateRecord, ConversationSourceSnapshot,
+        ConversationToolboxStateRecord, CreateAgentRunInput, CreateConversationInput,
+        CreateGitRepositoryInput, CreateGitWorktreeInput, CreateMessageInput, FailAgentRunInput,
+        GitRepositoryRecord, GitWorktreeRecord, ImportMessageInput,
+        InsertConversationCompactionEventInput, Message, MessageSearchPage, MessageSearchResult,
+        ProjectContextStateRecord, ProjectRegistryDbRepairReport, ProviderAuthMetadata,
+        ProviderConfig, ProviderModelInput, ProviderSettings, ReconcileProjectRegistryInput,
+        SessionContextStateRecord, SpeechProviderConfig, TerminalTabRecord, TimeOutAgentRunInput,
+        UpdateProviderConfigInput, UpsertArchitectPlanConversationSyncInput,
+        UpsertConversationCitationInput, UpsertConversationCompactionStateInput,
+        UpsertConversationToolboxStateInput, UpsertProjectContextStateInput,
+        UpsertSessionContextStateInput,
+    };
+    pub use crate::db::tool_invocations::{
+        CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult,
+        ToolEffectClass, ToolInvocation, ToolInvocationIdentity, ToolInvocationStatus,
     };
 }
 
@@ -88,9 +105,11 @@ pub mod skills {
 
 pub mod mcp {
     pub use crate::commands::mcp::{
-        McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpProtocolEra,
-        McpProtocolMode, McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot,
-        McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
+        McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpElicitationAction,
+        McpElicitationAnswer, McpElicitationPrompt, McpInteractionRequest, McpInteractionResponse,
+        McpProtocolEra, McpProtocolMode, McpRuntimeKey, McpRuntimeSelector,
+        McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto,
+        McpToolDto, McpTransportDto,
     };
 }
 

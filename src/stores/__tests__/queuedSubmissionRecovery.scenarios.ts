@@ -23,6 +23,54 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
   };
 
   describe('queued submission recovery through the real send contract', () => {
+    it('uses the submitted conversation references for steering even if the composer has changed', async () => {
+      c.chatSnapshotConversations = [
+        c.createChatSnapshotConversation('queued-conv'),
+        c.createChatSnapshotConversation('source-conv'),
+      ];
+      c.chatSnapshotMessages = [{
+        id: 'source-message', conversation_id: 'source-conv', role: 'user',
+        content: 'The deployment decision requires review.', created_at: '2026-09-28T10:00:00Z',
+      }];
+      const store = await prepare();
+      store.setState({ composerContextRefs: [{ id: 'foreign', kind: 'file', title: 'Foreign', path: 'foreign.txt' }] });
+      await store.getState().submitDuringActiveTurn({
+        conversationId: 'queued-conv', content: 'What was the deployment decision?',
+        composerContextRefs: [{ id: 'source-conv', kind: 'conversation', title: 'Prior work',
+          data: { conversationId: 'source-conv' } }],
+      }, 'steer');
+      const refs = c.createMessageMock.mock.calls.find(call => call[1] === 'user')?.[3]?.contextRefs;
+      expect(refs).toMatchObject([{ id: 'source-conv', conversationId: 'source-conv' }]);
+      expect(JSON.stringify(refs)).toContain('message_id=source-message');
+      expect(JSON.stringify(refs)).not.toContain('foreign');
+    });
+
+    it('selects conversation passages when a queued composer submission actually departs', async () => {
+      c.chatSnapshotConversations = [
+        c.createChatSnapshotConversation('queued-conv'),
+        c.createChatSnapshotConversation('source-conv'),
+      ];
+      c.chatSnapshotMessages = [{
+        id: 'source-message', conversation_id: 'source-conv', role: 'user',
+        content: 'Review every deployment.', created_at: '2026-09-28T10:00:00Z',
+      }];
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({
+        conversationId: 'queued-conv', content: 'What about deployment?',
+        composerContextRefs: [{ id: 'source-conv', kind: 'conversation', title: 'Prior work',
+          data: { conversationId: 'source-conv' } }],
+      }, 'queue');
+      expect(loadQueuedSubmissions()[0].input.contextRefs?.[0]).toMatchObject({
+        conversationId: 'source-conv',
+      });
+      expect(loadQueuedSubmissions()[0].input.contextRefs?.[0]?.snippet).toBeUndefined();
+      release(store);
+      await store.getState().retryQueuedSubmissions('queued-conv');
+      const refs = c.createMessageMock.mock.calls.find(call => call[1] === 'user')?.[3]?.contextRefs;
+      expect(JSON.stringify(refs)).toContain('message_id=source-message');
+      expect(loadQueuedSubmissions()).toEqual([]);
+    });
+
     it('retains a failed pre-persistence send across restart and retries once', async () => {
       const store = await prepare();
       await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Keep this message' }, 'queue');
@@ -126,9 +174,59 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       const { useChatStore: restarted } = await c.loadChatStore();
       await restarted.getState().initializeCritical();
       expect(restarted.getState().queuedSubmissionRecoveryByConversationId['queued-conv']).toEqual({ count: 1, error: undefined });
+      expect(restarted.getState().queuedSubmissionPreviews).toEqual([{
+        id: loadQueuedSubmissions()[0].id,
+        conversationId: 'queued-conv',
+        content: 'Recover after restart',
+      }]);
       await restarted.getState().retryQueuedSubmissions('queued-conv');
       expect(restarted.getState().queuedSubmissionRecoveryByConversationId).toEqual({});
+      expect(restarted.getState().queuedSubmissionPreviews).toEqual([]);
       expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('edits a recovered instruction before sending it in its original conversation', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Original instruction' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      const { useChatStore: restarted } = await c.loadChatStore();
+      restarted.setState(c.createIdleChatStoreState({ conversations: store.getState().conversations }));
+
+      await restarted.getState().editQueuedSubmission(accepted.id, 'Revised instruction');
+      expect(loadQueuedSubmissions()[0].input.content).toBe('Revised instruction');
+      await restarted.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.createMessageMock.mock.calls[0]?.[2]).toBe('Revised instruction');
+      expect(c.createMessageMock.mock.calls[0]?.[3]?.turnId).toBe(accepted.id);
+      expect(loadQueuedSubmissions()).toEqual([]);
+    });
+
+    it('removes a recovered instruction without sending it', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Discard this instruction' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      const { useChatStore: restarted } = await c.loadChatStore();
+      restarted.setState(c.createIdleChatStoreState({ conversations: store.getState().conversations }));
+
+      await restarted.getState().removeQueuedSubmission(accepted.id);
+      expect(loadQueuedSubmissions()).toEqual([]);
+      await restarted.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.createMessageMock).not.toHaveBeenCalled();
+      expect(c.streamChatMock).not.toHaveBeenCalled();
+    });
+
+    it('does not edit a queued entry whose user message was already saved', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Already saved' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      const { useChatStore: restarted } = await c.loadChatStore();
+      restarted.setState(c.createIdleChatStoreState({ conversations: store.getState().conversations }));
+      c.listMessagesMock.mockImplementationOnce(async () => [{
+        id: 'saved-user', conversation_id: 'queued-conv', role: 'user', content: 'Already saved',
+        turn_id: accepted.id, created_at: '2026-09-22T00:00:00Z',
+      }]);
+
+      await expect(restarted.getState().editQueuedSubmission(accepted.id, 'Too late')).rejects.toThrow('already saved');
+      expect(loadQueuedSubmissions()[0].input.content).toBe('Already saved');
     });
 
     for (const restart of [false, true]) it(`resolves the original task merge workspace after navigation, restart=${restart}`, async () => {

@@ -14,6 +14,7 @@ import type {
   DbConversation,
   DbConversationCitation,
   DbConversationCompactionState,
+  DbConversationSourceSnapshot,
   DbConversationToolboxState,
   DbImportMessageInput,
   DbInsertConversationCompactionEventInput,
@@ -134,6 +135,13 @@ export async function listMessages(
   conversationId: string,
 ): Promise<DbMessage[]> {
   return invoke<DbMessage[]>("db_list_messages", { conversationId });
+}
+
+export async function getConversationSourceSnapshot(
+  targetId: string,
+  sourceId: string,
+): Promise<DbConversationSourceSnapshot | null> {
+  return invoke<DbConversationSourceSnapshot | null>("db_get_conversation_source_snapshot", { targetId, sourceId });
 }
 
 export async function searchMessages(params: {
@@ -338,6 +346,7 @@ export async function updateMessage(
     providerTurnState?: ProviderTurnState;
     contextRefs?: unknown[];
     completionReason?: ChatCompletionReason;
+    generationAttempts?: import('../ai/contracts').GenerationAttempt[];
   },
 ): Promise<void> {
   return invoke("db_update_message", {
@@ -362,6 +371,9 @@ export async function updateMessage(
       ...(options?.completionReason
         ? { completionReason: options.completionReason }
         : {}),
+      generationAttemptsJson: options?.generationAttempts
+        ? JSON.stringify(options.generationAttempts)
+        : null,
     },
   });
 }

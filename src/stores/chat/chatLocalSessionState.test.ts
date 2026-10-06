@@ -220,6 +220,7 @@ describe("chatLocalSessionState", () => {
       timestamp: "2026-08-30T08:00:00.000Z",
       hidden_context: "contexte ".repeat(600),
       tool_traces: [],
+      generation_attempts: [{ id: "attempt-1", status: "abandoned", rawText: "Brouillon", acceptedText: "", costUsd: null }],
       persistence_state: "failed",
       persistence_error: "SQLite indisponible",
     };

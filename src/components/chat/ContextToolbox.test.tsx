@@ -125,12 +125,14 @@ const enabledToolIds = new Set(chatTools.map((tool) => tool.id));
 let contextCitations: MockCitation[] = createInitialContextCitations();
 let sourceCitations: MockCitation[] = createInitialSourceCitations();
 let selectedConversationIdMock: string | null = 'chat-conv';
+let conversationRuntimeByIdMock: Record<string, { phase: 'streaming' }> = {};
+let conversationsMock: Array<{ id: string; title: string; project_id: string | null; updated_at: string }> = [];
 let composerContextRefs: Array<{
   id: string;
   kind: string;
   title: string;
   subtitle?: string;
-  data: MockCitation;
+  data: MockCitation | { conversationId: string };
 }> = [];
 let citationCounter = 0;
 let citationVersion = 0;
@@ -210,7 +212,7 @@ const addComposerContextRefMock = mock((ref: {
   kind: string;
   title: string;
   subtitle?: string;
-  data: MockCitation;
+  data: MockCitation | { conversationId: string };
 }) => {
   if (!composerContextRefs.some((candidate) => candidate.id === ref.id && candidate.kind === ref.kind)) {
     composerContextRefs = [...composerContextRefs, ref];
@@ -374,6 +376,8 @@ const loadContextToolbox = async () => {
   mock.module('../../stores/useChatStore', () => ({
     useChatStore: () => ({
       selectedConversationId: selectedConversationIdMock,
+      conversations: conversationsMock,
+      conversationRuntimeById: conversationRuntimeByIdMock,
       createConversation: createConversationMock,
       composerContextRefs,
       addComposerContextRef: addComposerContextRefMock,
@@ -504,6 +508,8 @@ describe('ContextToolbox', () => {
     contextCitations = createInitialContextCitations();
     sourceCitations = createInitialSourceCitations();
     selectedConversationIdMock = 'chat-conv';
+    conversationsMock = [];
+    conversationRuntimeByIdMock = {};
     composerContextRefs = [];
     citationCounter = 0;
     citationVersion = 0;
@@ -673,6 +679,32 @@ describe('ContextToolbox', () => {
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
     expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
+  });
+
+  it('offers only conversations in the current project as explicit sources', async () => {
+    conversationsMock = [
+      { id: 'chat-conv', title: 'Current work', project_id: 'project-1', updated_at: '2026-09-28T12:00:00Z' },
+      { id: 'source-conv', title: 'Prior decision', project_id: 'project-1', updated_at: '2026-09-27T12:00:00Z' },
+      { id: 'other-conv', title: 'Private other project', project_id: 'project-2', updated_at: '2026-09-28T11:00:00Z' },
+      { id: 'active-conv', title: 'Running source', project_id: 'project-1', updated_at: '2026-09-28T11:30:00Z' },
+    ];
+    conversationRuntimeByIdMock = { 'active-conv': { phase: 'streaming' } };
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain('Prior decision');
+    expect(container?.textContent).not.toContain('Private other project');
+    expect(container?.textContent).not.toContain('Running source');
+    await act(async () => {
+      findButtonByText(container!, 'Prior decision').click();
+      await Promise.resolve();
+    });
+    expect(addComposerContextRefMock).toHaveBeenCalledWith({
+      id: 'source-conv', kind: 'conversation', title: 'Prior decision',
+      data: { conversationId: 'source-conv' },
+    });
   });
 
   it('shows source composer references as already added', async () => {

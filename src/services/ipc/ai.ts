@@ -179,6 +179,7 @@ export async function aiCancelStream(requestId: string): Promise<void> {
 export async function aiSubmitToolResult(params: {
   requestId: string;
   toolCallId: string;
+  submissionId?: string;
   result: string;
   blocks?: import('../../shared/toolResultContent').ToolResultBlock[];
   hiddenContext?: string | null;
@@ -191,6 +192,7 @@ export async function aiSubmitToolResult(params: {
     request: {
       request_id: params.requestId,
       tool_call_id: params.toolCallId,
+      ...(params.submissionId ? { submission_id: params.submissionId } : {}),
       result: params.result,
       ...(params.blocks ? { blocks: params.blocks } : {}),
       hidden_context: params.hiddenContext ?? null,

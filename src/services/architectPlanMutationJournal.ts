@@ -9,6 +9,7 @@ export interface ArchitectPlanMutationJournalEntry<TPayload = unknown> {
   workspaceKey: string;
   branchName: string;
   planId: string;
+  goalArtifactScope?: { conversationId: string; goalId: string };
   operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair' | 'bind' | 'activate' | 'chat' | 'auto_heal' | 'orphan_cleanup' | 'artifacts';
   phase: 'prepared' | 'applying' | 'files_applied' | 'committing';
   payload: TPayload;
@@ -21,6 +22,10 @@ const isEntry = (value: unknown): value is ArchitectPlanMutationJournalEntry => 
   const entry = value as Partial<ArchitectPlanMutationJournalEntry>;
   return !!entry && typeof entry.id === 'string' && typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0 && typeof entry.branchName === 'string' &&
     typeof entry.planId === 'string' &&
+    (entry.goalArtifactScope === undefined || (entry.goalArtifactScope !== null &&
+      entry.operation === 'artifacts' &&
+      typeof entry.goalArtifactScope.conversationId === 'string' &&
+      typeof entry.goalArtifactScope.goalId === 'string')) &&
     ['create', 'update', 'archive', 'restore', 'delete', 'repair', 'bind', 'activate', 'chat', 'auto_heal', 'orphan_cleanup', 'artifacts'].includes(entry.operation || '') &&
     ['prepared', 'applying', 'files_applied', 'committing'].includes(entry.phase || '') &&
     typeof entry.createdAt === 'string' && typeof entry.updatedAt === 'string' &&
@@ -110,8 +115,12 @@ const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanM
   throw new Error('Conflit persistant lors de la normalisation du journal des mutations de plans.');
 };
 
-export const createArchitectPlanMutationId = (entry: Pick<ArchitectPlanMutationJournalEntry, 'branchName' | 'planId' | 'operation'>): string =>
-  `${toPlanLocatorKey(entry)}:${entry.operation}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+export const createArchitectPlanMutationId = (entry: Pick<ArchitectPlanMutationJournalEntry, 'branchName' | 'planId' | 'operation' | 'goalArtifactScope'>): string => {
+  const owner = entry.goalArtifactScope
+    ? `goal:v1:${encodeURIComponent(entry.branchName)}:${encodeURIComponent(entry.goalArtifactScope.conversationId)}:${encodeURIComponent(entry.goalArtifactScope.goalId)}`
+    : toPlanLocatorKey(entry);
+  return `${owner}:${entry.operation}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+};
 
 export const loadArchitectPlanMutationJournal = async (transport: JournalTransport = tauriIpc): Promise<ArchitectPlanMutationJournalEntry[]> =>
   locked(() => loadUnlocked(transport));

@@ -5,6 +5,7 @@ ChatSnapshot as NativeDbChatSnapshot,
 Conversation as NativeDbConversation,
 ConversationCitation as NativeDbConversationCitation,
 ConversationCompactionStateRecord as NativeDbConversationCompactionState,
+ConversationSourceSnapshot as NativeDbConversationSourceSnapshot,
 ConversationToolboxStateRecord as NativeDbConversationToolboxState,
 ImportMessageInput as NativeDbImportMessageInput,
 InsertConversationCompactionEventInput as NativeDbInsertConversationCompactionEventInput,
@@ -31,11 +32,16 @@ export type DbConversation = OmitFields<NativeDbConversation, "scope_mode"> & {
 };
 
 /** Frontend compatibility: preserves adapted fields and omission rules. */
-export type DbMessage = OptionalFields<OmitFields<NativeDbMessage, "completion_reason">, "turn_id" | "context_refs_json"> & {
+export type DbMessage = OptionalFields<OmitFields<NativeDbMessage, "completion_reason">, "turn_id" | "context_refs_json" | "generation_attempts_json"> & {
   completion_reason?: ChatCompletionReason | null;
 };
 
 export type DbConversationCitation = NativeDbConversationCitation;
+
+export type DbConversationSourceSnapshot = OmitFields<NativeDbConversationSourceSnapshot, "conversation" | "messages"> & {
+  conversation: DbConversation;
+  messages: DbMessage[];
+};
 
 /** Frontend compatibility: preserves adapted fields and omission rules. */
 export type DbUpsertConversationCitationInput = OptionalFields<NativeDbUpsertConversationCitationInput,

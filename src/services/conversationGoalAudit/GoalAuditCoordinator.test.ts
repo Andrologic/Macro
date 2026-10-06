@@ -9,10 +9,12 @@ import type {
   ChildTurnExecutionRequest,
   ChildTurnExecutor,
   SubagentRuntimeClock,
+  SubagentTransition,
 } from "../subagentRuntime";
 import { GoalAuditCoordinator } from "./GoalAuditCoordinator";
 import {
   InMemoryGoalAuditJournal,
+  type GoalAuditJournal,
   type GoalAuditRunDescriptor,
 } from "./journal";
 import type {
@@ -347,20 +349,12 @@ describe("GoalAuditCoordinator", () => {
     expect(coordinator.isAuditActive("conversation-1")).toBe(true);
     expect(handle.cancel()).toBe(true);
     expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
-    let settled = false;
-    void handle.result.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-
-    verdictPort.resolve("applied");
     expect(await handle.result).toEqual({
-      status: "applied",
+      status: "cancelled",
       runId: "audit-1",
-      verdict,
+      reason: "child_cancelled",
     });
+    verdictPort.resolve("applied");
   });
 
   it("keeps cancelAudit active during verdict application", async () => {
@@ -374,13 +368,12 @@ describe("GoalAuditCoordinator", () => {
 
     expect(coordinator.cancelAudit("conversation-1")).toBe(true);
     expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    verdictPort.resolve("stale");
     expect(await handle.result).toEqual({
-      status: "stale",
+      status: "cancelled",
       runId: "audit-1",
-      reason: "revision_changed",
-      verdict,
+      reason: "child_cancelled",
     });
+    verdictPort.resolve("stale");
   });
 
   it("uses the original audit deadline while applying the verdict", async () => {
@@ -422,6 +415,50 @@ describe("GoalAuditCoordinator", () => {
     });
   });
 
+  it("does not apply a verdict when the terminal journal write fails", async () => {
+    class RejectingTerminalJournal extends InMemoryGoalAuditJournal {
+      override recordTransition(transition: SubagentTransition<unknown>): void {
+        if (transition.state === "completed") throw new Error("disk full");
+        super.recordTransition(transition);
+      }
+    }
+    const journal = new RejectingTerminalJournal();
+    const executor = new ControlledGoalAuditExecutor();
+    const verdictPort = new RecordingVerdictPort();
+    const coordinator = new GoalAuditCoordinator({
+      journal,
+      executor,
+      verdictPort,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      error: { code: "SUBAGENT_JOURNAL_FAILED" },
+    });
+    expect(verdictPort.applications).toEqual([]);
+    expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
+      "queued", "running",
+    ]);
+  });
+
+  it("settles on timeout while the verdict port remains pending", async () => {
+    const clock = new FakeClock();
+    const verdictPort = new DelayedVerdictPort();
+    const { coordinator, executor } = makeCoordinator({ clock, verdictPort });
+    const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    await verdictPort.started;
+    clock.advanceBy(50);
+    expect(await handle.result).toEqual({ status: "timed_out", runId: "audit-1", timeoutMs: 50 });
+    verdictPort.resolve("applied");
+    await Promise.resolve();
+    expect(coordinator.isAuditActive("conversation-1")).toBe(false);
+  });
+
   it("does not execute an audit when durable run registration fails", async () => {
     class RejectingJournal extends InMemoryGoalAuditJournal {
       override async registerRun(): Promise<void> {
@@ -448,7 +485,26 @@ describe("GoalAuditCoordinator", () => {
     expect(verdictPort.applications).toEqual([]);
   });
 
-  it("waits for registration after timeout and persists a terminal transition", async () => {
+  it("does not start an audit when registration rejects without an error value", async () => {
+    class RejectingJournal extends InMemoryGoalAuditJournal {
+      override registerRun(): Promise<void> {
+        return Promise.reject(undefined);
+      }
+    }
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal: new RejectingJournal(),
+      idFactory: () => "audit-1",
+    });
+    expect(await coordinator.audit(request())).toMatchObject({
+      status: "failed", error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    });
+    expect(executor.requests).toEqual([]);
+  });
+
+  it("settles registration on timeout even if the journal never responds", async () => {
     const clock = new FakeClock();
     const journal = new DelayedRegistrationJournal();
     const executor = new ControlledGoalAuditExecutor();
@@ -463,36 +519,18 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
 
     clock.advanceBy(50);
-    let settled = false;
-    void handle.result.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-
-    expect(settled).toBe(false);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    expect(executor.requests).toEqual([]);
-
-    journal.resolveRegistration();
-
     expect(await handle.result).toEqual({
-      status: "timed_out",
-      runId: "audit-1",
-      timeoutMs: 50,
+      status: "timed_out", runId: "audit-1", timeoutMs: 50,
     });
+    expect(coordinator.isAuditActive("conversation-1")).toBe(false);
+    expect(clock.timers.size).toBe(0);
+    journal.resolveRegistration();
+    await Promise.resolve();
     expect(executor.requests).toEqual([]);
-    expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
-      "queued",
-      "running",
-      "timed_out",
-    ]);
-    expect(journal.getRun("audit-1")?.transitions.at(-1)?.result).toMatchObject({
-      status: "timed_out",
-      timeoutMs: 50,
-    });
+    expect(journal.getRun("audit-1")?.transitions).toEqual([]);
   });
 
-  it("keeps registration failure authoritative after cancellation", async () => {
+  it("settles registration on cancellation without waiting for the journal", async () => {
     const journal = new DelayedRegistrationJournal();
     const executor = new ControlledGoalAuditExecutor();
     const verdictPort = new RecordingVerdictPort();
@@ -505,18 +543,15 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request());
 
     expect(handle.cancel()).toBe(true);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    journal.rejectRegistration(new Error("journal unavailable"));
-
-    expect(await handle.result).toMatchObject({
-      status: "failed",
-      runId: "audit-1",
-      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    expect(await handle.result).toEqual({
+      status: "cancelled", runId: "audit-1", reason: "child_cancelled",
     });
+    journal.rejectRegistration(new Error("journal unavailable"));
+    await Promise.resolve();
     expect(executor.requests).toEqual([]);
   });
 
-  it("waits for late registration before disposing the runtime", async () => {
+  it("disposes promptly while registration remains pending", async () => {
     const journal = new DelayedRegistrationJournal();
     const executor = new ControlledGoalAuditExecutor();
     const verdictPort = new RecordingVerdictPort();
@@ -529,30 +564,94 @@ describe("GoalAuditCoordinator", () => {
     const handle = coordinator.startAudit(request());
 
     const disposal = coordinator.dispose();
-    let disposed = false;
-    void disposal.then(() => {
-      disposed = true;
-    });
-    await Promise.resolve();
-
-    expect(disposed).toBe(false);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    journal.resolveRegistration();
-
     expect(await handle.result).toEqual({
-      status: "cancelled",
-      runId: "audit-1",
-      reason: "runtime_disposed",
+      status: "cancelled", runId: "audit-1", reason: "runtime_disposed",
     });
     await disposal;
+    journal.resolveRegistration();
+    await Promise.resolve();
     expect(executor.requests).toEqual([]);
-    expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
-      "queued",
-      "cancelled",
-    ]);
+    expect(journal.getRun("audit-1")?.transitions).toEqual([]);
   });
 
-  it("waits for verdict application during disposal and keeps applied authoritative", async () => {
+  it("bounds registration without an audit deadline", async () => {
+    const clock = new FakeClock();
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal: new DelayedRegistrationJournal(),
+      clock,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+    clock.advanceBy(10_000);
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    });
+    expect(executor.requests).toEqual([]);
+    expect(clock.timers.size).toBe(0);
+  });
+
+  it("releases a registration that completes after the audit timed out", async () => {
+    const clock = new FakeClock();
+    const registered = new Set<string>();
+    let releaseRegistration!: () => void;
+    let releases = 0;
+    const journal: GoalAuditJournal = {
+      registerRun(descriptor) {
+        return new Promise<void>((resolve) => {
+          releaseRegistration = () => {
+            registered.add(descriptor.runId);
+            resolve();
+          };
+        });
+      },
+      releaseRun(runId) {
+        releases += 1;
+        registered.delete(runId);
+      },
+      recordTransition() {
+        throw new Error("No transition should be recorded");
+      },
+    };
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal,
+      clock,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
+    clock.advanceBy(50);
+    expect(await handle.result).toMatchObject({ status: "timed_out" });
+    expect(releases).toBe(1);
+    releaseRegistration();
+    await Promise.resolve();
+    expect(registered.size).toBe(0);
+    expect(releases).toBe(2);
+    expect(executor.requests).toEqual([]);
+  });
+
+  it("continues after an asynchronous registration is confirmed", async () => {
+    const journal = new DelayedRegistrationJournal();
+    const executor = new ControlledGoalAuditExecutor();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort: new RecordingVerdictPort(),
+      journal,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+    journal.resolveRegistration();
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    expect(await handle.result).toMatchObject({ status: "applied", runId: "audit-1" });
+  });
+
+  it("does not apply a late verdict after disposal", async () => {
     const verdictPort = new DelayedVerdictPort();
     const { coordinator, executor } = makeCoordinator({ verdictPort });
     const handle = coordinator.startAudit(request());
@@ -562,22 +661,13 @@ describe("GoalAuditCoordinator", () => {
     await verdictPort.started;
 
     const disposal = coordinator.dispose();
-    let disposed = false;
-    void disposal.then(() => {
-      disposed = true;
-    });
-    await Promise.resolve();
-
-    expect(disposed).toBe(false);
     expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
-    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
-    verdictPort.resolve("applied");
-
     expect(await handle.result).toEqual({
-      status: "applied",
+      status: "cancelled",
       runId: "audit-1",
-      verdict,
+      reason: "runtime_disposed",
     });
+    verdictPort.resolve("applied");
     await disposal;
   });
 
