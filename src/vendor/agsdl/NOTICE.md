@@ -32,3 +32,10 @@ Reports retain their official scope and executionSupport: not-assessed.
 
 The historical 0.1.0 reader remains separate for existing documents. Its reports
 are never presented as 0.2.0 reports.
+
+Macro's inline conformance modules `src/services/agsdlExecution/content.ts` and
+`constraints.ts` adapt the published 0.2.0 Python helpers `sources.py`,
+`check_delivery.py` and `check_completion.py` under the same Apache-2.0 license.
+Attribution is retained in those modules. They deliberately reject URI and
+non-inline media for Macro's initial execution profile. The vendor reader's
+semantics are unchanged; only TypeScript declarations are extended.
