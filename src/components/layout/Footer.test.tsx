@@ -1168,7 +1168,9 @@ describe('Footer', () => {
     await act(async () => { root?.render(<Footer />); });
     await flushAsyncWork();
     const trigger = findButtonByIcon(container!, 'arrow-down')!;
-    act(() => { trigger.focus(); trigger.click(); });
+    act(() => { trigger.focus(); trigger.click(); trigger.blur(); });
+    // Browsers blur a button disabled during asynchronous Git preflight.
+    expect(document.activeElement).toBe(document.body);
     await flushAsyncWork();
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
     expect(dialog).not.toBeNull();
@@ -1182,7 +1184,7 @@ describe('Footer', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     });
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement?.getAttribute('data-tour-id')).toBe('footer-pull');
     expect(container.hasAttribute('inert')).toBe(false);
   });
 
@@ -1989,7 +1991,8 @@ describe('Footer', () => {
     await act(async () => { root?.render(<Footer />); });
     await flushAsyncWork();
     const trigger = findButtonByIcon(container!, 'arrow-up')!;
-    act(() => { trigger.focus(); trigger.click(); });
+    act(() => { trigger.focus(); trigger.click(); trigger.blur(); });
+    expect(document.activeElement).toBe(document.body);
     await flushAsyncWork();
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
     expect(dialog.contains(document.activeElement)).toBe(true);
@@ -2001,7 +2004,7 @@ describe('Footer', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     });
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement?.getAttribute('data-tour-id')).toBe('footer-push');
     expect(gitPushMock).not.toHaveBeenCalled();
   });
 

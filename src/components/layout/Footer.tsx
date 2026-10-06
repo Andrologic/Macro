@@ -390,6 +390,7 @@ const unavailableGitStatus = (branch: string): tauriIpc.GitStatusDto => ({
 });
 
 interface CodeDivergenceResolutionModalProps {
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   resolution: CodeDivergenceResolution;
   action: CodeDivergenceAction | null;
   t: TranslateFn;
@@ -401,6 +402,7 @@ interface CodeDivergenceResolutionModalProps {
 }
 
 const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps> = ({
+  returnFocusRef,
   resolution,
   action,
   t,
@@ -508,6 +510,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
 
   return (
     <Dialog
+      returnFocusRef={returnFocusRef}
       title={t('footer.sync.codeDivergencePromptTitle', 'Branch has diverged from remote')}
       onClose={() => { if (!action) onClose(); }}
       closeOnBackdropClick
@@ -812,6 +815,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   const refreshRef = useRef<{ capture: typeof captureView; promise: Promise<void> } | null>(null);
   const focusedBranchRequestIdRef = useRef(0);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
+  const gitSyncReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
@@ -2182,7 +2186,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                   aria-label={`${pullActionLabel} · ${pullCountLabel}`}
                   title={pullActionLabel}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
-                  onClick={() => void handleSyncAction('pull')}
+                  onClick={(event) => {
+                    gitSyncReturnFocusRef.current = event.currentTarget;
+                    void handleSyncAction('pull');
+                  }}
                   data-tour-id="footer-pull"
                 >
                   <span className="footer-git-action-icon-frame" aria-hidden="true">
@@ -2207,7 +2214,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                   aria-label={`${pushActionLabel} · ${pushCountLabel}`}
                   title={pushActionLabel}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
-                  onClick={() => void handleSyncAction('push')}
+                  onClick={(event) => {
+                    gitSyncReturnFocusRef.current = event.currentTarget;
+                    void handleSyncAction('push');
+                  }}
                   data-tour-id="footer-push"
                 >
                   <span className="footer-git-action-icon-frame" aria-hidden="true">
@@ -2233,7 +2243,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 size="sm"
                 variant="error"
                 className="h-6 px-2 text-[11px]"
-                onClick={openPushResolution}
+                onClick={(event) => {
+                  gitSyncReturnFocusRef.current = event.currentTarget;
+                  openPushResolution();
+                }}
               >
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
@@ -2378,6 +2391,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
 
       {pushResolution && (
         <Dialog
+          returnFocusRef={gitSyncReturnFocusRef}
           title={pushResolution.kind === 'missing_origin'
             ? t('footer.sync.missingOriginPromptTitle', 'Remote origin is missing')
             : t('footer.sync.missingUpstreamPromptTitle', '@macro has no remote branch yet')}
@@ -2519,6 +2533,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
 
       {codeDivergenceResolution && (
         <CodeDivergenceResolutionModal
+          returnFocusRef={gitSyncReturnFocusRef}
           resolution={codeDivergenceResolution}
           action={codeDivergenceAction}
           t={translate}
