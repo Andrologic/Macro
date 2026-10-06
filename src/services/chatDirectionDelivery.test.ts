@@ -20,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow }));
 
-function fixture() {
+function fixture(readBarrier?: Promise<void>) {
   const send = chatSendFixture();
   const identity = { conversationId: 'conversation-1', sessionId: 'original-session',
     turnId: 'original-turn', assistantMessageId: 'original-assistant' } satisfies ChatTurnIdentity;
@@ -33,7 +33,7 @@ function fixture() {
   }));
   const queue = createQueuedSubmissionRuntime({
     blocked: id => states.get(id)?.phase === 'streaming', cancelled: () => false,
-    read: async () => rows, send: sendRecovery, publish: () => {}, saveImages: () => true,
+    read: async () => { if (readBarrier) await readBarrier; return rows; }, send: sendRecovery, publish: () => {}, saveImages: () => true,
     recovery: () => {}, previews: () => {}, pending: () => {}, attempted: () => {},
   });
   const owner = createChatTurnRuntime({
@@ -204,4 +204,51 @@ test('a replacement generation recovers the prior pending batch before accepting
   expect(h.owner.deliverSteers(h.identity, 'successor-request', next)).toEqual([]);
   expect(loadQueuedSubmissions()[0].direction?.delivery).toBeUndefined();
   expect(h.owner.deliverSteers(h.identity, 'late-original-request', h.accepts)).toEqual([]);
+});
+
+for (const detach of ['confirmed', 'remove', 'restore'] as const) {
+  test(`${detach} keeps active IO discoverable by turn invalidation until it settles`, async () => {
+    const h = fixture();
+    let resolveWrite!: () => void;
+    const pending = new Promise<void>(resolve => { resolveWrite = resolve; });
+    const writing = h.queue.writeDirection(h.entry.id, () => pending);
+    await Promise.resolve();
+    if (detach === 'confirmed') {
+      h.enqueue();
+      h.owner.deliverSteers(h.identity, 'request', h.accepts);
+      h.owner.steerRequestEnded(h.identity, 'request');
+      h.queue.confirmDirections([h.entry.id], h.identity.assistantMessageId);
+    } else if (detach === 'remove') h.queue.remove([h.identity.conversationId]);
+    else h.queue.restore([]);
+    expect(loadQueuedSubmissions()).toEqual([]);
+    let invalidated = false;
+    const invalidating = h.queue.invalidateDirectionTurns(h.identity.conversationId, [h.identity.turnId])
+      .then(ids => { invalidated = true; return ids; });
+    await Promise.resolve(); await Promise.resolve();
+    expect(invalidated).toBe(false);
+    expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+    await expect(h.queue.writeDirection(h.entry.id, async () => {})).rejects.toThrow('invalidated');
+    resolveWrite(); await writing;
+    const ids = await invalidating;
+    expect(ids).toEqual([h.entry.id]);
+    h.queue.finishDirectionDeletion(ids);
+    expect(loadQueuedSubmissions()).toEqual([]);
+  });
+}
+
+
+test('manual removal holds the mutation lock across its read and refuses a simultaneous retry or write', async () => {
+  let releaseRead!: () => void;
+  const readBarrier = new Promise<void>(resolve => { releaseRead = resolve; });
+  const h = fixture(readBarrier);
+  h.queue.pause(h.identity.conversationId);
+  h.owner.set(h.identity.conversationId, null);
+  const removing = h.queue.removeEntry(h.entry.id);
+  try {
+    await expect(h.queue.retry(h.identity.conversationId)).rejects.toThrow('finish');
+    await expect(h.queue.writeDirection(h.entry.id, async () => {})).rejects.toThrow('finish');
+    expect(loadQueuedSubmissions()).toHaveLength(1);
+  } finally { releaseRead(); await removing; }
+  expect(loadQueuedSubmissions()).toEqual([]);
+  expect(h.sendRecovery).not.toHaveBeenCalled();
 });

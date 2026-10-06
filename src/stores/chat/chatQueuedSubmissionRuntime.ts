@@ -26,25 +26,30 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
   const attempted = new Map<string, string>();
-  const directionWrites = new Map<string, Promise<unknown>>();
-  const writeDirection = async <T>(id: string, write: () => Promise<T>): Promise<T> => {
-    if (!entries.some(entry => entry.id === id && !entry.direction?.deletionRequested)) {
-      throw new Error('The direction was invalidated before its write.');
-    }
-    // Keep the first IO tracked until it settles. A retry must never replace it.
+  // IO ownership outlives presentation/confirmation removal of its queue entry.
+  const directionWrites = new Map<string, { entry: QueuedSubmission; pending: Promise<unknown> }>();
+  const assertNoDirectionWrite = (id: string) => {
     if (directionWrites.has(id)) {
       throw new Error(i18n.t('chat.queueWriteInProgress',
         'This direction is still being saved. Wait for its save to finish before retrying.'));
     }
+  };
+  const writeDirection = async <T>(id: string, write: () => Promise<T>): Promise<T> => {
+    const entry = entries.find(entry => entry.id === id && !entry.direction?.deletionRequested);
+    if (!entry) throw new Error('The direction was invalidated before its write.');
+    if (mutating.has(id)) throw new Error(i18n.t('chat.queueEditInProgress', 'Wait for the queued message change to finish.'));
+    // Keep the first IO tracked until it settles. A retry must never replace it.
+    assertNoDirectionWrite(id);
     const pending = Promise.resolve().then(() => {
       if (!entries.some(entry => entry.id === id && !entry.direction?.deletionRequested)) {
         throw new Error('The direction was invalidated before its write.');
       }
       return write();
     });
-    directionWrites.set(id, pending);
+    const ownership = { entry, pending };
+    directionWrites.set(id, ownership);
     try { return await pending; }
-    finally { if (directionWrites.get(id) === pending) directionWrites.delete(id); }
+    finally { if (directionWrites.get(id) === ownership) directionWrites.delete(id); }
   };
   let recoveries: QueuedSubmissionRecoveries = Object.fromEntries(Array.from(paused, id => [id, {
     count: entries.filter(entry => entry.input.conversationId === id).length,
@@ -65,6 +70,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
     }
     if (entry.direction?.deletionRequested && !allowSaved) throw new Error("This direction was invalidated by deletion. Remove its recovery entry.");
+    assertNoDirectionWrite(id);
     mutating.add(id);
     try {
       const persisted = await ports.read(entry.input.conversationId);
@@ -75,6 +81,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       if (!entries.includes(entry) || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)) {
         throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
       }
+      assertNoDirectionWrite(id);
       return entry;
     } catch (error) {
       mutating.delete(id);
@@ -195,15 +202,21 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     hasEntry(id: string) { return entries.some(entry => entry.id === id && !entry.direction?.deletionRequested); },
     writeDirection,
     async invalidateDirectionTurns(conversationId: string, turnIds: readonly string[]) {
-      const selected = entries.filter(entry => entry.input.conversationId === conversationId &&
-        entry.direction && turnIds.includes(entry.direction.target.turnId));
-      if (!selected.length) return [];
-      const ids = selected.map(entry => entry.id);
+      const belongs = (entry: QueuedSubmission) => entry.input.conversationId === conversationId &&
+        entry.direction && turnIds.includes(entry.direction.target.turnId);
+      const selected = new Map(entries.filter(belongs).map(entry => [entry.id, entry]));
+      for (const { entry } of directionWrites.values()) {
+        if (belongs(entry) && !selected.has(entry.id)) selected.set(entry.id, entry);
+      }
+      if (!selected.size) return [];
+      const ids = [...selected.keys()];
+      // Reattach an active owner only as an invalidated record, never as a replayable direction.
+      const retained = [...entries, ...[...selected.values()].filter(entry => !entries.some(current => current.id === entry.id))];
       // Refusal happens before DB deletion. A later cleanup refusal retains this marker on disk.
-      persist(entries.map(entry => ids.includes(entry.id) && entry.direction ? {
+      persist(retained.map(entry => ids.includes(entry.id) && entry.direction ? {
         ...entry, direction: { ...entry.direction, deletionRequested: true },
       } : entry));
-      await Promise.allSettled(ids.flatMap(id => directionWrites.has(id) ? [directionWrites.get(id)!] : []));
+      await Promise.allSettled(ids.flatMap(id => directionWrites.has(id) ? [directionWrites.get(id)!.pending] : []));
       return ids;
     },
     finishDirectionDeletion(ids: readonly string[]) {

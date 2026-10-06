@@ -261,7 +261,9 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
       } finally { storage.setItem = write; await h.close(); }
     });
 
-    it('prevents overlapping recovery writes, then waits through Stop and replay before reload', async () => {
+    for (const manualRemoval of [false, true]) it(manualRemoval
+      ? 'retains IO ownership after manual recovery removal is refused, through replay and reload'
+      : 'prevents overlapping recovery writes, then waits through Stop and replay before reload', async () => {
       const h = await createHarness(); const initialDb = c.createDeferred<void>();
       let creates = 0; let trimmed = false;
       try {
@@ -280,6 +282,10 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
         expect(creates).toBe(1);
         expect(h.store.getState().queuedSubmissionRecoveryByConversationId[conversationId].error).toContain('still being saved');
         expect(h.requests).toHaveLength(1);
+        if (manualRemoval) {
+          await expect(h.store.getState().removeQueuedSubmission(entry.id)).rejects.toThrow('still being saved');
+          expect(loadQueuedSubmissions()).toHaveLength(1);
+        }
         const original = h.rows.find(row => row.role === 'user' && row.content === 'Initial request')!;
         c.dbPrepareConversationReplayMock.mockImplementation(async params => {
           h.rows.splice(h.rows.findIndex(row => row.id === params.messageId) + 1);
