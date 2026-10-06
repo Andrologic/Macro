@@ -90,13 +90,28 @@ export const openConflictAssistant = async (
   }
 
   const chatStore = useChatStore.getState();
+  const selectionBeforeCreate = useAppStore.getState();
+  const expectedSelection = [selectionBeforeCreate.mode, selectionBeforeCreate.selectedTaskId,
+    selectionBeforeCreate.selectedProjectId, selectionBeforeCreate.selectedGroupId];
+  const previousConversationId = chatStore.selectedConversationId;
   const title = conversationTitle ?? DEFAULT_CONFLICT_ASSISTANT_TITLE;
+  // ChatZone reads authority and the pending draft when the ID first changes.
+  // Publish both before selecting, rather than selecting the same ID twice.
   const conversation = await chatStore.createConversation(
     title,
     null,
     scope?.projectId ?? appState.selectedProjectId,
-    scope ? scope.groupId : appState.selectedGroupId
+    scope ? scope.groupId : appState.selectedGroupId,
+    { selectConversation: false },
   );
+
+  const current = useAppStore.getState();
+  if (repositories && ([current.mode, current.selectedTaskId, current.selectedProjectId, current.selectedGroupId]
+    .some((value, index) => value !== expectedSelection[index]) ||
+    useChatStore.getState().selectedConversationId !== previousConversationId)) {
+    throw new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED,
+      'Conflict assistant context changed.', { stage: 'creation' });
+  }
 
   if (repositories && scope && options.context) registerConflictAssistantContext({
     conversationId: conversation.id, kind: options.context.kind, ...scope, repositories,
@@ -108,9 +123,17 @@ export const openConflictAssistant = async (
   );
 
   chatStore.setComposerDraft(conversation.id, prompt);
-  const selected = await chatStore.selectConversation(conversation.id);
+  let selected: boolean;
+  try {
+    selected = await chatStore.selectConversation(conversation.id);
+  } catch (error) {
+    clearConflictAssistantContext(conversation.id);
+    clearConflictAssistantInternalAgentProfile(conversation.id);
+    throw error;
+  }
   if (!selected && repositories) {
     clearConflictAssistantContext(conversation.id);
+    clearConflictAssistantInternalAgentProfile(conversation.id);
     throw new Error('The verified conflict conversation could not be selected.');
   }
   if (!selected) {

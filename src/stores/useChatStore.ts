@@ -940,6 +940,7 @@ interface ChatStore {
     taskId: string | null,
     projectId: string | null,
     groupId?: string | null,
+    options?: { selectConversation?: boolean },
   ) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   invalidateConversationResolution: () => void;
@@ -1703,6 +1704,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
       groups: app.projectGroups,
     };
+  };
+  const getSelectedConflictInspection = (): string | null => {
+    const id = get().selectedConversationId;
+    return id && isConflictAssistantContextAllowed(
+      getConflictAssistantContext(id), conflictAssistantSelection(id),
+    ) ? id : null;
   };
   const assertImplementConversationContext = (conversationId: string) => {
     const conversation = get().conversations.find(conversation => conversation.id === conversationId);
@@ -11532,12 +11539,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
 
+    const selectedInspection = getSelectedConflictInspection();
+    if (selectedInspection) return modeFallback(selectedInspection);
     const localProjectContext = selectedGroupId
       ? await getLocalProjectContextState(selectedGroupId)
       : null;
     lifecycle?.assertActive();
     if (!isCurrentRequest()) return modeFallback(null);
     state = get();
+    const inspectionAfterRead = getSelectedConflictInspection();
+    if (inspectionAfterRead) return modeFallback(inspectionAfterRead);
 
     const localContextConversationId =
       mode === "Architect"
@@ -12368,10 +12379,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         requestId,
         shouldShowResolving: true,
       });
-      return true;
+      return isCurrent();
     },
 
-    createConversation: async (title, taskId, projectId, groupId) => {
+    createConversation: async (title, taskId, projectId, groupId, options) => {
       const appState = useAppStore.getState();
       const task = taskId ? useTaskStore.getState().getTaskById(taskId) : null;
       const executionTask = task
@@ -12388,6 +12399,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskId,
         projectId: executionTask?.project_id ?? projectId,
         groupId,
+        selectConversation: options?.selectConversation,
       });
     },
 
@@ -12463,14 +12475,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ensureConversationForCurrentMode: async (lifecycle) => {
       lifecycle?.assertActive();
       const resolutionGeneration = conversationResolutionGeneration;
+      const selectionRequestAtStart = get().selectionRequestId;
       await waitForHydration();
       lifecycle?.assertActive();
-      if (resolutionGeneration !== conversationResolutionGeneration) {
+      if (resolutionGeneration !== conversationResolutionGeneration ||
+          selectionRequestAtStart !== get().selectionRequestId) {
         return get().selectedConversationId;
       }
 
       let appState = useAppStore.getState();
-      if (appState.mode === "Implement") {
+      // A verified, currently selected inspection owns the taskless context.
+      // Restoring a remembered task would invalidate that deliberate selection.
+      if (appState.mode === "Implement" && !getSelectedConflictInspection()) {
         const contextBeforeRead = {
           mode: appState.mode,
           selectedGroupId: appState.selectedGroupId,
@@ -12483,6 +12499,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         lifecycle?.assertActive();
         const currentAppState = useAppStore.getState();
         if (resolutionGeneration !== conversationResolutionGeneration ||
+          selectionRequestAtStart !== get().selectionRequestId ||
           currentAppState.mode !== contextBeforeRead.mode ||
           currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
           currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||

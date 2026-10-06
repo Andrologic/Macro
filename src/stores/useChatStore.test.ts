@@ -1,6 +1,6 @@
 import { createGitCommitDto } from '../test-utils/gitCommit';
 import { loadQueuedSubmissions } from './chat/chatQueuedSubmissions';
-import { registerConflictAssistantContext, clearConflictAssistantContext, type VerifiedConflictAssistantContext } from '../services/conflictAssistantContext';
+import { registerConflictAssistantContext, getConflictAssistantContext, clearConflictAssistantContext, type VerifiedConflictAssistantContext } from '../services/conflictAssistantContext';
 import { createLifecycleScope } from '../services/lifecycleScope';
 import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
@@ -3496,6 +3496,108 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     registerConflictAssistantContext(context);
     return useChatStore;
   };
+
+  it('creates a native inspection without selection and publishes its prepared state on first selection', async () => {
+    tauriAvailable = true;
+    const chat = await setupConflictConversation();
+    providerState.selectedProviderId = null;
+    providerState.selectedModelId = null;
+    const observed: Array<{ id: string; draft: string | undefined; verified: boolean }> = [];
+    type ChatState = ReturnType<typeof import('./useChatStore').useChatStore.getState>;
+    const stop = chat.subscribe((state: ChatState, previous: ChatState) => {
+      if (state.selectedConversationId && state.selectedConversationId !== previous.selectedConversationId) {
+        const id = state.selectedConversationId;
+        observed.push({ id, draft: state.pendingComposerDraftByConversationId[id],
+          verified: Boolean(getConflictAssistantContext(id)) });
+      }
+    });
+    let id: string | undefined;
+    try {
+      const conversation = await chat.getState().createConversation('Inspect conflicts', null, 'project-1', 'group-1', { selectConversation: false });
+      const conversationId: string = conversation.id;
+      id = conversationId;
+      expect(conversation).toMatchObject({ scope_mode: 'Implement', task_id: null });
+      expect(chat.getState().selectedConversationId).toBe('conflict-store');
+      expect(observed).toEqual([]);
+      registerConflictAssistantContext({ ...getConflictAssistantContext('conflict-store')!, conversationId });
+      chat.getState().setComposerDraft(conversationId, 'Inspect the verified conflicts.');
+      expect(await chat.getState().selectConversation(conversationId)).toBe(true);
+      expect(observed).toEqual([{ id: conversationId, draft: 'Inspect the verified conflicts.', verified: true }]);
+      expect(providerState.selectedProviderId as string | null).toBe('provider-1');
+      expect(providerState.selectedModelId as string | null).toBe('model-1');
+      expect(streamChatMock).not.toHaveBeenCalled();
+      expect(createMessageMock).not.toHaveBeenCalled();
+    } finally { stop(); if (id) clearConflictAssistantContext(id); }
+  });
+
+  it.each(['selected', 'task-read', 'conversation-read'])('preserves a selected inspection against remembered task restoration at %s', async phase => {
+    const chat = await setupConflictConversation();
+    taskStoreState.tasks = phase === 'conversation-read' ? [] : [createImplementTask()];
+    const stored = { architectConversationId: null, implementConversationId: 'task-conv', lastTaskId: 'task-1' };
+    const entered = createDeferred<void>();
+    const read = createDeferred<typeof stored>();
+    const late = phase !== 'selected';
+    let reads = 0;
+    getLocalProjectContextStateMock.mockImplementation(async () => {
+      if (phase === 'conversation-read' && ++reads === 1) return { ...stored, lastTaskId: null };
+      entered.resolve();
+      return late ? read.promise : stored;
+    });
+    if (late) chat.setState({ selectedConversationId: null });
+    try {
+      const pending = chat.getState().ensureConversationForCurrentMode();
+      if (late) {
+        await entered.promise;
+        taskStoreState.tasks = [createImplementTask()];
+        expect(await chat.getState().selectConversation('conflict-store')).toBe(true);
+        read.resolve(stored);
+      }
+      expect(await pending).toBe('conflict-store');
+      expect(appState.selectedTaskId).toBeNull();
+      expect(chat.getState().selectedConversationId).toBe('conflict-store');
+      expect(streamChatMock).not.toHaveBeenCalled();
+    } finally { read.resolve(stored); getLocalProjectContextStateMock.mockImplementation(async () => ({
+      architectConversationId: 'project-architect-conversation', implementConversationId: null, lastTaskId: null,
+    })); clearConflictAssistantContext('conflict-store'); }
+  });
+
+  it.each(['task', 'project', 'group', 'mode', 'path'])('does not retain inspection selection after real %s navigation', async change => {
+    const chat = await setupConflictConversation();
+    taskStoreState.tasks = [createImplementTask()];
+    const originalGroups = appState.projectGroups;
+    try {
+      if (change === 'task') appState.selectedTaskId = 'task-1';
+      if (change === 'project') appState.selectedProjectId = 'other-project';
+      if (change === 'group') appState.selectedGroupId = 'other-group';
+      if (change === 'mode') appState.mode = 'Chat';
+      if (change === 'path') appState.projectGroups = originalGroups.map(group => ({ ...group,
+        projects: group.projects.map(project => ({ ...project, path: '/other/repository' })),
+      }));
+      expect(await chat.getState().ensureConversationForCurrentMode()).not.toBe('conflict-store');
+      expect(chat.getState().selectedConversationId).not.toBe('conflict-store');
+      expect(streamChatMock).not.toHaveBeenCalled();
+    } finally { appState.projectGroups = originalGroups; clearConflictAssistantContext('conflict-store'); }
+  });
+
+  it('refuses selection success after navigation during AI restoration', async () => {
+    const chat = await setupConflictConversation();
+    const entered = createDeferred<void>();
+    const released = createDeferred<void>();
+    const commit = providerState.commitRestoredSelection;
+    providerState.commitRestoredSelection = mock(async (...args: Parameters<typeof commit>) => {
+      entered.resolve();
+      await released.promise;
+      return commit(...args);
+    });
+    try {
+      const pending = chat.getState().selectConversation('conflict-store');
+      await entered.promise;
+      appState.mode = 'Chat';
+      released.resolve();
+      expect(await pending).toBe(false);
+      expect(streamChatMock).not.toHaveBeenCalled();
+    } finally { released.resolve(); providerState.commitRestoredSelection = commit; clearConflictAssistantContext('conflict-store'); }
+  });
 
   it('sends every conflict inspection with a read-only profile and only the confirmed repository', async () => {
     const chat = await setupConflictConversation();

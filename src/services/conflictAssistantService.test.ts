@@ -2,8 +2,8 @@ import { SERVICE_ERROR_CODES } from './contracts/errors';
 import { createGitCommitDto } from '../test-utils/gitCommit';
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
-const setModeMock = mock(() => undefined);
-const setSelectedTaskMock = mock((_taskId: string | null) => undefined);
+const setModeMock = mock((mode: string) => { appStoreState.mode = mode; });
+const setSelectedTaskMock = mock((taskId: string | null) => { appStoreState.selectedTaskId = taskId; });
 const createConversationMock = mock(async (..._args: unknown[]) => ({
   id: "repo-auditor-conv",
 }));
@@ -21,6 +21,7 @@ const switchProjectContextMock = mock(async (id: string) => {
   appStoreState.selectedGroupId = appStoreState.projectGroups.find(group => group.projects.some(project => project.id === id))?.id ?? null;
 });
 const appStoreState = {
+  mode: 'Implement',
   standaloneProjects: [{ id: 'project-1', path: '/repo/api' }],
   projectGroups: [] as Array<{ id: string; projects: Array<{ id: string; path: string }> }>,
   switchProjectContext: switchProjectContextMock,
@@ -74,6 +75,7 @@ describe("conflictAssistantService", () => {
     appStoreState.selectedProjectId = null;
     appStoreState.selectedGroupId = null;
     appStoreState.selectedTaskId = null;
+    appStoreState.mode = 'Implement';
 
     mock.module('./tauriIpc', () => ({ gitStatus: nativeStatusMock, gitWorktreeInspect: worktreeInspectMock, macroBranchStatus: mock(async ({ workspacePath }: { workspacePath: string }) => ({ branch: '@macro', worktree_path: workspacePath + '/metadata', state: 'conflict' })) }));
     mock.module('./index', () => ({ services: { listTasks: listTasksMock } }));
@@ -84,6 +86,30 @@ describe("conflictAssistantService", () => {
     mock.module("../stores/useChatStore", () => ({
       useChatStore: createStoreHook(chatStoreState),
     }));
+  });
+
+  it('publishes verified authority and draft before the first automatic or explicit selection', async () => {
+    const { getConflictAssistantContext } = await import('./conflictAssistantContext');
+    const moduleId = './conflictAssistantService.ts?first-publication';
+    const { openConflictAssistant, getConflictAssistantInternalAgentProfile } = await import(moduleId);
+    const observed: Array<{ verified: boolean; profile: string | undefined; draft: unknown }> = [];
+    const observe = () => observed.push({
+      verified: Boolean(getConflictAssistantContext('repo-auditor-conv')),
+      profile: getConflictAssistantInternalAgentProfile('repo-auditor-conv'),
+      draft: setComposerDraftMock.mock.calls.at(-1)?.[1],
+    });
+    createConversationMock.mockImplementation(async (...args: unknown[]) => {
+      // The real store selects before returning and awaiting AI restoration.
+      if ((args[4] as { selectConversation?: boolean } | undefined)?.selectConversation !== false) observe();
+      return { id: 'repo-auditor-conv' };
+    });
+    selectConversationMock.mockImplementationOnce(async () => { observe(); return true; });
+    await openConflictAssistant({ prompt: 'Stale prompt', context: { kind: 'code', repositories: [
+      { projectId: 'project-1', repoPath: '/repo/api', branch: 'feature/api' },
+    ] } });
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toEqual({ verified: true, profile: 'repo_auditor', draft: expect.stringContaining('src/api.ts') });
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it("opens a dedicated Implement conversation with a draft prompt and no send", async () => {
@@ -100,7 +126,8 @@ describe("conflictAssistantService", () => {
       "Resolve merge conflicts",
       null,
       null,
-      null
+      null,
+      { selectConversation: false },
     );
     expect(setComposerDraftMock).toHaveBeenCalledWith(
       "repo-auditor-conv",
@@ -142,7 +169,8 @@ describe("conflictAssistantService", () => {
       "Custom review title",
       null,
       null,
-      null
+      null,
+      { selectConversation: false },
     );
   });
 
@@ -159,7 +187,8 @@ describe("conflictAssistantService", () => {
       "Resolve merge conflicts",
       null,
       "project-1",
-      "group-1"
+      "group-1",
+      { selectConversation: false },
     );
   });
 
@@ -173,7 +202,7 @@ describe("conflictAssistantService", () => {
       scope: { projectId: "conflicted-project", groupId: null },
     });
     expect(createConversationMock).toHaveBeenCalledWith(
-      "Resolve merge conflicts", null, "conflicted-project", null,
+      "Resolve merge conflicts", null, "conflicted-project", null, { selectConversation: false },
     );
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
@@ -339,7 +368,7 @@ describe("conflictAssistantService", () => {
     await openConflictAssistant({ prompt: 'Stale metadata', context: { kind: 'metadata', repositories: [
       { projectId: 'project-1', repoPath: '/repo/api' }, { projectId: 'project-2', repoPath: '/repo/web' },
     ] } });
-    expect(createConversationMock).toHaveBeenCalledWith('Resolve merge conflicts', null, 'project-1', 'group-1');
+    expect(createConversationMock).toHaveBeenCalledWith('Resolve merge conflicts', null, 'project-1', 'group-1', { selectConversation: false });
     expect(getConflictAssistantContext('repo-auditor-conv')?.repositories.map(repo => repo.repoPath)).toEqual(['/repo/api/metadata', '/repo/web/metadata']);
     expect(getConflictAssistantContext('repo-auditor-conv')?.repositories.every(repo => repo.head === createGitCommitDto().id)).toBe(true);
     expect(setComposerDraftMock.mock.calls[0]?.[1]).toContain('workspace.json');
@@ -355,6 +384,38 @@ describe("conflictAssistantService", () => {
     const { getConflictAssistantContext } = await import('./conflictAssistantContext');
     await expect(openConflictAssistant({ prompt: 'Inspect', context: { kind: 'code', repositories: [{ projectId: 'project-1', repoPath: '/repo/api', branch: 'feature/api' }] } })).rejects.toThrow('could not be selected');
     expect(getConflictAssistantContext('repo-auditor-conv')).toBeUndefined();
+  });
+
+  it('refuses publication after navigation during native creation', async () => {
+    const moduleId = './conflictAssistantService.ts?creation-navigation';
+    const { openConflictAssistant, getConflictAssistantInternalAgentProfile } = await import(moduleId);
+    const { getConflictAssistantContext } = await import('./conflictAssistantContext');
+    createConversationMock.mockImplementationOnce(async () => {
+      appStoreState.selectedProjectId = 'other-project';
+      return { id: 'repo-auditor-conv' };
+    });
+    await expect(openConflictAssistant({ prompt: 'Inspect', context: { kind: 'code', repositories: [
+      { projectId: 'project-1', repoPath: '/repo/api', branch: 'feature/api' },
+    ] } })).rejects.toMatchObject({ code: SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED, details: { stage: 'creation' } });
+    expect(getConflictAssistantContext('repo-auditor-conv')).toBeUndefined();
+    expect(getConflictAssistantInternalAgentProfile('repo-auditor-conv')).toBeUndefined();
+    expect(setComposerDraftMock).not.toHaveBeenCalled();
+    expect(selectConversationMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes authority after a selection error while preserving the review draft', async () => {
+    const moduleId = './conflictAssistantService.ts?selection-error';
+    const { openConflictAssistant, getConflictAssistantInternalAgentProfile } = await import(moduleId);
+    const { getConflictAssistantContext } = await import('./conflictAssistantContext');
+    selectConversationMock.mockImplementationOnce(async () => { throw new Error('Selection failed'); });
+    await expect(openConflictAssistant({ prompt: 'Inspect', context: { kind: 'code', repositories: [
+      { projectId: 'project-1', repoPath: '/repo/api', branch: 'feature/api' },
+    ] } })).rejects.toThrow('Selection failed');
+    expect(getConflictAssistantContext('repo-auditor-conv')).toBeUndefined();
+    expect(getConflictAssistantInternalAgentProfile('repo-auditor-conv')).toBeUndefined();
+    expect(setComposerDraftMock.mock.calls[0]?.[1]).toContain('src/api.ts');
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
 });
