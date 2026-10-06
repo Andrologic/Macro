@@ -4579,6 +4579,38 @@ describe('useTaskStore task status transition guards', () => {
     lastLoadedAt: '2026-04-22T10:00:00.000Z',
   });
 
+  it.each(['fr', 'en'] as const)('%s refuses completion with localized open todo labels and unchanged task state', async (language) => {
+    const { default: i18n } = await import('../i18n');
+    const { loadTranslation } = await import('../i18n/resources');
+    const planService = await import('../services/architectPlanService');
+    const previousLanguage = i18n.language;
+    const previousResources = i18n.hasResourceBundle(language, 'translation')
+      ? structuredClone(i18n.getResourceBundle(language, 'translation')) : null;
+    i18n.addResourceBundle(language, 'translation', await loadTranslation(language), true, true);
+    await i18n.changeLanguage(language);
+    const planRead = spyOn(planService, 'getArchitectPlan').mockResolvedValue(null);
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const task = buildTask({ status: 'InReview', todos: [
+        { id: 'a', title: 'Relire <A>', status: 'pending' },
+        { id: 'b', title: 'Vérifier B: C', status: 'in-progress' },
+        { id: 'done', title: 'Déjà terminé', status: 'done' },
+      ] });
+      useTaskStore.setState({ tasks: [task], lastError: null });
+      await useTaskStore.getState().setTaskStatus('task-1', 'Completed');
+      expect(useTaskStore.getState().lastError).toBe(language === 'fr'
+        ? 'Impossible de terminer la tâche tant que des todos restent ouverts : Relire <A>, Vérifier B: C'
+        : 'Cannot complete task while todos remain open: Relire <A>, Vérifier B: C');
+      expect(useTaskStore.getState().getTaskById('task-1')).toEqual(task);
+      expect(workspaceUpdateStandaloneTaskStatusMock).not.toHaveBeenCalled();
+    } finally {
+      planRead.mockRestore();
+      i18n.removeResourceBundle(language, 'translation');
+      if (previousResources) i18n.addResourceBundle(language, 'translation', previousResources);
+      await i18n.changeLanguage(previousLanguage || 'en');
+    }
+  });
+
   it('allows merge-workflow blocked tasks to complete after blockers are resolved', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     const mergeRuntime = buildBlockedTaskCompletionRuntime();

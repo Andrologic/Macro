@@ -92,6 +92,7 @@ import {
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
+import { localizeTaskErrorMessage } from '../../services/taskErrorPresentation';
 import { toServiceError } from '../../services/contracts/errors';
 import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
@@ -956,9 +957,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }) => {
     setCreateTaskError(null);
     const reportCreationError = (message: string, description?: string) => {
-      setCreateTaskError([message, description].filter(Boolean).join(' '));
+      const localizedMessage = localizeTaskErrorMessage(message, (key, options) => String(t(key, options)));
+      setCreateTaskError([localizedMessage, description].filter(Boolean).join(' '));
       lastErrorToastRef.current = `no-task:${message}`;
-      notify.error(message, description ? { description } : undefined);
+      notify.error(localizedMessage, description ? { description } : undefined);
     };
     if (taskMutationDisabled || taskExecutionDisabled) {
       reportCreationError(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
@@ -1960,7 +1962,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     } catch (error) {
       const message = toServiceError(error).message;
       lastErrorToastRef.current = `${task.id}:${message}`;
-      notify.error(message);
+      notify.error(localizeTaskErrorMessage(message, (key, options) => String(t(key, options))));
     } finally {
       setPendingTaskId((current) => (current === task.id ? null : current));
     }

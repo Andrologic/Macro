@@ -409,6 +409,10 @@
     "full": "Vollständiger Dateikontext"
   },
   "errors": {
+    "databaseLocked": "Die Datenbank ist gesperrt. Versuchen Sie es erneut.",
+    "directProjectTaskAlreadyActiveWithTitle": "Dieses Projekt zur direkten Bearbeitung hat bereits eine aktive Aufgabe: {{title}}",
+    "taskTodosOpenForComplete": "Die Aufgabe kann nicht abgeschlossen werden, solange Todos offen sind: {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "Die Aufgabe kann nicht abgeschlossen werden, solange Todos offen sind.",
     "finalizationStrategyLocked": "Die Finalisierung hat bereits begonnen. Schließe den ausstehenden Merge ab oder fahre fort, ohne die Strategie zu ändern.",
     "directTaskCompletionFailed": "Die Aufgabe im Direktbearbeitungsmodus konnte nicht abgeschlossen werden.",
     "directTaskBranchChanged": "Der aktuelle Branch wurde von {{expected}} zu {{actual}} gewechselt. Wechsle vor dem Commit dieser Direct-Aufgabe zurück.",
