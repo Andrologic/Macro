@@ -36,7 +36,7 @@ les commits tardifs mais ne prouve pas que les anciens effets sont terminés.
 
 | Identité | Durée et unicité |
 | --- | --- |
-| `systemStartId` | Un démarrage et son snapshot immuable. Stop, édition et nouveau démarrage créent une nouvelle identité. |
+| `systemStartId` | Un démarrage et son snapshot immuable. Seul le prochain démarrage crée une nouvelle identité ; arrêt et édition seuls ne le font pas. |
 | `flowInvocationId` | Une invocation de flux. Les compteurs `maxVisits` sont propres à cette invocation et à chaque adresse de step. |
 | `agentInstanceId` | Une instance par couple système démarré et nom d'Agent. Plusieurs steps utilisent la même mémoire et configuration. |
 | `activationId` | Une occurrence de travail distincte. Deux entrées identiques peuvent créer deux occurrences différentes. |
@@ -101,7 +101,12 @@ profil. Une extension devra avoir son propre assessment et ses preuves.
 `StaticAssessment.valid` décrit uniquement le document. `RuntimeAssessment`
 porte sur le snapshot, le profil et la version du registre. Une assertion
 frontend `supported: true` ne permet aucun effet. Le service natif d'ouverture
-exécute ou vérifie son propre assessment avec le registre de confiance, refuse
+peut déléguer la compilation et les contrôles exacts à un service de confiance
+dans le host résident avant l'ouverture durable. Ce host travaille sur la source
+canonique fraîche vérifiée par le natif, avec une réponse liée à sa révision,
+son SHA et ses versions. Cela n'impose pas de réimplémenter le lecteur exact en
+Rust. Le frontend produit reste consultatif. Le natif vérifie cet assessment
+avec le registre de confiance, refuse
 les diagnostics bloquants et tout `unassessed` nécessaire à l'exécution, puis
 persiste le snapshot. La vérification du support ne garantit pas la disponibilité
 future d'un fournisseur ou la conservation des permissions.
