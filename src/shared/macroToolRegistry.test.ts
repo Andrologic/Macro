@@ -63,6 +63,10 @@ describe('macroToolRegistry', () => {
     expect(requireObjectParameters('agsdl_update').properties?.design_json).toMatchObject({ type: 'string' });
     expect(requireObjectParameters('agsdl_update').properties?.display_json).toMatchObject({ type: 'string' });
     expect(requireObjectParameters('agsdl_get').required).toEqual(['plan_id', 'target_branch']);
+    expect(requireObjectParameters('agsdl_get').properties?.section).toMatchObject({ enum: ['outline', 'outline_entry', 'source', 'report', 'design', 'display', 'models', 'annex_ids', 'error'] });
+    for (const key of ['offset', 'limit', 'report_index', 'entry_index']) expect(requireObjectParameters('agsdl_get').properties?.[key]).toMatchObject({ type: 'number' });
+    expect(requireObjectParameters('agsdl_get').properties?.cursor).toMatchObject({ type: 'string' });
+    expect(requireObjectParameters('agsdl_get').properties?.expected_revision).toMatchObject({ type: 'string' });
   });
 
   it('contains unique ids', () => {

@@ -5,6 +5,7 @@ import { AGSDL_EXAMPLES, createExampleDocument, type AgsdlExample } from "../../
 import type { AgsdlChange } from "../../types/agsdl";
 import { readDesign, updateDesignMetadata, validDisplayMetadata, type DesignMetadata, type AgsdlDisplayMetadata } from "../../services/agsdl/design";
 import { useProviderStore } from "../useProviderStore";
+import { paginateTextBytes, TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
   "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
@@ -12,7 +13,7 @@ export const AGSDL_AUTHORING_INSTRUCTION =
 const legacyGuide = {
   contract: "agsdl-0.1.0",
   workflow:
-    "Read the document and revision. Prefer atomic changes at JSON pointers to preserve opaque content and number tokens. After update, inspect diagnostics and correct the affected paths. Read source with these tools to diagnose unsupported contracts.",
+    "Read the document and revision. Prefer atomic changes at JSON pointers to preserve opaque content and number tokens. After update, inspect diagnostics and correct the affected paths. Read source with these tools to diagnose unsupported contracts. Follow outline.next_offset with section: outline and expected_revision to discover every pointer. When a value is omitted, read its explicit section and concatenate text_page.content in next_offset order before parsing.",
   definition:
     "D declares root, definitions, relations, and dependencies. Keys have scope, id, version. Keep reference identity intact when renaming. Instructions, Skills, and Tools are definitions linked by relations; their opaque bodies are data.",
   graph:
@@ -30,7 +31,7 @@ const legacyGuide = {
 
 const guide02 = {
   contract: "agsdl-0.2.0",
-  workflow: "Read source, revision, exact declaration_json strings and the scoped static documentReportJson. Apply atomic JSON-pointer changes with the returned revision, preserve opaque settings and numeric tokens, then inspect fresh diagnostics. Preserve imported editions and author a separate 0.2.0 document only after deliberate migration of intent and losses.",
+  workflow: "Read source and revision. Follow outline.next_offset with section: outline, offset and expected_revision until null to discover every declaration; read each path for its exact source. Full static reports are available with section: report and report_index. Read each *_omitted.section explicitly before editing its data. For any text_page, concatenate content in next_offset order for the same revision before parsing the JSON text. Apply atomic JSON-pointer changes with the returned revision, preserve opaque settings and numeric tokens, then inspect fresh diagnostics. Preserve imported editions and author a separate 0.2.0 document only after deliberate migration of intent and losses.",
   document: "The closed document requires contract:'agsdl-0.2.0', id, agents, configurations and bindings. Optional fields are content, skills, flow, compositions and baseUri. id and catalog names match ^[A-Za-z][A-Za-z0-9_-]*$. Catalogs are maps. Use only the 0.2.0 shapes. Unknown fields fail validation, except in literal values, settings and external requirement parameters.",
   content: "A source has exactly value or uri, with optional mediaType. A content use may instead be {ref:catalogName}. Messages separate ordered prompt instructions from named resources containing information. An Agent declares a fixed configuration name or {select:Operand,cases:map}; successful selection before initialization remains fixed for that persistent Agent. Skills expand in declared order before the Agent prompt and cannot overwrite resource names. An interface uses inputMediaTypes, outputMediaTypes and named results with mediaTypes, optional required and the bounded valueSchema constraint language. URI access and media delivery require integration evidence. Relative URIs use only their originating explicit baseUri; preserve unresolved origins.",
   flow: "Optional flow contains entry and a steps map. Steps have type agent, call, condition, prepare, join, approval or compose and their type-specific closed fields. next lists activate every destination; agent decisions use an explicit decision binding, choices and a matching next map. condition uses test and true/false next lists. prepare authors message roles. Direct Agent completion transfers visible text as information; prepared Messages retain prompt/resources. call results expose data; join results expose members. Default Agent delivery is queue. Steering, joins, loops, bounded composition and approval chains need their declared 0.2.0 constraints and scoped static checks. Normal path termination is an absent or empty next list. Use onError for explicit recovery.",
@@ -46,25 +47,90 @@ const guide02 = {
 export function agsdlAuthoringGuide(contract: unknown, empty = false) {
   if (contract === "agsdl-0.1.0") return legacyGuide;
   if (contract === "agsdl-0.2.0" || empty) return guide02;
-  return { contract: typeof contract === "string" ? contract : null, supported: false,
+  return { contract: typeof contract === "string" && bytes(contract) < 256 ? contract : null, ...(typeof contract === "string" && bytes(contract) >= 256 ? { contract_omitted: true } : {}), supported: false,
     workflow: "Preserve this source and its marker. Read diagnostics and repair the explicit edition or malformed JSON through a deliberate source replacement. Select a supported authoring guide only after reading the resulting document. Unknown editions have no inferred AgSDL semantics or execution support." };
 }
-function outline02(source: string, doc: Record<string, unknown>) {
-  const parsed = scanSource(source);
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  const catalog = (key: string) => Object.keys(object(doc[key])).slice(0, 100).map(name => {
-    const path = `/${key}/${pointerPart(name)}`;
-    const span = parsed.spans.get(path)!;
-    const declaration = decoder.decode(parsed.bytes.subarray(span.start, span.end));
-    return { path, name, declaration_json: declaration.length <= 8_000 ? declaration : undefined,
-      declaration_omitted: declaration.length > 8_000 ? "Read this path with agsdl_get." : undefined };
-  });
-  return { contract: doc.contract, id: doc.id, agents: catalog("agents"), configurations: catalog("configurations"), bindings: catalog("bindings"),
-    content: Object.keys(object(doc.content)).map(name => ({ name, path: `/content/${pointerPart(name)}` })),
-    skills: catalog("skills"), flow: doc.flow ? { entry: object(doc.flow).entry,
-      steps: Object.entries(object(object(doc.flow).steps)).slice(0, 100).map(([name, value]) => ({ name, path: `/flow/steps/${pointerPart(name)}`, type: object(value).type })) } : undefined,
-    compositions: Object.keys(object(doc.compositions)).map(name => ({ name, path: `/compositions/${pointerPart(name)}` })),
+// Leave room below the shared 50 KiB spill threshold for transport framing.
+export const AGSDL_TOOL_RESPONSE_BYTES = Math.min(40 * 1024, TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes - 1024);
+const PAGE_BYTES = 16 * 1024;
+const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const sections = ["outline", "outline_entry", "source", "report", "design", "display", "models", "annex_ids", "error"] as const;
+type ReadSection = typeof sections[number];
+interface InventoryEntry { catalog: string; path: string; name?: string; type?: unknown; key?: unknown; kind?: unknown }
+function inventory(doc: Record<string, unknown>, path: string): InventoryEntry[] {
+  const entries: InventoryEntry[] = [];
+  if (doc.contract === "agsdl-0.2.0") {
+    for (const catalog of ["agents", "configurations", "bindings", "content", "skills", "compositions"]) {
+      for (const name of Object.keys(object(doc[catalog]))) entries.push({ catalog, name, path: `/${catalog}/${pointerPart(name)}` });
+    }
+    const flows: Array<[string, unknown]> = [["/flow", doc.flow], ...Object.entries(object(doc.compositions)).map(([name, value]): [string, unknown] => [`/compositions/${pointerPart(name)}`, value])];
+    for (const [base, flow] of flows) for (const [name, value] of Object.entries(object(object(flow).steps))) {
+      entries.push({ catalog: "steps", name, path: `${base}/steps/${pointerPart(name)}`, type: object(value).type });
+    }
+  } else if (doc.contract === "agsdl-0.1.0") {
+    list(doc.definitions).forEach((value, index) => entries.push({ catalog: "definitions", path: `/definitions/${index}`, key: object(value).key, kind: object(value).kind }));
+    list(doc.graphs).forEach((value, index) => entries.push({ catalog: "graphs", path: `/graphs/${index}`, key: object(value).definition }));
+  }
+  return path ? entries.filter(entry => entry.path === path || entry.path.startsWith(`${path}/`)) : entries;
+}
+function integerArg(args: Record<string, unknown>, key: string, fallback: number): number {
+  const value = args[key];
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${key} must be a nonnegative safe integer.`);
+  return value;
+}
+function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], args: Record<string, unknown>) {
+  if (!["agsdl-0.1.0", "agsdl-0.2.0"].includes(text(doc.contract))) {
+    return { contract: bytes(doc.contract ?? null) < 256 ? doc.contract : undefined, supported: false };
+  }
+  const offset = integerArg(args, "offset", 0), limit = Math.min(integerArg(args, "limit", 100), 200);
+  if (!limit) throw new Error("limit must be positive.");
+  if (offset > entries.length) throw new Error("offset exceeds the inventory total.");
+  const items: Array<InventoryEntry | { entry_index: number; entry_omitted: { section: string; total_bytes: number } }> = [];
+  let index = offset;
+  while (index < entries.length && items.length < limit) {
+    const entry = entries[index];
+    const item = bytes(entry) > PAGE_BYTES / 4
+      ? { entry_index: index, entry_omitted: { section: "outline_entry", total_bytes: bytes(entry) } } : entry;
+    if (bytes([...items, item]) > PAGE_BYTES / 2) break;
+    items.push(item); index += 1;
+  }
+  // Preserve the small-document catalog keys while paging a single ordered inventory.
+  const catalogs = doc.contract === "agsdl-0.1.0" ? {
+    definitions: items.filter(item => "catalog" in item && item.catalog === "definitions"),
+    graphs: items.filter(item => "catalog" in item && item.catalog === "graphs").map(item => {
+      const { key, ...entry } = item as InventoryEntry; return { ...entry, definition: key };
+    }),
+  } : {
+    ...Object.fromEntries(["agents", "configurations", "bindings", "content", "skills", "compositions"].map(catalog => [catalog, items.filter(item => "catalog" in item && item.catalog === catalog)])),
+    ...(doc.flow ? { flow: {
+      ...(bytes(object(doc.flow).entry ?? null) < 256 ? { entry: object(doc.flow).entry } : { entry_omitted: true }),
+      steps: items.filter(item => "catalog" in item && item.catalog === "steps" && item.path.startsWith("/flow/steps/")),
+    } } : {}),
   };
+  return { contract: doc.contract, ...(bytes(doc.id ?? null) < 256 ? { id: doc.id } : { id_omitted: true }),
+    entries: items, ...catalogs, offset, limit, total: entries.length, returned: items.length, next_offset: index < entries.length ? index : null };
+}
+function textPage(content: string, args: Record<string, unknown>, section: ReadSection, base: Record<string, unknown>) {
+  const offset = integerArg(args, "offset", 0);
+  if (section === "models" && offset > 0 && args.cursor === undefined) throw new Error("Use the returned cursor to continue the provider catalog read.");
+  let limit = Math.min(integerArg(args, "limit", PAGE_BYTES), PAGE_BYTES);
+  if (!limit) throw new Error("limit must be positive.");
+  while (true) {
+    const page = paginateTextBytes(content, { ...(args.cursor === undefined ? { start_byte: offset } : { cursor: args.cursor, ...(args.offset !== undefined ? { start_byte: offset } : {}) }), max_bytes: limit }, JSON.stringify({ ...base, section, path: typeof args.path === "string" ? args.path : "" }) + "\n" + content);
+    const response = { ...base, section, text_page: { format: "json-text", encoding: "utf-8", content: page.content,
+      offset: page.startByte, limit: page.maxBytes, total_bytes: page.totalBytes, returned_bytes: page.returnedBytes,
+      next_offset: page.truncated ? page.endByte : null, next_cursor: page.nextCursor } };
+    if (bytes(response) <= AGSDL_TOOL_RESPONSE_BYTES) return JSON.stringify(response);
+    if (limit <= 4) throw new Error("The read target identifiers exceed the response budget.");
+    limit = Math.max(4, Math.floor(limit / 2));
+  }
+}
+function addBounded(response: Record<string, unknown>, key: string, value: unknown, section: ReadSection, maxBytes = AGSDL_TOOL_RESPONSE_BYTES - 512) {
+  if (value === undefined) return;
+  if (bytes({ ...response, [key]: value }) <= maxBytes) response[key] = value;
+  else response[`${key}_omitted`] = section === "report" ? { section, report_count: Array.isArray(value) ? value.length : undefined }
+    : { section, total_bytes: new TextEncoder().encode(key === "source" ? String(value) : JSON.stringify(value)).byteLength };
 }
 
 
@@ -183,8 +249,11 @@ export async function handleAgsdlToolCall(params: {
     }
   } else if (params.toolName !== "agsdl_get")
     throw new Error("Unknown AgSDL tool.");
+  const validationVersion = current().version;
   if (current().source) await store().validate(target);
+  if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   const session = current();
+  if (!session || session.version !== validationVersion) throw new Error("The document changed during validation. Read agsdl_get again.");
   let doc: Record<string, unknown> = {};
   try {
     if (session.source) doc = readDocument(session.source);
@@ -192,64 +261,69 @@ export async function handleAgsdlToolCall(params: {
     /* Keep malformed source available for repair. */
   }
   const pointer = typeof args.path === "string" ? args.path : "";
-  const source =
-    session.source && pointer
-      ? sourceAt(session.source, pointer)
-      : session.source;
-  const limit = 48_000;
+  const source = session.source && pointer ? sourceAt(session.source, pointer) : session.source;
+  if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== session.version) throw new Error("The document changed. Restart agsdl_get pagination with the current revision.");
+  if (args.section !== undefined && !sections.includes(args.section as ReadSection)) throw new Error("Unknown AgSDL read section.");
+  const section = args.section as ReadSection | undefined;
+  const base = { plan_id: target.planId, target_branch: target.branchName, revision: session.version,
+    persisted_revision: session.persistedRevision, dirty: session.dirty, ...(bytes(pointer) <= 1024 ? { path: pointer } : { path_omitted: true }) };
+  const entries = inventory(doc, pointer);
   let designContext: unknown;
   try { if (session.source) designContext = readDesign(session.source, session.design); }
   catch (error) { designContext = { error: String(error) }; }
   const providerState = useProviderStore.getState();
-  return JSON.stringify({
-    plan_id: target.planId,
-    target_branch: target.branchName,
-    revision: session.version,
-    persisted_revision: session.persistedRevision,
-    dirty: session.dirty,
-    path: pointer,
-    source: source.length <= limit ? source : undefined,
-    source_omitted:
-      source.length > limit
-        ? "Read smaller paths using agsdl_get. Partial JSON is never returned."
-        : undefined,
-    outline: doc.contract === "agsdl-0.2.0" ? outline02(session.source, doc) : doc.contract !== "agsdl-0.1.0" ? { contract: doc.contract, supported: false } : {
-      contract: doc.contract,
-      definitions: list(doc.definitions)
-        .slice(0, 100)
-        .map((value, index) => ({
-          path: `/definitions/${index}`,
-          key: object(value).key,
-          kind: object(value).kind,
-        })),
-      graphs: list(doc.graphs).map((value, index) => ({
-        path: `/graphs/${index}`,
-        definition: object(value).definition,
-      })),
-    },
-    annex_ids: Object.keys(session.annexes),
-    diagnostics: session.reports.map((report) => ({
-      operation: report.operation,
-      contract: report.contract,
-      scope: report.scope,
-      executionSupport: report.executionSupport,
-      documentReportJson: report.documentReportJson,
-      results: report.results.map((result) => ({
-        input: result.input,
-        unit: result.unit,
-        verdict: result.verdict,
-        findings: result.findings.slice(0, 30),
-        finding_count: result.findings.length,
-      })),
-    })),
-    error: session.error,
-    authoring_guide: pointer ? undefined : agsdlAuthoringGuide(doc.contract, !session.source),
-    design_context: pointer ? undefined : designContext,
-    display_context: pointer || doc.contract !== "agsdl-0.2.0" ? undefined : session.display ?? {},
-    macro_models: pointer ? undefined : providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
-      providerId: provider.id, name: provider.name,
-      models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name })),
-    })),
-    examples: session.source ? undefined : AGSDL_EXAMPLES,
-  });
+  const models = providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
+    providerId: provider.id, name: provider.name,
+    models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name })),
+  }));
+  if ((integerArg(args, "offset", 0) > 0 || args.cursor !== undefined) && args.expected_revision === undefined) throw new Error("expected_revision is required after the first page.");
+  if (args.cursor !== undefined && (!section || section === "outline")) throw new Error("cursor is only available for text sections.");
+  if (section === "outline") {
+    const response = { ...base, outline: inventoryPage(doc, entries, args) };
+    if (bytes(response) > AGSDL_TOOL_RESPONSE_BYTES) throw new Error("The read target identifiers exceed the response budget.");
+    return JSON.stringify(response);
+  }
+  if (section) {
+    let content: string;
+    if (section === "source") content = source;
+    else if (section === "report") {
+      const index = integerArg(args, "report_index", 0), report = session.reports[index];
+      if (!report) throw new Error("report_index does not identify an available report.");
+      content = typeof report.documentReportJson === "string" ? report.documentReportJson : JSON.stringify(report);
+      return textPage(content, args, section, { ...base, report_index: index });
+    } else if (section === "outline_entry") {
+      const index = integerArg(args, "entry_index", 0);
+      if (!entries[index]) throw new Error("entry_index does not identify an available inventory entry.");
+      return textPage(JSON.stringify(entries[index]), args, section, { ...base, entry_index: index });
+    } else content = JSON.stringify(({ design: designContext ?? null, display: session.display ?? null,
+      models, annex_ids: Object.keys(session.annexes), error: session.error })[section]);
+    return textPage(content, args, section, base);
+  }
+  const response: Record<string, unknown> = { ...base };
+  // A scoped source read carries only its own source and revision, never the global inventory.
+  if (!pointer) {
+    addBounded(response, "authoring_guide", agsdlAuthoringGuide(doc.contract, !session.source), "source");
+    response.outline = inventoryPage(doc, entries, args);
+    response.report_count = session.reports.length;
+    const diagnostics = session.reports.map((report, report_index) => ({ report_index, operation: report.operation,
+      contract: report.contract, scope: report.scope, executionSupport: report.executionSupport,
+      results: report.results.map(result => ({ input: result.input, unit: result.unit, verdict: result.verdict,
+        finding_count: result.findings.length })), report_section: "report" }));
+    addBounded(response, "diagnostics", diagnostics, "report", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    // Small reports retain the old convenience field; the complete session report is always available on demand.
+    if (response.diagnostics) {
+      const complete = diagnostics.map((summary, index) => ({ ...summary, documentReportJson: session.reports[index].documentReportJson,
+        results: session.reports[index].results.map(result => ({ ...result, finding_count: result.findings.length })) }));
+      if (bytes(complete) <= 8 * 1024 && bytes({ ...response, diagnostics: complete }) <= AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES) response.diagnostics = complete;
+    }
+    addBounded(response, "annex_ids", Object.keys(session.annexes), "annex_ids", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    addBounded(response, "design_context", designContext, "design", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    if (doc.contract === "agsdl-0.2.0") addBounded(response, "display_context", session.display ?? {}, "display", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    addBounded(response, "macro_models", models, "models", AGSDL_TOOL_RESPONSE_BYTES - PAGE_BYTES);
+    if (!session.source) response.examples = AGSDL_EXAMPLES;
+  }
+  addBounded(response, "error", session.error, "error");
+  addBounded(response, "source", source, "source");
+  if (bytes(response) > AGSDL_TOOL_RESPONSE_BYTES) throw new Error("The read target identifiers exceed the response budget.");
+  return JSON.stringify(response);
 }

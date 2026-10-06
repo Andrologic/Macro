@@ -29,6 +29,49 @@ lorsqu’une configuration fixe et compatible peut être identifiée. Une config
 partagée concerne tous les agents qui la référencent. Une édition de configuration
 rend ses anciennes assertions de support caduques ; elles doivent être réévaluées.
 
+## Lecture paginée dans le chat
+
+`agsdl_get` borne chaque réponse JSON complète à 40 Kio en UTF-8, sous le seuil
+de débordement du transport de 50 Kio. La lecture initiale fournit la révision,
+le guide de l’édition et un inventaire compact de noms et de pointeurs, sans
+copie des déclarations. Les clés de catalogue historiques restent présentes ;
+`outline.entries` est la liste ordonnée de la page courante.
+
+Pour découvrir tout le document, rappeler `agsdl_get` avec `section: "outline"`,
+`offset: outline.next_offset` et `expected_revision: revision` jusqu’à ce que
+`next_offset` soit `null`. `total` compte toutes les entrées, `returned` celles de
+la page. `limit` demande au plus 200 entrées ; le budget en octets peut réduire
+la page. Un `path` filtre cet inventaire sur le pointeur lui-même et ses descendants,
+y compris les étapes des compositions. Garder ce filtre pendant la pagination.
+Les pages après la première exigent la révision ; un changement pendant la lecture
+ou la validation demande de recommencer.
+
+Une lecture individuelle avec `path` renvoie la source JSON exacte du sous-arbre
+lorsqu’elle tient dans la réponse. Elle ne répète pas l’inventaire global. Un champ
+`*_omitted` indique explicitement la section à lire pour récupérer un contenu trop
+volumineux. Les sections `source`, `design`, `display`, `models`, `annex_ids` et
+`error` donnent accès à ces données. Une entrée d’inventaire exceptionnellement
+longue utilise `entry_omitted` ; lire `section: "outline_entry"` avec son
+`entry_index` pour récupérer son nom et son pointeur complets.
+
+Ces sections renvoient `text_page.content`, du texte JSON paginé sans perte.
+`offset` et `limit` portent alors sur les octets UTF-8, avec au plus 16 Kio demandés.
+Suivre `text_page.next_offset`, conserver la même révision et concaténer les contenus
+avant de parser le JSON reconstitué. `total_bytes` et `returned_bytes` décrivent
+les octets du texte d’origine. Les frontières respectent les caractères UTF-8 ;
+la réponse peut réduire la page pour tenir compte de l’échappement JSON.
+Les pages proposent aussi `next_cursor`, lié au contenu, à la cible et à sa révision.
+On peut fournir ce `cursor` à la place d’`offset`. Pour continuer la section `models`,
+utiliser obligatoirement le curseur : le catalogue fournisseur peut changer sans
+modifier la révision AgSDL. Un changement invalide le curseur et demande de recommencer.
+
+Les rapports complets restent dans la session, avec leurs jetons numériques exacts.
+L’aperçu `diagnostics` indique les verdicts et comptes de findings ; un petit rapport
+peut aussi conserver son champ `documentReportJson`. Pour lire un rapport complet,
+utiliser `section: "report"` et `report_index`, puis reconstituer ses pages de texte.
+`report_count` indique le nombre de rapports disponibles. Ce contrat de lecture
+s’applique aussi à la source et aux rapports historiques 0.1, sans changer leur édition.
+
 ## Données de conception
 
 Le schéma 0.2.0 est fermé. Les titres d’affichage, l’intention de conception,

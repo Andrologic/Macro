@@ -1271,8 +1271,17 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "agsdl_get",
-    "Read the calling plan's AgSDL document, revision, scoped diagnostics and authoring guide. Use path for a JSON pointer subtree.",
-    { type: "object", properties: { plan_id: { type: "string" }, target_branch: { type: "string" }, path: { type: "string", allowEmpty: true } }, required: ["plan_id", "target_branch"] },
+    "Read the calling plan's AgSDL document and revision with bounded UTF-8 responses. Use path for exact source reads. Follow outline.next_offset to discover every pointer. Explicit sections provide complete reports and oversized values as text pages; concatenate content before parsing JSON.",
+    { type: "object", properties: {
+      plan_id: { type: "string" }, target_branch: { type: "string" }, path: { type: "string", allowEmpty: true },
+      section: { type: "string", enum: ["outline", "outline_entry", "source", "report", "design", "display", "models", "annex_ids", "error"], description: "Omit for overview. outline lists pointers; source reads path; report reads the original report JSON; other sections read their full JSON text." },
+      expected_revision: { type: "string", description: "Use the returned revision for every subsequent page; stale reads fail explicitly." },
+      offset: { type: "number", description: "Nonnegative integer. Entry offset for outline; UTF-8 byte offset for text sections. Follow next_offset until null." },
+      limit: { type: "number", description: "Positive integer. Up to 200 outline entries (default 100) or 16384 text bytes. A byte budget may return fewer; follow next_offset." },
+      cursor: { type: "string", description: "Opaque next_cursor for text sections; binds the target, revision and content. Use instead of offset, with expected_revision. Required to continue models pages because the provider catalog can change independently." },
+      report_index: { type: "number", description: "Nonnegative report index from diagnostics, for section report. Default 0; report_count gives the total." },
+      entry_index: { type: "number", description: "Entry index from an oversized outline placeholder, for section outline_entry. Preserve the same path filter and revision." },
+    }, required: ["plan_id", "target_branch"] },
   ),
   objectTool(
     "agsdl_update",
