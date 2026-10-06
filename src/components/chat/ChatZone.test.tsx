@@ -22,6 +22,8 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import { useChatStore as draftLifecycleStore } from '../../stores/useChatStore';
+import { clearConflictAssistantContext, registerConflictAssistantContext } from '../../services/conflictAssistantContext';
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
   loadComposerDraftsFromStorage,
@@ -321,6 +323,8 @@ const useAppStore = createStoreHookMock(() => appState, (nextState) => {
 const useChatStore = createStoreHookMock(() => chatState, (nextState) => {
   chatState = nextState;
 });
+// Capture the real store before installing the component's presentation mocks.
+const realDraftStore = draftLifecycleStore;
 const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
@@ -4087,6 +4091,102 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
+  });
+
+  it.each([false, true])('keeps the audit opening draft and the previous unsent draft, durable=%s', async durable => {
+    const previous = 'Previous unsent draft.';
+    const prompt = 'Inspect the verified conflict without editing files.';
+    composerDraftsByContextKey['conversation:conv-1'] = { text: previous, images: [], contextRefs: [] };
+    chatState.peekComposerDraft = mock((id: string) => chatState.pendingComposerDraftByConversationId[id] ?? null);
+    chatState.acknowledgeComposerDraft = mock((id: string) => { delete chatState.pendingComposerDraftByConversationId[id]; });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(composerEditorValue).toBe(previous);
+    composerEditorSetTextCalls = [];
+    if (durable) composerDraftsByContextKey['conversation:inspection-audit'] = { text: prompt, images: [], contextRefs: [] };
+    await act(async () => {
+      useChatStore.setState({
+        conversations: [...chatState.conversations, { ...buildConversation(), id: 'inspection-audit' }],
+        pendingComposerDraftByConversationId: { 'inspection-audit': prompt },
+        selectedConversationId: 'inspection-audit',
+      });
+    });
+    expect(composerEditorSetTextCalls).toEqual([prompt]);
+    expect(composerEditorValue).toBe(prompt);
+    expect(chatState.peekComposerDraft('inspection-audit')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(previous);
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { opening: 'mount', saved: false }, { opening: 'switch', saved: false },
+    { opening: 'mount', saved: true }, { opening: 'switch', saved: true },
+  ])('keeps the prepared inspection draft through real editor restoration: %j', async ({ opening, saved }) => {
+    await loadChatZoneModule(true);
+    await preloadChatZoneLazyComponents();
+    const id = 'prepared-inspection';
+    const prompt = 'Inspect README.md and qa-conflict.txt without changing any files.';
+    const savedImage = { id: 'inspection-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-06T00:00:00Z' };
+    const state = realDraftStore.getState();
+    realDraftStore.setState(realDraftStore.getInitialState(), true);
+    installTauriRuntimeMock(async command => {
+      if (command === 'db_create_conversation') return { ...buildConversation(), id, title: 'Resolve merge conflicts',
+        scope_mode: 'Implement', group_id: 'group-1', provider_id: 'provider-1', model_id: 'model-1',
+        description: '', last_message: '', message_count: 0, created_at: '2026-10-06T00:00:00Z', updated_at: '2026-10-06T00:00:00Z' };
+      if (command === 'db_list_conversation_citations' || command === 'db_list_unresolved_tool_invocations') return [];
+      return null;
+    });
+    Object.assign(providerState, {
+      providerConfigs: [{ id: 'provider-1', isEnabled: true, isLocal: true, providerType: 'openai' }],
+      modelsByProvider: { 'provider-1': [{ id: 'model-1', isEnabled: true }] },
+      commitRestoredSelection: async () => ({ providerId: 'provider-1', modelId: 'model-1', reasoningEffort: null }),
+    });
+    const save = mock((key: string, draft: ComposerDraft) => state.saveComposerDraftForContext(key, draft));
+    const acknowledge = mock((conversationId: string) => state.acknowledgeComposerDraft(conversationId));
+    chatState = { ...chatState,
+      peekComposerDraft: mock((conversationId: string) => state.peekComposerDraft(conversationId)),
+      acknowledgeComposerDraft: acknowledge,
+      getComposerDraftForContext: mock((key: string) => state.getComposerDraftForContext(key)),
+      saveComposerDraftForContext: save,
+    };
+    const stop = realDraftStore.subscribe(snapshot => useChatStore.setState({
+      conversations: snapshot.conversations.map(conversation => ({ ...conversation, group_id: conversation.group_id ?? null })),
+      selectedConversationId: snapshot.selectedConversationId,
+      activeContextKey: snapshot.activeContextKey, selectedConversationContextKey: snapshot.selectedConversationContextKey,
+      restoreStatus: snapshot.restoreStatus,
+    }));
+    appState = { ...appState, mode: 'Implement', selectedProjectId: 'project-1', selectedGroupId: 'group-1', selectedTaskId: null };
+    registerConflictAssistantContext({ conversationId: id, projectId: 'project-1', groupId: 'group-1', kind: 'code',
+      repositories: [{ projectId: 'project-1', projectPath: '/tmp/api', repoPath: '/tmp/api', branch: 'develop',
+        head: 'ee2603d50000000000000000000000000000000000', conflictFiles: ['README.md', 'qa-conflict.txt'], mergeInProgress: true }],
+    });
+    try {
+      if (opening === 'switch') await act(async () => { requireRoot().render(<ChatZone />); });
+      await act(async () => {
+        const conversation = await state.createConversation('Resolve merge conflicts', null, 'project-1', 'group-1', { selectConversation: false });
+        expect(conversation.id).toBe(id);
+        // Use the actual creation, selection, pending and durable draft lifecycle.
+        if (saved) state.saveComposerDraftForContext(`conversation:${id}`, { text: 'Older saved text', images: [savedImage], contextRefs: [] });
+        state.setComposerDraft(id, prompt);
+        expect(await state.selectConversation(id)).toBe(true);
+        requireRoot().render(<ChatZone />);
+      });
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === prompt) break;
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+      }
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      expect((requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement).disabled).toBe(false);
+      expect(state.peekComposerDraft(id)).toBeNull();
+      expect(state.getComposerDraftForContext(`conversation:${id}`)).toMatchObject({ text: prompt, images: saved ? [savedImage] : [] });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(chatState.sendMessage).not.toHaveBeenCalled();
+      expect(chatState.clearLastError).not.toHaveBeenCalled();
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      await act(async () => { useChatStore.setState({ selectedConversationId: id }); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+    } finally { stop(); clearConflictAssistantContext(id); }
   });
 
   it('consults peekComposerDraft when the selected conversation changes', async () => {

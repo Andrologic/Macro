@@ -1654,42 +1654,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setManualCompactionPhase('idle');
   }, [selectedConversationId]);
 
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    let cancelled = false;
-
-    // The LazyComposerEditor loads its underlying editor module
-    // asynchronously. composerEditorRef.current may be null on the first
-    // render. We peek (read) the draft without consuming it, then retry
-    // until the editor is ready, and only then acknowledge (consume) it.
-    const tryApplyDraft = (attemptsLeft: number) => {
-      if (cancelled) return;
-      const handle = composerEditorRef.current;
-      const draft = peekComposerDraft(selectedConversationId);
-      if (draft === null) {
-        return;
-      }
-      if (handle) {
-        handle.setText(draft);
-        handle.focus();
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      if (attemptsLeft <= 0) {
-        // Editor never came up. Drop the draft so we don't leak it.
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      window.setTimeout(() => tryApplyDraft(attemptsLeft - 1), 50);
-    };
-
-    tryApplyDraft(10);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedConversationId, peekComposerDraft, acknowledgeComposerDraft]);
-
   const isStreaming = isContextStreaming;
   const isTranscriptActivityActive =
     isContextStreaming ||
@@ -1890,16 +1854,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     )
       ? null
       : getComposerDraftForContext(composerDraftContextKey);
+    const pendingDraft = selectedConversationId
+      ? peekComposerDraft(selectedConversationId)
+      : null;
     skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
-    if (!previousContextKey && !savedNextDraft) {
+    if (!previousContextKey && !savedNextDraft && pendingDraft === null) {
       return;
     }
-    const nextDraft = savedNextDraft ?? {
-      text: '',
-      images: [],
-      contextRefs: [],
+    // One restoration owns the text. A newly prepared prompt takes precedence
+    // over local text while retaining the saved images and context references.
+    const nextDraft = {
+      ...savedNextDraft,
+      text: pendingDraft ?? savedNextDraft?.text ?? '',
+      images: savedNextDraft?.images ?? [],
+      contextRefs: savedNextDraft?.contextRefs ?? [],
     };
+    if (pendingDraft !== null) {
+      pendingSentComposerDraftContextKeysRef.current.delete(composerDraftContextKey);
+      saveComposerDraftForContext(composerDraftContextKey, nextDraft);
+    }
     setComposerEditSession(null);
     goalComposerEditSessionRef.current = null;
     setGoalComposerEditSession(null);
@@ -1917,10 +1891,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     let cancelled = false;
     const applyText = (attemptsLeft: number) => {
-      if (cancelled) return;
+      if (cancelled || renderedComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
       const editor = composerEditorRef.current;
       if (editor) {
         editor.setText(nextDraft.text, nextDraft.contextRefs);
+        if (pendingDraft !== null && selectedConversationId &&
+            peekComposerDraft(selectedConversationId) === pendingDraft) {
+          editor.focus();
+          acknowledgeComposerDraft(selectedConversationId);
+        }
         return;
       }
       if (attemptsLeft > 0) {
@@ -1936,6 +1915,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerEditSession,
     goalComposerEditSession,
     getComposerDraftForContext,
+    peekComposerDraft,
+    acknowledgeComposerDraft,
     replaceComposerContextRefs,
     resetPromptHistoryNavigation,
     saveComposerDraftForContext,
