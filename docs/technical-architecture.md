@@ -1784,6 +1784,14 @@ conserve aussi le créneau de l’enfant tant que cette confirmation manque. Un
 `AbortError` ou la fin du compositeur ne constitue pas cette preuve. Une erreur
 `StreamStopUnconfirmedError` traverse le compositeur même après son callback
 d’abandon ; son `whenStopped` permet de conserver la réservation jusqu’au reçu.
+Les callbacks de projection, persistance et récupération sont observés dès leur
+lancement, puis joints avant la sortie du compositeur. Leur échec reste attaché
+au reçu comme diagnostic secondaire (`secondaryErrors`) et ne peut pas le
+remplacer. Si plusieurs propriétaires restent incertains, leur reçu composite
+attend toutes leurs confirmations. Les observateurs d’erreur du transport
+respectent la même priorité, y compris pour la génération sans streaming. Un
+rejet du reçu Goal reste un arrêt non confirmé : son diagnostic est conservé,
+mais le créneau ne se libère pas sur ce rejet.
 Les lectures parallèles génériques et les ports Goal natifs attendent leurs
 opérations déjà lancées, puis révoquent les sorties tardives.
 

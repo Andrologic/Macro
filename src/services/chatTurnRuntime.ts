@@ -1,4 +1,4 @@
-import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "./ai/streamCancellation";
 import type { ConversationRuntimeState } from "../types";
 import { isConversationRuntimeActive } from "../domains/chat/runtimeState";
 
@@ -56,11 +56,16 @@ export function createChatTurnRuntime(ports: {
   const reserveUnconfirmed = (id: string, state: ConversationRuntimeState, failure: StreamStopUnconfirmedError) => {
     unconfirmedStops.set(id, failure);
     unconfirmedStates.set(id, state);
-    const current = read(id);
-    if (current.sessionId === state.sessionId && current.turnId === state.turnId) {
-      generations.delete(id);
-      set(id, { ...current, phase: "error", lastError: failure.message,
-        lastErrorOrigin: "macro", lastErrorDisplayTarget: "composer" });
+    try {
+      const current = read(id);
+      if (current.sessionId === state.sessionId && current.turnId === state.turnId) {
+        generations.delete(id);
+        set(id, { ...current, phase: "error", lastError: failure.message,
+          lastErrorOrigin: "macro", lastErrorDisplayTarget: "composer" });
+      }
+    } catch (secondary) {
+      failure = preserveStreamStopError(failure, secondary);
+      unconfirmedStops.set(id, failure);
     }
     // A receipt may arrive independently of another UI Stop request.
     void failure.whenStopped.then(() => {
@@ -68,12 +73,21 @@ export function createChatTurnRuntime(ports: {
       unconfirmedStops.delete(id);
       unconfirmedStates.delete(id);
       stopping.delete(id);
-      const latest = read(id);
-      if (latest.sessionId === state.sessionId && latest.turnId === state.turnId) {
-        set(id, { ...latest, phase: "idle", abortController: null, lastError: null }, { globalLastError: null });
+      try {
+        const latest = read(id);
+        if (latest.sessionId === state.sessionId && latest.turnId === state.turnId) {
+          set(id, { ...latest, phase: "idle", abortController: null, lastError: null }, { globalLastError: null });
+        }
+        if (!streams.has(id)) ports.settled(id);
+      } catch (secondary) {
+        if (secondary instanceof StreamStopUnconfirmedError && !secondary.stopped) {
+          reserveUnconfirmed(id, state, secondary);
+        } else {
+          preserveStreamStopError(failure, secondary);
+        }
       }
-      if (!streams.has(id)) ports.settled(id);
     }, () => { /* No receipt: retain the same owner and its failure. */ });
+    return failure;
   };
   return {
     read, set, update, matches, ownsCompletion,
@@ -183,8 +197,7 @@ export function createChatTurnRuntime(ports: {
             failures.map(error => error.message).join("; "),
             Promise.all(failures.map(error => error.whenStopped)).then(() => undefined),
           );
-          reserveUnconfirmed(id, state, failure);
-          throw failure;
+          throw reserveUnconfirmed(id, state, failure);
         }
         // Other stream failures ended locally and retain their original error
         // projection. Only cancellation uncertainty keeps admission reserved.

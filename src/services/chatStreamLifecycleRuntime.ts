@@ -7,6 +7,7 @@ import {
 } from "./chatErrorPresentation";
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import type { StreamCompletionResult } from "./streamingChat";
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
 import { mergeGenerationAttempts } from "./ai/generationAttemptState";
 import { mergeToolTracesPreservingDeniedStatus, settleToolTraceRecovery } from "./toolTraceState";
 
@@ -413,7 +414,9 @@ export const createChatStreamLifecycleRuntime = (params: {
         return;
       }
 
-      const recovered = await adapters.tryRecoverFromOverflow(error, tokenControls);
+      // A provider retry cannot discharge a local executor lacking its receipt.
+      const recovered = !(error instanceof StreamStopUnconfirmedError) &&
+        await adapters.tryRecoverFromOverflow(error, tokenControls);
       if (adapters.isAbortSignalAborted()) {
         await persistAbortedTurn(tokenControls);
         return;

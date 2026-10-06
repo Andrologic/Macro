@@ -5007,3 +5007,64 @@ it('a spontaneous provider error with missing native cleanup proof retains the c
   await owner.stop('conversation');
   owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false });
 });
+
+
+for (const nonStreaming of [false, true]) {
+  it(`preserves native cleanup ownership when an async error observer rejects (${nonStreaming ? 'non-streaming' : 'streaming'})`, async () => {
+    const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let start!: () => void;
+    const ready = new Promise<void>(resolve => { start = resolve; });
+    let confirmed = false;
+    const invokeImpl = mock(async (command: string, params: { request?: { request_id?: string } }) => {
+      if (command === 'ai_stream_chat') { requestId = params.request!.request_id!; start(); }
+      if (command === 'ai_cancel_stream' && !confirmed) throw new Error('Unsupported reasoning effort: native reap receipt missing');
+    });
+    const fetchImpl = mock(async () => { throw new Error('Fallback forbidden'); });
+    const service = await loadStreamingChat(fetchImpl, { forceTauriAvailable: true, invokeImpl,
+      listenImpl: mock(async (name: string, handler: (event: { payload: Record<string, unknown> }) => void) => { listeners.set(name, handler); return () => listeners.delete(name); }),
+    });
+    const projectionFailure = new Error('Error projection failed');
+    const options = { sessionId: `observer-${nonStreaming}`, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', reasoningEffort: 'high' as const, messages: [],
+      onToken() {}, onComplete() {}, onError: async () => { throw projectionFailure; },
+    };
+    const running = nonStreaming ? service.sendChatNonStreaming(options) : service.streamChat(options);
+    void running.catch(() => {});
+    await ready;
+    listeners.get('ai:error')!({ payload: { request_id: requestId, message: 'Unsupported reasoning effort: high', status: 400 } });
+    const error = await running.catch((error: unknown) => error as import("./ai/streamCancellation").StreamStopUnconfirmedError);
+    expect(error).toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(error.secondaryErrors).toContain(projectionFailure);
+    expect(error.stopped).toBe(false);
+    expect(invokeImpl.mock.calls.filter(([command]) => command === 'ai_stream_chat')).toHaveLength(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    confirmed = true;
+    await service.cancelStream(options.sessionId);
+    await error.whenStopped;
+    expect(error.stopped).toBe(true);
+  });
+}
+
+
+it('preserves a generic tool receipt when its async error observer also fails', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  let confirm!: () => void;
+  const receipt = new StreamStopUnconfirmedError('Tool owner pending', new Promise<void>(resolve => { confirm = resolve; }));
+  const projection = new Error('Generic error projection failed');
+  const data = { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call', type: 'function', function: { name: 'mcp__fixture__work', arguments: '{}' } }] } }] };
+  const fetchImpl = mock(async () => ({ ok: true, body: new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\ndata: [DONE]\n\n`)); controller.close();
+  } }), text: async () => '' }));
+  const { streamChat } = await loadStreamingChat(fetchImpl);
+  const running = streamChat({ providerId: 'custom', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [],
+    allowedToolIds: ['mcp__fixture__work'], mcpTools: [{ id: 'mcp__fixture__work', name: 'work', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
+    onToolCall: async () => { throw receipt; }, onToken() {}, onComplete() {}, onError: async () => { throw projection; },
+  });
+  await expect(running).rejects.toBe(receipt);
+  expect(receipt.secondaryErrors).toContain(projection);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(receipt.stopped).toBe(false);
+  confirm();
+  await receipt.whenStopped;
+});

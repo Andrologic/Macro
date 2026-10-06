@@ -444,3 +444,38 @@ it('retains the Goal owner until every uncertain read receipt arrives', async ()
   confirmSecond();
   await expect(pending).rejects.toBe(failures[0]);
 });
+
+
+for (const source of ['stream', 'read'] as const) {
+  it(`does not release a Goal child slot when the ${source} receipt rejects`, async () => {
+    const receiptFailure = new Error('Cleanup receipt rejected');
+    const uncertain = new StreamStopUnconfirmedError('Local owner still pending', Promise.reject(receiptFailure));
+    let start!: () => void;
+    const ready = new Promise<void>(resolve => { start = resolve; });
+    const launched: string[] = [];
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: 'provider', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'model' }),
+      resolveChildConversation: ({ runId, parentConversationId, selection }) => ({ id: `conversation-${runId}`, runId, parentConversationId, selection }),
+      executeReadTool: async () => { throw uncertain; },
+      stream: async options => {
+        launched.push(options.sessionId!);
+        start();
+        if (source === 'stream') throw uncertain;
+        await Promise.resolve(options.onToolCall!('read', {}, 'read')).catch(() => {});
+        options.onComplete({ visibleContent: '{}', toolTraces: [] });
+      },
+    });
+    const runtime = new SubagentRuntime({ executor, policy: { maxConcurrencyForParentConversation: () => 1 } });
+    const first = runtime.run({ runId: 'first', parentConversationId: 'parent', parentDepth: 0, input: input() });
+    await ready;
+    first.cancel();
+    const second = runtime.run({ runId: 'second', parentConversationId: 'parent', parentDepth: 0, input: input() });
+    await expectStillOwned(first.result);
+    await expectStillOwned(second.result);
+    expect(uncertain.stopped).toBe(false);
+    expect(uncertain.secondaryErrors).toContain(receiptFailure);
+    expect(launched).toEqual(['first']);
+    expect(runtime.getSnapshot('second')?.state).toBe('queued');
+    runtime.dispose();
+  });
+}

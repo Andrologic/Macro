@@ -300,3 +300,33 @@ test('a successful local transport retry cannot release an outstanding tool rece
   await checkpoint();
   h.runtime.assertCanSend('a', { available: true, hasUnsavedResponse: false });
 });
+
+
+test("reservation and Stop retain the receipt even when runtime error projection throws", async () => {
+  const controller = new AbortController();
+  let state: ConversationRuntimeState = { ...EMPTY_CONVERSATION_RUNTIME, phase: "streaming", sessionId: "session", turnId: "turn", assistantMessageId: "assistant", abortController: controller };
+  const proof = deferred();
+  const receipt = new StreamStopUnconfirmedError("Tool still owned", proof.promise);
+  const projectionFailure = new Error("Runtime projection failed");
+  let failProjection = true;
+  const settled = mock(() => {});
+  const owner = createChatTurnRuntime({
+    state: { read: () => state, isDeleted: () => false, project: (_id, next) => {
+      if (failProjection) throw projectionFailure;
+      state = next ?? EMPTY_CONVERSATION_RUNTIME;
+    } }, cancelTransport: async () => {}, settled,
+  });
+  const stream = Promise.reject(receipt);
+  owner.track("conversation", stream);
+  await checkpoint();
+  expect(receipt.secondaryErrors).toContain(projectionFailure);
+  await expect(owner.stop("conversation")).rejects.toBe(receipt);
+  expect(() => owner.assertCanSend("conversation", { available: true, hasUnsavedResponse: false })).toThrow("already running");
+  expect(settled).not.toHaveBeenCalled();
+  failProjection = false;
+  proof.resolve();
+  await receipt.whenStopped;
+  await checkpoint();
+  owner.assertCanSend("conversation", { available: true, hasUnsavedResponse: false });
+  expect(settled).toHaveBeenCalledTimes(1);
+});

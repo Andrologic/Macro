@@ -76,6 +76,16 @@ const hasValidChildBinding = (
 
 const abortError = (): DOMException => new DOMException("Aborted", "AbortError");
 
+// A rejected receipt is still missing proof. Keep the child slot reserved;
+// returning any error here would let SubagentRuntime admit its successor.
+const awaitStopReceipt = async (error: StreamStopUnconfirmedError): Promise<void> => {
+  try { await error.whenStopped; }
+  catch (failure) {
+    error.secondaryErrors.push(failure instanceof Error ? failure : new Error(String(failure)));
+    await new Promise<void>(() => {});
+  }
+};
+
 // Admission and streaming ports own work until their promise settles. A signal
 // revokes the next effect immediately; racing it against the promise would let
 // a child owner disappear while its provider or conversation write continues.
@@ -89,7 +99,7 @@ const awaitOwned = async <T>(signal: AbortSignal, start: () => T | Promise<T>): 
     if (error instanceof StreamStopUnconfirmedError) {
       // A child slot cannot be released by an unconfirmed cancellation error.
       // Keep the typed error until a later receipt proves local task completion.
-      await error.whenStopped;
+      await awaitStopReceipt(error);
       throw error;
     }
     throw signal.aborted ? abortError() : error;
@@ -222,7 +232,7 @@ export const createGoalAuditProviderExecutor = (
     while (readWork.size) await Promise.all(Array.from(readWork, work => work.then(() => undefined, () => undefined)));
     const uncertainReads = readFailures.filter((error): error is StreamStopUnconfirmedError => error instanceof StreamStopUnconfirmedError);
     if (uncertainReads.length) {
-      await Promise.all(uncertainReads.map(error => error.whenStopped));
+      await Promise.all(uncertainReads.map(awaitStopReceipt));
       throw uncertainReads[0];
     }
     // Finite failures stay in the tool response and progress diagnostics.
