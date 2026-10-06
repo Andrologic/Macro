@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import type { ArchitectPlanRecord } from "../../services/architectPlanService";
 import type { AgsdlEditorDocument } from "../../types/agsdl";
 import type { AIModel, AIProvider } from "../../types";
-import { createExample } from "../../services/agsdl/examples";
+import { createLegacyExample as createExample } from "../../services/agsdl/examples";
 
 let plan: ArchitectPlanRecord;
 let releaseSave: (() => void) | undefined;
@@ -34,7 +34,7 @@ mock.module("../../services/architectPlanService", () => ({
 const { useAgsdlStore, agsdlSessionKey } = await import(
   "../useAgsdlStore"
 );
-const { handleAgsdlToolCall } = await import("./tools");
+const { handleAgsdlToolCall, agsdlAuthoringGuide } = await import("./tools");
 const { useProviderStore } = await import("../useProviderStore");
 let restoreProviderCatalog: (() => void) | undefined;
 const providers = [
@@ -192,7 +192,7 @@ describe("shared AgSDL authoring session", () => {
     );
     expect(result.persisted_revision).toBe(1);
     const subtree = JSON.parse(
-      await call("agsdl_get", { path: "/graphs/0/entry" }),
+      await call("agsdl_get", { path: "/flow/entry" }),
     );
     expect(JSON.parse(subtree.source)).toBe("checklist");
     await expect(
@@ -228,4 +228,76 @@ describe("shared AgSDL authoring session", () => {
     expect(useAgsdlStore.getState().sessions).toEqual({});
   });
 
+});
+
+
+describe("edition-specific authoring", () => {
+  it("uses a 0.2 guide for empty documents, preserves 0.1 meaning and rejects candidate editions", () => {
+    expect(agsdlAuthoringGuide(undefined, true).contract).toBe("agsdl-0.2.0");
+    expect(JSON.stringify(agsdlAuthoringGuide("agsdl-0.1.0"))).toContain("D declares root");
+    const modern = JSON.stringify(agsdlAuthoringGuide("agsdl-0.2.0"));
+    expect(modern).toContain("persistent Agent");
+    expect(modern).toContain("not-assessed");
+    expect(modern).not.toContain("D declares root");
+    expect(modern).not.toContain("invoke/condition/approval/end");
+    expect(modern).toContain("approval or compose");
+    expect(modern).not.toContain("approval or block");
+    expect(agsdlAuthoringGuide("agsdl-exp-flow-0.2-c1")).toMatchObject({ supported: false });
+    expect(agsdlAuthoringGuide(undefined)).toMatchObject({ supported: false });
+  });
+  it("exposes real 0.2 bindings, conditional configuration and reader support scope", async () => {
+    const requirement = { contract: { identity: "example/media", version: "1" } };
+    const document = {
+      contract: "agsdl-0.2.0", id: "conditional",
+      agents: { helper: { configuration: { select: { path: ["resources", "mode", "value"] }, cases: { local: "project" } } } },
+      configurations: { project: { engine: "desktop", requires: [requirement] } },
+      bindings: { desktop: { contract: { identity: "macro/agent-engine", version: "1" }, implementation: { identity: "macro/desktop", version: "1" } } },
+    };
+    plan.agsdl = { source: JSON.stringify(document), annexes: { original: "unchanged archive" }, revision: 1 };
+    const read = JSON.parse(await call("agsdl_get"));
+    expect(read.authoring_guide.contract).toBe(document.contract);
+    expect(JSON.parse(read.outline.agents[0].declaration_json)).toEqual(document.agents.helper);
+    expect(JSON.parse(read.outline.configurations[0].declaration_json)).toEqual(document.configurations.project);
+    expect(JSON.parse(read.outline.bindings[0].declaration_json)).toEqual(document.bindings.desktop);
+    expect(read.outline.definitions).toBeUndefined();
+    expect(read.annex_ids).toEqual(["original"]);
+    expect(read.diagnostics[0].executionSupport).toBe("not-assessed");
+    expect(JSON.parse(read.diagnostics[0].documentReportJson).executionSupport).toBe("not-assessed");
+    const changed = JSON.parse(await call("agsdl_update", { expected_revision: read.revision, changes: [{ op: "set", path: "/configurations/project/settings", value_json: '{"providerId":"provider-active","modelId":"model-active","opaque":12345678901234567890}' }] }));
+    expect(changed.source).toContain('"opaque":12345678901234567890');
+    expect(changed.outline.configurations[0].declaration_json).toContain('"opaque":12345678901234567890');
+    expect(plan.agsdl?.annexes).toEqual({ original: "unchanged archive" });
+    expect(JSON.parse(changed.diagnostics[0].documentReportJson).executionSupport).toBe("not-assessed");
+  });
+});
+
+
+it("edits 0.2 design intent in the versioned envelope and preserves source and other metadata", async () => {
+  const source = '{"contract":"agsdl-0.2.0","id":"draft","agents":{},"configurations":{},"bindings":{}}';
+  const design = { version: 1 as const, kind: "system" as const, purpose: "Original purpose", context: "", rules: [], requirements: [], future: { opaque: true } };
+  plan.agsdl = { source, annexes: { archive: "original" }, revision: 1, design, display: { title: "System" }, migration: { version: 1, from: "agsdl-0.1.0", issues: [] } };
+  const read = JSON.parse(await call("agsdl_get"));
+  expect(read.design_context).toEqual(design);
+  const next = { ...design, purpose: "New purpose" };
+  const changed = JSON.parse(await call("agsdl_update", { expected_revision: read.revision, design_json: JSON.stringify(next) }));
+  expect(changed.source).toBe(source);
+  expect(changed.design_context).toEqual(next);
+  expect(plan.agsdl).toMatchObject({ source, design: next, display: { title: "System" }, migration: { version: 1, from: "agsdl-0.1.0", issues: [] }, annexes: { archive: "original" } });
+  expect(changed.revision).not.toBe(read.revision);
+  await expect(call("agsdl_update", { expected_revision: read.revision, design_json: JSON.stringify(next) })).rejects.toThrow("changed");
+  await expect(call("agsdl_update", { expected_revision: changed.revision, design_json: '{"version":1,"version":1}' })).rejects.toThrow("Duplicate");
+  await expect(call("agsdl_update", { expected_revision: changed.revision, design_json: '{"version":2}' })).rejects.toThrow("malformed");
+  expect(current().source).toBe(source);
+});
+
+
+it("keeps unsupported source and reports distinct without assigning 0.1 or 0.2 semantics", async () => {
+  const source = '{"contract":"agsdl-exp-flow-0.2-c1","definitions":[],"agents":{}}';
+  plan.agsdl = { source, annexes: {}, revision: 1 };
+  const read = JSON.parse(await call("agsdl_get"));
+  expect(read.source).toBe(source);
+  expect(read.authoring_guide).toMatchObject({ supported: false, contract: "agsdl-exp-flow-0.2-c1" });
+  expect(read.outline).toEqual({ supported: false, contract: "agsdl-exp-flow-0.2-c1" });
+  expect(read.diagnostics[0]).toMatchObject({ scope: "unsupported-contract", executionSupport: "not-assessed" });
+  expect(plan.agsdl.source).toBe(source);
 });

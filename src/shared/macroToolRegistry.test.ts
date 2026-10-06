@@ -60,6 +60,7 @@ describe('macroToolRegistry', () => {
       expect(filterCopilotSupportedToolIds([id])).toEqual([id]);
     }
     expect(requireObjectParameters('agsdl_update').required).toEqual(['plan_id', 'target_branch', 'expected_revision']);
+    expect(requireObjectParameters('agsdl_update').properties?.design_json).toMatchObject({ type: 'string' });
     expect(requireObjectParameters('agsdl_get').required).toEqual(['plan_id', 'target_branch']);
   });
 

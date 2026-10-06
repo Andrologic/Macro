@@ -1276,12 +1276,13 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "agsdl_update",
-    "Edit and save the calling draft plan's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, or example. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
+    "Edit and save the calling draft plan's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, or design_json. Design metadata is stored outside closed 0.2 source. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
     { type: "object", properties: {
       plan_id: { type: "string" }, target_branch: { type: "string" }, expected_revision: { type: "string" },
       changes: { type: "array", items: { type: "object", properties: { op: { type: "string", enum: ["set", "remove"] }, path: { type: "string", allowEmpty: true }, value_json: { type: "string", description: "Exact JSON value as text, required for set." } }, required: ["op", "path"] } },
       source: { type: "string", description: "Complete replacement document; prefer changes for focused edits." },
       example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document." },
+      design_json: { type: "string", description: "Complete Macro design metadata as JSON text. Read design_context from agsdl_get first. Metadata stays outside 0.2 source; requirement targetPath values explicitly adapt supported source fields." },
     }, required: ["plan_id", "target_branch", "expected_revision"] },
   ),
   objectTool(

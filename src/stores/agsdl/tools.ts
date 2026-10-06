@@ -1,15 +1,15 @@
 import { getArchitectPlan } from "../../services/architectPlanService";
 import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
-import { list, object, readDocument, sourceAt, text } from "../../services/agsdl/document";
+import { list, object, readDocument, sourceAt, text, pointerPart, scanSource } from "../../services/agsdl/document";
 import { AGSDL_EXAMPLES, createExample, type AgsdlExample } from "../../services/agsdl/examples";
 import type { AgsdlChange } from "../../types/agsdl";
-import { readDesign } from "../../services/agsdl/design";
+import { readDesign, updateDesignMetadata, type DesignMetadata } from "../../services/agsdl/design";
 import { useProviderStore } from "../useProviderStore";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
   "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
 
-const guide = {
+const legacyGuide = {
   contract: "agsdl-0.1.0",
   workflow:
     "Read the document and revision. Prefer atomic changes at JSON pointers to preserve opaque content and number tokens. After update, inspect diagnostics and correct the affected paths. Read source with these tools to diagnose unsupported contracts.",
@@ -26,6 +26,46 @@ const guide = {
   scope:
     "Plan metadata only; no system execution or dependency network retrieval. Examples initialize empty documents with unconfigured engines. Attached annex bytes are preserved separately. Give agents descriptive titles and describe input/output contracts; bindings must identify actual provenance, never infer data transfer from execution order. Preserve migration metadata and report any unmapped legacy behavior.",
 };
+
+
+const guide02 = {
+  contract: "agsdl-0.2.0",
+  workflow: "Read source, revision, exact declaration_json strings and the scoped static documentReportJson. Apply atomic JSON-pointer changes with the returned revision, preserve opaque settings and numeric tokens, then inspect fresh diagnostics. Preserve imported editions and author a separate 0.2.0 document only after deliberate migration of intent and losses.",
+  document: "The closed document requires contract:'agsdl-0.2.0', id, agents, configurations and bindings. Optional fields are content, skills, flow, compositions and baseUri. id and catalog names match ^[A-Za-z][A-Za-z0-9_-]*$. Catalogs are maps. Use only the 0.2.0 shapes. Unknown fields fail validation, except in literal values, settings and external requirement parameters.",
+  content: "A source has exactly value or uri, with optional mediaType. A content use may instead be {ref:catalogName}. Messages separate ordered prompt instructions from named resources containing information. An Agent declares a fixed configuration name or {select:Operand,cases:map}; successful selection before initialization remains fixed for that persistent Agent. Skills expand in declared order before the Agent prompt and cannot overwrite resource names. An interface uses inputMediaTypes, outputMediaTypes and named results with mediaTypes, optional required and the bounded valueSchema constraint language. URI access and media delivery require integration evidence. Relative URIs use only their originating explicit baseUri; preserve unresolved origins.",
+  flow: "Optional flow contains entry and a steps map. Steps have type agent, call, condition, prepare, join, approval or compose and their type-specific closed fields. next lists activate every destination; agent decisions use an explicit decision binding, choices and a matching next map. condition uses test and true/false next lists. prepare authors message roles. Direct Agent completion transfers visible text as information; prepared Messages retain prompt/resources. call results expose data; join results expose members. Default Agent delivery is queue. Steering, joins, loops, bounded composition and approval chains need their declared 0.2.0 constraints and scoped static checks. Normal path termination is an absent or empty next list. Use onError for explicit recovery.",
+  flow_shapes: "Use operands {value:literal} or {path:[stringOrNonnegativeIndex,...]}. Predicates are {equals:[Operand,Operand]}, {all:[Predicate,...]} or {not:Predicate}. An agent step requires agent; optional decision is {binding,choices}, delivery is queue|steering and steers names its ordinary owner step. call requires binding and may map arguments to Operands. condition requires test and next:{true:[steps],false:[steps]}. prepare requires message:{prompt?,resources?}; prepared resources may use a Content, {select:Operand,mediaType?} or {source:Operand}. join requires after and members; mode is all|first, first requires accept, and remaining is stop-and-wait|finish. approval requires call, binding, timeoutMs, validForMs and next:{approved:[steps],denied:[steps]}; call names the protected action step. Protected targets require scope:{action,resources:[descriptions],context:Operand}. compose requires composition, agents and a next map covering composition outputs. A composition requires entry, steps and outputs, with optional agentParameters; its body is non-nested and serial or conditional. Ordinary steps may declare maxVisits and onError; compose has onError but no maxVisits. Validate the bounded Join and approval structure before reporting it as structurally valid.",
+  runtime: "Macro remains the engine selected for Macro-authored configurations. Declare a named binding with contract:{identity:'macro/agent-engine',version:'1'} and implementation:{identity:'macro/desktop',version:'1'}, then configuration.engine names that binding. Select providerId and modelId from macro_models and put them in configuration.settings; preserve all other settings, Engine/Tool declarations and explicit Model editions. The identities are external declarations and confer no support. The manual selector edits only fixed configurations with this exact Engine declaration and no separate model edition. Shared configurations affect every Agent that names them; dynamic cases remain explicit. Imported foreign bindings remain readable and require deliberate conversion. Configuration and skill changes require stop, edit and start in a consuming integration. This editor does not execute a 0.2.0 process.",
+  support: "bindings separate versioned contract and implementation, with optional settings, requires, claims and effects. Configuration tools map local names to declared bindings. Requirements name an exact contract edition plus optional parameters. Claims use requirement, status supported/unsupported/unknown and optional evidence SHA-256. Exact claims cover only their owning declaration, including settings and selected Engine/Model/Tools. Reassess or remove configuration claims after editing that declaration; preserve unchanged binding claims. Missing/unknown claims or support without evidence remain unknown. declared-supported is an assertion whose evidence was not verified. Report incompatible and unknown requirements independently. executionSupport stays not-assessed; structural validity, available provider names and human Agent responses do not prove execution or approval enforcement.",
+  design: "Macro design intent lives in the editor envelope's design metadata, outside this closed AgSDL source. design_context supplies {version:1,kind:system|blueprint,purpose,context,rules:[{id,title,instructions}],requirements:[{id,label,description,value,targetPath?}],origin?:{planId,name,revision}}. Edit it through agsdl_update design_json with the full desired design_context serialized as JSON and the current revision. Keep requirement and rule ids stable; empty values identify information still needed. Apply agreed values to prompt/resources, settings and declared flow controls. Design intent grants no runtime enforcement. Use explicit scopes and approval declarations for protected admission; actual Tool invocation admission remains an external integration requirement. Preserve unknown editor metadata and provenance.",
+  presentation: "Use descriptive Agent and step map names. Keep executable instructions in Agent/skill prompts or prepared Messages. Display titles and grouping belong to Macro editor metadata; closed declarations do not accept annotations or presentation-only fields. Routes show declared flow; distinguish their delivery roles and provenance from executable support.",
+  scope: "Plan document authoring and scoped static declaration checks only. No described Agents are executed, dependency code or URI payloads are not fetched, and external evidence is not verified. Retain original edition markers, reports, annexes and migration provenance. A draft may contain diagnostics while its design is refined.",
+};
+
+/** Edition-specific instructions prevent a 0.1 graph vocabulary leaking into 0.2 authoring. */
+export function agsdlAuthoringGuide(contract: unknown, empty = false) {
+  if (contract === "agsdl-0.1.0") return legacyGuide;
+  if (contract === "agsdl-0.2.0" || empty) return guide02;
+  return { contract: typeof contract === "string" ? contract : null, supported: false,
+    workflow: "Preserve this source and its marker. Read diagnostics and repair the explicit edition or malformed JSON through a deliberate source replacement. Select a supported authoring guide only after reading the resulting document. Unknown editions have no inferred AgSDL semantics or execution support." };
+}
+function outline02(source: string, doc: Record<string, unknown>) {
+  const parsed = scanSource(source);
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const catalog = (key: string) => Object.keys(object(doc[key])).slice(0, 100).map(name => {
+    const path = `/${key}/${pointerPart(name)}`;
+    const span = parsed.spans.get(path)!;
+    const declaration = decoder.decode(parsed.bytes.subarray(span.start, span.end));
+    return { path, name, declaration_json: declaration.length <= 8_000 ? declaration : undefined,
+      declaration_omitted: declaration.length > 8_000 ? "Read this path with agsdl_get." : undefined };
+  });
+  return { contract: doc.contract, id: doc.id, agents: catalog("agents"), configurations: catalog("configurations"), bindings: catalog("bindings"),
+    content: Object.keys(object(doc.content)).map(name => ({ name, path: `/content/${pointerPart(name)}` })),
+    skills: catalog("skills"), flow: doc.flow ? { entry: object(doc.flow).entry,
+      steps: Object.entries(object(object(doc.flow).steps)).slice(0, 100).map(([name, value]) => ({ name, path: `/flow/steps/${pointerPart(name)}`, type: object(value).type })) } : undefined,
+    compositions: Object.keys(object(doc.compositions)).map(name => ({ name, path: `/compositions/${pointerPart(name)}` })),
+  };
+}
 
 export async function handleAgsdlToolCall(params: {
   toolName: string;
@@ -65,11 +105,11 @@ export async function handleAgsdlToolCall(params: {
       args.expected_revision !== current().version
     )
       throw new Error("The document changed. Read agsdl_get before editing.");
-    const alternatives = ["changes", "source", "example"].filter((key) =>
+    const alternatives = ["changes", "source", "example", "design_json"].filter((key) =>
       Object.hasOwn(args, key),
     );
     if (alternatives.length !== 1)
-      throw new Error("Supply exactly one of changes, source, or example.");
+      throw new Error("Supply exactly one of changes, source, example, or design_json.");
     if (alternatives[0] === "changes") {
       if (!Array.isArray(args.changes))
         throw new Error("changes must be an array.");
@@ -90,6 +130,11 @@ export async function handleAgsdlToolCall(params: {
         };
       });
       store().edit(target, changes, args.expected_revision);
+    } else if (alternatives[0] === "design_json") {
+      if (typeof args.design_json !== "string") throw new Error("design_json must be a JSON string.");
+      scanSource(args.design_json);
+      const design = updateDesignMetadata(readDesign(current().source, current().design), JSON.parse(args.design_json) as DesignMetadata);
+      store().setDesign(target, design, args.expected_revision);
     } else if (alternatives[0] === "example") {
       if (!AGSDL_EXAMPLES.includes(args.example as AgsdlExample))
         throw new Error("Unknown AgSDL example.");
@@ -133,7 +178,7 @@ export async function handleAgsdlToolCall(params: {
       : session.source;
   const limit = 48_000;
   let designContext: unknown;
-  try { if (session.source) designContext = readDesign(session.source); }
+  try { if (session.source) designContext = readDesign(session.source, session.design); }
   catch (error) { designContext = { error: String(error) }; }
   const providerState = useProviderStore.getState();
   return JSON.stringify({
@@ -148,7 +193,7 @@ export async function handleAgsdlToolCall(params: {
       source.length > limit
         ? "Read smaller paths using agsdl_get. Partial JSON is never returned."
         : undefined,
-    outline: {
+    outline: doc.contract === "agsdl-0.2.0" ? outline02(session.source, doc) : doc.contract !== "agsdl-0.1.0" ? { contract: doc.contract, supported: false } : {
       contract: doc.contract,
       definitions: list(doc.definitions)
         .slice(0, 100)
@@ -165,6 +210,10 @@ export async function handleAgsdlToolCall(params: {
     annex_ids: Object.keys(session.annexes),
     diagnostics: session.reports.map((report) => ({
       operation: report.operation,
+      contract: report.contract,
+      scope: report.scope,
+      executionSupport: report.executionSupport,
+      documentReportJson: report.documentReportJson,
       results: report.results.map((result) => ({
         input: result.input,
         unit: result.unit,
@@ -174,7 +223,7 @@ export async function handleAgsdlToolCall(params: {
       })),
     })),
     error: session.error,
-    authoring_guide: pointer ? undefined : guide,
+    authoring_guide: pointer ? undefined : agsdlAuthoringGuide(doc.contract, !session.source),
     design_context: pointer ? undefined : designContext,
     macro_models: pointer ? undefined : providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
       providerId: provider.id, name: provider.name,
