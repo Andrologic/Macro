@@ -58,9 +58,11 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
       const h = await createHarness(kind);
       try {
         const first = await h.start(); await h.entered.promise;
-        expect(await h.store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
+        expect(await h.store.getState().submitDuringActiveTurn({ ...payload, taskId: 'foreign-task' }, 'steer')).toBe('steered');
         const [entry] = loadQueuedSubmissions();
         expect(entry.direction?.target.turnId).toBe(first.turnId);
+        expect(entry.input.taskId).toBeUndefined();
+        expect(h.store.getState().getConversationMessages(conversationId).find((message: ChatMessage) => message.content === content)?.task_id).toBe('');
         expect(entry.direction?.userMessageId).toBe(h.rows.find(row => row.content === content)?.id);
         expect(h.rows.find(row => row.content === content)?.hidden_context).toBe(hiddenContext);
         expect(entry.direction?.delivery).toBeUndefined();
@@ -91,6 +93,11 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
         // A completed predecessor of the same turn is not the recovery assistant.
         const originalAssistant = h.rows.find(row => row.id === first.assistantMessageId)!;
         Object.assign(originalAssistant, { completion_reason: 'completed' });
+        h.rows.find(row => row.id === userId)!.provider_input_items_json = JSON.stringify([
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'PRIVATE_DIRECTION_PREFIX first stale user' }] },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'PRIVATE_DIRECTION_PREFIX second stale user' }] },
+        ]);
+        h.store.getState().updateMessageFields(userId, { provider_input_items: JSON.parse(h.rows.find(row => row.id === userId)!.provider_input_items_json!) });
         await h.store.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork(); await c.flushAsyncWork();
         expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user' && call[2] === content)).toHaveLength(1);
         expect(h.rows.filter(row => row.id === userId)).toHaveLength(1);

@@ -6132,18 +6132,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const replacement = buildProviderInputItemsFromContent(role, content)[0];
     const clonedItems = cloneProviderInputItems(items) ?? [];
     let replaced = false;
-    const nextItems = clonedItems.map((item) => {
+    const nextItems = clonedItems.flatMap((item) => {
       if (
-        !replaced &&
+        (!replaced || role === "user") &&
         item &&
         typeof item === "object" &&
         (item as { type?: unknown }).type === "message" &&
         (item as { role?: unknown }).role === role
       ) {
+        if (replaced) return [];
         replaced = true;
-        return replacement;
+        return [replacement];
       }
-      return item;
+      return [item];
     });
     if (!replaced) {
       nextItems.push(replacement);
@@ -6378,6 +6379,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       const needsProviderContentRefresh = (message.role === "user" && Boolean(message.hidden_context)) || (
         index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock));
+      // Keep native tool-result items while rebuilding one filtered user item.
+      const refreshedUserInputItems = (content: StreamMessage["content"]) =>
+        replaceProviderMessageInputItem(message.provider_input_items, "user", content);
 
       if (
         message.role === "user" &&
@@ -6403,20 +6407,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ];
           providerInputItemsByMessageId[message.id] =
             needsProviderContentRefresh
-              ? replaceProviderMessageInputItem(
-                  message.provider_input_items,
-                  "user",
-                  content,
-                )
+              ? refreshedUserInputItems(content)
               : cloneProviderInputItems(message.provider_input_items) ??
                 buildProviderInputItemsFromContent("user", content);
           persistableProviderInputItemsByMessageId[message.id] =
             needsProviderContentRefresh
-              ? replaceProviderMessageInputItem(
-                  message.provider_input_items,
-                  "user",
-                  persistableContent,
-                )
+              ? refreshedUserInputItems(persistableContent)
               : providerInputItemsByMessageId[message.id];
           return {
             role: "user" as const,
@@ -6434,22 +6430,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       providerInputItemsByMessageId[message.id] =
         needsProviderContentRefresh && message.role === "user"
-          ? replaceProviderMessageInputItem(
-              message.provider_input_items,
-              "user",
-              messageContent,
-            )
+          ? refreshedUserInputItems(messageContent)
           : cloneProviderInputItems(message.provider_input_items) ??
             (message.role === "user" || message.role === "assistant"
               ? buildProviderInputItemsFromContent(message.role, messageContent)
               : undefined);
       persistableProviderInputItemsByMessageId[message.id] =
         needsProviderContentRefresh && message.role === "user"
-          ? replaceProviderMessageInputItem(
-              message.provider_input_items,
-              "user",
-              persistableMessageContent,
-            )
+          ? refreshedUserInputItems(persistableMessageContent)
           : providerInputItemsByMessageId[message.id];
 
       const storedImages = messageImagesByMessageId[message.id] || [];
@@ -13536,7 +13524,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const capturedIntent = structuredClone(resolvedIntent?.ownerSessionId === runtime.sessionId && resolvedIntent.ownerTurnId === runtime.turnId
         ? resolvedIntent : activeIntent);
       const messageId = crypto.randomUUID();
-      const entry = queue.capture(createConversationTurnId(), { ...payload, content, contextRefs: capturedContextRefs }, {
+      const entry = queue.capture(createConversationTurnId(), { ...payload, content, contextRefs: capturedContextRefs,
+        taskId: capturedIntent.intent.mode === 'Chat' ? undefined :
+          capturedIntent.input.taskId ?? capturedIntent.intent.conversationTaskId ?? capturedIntent.intent.selectedTaskId,
+      }, {
         ...capturedIntent.intent, composerRevision: revision,
         provider: { ...capturedIntent.intent.provider, isLoading: false, providerConfigs: [] },
       });
@@ -13570,7 +13561,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         try {
           userMessage = await buildUserMessageForSend({
             id: messageId, conversationId: payload.conversationId, turnId: runtime.turnId,
-            taskId: entry.input.taskId ?? capturedIntent.intent.conversationTaskId ?? "",
+            taskId: entry.input.taskId ?? "",
             content, hiddenContext: payload.hiddenContext, contextRefs,
           });
         } catch (error) {
