@@ -1,10 +1,11 @@
+import { StreamStopUnconfirmedError, combineStreamErrors, withStreamCleanup } from "./streamCancellation";
 import type { StreamingChatOptions, ToolCall, StreamCompletionReason } from './contracts';
 import type { ReasoningEffort } from '../../types';
 import type { ToolCallingAdapter } from './toolCallingLoop';
 import { ProviderRuntimeError, classifyReasoningRejection, extractProviderErrorMessage, extractSseProviderError } from './providerErrors';
 import { resolveChatCompletionProviderProfile, buildChatCompletionMessages, validateChatCompletionMessageSequence, applyToolsToChatCompletionsRequest, chatCompletionMessagesHaveToolHistory, hasReplayableReasoningContent, appendReasoningDetails, buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem } from './chatCompletionsCodec';
 import { applyReasoningToChatCompletionsRequest, shouldRequestProviderReasoning } from '../providerProtocolProfiles';
-import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_STREAM_IDLE_TIMEOUT_MS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, fetchWithTimeout, readStreamChunkWithIdleTimeout } from './httpTransport';
+import { GENERIC_RETRY_MAX_ATTEMPTS, GENERIC_STREAM_IDLE_TIMEOUT_MS, GENERIC_REQUEST_TIMEOUT_MS, getRetryDelayMs, sleep, fetchWithTimeout, readStreamChunkWithIdleTimeout, cancelStreamReader } from './httpTransport';
 import { createSseEventParser, extractSseData } from './sse';
 import { getValidToolCalls, hasCompleteToolCallBatch } from './toolCallProtocol';
 import { logStreamingDiagnostic, classifyProviderDiagnosticCategory, emitStreamTimeline } from './streamDiagnostics';
@@ -138,6 +139,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
 
           response = candidateResponse;
         } catch (error) {
+          if (error instanceof StreamStopUnconfirmedError) throw error;
           logStreamingDiagnostic('error', 'provider_request_failed', {
             request_id: genericRequestId,
             provider_id: providerId,
@@ -372,11 +374,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
         while (true) {
           // Check if the stream was cancelled
           if (options.signal?.aborted) {
-            try {
-              await reader.cancel();
-            } catch (e) {
-              // Ignore cancel errors
-            }
+            await cancelStreamReader(reader);
             throw new DOMException('Aborted', 'AbortError');
           }
 
@@ -412,23 +410,23 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             }
           }
           if (receivedDone) {
-            await reader.cancel().catch(() => {
-              // Ignore cancellation errors after a terminal SSE marker.
-            });
+            await cancelStreamReader(reader);
             break;
           }
         }
         consecutiveStreamRetryCount = 0;
       } catch (error) {
         try {
-          await reader.cancel();
-        } catch {
-          // Ignore cancel errors during stream retry cleanup.
+          await cancelStreamReader(reader, error);
+        } catch (secondary) {
+          if (error instanceof StreamStopUnconfirmedError || secondary instanceof StreamStopUnconfirmedError) {
+            throw combineStreamErrors(error, secondary);
+          }
         }
         activeResources.reader = null;
         activeResources.stream = null;
 
-        if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (error instanceof StreamStopUnconfirmedError || (error instanceof Error && error.name === 'AbortError')) throw error;
 
         const runtimeError =
           error instanceof ProviderRuntimeError
@@ -506,12 +504,13 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
       }
       return err;
     },
-    dispose: () => {
+    dispose: () => withStreamCleanup(async () => {
+      if (activeResources.reader) await cancelStreamReader(activeResources.reader);
+    }, () => {
       sourceOptions.signal?.removeEventListener('abort', abort);
-      void activeResources.reader?.cancel().catch(() => undefined);
       activeResources.reader = null;
       activeResources.stream = null;
       if (!resources) pruneActiveStreamResources(sessionId, activeResources);
-    },
+    }),
   };
 }

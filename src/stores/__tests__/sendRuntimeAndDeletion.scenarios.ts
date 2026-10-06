@@ -1216,7 +1216,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
 
       useChatStore.getState().stopConversationStream('chat-1');
-      await Promise.resolve();
+      await flushAsyncWork();
 
       expect(useChatStore.getState().getConversationRuntime('chat-1').phase).toBe('idle');
       expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
@@ -1688,11 +1688,15 @@ export const registerSendRuntimeAndDeletionScenarios = (
         selectedConversationIdsByMode: { Chat: 'chat-1' },
       }));
 
+      await expect(useChatStore.getState().sendMessage({
+        conversationId: 'chat-1', content: 'Envoi pendant la terminaison.',
+      })).rejects.toThrow('already running');
+      oldStreamReleased.resolve(undefined);
+      await flushAsyncWork();
       const newSend = await useChatStore.getState().sendMessage({
         conversationId: 'chat-1',
         content: 'Nouvelle session légitime.',
       });
-      oldStreamReleased.resolve(undefined);
       await flushAsyncWork();
 
       expect(newSend).toMatchObject({ status: 'sent', conversationId: 'chat-1' });

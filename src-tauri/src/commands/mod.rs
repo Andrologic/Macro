@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod http_resources;
 mod external_apps;
 pub mod fs;
 pub mod git;

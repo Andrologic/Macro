@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "./ai/streamCancellation";
 import type { ConversationRuntimeState } from "../types";
 import { isConversationRuntimeActive } from "../domains/chat/runtimeState";
 
@@ -19,13 +20,16 @@ export interface ChatTurnStatePort {
 
 export function createChatTurnRuntime(ports: {
   state: ChatTurnStatePort;
-  cancelTransport(sessionId: string): void;
+  cancelTransport(sessionId: string): void | Promise<void>;
   settled(conversationId: string): void;
 }) {
   const sessions = new Map<string, string>();
   const generations = new Map<string, symbol>();
   const completions = new Map<string, ChatTurnIdentity>();
   const streams = new Map<string, Promise<void>>();
+  const stopping = new Map<string, Promise<void>>();
+  const unconfirmedStops = new Map<string, StreamStopUnconfirmedError>();
+  const unconfirmedStates = new Map<string, ConversationRuntimeState>();
   const steers = new Map<string, Array<{ sessionId: string | null; turnId: string | null; message: import("./streamingChat").StreamMessage }>>();
   const read = ports.state.read;
   const set = ports.state.project;
@@ -49,12 +53,48 @@ export function createChatTurnRuntime(ports: {
       owner?.sessionId === identity.sessionId && owner.turnId === identity.turnId &&
       owner.assistantMessageId === identity.assistantMessageId;
   };
+  const reserveUnconfirmed = (id: string, state: ConversationRuntimeState, failure: StreamStopUnconfirmedError) => {
+    unconfirmedStops.set(id, failure);
+    unconfirmedStates.set(id, state);
+    try {
+      const current = read(id);
+      if (current.sessionId === state.sessionId && current.turnId === state.turnId) {
+        generations.delete(id);
+        set(id, { ...current, phase: "error", lastError: failure.message,
+          lastErrorOrigin: "macro", lastErrorDisplayTarget: "composer" });
+      }
+    } catch (secondary) {
+      failure = preserveStreamStopError(failure, secondary);
+      unconfirmedStops.set(id, failure);
+    }
+    // A receipt may arrive independently of another UI Stop request.
+    void failure.whenStopped.then(() => {
+      if (unconfirmedStops.get(id) !== failure) return;
+      unconfirmedStops.delete(id);
+      unconfirmedStates.delete(id);
+      stopping.delete(id);
+      try {
+        const latest = read(id);
+        if (latest.sessionId === state.sessionId && latest.turnId === state.turnId) {
+          set(id, { ...latest, phase: "idle", abortController: null, lastError: null }, { globalLastError: null });
+        }
+        if (!streams.has(id)) ports.settled(id);
+      } catch (secondary) {
+        if (secondary instanceof StreamStopUnconfirmedError && !secondary.stopped) {
+          reserveUnconfirmed(id, state, secondary);
+        } else {
+          preserveStreamStopError(failure, secondary);
+        }
+      }
+    }, () => { /* No receipt: retain the same owner and its failure. */ });
+    return failure;
+  };
   return {
     read, set, update, matches, ownsCompletion,
     assertCanSend: (id: string, input: { available: boolean; hasUnsavedResponse: boolean }) => {
       if (!input.available || ports.state.isDeleted(id)) throw new Error("This conversation is no longer available.");
       if (input.hasUnsavedResponse) throw new Error("Save or delete the unsaved assistant response before sending another message.");
-      if (isConversationRuntimeActive(read(id))) throw new Error("This conversation is already running. Wait for it to finish before sending again.");
+      if (streams.has(id) || stopping.has(id) || unconfirmedStops.has(id) || isConversationRuntimeActive(read(id))) throw new Error("This conversation is already running. Wait for it to finish before sending again.");
     },
     latestSession: (id: string) => sessions.get(id),
     rememberSession: (id: string, session: string) => { sessions.set(id, session); },
@@ -110,32 +150,99 @@ export function createChatTurnRuntime(ports: {
       completions.delete(identity.conversationId);
       fail();
     },
-    stop: (id: string) => {
-      const state = read(id);
-      if (!isConversationRuntimeActive(state)) return;
-      if (state.phase === "persisting" && !ports.state.isDeleted(id)) return;
-      // Abort listeners flush and capture progress synchronously before ownership is released.
+    stop: (id: string): Promise<void> => {
+      const pendingStop = stopping.get(id);
+      if (pendingStop && !unconfirmedStops.has(id)) return pendingStop;
+      const projected = read(id);
+      const state = projected.sessionId ? projected : unconfirmedStates.get(id) ?? projected;
+      if (!isConversationRuntimeActive(state) && !unconfirmedStops.has(id)) return Promise.resolve();
+      if (state.phase === "persisting" && !ports.state.isDeleted(id)) return Promise.resolve();
+      const stream = streams.get(id);
+      const generation = generations.get(id);
+      // Abort first flushes visible progress synchronously; then revoke late callbacks.
       state.abortController?.abort();
-      if (state.sessionId) ports.cancelTransport(state.sessionId);
-      // A synchronous abort listener may have installed a successor.
-      if (read(id) !== state) return;
-      set(id, { ...state, phase: "idle", abortController: null, lastError: null }, { globalLastError: null });
+      if (generations.get(id) === generation) generations.delete(id);
+      let transport: void | Promise<void>;
+      try { transport = state.sessionId ? ports.cancelTransport(state.sessionId) : undefined; }
+      catch (error) { transport = Promise.reject(error); }
+      if (!stream && !transport) {
+        const failure = unconfirmedStops.get(id);
+        if (failure) {
+          const rejected = Promise.reject(failure);
+          void rejected.catch(() => undefined);
+          return rejected;
+        }
+        if (read(id) === state) set(id, { ...state, phase: "idle", abortController: null, lastError: null }, { globalLastError: null });
+        return Promise.resolve();
+      }
+      const stopped = Promise.allSettled([stream, transport]).then((results) => {
+        if (stopping.get(id) !== stopped) return;
+        const transportResult = results[1];
+        const streamResult = results[0];
+        const unresolved = new Set<StreamStopUnconfirmedError>();
+        const retained = unconfirmedStops.get(id);
+        if (retained && !retained.stopped) unresolved.add(retained);
+        if (streamResult.status === "rejected" && streamResult.reason instanceof StreamStopUnconfirmedError && !streamResult.reason.stopped) unresolved.add(streamResult.reason);
+        if (transportResult.status === "rejected") {
+          const reason = transportResult.reason;
+          const failure = reason instanceof StreamStopUnconfirmedError ? reason :
+            new StreamStopUnconfirmedError(`Stream stop was not confirmed: ${String(reason)}. Its owner remains reserved.`);
+          if (!failure.stopped) unresolved.add(failure);
+        }
+        if (unresolved.size) {
+          // A successful provider cancellation cannot discharge another tool's
+          // outstanding receipt. Keep every previously reserved owner joined.
+          const failures = [...unresolved];
+          const failure = failures.length === 1 ? failures[0] : new StreamStopUnconfirmedError(
+            failures.map(error => error.message).join("; "),
+            Promise.all(failures.map(error => error.whenStopped)).then(() => undefined),
+          );
+          throw reserveUnconfirmed(id, state, failure);
+        }
+        // Other stream failures ended locally and retain their original error
+        // projection. Only cancellation uncertainty keeps admission reserved.
+        unconfirmedStops.delete(id);
+        unconfirmedStates.delete(id);
+        stopping.delete(id);
+        const current = read(id);
+        if (current.sessionId === state.sessionId && current.turnId === state.turnId &&
+          current.abortController === state.abortController && current.phase !== "persisting") {
+          set(id, { ...current, phase: "idle", abortController: null, lastError: null }, { globalLastError: null });
+        }
+        ports.settled(id);
+      });
+      stopping.set(id, stopped);
+      void stopped.catch(() => undefined);
+      return stopped;
     },
     track: (id: string, promise: Promise<void>) => {
       streams.set(id, promise);
-      const release = () => {
+      const identity = read(id);
+      const release = (error?: unknown) => {
         if (streams.get(id) !== promise) return;
         streams.delete(id);
+        if (error instanceof StreamStopUnconfirmedError && !error.stopped) reserveUnconfirmed(id, identity, error);
         steers.delete(id);
-        queueMicrotask(() => ports.settled(id));
+        if (!stopping.has(id) && !unconfirmedStops.has(id)) queueMicrotask(() => ports.settled(id));
       };
-      void promise.then(release, release);
+      void promise.then(() => release(), error => release(error));
     },
     drain: async (id: string) => {
+      try { await stopping.get(id); }
+      catch (error) {
+        if (!(error instanceof StreamStopUnconfirmedError)) throw error;
+        await error.whenStopped;
+      }
+      await unconfirmedStops.get(id)?.whenStopped;
       // Overflow recovery can replace the transport while its predecessor unwinds.
       let pending = streams.get(id);
       while (pending) {
-        await pending;
+        try { await pending; }
+        catch (error) {
+          if (error instanceof StreamStopUnconfirmedError) await error.whenStopped;
+          // Finite stream errors ended locally and have their own projection.
+        }
+        await unconfirmedStops.get(id)?.whenStopped;
         const next = streams.get(id);
         if (next === pending) return;
         pending = next;

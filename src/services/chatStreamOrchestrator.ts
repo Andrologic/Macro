@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, preserveStreamStopError } from "./ai/streamCancellation";
 import type {
   StreamCompletionResult,
   StreamingChatOptions,
@@ -143,7 +144,25 @@ export const runAssistantStream = async ({
   let abortPromise: Promise<void> | null = null;
   let completionPromise: Promise<void> | null = null;
   let errorPromise: Promise<void> | null = null;
+  let unconfirmedStop: StreamStopUnconfirmedError | undefined;
+  const lifecycleFailures: unknown[] = [];
+  const stopOwners = new Set<StreamStopUnconfirmedError>();
+  const rememberStop = (error: unknown) => {
+    if (error instanceof StreamStopUnconfirmedError && !stopOwners.has(error)) {
+      stopOwners.add(error);
+      unconfirmedStop = unconfirmedStop
+        ? preserveStreamStopError(unconfirmedStop, error)
+        : error;
+    }
+  };
+  // Observe callbacks as soon as they start. Drain them even if another callback
+  // fails, and select the owner error only after all finite lifecycle work ends.
+  const observe = (pending: Promise<void>): Promise<void> => pending.catch(error => {
+    rememberStop(error);
+    lifecycleFailures.push(error);
+  });
   const handleErrorOnce = async (error: Error, completionFailure = false): Promise<void> => {
+    rememberStop(error);
     if (handledError || handledAbort || (handledComplete && !completionFailure)) {
       return;
     }
@@ -171,10 +190,18 @@ export const runAssistantStream = async ({
       return;
     }
     handledAbort = true;
-    controls.flushNow();
-    abortPromise = Promise.resolve(lifecycle.onAbort?.(controls)).catch(
-      () => undefined,
-    );
+    try {
+      controls.flushNow();
+    } catch (error) {
+      rememberStop(error);
+      lifecycleFailures.push(error);
+    }
+    try {
+      abortPromise = observe(Promise.resolve(lifecycle.onAbort?.(controls)));
+    } catch (error) {
+      rememberStop(error);
+      lifecycleFailures.push(error);
+    }
   };
   streamOptions.signal?.addEventListener("abort", handleAbort, { once: true });
 
@@ -190,36 +217,42 @@ export const runAssistantStream = async ({
       },
       onComplete: (result) => {
         if (handledComplete || handledError || handledAbort) return;
-        completionPromise = handleCompleteOnce(result);
+        completionPromise = observe(handleCompleteOnce(result));
       },
       onError: (error) => {
+        rememberStop(error);
         if (handledComplete || handledError || handledAbort) return;
-        errorPromise = handleErrorOnce(error);
+        errorPromise = observe(handleErrorOnce(error));
       },
     });
-    if (completionPromise) {
-      await completionPromise;
-    }
-    if (errorPromise) {
-      await errorPromise;
-    }
-    if (abortPromise) {
-      await abortPromise;
-    }
   } catch (error) {
-    if (completionPromise) {
-      await completionPromise;
-      return;
+    rememberStop(error);
+    // Completion already owns its persistence/recovery; a late transport error
+    // must still retain a receipt, without starting a second lifecycle callback.
+    if (!completionPromise) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      await observe(handleErrorOnce(normalized));
     }
-    const normalized =
-      error instanceof Error ? error : new Error(String(error));
-    await handleErrorOnce(normalized);
   } finally {
-    try {
-      if (errorPromise) await errorPromise;
-      if (abortPromise) await abortPromise;
-    } finally {
-      streamOptions.signal?.removeEventListener("abort", handleAbort);
+    await completionPromise;
+    await errorPromise;
+    await abortPromise;
+    for (const cleanup of [
+      () => streamOptions.signal?.removeEventListener("abort", handleAbort),
+      () => tokenBatcher.dispose(),
+    ]) {
+      try { cleanup(); }
+      catch (error) { rememberStop(error); lifecycleFailures.push(error); }
     }
   }
+  if (unconfirmedStop) {
+    for (const error of lifecycleFailures) {
+      // Typed failures were already combined by rememberStop.
+      if (!(error instanceof StreamStopUnconfirmedError)) {
+        unconfirmedStop = preserveStreamStopError(unconfirmedStop, error);
+      }
+    }
+    throw unconfirmedStop;
+  }
+  if (lifecycleFailures.length) throw lifecycleFailures[0];
 };

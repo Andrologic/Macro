@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import type { StreamingChatOptions, ToolCall } from './contracts';
 import { runToolBatch, validateToolInvocation, type ToolBatchAccumulator } from './toolCallRunner';
 import { createStreamAccumulator } from './streamAccumulator';
+import { StreamStopUnconfirmedError } from './streamCancellation';
 
 const call = (name: string, id = name): ToolCall => ({ id, type: 'function', function: { name, arguments: '{}' } });
 const accumulator = (): ToolBatchAccumulator => ({
@@ -180,10 +181,13 @@ describe('shared tool batch', () => {
     await Promise.resolve();
     expect(started).toEqual(['one', 'two', 'three']);
     controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    let ended = false;
+    void pending.then(() => { ended = true; }, () => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
     expect(started).not.toContain('four');
     for (const [index, release] of releases.entries()) release(String(index));
-    await Promise.resolve();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(acc.addHiddenToolContext).not.toHaveBeenCalled();
   });
 
@@ -224,8 +228,8 @@ describe('shared tool batch', () => {
     await firstPublished;
     expect(providerOrder).toEqual(['one']);
     controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     releaseSecond('late');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     await Promise.resolve();
     expect(providerOrder).toEqual(['one']);
     expect(acc.addHiddenToolContext).toHaveBeenCalledWith('one', 'read', undefined, 'first');
@@ -320,8 +324,8 @@ describe('shared tool batch', () => {
     await Promise.resolve();
     expect(releases).toHaveLength(2);
     controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     releases.forEach((release, index) => release(String(index)));
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     await Promise.resolve();
     expect(late).toEqual([]);
   });
@@ -363,17 +367,65 @@ describe('shared tool batch', () => {
     let releaseSecond!: (value: string) => void;
     const second = new Promise<string>(resolve => { releaseSecond = resolve; });
     const acc = createStreamAccumulator({ onToken: () => undefined });
-    const result = await run([call('read', 'one'), call('grep', 'pending')],
+    const pending = run([call('read', 'one'), call('grep', 'pending')],
       options((_name, _args, id) => id === 'one'
         ? { kind: 'interrupt', result: 'Question queued', visibleContent: 'Choose', hiddenContext: 'Pending question' }
         : second), acc);
+    let ended = false;
+    void pending.then(() => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
+    releaseSecond('late result');
+    const result = await pending;
     expect(result.interruptResolution).not.toBeNull();
     expect(result.toolResults.map(item => item.tool_call_id)).toEqual(['one']);
     expect(acc.snapshotLiveContext().toolTraces.map(trace => [trace.tool_call_id, trace.status])).toEqual([
       ['one', 'done'], ['pending', 'running'],
     ]);
-    releaseSecond('late result');
-    await Promise.resolve();
     expect(acc.snapshotLiveContext().toolTraces[1].status).toBe('running');
   });
+});
+
+
+it('joins every uncertain parallel read receipt before confirming Stop', async () => {
+  let confirmFirst!: () => void;
+  let confirmSecond!: () => void;
+  const failures = [
+    new StreamStopUnconfirmedError('First read still owned', new Promise<void>(resolve => { confirmFirst = resolve; })),
+    new StreamStopUnconfirmedError('Second read still owned', new Promise<void>(resolve => { confirmSecond = resolve; })),
+  ];
+  const pending = run([call('read', 'first'), call('grep', 'second')], options(async (_name, _args, id) => {
+    throw failures[id === 'first' ? 0 : 1];
+  }));
+  const failure = await pending.then(() => { throw new Error('Expected uncertain Stop'); }, error => error as StreamStopUnconfirmedError);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  let stopped = false;
+  void failure.whenStopped.then(() => { stopped = true; });
+  confirmFirst();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(stopped).toBe(false);
+  confirmSecond();
+  await failure.whenStopped;
+  expect(failure.stopped).toBe(true);
+});
+
+it('joins a publication owner with a later read owner before releasing the batch', async () => {
+  let first!: () => void;
+  let second!: () => void;
+  const projection = new StreamStopUnconfirmedError('Projection owner', new Promise<void>(resolve => { first = resolve; }));
+  const read = new StreamStopUnconfirmedError('Read owner', new Promise<void>(resolve => { second = resolve; }));
+  const acc = accumulator();
+  acc.completeToolTrace = () => { throw projection; };
+  const pending = run([call('read', 'one'), call('grep', 'two')], options(async (_name, _args, id) => {
+    if (id === 'two') throw read;
+    return 'first result';
+  }), acc);
+  const failure = await pending.catch(error => error);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  first();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(failure.stopped).toBe(false);
+  second();
+  await failure.whenStopped;
+  expect(failure.stopped).toBe(true);
 });

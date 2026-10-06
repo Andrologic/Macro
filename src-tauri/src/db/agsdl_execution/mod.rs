@@ -288,6 +288,12 @@ async fn accept(
         )?;
         return Ok(retained);
     }
+    // Stop closes new admission, but never hides a receipt already committed.
+    // Public/runtime callers authenticate the epoch before reaching this lookup.
+    require(
+        matches!(stored.state.stop, EngineStopState::None),
+        "System admission is closed",
+    )?;
     require(
         !stored
             .state
@@ -563,10 +569,6 @@ pub(crate) async fn accept_delivery(
     let mut tx = durable(&mut c).await?;
     let mut stored = load(&mut tx, &delivery.work.system_start_id).await?;
     owner(&stored.state, runtime, &stored.snapshot.system_start_id)?;
-    require(
-        matches!(stored.state.stop, EngineStopState::None),
-        "System admission is closed",
-    )?;
     let result = accept(&mut tx, &mut stored, delivery).await?;
     save(&mut tx, &stored.snapshot.system_start_id, &stored.state).await?;
     tx.commit().await?;

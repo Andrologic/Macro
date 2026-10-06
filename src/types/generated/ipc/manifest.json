@@ -2123,6 +2123,14 @@
     },
     {
       "families": [
+        "chat"
+      ],
+      "name": "WebviewResourceRelease",
+      "origin": "macro_lib::commands::http_resources::WebviewResourceRelease",
+      "path": "WebviewResourceRelease.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "WorkspaceArchitectActivatePlanChatRequestDto",

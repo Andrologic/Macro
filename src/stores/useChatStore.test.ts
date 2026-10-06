@@ -1470,9 +1470,9 @@ const terminalRunCommandFromChatMock = mock(
     id: sessionId,
     command,
     timeout_ms: timeoutMs ?? null,
-    status: 'idle',
+    status: 'completed',
     output: '',
-    exit_code: null,
+    exit_code: 0 as number | null,
     timed_out: false,
     updated_at: '2026-03-26T10:00:00.000Z',
   })

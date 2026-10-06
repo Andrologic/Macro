@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from './ai/streamCancellation';
 import { ToolResultPreservationError } from './toolResultArtifacts';
 import { describe, expect, mock, test } from 'bun:test';
 import { createChatToolDispatch, classifyChatToolEffect, type ChatToolDispatchPorts, type ChatToolInvocationJournal } from './chatToolDispatch';
@@ -70,7 +71,7 @@ describe('durable Chat tool dispatch', () => {
       stopped.controller.abort();
       return 'late result';
     });
-    expect(await stopped.dispatch('write', {}, 'stop')).toMatchObject({ errorKind: 'aborted' });
+    expect(await stopped.dispatch('write', {}, 'stop')).toMatchObject({ errorKind: 'uncertain' });
     expect(stopped.events).toContain('unknown');
     expect(stopped.journal.complete).not.toHaveBeenCalled();
 
@@ -122,7 +123,7 @@ describe('durable Chat tool dispatch', () => {
       stopped.controller.abort();
       return value;
     });
-    expect(await stopped.dispatch('write', {}, 'preserve-stopped')).toMatchObject({ errorKind: 'aborted' });
+    expect(await stopped.dispatch('write', {}, 'preserve-stopped')).toMatchObject({ errorKind: 'uncertain' });
     expect(stopped.events).toEqual(['record:write:workspace_mutation', 'execute', 'unknown']);
     expect(stopped.journal.complete).not.toHaveBeenCalled();
   });
@@ -317,3 +318,56 @@ test('does not continue with a refusal before its durable completion is confirme
   expect(await f.dispatch('write', {}, 'denied-unconfirmed')).toMatchObject({ errorKind: 'uncertain' });
   expect(f.events).toContain('unknown');
 });
+
+test('typed terminal uncertainty stays unknown and is never durably completed', async () => {
+  const f = fixture();
+  f.execute.mockImplementation(async () => ({ kind: 'result', result: 'command receipt lost', isError: true, errorKind: 'uncertain' }));
+  expect(await f.dispatch('terminal_run', {}, 'terminal-call')).toMatchObject({ errorKind: 'uncertain' });
+  expect(f.events).toEqual(['record:terminal_run:external_effect', 'unknown']);
+  expect(f.journal.complete).not.toHaveBeenCalled();
+});
+
+
+for (const errorKind of ['permission', 'validation'] as const) {
+  test(`Stop preserves ${errorKind} when the executor proves no effect was dispatched`, async () => {
+    const f = fixture();
+    f.execute.mockImplementation(async () => {
+      f.controller.abort();
+      return { kind: 'result', result: 'Refused before dispatch', isError: true, errorKind };
+    });
+    expect(await f.dispatch('terminal_run', {}, 'refused')).toMatchObject({ errorKind });
+    expect(f.journal.complete).not.toHaveBeenCalled();
+    expect(f.preserve).not.toHaveBeenCalled();
+  });
+}
+
+
+test('keeps a terminal local-stop receipt and journal unknown through dispatch after Stop', async () => {
+  const f = fixture();
+  let confirm!: () => void;
+  const receipt = new Promise<void>(resolve => { confirm = resolve; });
+  const failure = new StreamStopUnconfirmedError('Run and kill receipts missing', receipt);
+  f.execute.mockImplementation(async () => { f.controller.abort(); throw failure; });
+  await expect(f.dispatch('terminal_run', {}, 'terminal-call')).rejects.toBe(failure);
+  expect(f.events).toEqual(['record:terminal_run:external_effect', 'unknown']);
+  expect(f.journal.complete).not.toHaveBeenCalled();
+  expect(f.preserve).not.toHaveBeenCalled();
+  expect(failure.stopped).toBe(false);
+  confirm();
+  await failure.whenStopped;
+});
+
+for (const errorKind of ['permission', 'validation'] as const) {
+  test(`Stop during diagnostic preservation keeps a typed ${errorKind} refusal without completing`, async () => {
+    const f = fixture();
+    const refusal = { kind: 'result' as const, result: 'Refused before dispatch', isError: true, errorKind };
+    f.execute.mockImplementation(async () => refusal);
+    f.preserve.mockImplementation(async () => {
+      f.controller.abort();
+      throw new ToolResultPreservationError('Refused before dispatch');
+    });
+    expect(await f.dispatch('terminal_run', {}, 'refused-during-preservation')).toBe(refusal);
+    expect(f.events).toContain('unknown');
+    expect(f.journal.complete).not.toHaveBeenCalled();
+  });
+}

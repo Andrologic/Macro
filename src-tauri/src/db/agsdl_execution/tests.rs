@@ -228,6 +228,78 @@ async fn terminal_commit_survives_lost_response_and_contradictions_roll_back() {
     assert_eq!(empty.next_cursor, next_page.next_cursor);
 }
 #[tokio::test]
+async fn stopped_system_retains_delivery_receipts_without_reopening_admission() {
+    let (_temp, pool, receipt, runtime) = setup().await;
+    let mut delivery = delivery(&pool, &runtime, "second", "retained").await;
+    delivery.input.value_json = r#"{"number":1,"flag":false}"#.into();
+    let retained = accept_delivery(&pool, &runtime, delivery.clone())
+        .await
+        .unwrap();
+    stop(
+        &pool,
+        EngineStopRequest {
+            system_start_id: receipt.system_start_id.clone(),
+            request_id: "stop-retained".into(),
+            activation_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let stopped = read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap();
+    let mut same = delivery.clone();
+    same.input.value_json = r#"{ "flag":false, "number":1e0 }"#.into();
+    assert_eq!(
+        accept_delivery(&pool, &runtime, same).await.unwrap(),
+        retained
+    );
+    assert_eq!(
+        retained.delivery.input.value_json,
+        delivery.input.value_json
+    );
+    let mut conflicting = delivery.clone();
+    conflicting.input.value_json = "null".into();
+    assert_eq!(
+        accept_delivery(&pool, &runtime, conflicting)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    let mut fresh = delivery.clone();
+    fresh.delivery_id = "new-after-stop".into();
+    fresh.work.activation_id = "new-after-stop-activation".into();
+    assert_eq!(
+        accept_delivery(&pool, &runtime, fresh)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    let mut stale = runtime.clone();
+    stale.owner_epoch = "999".into();
+    assert_eq!(
+        accept_delivery(&pool, &stale, delivery)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    assert_eq!(
+        read_projection(&pool, &receipt.system_start_id)
+            .await
+            .unwrap(),
+        stopped
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_deliveries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
 async fn concurrent_fifo_admission_memory_and_visit_budget() {
     let (_temp, pool, _receipt, runtime) = setup().await;
     let first = delivery(&pool, &runtime, "first", "first").await;

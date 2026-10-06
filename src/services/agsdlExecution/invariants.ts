@@ -35,7 +35,8 @@ export function assertSourceRevision(expected: SourceRevision, captured: SourceR
 }
 /** Canonical string representation makes large queue positions safe on the wire. */
 export function compareSequence(left: Sequence, right: Sequence): -1 | 0 | 1 {
-  requireMatch(/^(0|[1-9][0-9]*)$/.test(left) && /^(0|[1-9][0-9]*)$/.test(right),
+  requireMatch(typeof left === 'string' && typeof right === 'string' &&
+    /^(0|[1-9][0-9]*)$/.test(left) && /^(0|[1-9][0-9]*)$/.test(right),
     'Invalid queue sequence.');
   if (left === right) return 0;
   return left.length < right.length || (left.length === right.length && left < right) ? -1 : 1;

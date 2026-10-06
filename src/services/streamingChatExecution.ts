@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError, combineStreamErrors, reportStreamError } from "./ai/streamCancellation";
 import { runToolCallingLoop } from './ai/toolCallingLoop';
 import { createNativeAdapter } from './ai/nativeAdapter';
 import { createChatCompletionsAdapter } from './ai/chatCompletionsAdapter';
@@ -48,9 +49,9 @@ const nativeProviderSupportsReasoningTransport = (
 const streamChatViaNativeToolCallingProvider = async (options: StreamingChatOptions, resources: ActiveStreamResources, compatibility: ReasoningCompatibility): Promise<void> => {
   const accumulator = createStreamAccumulator(options);
   try {
-    options.onComplete(await runToolCallingLoop(options, createNativeAdapter(options, accumulator, compatibility, resources), accumulator));
+    await options.onComplete(await runToolCallingLoop(options, createNativeAdapter(options, accumulator, compatibility, resources), accumulator));
   } catch (error) {
-    options.onError(error instanceof Error ? error : new Error(String(error)));
+    await reportStreamError(error, options.onError);
   }
 };
 
@@ -100,7 +101,7 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
     try {
       return await streamChatViaNativeToolCallingProvider(effectiveOptions, resources, compatibility);
     } catch (error) {
-      if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
+      if (effectiveOptions.signal?.aborted || error instanceof StreamStopUnconfirmedError || options.providerType === 'ollama' || options.providerType === 'lmstudio') {
         throw error;
       }
       // Generic native streaming reads keys from Macro's local secret store. If
@@ -110,14 +111,30 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
 
   const accumulator = createStreamAccumulator(effectiveOptions);
   const transport = createChatCompletionsAdapter(effectiveOptions, compatibility, resources);
+  let failed = false;
+  let failure: unknown;
   try {
-    options.onComplete(await runToolCallingLoop({ ...effectiveOptions, signal: transport.signal }, transport.adapter, accumulator));
+    await options.onComplete(await runToolCallingLoop({ ...effectiveOptions, signal: transport.signal }, transport.adapter, accumulator));
     transport.done();
   } catch (error) {
-    options.onError(transport.error(error));
+    try {
+      await reportStreamError(error, async normalized => {
+        // Timeline/projection errors are secondary to a missing local receipt.
+        const reported = transport.error(normalized);
+        await options.onError(normalized instanceof StreamStopUnconfirmedError ? normalized : reported);
+      });
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
   } finally {
-    transport.dispose();
+    try { await transport.dispose(); }
+    catch (secondary) {
+      failure = failed ? combineStreamErrors(failure, secondary) : secondary;
+      failed = true;
+    }
   }
+  if (failed) throw failure;
 }
 
 /**
@@ -169,6 +186,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
           }, resources);
           break;
         } catch (error) {
+          if (options.signal?.aborted || error instanceof StreamStopUnconfirmedError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           const rejection = classifyReasoningRejection(message);
           const rejectedEffort = currentReasoningEffort;
@@ -191,7 +209,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
           throw error;
         }
       }
-      onComplete({
+      await onComplete({
         visibleContent:
           providerType === 'chatgpt' || providerType === 'copilot'
             ? buildNativeReasoningVisibleTurnContent(turn.content, turn.reasoningSummary)
@@ -204,7 +222,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
       return turn.content;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      onError(err);
+      await reportStreamError(err, onError);
       throw err;
     }
   }
@@ -328,14 +346,14 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
       reasoningDetails,
       toolCalls: [],
     });
-    onComplete({
+    await onComplete({
       ...emptyStreamCompletionResult(content),
       providerInputItems: providerItem ? [providerItem] : undefined,
     });
     return content;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    onError(err);
+    await reportStreamError(err, onError);
     throw err;
   }
 }

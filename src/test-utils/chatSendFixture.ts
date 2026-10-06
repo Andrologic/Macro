@@ -44,6 +44,7 @@ export function chatSendFixture(mode: ChatSendSnapshot['mode'] = 'Chat') {
   const unexpected = async (): Promise<never> => { throw new Error('Unexpected persistence operation'); };
   const ports: ChatSendPorts<SendTask, { taskId: string }, { prepared: true }> = {
     owner: {
+      track: () => {},
       read: (id) => runtimes.get(id) ?? { phase: 'idle', sessionId: null },
       set: (id, runtime) => { if (runtime) runtimes.set(id, runtime); else runtimes.delete(id); },
       update: (id, session, updater) => {

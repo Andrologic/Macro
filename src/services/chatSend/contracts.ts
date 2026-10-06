@@ -72,7 +72,7 @@ export interface SendLease {
 }
 
 export type ChatSendOwner = Pick<ChatTurnRuntime,
-  'read' | 'set' | 'update' | 'latestSession' | 'rememberSession' | 'transfer' | 'forgetSession'>;
+  'read' | 'set' | 'update' | 'latestSession' | 'rememberSession' | 'transfer' | 'forgetSession' | 'track'>;
 
 export interface SendTask {
   task_source?: string;

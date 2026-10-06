@@ -1630,10 +1630,11 @@ futur appelant ne doit dispatcher que dans ce cas. Une nouvelle lecture de
 `pending`, `unknown` ou `completed` renvoie `is_new=false` et n'autorise pas un
 second effet. L'identifiant de reçu peut être partagé entre deux invocations
 distinctes ; sa cohérence est vérifiée à l'intérieur de chaque identité.
-`db_complete_tool_invocation` exige un identifiant de reçu que le futur appelant
-ne doit fournir qu'après confirmation du résultat par le transport. Le journal
-ne stocke ni résultat brut ni preuve de remise du transport. Les entrées encore
-`pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
+`db_complete_tool_invocation` exige un identifiant de reçu fourni après la
+réponse de l’exécuteur. Depuis la migration 10, il peut conserver `result_json`
+et le reçu dans la même transaction. Les anciens résultats absents restent
+`NULL`. Ce résultat local ne constitue pas une preuve de remise au fournisseur.
+Les entrées encore `pending` au démarrage deviennent `unknown`. Une réponse confirmée tardive peut
 clôturer une entrée inconnue, mais aucune entrée non résolue ne doit être rejouée
 automatiquement. La suppression de conversation efface les entrées par cascade.
 La garantie est un dispatch au plus une fois par identité, pas une exécution
@@ -1644,16 +1645,17 @@ restauration d'une sauvegarde ancienne peut oublier des effets postérieurs à
 l'archive ; le futur transport doit donc vérifier son propre identifiant
 d'idempotence avant toute reprise depuis une sauvegarde.
 Le dispatch commun du Chat enregistre désormais l'intention avant d'appeler
-l'exécuteur et ne l'appelle que pour `is_new=true`. Le reçu de fin n'est écrit
-qu'après la réponse de l'exécuteur et le traitement éventuel d'un gros résultat.
-`completed` prouve cette réponse et, si l'écriture de l'artefact a réussi, sa
-conservation. L'échec de cette écriture peut produire un simple aperçu ; le
-journal v7 ne conserve aucun résultat brut et ne garantit pas la reconstruction
-d'une réponse courte. Il ne prouve pas non plus
-l'acceptation par le fournisseur Copilot ; la trace UI reste `unknown` tant que
-ce reçu fournisseur manque. Une annulation, une exception de transport ou un
-échec explicite du traitement du résultat laisse
-l'intention locale `unknown`, sans rejeu automatique. Le mode frontend-only
+l’exécuteur et ne l’appelle que pour `is_new=true`. Après sa réponse et le
+traitement éventuel d’un gros résultat, il persiste le résultat normalisé
+effectivement rendu à la continuation dans `result_json`, avec son reçu de fin.
+Les réponses courtes et les refus sont donc conservés avant la continuation.
+Si l’artefact diagnostic d’un refus échoue, le refus borné est conservé par la
+même clôture durable. Une clôture non confirmée bloque la continuation et
+laisse l’intention incertaine. `completed` atteste le résultat local conservé ;
+il ne prouve pas l’acceptation par le fournisseur Copilot. La trace UI reste
+`unknown` tant que ce reçu fournisseur manque. Une annulation, une exception de
+transport ou un traitement de résultat non confirmé laisse l’intention locale
+`unknown`, sans rejeu automatique. Le mode frontend-only
 distant conserve son chemin d'exécution sans écrire dans le journal SQLite
 `tool_invocations`. Pour `write`, `edit`, `delete`, `apply_patch` et les mutations
 Git prises en charge, `remoteKernelApi` utilise déjà l'`invocationId` composé
@@ -1762,6 +1764,65 @@ y compris les lectures de favicon. Chaque appel natif annulable porte un
 identifiant d’exécution ; la commande d’annulation interrompt l’attente réseau
 et la lecture du corps. Le registre conserve temporairement les annulations
 reçues avant le démarrage de la commande.
+
+Le registre natif des streams réserve chaque identifiant avant toute attente de
+préparation du fournisseur. Ces identifiants sont à usage unique pendant la vie
+du processus ; une annulation reçue avant admission interdit un démarrage tardif.
+La commande d’annulation attend la destruction de la tâche possédée. Les wrappers
+ChatGPT, OpenAI compatibles et Copilot exécutent leur travail dans cette tâche.
+Le superviseur joint également le processus Copilot confiné, ses descendants et
+sa lecture stderr ; une erreur de terminaison conserve un reçu d’arrêt incertain.
+Copilot publie sa fin seulement après ce contrôle. Les événements de fin ou
+d’erreur fournisseur ne sont pas des reçus du superviseur : le transport joint
+le registre natif sur chaque sortie avant de libérer l’identité. Une erreur de
+cleanup conserve `StreamStopUnconfirmedError`, sans fallback ni nouvelle requête
+fournisseur. Un Stop concurrent joint cette même finalisation.
+
+Chat conserve sa réservation pendant la préparation, le transport et les outils
+déjà lancés, même si un exécuteur ignore le signal. L’annulation du transport
+rend une promesse de confirmation. Son échec conserve la réservation et expose
+une erreur ; une nouvelle demande peut obtenir la confirmation manquante. Goal
+conserve aussi le créneau de l’enfant tant que cette confirmation manque. Un
+`AbortError` ou la fin du compositeur ne constitue pas cette preuve. Une erreur
+`StreamStopUnconfirmedError` traverse le compositeur même après son callback
+d’abandon ; son `whenStopped` permet de conserver la réservation jusqu’au reçu.
+Les callbacks de projection, persistance et récupération sont observés dès leur
+lancement, puis joints avant la sortie du compositeur. Leur échec reste attaché
+au reçu comme diagnostic secondaire (`secondaryErrors`) et ne peut pas le
+remplacer. Si plusieurs propriétaires restent incertains, leur reçu composite
+attend toutes leurs confirmations. Les observateurs d’erreur du transport
+respectent la même priorité, y compris pour la génération sans streaming. Un
+rejet du reçu Goal reste un arrêt non confirmé : son diagnostic est conservé,
+mais le créneau ne se libère pas sur ce rejet.
+Le diagnostic d’une tentative interrompue conserve aussi le reçu initial si son
+flush ou sa projection échoue. Le service public joint ses callbacks de chargement
+et sélectionne son erreur après le cleanup. Les normalisations HTTP et fournisseur
+préservent les erreurs d’arrêt typées avant toute classification ou nouvelle
+requête. Goal conserve tous les reçus observés par callback, même si le stream
+rejette ensuite une autre erreur ; ses lectures lancées restent jointes. Une
+exception d’observateur ou de logger natif ne court-circuite pas la finalisation.
+Le fetch HTTP Macro utilise le même port `RuntimeInvoke` pour Tauri natif et son
+bridge navigateur. Les commandes du plugin HTTP conservent leurs contrôles de
+scope et les options client. Le propriétaire du corps joint les IPC de lecture
+et de libération déjà lancés : fermer le reader JavaScript ou retirer la ressource
+Tauri ne prouve pas la fin d’une lecture qui possède encore sa réponse native.
+Le premier échec de cancellation reste typé sur `[DONE]`, abort et timeout ; une
+seconde cancellation JavaScript réussie ne le remplace pas. Un EOF reçu ou une
+lecture terminée et son cleanup confirmé permettent la libération. Une réponse
+IPC perdue reste incertaine, sans preuve fabriquée à partir de son rejet.
+Les lectures parallèles génériques et les ports Goal natifs attendent leurs
+opérations déjà lancées, puis révoquent les sorties tardives.
+
+La confirmation concerne la tâche locale du stream, pas les effets externes déjà
+dispatchés. Les outils terminaux rendent des refus et erreurs typés ; un code de
+sortie métier non nul reste un résultat exécuté. Après dispatch, une interruption,
+un résultat non final ou une réponse de transport perdue reste `uncertain` et
+maintient le journal en `unknown`, sans déclaration de réussite ni rejeu aveugle.
+Un résultat final du run terminal confirme sa fin locale même si le kill échoue ;
+son résultat métier peut rester incertain. En revanche, la perte de ce reçu ou un
+état non final conserve le propriétaire avec `StreamStopUnconfirmedError`. Le
+simple accusé de réception du kill ou la projection de session ne prouve pas la
+récupération du processus ; ils ne libèrent pas ce propriétaire.
 
 ### 15.2 Couplage avec les plans
 
@@ -2107,3 +2168,20 @@ sans retirer un remplacement ou un autre dépôt. Les racines metadata en cache
 sont revalidées avant réutilisation et retirées après nettoyage du projet. Cette
 propriété native ne fait pas dépendre un handle Git du montage d'un panneau et
 n'ajoute ni TTL ni affirmation de fuite mesurée.
+
+HTTP opts into runtime reply provenance through `invokeWithReceipt`. Native
+error callbacks and browser `status: error` envelopes produce
+`RuntimeCommandError`; transport throws, disconnects and missing responses do
+not. Ordinary `invoke` consumers retain their existing error payloads. A received
+admission refusal proves no request was created. A received body-read error
+proves that read ended, but releasing its owner also requires successful body
+cleanup. A failed send also joins request-resource closure before release.
+Cleanup failure alone does not prove resource closure. HTTP error-body
+diagnostics preserve stop receipts before classifying status codes or retrying.
+
+`http_release_webview_resource` retires a finished HTTP request from the caller's
+webview table under one lock. Its typed `removed` or `alreadyAbsent` reply proves
+only table absence. HTTP joins send before retiring the request, on success and
+failure, and keeps the response body's separate resource alive until EOF or body
+cleanup. The command never searches window or app tables. A lost retirement reply
+remains uncertain; removing a table entry never stands in for joining active reads.

@@ -262,6 +262,7 @@ export type { WebFetchResourceDto } from './WebFetchResourceDto';
 export type { WebSearchResultDto } from './WebSearchResultDto';
 export type { WebSearchSecretInput } from './WebSearchSecretInput';
 export type { WebSearchSecretStatus } from './WebSearchSecretStatus';
+export type { WebviewResourceRelease } from './WebviewResourceRelease';
 export type { WorkspaceArchitectActivatePlanChatRequestDto } from './WorkspaceArchitectActivatePlanChatRequestDto';
 export type { WorkspaceArchitectActivatePlanHeadRequestDto } from './WorkspaceArchitectActivatePlanHeadRequestDto';
 export type { WorkspaceArchitectChatMessageDto } from './WorkspaceArchitectChatMessageDto';

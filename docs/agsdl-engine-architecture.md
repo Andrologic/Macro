@@ -1,8 +1,12 @@
 # Contrats du moteur AgSDL
 
-Ce document fixe les interfaces du moteur à construire. Le lot présent ajoute
-les types et des invariants purs, sans scheduler, migration SQL, commande IPC,
-adaptateur fournisseur ou parcours d'exécution dans l'interface.
+Ce document fixe les interfaces et les garanties du moteur AgSDL. Le lot présent
+ajoute les contrats, les invariants, le repository SQLite et les commandes
+produit de lecture et d’arrêt. La compilation pure et les contrôles de contenu
+sont intégrés séparément dans les modules Conformance. Le host, sa capture
+native de compilation, les adaptateurs fournisseur, le scheduler et le parcours
+d’exécution dans l’interface restent à raccorder ; le démarrage renvoie
+`RUNTIME_UNAVAILABLE`.
 Les déclarations sont dans
 [`contracts.ts`](../src/services/agsdlExecution/contracts.ts), les vérifications
 locales dans [`invariants.ts`](../src/services/agsdlExecution/invariants.ts).
@@ -108,7 +112,17 @@ profil. Une extension devra avoir son propre assessment et ses preuves.
 
 `StaticAssessment.valid` décrit uniquement le document. `RuntimeAssessment`
 porte sur le snapshot, le profil et la version du registre. Une assertion
-frontend `supported: true` ne permet aucun effet. Le service natif d'ouverture
+frontend `supported: true` ne permet aucun effet. Le compilateur pur annonce
+`supported` seulement après construction et sérialisation exactes réussies.
+Une erreur produit un refus transportable sans plan. `RuntimeAssessment.source`
+est nullable exclusivement lors d'une capture source structurellement invalide,
+avec un diagnostic CORRELATION et un pointeur utile. Après une capture valide,
+un refus de SHA ou de profil conserve la source complète. Les plans compilés,
+snapshots exécutables et succès exigent toujours une SourceRevision complète.
+Le host refuse un assessment sans source avant toute ouverture durable.
+Les identités, versions et JSON de métadonnées exigent des chaînes primitives,
+la révision source un texte décimal canonique et le SHA un texte hexadécimal
+minuscule de 64 caractères. Le service natif d'ouverture
 peut déléguer la compilation et les contrôles exacts à un service de confiance
 dans le host résident avant l'ouverture durable. Ce host travaille sur la source
 canonique fraîche vérifiée par le natif, avec une réponse liée à sa révision,
@@ -137,13 +151,14 @@ décrit une action ; il n'accorde pas à lui seul un droit d'exécution.
 | `ProjectionPort` | Projection déterministe des événements, sans déclencher de travail. |
 | `ExactValuePort` | Comparaison exacte déléguée aux règles vendor lors de la conformité. |
 
-Le stockage natif devra conserver snapshots, invocations de flux, instances
-Agents, livraisons et ordre FIFO, activations et compteurs, tentatives fournisseur,
-invocations d'outils, checkpoints mémoire, réponses et publications, arrêt,
-événements et curseurs. Ces données appartiennent au workflow de métadonnées
-Macro ; aucun fichier sidecar ad hoc n'est créé. Les contraintes uniques doivent
-protéger notamment système/Agent, delivery, activation, terminal et séquence de
-file. Le présent document ne choisit pas de schéma SQL.
+Le repository SQLite conserve snapshots, invocations de flux, instances Agents,
+livraisons et ordre FIFO, activations et compteurs, intentions et résultats
+d’effets fournisseur ou outil, checkpoints mémoire, arrêt, fermetures de
+réponses, événements et curseurs. La migration 11 fixe ce schéma pour le profil
+sériel initial. Ces données appartiennent au workflow de métadonnées Macro ;
+aucun fichier sidecar ad hoc n’est créé. Les contraintes SQL et transactionnelles
+protègent notamment système/Agent, delivery, activation, terminal et séquence de
+file. Le collecteur et les publications complets restent à raccorder au host.
 
 `start` est idempotent par `requestId` et requête identique. Un conflit est
 `CORRELATION`. Un flux avec entrée exige un Message fourni explicitement ;
@@ -160,8 +175,9 @@ et validées contre les routes du snapshot.
 
 `acceptDelivery` attribue et persiste un ordre total par instance Agent avant
 confirmation, y compris pour un batch arrivé sans ordre. Une retransmission
-identique rend le même reçu. Un même identifiant avec une autre occurrence,
-origine ou valeur échoue avec `CORRELATION`. Les occurrences distinctes gardent
+identique rend le même reçu, même après l’arrêt système, si l’epoch est
+authentifiée. L’arrêt ferme seulement les nouvelles admissions. Un même
+identifiant avec une autre occurrence, origine ou valeur échoue avec `CORRELATION`. Les occurrences distinctes gardent
 des identifiants distincts même si leurs valeurs sont égales. L'ordre entre
 Agents indépendants n'est pas imposé.
 
@@ -253,10 +269,12 @@ rejouée automatiquement. Une nouvelle epoch conserve ses verrous jusqu'à une
 preuve explicite de terminaison ou une résolution opérateur documentée.
 L'atomicité locale ne promet pas un effet externe exactement une fois.
 
-Les tests de ce lot vérifient les invariants purs, pas ces garanties natives.
-La persistance, les permissions effectives, l'hébergement, la compilation,
-l'exécution, les crashs et la reprise doivent être prouvés dans leurs lots avant
-que l'interface annonce le moteur disponible.
+Les tests de ce lot couvrent les invariants purs et le stockage natif sur de
+vraies bases SQLite : réouverture, transactions, FIFO, visites, versions,
+réconciliation, migrations et sauvegardes. La capture exerce aussi le vrai writer
+FS. Les permissions effectives, l’hébergement, la capture native de compilation,
+les fournisseurs et les crashs du host doivent être vérifiés lors de leur raccordement avant que
+l’interface annonce le moteur disponible.
 
 ## Repository natif durable
 
@@ -320,6 +338,15 @@ valeur ; les booléens restent distincts des nombres. Le texte du premier reçu
 reste intact. Les objets aux clés dupliquées sont rejetés. Le lecteur des
 valeurs externes impose une profondeur maximale de 128 niveaux avant toute
 descente récursive supplémentaire ; cette borne ne change pas l’égalité.
+
+La capture vérifie l’existence et le chemin du projet dans le registre natif.
+Le hint du résolveur désigne un scope candidat, sans prouver son propriétaire.
+L’appartenance du plan réunit `projectId` et `projectIds`, conformément à la
+normalisation des plans : un membre secondaire peut être choisi comme
+`SourceOwner`. Un plan historique sans ces champs doit provenir de la racine
+canonique du projet enregistré. Un plan workspace étranger n’est pas une copie
+du projet demandé. Toutes les copies admissibles doivent avoir la révision et
+le SHA attendus et conserver le même texte source.
 
 La capture finale retourne un `LockedExecutionSource` qui garde les verrous
 natifs de contenu des `plan.json`, également pris par le vrai writer

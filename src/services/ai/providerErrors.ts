@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from './streamCancellation';
 import { isContextOverflowMessage } from '../contextOverflow';
 
 export type ProviderRuntimeErrorKind =
@@ -197,7 +198,10 @@ export const classifyProviderError = (
 };
 
 export const extractProviderErrorMessage = async (response: Response): Promise<ProviderRuntimeError> => {
-  const errorText = await response.text().catch(() => 'Unknown error');
+  const errorText = await response.text().catch(error => {
+    if (error instanceof StreamStopUnconfirmedError) throw error;
+    return 'Unknown error';
+  });
   let errorMessage = `Request failed: ${response.status}`;
   let providerMessage: string | undefined;
   let providerCode: string | undefined;

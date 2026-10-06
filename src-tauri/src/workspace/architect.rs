@@ -2699,6 +2699,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execution_source_capture_checks_registered_roots_and_multi_project_membership() {
+        use crate::db::agsdl_execution::dto::{EngineSourceOwner, EngineSourceRevision};
+        use sha2::{Digest, Sha256};
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace-a");
+        let _repo = init_repo(&workspace);
+        let project_path = temp.path().join("project-b");
+        std_fs::create_dir_all(&project_path).unwrap();
+        let metadata_root = workspace.join(".macro");
+        let project_root = project_path.join(".macro");
+        let mut other = project("project-b", &project_path.to_string_lossy());
+        other.git_setup_state = "not_git".into();
+        other.direct_edit = true;
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![project("project-a", &workspace.to_string_lossy()), other];
+        write_json(&metadata_root.join("workspace.json"), &state);
+        let source = "{ \"large\":9007199254740993 }";
+        let expected = EngineSourceRevision {
+            owner: EngineSourceOwner {
+                project_id: "project-b".into(),
+                plan_id: "source-plan".into(),
+                branch: "develop".into(),
+            },
+            revision: "3".into(),
+            source_sha256: format!("{:x}", Sha256::digest(source.as_bytes())),
+        };
+        let workspace_plan =
+            architect_plan_dir(&metadata_root, "develop", "source-plan").join("plan.json");
+        let project_plan =
+            architect_plan_dir(&project_root, "develop", "source-plan").join("plan.json");
+        let mut plan = serde_json::json!({
+            "id":"source-plan", "projectIds":["project-a"], "revision":3,
+            "agsdl":{"source":source}
+        });
+        // A known project elsewhere cannot inherit the workspace scope's hint.
+        write_json(&workspace_plan, &plan);
+        assert!(matches!(
+            lock_execution_source(&workspace, &metadata_root, &expected).await,
+            Err(error) if error.code == "CORRELATION"
+        ));
+        // A legacy copy with no membership is owned only by its registered root.
+        let legacy = serde_json::json!({
+            "id":"source-plan", "revision":3, "agsdl":{"source":source}
+        });
+        write_json(&project_plan, &legacy);
+        let captured = lock_execution_source(&workspace, &metadata_root, &expected)
+            .await
+            .unwrap();
+        assert_eq!(captured.source, source);
+        drop(captured);
+        std_fs::remove_file(&project_plan).unwrap();
+        write_json(&workspace_plan, &legacy);
+        assert!(matches!(
+            lock_execution_source(&workspace, &metadata_root, &expected).await,
+            Err(error) if error.code == "CORRELATION"
+        ));
+        // normalize_plan_record makes project-a primary; project-b is still a member.
+        plan["projectId"] = serde_json::json!("project-a");
+        plan["projectIds"] = serde_json::json!(["project-a", "project-b"]);
+        write_json(&workspace_plan, &plan);
+        let captured = lock_execution_source(&workspace, &metadata_root, &expected)
+            .await
+            .unwrap();
+        assert_eq!(captured.source, source);
+        drop(captured);
+        // All eligible copies must agree, including the secondary member's copy.
+        write_json(&project_plan, &plan);
+        let captured = lock_execution_source(&workspace, &metadata_root, &expected)
+            .await
+            .unwrap();
+        assert_eq!(captured.source, source);
+        drop(captured);
+        let mut changed = plan.clone();
+        changed["revision"] = serde_json::json!(4);
+        write_json(&project_plan, &changed);
+        assert!(matches!(
+            lock_execution_source(&workspace, &metadata_root, &expected).await,
+            Err(error) if error.code == "CORRELATION" && error.pointer == "source"
+        ));
+        // An explicit foreign membership contradicts even a registered namespace.
+        plan["projectIds"] = serde_json::json!(["project-a"]);
+        write_json(&project_plan, &plan);
+        assert!(matches!(
+            lock_execution_source(&workspace, &metadata_root, &expected).await,
+            Err(error) if error.code == "CORRELATION" && error.pointer == "source.owner"
+        ));
+    }
+
+    #[tokio::test]
     async fn execution_source_capture_locks_the_exact_envelope_and_rechecks_revision() {
         use crate::db::agsdl_execution::dto::{EngineSourceOwner, EngineSourceRevision};
         use sha2::{Digest, Sha256};
@@ -2791,6 +2880,8 @@ pub(crate) async fn lock_execution_source(
     struct SourcePlan {
         id: String,
         project_id: Option<String>,
+        #[serde(default)]
+        project_ids: Vec<String>,
         revision: Option<i64>,
         agsdl: SourceEnvelope,
     }
@@ -2854,8 +2945,27 @@ pub(crate) async fn lock_execution_source(
     })?;
     let mut scopes = scopes
         .into_iter()
-        .filter(|scope| scope.project_id.as_deref() == Some(&owner.project_id))
+        .map(|mut scope| {
+            // The existing editor resolver uses hints to label workspace scopes.
+            // A capture treats that scope as a candidate, never as an owner proof.
+            if scope.source == "workspace" {
+                scope.project_id = None;
+            }
+            scope
+        })
+        .filter(|scope| {
+            scope.source == "workspace" || scope.project_id.as_deref() == Some(&owner.project_id)
+        })
         .collect::<Vec<_>>();
+    // Preserve actual registry-derived project roots before merging copies that
+    // share a metadata root with the workspace candidate.
+    let registered_roots: HashSet<_> = scopes
+        .iter()
+        .filter(|scope| {
+            scope.source == "project" && scope.project_id.as_deref() == Some(&owner.project_id)
+        })
+        .map(|scope| scope.metadata_root.clone())
+        .collect();
     scopes.sort_by(|a, b| a.metadata_root.cmp(&b.metadata_root));
     scopes.dedup_by(|a, b| a.metadata_root == b.metadata_root);
     let mut guards = Vec::new();
@@ -2873,10 +2983,15 @@ pub(crate) async fn lock_execution_source(
     // workspace batches acquire those keys in the same sorted order. Do not
     // resolve roots or acquire lifecycle locks again while content locks are held.
     let mut content_keys = Vec::with_capacity(scopes.len());
+    let mut registered_plan_keys = HashSet::new();
     for scope in &scopes {
         let path = architect_plan_dir(&scope.metadata_root, &owner.branch, &owner.plan_id)
             .join("plan.json");
-        content_keys.push(crate::fs::mutation_locks::native_content_mutation_key(&path).await);
+        let key = crate::fs::mutation_locks::native_content_mutation_key(&path).await;
+        if registered_roots.contains(&scope.metadata_root) {
+            registered_plan_keys.insert(key.clone());
+        }
+        content_keys.push(key);
     }
     content_keys.sort();
     content_keys.dedup();
@@ -2933,10 +3048,7 @@ pub(crate) async fn lock_execution_source(
         ));
     }
     let mut sources = Vec::new();
-    for scope in scopes
-        .into_iter()
-        .filter(|scope| scope.project_id.as_deref() == Some(&owner.project_id))
-    {
+    for scope in scopes {
         let path = architect_plan_dir(&scope.metadata_root, &owner.branch, &owner.plan_id)
             .join("plan.json");
         let locked_key = crate::fs::mutation_locks::native_content_mutation_key(&path).await;
@@ -2960,11 +3072,29 @@ pub(crate) async fn lock_execution_source(
         };
         let plan: SourcePlan = serde_json::from_str(&contents)
             .map_err(|_| failure("CORRELATION", "source", "Invalid canonical source envelope"))?;
+        // Match normalize_plan_record: projectId is the primary member, and projectIds
+        // can contain other legitimate owners. Legacy plans with neither field
+        // need a canonical project namespace proven by the native registry.
+        let mut members = plan.project_ids;
+        if let Some(primary) = plan.project_id {
+            members.push(primary);
+        }
+        let members = normalize_string_vec(&members);
+        let registered_namespace = registered_plan_keys.contains(&locked_key);
+        if !members.is_empty() && !members.contains(&owner.project_id) {
+            if registered_namespace {
+                return Err(failure(
+                    "CORRELATION",
+                    "source.owner",
+                    "Canonical plan belongs to another project",
+                ));
+            }
+            continue; // An unrelated workspace plan is not this project's copy.
+        }
+        if members.is_empty() && !registered_namespace {
+            continue;
+        }
         if plan.id != owner.plan_id
-            || plan
-                .project_id
-                .as_ref()
-                .is_some_and(|id| id != &owner.project_id)
             || plan.revision.unwrap_or(1).to_string() != expected.revision
             || format!("{:x}", Sha256::digest(plan.agsdl.source.as_bytes()))
                 != expected.source_sha256

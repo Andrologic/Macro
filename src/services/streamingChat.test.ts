@@ -74,6 +74,7 @@ import type {
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
+const actualTauriHttp = await import('./tauriHttp');
 const actualWebSearch = await import('./webSearch');
 
 const loadStreamingChat = async (
@@ -112,6 +113,10 @@ const loadStreamingChat = async (
       mock(async () => {
         throw new Error('HTTP fetch should not be called in streamingChat unit tests.');
       }),
+  }));
+  mock.module('./tauriHttp', () => ({
+    ...actualTauriHttp,
+    tauriFetch: fetchImpl ?? mock(async () => { throw new Error('HTTP fetch should not be called in streamingChat unit tests.'); }),
   }));
   mock.module('../stores/useProviderStore', () => ({
     isLinkedProviderType: (providerType?: string | null) =>
@@ -361,7 +366,7 @@ describe('streamingChat native request ownership', () => {
 
     expect(firstTokens).toEqual(['first']);
     expect(secondTokens).toEqual(['second']);
-    expect(cancelledRequestIds).toEqual([requestIds[1]]);
+    expect(cancelledRequestIds).toEqual([requestIds[0], requestIds[1]]);
 
     emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
     await second;
@@ -665,7 +670,7 @@ describe('streamingChat SSE stream handling', () => {
     );
   });
 
-  it('rejects an idle stream before cancelling its reader', async () => {
+  it('reports an idle stream after cancelling its reader', async () => {
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       cancel() {
@@ -3352,7 +3357,7 @@ describe('streamingChat tool rendering helpers', () => {
       messages: [
         {
           role: 'user',
-          content: 'Utilise l outil question pour m aider a choisir une couleur.',
+          content: 'Utilise l’outil question pour m’aider à choisir une couleur.',
         },
       ],
       allowedToolIds: ['question'],
@@ -3366,7 +3371,7 @@ describe('streamingChat tool rendering helpers', () => {
       onToolCall,
     });
 
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual(['ai_stream_chat', 'ai_cancel_stream']);
     const invokePayload = (invokeMock.mock.calls[0]?.[1] ?? {}) as {
       request?: {
         tools?: Array<{ function?: { name?: string } }>;
@@ -4399,7 +4404,7 @@ describe('streamingChat transport lifetime', () => {
     expect(errors).toEqual([]);
   });
 
-  it('discards a live native tool resolution after its provider turn has completed', async () => {
+  it('drains an outstanding native tool after provider completion and discards its late result', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     let requestId = '';
     let started!: () => void;
@@ -4434,9 +4439,13 @@ describe('streamingChat transport lifetime', () => {
     await ready;
     listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'late-call', tool_name: 'read', args: { path: 'README.md' } } });
     listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
-    await run;
+    let ended = false;
+    void run.then(() => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
     const finishedTraceCount = traces.length;
     resolveTool('late-result');
+    await run;
     await tool;
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(submit).not.toHaveBeenCalled();
@@ -4592,6 +4601,7 @@ describe('streamingChat transport lifetime', () => {
         return () => listeners.delete(name);
       }),
       invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; submission_id?: string } }) => {
+        if (command === 'ai_cancel_stream') return;
         const requestId = params.request!.request_id!;
         if (command === 'ai_stream_chat') {
           queueMicrotask(() => listeners.get('ai:tool-request')!({ payload: {
@@ -4636,13 +4646,15 @@ describe('streamingChat transport lifetime', () => {
     }
   });
 
-  it('finishes with an unknown tool outcome when native submission never settles', async () => {
+  it('keeps ownership until an unconfirmed native submission settles', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     let requestId = '';
     let started!: () => void;
     let submitting!: () => void;
     const ready = new Promise<void>((resolve) => { started = resolve; });
     const submissionReady = new Promise<void>((resolve) => { submitting = resolve; });
+    let releaseSubmission!: () => void;
+    const submission = new Promise<void>(resolve => { releaseSubmission = resolve; });
     const { streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
       listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
@@ -4656,7 +4668,7 @@ describe('streamingChat transport lifetime', () => {
         }
         if (command === 'ai_submit_tool_result') {
           submitting();
-          await new Promise<void>(() => undefined);
+          await submission;
         }
       }),
     });
@@ -4682,6 +4694,11 @@ describe('streamingChat transport lifetime', () => {
     listeners.get('ai:done')!({ payload: {
       request_id: requestId, output_text: 'done', tool_calls: [], accepted_submission_ids: [],
     } });
+    let ended = false;
+    void run.then(() => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
+    releaseSubmission();
     await run;
 
     const result = completed.mock.calls[0]?.[0];
@@ -4767,7 +4784,7 @@ describe('streamingChat partial native listener setup', () => {
     let successorReady!: () => void;
     const ready = new Promise<void>((resolve) => { successorReady = resolve; });
     let successorId = '';
-    const cancel = mock(() => undefined);
+    const cancel = mock((_requestId?: string) => undefined);
     const { streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
       listenImpl: mock((name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
@@ -4779,8 +4796,8 @@ describe('streamingChat partial native listener setup', () => {
         if (index > 2 && index < 6) return new Promise<() => void>((resolve) => { late.push(() => resolve(dispose)); });
         return Promise.resolve(dispose);
       }),
-      invokeImpl: mock(async (command: string, params: { request?: { request_id: string } }) => {
-        if (command === 'ai_cancel_stream') cancel();
+      invokeImpl: mock(async (command: string, params: { request?: { request_id: string }; requestId?: string }) => {
+        if (command === 'ai_cancel_stream') cancel(params.requestId);
         if (command === 'ai_stream_chat') {
           successorId = params.request!.request_id;
           successorReady();
@@ -4809,7 +4826,8 @@ describe('streamingChat partial native listener setup', () => {
     for (const index of [0, 1, 3, 4, 5]) expect(disposers[index]).toHaveBeenCalledTimes(1);
     for (const dispose of disposers.slice(6)) expect(dispose).not.toHaveBeenCalled();
     controller.abort();
-    expect(cancel).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel.mock.calls[0]?.[0]).not.toBe(successorId);
     callbacks.slice(6).find(({ name }) => name === 'ai:done')!.callback({
       payload: { request_id: successorId, output_text: 'successor', tool_calls: [] },
     });
@@ -4885,4 +4903,251 @@ it('native Copilot replay names unavailable media without putting base64 in its 
   const message = (request.messages as Array<{ content: string }>)[0];
   expect(message.content).toContain('not sent as media by Copilot historical prompt replay');
   expect(message.content).not.toContain(fixture.content[1].data!);
+});
+
+
+describe('Stop ownership through the native transport and composer pipeline', () => {
+  it('retains admission when the composer resolves after an unconfirmed native Stop, then retries the receipt', async () => {
+    const { createChatTurnRuntime } = await import('./chatTurnRuntime');
+    const { runAssistantStream } = await import('./chatStreamOrchestrator');
+    const { EMPTY_CONVERSATION_RUNTIME } = await import('../domains/chat/runtimeState');
+    const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let confirmsStop = false;
+    const invokeImpl = mock(async (command: string) => {
+      if (command === 'ai_stream_chat') started();
+      if (command === 'ai_cancel_stream' && !confirmsStop) throw new Error('Receipt unavailable');
+    });
+    const { streamChat, cancelStream } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true, invokeImpl,
+    });
+    const controller = new AbortController();
+    let state = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'preparing' as const,
+      sessionId: 'stop-pipeline', turnId: 'turn', assistantMessageId: 'assistant', abortController: controller } as import('../types').ConversationRuntimeState;
+    const settled = mock(() => {});
+    const owner = createChatTurnRuntime({
+      state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false },
+      cancelTransport: cancelStream, settled,
+    });
+    owner.rememberSession('conversation', 'stop-pipeline');
+    const accepts = owner.claimStream({ conversationId: 'conversation', sessionId: 'stop-pipeline', turnId: 'turn', assistantMessageId: 'assistant' }, controller)!;
+    const onAbort = mock(() => { expect(accepts()).toBe(true); });
+    const onError = mock(() => {});
+    const stream = runAssistantStream({
+      sessionId: 'stop-pipeline', providerId: 'chatgpt', providerType: 'chatgpt', modelId: 'model', baseUrl: 'https://example.invalid',
+      messages: [{ role: 'user', content: 'hello' }], signal: controller.signal,
+      streamChatImpl: streamChat,
+      lifecycle: { appendTokenChunk: () => {}, onComplete: () => {}, onError, onAbort },
+    });
+    void stream.catch(() => undefined);
+    owner.track('conversation', stream);
+    await ready;
+    await expect(owner.stop('conversation')).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+    await expect(stream).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(accepts()).toBe(false);
+    expect(state.phase).toBe('error');
+    expect(settled).not.toHaveBeenCalled();
+    expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+    expect(getActiveStreamingSessionIds()).toContain('stop-pipeline');
+    confirmsStop = true;
+    await owner.stop('conversation');
+    expect(state.phase).toBe('idle');
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).not.toThrow();
+    expect(getActiveStreamingSessionIds()).not.toContain('stop-pipeline');
+  });
+});
+
+
+it('a spontaneous provider error with missing native cleanup proof retains the composer owner and cannot retry reasoning or fall back', async () => {
+  const { createChatTurnRuntime } = await import('./chatTurnRuntime');
+  const { runAssistantStream } = await import('./chatStreamOrchestrator');
+  const { EMPTY_CONVERSATION_RUNTIME } = await import('../domains/chat/runtimeState');
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+  let requestId = '';
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  let confirmsEnd = false;
+  const invokeImpl = mock(async (command: string, params: { request?: { request_id?: string } }) => {
+    if (command === 'ai_stream_chat') { requestId = params.request!.request_id!; started(); }
+    if (command === 'ai_cancel_stream' && !confirmsEnd) throw new Error('Native tree reap failed');
+  });
+  const fetchImpl = mock(async () => { throw new Error('Provider fallback must not run'); });
+  const { streamChat, cancelStream } = await loadStreamingChat(fetchImpl, {
+    forceTauriAvailable: true, invokeImpl,
+    listenImpl: mock(async (name: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(name, handler);
+      return () => { listeners.delete(name); };
+    }),
+  });
+  const controller = new AbortController();
+  let state = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId: 'error-pipeline',
+    turnId: 'turn', assistantMessageId: 'assistant', abortController: controller } as import('../types').ConversationRuntimeState;
+  const settled = mock(() => undefined);
+  const owner = createChatTurnRuntime({
+    state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false },
+    cancelTransport: cancelStream, settled,
+  });
+  const stream = runAssistantStream({
+    sessionId: 'error-pipeline', providerId: 'chatgpt', providerType: 'chatgpt', modelId: 'model', reasoningEffort: 'high',
+    baseUrl: 'https://example.invalid', messages: [], signal: controller.signal, streamChatImpl: streamChat,
+    lifecycle: { appendTokenChunk: () => {}, onComplete: () => {}, onError: () => {} },
+  });
+  void stream.catch(() => undefined);
+  owner.track('conversation', stream);
+  await ready;
+  listeners.get('ai:error')!({ payload: { request_id: requestId, message: 'Unsupported reasoning effort: high', status: 400 } });
+  await expect(stream).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(invokeImpl.mock.calls.filter(([command]) => command === 'ai_stream_chat')).toHaveLength(1);
+  expect(fetchImpl).not.toHaveBeenCalled();
+  expect(state.phase).toBe('error');
+  expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+  expect(settled).not.toHaveBeenCalled();
+  confirmsEnd = true;
+  await owner.stop('conversation');
+  owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false });
+});
+
+
+for (const nonStreaming of [false, true]) {
+  it(`preserves native cleanup ownership when an async error observer rejects (${nonStreaming ? 'non-streaming' : 'streaming'})`, async () => {
+    const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let start!: () => void;
+    const ready = new Promise<void>(resolve => { start = resolve; });
+    let confirmed = false;
+    const invokeImpl = mock(async (command: string, params: { request?: { request_id?: string } }) => {
+      if (command === 'ai_stream_chat') { requestId = params.request!.request_id!; start(); }
+      if (command === 'ai_cancel_stream' && !confirmed) throw new Error('Unsupported reasoning effort: native reap receipt missing');
+    });
+    const fetchImpl = mock(async () => { throw new Error('Fallback forbidden'); });
+    const service = await loadStreamingChat(fetchImpl, { forceTauriAvailable: true, invokeImpl,
+      listenImpl: mock(async (name: string, handler: (event: { payload: Record<string, unknown> }) => void) => { listeners.set(name, handler); return () => listeners.delete(name); }),
+    });
+    const projectionFailure = new Error('Error projection failed');
+    const options = { sessionId: `observer-${nonStreaming}`, providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', reasoningEffort: 'high' as const, messages: [],
+      onToken() {}, onComplete() {}, onError: async () => { throw projectionFailure; },
+    };
+    const running = nonStreaming ? service.sendChatNonStreaming(options) : service.streamChat(options);
+    void running.catch(() => {});
+    await ready;
+    listeners.get('ai:error')!({ payload: { request_id: requestId, message: 'Unsupported reasoning effort: high', status: 400 } });
+    const error = await running.catch((error: unknown) => error as import("./ai/streamCancellation").StreamStopUnconfirmedError);
+    expect(error).toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(error.secondaryErrors).toContain(projectionFailure);
+    expect(error.stopped).toBe(false);
+    expect(invokeImpl.mock.calls.filter(([command]) => command === 'ai_stream_chat')).toHaveLength(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    confirmed = true;
+    await service.cancelStream(options.sessionId);
+    await error.whenStopped;
+    expect(error.stopped).toBe(true);
+  });
+}
+
+
+it('preserves a generic tool receipt when its async error observer also fails', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  let confirm!: () => void;
+  const receipt = new StreamStopUnconfirmedError('Tool owner pending', new Promise<void>(resolve => { confirm = resolve; }));
+  const projection = new Error('Generic error projection failed');
+  const data = { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call', type: 'function', function: { name: 'mcp__fixture__work', arguments: '{}' } }] } }] };
+  const fetchImpl = mock(async () => ({ ok: true, body: new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\ndata: [DONE]\n\n`)); controller.close();
+  } }), text: async () => '' }));
+  const { streamChat } = await loadStreamingChat(fetchImpl);
+  const running = streamChat({ providerId: 'custom', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'fixture', messages: [],
+    allowedToolIds: ['mcp__fixture__work'], mcpTools: [{ id: 'mcp__fixture__work', name: 'work', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
+    onToolCall: async () => { throw receipt; }, onToken() {}, onComplete() {}, onError: async () => { throw projection; },
+  });
+  await expect(running).rejects.toBe(receipt);
+  expect(receipt.secondaryErrors).toContain(projection);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(receipt.stopped).toBe(false);
+  confirm();
+  await receipt.whenStopped;
+});
+
+it('does not normalize a generic transport receipt into a retryable network error', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  let confirm!: () => void;
+  const owner = new StreamStopUnconfirmedError('Unsupported reasoning effort: local transport owner pending', new Promise<void>(resolve => { confirm = resolve; }));
+  const fetchImpl = mock(async () => { throw owner; });
+  const { streamChat } = await loadStreamingChat(fetchImpl);
+  const errors: Error[] = [];
+  await expect(streamChat({ sessionId: 'generic-transport-owner', providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], reasoningEffort: 'high',
+    onToken() {}, onComplete() {}, onError: (error: Error) => { errors.push(error); },
+  })).rejects.toBe(owner);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(errors).toEqual([owner]);
+  expect(owner.stopped).toBe(false);
+  confirm();
+  await owner.whenStopped;
+});
+
+it('fetch cleanup joins its own receipt with the failed transport receipt', async () => {
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  const { fetchWithTimeout } = await import('./ai/httpTransport');
+  let confirmTransport!: () => void;
+  let confirmCleanup!: () => void;
+  const transport = new StreamStopUnconfirmedError('Transport pending', new Promise<void>(resolve => { confirmTransport = resolve; }));
+  const cleanup = new StreamStopUnconfirmedError('Cleanup pending', new Promise<void>(resolve => { confirmCleanup = resolve; }));
+  const fetchImpl = mock(async () => { throw transport; });
+  await loadStreamingChat(fetchImpl);
+  const controller = new AbortController();
+  controller.signal.removeEventListener = () => { throw cleanup; };
+  const failure = await fetchWithTimeout('https://example.invalid', {}, 1000, controller.signal).catch(error => error);
+  expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  confirmTransport();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(failure.stopped).toBe(false);
+  confirmCleanup();
+  await failure.whenStopped;
+  expect(failure.stopped).toBe(true);
+});
+
+for (const phase of ['done', 'abort'] as const) {
+  it(`preserves the first typed reader cancellation after HTTP ${phase}`, async () => {
+    const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+    let confirm!: () => void;
+    const owner = new StreamStopUnconfirmedError('Reader cleanup pending', new Promise<void>(resolve => { confirm = resolve; }));
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"answer"}}]}\n\n' + (phase === 'done' ? 'data: [DONE]\n\n' : ''))); },
+      cancel() { cancellations++; throw owner; },
+    });
+    const { streamChat } = await loadStreamingChat(mock(async () => new Response(body)));
+    const controller = new AbortController();
+    await expect(streamChat({ sessionId: `reader-${phase}`, providerId: 'custom', providerType: 'custom', modelId: 'fixture', baseUrl: 'https://example.invalid', messages: [], signal: controller.signal,
+      onToken() {}, onComplete() {}, onError() {},
+      onGenerationAttemptProgress: (attempt: import('./ai/contracts').GenerationAttempt) => { if (phase === 'abort' && attempt.rawText) controller.abort(); },
+    })).rejects.toBe(owner);
+    expect(cancellations).toBe(1);
+    expect(owner.stopped).toBe(false);
+    confirm();
+    await owner.whenStopped;
+  });
+}
+
+it('joins pending reader cancellation before reporting its idle timeout', async () => {
+  let confirm!: () => void;
+  let cancelling!: () => void;
+  const cancelled = new Promise<void>(resolve => { confirm = resolve; });
+  const started = new Promise<void>(resolve => { cancelling = resolve; });
+  const stream = new ReadableStream<Uint8Array>({ cancel() { cancelling(); return cancelled; } });
+  const pending = readStreamChunkWithIdleTimeout(stream.getReader(), 1);
+  let ended = false;
+  void pending.then(() => { ended = true; }, () => { ended = true; });
+  await started;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(ended).toBe(false);
+  confirm();
+  await expect(pending).rejects.toMatchObject({ kind: 'stream_idle_timeout' });
 });

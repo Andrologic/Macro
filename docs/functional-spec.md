@@ -1360,6 +1360,13 @@ Matrice fonctionnelle des raccourcis configurables :
 | Prompt précédent | Navigue dans l'historique de prompts vers le précédent | Compositeur focus et mode historique par raccourci |
 | Prompt suivant | Navigue dans l'historique de prompts vers le suivant | Compositeur focus et mode historique par raccourci |
 
+L’arrêt réserve la conversation jusqu’à la fin locale confirmée de son exécution,
+y compris les outils déjà lancés. Si Macro ne reçoit pas cette confirmation,
+le tour affiche une erreur et un nouvel envoi reste bloqué. Une nouvelle demande
+d’arrêt peut obtenir la confirmation manquante. Les effets déjà produits par un
+terminal ou un outil externe peuvent subsister ; leur résultat reste incertain
+lorsque Macro ne peut pas le confirmer.
+
 ---
 
 ## 22. Données, audit et trace historique

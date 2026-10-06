@@ -9,8 +9,8 @@ let pageLifecycleController = new AbortController();
 let pageShuttingDown = false;
 
 const loadProviderApi = async () => {
-  mock.module('@tauri-apps/plugin-http', () => ({
-    fetch: tauriFetchMock,
+  mock.module('./tauriHttp', () => ({
+    tauriFetch: tauriFetchMock,
   }));
 
   mock.module('../utils/pageLifecycle', () => ({

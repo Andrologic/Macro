@@ -82,6 +82,15 @@ describe('retention and admission evidence', () => {
       expect(() => compareSequence(sequence(invalid), sequence('1'))).toThrow();
     }
   });
+  it('refuses non-string queue positions on either side without coercion', () => {
+    for (const value of [0, 1, 1n, undefined, null, Object('1')]) {
+      expect(() => compareSequence(value as Sequence, sequence('1'))).toThrow('Invalid queue sequence.');
+      expect(() => compareSequence(sequence('1'), value as Sequence)).toThrow('Invalid queue sequence.');
+    }
+    const enormous = '90071992547409931234567890123456789012345678901234567890';
+    expect(compareSequence(sequence(enormous), sequence(enormous))).toBe(0);
+    expect(compareSequence(sequence(enormous), sequence(enormous.slice(0, -1)))).toBe(1);
+  });
   it('requires the unique oldest queued occurrence across steps sharing an Agent', () => {
     const oldest = delivery('a', '9');
     const later = { ...delivery('b', '10'), work: { ...work, activationId: id<'activation'>('next'), step: ['other'] as const } };
