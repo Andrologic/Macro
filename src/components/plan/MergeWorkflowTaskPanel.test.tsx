@@ -10,6 +10,8 @@ import type { ImplementTask } from '../../stores/useTaskStore';
 import type { TaskStatus } from '../../types';
 import type { MergeWorkflowTaskPanel as MergeWorkflowTaskPanelComponent } from './MergeWorkflowTaskPanel';
 
+const { resolveMergeWorkflowViewState: realResolveMergeWorkflowViewState } = await import('../../services/mergeWorkflow');
+
 const taskId = 'task-a';
 const repositoryId = 'repo-a';
 
@@ -111,7 +113,7 @@ let assistantPhase: 'idle' | 'streaming' = 'idle';
 let currentRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> = {
   [taskId]: runtime(taskId),
 };
-let loadMergeWorkflowReviewMock = mock(async () => null);
+let loadMergeWorkflowReviewMock = mock(async (): Promise<MergeWorkflowRuntimeState | null> => null);
 let resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
   conversationId: null,
   autoResolvedRepositoryCount: 0,
@@ -152,16 +154,7 @@ const registerMocks = () => {
     isMergeWorkflowFileConflictRepository: (value: typeof repository) =>
       value.mergeStrategy === 'file_conflict' && value.conflictFiles.length > 0,
     isMergeWorkflowStagedResolutionRepository: () => false,
-    resolveMergeWorkflowViewState: () => ({
-      isLoading: false,
-      isBlocked: true,
-      isFailed: false,
-      isBusy: false,
-      canArchive: false,
-      canMerge: false,
-      canRetry: true,
-      canResolveAutomatically: true,
-    }),
+    resolveMergeWorkflowViewState: realResolveMergeWorkflowViewState,
   }));
 
   mock.module('../../services/degradedErrorPresentation', () => ({
@@ -206,9 +199,9 @@ const flushRender = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-const renderPanel = async (root: Root, id = taskId) => {
+const renderPanel = async (root: Root, id = taskId, currentTask = task(id)) => {
   await act(async () => {
-    root.render(<MergeWorkflowTaskPanel task={task(id)} />);
+    root.render(<MergeWorkflowTaskPanel task={currentTask} />);
     await flushRender();
   });
 };
@@ -229,11 +222,13 @@ describe('MergeWorkflowTaskPanel', () => {
 
   beforeEach(async () => {
     assistantPhase = 'idle';
+    taskStoreState.runMergeWorkflow.mockClear();
+    taskStoreState.archivePlanFromTask.mockClear();
     currentRuntimeByTaskId = {
       [taskId]: runtime(taskId),
       'task-b': runtime('task-b'),
     };
-    loadMergeWorkflowReviewMock = mock(async () => null);
+    loadMergeWorkflowReviewMock = mock(async (): Promise<MergeWorkflowRuntimeState | null> => null);
     resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
       conversationId: null,
       autoResolvedRepositoryCount: 0,
@@ -334,4 +329,60 @@ describe('MergeWorkflowTaskPanel', () => {
 
     expect(document.body.textContent).not.toContain('Checking resolution...');
   });
+  const renderFailedFinalization = async () => {
+    currentRuntimeByTaskId[taskId] = {
+      ...runtime(taskId),
+      kind: 'plan_finalization',
+      phase: 'failed',
+      taskStatus: 'Failed',
+      repositories: [{ ...repository, progressState: 'pending', blockingKind: null,
+        blockingReason: null, conflictFiles: [], mergeInProgress: false,
+        mergeStrategy: 'fast_forward_available', availableActions: ['fast_forward', 'merge_commit'],
+        recommendedAction: 'fast_forward', isClean: true, mergeable: true }],
+      blockedRepositories: [],
+      message: "Branch develop has no configured upstream",
+    };
+    await renderPanel(root, taskId, { ...task(taskId), task_source: 'plan_finalization' });
+    const retry = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    expect(retry?.disabled).toBe(false);
+    expect(container.textContent).toContain('Branch develop has no configured upstream');
+    expect(container.querySelector('details')).not.toBeNull();
+    return retry!;
+  };
+
+  it('offers a failed finalization retry and refreshes the review before merging', async () => {
+    const retry = await renderFailedFinalization();
+    const review = createDeferred<MergeWorkflowRuntimeState>();
+    loadMergeWorkflowReviewMock.mockImplementationOnce(async () => review.promise);
+    await act(async () => { retry.click(); await flushRender(); });
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledWith(taskId, { force: true });
+    expect(taskStoreState.runMergeWorkflow).not.toHaveBeenCalled();
+    expect(retry.disabled).toBe(true);
+    const archive = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Archive');
+    expect(archive?.disabled).toBe(true);
+    await act(async () => { retry.click(); await flushRender(); });
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      review.resolve({ ...currentRuntimeByTaskId[taskId], phase: 'ready' });
+      await flushRender();
+    });
+    expect(taskStoreState.runMergeWorkflow).toHaveBeenCalledTimes(1);
+    expect(taskStoreState.runMergeWorkflow).toHaveBeenCalledWith(taskId);
+    expect(taskStoreState.archivePlanFromTask).not.toHaveBeenCalled();
+  });
+
+  it('does not merge when the refreshed review still fails or finds conflicts', async () => {
+    const retry = await renderFailedFinalization();
+    loadMergeWorkflowReviewMock.mockImplementationOnce(async () => currentRuntimeByTaskId[taskId]);
+    await act(async () => { retry.click(); await flushRender(); });
+    expect(taskStoreState.runMergeWorkflow).not.toHaveBeenCalled();
+    loadMergeWorkflowReviewMock.mockImplementationOnce(async () => runtime(taskId));
+    await act(async () => { retry.click(); await flushRender(); });
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledTimes(2);
+    expect(taskStoreState.runMergeWorkflow).not.toHaveBeenCalled();
+    expect(taskStoreState.archivePlanFromTask).not.toHaveBeenCalled();
+  });
+
 });
