@@ -15,6 +15,8 @@ export interface QueuedDirection {
   delivery?: { requestId: string; assistantMessageId: string; requestEnded: boolean };
   recoveryAssistantMessageId?: string;
   recoveryRequestEnded?: boolean;
+  /** Durable invalidation precedes a turn deletion or replay trim. */
+  deletionRequested?: boolean;
 }
 export interface QueuedSubmission {
   id: string;
@@ -83,6 +85,7 @@ function parseQueue(raw: string): QueuedSubmission[] {
         !record(direction.target) || !text(direction.target.sessionId) || !direction.target.sessionId ||
         !text(direction.target.turnId) || !direction.target.turnId || !nullableText(direction.target.assistantMessageId) ||
         (direction.recoveryRequestEnded !== undefined && typeof direction.recoveryRequestEnded !== 'boolean') ||
+        (direction.deletionRequested !== undefined && typeof direction.deletionRequested !== 'boolean') ||
         (direction.recoveryAssistantMessageId !== undefined && (!text(direction.recoveryAssistantMessageId) || !direction.recoveryAssistantMessageId)) ||
         (direction.delivery !== undefined && (!record(direction.delivery) ||
           !text(direction.delivery.requestId) || !direction.delivery.requestId ||
@@ -98,7 +101,7 @@ function parseQueue(raw: string): QueuedSubmission[] {
       !text(input.conversationId) || !input.conversationId ||
       (input.taskId !== undefined && !nullableText(input.taskId)) ||
       (input.internalAgentProfile != null && !['default_executor', 'plan_explorer', 'task_reviewer', 'repo_auditor', 'goal_auditor'].includes(String(input.internalAgentProfile))) ||
-      !parseComposerDraft({ text: input.content, images: input.images ?? [], contextRefs: input.contextRefs ?? [] }) ||
+      !parseComposerDraft({ text: input.content, images: input.images ?? [], contextRefs: input.contextRefs ?? [] }, entry.direction !== undefined) ||
       !['Chat', 'Architect', 'Implement'].includes(String(intent.mode)) ||
       !(intent.agentType === null || intent.agentType === 'build' || intent.agentType === 'plan') ||
       !nullableText(intent.conversationTaskId) || !text(intent.selectedTaskId) ||

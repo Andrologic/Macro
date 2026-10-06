@@ -177,13 +177,14 @@ test('a DB await owned by an old generation does not enqueue into its overflow r
 });
 
 
-test('transcript deletion removes only the selected direction, even within one original turn', () => {
+test('turn deletion invalidates sibling directions while preserving another conversation', async () => {
   const h = fixture();
   const sibling = structuredClone(h.entry); sibling.id = 'sibling-direction'; sibling.direction!.userMessageId = 'sibling-user';
   const other = structuredClone(h.entry); other.id = 'other-direction'; other.input.conversationId = 'other-conversation'; other.direction!.userMessageId = 'other-user';
   h.queue.accept(sibling); h.queue.accept(other);
-  h.queue.removeDirectionMessages(h.identity.conversationId, [h.entry.direction!.userMessageId]);
-  expect(loadQueuedSubmissions().map(entry => entry.id)).toEqual(['sibling-direction', 'other-direction']);
+  const ids = await h.queue.invalidateDirectionTurns(h.identity.conversationId, [h.identity.turnId]);
+  h.queue.finishDirectionDeletion(ids);
+  expect(loadQueuedSubmissions().map(entry => entry.id)).toEqual(['other-direction']);
 });
 
 test('request ended plus a saved exact assistant retires recovery after restart without a replay', async () => {

@@ -8389,10 +8389,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     content: string,
     refs: ChatMessage["context_refs"],
+    preservePassages = false,
   ) => resolveConversationContextSources({
     targetConversationId: conversationId,
     request: content,
     refs,
+    preservePassages,
     ports: {
       getConversation: tauriIpc.getConversation,
       getConversationSourceSnapshot: tauriIpc.getConversationSourceSnapshot,
@@ -8806,6 +8808,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ],
     });
 
+    const queue = await getQueueRuntime();
+    const invalidatedDirectionIds = await queue.invalidateDirectionTurns(params.conversationId,
+      [...new Set(replayMessages.filter(message => message.conversation_id === params.conversationId &&
+        (!plan.keptMessageIds.has(message.id) || message.id === params.messageId))
+        .map(message => getMessageTurnId(message)).filter((id): id is string => Boolean(id)))]);
     try {
       await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
         const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
@@ -8878,8 +8885,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    queueRuntime?.removeDirectionMessages(params.conversationId,
-      replayMessages.filter(message => !plan.keptMessageIds.has(message.id)).map(message => message.id));
+    queue.finishDirectionDeletion(invalidatedDirectionIds);
     applyReplayTrimToState(plan);
     useCitationsStore.getState().pruneConversationCitations(
       params.conversationId,
@@ -13524,7 +13530,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const capturedIntent = structuredClone(resolvedIntent?.ownerSessionId === runtime.sessionId && resolvedIntent.ownerTurnId === runtime.turnId
         ? resolvedIntent : activeIntent);
       const messageId = crypto.randomUUID();
-      const entry = queue.capture(createConversationTurnId(), { ...payload, content, contextRefs: capturedContextRefs,
+      const entry = queue.capture(createConversationTurnId(), { ...payload, content, contextRefs,
         taskId: capturedIntent.intent.mode === 'Chat' ? undefined :
           capturedIntent.input.taskId ?? capturedIntent.intent.conversationTaskId ?? capturedIntent.intent.selectedTaskId,
       }, {
@@ -13558,20 +13564,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
       let userMessage: ChatMessage;
       try {
-        try {
-          userMessage = await buildUserMessageForSend({
-            id: messageId, conversationId: payload.conversationId, turnId: runtime.turnId,
-            taskId: entry.input.taskId ?? "",
-            content, hiddenContext: payload.hiddenContext, contextRefs,
-          });
-        } catch (error) {
-          // A rejected DB acknowledgement can follow a successful write.
-          const saved = (await loadConversationMessages(chatPersistenceAdapters, {
-            conversationId: payload.conversationId, conversations: get().conversations,
-          })).find(message => message.id === messageId);
-          if (!saved || saved.role !== 'user' || saved.conversation_id !== payload.conversationId || saved.turn_id !== runtime.turnId) throw error;
-          userMessage = saved;
-        }
+        userMessage = await queue.writeDirection(entry.id, async () => {
+          try {
+            return await buildUserMessageForSend({
+              id: messageId, conversationId: payload.conversationId, turnId: runtime.turnId!,
+              taskId: entry.input.taskId ?? "",
+              content, hiddenContext: payload.hiddenContext, contextRefs,
+            });
+          } catch (error) {
+            // A rejected DB acknowledgement can follow a successful write.
+            const saved = (await loadConversationMessages(chatPersistenceAdapters, {
+              conversationId: payload.conversationId, conversations: get().conversations,
+            })).find(message => message.id === messageId);
+            if (!saved || saved.role !== 'user' || saved.conversation_id !== payload.conversationId || saved.turn_id !== runtime.turnId) throw error;
+            return saved;
+          }
+        });
         if (userMessage.id !== messageId || userMessage.role !== 'user' || userMessage.conversation_id !== payload.conversationId || userMessage.turn_id !== runtime.turnId) {
           throw buildSendError('The saved message does not belong to this direction.');
         }
@@ -13651,6 +13659,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const resolvedRefs = await resolveSelectedConversationSources(
         payload.conversationId, payload.content,
         payload.contextRefs ?? snapshot.composerContextRefs,
+        Boolean(deferredSubmission?.direction),
       );
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
@@ -13691,7 +13700,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
             assertConversationRuntimeAvailableForSend(id);
           },
-          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(deferredSubmission &&
+          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(queuedSubmission?.direction && !queueRuntime?.hasEntry(queuedSubmission.id)) || Boolean(deferredSubmission &&
             useConversationArchiveStore.getState().archivedConversationIds.has(id)),
           createSessionId: createConversationSessionId,
           createTurnId: createConversationTurnId,
@@ -13749,6 +13758,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!deferredSubmission) persistSelectionForContext(mode, id);
           },
           publishUser: (message, context) => {
+            if (queuedSubmission?.direction && !queueRuntime?.hasEntry(queuedSubmission.id)) return;
             if (!getOrderedConversationMessages(message.conversation_id).some(item => item.id === message.id)) get().addMessage(message);
             payload.onUserMessagePublished?.(message.id);
             for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
@@ -13904,6 +13914,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "Only the latest unsaved assistant turn can be deleted.",
         );
       }
+      const queue = await getQueueRuntime();
+      const invalidatedDirectionIds = await queue.invalidateDirectionTurns(assistantMessage.conversation_id, [targetTurnId]);
       try {
         await deletePersistedConversationTurn(
           chatPersistenceAdapters,
@@ -13916,8 +13928,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
 
-      queueRuntime?.removeDirectionMessages(assistantMessage.conversation_id,
-        orderedMessages.filter(message => getMessageTurnId(message) === targetTurnId).map(message => message.id));
+      queue.finishDirectionDeletion(invalidatedDirectionIds);
       set((state) => {
         const currentConversationMessages = sortMessagesChronologically(
           getConversationMessagesFromState(

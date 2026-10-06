@@ -1,3 +1,4 @@
+import { createQueuedSubmissionRuntime } from './chatQueuedSubmissionRuntime';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { chatSendFixture } from '../../test-utils/chatSendFixture';
 import { usePersistenceHealth } from '../../services/persistenceHealth';
@@ -84,4 +85,27 @@ describe('queued durable direction subtype', () => {
     expect(loadQueuedSubmissions()).toEqual([]); expect(saveQueuedSubmissions([])).toBe(false);
     expect(window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY)).toBe(raw);
   });
+});
+
+
+it('invalidates every direction of the targeted turn while preserving other turns, conversations and ordinary submissions', async () => {
+  const f = chatSendFixture();
+  const direction = (id: string, conversationId: string, turnId: string) => ({
+    ...captureQueuedSubmission(id, { ...f.input, conversationId }, f.snapshot),
+    direction: { userMessageId: `user-${id}`, target: { sessionId: 'session', turnId, assistantMessageId: null } },
+  });
+  const original = [direction('first', 'a', 'target'), direction('pending', 'a', 'target'),
+    direction('other-turn', 'a', 'other'), direction('other-conversation', 'b', 'target'),
+    captureQueuedSubmission('ordinary', { ...f.input, conversationId: 'a' }, f.snapshot)];
+  expect(saveQueuedSubmissions(original)).toBe(true);
+  const queue = createQueuedSubmissionRuntime({ blocked: () => false, cancelled: () => false,
+    read: async () => [], send: async () => { throw new Error('Unexpected replay'); }, publish() {}, saveImages: () => true,
+    recovery() {}, previews() {}, pending() {}, attempted() {},
+  });
+  const ids = await queue.invalidateDirectionTurns('a', ['target']);
+  expect(ids).toEqual(['first', 'pending']);
+  expect(queue.hasEntry('first')).toBe(false); expect(queue.hasEntry('pending')).toBe(false);
+  expect(loadQueuedSubmissions().filter(entry => entry.direction?.deletionRequested).map(entry => entry.id)).toEqual(ids);
+  queue.finishDirectionDeletion(ids);
+  expect(loadQueuedSubmissions()).toEqual(original.slice(2));
 });

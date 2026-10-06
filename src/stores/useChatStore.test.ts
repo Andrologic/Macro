@@ -3,6 +3,7 @@ import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalR
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type {
   AgentType,
+  ChatMessage,
   AppMode,
   Conversation,
   MCPServer,
@@ -737,6 +738,7 @@ let chatSnapshotMessages: Array<{
   content: string;
   created_at: string;
   tool_traces_json?: string | null;
+  completion_reason?: ChatMessage["completion_reason"];
 }> = [];
 type ArchitectPlanConversationSyncRecord = {
   conversation_id: string;
@@ -1363,6 +1365,8 @@ const updateMessageMock = mock(
     _options?: {
       turnId?: string | null;
       tokenCount?: number;
+      completionReason?: ChatMessage["completion_reason"];
+      generationAttempts?: ChatMessage["generation_attempts"];
       toolTraces?: unknown[];
 	          hiddenContext?: string;
 	          providerInputItems?: unknown[];
@@ -1372,9 +1376,9 @@ const updateMessageMock = mock(
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
-const deleteConversationTurnMock = mock(async () => undefined);
+const deleteConversationTurnMock = mock(async (_conversationId: string, _turnId: string): Promise<void> => {});
 const dbTrimConversationReplayMock = mock(async () => undefined);
-const dbPrepareConversationReplayMock = mock(async () => undefined);
+const dbPrepareConversationReplayMock = mock(async (_params: Parameters<typeof actualTauriIpc.dbPrepareConversationReplay>[0]): Promise<void> => {});
 const dbRestoreConversationReplayMock = mock(async () => true);
 const dbCompleteConversationReplayMock = mock(async () => undefined);
 const dbMarkConversationReplayLaunchedMock = mock(async () => undefined);

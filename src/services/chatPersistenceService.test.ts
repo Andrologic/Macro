@@ -394,6 +394,15 @@ describe("chatPersistenceService", () => {
     });
   });
 
+  it("records a final save for transports without a reason and never certifies progress", async () => {
+    const updateMessage = mock<ChatPersistenceIpc["updateMessage"]>(async () => {});
+    const ipc = baseIpc({ updateMessage }); const persistence = { ...adapters(), ipc };
+    await persistAssistantPartialResult(persistence, chatMessage({ content: "Progress", completion_reason: "completed" }));
+    expect(updateMessage.mock.calls.at(-1)?.[2]?.completionReason).toBeUndefined();
+    await persistAssistantCompletionResult(persistence, { assistantMessageId: "message-1", result: { visibleContent: "" } });
+    expect(ipc.updateMessage).toHaveBeenLastCalledWith("message-1", "", expect.objectContaining({ completionReason: "completed" }));
+  });
+
   it("serializes partial and final writes for one assistant message", async () => {
     let releaseFirst!: () => void;
     let firstStarted!: () => void;

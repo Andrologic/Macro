@@ -26,6 +26,18 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
   const attempted = new Map<string, string>();
+  const directionWrites = new Map<string, Promise<unknown>>();
+  const writeDirection = async <T>(id: string, write: () => Promise<T>): Promise<T> => {
+    const pending = Promise.resolve().then(() => {
+      if (!entries.some(entry => entry.id === id && !entry.direction?.deletionRequested)) {
+        throw new Error('The direction was invalidated before its write.');
+      }
+      return write();
+    });
+    directionWrites.set(id, pending);
+    try { return await pending; }
+    finally { if (directionWrites.get(id) === pending) directionWrites.delete(id); }
+  };
   let recoveries: QueuedSubmissionRecoveries = Object.fromEntries(Array.from(paused, id => [id, {
     count: entries.filter(entry => entry.input.conversationId === id).length,
   }]));
@@ -44,6 +56,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     if (!entry || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId) || mutating.has(id)) {
       throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
     }
+    if (entry.direction?.deletionRequested && !allowSaved) throw new Error("This direction was invalidated by deletion. Remove its recovery entry.");
     mutating.add(id);
     try {
       const persisted = await ports.read(entry.input.conversationId);
@@ -82,14 +95,14 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     publishRecovery();
   };
   const acknowledge = (entry: QueuedSubmission, message: ChatMessage) => {
-    if (!entries.some(candidate => candidate.id === entry.id)) return;
+    if (!entries.some(candidate => candidate.id === entry.id && !candidate.direction?.deletionRequested)) return;
     if (entry.input.images?.length && !ports.saveImages(message.id, entry.input.images)) {
       throw new Error(i18n.t('chat.queueImagesSaveFailed', 'The message is saved, but its images still need saving. Retry the queued submission.'));
     }
   };
   const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
   const retireConfirmed = (confirmed: (entry: QueuedSubmission) => boolean) => {
-    const selected = entries.filter(confirmed);
+    const selected = entries.filter(entry => !entry.direction?.deletionRequested && confirmed(entry));
     if (!selected.length) return;
     persist(entries.filter(entry => !selected.includes(entry)));
     for (const id of new Set(selected.map(entry => entry.input.conversationId))) {
@@ -97,13 +110,13 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     }
     publishRecovery();
   };
-  const confirmedBy = (entry: QueuedSubmission, assistant: ChatMessage) => entry.direction &&
+  const confirmedBy = (entry: QueuedSubmission, assistant: ChatMessage, savedNow = false) => entry.direction && !entry.direction.deletionRequested &&
     entry.input.conversationId === assistant.conversation_id && entry.direction.target.turnId === assistant.turn_id &&
-    isSuccessfulCompletionReason(assistant.completion_reason) && (
+    (savedNow || assistant.completion_reason !== undefined) && isSuccessfulCompletionReason(assistant.completion_reason) && (
       (entry.direction.delivery?.assistantMessageId === assistant.id && entry.direction.delivery.requestEnded) ||
       (entry.direction.recoveryAssistantMessageId === assistant.id && entry.direction.recoveryRequestEnded));
   const beforeAssistantStart = (entry: QueuedSubmission, assistant?: ChatMessage) => {
-    if (!entries.some(candidate => candidate.id === entry.id)) throw new Error('The queued submission is no longer available.');
+    if (!entries.some(candidate => candidate.id === entry.id && !candidate.direction?.deletionRequested)) throw new Error('The queued submission is no longer available.');
     persist(entries.map(candidate => candidate.id === entry.id ? {
       ...candidate, assistantStartAttempted: true,
       ...(candidate.direction ? { direction: { ...candidate.direction, recoveryAssistantMessageId: assistant?.id } } : {}),
@@ -116,8 +129,12 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     draining.add(id);
     let continueQueue = false;
     try {
+      if (next.direction?.deletionRequested) {
+        throw new Error(i18n.t('chat.queueDirectionDeleted',
+          'This direction was invalidated by deletion or replay. Remove this recovery entry before continuing manually.'));
+      }
       const persisted = await ports.read(id);
-      if (ports.cancelled(id) || !entries.some(entry => entry.id === next.id)) return;
+      if (ports.cancelled(id) || !entries.some(entry => entry.id === next.id && !entry.direction?.deletionRequested)) return;
       const saved = persisted.find(message => message.role === 'user' &&
         (next.direction ? message.id === next.direction.userMessageId : message.turn_id === next.id));
       if (saved && (saved.conversation_id !== id || (next.direction && saved.turn_id !== next.direction.target.turnId))) {
@@ -139,7 +156,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       } else {
         attempted.set(next.id, id);
         publishRecovery();
-        const result = await ports.send(next, saved);
+        const result = next.direction ? await writeDirection(next.id, () => ports.send(next, saved)) : await ports.send(next, saved);
         if (result.status === 'cancelled' || !result.assistantMessageId) throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
       }
       continueQueue = true;
@@ -156,24 +173,45 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     capture: captureQueuedSubmission,
     excludedDirectionMessageIds(conversationId: string, resumedMessageId?: string) {
       return new Set(entries.filter(entry => entry.input.conversationId === conversationId && entry.direction &&
-        !entry.direction.delivery?.requestEnded && entry.direction.userMessageId !== resumedMessageId)
+        (entry.direction.deletionRequested || !entry.direction.delivery?.requestEnded) && entry.direction.userMessageId !== resumedMessageId)
         .map(entry => entry.direction!.userMessageId));
     },
     bindDirectionIntent(conversationId: string, sessionId: string, turnId: string, intent: QueuedSendIntent) {
       const belongs = (entry: QueuedSubmission) => entry.input.conversationId === conversationId &&
-        entry.direction?.target.sessionId === sessionId && entry.direction.target.turnId === turnId && !entry.direction.delivery;
+        entry.direction?.target.sessionId === sessionId && entry.direction.target.turnId === turnId && !entry.direction.delivery && !entry.direction.deletionRequested;
       if (entries.some(belongs)) persist(entries.map(entry => belongs(entry) ? {
         ...entry, intent: { ...intent, composerContextRefs: entry.input.contextRefs ?? [] },
       } : entry));
     },
     hasDirections(conversationId: string) { return entries.some(entry => entry.input.conversationId === conversationId && entry.direction); },
-    hasEntry(id: string) { return entries.some(entry => entry.id === id); },
+    hasEntry(id: string) { return entries.some(entry => entry.id === id && !entry.direction?.deletionRequested); },
+    writeDirection,
+    async invalidateDirectionTurns(conversationId: string, turnIds: readonly string[]) {
+      const selected = entries.filter(entry => entry.input.conversationId === conversationId &&
+        entry.direction && turnIds.includes(entry.direction.target.turnId));
+      if (!selected.length) return [];
+      const ids = selected.map(entry => entry.id);
+      // Refusal happens before DB deletion. A later cleanup refusal retains this marker on disk.
+      persist(entries.map(entry => ids.includes(entry.id) && entry.direction ? {
+        ...entry, direction: { ...entry.direction, deletionRequested: true },
+      } : entry));
+      await Promise.allSettled(ids.flatMap(id => directionWrites.has(id) ? [directionWrites.get(id)!] : []));
+      return ids;
+    },
+    finishDirectionDeletion(ids: readonly string[]) {
+      if (!ids.length) return;
+      const remaining = entries.filter(entry => !ids.includes(entry.id));
+      saveQueuedSubmissions(remaining);
+      // DB deletion is authoritative; a refused write leaves only invalidated entries on disk.
+      entries = remaining;
+      refreshRecovery();
+    },
     markDirectionDelivery(ids: string[], identity: { conversationId: string; sessionId: string; turnId: string | null; assistantMessageId: string }, requestId: string) {
       for (const id of ids) {
         const entry = entries.find(candidate => candidate.id === id);
         const target = entry?.direction?.target;
         if (!target || entry?.input.conversationId !== identity.conversationId || target.sessionId !== identity.sessionId ||
-          target.turnId !== identity.turnId || (target.assistantMessageId !== null && target.assistantMessageId !== identity.assistantMessageId) || entry.direction?.delivery) {
+          target.turnId !== identity.turnId || (target.assistantMessageId !== null && target.assistantMessageId !== identity.assistantMessageId) || entry.direction?.delivery || entry.direction?.deletionRequested) {
           throw new Error('The direction no longer belongs to this request.');
         }
       }
@@ -200,11 +238,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     confirmDirectionRecovery(assistantMessageId: string) {
       retireConfirmed(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId && entry.direction.recoveryRequestEnded === true);
     },
-    confirmPersistedAssistant(assistant: ChatMessage) { retireConfirmed(entry => Boolean(confirmedBy(entry, assistant))); },
-    removeDirectionMessages(conversationId: string, messageIds: readonly string[]) {
-      persist(entries.filter(entry => entry.input.conversationId !== conversationId ||
-        !entry.direction || !messageIds.includes(entry.direction.userMessageId)));
-    },
+    confirmPersistedAssistant(assistant: ChatMessage) { retireConfirmed(entry => Boolean(confirmedBy(entry, assistant, true))); },
     accept(entry: QueuedSubmission) {
       persist([...entries, entry]);
       queueMicrotask(() => void drain(entry.input.conversationId));

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import type { DbMessage } from '../../services/tauriIpc';
+import { createQueuedSubmissionRuntime } from '../chat/chatQueuedSubmissionRuntime';
+import { loadConversationMessages, type ChatPersistenceAdapters } from '../../services/chatPersistenceService';
+import { describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../../types';
 import type { StreamingChatOptions, StreamMessage } from '../../services/ai/contracts';
 import { createStreamAccumulator } from '../../services/ai/streamAccumulator';
@@ -186,6 +189,238 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
         expect(h.rows.filter(row => row.role === 'user')).toHaveLength(users); expect(h.store.getState().composerContextRefs).toEqual(refs);
         expect(loadQueuedSubmissions()).toEqual([]);
       } finally { storage.setItem = write; await h.close(); }
+    });
+
+    it('keeps delivery recovery while the exact assistant has only placeholder or progress writes', async () => {
+      const h = await createHarness();
+      const finalEntered = c.createDeferred<void>(); const finalRelease = c.createDeferred<void>();
+      c.streamChatMock.mockImplementation(async options => {
+        const actual = options as unknown as StreamingChatOptions;
+        const result = await runToolCallingLoop({ ...actual, maxTurns: 3 }, {
+          kind: 'generic', streamTurn: async ({ messages }) => {
+            h.requests.push(structuredClone(messages));
+            if (h.requests.length === 1) { h.entered.resolve(); await h.release.promise; }
+            return { result: { content: '', toolCalls: [], completionReason: 'completed' }, projectAssistant: () => ({ items: [] }) };
+          }, projectTool: r => r.content, afterToolResults() {},
+        }, createStreamAccumulator(actual));
+        actual.onComplete(result); return { usage: null };
+      });
+      try {
+        const first = await h.start(); await h.entered.promise;
+        expect(await h.store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
+        c.updateMessageMock.mockImplementation(async (id, answer, options) => {
+          const row = h.rows.find(r => r.id === id)!;
+          if (options?.completionReason === 'completed') {
+            finalEntered.resolve(); await finalRelease.promise;
+            Object.assign(row, { content: answer, completion_reason: options.completionReason });
+          } else Object.assign(row, { content: answer ?? '', generation_attempts_json: JSON.stringify(options?.generationAttempts) });
+        });
+        h.release.resolve(); await finalEntered.promise;
+        expect(loadQueuedSubmissions()[0].direction?.delivery?.requestEnded).toBe(true);
+        const assistant = h.rows.find(r => r.id === first.assistantMessageId)!;
+        const send = mock(async () => { throw new Error('Unexpected provider replay'); });
+        for (const progress of ['', 'Partial checkpoint']) {
+          assistant.content = progress;
+          const queue = createQueuedSubmissionRuntime({ blocked: () => false, cancelled: () => false,
+            read: id => loadConversationMessages({ isTauriAvailable: () => true, ipc: { listMessages: c.listMessagesMock } } as unknown as ChatPersistenceAdapters,
+              { conversationId: id, conversations: h.store.getState().conversations }),
+            send, publish() {}, saveImages: () => true, recovery() {}, previews() {}, pending() {}, attempted() {},
+          });
+          await queue.retry(conversationId);
+          expect(loadQueuedSubmissions()).toHaveLength(1); expect(send).not.toHaveBeenCalled();
+        }
+        finalRelease.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect((assistant as Partial<DbMessage>).completion_reason).toBe('completed'); expect(loadQueuedSubmissions()).toEqual([]);
+      } finally { finalRelease.resolve(); await h.close(); }
+    });
+
+    it('confirms an optional-reason final save after reload without replaying its request', async () => {
+      const h = await createHarness(); const storage = window.localStorage, write = storage.setItem;
+      try {
+        const first = await h.start(); await h.entered.promise;
+        expect(await h.store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
+        c.updateMessageMock.mockImplementation(async (id, answer, options) => {
+          Object.assign(h.rows.find(row => row.id === id)!, { content: answer, completion_reason: options?.completionReason });
+        });
+        // The real loop produces request-ended; this transport omits the completion reason.
+        const options = c.getLatestStreamOptions<{ onComplete: StreamingChatOptions['onComplete'] }>();
+        const complete = options.onComplete;
+        options.onComplete = result => complete({ ...result, completionReason: undefined });
+        storage.setItem = (key, value) => {
+          if (key === QUEUED_SUBMISSIONS_STORAGE_KEY && JSON.parse(value).length === 0) throw new Error('Removal unavailable');
+          write.call(storage, key, value);
+        };
+        h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(loadQueuedSubmissions()).toHaveLength(1);
+        expect((h.rows.find(row => row.id === first.assistantMessageId) as Partial<DbMessage>).completion_reason).toBe('completed');
+        storage.setItem = write;
+        const { useChatStore: restarted } = await c.loadChatStore();
+        restarted.setState(c.createIdleChatStoreState({ conversations: h.store.getState().conversations }));
+        await restarted.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork();
+        expect(loadQueuedSubmissions()).toEqual([]); expect(h.requests).toHaveLength(2);
+      } finally { storage.setItem = write; await h.close(); }
+    });
+
+    it('invalidates unpublished directions before awaiting their DB writes and deleting the turn', async () => {
+      const h = await createHarness(); const dbRelease = c.createDeferred<void>();
+      try {
+        await h.start(); await h.entered.promise;
+        const create = c.createMessageMock.getMockImplementation()!;
+        c.createMessageMock.mockImplementation(async (...args) => { if (args[2] === content) await dbRelease.promise; return create(...args); });
+        const submitting = h.store.getState().submitDuringActiveTurn(payload, 'steer'); await c.flushAsyncWork();
+        c.updateMessageMock.mockImplementation(async () => { throw new Error('Final save unavailable'); });
+        h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        const assistant = h.store.getState().getConversationMessages(conversationId).find((m: ChatMessage) => m.persistence_state === 'failed')!;
+        c.deleteConversationTurnMock.mockImplementation(async (id, turn) => {
+          for (let i = h.rows.length - 1; i >= 0; i--) if (h.rows[i].conversation_id === id && h.rows[i].turn_id === turn) h.rows.splice(i, 1);
+        });
+        const deleting = h.store.getState().deleteUnsavedAssistantResponse(assistant.id);
+        await c.flushAsyncWork();
+        expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+        expect(c.deleteConversationTurnMock).not.toHaveBeenCalled();
+        dbRelease.resolve(); await submitting; await deleting;
+        expect(h.rows).toEqual([]); expect(loadQueuedSubmissions()).toEqual([]);
+        expect(h.store.getState().getConversationMessages(conversationId)).toEqual([]);
+        await expect(h.store.getState().retryAssistantPersistence(assistant.id)).rejects.toThrow('not waiting');
+        await h.store.getState().retryQueuedSubmissions(conversationId);
+        expect(h.requests).toHaveLength(1);
+      } finally { dbRelease.resolve(); await h.close(); }
+    });
+
+    for (const refuseBeforeDeletion of [false, true]) it(`keeps deletion and recovery coherent when queue storage refuses, before=${refuseBeforeDeletion}`, async () => {
+      const h = await createHarness(); const dbRelease = c.createDeferred<void>();
+      const storage = window.localStorage, write = storage.setItem;
+      let dbDeleted = false;
+      try {
+        await h.start(); await h.entered.promise;
+        const create = c.createMessageMock.getMockImplementation()!;
+        c.createMessageMock.mockImplementation(async (...args) => { const row = await create(...args); if (args[2] === content) await dbRelease.promise; return row; });
+        const submitting = h.store.getState().submitDuringActiveTurn(payload, 'steer'); await c.flushAsyncWork();
+        c.updateMessageMock.mockImplementation(async () => { throw new Error('Final save unavailable'); });
+        h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        dbRelease.resolve(); await submitting;
+        const assistant = h.store.getState().getConversationMessages(conversationId).find((m: ChatMessage) => m.persistence_state === 'failed')!;
+        c.deleteConversationTurnMock.mockImplementation(async (id, turn) => {
+          for (let i = h.rows.length - 1; i >= 0; i--) if (h.rows[i].conversation_id === id && h.rows[i].turn_id === turn) h.rows.splice(i, 1);
+          dbDeleted = true;
+        });
+        storage.setItem = (key, value) => {
+          if (key === QUEUED_SUBMISSIONS_STORAGE_KEY && (refuseBeforeDeletion || dbDeleted)) throw new Error('Queue write unavailable');
+          write.call(storage, key, value);
+        };
+        if (refuseBeforeDeletion) {
+          await expect(h.store.getState().deleteUnsavedAssistantResponse(assistant.id)).rejects.toThrow('could not be saved');
+          expect(dbDeleted).toBe(false); expect(h.rows.some(r => r.id === assistant.id)).toBe(true);
+        } else {
+          await h.store.getState().deleteUnsavedAssistantResponse(assistant.id);
+          expect(h.rows).toEqual([]); expect(h.store.getState().getConversationMessages(conversationId)).toEqual([]);
+          expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+          await expect(h.store.getState().retryAssistantPersistence(assistant.id)).rejects.toThrow('not waiting');
+          const { useChatStore: restarted } = await c.loadChatStore();
+          restarted.setState(c.createIdleChatStoreState({ conversations: h.store.getState().conversations }));
+          await restarted.getState().retryQueuedSubmissions(conversationId);
+          expect(h.requests).toHaveLength(1); expect(h.rows).toEqual([]);
+          storage.setItem = write;
+          await restarted.getState().retryQueuedSubmissions(conversationId);
+          expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+          await restarted.getState().removeQueuedSubmission(loadQueuedSubmissions()[0].id);
+          expect(loadQueuedSubmissions()).toEqual([]); expect(h.requests).toHaveLength(1);
+        }
+      } finally { storage.setItem = write; dbRelease.resolve(); await h.close(); }
+    });
+
+    it('keeps a committed replay trim coherent when durable direction cleanup refuses', async () => {
+      const h = await createHarness(); const dbRelease = c.createDeferred<void>();
+      const storage = window.localStorage, write = storage.setItem;
+      let trimmed = false;
+      try {
+        await h.start(); await h.entered.promise;
+        const create = c.createMessageMock.getMockImplementation()!;
+        c.createMessageMock.mockImplementation(async (...args) => { const row = await create(...args); if (args[2] === content) await dbRelease.promise; return row; });
+        const submitting = h.store.getState().submitDuringActiveTurn(payload, 'steer'); await c.flushAsyncWork();
+        h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork(); dbRelease.resolve(); await submitting;
+        const originalUser = h.rows.find(row => row.role === 'user' && row.content === 'Initial request')!;
+        c.dbPrepareConversationReplayMock.mockImplementation(async params => {
+          const anchorIndex = h.rows.findIndex(row => row.id === params.messageId);
+          h.rows.splice(anchorIndex + 1);
+          originalUser.content = params.content;
+          trimmed = true;
+        });
+        storage.setItem = (key, value) => {
+          if (key === QUEUED_SUBMISSIONS_STORAGE_KEY && trimmed) throw new Error('Cleanup unavailable after replay DB commit');
+          write.call(storage, key, value);
+        };
+        await h.store.getState().editMessage(originalUser.id, 'Edited request', { skipAgentCodeReplayCheck: true });
+        await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(trimmed).toBe(true); expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+        expect(h.rows.some(row => row.content === content)).toBe(false);
+        expect(h.store.getState().getConversationMessages(conversationId).some((m: ChatMessage) => m.content === content)).toBe(false);
+        expect(h.requests).toHaveLength(2); expect(directionMessages(h.requests[1])).toEqual([]);
+        const { useChatStore: restarted } = await c.loadChatStore();
+        restarted.setState(c.createIdleChatStoreState({ conversations: h.store.getState().conversations }));
+        storage.setItem = write;
+        await restarted.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork();
+        expect(h.requests).toHaveLength(2); expect(h.rows.some(row => row.content === content)).toBe(false);
+        expect(restarted.getState().queuedSubmissionRecoveryByConversationId[conversationId].error).toContain('invalidated');
+      } finally { storage.setItem = write; dbRelease.resolve(); await h.close(); }
+    });
+
+    it('reuses the captured source passages after DB failure and still revalidates access', async () => {
+      const h = await createHarness();
+      try {
+        c.chatSnapshotConversations = [c.createChatSnapshotConversation(conversationId, { project_id: 'project-1', title: 'Target' }),
+          c.createChatSnapshotConversation('direction-source', { project_id: 'project-1', title: 'Source' })];
+        c.chatSnapshotMessages = [{ id: 'source-first', conversation_id: 'direction-source', role: 'assistant',
+          content: 'SOURCE ORIGINAL', created_at: '2026-01-01', completion_reason: 'completed' }];
+        await h.start(); await h.entered.promise;
+        const create = c.createMessageMock.getMockImplementation()!;
+        c.createMessageMock.mockImplementation(async (...args) => { if (args[2] === content) throw new Error('User write unavailable'); return create(...args); });
+        expect(await h.store.getState().submitDuringActiveTurn({ ...payload, contextRefs: [
+          { id: 'direction-source', kind: 'conversation', conversationId: 'direction-source', title: 'Source' },
+        ] }, 'steer')).toBe('queued');
+        const originalRefs = loadQueuedSubmissions()[0].input.contextRefs;
+        expect(originalRefs?.[0].snippet).toContain('SOURCE ORIGINAL');
+        const userId = loadQueuedSubmissions()[0].direction!.userMessageId;
+        h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        c.chatSnapshotMessages = [{ id: 'source-second', conversation_id: 'direction-source', role: 'assistant',
+          content: 'SOURCE CHANGED', created_at: '2026-01-02', completion_reason: 'completed' }];
+        c.createMessageMock.mockImplementation(create);
+        const source = c.chatSnapshotConversations.pop()!;
+        await h.store.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork();
+        expect(h.requests).toHaveLength(1); expect(loadQueuedSubmissions()).toHaveLength(1);
+        expect(h.rows.some(row => row.id === userId)).toBe(false);
+        c.chatSnapshotConversations.push(source);
+        await h.store.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(JSON.parse(h.rows.find(row => row.id === userId)!.context_refs_json!)).toEqual(originalRefs);
+        expect(h.requests).toHaveLength(2);
+        expect(JSON.stringify(h.requests[1])).toContain('SOURCE ORIGINAL'); expect(JSON.stringify(h.requests[1])).not.toContain('SOURCE CHANGED');
+        expect(loadQueuedSubmissions()).toEqual([]);
+      } finally { await h.close(); }
+    });
+
+    it('omits a stopped empty placeholder from reload and resumed provider history while retaining the user', async () => {
+      const h = await createHarness();
+      c.streamChatMock.mockImplementation(async options => {
+        const actual = options as unknown as StreamingChatOptions;
+        if (!h.requests.length) { h.requests.push(structuredClone(actual.messages)); h.entered.resolve(); await h.release.promise; return { usage: null }; }
+        const result = await runToolCallingLoop(actual, { kind: 'generic', streamTurn: async ({ messages }) => {
+          h.requests.push(structuredClone(messages)); return { result: { content: 'Recovered', toolCalls: [], completionReason: 'completed' }, projectAssistant: () => ({ items: [] }) };
+        }, projectTool: r => r.content, afterToolResults() {} }, createStreamAccumulator(actual));
+        actual.onComplete(result); return { usage: null };
+      });
+      try {
+        const first = await h.start(); await h.entered.promise;
+        expect(await h.store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
+        h.store.getState().stopConversationStream(conversationId); h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(h.rows.some(row => row.id === first.assistantMessageId)).toBe(true);
+        h.store.setState({ messageLoadStatusByConversationId: {}, messages: [], messagesByConversationId: {}, messageIndexById: {} });
+        await h.store.getState().ensureMessagesLoaded(conversationId);
+        expect(h.store.getState().getConversationMessages(conversationId).some((m: ChatMessage) => m.id === first.assistantMessageId)).toBe(false);
+        await h.store.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(h.requests[1].some(m => m.role === 'assistant' && m.content === '')).toBe(false);
+        expect(h.rows.filter(row => row.role === 'user' && row.content === content)).toHaveLength(1);
+        expect(loadQueuedSubmissions()).toEqual([]);
+      } finally { await h.close(); }
     });
   });
 }
