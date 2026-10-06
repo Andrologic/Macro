@@ -378,7 +378,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     })
   );
   const [isArchiving, setIsArchiving] = useState(false);
-  const [isRetryingMerge, setIsRetryingMerge] = useState(false);
+  const retryRequestsByTaskIdRef = useRef(new Map<string, object>());
+  const [retryingTaskIds, setRetryingTaskIds] = useState<Set<string>>(() => new Set());
+  const isRetryingMerge = retryingTaskIds.has(task.id);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
   const [repositoryResolutionStateById, setRepositoryResolutionStateById] =
     useState<Record<string, RepositoryResolutionState>>({});
@@ -1397,8 +1399,16 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                   disabled={!viewState.canRetry || isArchiving || isResolvingAutomatically || isRetryingMerge}
                   isLoading={isRetryingMerge}
                   onClick={() => {
-                    setIsRetryingMerge(true);
-                    void handleRetryMerge().finally(() => setIsRetryingMerge(false));
+                    if (retryRequestsByTaskIdRef.current.has(task.id)) return;
+                    const request = {};
+                    const retryTaskId = task.id;
+                    retryRequestsByTaskIdRef.current.set(retryTaskId, request);
+                    setRetryingTaskIds(new Set(retryRequestsByTaskIdRef.current.keys()));
+                    void handleRetryMerge().finally(() => {
+                      if (retryRequestsByTaskIdRef.current.get(retryTaskId) !== request) return;
+                      retryRequestsByTaskIdRef.current.delete(retryTaskId);
+                      setRetryingTaskIds(new Set(retryRequestsByTaskIdRef.current.keys()));
+                    });
                   }}
                 >
                   {t('common.retry', 'Retry')}

@@ -329,9 +329,9 @@ describe('MergeWorkflowTaskPanel', () => {
 
     expect(document.body.textContent).not.toContain('Checking resolution...');
   });
-  const renderFailedFinalization = async () => {
-    currentRuntimeByTaskId[taskId] = {
-      ...runtime(taskId),
+  const renderFailedFinalization = async (id = taskId) => {
+    currentRuntimeByTaskId[id] = {
+      ...runtime(id),
       kind: 'plan_finalization',
       phase: 'failed',
       taskStatus: 'Failed',
@@ -342,7 +342,7 @@ describe('MergeWorkflowTaskPanel', () => {
       blockedRepositories: [],
       message: "Branch develop has no configured upstream",
     };
-    await renderPanel(root, taskId, { ...task(taskId), task_source: 'plan_finalization' });
+    await renderPanel(root, id, { ...task(id), task_source: 'plan_finalization' });
     const retry = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent === 'Retry');
     expect(retry).toBeDefined();
@@ -383,6 +383,41 @@ describe('MergeWorkflowTaskPanel', () => {
     expect(loadMergeWorkflowReviewMock).toHaveBeenCalledTimes(2);
     expect(taskStoreState.runMergeWorkflow).not.toHaveBeenCalled();
     expect(taskStoreState.archivePlanFromTask).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates retry clicks before React renders the busy state', async () => {
+    const retry = await renderFailedFinalization();
+    const review = createDeferred<MergeWorkflowRuntimeState>();
+    loadMergeWorkflowReviewMock.mockImplementation(async () => review.promise);
+    await act(async () => { retry.click(); retry.click(); await flushRender(); });
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledTimes(1);
+    await act(async () => { review.resolve(currentRuntimeByTaskId[taskId]); await flushRender(); });
+    expect(taskStoreState.runMergeWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('keeps pending retries owned by their task across navigation and late replies', async () => {
+    const retryA = await renderFailedFinalization();
+    const reviewA = createDeferred<MergeWorkflowRuntimeState>();
+    const reviewB = createDeferred<MergeWorkflowRuntimeState>();
+    loadMergeWorkflowReviewMock.mockImplementationOnce(async () => reviewA.promise);
+    await act(async () => { retryA.click(); await flushRender(); });
+    currentRuntimeByTaskId['task-b'] = { ...currentRuntimeByTaskId[taskId], taskId: 'task-b', phase: 'ready' };
+    await renderPanel(root, 'task-b', { ...task('task-b'), task_source: 'plan_finalization' });
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === label)!;
+    expect(findButton('Merge plan').disabled).toBe(false);
+    expect(findButton('Archive').disabled).toBe(false);
+    const retryB = await renderFailedFinalization('task-b');
+    loadMergeWorkflowReviewMock.mockImplementationOnce(async () => reviewB.promise);
+    await act(async () => { retryB.click(); await flushRender(); });
+    expect(retryB.disabled).toBe(true);
+    await act(async () => { reviewA.resolve(currentRuntimeByTaskId[taskId]); await flushRender(); });
+    expect(retryB.disabled).toBe(true);
+    expect(findButton('Archive').disabled).toBe(true);
+    await act(async () => { reviewB.resolve(currentRuntimeByTaskId['task-b']); await flushRender(); });
+    expect(retryB.disabled).toBe(false);
+    expect(findButton('Archive').disabled).toBe(false);
+    expect(taskStoreState.runMergeWorkflow).not.toHaveBeenCalled();
   });
 
 });
