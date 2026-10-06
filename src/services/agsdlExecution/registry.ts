@@ -222,17 +222,25 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   const modelId = metadataIdentity(models[0].modelId, '/registry/models/modelId');
   // Native model dispatch identifies a model by provider and model ID.
   if (registry.models.filter(model => model.providerId === providerId && model.modelId === modelId).length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Selected native Model identity is ambiguous.');
+  const authoredSettings = record(configuration.settings ?? {});
+  for (const [key, expected] of [['providerId', providerId], ['modelId', modelId]] as const) {
+    if (has(authoredSettings, key) && authoredSettings[key] !== expected) fail('UNSUPPORTED', `/configurations/${configurationName}/settings/${key}`, 'Settings contradict the explicit Model edition.');
+  }
   const proofs = registry.configurations.filter(proof => proof.agentName === agentName);
   if (proofs.length !== 1 || !equal(decode(proofs[0].agentDeclarationJson), agent) || !equal(decode(proofs[0].configurationDeclarationJson), configuration)) return fail('UNSUPPORTED', '/registry/configurations', 'Agent configuration has no unique end-to-end verification.');
   const proof = proofs[0];
   const skillRequirements = list(agent.skills ?? []).flatMap(name => list(record(record(document.skills ?? {})[text(name)]).requires ?? []));
   requireExactRequirements([...list(configuration.requires ?? []), ...skillRequirements], proof.verifiedRequirementsJson);
-  record(decode(proof.effectiveSettingsJson));
+  const effectiveSettings = record(decode(proof.effectiveSettingsJson));
+  for (const [key, expected] of [['providerId', providerId], ['modelId', modelId]] as const) {
+    if (has(effectiveSettings, key) && effectiveSettings[key] !== expected) fail('UNSUPPORTED', `/registry/configurations/${agentName}/effectiveSettingsJson`, 'Effective settings contradict the explicit Model edition.');
+    effectiveSettings[key] = expected;
+  }
   decode(proof.permissionsJson);
   decode(proof.scopeJson);
   return {
     agentName, configurationName, providerId, modelId,
     configurationJson: encode({ agent: clone(agent), configuration: clone(configuration), initialization: clone(initialization), bindings: clone(record(document.bindings)) }),
-    settingsJson: proof.effectiveSettingsJson, permissionsJson: proof.permissionsJson, scopeJson: proof.scopeJson,
+    settingsJson: encode(effectiveSettings), permissionsJson: proof.permissionsJson, scopeJson: proof.scopeJson,
   };
 }

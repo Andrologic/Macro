@@ -24,6 +24,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   private readonly publications = new Map<string, TypedPublication>();
   private closed: { text: string; resultsJson: ExactJsonText; choice: string | null; cursor: Sequence } | null = null;
   private bytes = 0;
+  private readonly providerAttempts = new Set<ProviderAttemptId>();
   private sequence(value: Sequence, pointer = '/sequence', positive = false): void {
     try { compareSequence(value, value); }
     catch { fail('CORRELATION', pointer, 'Invalid canonical emission sequence.'); }
@@ -32,6 +33,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   constructor(options: ResponseCollectionOptions) {
     this.sequence(options.context.owner.ownerEpoch as unknown as Sequence, '/ownerEpoch');
     this.options = clone(options);
+    for (const attempt of options.providerAttempts) this.providerAttempts.add(attempt);
     if (!options.context.registryVersion || !options.context.work.agentInstanceId || [options.context.work.systemStartId, options.context.work.flowInvocationId, options.context.work.activationId, options.context.work.agentInstanceId].some(value => typeof value !== 'string' || value === '') || options.providerAttempts.some(attempt => typeof attempt !== 'string' || attempt === '')) fail('CORRELATION', '', 'Collection identities must be explicit and nonempty.');
     if (options.context.work.step !== null && !shape(options.context.work.step, schema.$defs.StepAddress)) fail('CORRELATION', '/step', 'Invalid work address.');
     if (new Set(options.providerAttempts).size !== options.providerAttempts.length) fail('CORRELATION', '', 'Repeated registered provider attempt.');
@@ -55,10 +57,18 @@ export class ExactResponseCollection implements ResponseCollectionPort {
     this.sequence(context.owner.ownerEpoch as unknown as Sequence, '/ownerEpoch');
     if (!sameWork(context.work, expected.work) || context.owner.systemStartId !== context.work.systemStartId || context.owner.systemStartId !== expected.owner.systemStartId || context.owner.ownerEpoch !== expected.owner.ownerEpoch || context.registryVersion !== expected.registryVersion || !equal(decode(context.permissionsJson), decode(expected.permissionsJson)) || !equal(decode(context.scopeJson), decode(expected.scopeJson))) fail('CORRELATION', '', 'Response is not attributed to the current work.');
   }
+  async registerAttempt(context: ExecutionContext, attempt: ProviderAttemptId): Promise<'registered' | 'duplicate'> {
+    this.correlateContext(context);
+    if (this.closed) fail('CORRELATION', '', 'Response collection is closed.');
+    if (typeof attempt !== 'string' || !attempt.trim()) fail('CORRELATION', '/providerAttemptId', 'An explicit registered provider attempt is required.');
+    if (this.providerAttempts.has(attempt)) return 'duplicate';
+    this.providerAttempts.add(attempt);
+    return 'registered';
+  }
   private correlateEvent(event: Pick<VisibleResponseMessage, 'context' | 'providerAttemptId'>): void {
     this.correlateContext(event.context);
     const providerAttemptId = event.providerAttemptId;
-    if (!Object.hasOwn(event, 'providerAttemptId') || typeof providerAttemptId !== 'string' || providerAttemptId === '' || !this.options.providerAttempts.includes(providerAttemptId)) fail('CORRELATION', '/providerAttemptId', 'An explicit registered provider attempt is required.');
+    if (!Object.hasOwn(event, 'providerAttemptId') || typeof providerAttemptId !== 'string' || providerAttemptId === '' || !this.providerAttempts.has(providerAttemptId)) fail('CORRELATION', '/providerAttemptId', 'An explicit registered provider attempt is required.');
   }
   private inspect(sequence: Sequence, identity: string, signature: ExactJsonText, kind: 'message' | 'publication'): 'accepted' | 'duplicate' {
     if (this.closed) fail('CORRELATION', '', 'Response collection is closed.');

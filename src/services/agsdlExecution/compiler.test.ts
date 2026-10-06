@@ -26,7 +26,7 @@ describe('versioned compiler and fail-closed runtime assessment', () => {
     expect(PRODUCT_RUNTIME_AVAILABLE).toBe(false);
     expect(result.plan!.steps[0].maxVisitsJson).toBe(json('1e20'));
     expect(result.plan!.steps[0].address).toEqual(['work']);
-    expect(result.plan!.agents[0].settingsJson).toBe(json('{"budget":9007199254740993}'));
+    expect(result.plan!.agents[0].settingsJson).toBe(json('{"budget":9007199254740993,"providerId":"synthetic-provider","modelId":"synthetic-model"}'));
     expect(result.compiledPlanJson).toContain('macro-agsdl-compiled-plan/1');
     expect(result.plan!.agents[0].providerId).toBe('synthetic-provider');
   });

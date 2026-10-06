@@ -14,6 +14,16 @@ function collector(publication = true, providerAttempts: readonly ProviderAttemp
 const message = (sequence = '1', messageId = 'm1', textParts = ['visible']): VisibleResponseMessage => ({ context, providerAttemptId: id('attempt'), sequence: id(sequence), messageId: id(messageId), textParts });
 const publication = (sequence = '2', changes: Partial<TypedPublication> = {}): TypedPublication => ({ context, providerAttemptId: id('attempt'), publicationId: 'publication-1', sequence: id(sequence), contractJson, resultsJson: json('{"report":{"value":9007199254740993.0,"mediaType":"application/json"}}'), choice: 'done', ...changes });
 describe('attributed ordered response collection', () => {
+  it('admits newly registered attempts only while the correlated collection is open', async () => {
+    const collection = collector(false, []);
+    await expect(collection.append(message())).rejects.toMatchObject({ code: 'CORRELATION' });
+    await expect(collection.registerAttempt({ ...context, owner: { ...context.owner, ownerEpoch: id('4') } }, id('attempt'))).rejects.toMatchObject({ code: 'CORRELATION' });
+    expect(await collection.registerAttempt(context, id('attempt'))).toBe('registered');
+    expect(await collection.registerAttempt(context, id('attempt'))).toBe('duplicate');
+    await collection.append(message());
+    expect((await collection.close(context, id('1'))).text).toBe('visible');
+    await expect(collection.registerAttempt(context, id('later'))).rejects.toMatchObject({ code: 'CORRELATION' });
+  });
   it('assembles in emission order after network reordering, with exact empty/LF rules', async () => {
     const collection = collector(false);
     await collection.append(message('4', 'm4', ['D\n']));

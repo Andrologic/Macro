@@ -228,7 +228,7 @@ export interface ExecutionPublicPort {
 export interface ExecutionRepositoryPort extends ExecutionRuntimePort {
   readAgent(id: AgentInstanceId): Promise<AgentInstanceRecord>;
   readInvocation(id: FlowInvocationId): Promise<FlowInvocationRecord>;
-  readEffects(work: WorkIdentity): Promise<readonly { readonly registered: EffectRecord; readonly settlement: EffectSettlement | null }[]>;
+  readEffects(work: WorkIdentity): Promise<readonly { readonly registered: EffectRecord; readonly settlement: EffectSettlement | null; readonly resultJson: ExactJsonText | null }[]>;
   /** Validate owner/revision/SHA natively, capture/assess, then persist. */
   start(request: StartRequest): Promise<StartReceipt>;
   acceptDelivery(request: DeliveryRequest): Promise<AcceptedDelivery>;
@@ -277,12 +277,14 @@ export interface EffectRecord {
   readonly effect: EffectIdentity;
   readonly invocationJson: ExactJsonText;
 }
-export interface EffectSettlement {
+export type EffectSettlement = {
   readonly context: ExecutionContext;
-  readonly effect: EffectIdentity;
-  readonly status: 'ended' | 'uncertain';
   readonly evidenceJson: ExactJsonText;
-}
+} & (
+  | { readonly status: 'ended'; readonly effect: Extract<EffectIdentity, { kind: 'tool' }>; readonly resultJson: ExactJsonText }
+  | { readonly status: 'ended'; readonly effect: Extract<EffectIdentity, { kind: 'provider' }>; readonly resultJson?: never }
+  | { readonly status: 'uncertain'; readonly effect: EffectIdentity; readonly resultJson?: never }
+);
 export interface AgentExecutionRequest {
   readonly context: ExecutionContext;
   readonly configuration: FrozenAgentConfiguration;
@@ -334,6 +336,8 @@ export interface TypedPublication {
   readonly choice: string | null;
 }
 export interface ResponseCollectionPort {
+  /** Call only after the native registerEffect receipt. Native append verifies it again. */
+  registerAttempt(context: ExecutionContext, attempt: ProviderAttemptId): Promise<'registered' | 'duplicate'>;
   append(message: VisibleResponseMessage): Promise<'accepted' | 'duplicate'>;
   publish(publication: TypedPublication): Promise<'accepted' | 'duplicate'>;
   close(context: ExecutionContext, finalCursor: Sequence): Promise<{
