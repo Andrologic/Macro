@@ -15,8 +15,11 @@ const translators = await Promise.all(['fr', 'en'].map(async (lng) => {
 describe('task refusal presentation', () => {
   for (const { lng, translate } of translators) {
     it(`${lng} localizes the locked database refusal`, () => {
-      expect(localizeTaskErrorMessage('Database is locked', translate)).toBe(lng === 'fr'
-        ? 'La base de données est verrouillée. Réessayez.' : 'The database is locked. Try again.');
+      for (const message of ['Database is locked',
+        'Database error: error returned from database: (code: 5) database is locked']) {
+        expect(localizeTaskErrorMessage(message, translate)).toBe(lng === 'fr'
+          ? 'La base de données est verrouillée. Réessayez.' : 'The database is locked. Try again.');
+      }
     });
     it(`${lng} preserves the active Direct task title verbatim`, () => {
       const title = 'Direct: <A> & B\nDeuxième ligne';
@@ -36,7 +39,9 @@ describe('task refusal presentation', () => {
     });
     it(`${lng} keeps unknown errors and extra diagnostics unchanged`, () => {
       for (const message of ['SQLite error: Database is locked; path=/synthetic/db',
-        'Database is locked: additional diagnostic', 'Unexpected failure\nSQLITE_IOERR: 10',
+        'Database is locked: additional diagnostic',
+        'Database error: error returned from database: (code: 5) database is locked; path=/synthetic/db',
+        'Database error: error returned from database: (code: 6) database table is locked', 'Unexpected failure\nSQLITE_IOERR: 10',
         'Direct-edit project already has an active task:', 'Cannot complete task while todos remain open:']) {
         expect(localizeTaskErrorMessage(message, translate)).toBe(message);
       }

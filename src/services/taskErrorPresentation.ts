@@ -5,7 +5,8 @@ export const localizeTaskErrorMessage = (
   message: string,
   translate: DegradedErrorTranslator,
 ): string => {
-  if (message === 'Database is locked') {
+  if (message === 'Database is locked'
+    || message === 'Database error: error returned from database: (code: 5) database is locked') {
     return translate('implement.errors.databaseLocked', {
       defaultValue: 'The database is locked. Try again.',
     });
