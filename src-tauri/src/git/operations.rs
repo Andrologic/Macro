@@ -481,7 +481,9 @@ fn run_contained_git_command(
                 let timed_out = matches!(outcome, WaitOutcome::TimedOut);
                 let reason = match outcome {
                     WaitOutcome::Cancelled => "Git review was cancelled.".to_string(),
-                    WaitOutcome::OutputLimit => format!("Git command '{}' produced too much output.", args.join(" ")),
+                    WaitOutcome::OutputLimit => {
+                        format!("Git command '{}' produced too much output.", args.join(" "))
+                    }
                     WaitOutcome::TimedOut => git_timeout_recovery_message(&cwd, &args),
                     WaitOutcome::Completed(_) => unreachable!(),
                 };
@@ -492,10 +494,11 @@ fn run_contained_git_command(
                 // termination itself cannot prove complete containment.
                 let reason = if timed_out {
                     git_timeout_recovery_message(&cwd, &args)
-                } else { reason };
+                } else {
+                    reason
+                };
                 return Err(git_termination_error(reason, termination.err()));
             }
-
         };
         verify_completed_git_termination(
             status,

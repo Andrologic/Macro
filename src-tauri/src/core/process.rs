@@ -656,7 +656,9 @@ pub(crate) fn process_error_diagnostic(error: &io::Error) -> String {
         "process containment inspection failed" => "containment command failed",
         "process marker inspection panicked" => "marker inspection panicked",
         "contained process tree did not exit after SIGKILL" => "process tree reap timed out",
-        "contained process tree did not exit after job termination" => "process tree reap timed out",
+        "contained process tree did not exit after job termination" => {
+            "process tree reap timed out"
+        }
         "contained process did not exit after kill" => "process reap timed out",
         _ => "process operation failed",
     };
@@ -1447,7 +1449,9 @@ mod tests {
         let message = error.expect("partial rounds must stay failed").to_string();
         assert_eq!(calls, 8);
         assert!(
-            message.contains("first failure: Environment: process operation failed (kind=PermissionDenied"),
+            message.contains(
+                "first failure: Environment: process operation failed (kind=PermissionDenied"
+            ),
             "{message}"
         );
         assert!(message.contains(&format!("errno=Some({})", libc::EACCES)));
