@@ -2357,6 +2357,162 @@ describe('useAppStore architect plan resolution', () => {
     expect(getArchitectPlanActivationPayloadMock).toHaveBeenCalledWith(current.targetBranch, current.id, expect.any(Object));
   });
 
+  for (const [navigation, phases] of [
+    ['same-project', ['catalog', 'head', 'runtime']],
+    ['same-standalone-project', ['catalog', 'head', 'runtime']],
+    ['mode-round-trip', ['catalog', 'head', 'runtime']],
+  ] as const) {
+    for (const phase of phases) {
+      it(`preserves the selected plan when ${navigation} revokes a pending ${phase}`, async () => {
+        const plan = buildPlan({ id: 'navigation-plan', nodes: [{ id: 'old-node' }] });
+        planById.set(plan.id, plan);
+        projectContexts.set('group-1', buildProjectContext({ lastPlanId: plan.id }));
+        let release!: () => void;
+        let enteredRead!: () => void;
+        const entered = new Promise<void>(resolve => { enteredRead = resolve; });
+        const wait = async () => { enteredRead(); await new Promise<void>(resolve => { release = resolve; }); };
+        if (phase === 'head') getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => {
+          await wait();
+          return { plan, chatMessages: [], conversationId: null, sharedConversation: false,
+            targetBranch: plan.targetBranch, resolutionMode: 'full' };
+        });
+        if (phase === 'runtime') readPlanRuntimeMock.mockImplementationOnce(async () => {
+          await wait();
+          return { schemaVersion: 1, planId: plan.id, updatedAt: plan.updatedAt,
+            mergeWorkflows: {}, strategyPreview: buildSavedPreview(plan) };
+        });
+        if (phase === 'catalog') listArchitectPlansMock.mockImplementationOnce(async () => {
+          await wait();
+          return { activePlanId: plan.id, plans: [toPlanSummary(plan)] };
+        });
+        const { useAppStore } = await loadIsolatedUseAppStore();
+        useAppStore.setState({
+          mode: 'Architect', projectGroups: bootstrapProjectGroups,
+          selectedGroupId: 'group-1', selectedProjectId: 'project-1', activeArchitectPlanId: plan.id,
+          activePlanContext: { id: plan.id, title: plan.title, status: plan.status, targetBranch: plan.targetBranch },
+          planNodes: phase === 'catalog' ? [{ id: 'current-node' }] as never : plan.nodes as never,
+        });
+        if (navigation === 'same-standalone-project') {
+          useAppStore.setState({ projectGroups: [], standaloneProjects: [bootstrapProjectGroups[0].projects[0]], selectedGroupId: null });
+          projectContexts.set('project-1', buildProjectContext({ projectId: 'project-1', groupId: null, lastPlanId: plan.id }));
+        }
+        const pending = useAppStore.getState().loadMacroProjectMetadataForSelection({ hydrateActivePlan: true });
+        await entered;
+        if (navigation === 'same-project') await useAppStore.getState().switchProjectContext('project-1');
+        else if (navigation === 'same-standalone-project') {
+          useAppStore.getState().setSelectedProject('project-1');
+          await flushAsyncWork();
+        } else {
+          useAppStore.getState().setMode('Implement', { ensureAutoPlan: false });
+          useAppStore.getState().setMode('Architect', { ensureAutoPlan: false });
+        }
+        const before = useAppStore.getState();
+        const publications: Array<string | null> = [];
+        const unsubscribe = useAppStore.subscribe((state: { activeArchitectPlanId: string | null }) => { publications.push(state.activeArchitectPlanId); });
+        upsertLocalProjectContextStateMock.mockClear();
+        release();
+        await pending;
+        unsubscribe();
+        const state = useAppStore.getState();
+        expect(state.activeArchitectPlanId).toBe(plan.id);
+        expect(state.planNodes).toEqual(before.planNodes);
+        expect(state.pendingArchitectPlanActivationPayload).toBe(before.pendingArchitectPlanActivationPayload);
+        expect(state.strategyMutationPreview).toBeNull();
+        expect(state.architectPlanCatalogStatus).not.toBe('loading');
+        expect(publications).not.toContain(null);
+        expect(upsertLocalProjectContextStateMock).not.toHaveBeenCalled();
+        expect(chatStoreState.beginArchitectPlanSwitch).not.toHaveBeenCalled();
+      });
+    }
+  }
+
+  for (const superseded of [true, false]) {
+    it(`projects a runtime failure only when its hydration is current, superseded=${superseded}`, async () => {
+      const oldPlan = buildPlan({ id: 'runtime-error-old' });
+      const nextPlan = buildPlan({ id: 'runtime-error-new', nodes: [{ id: 'new-node' }] });
+      planById.set(oldPlan.id, oldPlan);
+      planById.set(nextPlan.id, nextPlan);
+      projectContexts.set('group-1', buildProjectContext({ lastPlanId: oldPlan.id }));
+      let rejectRuntime!: (error: Error) => void;
+      let enteredRead!: () => void;
+      const entered = new Promise<void>(resolve => { enteredRead = resolve; });
+      readPlanRuntimeMock.mockImplementationOnce(async () => {
+        enteredRead();
+        return await new Promise((_resolve, reject) => { rejectRuntime = reject; });
+      });
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      useAppStore.setState({
+        mode: 'Architect', projectGroups: bootstrapProjectGroups,
+        selectedGroupId: 'group-1', selectedProjectId: 'project-1', activeArchitectPlanId: oldPlan.id,
+        activePlanContext: { id: oldPlan.id, title: oldPlan.title, status: oldPlan.status, targetBranch: oldPlan.targetBranch },
+      });
+      const pending = useAppStore.getState().loadMacroProjectMetadataForSelection({ hydrateActivePlan: true });
+      await entered;
+      if (superseded) expect(await useAppStore.getState().activateArchitectPlan(nextPlan.id)).toBe(true);
+      rejectRuntime(new Error('Synthetic runtime read failure'));
+      await pending;
+      expect(useAppStore.getState().activeArchitectPlanId).toBe(superseded ? nextPlan.id : oldPlan.id);
+      expect(useAppStore.getState().architectPlanCatalogStatus).toBe(superseded ? 'ready' : 'error');
+      expect(useAppStore.getState().architectPlanCatalogError).toBe(superseded ? null : 'Synthetic runtime read failure');
+    });
+  }
+
+  it('clears the current selection when a current head really no longer exists', async () => {
+    const plan = buildPlan({ id: 'removed-plan' });
+    planById.set(plan.id, plan);
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-1', activeArchitectPlanId: plan.id,
+      activePlanContext: { id: plan.id, title: plan.title, status: plan.status, targetBranch: plan.targetBranch },
+    });
+    getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => null);
+    await useAppStore.getState().loadMacroProjectMetadataForSelection({ hydrateActivePlan: true });
+    expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
+    expect(useAppStore.getState().pendingArchitectPlanActivationPayload).toBeNull();
+  });
+
+  for (const interrupted of [false, true]) {
+    it(`authorizes only its own cross-scope navigation, interrupted=${interrupted}`, async () => {
+      const readonlyProject = { id: 'project-readonly', name: 'Reference', path: '/synthetic/reference', isReadOnly: true };
+      const plan = buildPlan({ id: 'api-plan', label: 'Plan reprise été QA', projectId: 'project-2', nodes: [{ id: 'api-node', projectId: 'project-2' }] });
+      planById.set(plan.id, plan);
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      useAppStore.setState({
+        mode: 'Architect', projectGroups: bootstrapProjectGroups, standaloneProjects: [readonlyProject],
+        selectedGroupId: null, selectedProjectId: readonlyProject.id,
+      });
+      let release!: () => void;
+      let enteredWrite!: () => void;
+      const entered = new Promise<void>(resolve => { enteredWrite = resolve; });
+      upsertLocalSessionContextStateMock.mockImplementationOnce(async (input) => {
+        enteredWrite();
+        await new Promise<void>(resolve => { release = resolve; });
+        sessionContext = buildSessionContextFromInput(input);
+        return sessionContext;
+      });
+      const activating = useAppStore.getState().activateArchitectPlan(plan.id, {
+        targetBranch: plan.targetBranch, planSummaryHint: toPlanSummary(plan), scopedProjectIdsHint: ['project-1', 'project-2'],
+      });
+      await entered;
+      if (interrupted) await useAppStore.getState().switchProjectContext(readonlyProject.id, { restoreProjectContext: false, ensureAutoPlan: false });
+      release();
+      expect(await activating).toBe(!interrupted);
+      if (interrupted) {
+        expect(useAppStore.getState().selectedProjectId).toBe(readonlyProject.id);
+        expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
+      } else {
+        expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+        expect(useAppStore.getState().selectedProjectId).toBe('project-2');
+        expect(useAppStore.getState().activeArchitectPlanId).toBe(plan.id);
+        expect(useAppStore.getState().planNodes).toEqual(plan.nodes);
+        expect(useAppStore.getState().architectPlanSwitch.status).toBe('ready');
+        expect(useAppStore.getState().architectPlanSwitch.requestId).toBe(1);
+      }
+      expect(chatStoreState.beginArchitectPlanSwitch).toHaveBeenCalledTimes(1);
+    });
+  }
+
   it('restores a saved API-only strategy after switching plans without regenerating its tasks', async () => {
     const oldPlan = buildPlan({ id: 'old-app-plan', nodes: [{ id: 'old-task', projectId: 'project-1' }] });
     const savedPlan = buildPlan({

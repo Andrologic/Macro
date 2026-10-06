@@ -179,6 +179,11 @@ let architectPlanSwitchRequestId = 0;
 let architectPlanActivationOwner: object | null = null;
 let architectPlanCatalogRequestId = 0;
 const architectPlanCatalogRequestIdsByKind = new Map<string, number>();
+const retireArchitectPlanCatalogLoad = (): void => {
+  if (useAppStore.getState().architectPlanCatalogStatus === 'loading') {
+    useAppStore.setState({ architectPlanCatalogStatus: 'idle' });
+  }
+};
 let selectedTaskPersistenceTimer: ReturnType<typeof setTimeout> | null = null;
 let selectedTaskPersistenceQueue = Promise.resolve();
 let lastQueuedTaskSelectionKey: string | null = null;
@@ -931,6 +936,7 @@ const beginArchitectPlanSwitchInStore = (input: {
   planId: string;
   targetBranch: string;
   summaryHint?: ArchitectPlanSummary | null;
+  beginChatTransition?: boolean;
 }): void => {
   useAppStore.setState({
     activeArchitectPlanId: input.planId,
@@ -960,9 +966,9 @@ const beginArchitectPlanSwitchInStore = (input: {
     predictedBranches: [],
     strategyMutationPreview: null,
   });
-  useChatStore
-    .getState()
-    .beginArchitectPlanSwitch({ requestId: input.requestId });
+  if (input.beginChatTransition !== false) {
+    useChatStore.getState().beginArchitectPlanSwitch({ requestId: input.requestId });
+  }
 };
 
 const isCurrentArchitectPlanSwitchRequest = (input: {
@@ -980,11 +986,15 @@ const isCurrentArchitectPlanSwitchRequest = (input: {
   );
 };
 
+type ArchitectPlanActivationResult =
+  | { status: 'activated'; plan: NonNullable<Awaited<ReturnType<typeof getArchitectPlan>>> }
+  | { status: 'unavailable' | 'cancelled' };
+
 const activateArchitectPlanInStore = async (input: {
   lifecycle?: LifecycleContext;
   planId: string;
   options?: ActivateArchitectPlanOptions;
-}): Promise<Awaited<ReturnType<typeof getArchitectPlan>> | null> => {
+}): Promise<ArchitectPlanActivationResult> => {
   const lifecycle = input.lifecycle;
   lifecycle?.assertActive();
   const appStore = useAppStore.getState();
@@ -1027,12 +1037,13 @@ const activateArchitectPlanInStore = async (input: {
       summaryHint: input.options?.planSummaryHint ?? null,
     });
   }
-  const isCurrentActivation = () =>
+  const ownsActivation = () =>
     architectPlanActivationOwner === activationOwner &&
     architectPlanSwitchRequestId === activationGeneration &&
     projectSwitchRequestId === activationNavigationId &&
-    useAppStore.getState().mode === appStore.mode &&
-    getActivationScopeKey() === activationScopeKey &&
+    useAppStore.getState().mode === appStore.mode;
+  const isCurrentActivation = () =>
+    ownsActivation() && getActivationScopeKey() === activationScopeKey &&
     (!switchingArchitectPlan || isCurrentArchitectPlanSwitchRequest({
       requestId, planId: input.planId, targetBranch,
     }));
@@ -1093,10 +1104,10 @@ const activateArchitectPlanInStore = async (input: {
         },
       }));
     }
-    return null;
+    return { status: isCurrentActivation() ? 'unavailable' : 'cancelled' };
   }
   if (!isCurrentActivation()) {
-    return null;
+    return { status: 'cancelled' };
   }
   const plan = activationPayload?.plan ?? null;
   if (!plan || plan.status === "deleted") {
@@ -1119,7 +1130,7 @@ const activateArchitectPlanInStore = async (input: {
     } else {
       useAppStore.setState({ pendingArchitectPlanActivationPayload: null });
     }
-    return null;
+    return { status: 'unavailable' };
   }
 
   if (input.options?.allowScopeSwitch !== false) {
@@ -1150,30 +1161,48 @@ const activateArchitectPlanInStore = async (input: {
       activationNavigationId = projectSwitchRequestId;
       await scopeSwitch;
       lifecycle?.assertActive();
-      if (useAppStore.getState().selectedProjectId !== planProjectId) return null;
+      if (!ownsActivation() || useAppStore.getState().selectedProjectId !== planProjectId) {
+        return { status: 'cancelled' };
+      }
       activationScopeKey = getActivationScopeKey();
+      if (switchingArchitectPlan) {
+        // The authorized navigation cleared the projection, not this operation or its chat request.
+        beginArchitectPlanSwitchInStore({
+          requestId,
+          planId: input.planId,
+          targetBranch,
+          summaryHint: input.options?.planSummaryHint ?? null,
+          beginChatTransition: false,
+        });
+      }
       if (!isCurrentActivation()) {
-        return null;
+        return { status: 'cancelled' };
       }
     }
   }
 
-  await hydrateArchitectPlanInStore({
-    lifecycle,
-    requestId,
-    isCurrent: isCurrentActivation,
-    activationPayload:
-      activationPayload ?? {
-        plan,
-        chatMessages: [],
-        conversationId: plan.conversationId ?? null,
-        sharedConversation: false,
-        targetBranch,
-        resolutionMode: 'full',
-      },
-  });
+  try {
+    await hydrateArchitectPlanInStore({
+      lifecycle,
+      requestId,
+      isCurrent: isCurrentActivation,
+      activationPayload:
+        activationPayload ?? {
+          plan,
+          chatMessages: [],
+          conversationId: plan.conversationId ?? null,
+          sharedConversation: false,
+          targetBranch,
+          resolutionMode: 'full',
+        },
+    });
+  } catch (error) {
+    lifecycle?.assertActive();
+    if (!isCurrentActivation()) return { status: 'cancelled' };
+    throw error;
+  }
   lifecycle?.assertActive();
-  if (!isCurrentActivation()) return null;
+  if (!isCurrentActivation()) return { status: 'cancelled' };
   const latestAppState = useAppStore.getState();
   if (input.options?.consolidateBlankPlans !== false) {
     scheduleScopedBlankPlanConsolidation({
@@ -1189,7 +1218,7 @@ const activateArchitectPlanInStore = async (input: {
       reason: "activate",
     });
   }
-  return plan;
+  return { status: 'activated', plan };
 };
 
 const persistResolvedArchitectPlanContext = async (params: {
@@ -1816,7 +1845,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setMode: (mode, options) => {
     const previousMode = get().mode;
-    if (mode !== previousMode) projectSwitchRequestId += 1;
+    if (mode !== previousMode) {
+      projectSwitchRequestId += 1;
+      retireArchitectPlanCatalogLoad();
+    }
     set({ mode, isProjectSwitching: false });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
     const { selectedGroupId, selectedProjectId } = get();
@@ -1879,6 +1911,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return;
     }
     const requestId = ++projectSwitchRequestId;
+    retireArchitectPlanCatalogLoad();
     const outgoingContext = previousGroupId
       ? persistCurrentProjectContext(previousGroupId, previousProjectId, state)
       : Promise.resolve();
@@ -1990,6 +2023,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   switchProjectContext: async (projectId, options) => {
     const requestId = ++projectSwitchRequestId;
+    retireArchitectPlanCatalogLoad();
     const previous = get();
     const restoreProjectContextOnSwitch =
       options?.restoreProjectContext !== false;
@@ -2244,17 +2278,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }),
 
   activateArchitectPlan: async (planId, options) => {
-    const plan = await activateArchitectPlanInStore({
+    const result = await activateArchitectPlanInStore({
       planId,
       options,
     });
-    return Boolean(plan);
+    return result.status === 'activated';
   },
 
   loadMacroProjectMetadataForSelection: async (options = {}) => {
     const lifecycle = options.lifecycle;
     lifecycle?.assertActive();
     const requestId = ++architectPlanCatalogRequestId;
+    const navigationId = projectSwitchRequestId;
     const state = get();
     const planSelectionGeneration = architectPlanSwitchRequestId;
     const planActivationOwner = architectPlanActivationOwner;
@@ -2284,7 +2319,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const requestKind = `${catalogScopeKey}::${options.hydrateActivePlan !== false ? 'hydrate' : 'catalog'}`;
     architectPlanCatalogRequestIdsByKind.set(requestKind, requestId);
     const isCurrentScope = () => {
-      if (architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return false;
+      if (projectSwitchRequestId !== navigationId || get().mode !== state.mode ||
+          architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return false;
       const latest = get();
       return buildArchitectPlanCatalogScopeKey({
         selectedGroupId: latest.selectedGroupId,
@@ -2327,10 +2363,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       architectPlanCatalogVisiblePlanCount: 0,
     });
 
+    let isCurrentHydration: (() => boolean) | null = null;
+    const canPublish = () => isCurrentScope() && (isCurrentHydration?.() ?? true);
     try {
       const localContext =
         await localProjectContext.getLocalProjectContextState(contextId);
       lifecycle?.assertActive();
+      if (!isCurrentScope()) return null;
       const result = await loadMacroProjectMetadataCatalog({
         scopedProjectIds,
         selectedGroupId: state.selectedGroupId,
@@ -2380,16 +2419,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
           });
           const hydrationGeneration = architectPlanSwitchRequestId;
           const hydrationOwner = architectPlanActivationOwner;
-          const activatedPlan = await activation;
+          isCurrentHydration = () => architectPlanActivationOwner === hydrationOwner &&
+            architectPlanSwitchRequestId === hydrationGeneration;
+          const activationResult = await activation;
           lifecycle?.assertActive();
-          if (!isCurrentScope() || architectPlanActivationOwner !== hydrationOwner ||
-              architectPlanSwitchRequestId !== hydrationGeneration || get().mode !== state.mode) return null;
-          if (activatedPlan) {
+          if (!canPublish() || activationResult.status === 'cancelled') return null;
+          if (activationResult.status === 'activated') {
             await persistResolvedArchitectPlanContext({
               contextId,
               groupId: state.selectedGroupId,
               focusProjectId: state.selectedProjectId,
-              planId: activatedPlan.id,
+              planId: activationResult.plan.id,
               localContext,
             });
             lifecycle?.assertActive();
@@ -2401,6 +2441,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       }
 
+      if (!canPublish()) return null;
       if (options.refreshTasks) {
         await useTaskStore.getState().refreshFromPlan({ lifecycle });
         lifecycle?.assertActive();
@@ -2427,7 +2468,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return result;
     } catch (error) {
       lifecycle?.assertActive();
-      if (!isCurrentScope()) return null;
+      if (!canPublish()) return null;
       const normalized = toServiceError(error);
       set({
         architectPlanCatalogStatus: "error",
