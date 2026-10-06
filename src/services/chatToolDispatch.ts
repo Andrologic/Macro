@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
 import { formatToolExecutionError } from './ai/toolCallResolution';
 import { ToolResultPreservationError } from './toolResultArtifacts';
 import type { FrozenToolCallContext } from "./chatStreamContracts";
@@ -75,6 +76,7 @@ export function createChatToolDispatch(
     progress();
     let normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
+    let effectDispatched = false;
     const journalState: { localIntent: ToolInvocationIdentity | null } = { localIntent: null };
     const uncertain = (reason: string, diagnostic?: string): ToolCallResolution => ({
       kind: 'result', isError: true, errorKind: 'uncertain',
@@ -109,6 +111,7 @@ export function createChatToolDispatch(
       // Keep this path on its existing contract until a remote conversation
       // journal can reserve the same executionId before dispatch.
       if (ports.journal.isRemoteRuntime()) {
+        effectDispatched = true;
         return ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
       }
       try {
@@ -129,25 +132,32 @@ export function createChatToolDispatch(
       }
       let result: ToolCallResolution | string | void;
       try {
+        effectDispatched = true;
         result = await ports.execute(operation, name, canonicalArgs, toolCallId, isCurrent);
       } catch (error) {
         await markUnknown();
-        if (!isCurrent()) return ABORTED;
+        if (error instanceof StreamStopUnconfirmedError) throw error;
+        if (!isCurrent()) return uncertain('Stop revoked publication before the executor confirmed its outcome.');
         let bounded: unknown;
         try {
           bounded = await ports.boundError(operation, name, toolCallId, error);
         } catch (preservationError) {
           bounded = preservationError instanceof ToolResultPreservationError ? preservationError : undefined;
         }
-        if (!isCurrent()) return ABORTED;
+        if (!isCurrent()) return uncertain('Stop revoked publication before the executor confirmed its outcome.');
         return uncertain('The executor did not confirm its outcome.', bounded === undefined ? undefined : formatToolExecutionError(bounded));
       }
-      if (!isCurrent() || result === undefined ||
-        (typeof result === 'object' && result?.kind === 'result' && result.errorKind === 'aborted')) {
+      const typed = typeof result === 'object' && result?.kind === 'result' ? result : undefined;
+      if (typed?.errorKind === 'uncertain') {
         await markUnknown();
-        return result === undefined
-          ? uncertain('The executor returned no confirmed result.')
-          : ABORTED;
+        return typed;
+      }
+      if (!isCurrent() || result === undefined || typed?.errorKind === 'aborted') {
+        await markUnknown();
+        if (typed?.errorKind === 'permission' || typed?.errorKind === 'validation') return typed;
+        return uncertain(result === undefined
+          ? 'The executor returned no confirmed result.'
+          : 'Stop revoked publication after dispatch. Effects may have occurred.');
       }
       return result;
     };
@@ -173,6 +183,11 @@ export function createChatToolDispatch(
         resolution = await executeJournaled(normalizedName, args);
       }
     } catch (error) {
+      if (error instanceof StreamStopUnconfirmedError) throw error;
+      if (effectDispatched) {
+        await markUnknown();
+        return uncertain('The executor did not confirm its outcome.', formatToolExecutionError(error));
+      }
       if (!isCurrent()) return ABORTED;
       const bounded = await ports.boundError(operation, normalizedName, toolCallId, error);
       if (!isCurrent()) return ABORTED;
@@ -181,9 +196,10 @@ export function createChatToolDispatch(
     if (typeof resolution === 'object' && resolution?.kind === 'result' && resolution.errorKind === 'uncertain') return resolution;
     if (!isCurrent()) {
       await markUnknown();
+      if (!effectDispatched) return resolution;
       // Preserve explicit denial without starting a new artifact write after Stop.
-      return typeof resolution === "object" && resolution?.kind === "result" && resolution.errorKind === "permission"
-        ? resolution : ABORTED;
+      return typeof resolution === "object" && resolution?.kind === "result" && (resolution.errorKind === "permission" || resolution.errorKind === "validation")
+        ? resolution : uncertain("Stop revoked publication after dispatch. Effects may have occurred.");
     }
     // A typed refusal confirms that no effect was dispatched, even if retaining
     // its diagnostic later fails. Do not turn it into a possible mutation.
@@ -194,7 +210,7 @@ export function createChatToolDispatch(
       preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
     } catch (error) {
       await markUnknown();
-      if (!isCurrent()) return ABORTED;
+      if (!isCurrent()) return refusal ?? uncertain("Stop revoked publication while preserving the result.");
       if (journalState.localIntent) {
         if (refusal) return refusal;
         const failure = uncertain('The tool result could not be preserved.',
@@ -208,7 +224,7 @@ export function createChatToolDispatch(
     }
     if (!isCurrent()) {
       await markUnknown();
-      return ABORTED;
+      return refusal ?? uncertain("Stop revoked publication after dispatch. Effects may have occurred.");
     }
     if (journalState.localIntent) {
       if (preserved === undefined) {

@@ -70,7 +70,7 @@ describe('durable Chat tool dispatch', () => {
       stopped.controller.abort();
       return 'late result';
     });
-    expect(await stopped.dispatch('write', {}, 'stop')).toMatchObject({ errorKind: 'aborted' });
+    expect(await stopped.dispatch('write', {}, 'stop')).toMatchObject({ errorKind: 'uncertain' });
     expect(stopped.events).toContain('unknown');
     expect(stopped.journal.complete).not.toHaveBeenCalled();
 
@@ -122,7 +122,7 @@ describe('durable Chat tool dispatch', () => {
       stopped.controller.abort();
       return value;
     });
-    expect(await stopped.dispatch('write', {}, 'preserve-stopped')).toMatchObject({ errorKind: 'aborted' });
+    expect(await stopped.dispatch('write', {}, 'preserve-stopped')).toMatchObject({ errorKind: 'uncertain' });
     expect(stopped.events).toEqual(['record:write:workspace_mutation', 'execute', 'unknown']);
     expect(stopped.journal.complete).not.toHaveBeenCalled();
   });
@@ -270,5 +270,28 @@ for (const errorKind of ['permission', 'validation'] as const) {
     f.execute.mockImplementation(async () => ({ kind: 'result', result: 'Refused', isError: true, errorKind }));
     f.preserve.mockImplementation(async () => { throw new ToolResultPreservationError('Refused'); });
     expect(await f.dispatch('write', {}, 'refused')).toMatchObject({ errorKind, result: 'Refused' });
+  });
+}
+
+
+test('typed terminal uncertainty stays unknown and is never durably completed', async () => {
+  const f = fixture();
+  f.execute.mockImplementation(async () => ({ kind: 'result', result: 'command receipt lost', isError: true, errorKind: 'uncertain' }));
+  expect(await f.dispatch('terminal_run', {}, 'terminal-call')).toMatchObject({ errorKind: 'uncertain' });
+  expect(f.events).toEqual(['record:terminal_run:external_effect', 'unknown']);
+  expect(f.journal.complete).not.toHaveBeenCalled();
+});
+
+
+for (const errorKind of ['permission', 'validation'] as const) {
+  test(`Stop preserves ${errorKind} when the executor proves no effect was dispatched`, async () => {
+    const f = fixture();
+    f.execute.mockImplementation(async () => {
+      f.controller.abort();
+      return { kind: 'result', result: 'Refused before dispatch', isError: true, errorKind };
+    });
+    expect(await f.dispatch('terminal_run', {}, 'refused')).toMatchObject({ errorKind });
+    expect(f.journal.complete).not.toHaveBeenCalled();
+    expect(f.preserve).not.toHaveBeenCalled();
   });
 }

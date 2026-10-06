@@ -73,49 +73,23 @@ struct ChatCompletionAccumulator {
 pub async fn stream_chat(
     app_handle: AppHandle,
     pool: SqlitePool,
-    ai_state: AiState,
+    _ai_state: AiState,
     request: AiChatRequest,
 ) -> Result<(), String> {
-    super::chatgpt::cancel_stream(&ai_state, &request.request_id).await?;
-
     let request_id = request.request_id.clone();
-    let task_request_id = request.request_id.clone();
-    let task_provider_id = request.provider_id.clone();
-    let app_for_task = app_handle.clone();
-    let state_for_task = ai_state.clone();
-    let task_started_at = Instant::now();
-
-    let handle = tokio::spawn(async move {
-        let result = stream_chat_inner(app_for_task.clone(), pool, request).await;
-        if let Err(error) = result {
-            emit_timeline(
-                &app_for_task,
-                &task_request_id,
-                &task_provider_id,
-                "openai_compatible",
-                task_started_at,
-                "error",
-            );
-            let _ = app_for_task.emit("ai:error", error.into_event(task_request_id.clone()));
-        }
-
-        let task_id = tokio::task::try_id();
-        let mut tasks = state_for_task.stream_tasks.lock().await;
-        if task_id
-            .map(|task_id| {
-                tasks
-                    .get(&task_request_id)
-                    .map(|handle| handle.id() == task_id)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-        {
-            tasks.remove(&task_request_id);
-        }
-    });
-
-    let mut tasks = ai_state.stream_tasks.lock().await;
-    tasks.insert(request_id, handle);
+    let provider_id = request.provider_id.clone();
+    let started_at = Instant::now();
+    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, request).await {
+        emit_timeline(
+            &app_handle,
+            &request_id,
+            &provider_id,
+            "openai_compatible",
+            started_at,
+            "error",
+        );
+        let _ = app_handle.emit("ai:error", error.into_event(request_id));
+    }
     Ok(())
 }
 

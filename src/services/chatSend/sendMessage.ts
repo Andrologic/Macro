@@ -27,6 +27,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   let lease: SendLease | null = null;
   let assistantMessageId: string | null = null;
   let launchError: unknown = null;
+  let releaseAdmission: (() => void) | undefined;
+  let admission: Promise<void> | undefined;
   const startedAt = Date.now();
   const timeline = (phase: string, context: Record<string, unknown> = {}) =>
     projection.timeline(phase, { requestId: lease?.sessionId ?? null, elapsedMs: Date.now() - startedAt, ...context });
@@ -83,6 +85,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     owner.rememberSession(conversationId, current.sessionId);
     timeline('send_requested', { conversationId });
     setPreparing(conversationId, current);
+    admission = new Promise<void>(resolve => { releaseAdmission = resolve; });
+    owner.track(conversationId, admission);
     await messages.ensureLoaded(conversationId);
     if (!isCurrent()) return cancelled();
     timeline('messages_ready', { conversationId });
@@ -109,6 +113,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
       owner.set(previousConversationId, null);
       setPreparing(conversationId, current);
+      if (admission) owner.track(conversationId, admission);
     }
     const scopedConfiguration = await configuration.load({
       projectIds: executionContext.projectIds, focusProjectId: executionContext.focusedProjectId, mode,
@@ -267,5 +272,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
     } else projection.sendError(normalized.message);
     throw normalized;
+  } finally {
+    releaseAdmission?.();
   }
 }

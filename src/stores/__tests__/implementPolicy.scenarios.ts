@@ -1571,8 +1571,8 @@ export const registerImplementPolicyScenarios = (
 
       useChatStore.getState().stopConversationStream('implement-conv');
 
-      expect(String(await toolCallPromise)).toBe('Tool execution aborted');
-      expect(String(await queuedToolCallPromise)).toBe('Tool execution aborted');
+      expect(await toolCallPromise).toMatchObject({ kind: 'result', isError: true, errorKind: 'permission' });
+      expect(await queuedToolCallPromise).toMatchObject({ kind: 'result', isError: true, errorKind: 'uncertain' });
       expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
       expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
       expect(

@@ -18,7 +18,9 @@ use crate::ai::types::{
 use crate::ai::{
     emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
 };
-use crate::core::process::{background_command, background_tokio_command};
+use crate::core::process::{
+    background_command, background_tokio_command, ContainedBackgroundProcess,
+};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -418,11 +420,11 @@ fn normalize_copilot_send_timeout_ms(value: Option<i64>) -> i64 {
         .unwrap_or(DEFAULT_COPILOT_SEND_TIMEOUT_MS)
 }
 
-fn spawn_bridge(
+fn bridge_command(
     app_handle: &AppHandle,
     args: &[&str],
     envs: &[(String, String)],
-) -> Result<Child, String> {
+) -> Result<tokio::process::Command, String> {
     let bridge_path = resolve_bridge_path(app_handle)?;
     let mut command = background_tokio_command(bridge_path);
     tracing::debug!(
@@ -442,7 +444,15 @@ fn spawn_bridge(
         command.env(key, value);
     }
 
-    command
+    Ok(command)
+}
+
+fn spawn_bridge(
+    app_handle: &AppHandle,
+    args: &[&str],
+    envs: &[(String, String)],
+) -> Result<Child, String> {
+    bridge_command(app_handle, args, envs)?
         .spawn()
         .map_err(|error| format!("Failed to start Macro AI runtime: {}", error))
 }
@@ -1992,56 +2002,27 @@ pub async fn stream_chat(
     ai_state: AiState,
     request: AiChatRequest,
 ) -> Result<(), String> {
-    cancel_stream(&ai_state, &request.request_id).await?;
-
     let request_id = request.request_id.clone();
-    let task_request_id = request.request_id.clone();
-    let task_provider_id = request.provider_id.clone();
-    let app_for_task = app_handle.clone();
-    let state_for_task = ai_state.clone();
-    let task_started_at = Instant::now();
-
-    let handle = tokio::spawn(async move {
-        let result =
-            stream_chat_inner(app_for_task.clone(), pool, state_for_task.clone(), request).await;
-        if let Err(message) = result {
-            emit_timeline(
-                &app_for_task,
-                &task_request_id,
-                &task_provider_id,
-                "copilot",
-                task_started_at,
-                "error",
-            );
-            let _ = app_for_task.emit(
-                "ai:error",
-                AiStreamErrorEvent {
-                    request_id: task_request_id.clone(),
-                    message,
-                    status: None,
-                },
-            );
-        }
-
-        let task_id = tokio::task::try_id();
-        let mut tasks = state_for_task.stream_tasks.lock().await;
-        let is_current_task = task_id
-            .map(|task_id| {
-                tasks
-                    .get(&task_request_id)
-                    .map(|handle| handle.id() == task_id)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if is_current_task {
-            tasks.remove(&task_request_id);
-            let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
-            tool_writers.remove(&task_request_id);
-        }
-    });
-
-    let mut tasks = ai_state.stream_tasks.lock().await;
-    tasks.insert(request_id, handle);
+    let provider_id = request.provider_id.clone();
+    let started_at = Instant::now();
+    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, ai_state, request).await {
+        emit_timeline(
+            &app_handle,
+            &request_id,
+            &provider_id,
+            "copilot",
+            started_at,
+            "error",
+        );
+        let _ = app_handle.emit(
+            "ai:error",
+            AiStreamErrorEvent {
+                request_id,
+                message: error,
+                status: None,
+            },
+        );
+    }
     Ok(())
 }
 
@@ -2123,7 +2104,15 @@ async fn stream_chat_inner(
     let runtime = ensure_copilot_runtime_for_send(&app_handle, &ai_state).await?;
     let payload = serde_json::to_string(&request)
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
-    let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
+    let process = ContainedBackgroundProcess::spawn(bridge_command(
+        &app_handle,
+        &["send"],
+        &bridge_envs(&app_handle, &runtime),
+    )?)
+    .map_err(|error| format!("Failed to start Macro AI runtime: {error}"))?;
+    let mut child = ai_state
+        .stream_tasks
+        .own_process(&request.request_id, process)?;
 
     let stdin = child
         .stdin
@@ -2155,24 +2144,8 @@ async fn stream_chat_inner(
         .stdout
         .take()
         .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
-
     let mut stdout_reader = BufReader::new(stdout).lines();
-    let stderr_task = tokio::spawn(async move {
-        let mut stderr_reader = BufReader::new(stderr).lines();
-        let mut lines = Vec::new();
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
-            }
-        }
-        lines.join("\n")
-    });
-
+    let mut done_payload = None;
     let mut saw_done = false;
     let mut last_error: Option<(Option<String>, String)> = None;
     let mut emitted_first_provider_event = false;
@@ -2224,27 +2197,20 @@ async fn stream_chat_inner(
                     emitted_first_provider_event = true;
                     timeline.emit("first_provider_event");
                 }
-                timeline.emit("done");
-                app_handle
-                    .emit(
-                        "ai:done",
-                        AiStreamDoneEvent {
-                            request_id: request.request_id.clone(),
-                            output_text: content,
-                            tool_calls: Vec::new(),
-                            response_id: None,
-                            output_items: None,
-                            provider_input_items: None,
-                            provider_turn_state: None,
-                            reasoning_summary,
-                            tool_traces,
-                            hidden_context,
-                            accepted_submission_ids: Some(accepted_submission_ids),
-                            completion_reason: completion_reason
-                                .or_else(|| Some("incomplete".to_string())),
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
+                done_payload = Some(AiStreamDoneEvent {
+                    request_id: request.request_id.clone(),
+                    output_text: content,
+                    tool_calls: Vec::new(),
+                    response_id: None,
+                    output_items: None,
+                    provider_input_items: None,
+                    provider_turn_state: None,
+                    reasoning_summary,
+                    tool_traces,
+                    hidden_context,
+                    accepted_submission_ids: Some(accepted_submission_ids),
+                    completion_reason: completion_reason.or_else(|| Some("incomplete".to_string())),
+                });
             }
             BridgeSendEvent::Error { code, message } => {
                 if !emitted_first_provider_event {
@@ -2298,13 +2264,15 @@ async fn stream_chat_inner(
         }
     }
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
+    let (status, stderr_output) = child.wait().await?;
 
     if saw_done {
+        if let Some(payload) = done_payload {
+            timeline.emit("done");
+            app_handle
+                .emit("ai:done", payload)
+                .map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
 

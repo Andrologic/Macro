@@ -1,4 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
+import { StreamStopUnconfirmedError } from "../ai/streamCancellation";
+import { SubagentRuntime } from "../subagentRuntime/SubagentRuntime";
 import type { StreamingChatOptions } from "../streamingChat";
 import { createGoalAuditProviderExecutor, type GoalAuditEffectiveSelection, type GoalAuditReadToolContext } from "./providerExecutor";
 import type { GoalAuditChildInput } from "./types";
@@ -21,16 +23,11 @@ const input = (): GoalAuditChildInput => ({
 const selection = { providerId: "provider", modelId: "model", reasoningEffort: undefined };
 const resolvedChild = () => ({ id: "conversation-child", runId: "child", parentConversationId: "parent", selection });
 
-const expectPromptAbort = async (pending: Promise<unknown>) => {
-  let deadline: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    deadline = setTimeout(() => reject(new Error("Abort did not settle promptly.")), 500);
-  });
-  try {
-    await expect(Promise.race([pending, timeout])).rejects.toHaveProperty("name", "AbortError");
-  } finally {
-    clearTimeout(deadline!);
-  }
+const expectStillOwned = async (pending: Promise<unknown>) => {
+  let settled = false;
+  void pending.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(settled).toBe(false);
 };
 
 describe("goal auditor provider executor", () => {
@@ -284,14 +281,15 @@ describe("goal auditor provider executor", () => {
     expect(stream).not.toHaveBeenCalled();
   });
 
-  it("settles promptly when provider resolution never completes", async () => {
+  it("retains ownership when provider resolution ignores Stop", async () => {
     const controller = new AbortController();
+    let finish!: (provider: { providerId: string; providerType: string; baseUrl: string; modelId: string }) => void;
     const resolveChildConversation = mock(resolvedChild);
     const stream = mock(async () => {});
     const executor = createGoalAuditProviderExecutor({
       resolveProvider: (_input, signal) => {
         expect(signal).toBe(controller.signal);
-        return new Promise(() => {});
+        return new Promise(resolve => { finish = resolve; });
       },
       resolveChildConversation,
       executeReadTool: async () => "unused",
@@ -299,14 +297,17 @@ describe("goal auditor provider executor", () => {
     });
     const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal });
     controller.abort();
-    await expectPromptAbort(pending);
+    await expectStillOwned(pending);
+    finish({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" });
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
     expect(resolveChildConversation).not.toHaveBeenCalled();
     expect(stream).not.toHaveBeenCalled();
   });
 
-  it("settles promptly when child resolution never completes", async () => {
+  it("retains ownership when child reservation ignores Stop", async () => {
     const controller = new AbortController();
     const stream = mock(async () => {});
+    let finish!: (child: ReturnType<typeof resolvedChild>) => void;
     let childStarted: () => void = () => {};
     const started = new Promise<void>((resolve) => { childStarted = resolve; });
     const executor = createGoalAuditProviderExecutor({
@@ -314,7 +315,7 @@ describe("goal auditor provider executor", () => {
       resolveChildConversation: ({ signal }) => {
         expect(signal).toBe(controller.signal);
         childStarted();
-        return new Promise(() => {});
+        return new Promise(resolve => { finish = resolve; });
       },
       executeReadTool: async () => "unused",
       stream,
@@ -322,15 +323,18 @@ describe("goal auditor provider executor", () => {
     const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal });
     await started;
     controller.abort();
-    await expectPromptAbort(pending);
+    await expectStillOwned(pending);
+    finish(resolvedChild());
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
     expect(stream).not.toHaveBeenCalled();
   });
 
-  it("settles promptly when streaming ignores abort and suppresses late progress", async () => {
+  it("waits for a stream ignoring Stop and suppresses late progress", async () => {
     const controller = new AbortController();
     const progress: string[] = [];
     let streamStarted: () => void = () => {};
     const started = new Promise<void>((resolve) => { streamStarted = resolve; });
+    let finish!: () => void;
     let callbacks: StreamingChatOptions | undefined;
     const readTool = mock(async () => "unused");
     const executor = createGoalAuditProviderExecutor({
@@ -340,18 +344,103 @@ describe("goal auditor provider executor", () => {
       stream: async (options) => {
         callbacks = options;
         streamStarted();
-        return new Promise(() => {});
+        return new Promise(resolve => { finish = resolve; });
       },
     });
     const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal, onProgress: (event) => progress.push(event.kind) });
     await started;
     controller.abort();
-    await expectPromptAbort(pending);
+    await expectStillOwned(pending);
     callbacks?.onToken("late token");
     callbacks?.onToolResult?.("read", "late result");
     await callbacks?.onToolCall?.("read", {});
     callbacks?.onComplete({ visibleContent: "late completion", toolTraces: [] });
     expect(progress).toEqual([]);
     expect(readTool).not.toHaveBeenCalled();
+    finish();
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
   });
+
+  it("preserves a typed uncertain receipt and reserves the child slot until local stop is confirmed", async () => {
+    let confirm!: () => void;
+    const proof = new Promise<void>(resolve => { confirm = resolve; });
+    const uncertain = new StreamStopUnconfirmedError("Receipt unavailable", proof);
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const launched: string[] = [];
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveChildConversation: ({ runId, parentConversationId, selection }) => ({ id: `conversation-${runId}`, runId, parentConversationId, selection }),
+      executeReadTool: async () => "unused",
+      stream: async options => {
+        launched.push(options.sessionId!);
+        if (options.sessionId !== "first") {
+          options.onComplete({ visibleContent: "{}", toolTraces: [] });
+          return;
+        }
+        started();
+        await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => {
+          options.onError(uncertain);
+          resolve();
+        }, { once: true }));
+      },
+    });
+    const runtime = new SubagentRuntime({ executor, policy: { maxConcurrencyForParentConversation: () => 1 } });
+    const first = runtime.run({ runId: "first", parentConversationId: "parent", parentDepth: 0, input: input() });
+    await ready;
+    first.cancel();
+    const second = runtime.run({ runId: "second", parentConversationId: "parent", parentDepth: 0, input: input() });
+    await expectStillOwned(first.result);
+    expect(runtime.getSnapshot("first")?.state).toBe("running");
+    expect(runtime.getSnapshot("second")?.state).toBe("queued");
+    expect(launched).toEqual(["first"]);
+    confirm();
+    expect((await first.result).status).toBe("cancelled");
+    expect((await second.result).status).toBe("completed");
+    expect(launched).toEqual(["first", "second"]);
+    runtime.dispose();
+  });
+
+  it("does not convert a thrown uncertain Stop into AbortError", async () => {
+    let confirm!: () => void;
+    const proof = new Promise<void>(resolve => { confirm = resolve; });
+    const uncertain = new StreamStopUnconfirmedError("Receipt unavailable", proof);
+    const controller = new AbortController();
+    const executor = createGoalAuditProviderExecutor({
+      resolveProvider: () => ({ providerId: "provider", providerType: "openai", baseUrl: "https://example.invalid", modelId: "model" }),
+      resolveChildConversation: resolvedChild,
+      executeReadTool: async () => "unused",
+      stream: async () => { controller.abort(); throw uncertain; },
+    });
+    const pending = executor.execute({ childRunId: "child", parentConversationId: "parent", depth: 1, input: input(), signal: controller.signal });
+    await expectStillOwned(pending);
+    confirm();
+    await expect(pending).rejects.toBe(uncertain);
+  });
+
+});
+
+
+it('retains the Goal owner until every uncertain read receipt arrives', async () => {
+  let confirmFirst!: () => void;
+  let confirmSecond!: () => void;
+  const failures = [
+    new StreamStopUnconfirmedError('First read still owned', new Promise<void>(resolve => { confirmFirst = resolve; })),
+    new StreamStopUnconfirmedError('Second read still owned', new Promise<void>(resolve => { confirmSecond = resolve; })),
+  ];
+  const executor = createGoalAuditProviderExecutor({
+    resolveProvider: () => ({ providerId: 'provider', providerType: 'openai', baseUrl: 'https://example.invalid', modelId: 'model' }),
+    resolveChildConversation: resolvedChild,
+    executeReadTool: async (_name, _args, id) => { throw failures[id === 'first' ? 0 : 1]; },
+    stream: async options => {
+      await Promise.all(['first', 'second'].map(id => Promise.resolve(options.onToolCall!('read', {}, id)).catch(() => undefined)));
+      options.onComplete({ visibleContent: '{}', toolTraces: [] });
+    },
+  });
+  const pending = executor.execute({ childRunId: 'child', parentConversationId: 'parent', depth: 1, input: input(), signal: new AbortController().signal });
+  await expectStillOwned(pending);
+  confirmFirst();
+  await expectStillOwned(pending);
+  confirmSecond();
+  await expect(pending).rejects.toBe(failures[0]);
 });

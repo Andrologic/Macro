@@ -4399,7 +4399,7 @@ describe('streamingChat transport lifetime', () => {
     expect(errors).toEqual([]);
   });
 
-  it('discards a live native tool resolution after its provider turn has completed', async () => {
+  it('drains an outstanding native tool after provider completion and discards its late result', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     let requestId = '';
     let started!: () => void;
@@ -4434,9 +4434,13 @@ describe('streamingChat transport lifetime', () => {
     await ready;
     listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'late-call', tool_name: 'read', args: { path: 'README.md' } } });
     listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
-    await run;
+    let ended = false;
+    void run.then(() => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
     const finishedTraceCount = traces.length;
     resolveTool('late-result');
+    await run;
     await tool;
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(submit).not.toHaveBeenCalled();
@@ -4636,13 +4640,15 @@ describe('streamingChat transport lifetime', () => {
     }
   });
 
-  it('finishes with an unknown tool outcome when native submission never settles', async () => {
+  it('keeps ownership until an unconfirmed native submission settles', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     let requestId = '';
     let started!: () => void;
     let submitting!: () => void;
     const ready = new Promise<void>((resolve) => { started = resolve; });
     const submissionReady = new Promise<void>((resolve) => { submitting = resolve; });
+    let releaseSubmission!: () => void;
+    const submission = new Promise<void>(resolve => { releaseSubmission = resolve; });
     const { streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
       listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
@@ -4656,7 +4662,7 @@ describe('streamingChat transport lifetime', () => {
         }
         if (command === 'ai_submit_tool_result') {
           submitting();
-          await new Promise<void>(() => undefined);
+          await submission;
         }
       }),
     });
@@ -4682,6 +4688,11 @@ describe('streamingChat transport lifetime', () => {
     listeners.get('ai:done')!({ payload: {
       request_id: requestId, output_text: 'done', tool_calls: [], accepted_submission_ids: [],
     } });
+    let ended = false;
+    void run.then(() => { ended = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
+    releaseSubmission();
     await run;
 
     const result = completed.mock.calls[0]?.[0];
@@ -4885,4 +4896,60 @@ it('native Copilot replay names unavailable media without putting base64 in its 
   const message = (request.messages as Array<{ content: string }>)[0];
   expect(message.content).toContain('not sent as media by Copilot historical prompt replay');
   expect(message.content).not.toContain(fixture.content[1].data!);
+});
+
+
+describe('Stop ownership through the native transport and composer pipeline', () => {
+  it('retains admission when the composer resolves after an unconfirmed native Stop, then retries the receipt', async () => {
+    const { createChatTurnRuntime } = await import('./chatTurnRuntime');
+    const { runAssistantStream } = await import('./chatStreamOrchestrator');
+    const { EMPTY_CONVERSATION_RUNTIME } = await import('../domains/chat/runtimeState');
+    const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let confirmsStop = false;
+    const invokeImpl = mock(async (command: string) => {
+      if (command === 'ai_stream_chat') started();
+      if (command === 'ai_cancel_stream' && !confirmsStop) throw new Error('Receipt unavailable');
+    });
+    const { streamChat, cancelStream } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true, invokeImpl,
+    });
+    const controller = new AbortController();
+    let state = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'preparing' as const,
+      sessionId: 'stop-pipeline', turnId: 'turn', assistantMessageId: 'assistant', abortController: controller } as import('../types').ConversationRuntimeState;
+    const settled = mock(() => {});
+    const owner = createChatTurnRuntime({
+      state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false },
+      cancelTransport: cancelStream, settled,
+    });
+    owner.rememberSession('conversation', 'stop-pipeline');
+    const accepts = owner.claimStream({ conversationId: 'conversation', sessionId: 'stop-pipeline', turnId: 'turn', assistantMessageId: 'assistant' }, controller)!;
+    const onAbort = mock(() => { expect(accepts()).toBe(true); });
+    const onError = mock(() => {});
+    const stream = runAssistantStream({
+      sessionId: 'stop-pipeline', providerId: 'chatgpt', providerType: 'chatgpt', modelId: 'model', baseUrl: 'https://example.invalid',
+      messages: [{ role: 'user', content: 'hello' }], signal: controller.signal,
+      streamChatImpl: streamChat,
+      lifecycle: { appendTokenChunk: () => {}, onComplete: () => {}, onError, onAbort },
+    });
+    void stream.catch(() => undefined);
+    owner.track('conversation', stream);
+    await ready;
+    await expect(owner.stop('conversation')).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+    await expect(stream).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(accepts()).toBe(false);
+    expect(state.phase).toBe('error');
+    expect(settled).not.toHaveBeenCalled();
+    expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+    expect(getActiveStreamingSessionIds()).toContain('stop-pipeline');
+    confirmsStop = true;
+    await owner.stop('conversation');
+    expect(state.phase).toBe('idle');
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).not.toThrow();
+    expect(getActiveStreamingSessionIds()).not.toContain('stop-pipeline');
+  });
 });

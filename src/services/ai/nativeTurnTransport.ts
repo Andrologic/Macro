@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from './streamCancellation';
 import type { ToolResultBlock } from '../../shared/toolResultContent';
 import { projectCopilotMessageContent } from './copilotPromptCodec';
 import {
@@ -99,6 +100,34 @@ export const streamNativeTurnViaTauri = async (params: {
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
+    let cancellationRequested = false;
+    let cancellation: Promise<void> | undefined;
+    let stopUnconfirmed = false;
+    let confirmLocalStop!: () => void;
+    const localStopConfirmed = new Promise<void>(resolve => { confirmLocalStop = resolve; });
+    const ownedWork = new Set<Promise<unknown>>();
+    const ownedFailures: unknown[] = [];
+    const unconfirmedWork = new Set<StreamStopUnconfirmedError>();
+    const drainOwnedWork = async () => {
+      // Each rejection is recorded immediately, including work that settled
+      // before draining began. Ordinary failures ended locally; uncertain ones
+      // still require their own receipt.
+      while (ownedWork.size) await Promise.all([...ownedWork].map(work => work.then(() => undefined, () => undefined)));
+      for (const error of ownedFailures.splice(0)) {
+        if (error instanceof StreamStopUnconfirmedError) unconfirmedWork.add(error);
+        else devLogger.warn('Owned native operation failed', formatToolExecutionError(error));
+      }
+      for (const error of unconfirmedWork) if (error.stopped) unconfirmedWork.delete(error);
+    };
+    const uncertainStop = (reason: unknown) => new StreamStopUnconfirmedError(
+      `Native stream stop was not confirmed: ${formatToolExecutionError(reason)}`,
+      Promise.all([localStopConfirmed, ...Array.from(unconfirmedWork, error => error.whenStopped)]).then(() => undefined),
+    );
+    const own = <T>(work: Promise<T>): Promise<T> => {
+      ownedWork.add(work);
+      void work.then(() => ownedWork.delete(work), error => { ownedFailures.push(error); ownedWork.delete(work); });
+      return work;
+    };
     const nativeUnlisteners: UnlistenFn[] = [];
     let questionToolRequestCount = 0;
     let nativeToolRequestOrder = 0;
@@ -135,7 +164,7 @@ export const streamNativeTurnViaTauri = async (params: {
     let deferredDonePayload: tauriIpc.AiStreamDoneEvent | undefined;
     let deferredDoneTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const stopped = () => settled || params.signal?.aborted === true;
+    const stopped = () => settled || cancellationRequested || params.signal?.aborted === true;
     const emitToolTrace = (trace: ToolTrace) => {
       try { params.onToolTrace?.(trace); }
       catch (error) { devLogger.warn('Native tool trace observer failed', formatToolExecutionError(error)); }
@@ -168,7 +197,7 @@ export const streamNativeTurnViaTauri = async (params: {
       const request = requests[nextToPublish];
       if (!request?.outcome) return;
       publishing = true;
-      void (async () => {
+      void own((async () => {
         try {
           await submitResult(request, request.outcome!);
         } catch {
@@ -205,7 +234,7 @@ export const streamNativeTurnViaTauri = async (params: {
             else { publishReady(); startReady(); }
           }
         }
-      })();
+      })());
     };
 
     const executeRequest = async (request: NativeRequest) => {
@@ -239,9 +268,20 @@ export const streamNativeTurnViaTauri = async (params: {
             outcome.blocks = resolution.blocks;
             outcome.isError = resolution.isError === true;
             outcome.errorKind = resolution.errorKind;
+          } else {
+            outcome.result = JSON.stringify({ outcome: 'unknown', toolName, callId: toolCallId,
+              reason: 'The tool handler returned no execution result. Inspect its effects before retrying.' });
+            outcome.isError = true;
+            outcome.errorKind = 'uncertain';
           }
         }
       } catch (error) {
+        if (error instanceof StreamStopUnconfirmedError) {
+          cancellationRequested = true;
+          stopUnconfirmed = true;
+          finish(() => reject(error));
+          throw error;
+        }
         if (stopped()) return;
         outcome.result = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
         outcome.isError = true;
@@ -274,7 +314,7 @@ export const streamNativeTurnViaTauri = async (params: {
           batch_id: requestId, order: request.order, started_at_ms: Date.now(),
         });
         if (stopped()) return;
-        void executeRequest(request);
+        void own(executeRequest(request));
         if (!request.safeRead) return;
       }
     };
@@ -297,13 +337,22 @@ export const streamNativeTurnViaTauri = async (params: {
       if (settled) return;
       settled = true;
       if (deferredDoneTimer) clearTimeout(deferredDoneTimer);
-      params.signal?.removeEventListener('abort', signalHandler);
+      params.signal?.removeEventListener('abort', signalObserver);
       nativeUnlisteners.splice(0).forEach(disposeListener);
-      if (resources.tauriRequestId === requestId) {
-        resources.tauriRequestId = null;
-        if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
-      }
-      fn();
+      // The result may stop publication before a tool or the admission IPC
+      // settles. Keep the invocation alive until every owned operation ends.
+      void drainOwnedWork().then(() => {
+        if (unconfirmedWork.size) {
+          stopUnconfirmed = true;
+          reject(uncertainStop([...unconfirmedWork][0]));
+          return;
+        }
+        if (!stopUnconfirmed && resources.tauriRequestId === requestId) {
+          resources.tauriRequestId = null;
+          if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
+        }
+        fn();
+      });
     };
 
     const completeDone = (payload: tauriIpc.AiStreamDoneEvent) => {
@@ -377,14 +426,51 @@ export const streamNativeTurnViaTauri = async (params: {
       completeDone(payload);
     };
 
-    const signalHandler = () => {
-      void tauriIpc.aiCancelStream(requestId).catch(() => {
-        // Ignore backend cancel failures
-      });
-      finish(() => reject(new DOMException('Aborted', 'AbortError')));
+    const signalHandler = (): Promise<void> => {
+      if (cancellation) return cancellation;
+      if (settled) return Promise.resolve();
+      cancellationRequested = true;
+      // Joining this provider future says nothing about terminal/MCP effects.
+      const nativeStop = own(Promise.resolve().then(() => tauriIpc.aiCancelStream(requestId)));
+      cancellation = (async () => {
+        let failure: unknown;
+        try { await nativeStop; } catch (error) { failure = error; }
+        await drainOwnedWork();
+        if (failure !== undefined || unconfirmedWork.size) {
+          stopUnconfirmed = true;
+          const uncertain = uncertainStop(failure ?? [...unconfirmedWork][0]);
+          finish(() => reject(uncertain));
+          throw uncertain;
+        }
+        confirmLocalStop();
+        finish(() => reject(new DOMException('Aborted', 'AbortError')));
+      })();
+      // AbortSignal observers cannot await or handle a rejected stop receipt.
+      void cancellation.catch(() => undefined);
+      return cancellation;
     };
 
-    if (!invocationResources) resources.cancel = signalHandler;
+    const signalObserver = () => { void signalHandler(); };
+    const cancelInvocation = resources.cancel;
+    resources.cancel = () => {
+      if (stopUnconfirmed && settled) {
+        // Retrying cancellation is idempotent for this single-use request ID.
+        const retry = tauriIpc.aiCancelStream(requestId).then(async () => {
+          await drainOwnedWork();
+          await Promise.all(Array.from(unconfirmedWork, error => error.whenStopped));
+          unconfirmedWork.clear();
+          stopUnconfirmed = false;
+          confirmLocalStop();
+          if (resources.tauriRequestId === requestId) resources.tauriRequestId = null;
+          // The outer invocation already unwound after the uncertain result.
+          pruneActiveStreamResources(sessionId, resources);
+        });
+        void retry.catch(() => undefined);
+        return retry;
+      }
+      cancelInvocation?.();
+      return signalHandler();
+    };
 
     if (params.signal?.aborted) {
       signalHandler();
@@ -392,14 +478,14 @@ export const streamNativeTurnViaTauri = async (params: {
     }
 
     if (params.signal) {
-      params.signal.addEventListener('abort', signalHandler, { once: true });
+      params.signal.addEventListener('abort', signalObserver, { once: true });
     }
 
     void (async () => {
       try {
         await Promise.all([
           ownListener<tauriIpc.AiStreamTimelineEvent>('ai:timeline', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             params.onTimeline?.({
               request_id: event.payload.request_id,
               provider_id: event.payload.provider_id,
@@ -409,18 +495,18 @@ export const streamNativeTurnViaTauri = async (params: {
             });
           }),
           ownListener<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             fullContent += event.payload.delta;
             params.onDelta(event.payload.delta);
           }),
           ownListener<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             if (event.payload.tool_trace.status === 'done' &&
               requests.some(request => request.toolCallId === event.payload.tool_trace.tool_call_id)) return;
             emitToolTrace(event.payload.tool_trace);
           }),
           ownListener<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             const toolName = event.payload.tool_name;
             const args = event.payload.args && typeof event.payload.args === 'object'
               ? event.payload.args : {};
@@ -433,7 +519,7 @@ export const streamNativeTurnViaTauri = async (params: {
             startReady();
           }),
           ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             // Completion may arrive before IPC settles the submitted result.
             deferredDonePayload = event.payload;
             if (pendingToolSubmissions.size === 0) flushDeferredDone();
@@ -442,19 +528,19 @@ export const streamNativeTurnViaTauri = async (params: {
             }, DONE_SUBMISSION_GRACE_MS);
           }),
           ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
-            if (settled || event.payload.request_id !== requestId) return;
+            if (stopped() || event.payload.request_id !== requestId) return;
             finish(() => reject(classifyProviderError(event.payload.message, event.payload.status)));
           }),
         ]);
 
-        if (settled) return;
+        if (stopped()) return;
         if (params.signal?.aborted) {
           signalHandler();
           return;
         }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
-        await tauriIpc.aiStreamChat({
+        await own(tauriIpc.aiStreamChat({
           requestId,
           providerId: params.providerId,
           modelId: params.modelId,
@@ -482,8 +568,9 @@ export const streamNativeTurnViaTauri = async (params: {
           focusedProjectId: params.focusedProjectId,
           allowedToolIds: params.allowedToolIds,
           copilotSendTimeoutMs: params.copilotSendTimeoutMs,
-        });
+        }));
       } catch (error) {
+        if (cancellationRequested) return;
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     })();

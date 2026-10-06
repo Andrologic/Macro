@@ -11,34 +11,13 @@ const NATIVE_READ_TOOLS = new Set<GoalAuditorReadInput["toolId"]>([
 
 const abortError = () => new DOMException("Goal audit read cancelled.", "AbortError");
 
-const readUntilAbort = (input: GoalAuditorReadInput, signal: AbortSignal): Promise<string> =>
-  new Promise<string>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(abortError());
-      return;
-    }
-    let settled = false;
-    const finish = (settle: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      settle();
-    };
-    const onAbort = () => finish(() => reject(abortError()));
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    try {
-      executeGoalAuditorRead(input).then(
-        (value) => finish(() => signal.aborted ? reject(abortError()) : resolve(value)),
-        (error) => finish(() => reject(signal.aborted ? abortError() : error)),
-      );
-    } catch (error) {
-      finish(() => reject(signal.aborted ? abortError() : error));
-    }
-  });
+// Revoking publication cannot release the owner of an IPC already dispatched.
+const readUntilAbort = async (input: GoalAuditorReadInput, signal: AbortSignal): Promise<string> => {
+  if (signal.aborted) throw abortError();
+  const value = await executeGoalAuditorRead(input);
+  if (signal.aborted) throw abortError();
+  return value;
+};
 
 /** The executor supplies audit identity separately from provider arguments. */
 export async function executeNativeGoalAuditReadTool(

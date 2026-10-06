@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
 import type {
   StreamCompletionResult,
   StreamingChatOptions,
@@ -143,6 +144,7 @@ export const runAssistantStream = async ({
   let abortPromise: Promise<void> | null = null;
   let completionPromise: Promise<void> | null = null;
   let errorPromise: Promise<void> | null = null;
+  let unconfirmedStop: StreamStopUnconfirmedError | undefined;
   const handleErrorOnce = async (error: Error, completionFailure = false): Promise<void> => {
     if (handledError || handledAbort || (handledComplete && !completionFailure)) {
       return;
@@ -193,6 +195,7 @@ export const runAssistantStream = async ({
         completionPromise = handleCompleteOnce(result);
       },
       onError: (error) => {
+        if (error instanceof StreamStopUnconfirmedError) unconfirmedStop = error;
         if (handledComplete || handledError || handledAbort) return;
         errorPromise = handleErrorOnce(error);
       },
@@ -209,10 +212,12 @@ export const runAssistantStream = async ({
   } catch (error) {
     if (completionPromise) {
       await completionPromise;
+      if (error instanceof StreamStopUnconfirmedError) throw error;
       return;
     }
     const normalized =
       error instanceof Error ? error : new Error(String(error));
+    if (normalized instanceof StreamStopUnconfirmedError) unconfirmedStop = normalized;
     await handleErrorOnce(normalized);
   } finally {
     try {
@@ -222,4 +227,5 @@ export const runAssistantStream = async ({
       streamOptions.signal?.removeEventListener("abort", handleAbort);
     }
   }
+  if (unconfirmedStop) throw unconfirmedStop;
 };

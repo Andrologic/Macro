@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from "./streamCancellation";
 import { beforeEach, expect, mock, test } from 'bun:test';
 import { resolveChatErrorPresentation, buildProviderErrorTranscriptMarkdown } from '../chatErrorPresentation';
 import type { ToolTrace } from '../../types';
@@ -16,19 +17,24 @@ let started: Promise<void>;
 let submissions: Submission[] = [];
 let cancelCount = 0;
 let doneAfter = 0;
+let cancelGate: (() => Promise<void>) | undefined;
+let streamGate: (() => Promise<void>) | undefined;
+let listenerGate: Promise<void> | undefined;
 let submissionGate: ((submission: Submission) => Promise<void>) | undefined;
 const emit = (event: string, payload: Record<string, unknown>) => handlers.get(event)?.({ payload });
 
 mock.module('../tauriRuntimeBridge', () => ({ ...bridge, listen: async (event: string, handler: Handler) => {
   handlers.set(event, handler);
+  await listenerGate;
   return () => handlers.delete(event);
 } }));
 mock.module('../tauriIpc', () => ({ ...ipc,
   isTauriAvailable: () => true,
-  aiCancelStream: async () => { cancelCount += 1; },
+  aiCancelStream: async () => { cancelCount += 1; await cancelGate?.(); },
   aiStreamChat: async (request: Parameters<typeof ipc.aiStreamChat>[0]) => {
     requestId = request.requestId;
     streamStarted();
+    await streamGate?.();
   },
   aiSubmitToolResult: async (submission: Submission) => {
     submissions.push(submission);
@@ -51,6 +57,9 @@ beforeEach(() => {
   cancelCount = 0;
   doneAfter = 0;
   submissionGate = undefined;
+  cancelGate = undefined;
+  streamGate = undefined;
+  listenerGate = undefined;
 });
 
 const deferred = <T>() => {
@@ -202,8 +211,12 @@ test('native cancellation drops running and queued tool results', async () => {
   for (let index = 0; index < 4; index += 1) request(`call-${index}`, 'read', { path: `file-${index}` });
   expect(launched).toEqual(['call-0', 'call-1', 'call-2']);
   controller.abort();
-  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  let ended = false;
+  void run.then(() => { ended = true; }, () => { ended = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(ended).toBe(false);
   gates.forEach(gate => gate.resolve('late'));
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(cancelCount).toBe(1);
   expect(launched).toEqual(['call-0', 'call-1', 'call-2']);
@@ -351,7 +364,7 @@ test('failed submission during cancellation publishes no success', async () => {
   expect(completed).not.toHaveBeenCalled();
 });
 
-test('cancellation settles promptly while native submission remains pending', async () => {
+test('cancellation retains ownership while native submission remains pending', async () => {
   const controller = new AbortController();
   const gate = deferred<void>();
   submissionGate = () => gate.promise;
@@ -361,9 +374,13 @@ test('cancellation settles promptly while native submission remains pending', as
   request('read-call', 'read', { path: 'file' });
   await waitFor(() => submissions.length === 1);
   controller.abort();
-  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  let ended = false;
+  void run.then(() => { ended = true; }, () => { ended = true; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(ended).toBe(false);
   expect(live).not.toHaveBeenCalled();
   gate.resolve();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(live).not.toHaveBeenCalled();
 });
@@ -444,3 +461,97 @@ for (const providerType of ['copilot', 'chatgpt']) {
     expect(traces.at(-1)).toMatchObject({ status: 'done', recovery_state: 'unknown' });
   });
 }
+
+
+test('Stop during listener admission prevents provider start after late registration', async () => {
+  const gate = deferred<void>();
+  listenerGate = gate.promise;
+  const controller = new AbortController();
+  const run = turn({ signal: controller.signal });
+  controller.abort();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  gate.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(requestId).toBe('');
+  expect(handlers.size).toBe(0);
+});
+
+test('Stop waits for both its native receipt and the in-flight admission IPC', async () => {
+  const admission = deferred<void>();
+  const cancellation = deferred<void>();
+  streamGate = () => admission.promise;
+  cancelGate = () => cancellation.promise;
+  const controller = new AbortController();
+  const run = turn({ signal: controller.signal });
+  let ended = false;
+  void run.then(() => { ended = true; }, () => { ended = true; });
+  await started;
+  controller.abort();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(ended).toBe(false);
+  cancellation.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(ended).toBe(false);
+  admission.resolve();
+  await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cancelCount).toBe(1);
+});
+
+test('failed native cancellation is uncertainty, not AbortError or released resources', async () => {
+  const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+  cancelGate = async () => { throw new Error('No native stop receipt'); };
+  const controller = new AbortController();
+  const run = turn({ sessionId: 'unconfirmed', signal: controller.signal });
+  void run.catch(() => undefined);
+  await started;
+  controller.abort();
+  const stop = cancelStream('unconfirmed');
+  await expect(stop).rejects.toMatchObject({ name: 'StreamStopUnconfirmedError' });
+  await expect(run).rejects.toMatchObject({ name: 'StreamStopUnconfirmedError' });
+  expect(activeStreamResourcesBySessionId.get('unconfirmed')?.tauriRequestId).toBe(requestId);
+  activeStreamResourcesBySessionId.delete('unconfirmed');
+});
+
+
+for (const errorKind of ['permission', 'validation', 'execution', 'uncertain'] as const) {
+  test(`native publication preserves a typed tool ${errorKind} result`, async () => {
+    doneAfter = 1;
+    const traces: ToolTrace[] = [];
+    const run = turn({ allowedToolIds: ['terminal_run'], onToolTrace: trace => traces.push(trace),
+      onToolCall: async () => ({ kind: 'result', result: 'structured terminal outcome', isError: true, errorKind }) });
+    await started;
+    request('terminal-call', 'terminal_run', { session_id: 'session', command: 'command' });
+    await run;
+    expect(submissions[0]).toMatchObject({ result: 'structured terminal outcome', isError: true, errorKind });
+    expect(traces.at(-1)?.recovery_state).toBe(errorKind === 'uncertain' ? 'unknown' : 'completed');
+  });
+}
+
+test('a tool handler without a result cannot publish fictitious native success', async () => {
+  doneAfter = 1;
+  const run = turn({ onToolCall: async () => undefined });
+  await started;
+  request('missing-result', 'read', { path: 'file' });
+  await run;
+  expect(submissions[0]).toMatchObject({ isError: true, errorKind: 'uncertain' });
+});
+
+
+test('a tool stop uncertainty survives draining and does not publish a fictitious result', async () => {
+  const proof = deferred<void>();
+  const failure = new StreamStopUnconfirmedError('Tool executor still owns work', proof.promise);
+  const run = turn({ sessionId: 'uncertain-tool', onToolCall: async () => { throw failure; } });
+  void run.catch(() => undefined);
+  await started;
+  request('uncertain-read', 'read', { path: 'file' });
+  await expect(run).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+  expect(submissions).toHaveLength(0);
+  const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+  let stopped = false;
+  const stop = cancelStream('uncertain-tool').then(() => { stopped = true; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(stopped).toBe(false);
+  proof.resolve();
+  await stop;
+  expect(activeStreamResourcesBySessionId.has('uncertain-tool')).toBe(false);
+});

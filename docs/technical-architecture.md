@@ -1763,6 +1763,32 @@ identifiant d’exécution ; la commande d’annulation interrompt l’attente r
 et la lecture du corps. Le registre conserve temporairement les annulations
 reçues avant le démarrage de la commande.
 
+Le registre natif des streams réserve chaque identifiant avant toute attente de
+préparation du fournisseur. Ces identifiants sont à usage unique pendant la vie
+du processus ; une annulation reçue avant admission interdit un démarrage tardif.
+La commande d’annulation attend la destruction de la tâche possédée. Les wrappers
+ChatGPT, OpenAI compatibles et Copilot exécutent leur travail dans cette tâche.
+Le superviseur joint également le processus Copilot confiné, ses descendants et
+sa lecture stderr ; une erreur de terminaison conserve un reçu d’arrêt incertain.
+Copilot publie sa fin seulement après ce contrôle.
+
+Chat conserve sa réservation pendant la préparation, le transport et les outils
+déjà lancés, même si un exécuteur ignore le signal. L’annulation du transport
+rend une promesse de confirmation. Son échec conserve la réservation et expose
+une erreur ; une nouvelle demande peut obtenir la confirmation manquante. Goal
+conserve aussi le créneau de l’enfant tant que cette confirmation manque. Un
+`AbortError` ou la fin du compositeur ne constitue pas cette preuve. Une erreur
+`StreamStopUnconfirmedError` traverse le compositeur même après son callback
+d’abandon ; son `whenStopped` permet de conserver la réservation jusqu’au reçu.
+Les lectures parallèles génériques et les ports Goal natifs attendent leurs
+opérations déjà lancées, puis révoquent les sorties tardives.
+
+La confirmation concerne la tâche locale du stream, pas les effets externes déjà
+dispatchés. Les outils terminaux rendent des refus et erreurs typés ; un code de
+sortie métier non nul reste un résultat exécuté. Après dispatch, une interruption,
+un résultat non final ou une réponse de transport perdue reste `uncertain` et
+maintient le journal en `unknown`, sans déclaration de réussite ni rejeu aveugle.
+
 ### 15.2 Couplage avec les plans
 
 En mode Architect, la synchronisation de fin de tour attend la réussite de

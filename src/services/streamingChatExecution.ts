@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
 import { runToolCallingLoop } from './ai/toolCallingLoop';
 import { createNativeAdapter } from './ai/nativeAdapter';
 import { createChatCompletionsAdapter } from './ai/chatCompletionsAdapter';
@@ -51,6 +52,7 @@ const streamChatViaNativeToolCallingProvider = async (options: StreamingChatOpti
     options.onComplete(await runToolCallingLoop(options, createNativeAdapter(options, accumulator, compatibility, resources), accumulator));
   } catch (error) {
     options.onError(error instanceof Error ? error : new Error(String(error)));
+    if (error instanceof StreamStopUnconfirmedError) throw error;
   }
 };
 
@@ -100,7 +102,7 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
     try {
       return await streamChatViaNativeToolCallingProvider(effectiveOptions, resources, compatibility);
     } catch (error) {
-      if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
+      if (effectiveOptions.signal?.aborted || error instanceof StreamStopUnconfirmedError || options.providerType === 'ollama' || options.providerType === 'lmstudio') {
         throw error;
       }
       // Generic native streaming reads keys from Macro's local secret store. If
@@ -115,6 +117,7 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
     transport.done();
   } catch (error) {
     options.onError(transport.error(error));
+    if (error instanceof StreamStopUnconfirmedError) throw error;
   } finally {
     transport.dispose();
   }

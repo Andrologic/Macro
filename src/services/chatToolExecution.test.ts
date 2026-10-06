@@ -108,7 +108,7 @@ function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: P
     terminal: {
       cachedSession: () => terminalSession,
       createSession: mock(async () => terminalSession), readSession: mock(async () => terminalSession),
-      runCommand: mock(async () => terminalSession), killSession: mock(async () => terminalSession),
+      runCommand: mock(async () => ({ ...terminalSession, status: "completed" as const })), killSession: mock(async () => terminalSession),
     },
     workspace: {
       executor: async () => executor,
@@ -386,7 +386,10 @@ describe("agent terminal isolation", () => {
   test("rejects manual sessions and omits project metadata from agent results", async () => {
     const f = setup("terminal_read");
     f.ports.terminal.cachedSession = () => ({ ...terminalSession, project_id: "manual" });
-    expect(await f.run({ session_id: "terminal" })).toContain("manual project terminal");
+    expect(await f.run({ session_id: "terminal" })).toMatchObject({
+      kind: "result", isError: true, errorKind: "permission",
+      result: expect.stringContaining("manual project terminal"),
+    });
     f.ports.terminal.cachedSession = () => terminalSession;
     const result = JSON.parse(String(await f.run({ session_id: "terminal" })));
     expect(result).not.toHaveProperty("project_id");

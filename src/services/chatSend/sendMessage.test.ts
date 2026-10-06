@@ -353,7 +353,7 @@ describe('sendMessage use case without UI stores', () => {
 
 });
 
-it('a stale assistant write failure must not revert the successor task', async () => {
+it('Stop waits for an outstanding assistant write before admitting a successor', async () => {
   const f = fixture('Implement');
   const owner = createChatTurnRuntime({ state: {
     read: id => f.runtimes.get(id) ?? EMPTY_CONVERSATION_RUNTIME,
@@ -377,12 +377,14 @@ it('a stale assistant write failure must not revert the successor task', async (
   await new Promise<void>(resolve => setImmediate(resolve));
   expect(f.task.draft).toBe(false);
   expect(assistantWrites).toBe(1);
-  owner.stop('conversation-1');
+  const stopped = owner.stop('conversation-1');
+  expect(() => owner.assertCanSend('conversation-1', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+  oldWrite.reject(new Error('late disk failure'));
+  await oldSend;
+  await stopped;
   const successor = await f.run();
   expect(successor.status).toBe('sent');
   expect(owner.read('conversation-1')).toMatchObject({ phase: 'streaming', sessionId: 'session-2' });
-  oldWrite.reject(new Error('late disk failure'));
-  await oldSend;
   expect(f.ports.tasks.rollbackDraft).not.toHaveBeenCalled();
   expect(f.task.draft).toBe(false);
 });
