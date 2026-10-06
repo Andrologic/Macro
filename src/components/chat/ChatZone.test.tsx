@@ -3,6 +3,7 @@ import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import {
   createTranslationMock,
   installReactI18nextMock,
@@ -429,7 +430,10 @@ const resetNotifyMocks = () => {
   notifyActionRequiredMock.mockClear();
 };
 
-const loadChatZoneModule = async (useRichComposer = false) => {
+const loadChatZoneModule = async (
+  useRichComposer = false,
+  chatStore: typeof useChatStore | UseBoundStore<StoreApi<MockChatState>> = useChatStore,
+) => {
   importCounter += 1;
   mock.restore();
 
@@ -440,7 +444,7 @@ const loadChatZoneModule = async (useRichComposer = false) => {
   }));
 
   mock.module('../../stores/useChatStore', () => ({
-    useChatStore,
+    useChatStore: chatStore,
   }));
 
   mock.module('../../stores/useSkillsStore', () => ({
@@ -1242,6 +1246,76 @@ describe('ChatZone', () => {
 
   afterAll(() => {
     mock.restore();
+  });
+
+  it('reacts to approval-only publication and removal with a real Zustand subscription', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      messagesByConversationId: {},
+      // Real runtime snapshots keep their identity until the runtime changes.
+      getConversationRuntime: () => runtime,
+      getPendingToolApproval: mock((id: string): PendingToolApproval | null =>
+        realChatStore.getState().pendingToolApprovalByConversationId[id] ?? null
+      ),
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+
+    const traceMessage = buildMessage({
+      id: 'approval-assistant',
+      role: 'assistant',
+      content: '',
+      tool_traces: [{ tool_call_id: 'selected-call', tool_name: 'terminal_run', status: 'pending_approval' }],
+    });
+    await act(async () => {
+      realChatStore.setState({ messages: [traceMessage], messagesByConversationId: { 'conv-1': [traceMessage] } });
+    });
+    const footer = () => requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer()).toBeNull();
+
+    const approval: PendingToolApproval = {
+      conversationId: 'conv-1', assistantMessageId: traceMessage.id, toolCallId: 'selected-call',
+      toolId: 'terminal_run', actionGroup: 'escape', riskLevel: 'balanced',
+      summary: 'Run selected command', detail: 'echo selected-request', rememberKey: '',
+      canApproveForConversation: false,
+    };
+    const otherApproval: PendingToolApproval = {
+      ...approval, conversationId: 'conv-2', toolCallId: 'other-call', detail: 'echo other-request',
+    };
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+
+    // Persistence has finished. Only the approval map changes, with no forced render.
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-1': approval, 'conv-2': otherApproval } });
+    });
+    expect(footer()).not.toBeNull();
+    expect(footer()?.textContent).toContain('echo selected-request');
+    expect(footer()?.textContent).not.toContain('echo other-request');
+    expect(footer()?.textContent).toContain('Refuse');
+    const allowOnce = Array.from(footer()?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Allow once')
+    );
+    expect(allowOnce).toBeDefined();
+    await act(async () => { allowOnce?.click(); });
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledTimes(1);
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+
+    await act(async () => {
+      realChatStore.setState({ selectedConversationId: 'conv-2' });
+    });
+    expect(footer()?.textContent).toContain('echo other-request');
+    expect(footer()?.textContent).not.toContain('echo selected-request');
   });
 
   it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
