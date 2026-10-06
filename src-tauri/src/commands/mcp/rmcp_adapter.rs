@@ -34,7 +34,8 @@ use tokio::sync::Mutex;
 use super::env_secrets::sanitized_process_environment;
 use super::ids::build_mcp_tool_id;
 use super::result_format::normalize_tool_call_result;
-use super::runtime::McpOperationCancellation;
+use super::runtime::{McpOperationCancellation, McpRuntimeError};
+use super::service_shutdown::TransportCleanup;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
 use crate::core::process::{background_tokio_command, ContainedBackgroundProcess};
@@ -65,7 +66,6 @@ const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const TRANSPORT_VOLUNTARY_EXIT_GRACE: Duration = Duration::from_secs(3);
 /// Budget for `RunningService::close_with_timeout`; must exceed the transport
 /// close path (voluntary grace + SIGKILL + bounded reap) with margin.
-const SERVICE_CLOSE_BUDGET: Duration = Duration::from_secs(10);
 const CANCEL_NOTIFICATION_BUDGET: Duration = Duration::from_secs(1);
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 const MAX_STDERR_EXCERPT_CHARS: usize = 2_000;
@@ -331,15 +331,14 @@ impl Transport<RoleClient> for ContainedStdioTransport {
     async fn close(&mut self) -> Result<(), Self::Error> {
         // Dropping stdin sends EOF so well-behaved servers exit on their own.
         self.stdin.lock().await.take();
-        match tokio::time::timeout(TRANSPORT_VOLUNTARY_EXIT_GRACE, self.process.wait()).await {
-            Ok(status) => {
-                status?;
-            }
-            Err(_) => {
-                // No voluntary exit after EOF: hard-stop the whole group now.
-                self.process.terminate_with_grace(Duration::ZERO).await?;
-            }
+        if let Ok(status) =
+            tokio::time::timeout(TRANSPORT_VOLUNTARY_EXIT_GRACE, self.process.wait()).await
+        {
+            status?;
         }
+        // The leader can exit on EOF while detached descendants remain. Always
+        // verify tree cleanup here so inspection errors reach the runtime.
+        self.process.terminate_with_grace(Duration::ZERO).await?;
         Ok(())
     }
 }
@@ -394,6 +393,7 @@ impl ClientHandler for ClosedCapabilityClientHandler {
 /// one confined server process and one initialized session.
 pub(crate) struct RmcpLegacyStdioClient {
     service: RunningService<RoleClient, ClosedCapabilityClientHandler>,
+    cleanup: TransportCleanup,
     server_id: String,
     server_name: String,
     negotiated_version: String,
@@ -423,6 +423,29 @@ fn map_service_error(server_name: &str, label: &str, error: ServiceError) -> Com
 }
 
 impl RmcpLegacyStdioClient {
+    #[cfg(test)]
+    pub(super) async fn cleanup_fixture(
+        behavior: super::service_shutdown::fixture::CloseBehavior,
+    ) -> (Self, super::service_shutdown::fixture::CloseControl) {
+        let (service, cleanup, control) = super::service_shutdown::fixture::service(
+            ClosedCapabilityClientHandler::new(Self::legacy_client_info()),
+            false,
+            behavior,
+        )
+        .await;
+        (
+            Self {
+                service,
+                cleanup,
+                server_id: "test".to_owned(),
+                server_name: "cleanup-fixture".to_owned(),
+                operation_timeout: Duration::from_secs(2),
+                negotiated_version: "2025-11-25".to_owned(),
+            },
+            control,
+        )
+    }
+
     fn legacy_client_info() -> ClientInfo {
         ClientInfo::new(
             ClientCapabilities::default(),
@@ -446,6 +469,7 @@ impl RmcpLegacyStdioClient {
     /// `initialize`/`notifications/initialized` handshake.
     pub(crate) async fn connect(config: &RmcpStdioServerConfig) -> CommandResult<Self> {
         let (transport, mut stderr) = ContainedStdioTransport::spawn(config)?;
+        let (transport, cleanup) = TransportCleanup::observe(transport);
         let handler = ClosedCapabilityClientHandler::new(Self::legacy_client_info());
 
         let handshake = handler.serve_with_lifecycle(transport, ClientLifecycleMode::Initialize);
@@ -487,7 +511,8 @@ impl RmcpLegacyStdioClient {
         if let Err(error) = Self::validate_negotiated_version(&negotiated_version) {
             // Shut down cleanly instead of leaking an unusable session; the
             // validation error itself carries the actionable message.
-            Self {
+            let cleanup_result = Self {
+                cleanup,
                 service,
                 server_id: config.server_id.clone(),
                 server_name: config.server_name.clone(),
@@ -496,10 +521,14 @@ impl RmcpLegacyStdioClient {
             }
             .shutdown()
             .await;
+            if let Err(cleanup_error) = cleanup_result {
+                return Err(command_error(format!("{}; {cleanup_error}", error.message)));
+            }
             return Err(error);
         }
 
         Ok(Self {
+            cleanup,
             service,
             server_id: config.server_id.clone(),
             server_name: config.server_name.clone(),
@@ -671,29 +700,8 @@ impl RmcpLegacyStdioClient {
     /// waits. Dropping without calling this still cannot leak processes:
     /// rmcp's drop guard cancels the service task and containment
     /// kill-on-drop backstops everything else.
-    pub(crate) async fn shutdown(self) {
-        let Self {
-            service: mut owned_service,
-            server_name,
-            ..
-        } = self;
-        match owned_service.close_with_timeout(SERVICE_CLOSE_BUDGET).await {
-            Ok(Some(_quit_reason)) => {}
-            Ok(None) => {
-                tracing::warn!(
-                    server = %server_name,
-                    "MCP service cleanup exceeded its close budget; containment \
-                     kill-on-drop remains active"
-                );
-            }
-            Err(join_error) => {
-                tracing::warn!(
-                    server = %server_name,
-                    error = %join_error,
-                    "MCP service task failed during shutdown"
-                );
-            }
-        }
+    pub(crate) async fn shutdown(self) -> Result<(), McpRuntimeError> {
+        self.cleanup.shutdown(self.service, &self.server_name).await
     }
 }
 
@@ -957,7 +965,7 @@ while True:
         assert_eq!(call.raw_result["content"][0]["text"], "echo:ok");
 
         assert!(!client.is_closed());
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -998,7 +1006,7 @@ while True:
             error.message
         );
         assert!(client.is_closed());
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1020,6 +1028,6 @@ while True:
             error.message
         );
         assert!(client.is_closed());
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
     }
 }

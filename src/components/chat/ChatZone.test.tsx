@@ -3,11 +3,16 @@ import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
 import { createDeferred } from '../../test-utils/deferred';
+import { resolveConversationContextSources } from '../../services/conversationContextSource';
+import type { DbConversation } from '../../services/ipc/conversations.types';
+import type { PersistedContextReference } from '../../types';
+import fr from '../../i18n/locales/fr.json';
 import {
   installTauriRuntimeMock,
   removeTauriRuntimeMock,
@@ -18,6 +23,8 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import { useChatStore as draftLifecycleStore } from '../../stores/useChatStore';
+import { clearConflictAssistantContext, registerConflictAssistantContext } from '../../services/conflictAssistantContext';
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
   loadComposerDraftsFromStorage,
@@ -200,6 +207,7 @@ export type MockChatState = {
   submitArchitectPlanManualName: ReturnType<typeof mock>;
   composerContextRefs: unknown[];
   addComposerContextRef: ReturnType<typeof mock>;
+  removeComposerContextRef: ReturnType<typeof mock>;
   clearComposerContextRefs: ReturnType<typeof mock>;
 };
 
@@ -270,7 +278,14 @@ let chatState: MockChatState;
 let providerState: ProviderState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
-let skillsState: { getSkillById: ReturnType<typeof mock>; refreshSkills: ReturnType<typeof mock> };
+let skillsState: {
+  getSkillById: ReturnType<typeof mock>;
+  refreshSkills: ReturnType<typeof mock>;
+  skills: [];
+  settingsBySkillId: Record<string, never>;
+  isLoading: boolean;
+  loadSettings: ReturnType<typeof mock>;
+};
 let composerDraftsByContextKey: Record<string, ComposerDraft>;
 
 const getMockConversationRuntime = (
@@ -309,6 +324,8 @@ const useAppStore = createStoreHookMock(() => appState, (nextState) => {
 const useChatStore = createStoreHookMock(() => chatState, (nextState) => {
   chatState = nextState;
 });
+// Capture the real store before installing the component's presentation mocks.
+const realDraftStore = draftLifecycleStore;
 const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
@@ -324,6 +341,10 @@ const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
 const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'chat.typeMessage': 'Type your message',
+  'chat.conversationSourceEmpty': fr.chat.conversationSourceEmpty,
+  'errors.degraded.service.resourcePressure.title': fr.errors.degraded.service.resourcePressure.title,
+  'errors.degraded.service.resourcePressure.body': fr.errors.degraded.service.resourcePressure.body,
+  'errors.degraded.service.resourcePressure.nextStep': fr.errors.degraded.service.resourcePressure.nextStep,
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
@@ -409,7 +430,10 @@ const resetNotifyMocks = () => {
   notifyActionRequiredMock.mockClear();
 };
 
-const loadChatZoneModule = async () => {
+const loadChatZoneModule = async (
+  useRichComposer = false,
+  chatStore: typeof useChatStore | UseBoundStore<StoreApi<MockChatState>> = useChatStore,
+) => {
   importCounter += 1;
   mock.restore();
 
@@ -420,7 +444,7 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../../stores/useChatStore', () => ({
-    useChatStore,
+    useChatStore: chatStore,
   }));
 
   mock.module('../../stores/useSkillsStore', () => ({
@@ -560,9 +584,12 @@ const loadChatZoneModule = async () => {
     PlanSelector: () => null,
   }));
 
+  const RichComposer = useRichComposer
+    ? (await import(`./composer/LazyComposerEditor.tsx?rich-chat-zone-test=${importCounter}`)).default
+    : null;
   mock.module('./composer/LazyComposerEditor', () => ({
     __esModule: true,
-    default: React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
+    default: RichComposer ?? React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
       getTextContent: () => string;
       clear: () => void;
       setText: (_value: string) => void;
@@ -916,6 +943,12 @@ const resetState = () => {
       };
       useChatStore.emit();
     }),
+    removeComposerContextRef: mock((id: string, kind: string) => {
+      useChatStore.setState({ composerContextRefs: chatState.composerContextRefs.filter((value) => {
+        const ref = value as { id: string; kind: string };
+        return ref.id !== id || ref.kind !== kind;
+      }) });
+    }),
     clearComposerContextRefs: mock(() => {
       chatState = {
         ...chatState,
@@ -935,6 +968,7 @@ const resetState = () => {
 
 
   skillsState = {
+    skills: [], settingsBySkillId: {}, isLoading: false, loadSettings: mock(async () => undefined),
     getSkillById: mock(() => null),
     refreshSkills: mock(async () => undefined),
   };
@@ -1212,6 +1246,76 @@ describe('ChatZone', () => {
 
   afterAll(() => {
     mock.restore();
+  });
+
+  it('reacts to approval-only publication and removal with a real Zustand subscription', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      messagesByConversationId: {},
+      // Real runtime snapshots keep their identity until the runtime changes.
+      getConversationRuntime: () => runtime,
+      getPendingToolApproval: mock((id: string): PendingToolApproval | null =>
+        realChatStore.getState().pendingToolApprovalByConversationId[id] ?? null
+      ),
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+
+    const traceMessage = buildMessage({
+      id: 'approval-assistant',
+      role: 'assistant',
+      content: '',
+      tool_traces: [{ tool_call_id: 'selected-call', tool_name: 'terminal_run', status: 'pending_approval' }],
+    });
+    await act(async () => {
+      realChatStore.setState({ messages: [traceMessage], messagesByConversationId: { 'conv-1': [traceMessage] } });
+    });
+    const footer = () => requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer()).toBeNull();
+
+    const approval: PendingToolApproval = {
+      conversationId: 'conv-1', assistantMessageId: traceMessage.id, toolCallId: 'selected-call',
+      toolId: 'terminal_run', actionGroup: 'escape', riskLevel: 'balanced',
+      summary: 'Run selected command', detail: 'echo selected-request', rememberKey: '',
+      canApproveForConversation: false,
+    };
+    const otherApproval: PendingToolApproval = {
+      ...approval, conversationId: 'conv-2', toolCallId: 'other-call', detail: 'echo other-request',
+    };
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+
+    // Persistence has finished. Only the approval map changes, with no forced render.
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-1': approval, 'conv-2': otherApproval } });
+    });
+    expect(footer()).not.toBeNull();
+    expect(footer()?.textContent).toContain('echo selected-request');
+    expect(footer()?.textContent).not.toContain('echo other-request');
+    expect(footer()?.textContent).toContain('Refuse');
+    const allowOnce = Array.from(footer()?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Allow once')
+    );
+    expect(allowOnce).toBeDefined();
+    await act(async () => { allowOnce?.click(); });
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledTimes(1);
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+
+    await act(async () => {
+      realChatStore.setState({ selectedConversationId: 'conv-2' });
+    });
+    expect(footer()?.textContent).toContain('echo other-request');
+    expect(footer()?.textContent).not.toContain('echo selected-request');
   });
 
   it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
@@ -1860,6 +1964,195 @@ describe('ChatZone', () => {
       taskId: 'task-1',
       content: expect.stringContaining('Start without notes'),
     }));
+  });
+
+  it('keeps B refusal when A rejects late after a context switch', async () => {
+    const releaseA = createDeferred<void>();
+    const failure = 'The selected conversation has no completed text to cite.';
+    chatState.sendMessage = mock(async (payload: { conversationId: string }) => {
+      if (payload.conversationId === 'conv-1') {
+        await releaseA.promise;
+        throw new Error('A late failure');
+      }
+      throw new Error(failure);
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    await setComposerText('B draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { releaseA.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(getComposerEditor().value).toBe('B draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('A late failure');
+  });
+
+  it.each(['remove_image', 'send', 'type'])('preserves A refusal after a user action in B: %s', async (action) => {
+    const failure = 'The selected conversation has no completed text to cite.';
+    const image = { id: 'b-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    chatState.sendMessage = mock(async () => { throw new Error(failure); });
+    composerDraftsByContextKey['conversation:conv-2'] = { text: 'B draft', images: [image], contextRefs: [] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).not.toBeNull();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    if (action === 'remove_image') {
+      const remove = requireContainer().querySelector('button[title="Remove image"]');
+      expect(remove).not.toBeNull();
+      await act(async () => { remove?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+      expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    } else if (action === 'send') {
+      await clickSendButton();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    } else {
+      await setComposerText('B edited draft');
+    }
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    // Editing A dismisses A's refusal; it must not remove B's refusal either.
+    await setComposerText('A edited draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    if (action === 'send') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-2' }); });
+      expect(getComposerEditor().value).toBe('B draft');
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+  });
+
+  it('preserves structured pre-provider code and details', async () => {
+    chatState.sendMessage = mock(async () => {
+      throw { code: 'RESOURCE_PRESSURE', message: 'Failed to read workspace state', details: { errno: 24, reason: 'Too many open files' } };
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    const notice = requireContainer().querySelector('[data-chat-floating-notices]');
+    expect(notice?.textContent).toContain(fr.errors.degraded.service.resourcePressure.title);
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('Too many open files');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('"errno": 24');
+  });
+
+  it.each([
+    { publishedByStore: false, retry: 'edit' },
+    { publishedByStore: true, retry: 'send' },
+    { publishedByStore: false, retry: 'navigate' },
+  ])('keeps a pre-send refusal visible after real Lexical restoration: %j', async ({ publishedByStore, retry }) => {
+    await loadChatZoneModule(true);
+    const draft = 'QA_SOURCE_VIDE Brouillon été avec image.';
+    const image = { id: 'synthetic-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    const source = { id: 'source-empty', kind: 'conversation' as const, title: 'Source vide', data: { conversationId: 'source-empty' } };
+    const persistedSource: PersistedContextReference = {
+      id: source.id, kind: 'conversation', conversationId: source.id, title: source.title,
+    };
+    composerDraftsByContextKey['conversation:conv-1'] = { text: draft, images: [image], contextRefs: [source] };
+    const release = createDeferred<void>();
+    const providerRequest = mock(() => undefined);
+    const failureMessage = 'The selected conversation has no completed text to cite.';
+    const clear = mock(() => useChatStore.setState({ lastError: null, sendState: 'idle' }));
+    chatState = {
+      ...chatState,
+      clearLastError: clear,
+      composerContextRefs: [source],
+      conversations: [buildConversation(), { ...buildConversation(), id: source.id, title: source.title }],
+      sendMessage: mock(async (_payload: { conversationId: string; content: string; images?: unknown[] }) => {
+        useChatStore.setState({ lastError: null, sendState: 'idle' });
+        const selected = [...chatState.composerContextRefs];
+        await release.promise;
+        try {
+          await resolveConversationContextSources({
+            targetConversationId: 'conv-1', request: draft,
+            refs: selected.length ? [persistedSource] : [],
+            ports: {
+              getConversation: async () => buildConversation() as DbConversation,
+              getConversationSourceSnapshot: async () => ({
+                target_project_id: 'project-1',
+                conversation: { ...buildConversation(), id: source.id } as DbConversation,
+                messages: [],
+              }),
+              isSourceActive: () => false,
+            },
+          });
+        } catch (error) {
+          if (publishedByStore) flushSync(() => useChatStore.setState({ lastError: failureMessage, sendState: 'error' }));
+          throw error;
+        }
+        providerRequest();
+        return { status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' };
+      }),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === draft) break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    }
+    let editable = requireContainer().querySelector('[contenteditable="true"]') as HTMLElement & { __lexicalEditor: import('lexical').LexicalEditor };
+    expect(editable?.textContent).toBe(draft);
+    expect(chatState.composerContextRefs).toEqual([source]);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    await clickSendButton();
+    expect(editable.textContent).toBe('');
+    expect(chatState.sendMessage.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'conv-1', content: draft, images: [image] });
+    await act(async () => { release.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(editable.textContent).toStartWith(draft);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([source]);
+    expect(providerRequest).not.toHaveBeenCalled();
+    expect(chatState.messages).toEqual([]);
+    expect(clear).not.toHaveBeenCalled();
+    const details = Array.from(requireContainer().querySelectorAll('button')).find((button) => button.textContent === 'Show details');
+    expect(details).toBeDefined();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { details?.click(); });
+    expect(requireContainer().querySelector('pre')?.textContent).toContain(failureMessage);
+    // Passive rerenders and programmatic restoration keep the notice durable.
+    await act(async () => { requireRoot().render(<ChatZone />); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    if (retry === 'navigate') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: source.id }); });
+      expect(requireContainer().textContent).not.toContain(fr.chat.conversationSourceEmpty);
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+      editable = requireContainer().querySelector('[contenteditable="true"]') as typeof editable;
+    }
+    const { $getRoot, KEY_ENTER_COMMAND } = await import('lexical');
+    if (retry !== 'send') {
+      await act(async () => {
+        editable.__lexicalEditor.update(() => { $getRoot().selectEnd().insertText(' Suite.'); });
+        await Promise.resolve();
+      });
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    }
+    await act(async () => { useChatStore.setState({ composerContextRefs: [] }); });
+    if (retry === 'send') {
+      expect(clear).not.toHaveBeenCalled();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+    // Enter follows the real Lexical submit command, with no reload or stop.
+    await act(async () => {
+      editable.__lexicalEditor.dispatchCommand(KEY_ENTER_COMMAND, new KeyboardEvent('keydown', { key: 'Enter' }));
+      await Promise.resolve();
+    });
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(2);
+    expect(chatState.sendMessage.mock.calls[1]?.[0]).toMatchObject({ conversationId: 'conv-1', images: [image] });
+    expect(providerRequest).toHaveBeenCalledTimes(1);
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(editable.textContent).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
   });
 
   it('restores the composer when a send fails before Macro accepts it', async () => {
@@ -3872,6 +4165,102 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
+  });
+
+  it.each([false, true])('keeps the audit opening draft and the previous unsent draft, durable=%s', async durable => {
+    const previous = 'Previous unsent draft.';
+    const prompt = 'Inspect the verified conflict without editing files.';
+    composerDraftsByContextKey['conversation:conv-1'] = { text: previous, images: [], contextRefs: [] };
+    chatState.peekComposerDraft = mock((id: string) => chatState.pendingComposerDraftByConversationId[id] ?? null);
+    chatState.acknowledgeComposerDraft = mock((id: string) => { delete chatState.pendingComposerDraftByConversationId[id]; });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(composerEditorValue).toBe(previous);
+    composerEditorSetTextCalls = [];
+    if (durable) composerDraftsByContextKey['conversation:inspection-audit'] = { text: prompt, images: [], contextRefs: [] };
+    await act(async () => {
+      useChatStore.setState({
+        conversations: [...chatState.conversations, { ...buildConversation(), id: 'inspection-audit' }],
+        pendingComposerDraftByConversationId: { 'inspection-audit': prompt },
+        selectedConversationId: 'inspection-audit',
+      });
+    });
+    expect(composerEditorSetTextCalls).toEqual([prompt]);
+    expect(composerEditorValue).toBe(prompt);
+    expect(chatState.peekComposerDraft('inspection-audit')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(previous);
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { opening: 'mount', saved: false }, { opening: 'switch', saved: false },
+    { opening: 'mount', saved: true }, { opening: 'switch', saved: true },
+  ])('keeps the prepared inspection draft through real editor restoration: %j', async ({ opening, saved }) => {
+    await loadChatZoneModule(true);
+    await preloadChatZoneLazyComponents();
+    const id = 'prepared-inspection';
+    const prompt = 'Inspect README.md and qa-conflict.txt without changing any files.';
+    const savedImage = { id: 'inspection-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-06T00:00:00Z' };
+    const state = realDraftStore.getState();
+    realDraftStore.setState(realDraftStore.getInitialState(), true);
+    installTauriRuntimeMock(async command => {
+      if (command === 'db_create_conversation') return { ...buildConversation(), id, title: 'Resolve merge conflicts',
+        scope_mode: 'Implement', group_id: 'group-1', provider_id: 'provider-1', model_id: 'model-1',
+        description: '', last_message: '', message_count: 0, created_at: '2026-10-06T00:00:00Z', updated_at: '2026-10-06T00:00:00Z' };
+      if (command === 'db_list_conversation_citations' || command === 'db_list_unresolved_tool_invocations') return [];
+      return null;
+    });
+    Object.assign(providerState, {
+      providerConfigs: [{ id: 'provider-1', isEnabled: true, isLocal: true, providerType: 'openai' }],
+      modelsByProvider: { 'provider-1': [{ id: 'model-1', isEnabled: true }] },
+      commitRestoredSelection: async () => ({ providerId: 'provider-1', modelId: 'model-1', reasoningEffort: null }),
+    });
+    const save = mock((key: string, draft: ComposerDraft) => state.saveComposerDraftForContext(key, draft));
+    const acknowledge = mock((conversationId: string) => state.acknowledgeComposerDraft(conversationId));
+    chatState = { ...chatState,
+      peekComposerDraft: mock((conversationId: string) => state.peekComposerDraft(conversationId)),
+      acknowledgeComposerDraft: acknowledge,
+      getComposerDraftForContext: mock((key: string) => state.getComposerDraftForContext(key)),
+      saveComposerDraftForContext: save,
+    };
+    const stop = realDraftStore.subscribe(snapshot => useChatStore.setState({
+      conversations: snapshot.conversations.map(conversation => ({ ...conversation, group_id: conversation.group_id ?? null })),
+      selectedConversationId: snapshot.selectedConversationId,
+      activeContextKey: snapshot.activeContextKey, selectedConversationContextKey: snapshot.selectedConversationContextKey,
+      restoreStatus: snapshot.restoreStatus,
+    }));
+    appState = { ...appState, mode: 'Implement', selectedProjectId: 'project-1', selectedGroupId: 'group-1', selectedTaskId: null };
+    registerConflictAssistantContext({ conversationId: id, projectId: 'project-1', groupId: 'group-1', kind: 'code',
+      repositories: [{ projectId: 'project-1', projectPath: '/tmp/api', repoPath: '/tmp/api', branch: 'develop',
+        head: 'ee2603d50000000000000000000000000000000000', conflictFiles: ['README.md', 'qa-conflict.txt'], mergeInProgress: true }],
+    });
+    try {
+      if (opening === 'switch') await act(async () => { requireRoot().render(<ChatZone />); });
+      await act(async () => {
+        const conversation = await state.createConversation('Resolve merge conflicts', null, 'project-1', 'group-1', { selectConversation: false });
+        expect(conversation.id).toBe(id);
+        // Use the actual creation, selection, pending and durable draft lifecycle.
+        if (saved) state.saveComposerDraftForContext(`conversation:${id}`, { text: 'Older saved text', images: [savedImage], contextRefs: [] });
+        state.setComposerDraft(id, prompt);
+        expect(await state.selectConversation(id)).toBe(true);
+        requireRoot().render(<ChatZone />);
+      });
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === prompt) break;
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+      }
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      expect((requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement).disabled).toBe(false);
+      expect(state.peekComposerDraft(id)).toBeNull();
+      expect(state.getComposerDraftForContext(`conversation:${id}`)).toMatchObject({ text: prompt, images: saved ? [savedImage] : [] });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(chatState.sendMessage).not.toHaveBeenCalled();
+      expect(chatState.clearLastError).not.toHaveBeenCalled();
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      await act(async () => { useChatStore.setState({ selectedConversationId: id }); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+    } finally { stop(); clearConflictAssistantContext(id); }
   });
 
   it('consults peekComposerDraft when the selected conversation changes', async () => {

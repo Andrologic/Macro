@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { presentQueuedRecoveryError } from '../../services/queuedRecoveryErrorPresentation';
+import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { usePersistenceHealth } from '../../services/persistenceHealth';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
@@ -118,6 +120,7 @@ export function PersistenceHealthNotifications() {
             ))}
 
             {recoveryEntries.map(([conversationId, recovery]) => {
+              const errorPresentation = recovery.error ? presentQueuedRecoveryError(recovery.error) : null;
               const conversation = conversations.find((candidate) => candidate.id === conversationId);
               const conversationLabel = conversation?.title || conversationId;
               const isRetrying = retryingConversationIds.has(conversationId);
@@ -133,7 +136,9 @@ export function PersistenceHealthNotifications() {
                         {conversationLabel}
                       </div>
                       <div className="text-[11px] text-muted-foreground">×{recovery.count}</div>
-                      {recovery.error ? (
+                      {errorPresentation ? (
+                        <ActionableErrorCallout presentation={errorPresentation} compact announce className="mt-1" />
+                      ) : recovery.error ? (
                         <p role="alert" className="mt-1 break-words text-xs text-destructive">
                           {recovery.error}
                         </p>

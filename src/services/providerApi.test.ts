@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+
+import type { ProviderModel } from './providerApi';
+import i18n from '../i18n';
+import en from '../i18n/locales/en.json';
+import fr from '../i18n/locales/fr.json';
+i18n.addResourceBundle('en', 'translation', en, true, true);
+i18n.addResourceBundle('fr', 'translation', fr, true, true);
+afterEach(async () => { await i18n.changeLanguage('en'); });
 
 let importCounter = 0;
 
@@ -28,6 +36,48 @@ describe('providerApi fetchModelsFromProvider', () => {
     tauriFetchMock.mockClear();
     pageLifecycleController = new AbortController();
     pageShuttingDown = false;
+  });
+
+  for (const count of [0, 1, 2]) {
+    it(`reports ${count} discovered models in French without changing the probe result`, async () => {
+      await i18n.changeLanguage('fr');
+      const ids = Array.from({ length: count }, (_, index) => `qa-model-${index}`);
+      tauriFetchMock.mockImplementation(async () => new Response(JSON.stringify({ data: ids.map(id => ({ id })) }), { status: 200 }));
+      const { probeModelsEndpoint } = await loadProviderApi();
+      const result = await probeModelsEndpoint({ baseUrl: 'https://example.com/v1', providerId: 'custom' });
+      expect(result.success).toBe(true);
+      expect(result.status).toBe('reachable');
+      expect(result.source).toBe('models_endpoint');
+      expect(result.models.map((model: ProviderModel) => model.id)).toEqual(ids);
+      expect(result.message).toBe(`Connexion réussie. ${count} ${count === 1 ? 'modèle trouvé' : 'modèles trouvés'}.`);
+    });
+  }
+
+  it('preserves the technical model id in a localized successful completions probe', async () => {
+    await i18n.changeLanguage('fr');
+    tauriFetchMock.mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 }));
+    const { probeChatCompletionsEndpoint } = await loadProviderApi();
+    const result = await probeChatCompletionsEndpoint({ baseUrl: 'https://example.com/v1', providerId: 'custom', modelId: 'qa-model-été' });
+    expect(result.success).toBe(true);
+    expect(result.modelIdUsed).toBe('qa-model-été');
+    expect(result.source).toBe('chat_completions_probe');
+    expect(result.message).toBe('Connexion réussie avec le modèle qa-model-été.');
+    expect(result.models).toEqual([]);
+  });
+
+  it('localizes LM Studio discovery without changing the native model identity', async () => {
+    await i18n.changeLanguage('fr');
+    tauriFetchMock.mockImplementation(async () => new Response(JSON.stringify({ models: [
+      { type: 'llm', key: 'qa/qa-model', display_name: 'QA Model', max_context_length: 8192 },
+      { type: 'embedding', key: 'qa/embedding' },
+    ] }), { status: 200 }));
+    const { probeModelsEndpoint } = await loadProviderApi();
+    const result = await probeModelsEndpoint({ baseUrl: 'http://localhost:1234/v1', providerId: 'lmstudio' });
+    expect(result.success).toBe(true);
+    expect(result.source).toBe('models_endpoint');
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toMatchObject({ id: 'qa/qa-model', name: 'QA Model', max_context_length: 8192 });
+    expect(result.message).toBe('Connexion réussie. 1 modèle LM Studio trouvé.');
   });
 
   it('returns normalized models on success', async () => {

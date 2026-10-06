@@ -343,6 +343,50 @@
     "cpu": "CPU",
     "memory": "メモリ",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "リモートが設定されていません",
+          "body": "このリポジトリを同期するには origin の URL を追加してください。ローカルで作業を続けることもできます。"
+        },
+        "missing_upstream": {
+          "title": "追跡ブランチが設定されていません",
+          "body": "コードブランチを origin に公開して追跡先を設定し、再試行してください。公開するとローカルのコミットがリモートに送信されます。"
+        },
+        "remote_unavailable": {
+          "title": "リモートリポジトリにアクセスできません",
+          "body": "origin の URL とアクセス権を確認してください。既存の URL は Git クライアントで修正してから再試行してください。"
+        },
+        "auth": {
+          "title": "Git 認証が必要です",
+          "body": "Git の認証情報とリポジトリへのアクセス権を確認して再試行してください。"
+        },
+        "network": {
+          "title": "リモートに接続できません",
+          "body": "接続と origin の URL を確認して再試行してください。"
+        },
+        "local_changes": {
+          "title": "ローカルファイルが pull を妨げています",
+          "body": "変更を保持してください。変更を確認するか stash で退避してから pull を再試行してください。"
+        },
+        "divergence": {
+          "title": "ブランチが分岐しています",
+          "body": "ブランチの状態を更新し、merge または rebase でリモートのコミットを統合してください。"
+        },
+        "unknown": {
+          "title": "Git の同期に失敗しました",
+          "body": "技術的な詳細を確認し、問題を修正して再試行してください。"
+        }
+      },
+      "publishCodeBranch": "コードブランチを公開",
+      "configureAndRetry": "設定して再試行",
+      "remoteConfigurationFailed": "リモートの設定に失敗しました。URL と技術的な詳細を確認してください。",
+      "originUrl": "origin の URL",
+      "metadataNeedsAttention": "コードの同期は完了しました。メタデータの同期には対応が必要です。",
+      "reviewRecovery": "復旧手順を確認",
+      "conflictedFiles_other": "競合ファイル {{count}} 件",
+      "conflictedFiles_one": "競合ファイル {{count}} 件",
+      "conflictContextChanged": "ブランチが変更されました。アシスタントを開く前に更新してください。",
+      "preflightUnavailable": "利用不可",
       "done": "終わり。",
       "macroClean": "@macroクリーン",
       "macroPending": "@macro保留中",
@@ -467,7 +511,8 @@
       "conflictedFiles": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Implement で競合アシスタントを開く",
+      "conflictReadOnly": "読み取り専用の競合調査",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",
@@ -572,6 +617,7 @@
     "noProvidersConfigured": "プロバイダーが構成されていません",
     "providerRestoreUnavailable": "この会話で以前使用したプロバイダーまたはモデルは利用できなくなりました。続行するには別のものを選択してください。",
     "runtimeErrorFallback": "Macro はこの操作を完了できませんでした。詳細を確認して、もう一度お試しください。",
+    "conversationSourceEmpty": "選択した会話には引用できる完了済みのテキストがありません。この参照元を削除するか、別の会話を選択してから、もう一度送信してください。",
     "noEnabledModels": "有効なモデルはありません。設定でモデルを有効にします。",
     "selectProviderFirst": "まずプロバイダーを選択してください",
     "agentTypeBuild": "建てる",
@@ -641,6 +687,7 @@
     "toolDenied": "denied",
     "toolApprovalRecoveryWarning": "保存されたツールリクエストの一部を復元できませんでした。データは保持されています。この通知を閉じてチャットを続けられます。",
     "toolApprovalResumeCancelled": "新しいターンは開始されませんでした。もう一度再開できます。",
+    "sourcePassageEditApproval": "保存された箇所を編集する",
     "toolApprovalInterrupted": "このツールリクエストは中断されました。",
     "toolApprovalInterruptedHint": "再開すると新しいターンで現在のワークスペースを確認し、必要に応じて改めて承認を求めます。元のリクエストは履歴に残ります。",
     "toolApprovalResume": "新しいターンで再開",
@@ -738,6 +785,14 @@
       "clipboardReadFailedTitle": "クリップボードを読み取れませんでした",
       "previewUnavailable": "プレビューを利用できません",
       "removeFromContext": "コンテキストから削除",
+      "toolDescriptions": {
+        "web_search": "引用付きでWeb上の情報を検索する",
+        "web_fetch": "指定したURLを直接取得して読む",
+        "question": "回答を待つ構造化された質問を選択肢付きで提示する",
+        "read_file": "このチャットに添付されたファイルとコンテキスト文書を読む",
+        "terminal_create_session": "個別に承認されたコマンドをコンピューターで実行する",
+        "mark_source_passage": "重要な箇所とAIが使用した箇所を記録する"
+      },
       "toolsUnavailableWarning": "現在選択されているプロバイダーまたはモデルではツールを使用できません。ネイティブ ツール呼び出しサポートを有効にするには、サポートを備えたモデルを選択します。",
       "builtInTools": "内蔵ツール",
       "noToolsEnabled": "有効なツールはありません",
@@ -747,6 +802,8 @@
       "webFetchDisabledTooltip": "[設定] > [ツール] > [ウェブ検索] で Web Fetch を有効にします。",
       "nativeToolTooltip": "選択したモデルはネイティブ ツール呼び出しをサポートしていません。",
       "sourceSummary": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
+      "sourceSummary_one": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
+      "sourceSummary_other": "{{interesting}}見つかった •{{used}}使用済み •{{total}}パッセージ",
       "collectionDisabledTitle": "収集が無効になっています",
       "collectionDisabledDescription": "新しいパッセージを保存するには、ソース ツールを有効にします。",
       "sourceSearchPlaceholder": "ソースを検索する",
@@ -1128,6 +1185,10 @@
       "maxTurnsLabel": "エージェント最大ターン数",
       "maxTurnsDescription": "Macro がエージェントループを停止し、チャットに通知を表示するまでの AI/ツール サイクルの最大数。"
     },
+    "themeDark": "ダーク",
+    "themeLight": "ライト",
+    "notificationChannelsUnsupportedDesc": "この環境ではデスクトップ通知を利用できません。アプリ内通知を選択するか、通知をオフにしてください。",
+    "desktopNotificationsUnsupportedHint": "この環境ではデスクトップ通知を利用できません。Macroはアプリ内通知を使用します。",
     "theme": "テーマ",
     "zoom": "ズーム",
     "zoom_auto": "自動",
@@ -1366,6 +1427,9 @@
     "parentFolderRequired": "親フォルダーは必須です",
     "folderNameRequired": "フォルダー名は単一のフォルダー名にしてください",
     "repoPathRequired": "先に既存プロジェクトのフォルダーを選択してください",
+    "folderNotFound": "このフォルダーは存在しません。既存のフォルダーを選択してください。",
+    "pathNotDirectory": "このパスはフォルダーではありません。既存のフォルダーを選択してください。",
+    "folderCheckFailed": "このフォルダーを読み取れません。パスとアクセス権限を確認してください。",
     "projectPathRequired": "プロジェクトパスは必須です",
     "duplicateSubprojectName": "このグループには同じ名前のプロジェクトがすでに存在します",
     "localFolder": "ローカルフォルダー",
@@ -1379,6 +1443,7 @@
     "attachedReposCount_one": "このグループに{{count}}件のプロジェクト",
     "attachedReposCount_other": "このグループに{{count}}件のプロジェクト",
     "folderAlreadyAttached": "このフォルダーは既に添付されています{{name}}。",
+    "folderAlreadyAttachedInWorkspace": "このフォルダーは、このワークスペースのプロジェクトに既に関連付けられています。",
     "folderAlreadyAttachedNamed": "このフォルダはすでに「」に添付されています{{name}}」",
     "saveFailed": "プロジェクトの保存に失敗しました",
     "createProject": "プロジェクトの作成",
@@ -1499,6 +1564,8 @@
     "projectGitPrepared": "{{projectName}} の Git 準備が完了しました。",
     "projectDirectEditEnabled": "{{projectName}} を Git なしで編集できるようになりました。",
     "projectDirectEditDisabled": "{{projectName}} は Git が初期化されるまで読み取り専用です。",
+    "gitFlowInvalidBranch": "有効な Git ブランチ名を入力してください。",
+    "projectActions": "{{name}} の操作",
     "gitFlowSaved": "Git ワークフロー設定を保存しました。",
     "readOnlyImpactTitle": "read-only に切り替えますか？",
     "readOnlyImpactDescription": "Macro はこのプロジェクトを編集可能なプランやタスクの対象から外しますが、コンテキスト参照と読み取りは引き続き可能です。",
@@ -1771,6 +1838,11 @@
     "noStrategyDescription": "Architect チャットでプランについて話し合い、戦略を生成を使ってこのグラフを作成します。",
     "noBranchesMatchingFilters": "現在のフィルターに一致するブランチはありません。",
     "planCompleted": "計画が完了しました",
+    "newPlanPlaceholder": "新しいプラン",
+    "planValidationBranchesCreated_one": "プランを検証しました。{{count}}個のブランチを準備しました。",
+    "planValidationBranchesCreated_other": "プランを検証しました。{{count}}個のブランチを準備しました。",
+    "planValidationBranchesCurrent": "プランを検証しました。ブランチはすでに最新です。",
+    "finalizationTaskTitle": "プランを完了: {{name}}",
     "planValidated": "計画が検証されました",
     "validatingPlan": "検証中...",
     "noActivePlan": "有効なプランはありません",
@@ -1870,6 +1942,13 @@
     "searchPlaceholder": "プロバイダーを検索...",
     "configuredTitle": "設定済みプロバイダー",
     "unconfiguredTitle": "設定が必要なプロバイダー",
+    "connectionModelsFound_one": "接続に成功しました。{{count}}個のモデルが見つかりました。",
+    "connectionModelsFound_other": "接続に成功しました。{{count}}個のモデルが見つかりました。",
+    "connectionLmStudioModelsFound_one": "接続に成功しました。{{count}}個のLM Studioモデルが見つかりました。",
+    "connectionLmStudioModelsFound_other": "接続に成功しました。{{count}}個のLM Studioモデルが見つかりました。",
+    "connectionModelVerified": "モデル{{model}}で接続に成功しました。",
+    "connectionModelsFound_zero": "接続に成功しました。{{count}}個のモデルが見つかりました。",
+    "connectionLmStudioModelsFound_zero": "接続に成功しました。{{count}}個のLM Studioモデルが見つかりました。",
     "testSaveFirst": "テスト前にプロバイダーを保存してください。",
     "testConnection": "テスト接続",
     "saveProvider": "プロバイダーを保存",
@@ -2176,6 +2255,7 @@
         "resourcePressure": { "title": "Macro は一時的に過負荷です", "body": "開いているファイルが多すぎるため、Macro は再試行前にリポジトリの自動更新を一時停止しました。", "nextStep": "少し待ってから再試行してください。問題が続く場合は、余分なプロジェクトウィンドウやターミナルを閉じてください。" },
         "replicaRepair": { "title": "プランのメタデータを修復する必要があります", "body": "Macro は不整合なプランのメタデータを検出したため、続行する前に正規のコピーを修復する必要があります。", "nextStep": "プランのメタデータを修復してから再試行してください。" },
         "metadataMissing": { "title": "プランのメタデータが不完全です", "body": "Macro は、欠落または一部のみ保存されたプランのメタデータを参照するタスクまたは会話を検出しました。", "nextStep": "メタデータのリンクを修復してから再試行してください。" },
+        "conflictAssistantContextChanged": {"title": "Git コンテキストが変更されました", "body": "アシスタントを開く間に、選択された Git コンテキストが変更されました。", "nextStep": "Git ビューを更新し、アシスタントを開き直してください。"},
         "workspaceUnavailable": { "title": "作業領域の状態を一時的に取得できません", "body": "Macro はこの操作に必要な作業領域の状態を読み取れませんでした。", "nextStep": "作業領域の更新が終わってから再試行してください。問題が続く場合は、プロジェクトを開き直してください。" },
         "gitNotReady": { "title": "このプロジェクトはまだ編集できません", "body": "Macro はこのプロジェクトをコンテキストとして使用できますが、Git の準備が整うまで書き込めません。", "nextStep": "プロジェクト設定を開き、Git の設定を完了してください。" },
         "fallback": { "title": "確認が必要です", "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。" }
@@ -2185,6 +2265,12 @@
     "saveFailed": "プロバイダーの保存に失敗しました"
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architectモード",
+        "description": "Architectの会話に使用する基本システムプロンプト。"
+      }
+    },
     "loadFailed": "システムプロンプトを読み込めませんでした。保存する前に再試行してください。", "title": "システムプロンプト", "description": "プラン、レビュー、リポジトリ監査で使用する各モードの基本プロンプトと内部プロファイルをカスタマイズします。", "restoreAll": "すべて復元", "saveFailed": "システムプロンプトを保存できませんでした。" },
   "toast": {
     "languageChanged": "言語が次のように変更されました{{language}}",

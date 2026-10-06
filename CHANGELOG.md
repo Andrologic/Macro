@@ -6,6 +6,23 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+### Added
+
+- Added local profile backup and restore controls, preserving queued instructions and responses needed for recovery.
+- Added read-only conversation assistance for verified Git conflicts, with explicit recovery actions for missing remotes, upstream branches, and failed synchronization.
+
+### Fixed
+
+- Preserved user text across conversation transports, images before accepting a send, deferred submissions, Goal continuations, and uncertain tool outcomes after failures.
+- Kept plan finalization available after completed tasks are archived, and preserved task-creation choices and errors after a rejected operation.
+- Kept task reviews tied to the selected task across project filters, and made saved Architect strategy changes distinguishable from failed follow-up operations.
+- Kept the task checklist available during review so work can resume after a merge is blocked by an open todo.
+- Stabilized Chat archive navigation and preserved manually chosen conversation titles during automatic naming.
+- Closed obsolete MCP connections after configuration changes and retained cleanup failure diagnostics.
+- Improved keyboard focus and accessible labels in dialogs, project navigation, Git actions, and settings, and preserved prompt drafts during settings navigation.
+- Corrected French guide text, theme categories, tool descriptions, provisional plan labels, and file counts.
+- Preserved the upstream fixes for archive keyboard actions, approval drafts, transcript loading, notification dates, group controls, and diff colors.
+
 ## 0.1.8 - 2026-09-30
 
 ### Added

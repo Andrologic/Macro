@@ -7,18 +7,19 @@ const ASSETS_DIR = process.argv[2] ? resolve(process.argv[2]) : fileURLToPath(ne
 
 const BUDGETS = [
   // Application code follows Rollup's dependency graph; vendor libraries keep stable manual chunks.
-  // The 0.1.8 build measures 1,460,181 B for entry and retains its existing cap.
-  // Goal, sources and recovery add application code to the deferred chat chunk:
-  // 198,707 B. Completed locale chunks measure up to 136,978 B, or 151,451 B
-  // for Japanese. Keep about 1% headroom; vendor and startup caps stay fixed.
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_465_000 },
+  // The stabilization build measures 1,487,044 B for entry and 62,167 B for
+  // TaskQueue. Its Git, archive and dialog copy takes locale chunks up to
+  // 143,769 B, or 159,064 B for Japanese. Keep about 1% headroom for this
+  // measured scope; vendor, deferred chat and rich-markdown caps stay fixed.
+  // See docs/performance-baselines.md for the same-toolchain comparison.
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_505_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 201_000 },
-  // The 0.1.7 task recovery fix builds a 61,741 B chunk; keep a narrow margin.
-  { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 62_000 },
+  // Native SQLite refusal copy brings TaskQueue to 63,040 B; retain a 160 B margin.
+  { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 63_200 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 138_500 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 153_000 },
+  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 145_500 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 161_000 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;

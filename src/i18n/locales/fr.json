@@ -305,10 +305,11 @@
       },
       "architect-strategy": {
         "title": "Stratégie et branches",
-        "body": "Le panneau droit montre la stratégie. Le switch Graph / Branches aide à passer d'une vue dépendances à une vue exécution Git.",
+        "body": "Le panneau droit montre la stratégie. Le sélecteur Graph / Branches permet de passer des dépendances à l’exécution Git.",
         "points": [
           "Graph : dépendances et ordre logique.",
-          "Branches : travail regroupé par branche fonctionnelle."
+          "Branches : travail regroupé par branche fonctionnelle.",
+          "Ouvrir l'explorateur de graphiques affiche une vue agrandie de la stratégie."
         ]
       },
       "architect-validate": {
@@ -344,16 +345,16 @@
         "body": "Le panneau gauche gère l'historique : nouveau chat, recherche, multi-sélection, épinglage, archive, export et suppression."
       },
       "chat-toolbox": {
-        "title": "Toolbox",
+        "title": "Boîte à outils",
         "body": "Le panneau droit est la boîte à contexte. Tu peux joindre des fichiers, ajouter une URL, coller du texte, activer des outils et retrouver les sources citées."
       },
       "chat-models": {
         "title": "Fournisseur, modèle et raisonnement",
-        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Settings."
+        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Paramètres."
       },
       "composer": {
-        "title": "Composer et envoyer",
-        "body": "Le composer accepte texte, mentions et images collées. Le bouton flèche envoie, ou stoppe la génération quand une réponse est en cours."
+        "title": "Rédiger et envoyer",
+        "body": "La zone de rédaction accepte du texte, des mentions et des images collées. La flèche envoie le message. Pendant un tour actif, elle permet d’orienter ce tour ou de mettre le message en file pour le suivant. Le bouton Arrêter interrompt le tour actif."
       },
       "footer": {
         "title": "Barre Git et notifications",
@@ -371,6 +372,46 @@
     "cpu": "Processeur",
     "memory": "Mémoire",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "Aucun remote configuré",
+          "body": "Ajoutez l’URL du remote origin pour synchroniser ce dépôt. Vous pouvez aussi continuer à travailler localement."
+        },
+        "missing_upstream": {
+          "title": "Aucune branche de suivi configurée",
+          "body": "Publiez la branche de code sur origin pour définir sa branche de suivi, puis réessayez. La publication envoie vos commits locaux au dépôt distant."
+        },
+        "remote_unavailable": {
+          "title": "Dépôt distant inaccessible",
+          "body": "Vérifiez l’URL du remote origin et vos droits d’accès, puis réessayez. Corrigez l’URL d’un remote existant dans votre client Git."
+        },
+        "auth": {
+          "title": "Authentification Git nécessaire",
+          "body": "Vérifiez vos identifiants Git et vos droits d’accès au dépôt, puis réessayez."
+        },
+        "network": {
+          "title": "Connexion au dépôt distant impossible",
+          "body": "Vérifiez votre connexion et l’URL du remote origin, puis réessayez."
+        },
+        "local_changes": {
+          "title": "Des fichiers locaux empêchent le pull",
+          "body": "Conservez vos modifications. Relisez-les ou mettez-les de côté avant de réessayer le pull."
+        },
+        "divergence": {
+          "title": "Les branches ont divergé",
+          "body": "Actualisez l’état de la branche et choisissez une fusion ou un rebase pour intégrer les commits distants."
+        },
+        "unknown": {
+          "title": "La synchronisation Git a échoué",
+          "body": "Consultez les détails techniques, corrigez le problème signalé, puis réessayez."
+        }
+      },
+      "publishCodeBranch": "Publier la branche de code",
+      "configureAndRetry": "Configurer et réessayer",
+      "remoteConfigurationFailed": "La configuration du remote a échoué. Vérifiez l’URL et les détails techniques.",
+      "originUrl": "URL du remote origin",
+      "metadataNeedsAttention": "La synchronisation du code est terminée. Celle des métadonnées demande une intervention.",
+      "reviewRecovery": "Examiner la reprise",
       "done": "Terminé.",
       "macroClean": "@macro clean",
       "macroPending": "@macro pending",
@@ -466,6 +507,8 @@
       "from": "depuis",
       "preflightAvailable": "Synchronisation disponible",
       "preflightConflicts": "Conflits détectés",
+      "preflightUnavailable": "Indisponible",
+      "conflictContextChanged": "La branche a changé. Actualisez avant d’ouvrir l’assistant.",
       "preflightBlockedByLocalChanges": "Bloqué par des changements locaux",
       "preflightChecking": "Vérification de la synchronisation",
       "preflightFailed": "Échec de la vérification",
@@ -493,9 +536,12 @@
       "localChangesBadge": "changements locaux",
       "mergeInProgressBadge": "fusion en cours",
       "conflictedFiles": "{{count}} fichiers en conflit",
+      "conflictedFiles_one": "{{count}} fichier en conflit",
+      "conflictedFiles_other": "{{count}} fichiers en conflit",
       "stashAndRetry": "Mettre de côté et réessayer",
       "discardLocalChanges": "Supprimer les changements locaux",
-      "openConflictAssistant": "Ouvrir l’assistant de conflits",
+      "openConflictAssistant": "Ouvrir l’assistant de conflit en mode Implement",
+      "conflictReadOnly": "Inspection des conflits en lecture seule",
       "abortMerge": "Annuler la fusion",
       "fastForwardBlockedMergeInProgress": "L’avance rapide est bloquée pendant une fusion.",
       "fastForwardBlockedLocalCommits": "L’avance rapide est bloquée par des commits locaux.",
@@ -600,6 +646,7 @@
     "noProvidersConfigured": "Aucun provider configuré",
     "providerRestoreUnavailable": "Le fournisseur ou le modèle utilisé précédemment par cette conversation n’est plus disponible. Sélectionnez-en un autre pour continuer.",
     "runtimeErrorFallback": "Macro n’a pas pu terminer cette action. Consultez les détails, puis réessayez.",
+    "conversationSourceEmpty": "La conversation sélectionnée ne contient aucun texte terminé à citer. Retirez cette source ou choisissez une autre conversation, puis réessayez l’envoi.",
     "noEnabledModels": "Aucun modèle activé. Activez-en dans Settings.",
     "selectProviderFirst": "Sélectionnez d'abord un provider",
     "agentTypeBuild": "Build",
@@ -669,6 +716,7 @@
     "toolDenied": "refusé",
     "toolApprovalRecoveryWarning": "Certaines demandes d’outil enregistrées n’ont pas pu être restaurées. Leurs données ont été conservées. Vous pouvez fermer cet avertissement et continuer à discuter.",
     "toolApprovalResumeCancelled": "Le nouveau tour n’a pas démarré. Vous pouvez reprendre à nouveau.",
+    "sourcePassageEditApproval": "Modifier un passage enregistré",
     "toolApprovalInterrupted": "Cette demande d’outil a été interrompue.",
     "toolApprovalInterruptedHint": "La reprise démarre un nouveau tour qui vérifie le workspace actuel et redemande une approbation si nécessaire. La demande initiale reste dans l’historique.",
     "toolApprovalResume": "Reprendre dans un nouveau tour",
@@ -766,6 +814,14 @@
       "clipboardReadFailedTitle": "Impossible de lire le presse-papiers",
       "previewUnavailable": "Aperçu indisponible",
       "removeFromContext": "Retirer du contexte",
+      "toolDescriptions": {
+        "web_search": "Rechercher des informations sur le Web avec des citations",
+        "web_fetch": "Récupérer et lire directement une URL précise",
+        "question": "Poser une question bloquante structurée avec des réponses guidées",
+        "read_file": "Lire les fichiers joints et les documents de contexte de cette conversation",
+        "terminal_create_session": "Exécuter sur l’ordinateur des commandes approuvées individuellement",
+        "mark_source_passage": "Suivre les passages intéressants et ceux utilisés par l’IA"
+      },
       "toolsUnavailableWarning": "Les tools ne sont pas disponibles pour le provider ou le modèle actuellement sélectionné. Sélectionnez un modèle compatible avec le tool calling natif pour les activer.",
       "builtInTools": "Outils intégrés",
       "noToolsEnabled": "Aucun outil activé",
@@ -775,6 +831,8 @@
       "webFetchDisabledTooltip": "Activez Web Fetch dans Paramètres > Outils > Recherche sur le Web",
       "nativeToolTooltip": "Le modèle sélectionné ne prend pas en charge les appels d'outils natifs.",
       "sourceSummary": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passages",
+      "sourceSummary_one": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passage",
+      "sourceSummary_other": "{{interesting}} trouvé • {{used}} utilisé • {{total}} passages",
       "collectionDisabledTitle": "Collecte désactivée",
       "collectionDisabledDescription": "Activez l'outil Sources pour enregistrer de nouveaux passages.",
       "sourceSearchPlaceholder": "Sources de recherche",
@@ -1062,7 +1120,7 @@
       "skills": "Gérer les skills réutilisables et leurs sources",
       "prompts": "Personnaliser les prompts système utilisés par Macro",
       "architect": "Configurer les modèles de nommage des cibles et des branches d’Architect",
-      "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
+      "shortcuts": "Configurer les raccourcis clavier",
       "diagnostics": "Générer et vérifier un rapport d’assistance local",
       "providers": "Configurer les clés API et les points de terminaison",
       "models": "Gérer les paramètres des modèles disponibles",
@@ -1156,6 +1214,10 @@
       "maxTurnsLabel": "Tours agent max",
       "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro arrête la boucle agent et affiche une notice dans le chat."
     },
+    "themeDark": "Sombre",
+    "themeLight": "Clair",
+    "notificationChannelsUnsupportedDesc": "Les notifications de bureau sont indisponibles dans cet environnement. Choisissez les notifications intégrées ou désactivez la diffusion.",
+    "desktopNotificationsUnsupportedHint": "Les notifications de bureau sont indisponibles dans cet environnement. Macro utilise les notifications intégrées à l’application.",
     "theme": "Thème",
     "zoom": "Zoomer",
     "zoom_auto": "Automatique",
@@ -1394,6 +1456,9 @@
     "parentFolderRequired": "Le dossier parent est obligatoire",
     "folderNameRequired": "Le nom du dossier doit être un seul nom de dossier",
     "repoPathRequired": "Choisissez d’abord le dossier d’un projet existant",
+    "folderNotFound": "Ce dossier n’existe pas. Choisissez un dossier existant.",
+    "pathNotDirectory": "Ce chemin ne désigne pas un dossier. Choisissez un dossier existant.",
+    "folderCheckFailed": "Impossible de lire ce dossier. Vérifiez le chemin et les droits d’accès.",
     "projectPathRequired": "Le chemin du projet est obligatoire",
     "duplicateSubprojectName": "Un projet portant ce nom existe déjà dans ce groupe",
     "localFolder": "Dossier local",
@@ -1407,6 +1472,7 @@
     "attachedReposCount_one": "{{count}} projet dans ce groupe",
     "attachedReposCount_other": "{{count}} projets dans ce groupe",
     "folderAlreadyAttached": "Ce dossier est déjà attaché à {{name}}.",
+    "folderAlreadyAttachedInWorkspace": "Ce dossier est déjà attaché à un projet de cet espace de travail.",
     "folderAlreadyAttachedNamed": "Ce dossier est déjà attaché à \"{{name}}\"",
     "saveFailed": "Échec de l'enregistrement du projet",
     "createProject": "Créer un projet",
@@ -1527,6 +1593,8 @@
     "projectGitPrepared": "Git est maintenant prêt pour {{projectName}}.",
     "projectDirectEditEnabled": "{{projectName}} peut maintenant être modifié sans Git.",
     "projectDirectEditDisabled": "{{projectName}} est maintenant en lecture seule jusqu'à l'initialisation de Git.",
+    "gitFlowInvalidBranch": "Saisissez un nom de branche Git valide.",
+    "projectActions": "Actions pour {{name}}",
     "gitFlowSaved": "Paramètres du workflow Git enregistrés.",
     "readOnlyImpactTitle": "Passer en lecture seule ?",
     "readOnlyImpactDescription": "Macro retirera ce projet des cibles éditables des plans et des tâches, mais le gardera disponible pour le contexte et la lecture.",
@@ -1617,7 +1685,7 @@
       "nameLabel": "Nom du plan",
       "nameRequired": "Le nom du plan est obligatoire.",
       "namePlaceholder": "par ex. Révision de l'authentification",
-      "labelLabel": "Etiquette du plan",
+      "labelLabel": "Étiquette du plan",
       "labelRequired": "L’étiquette du plan est requise.",
       "labelPlaceholder": "par ex. Révision de l'authentification",
       "descriptionLabel": "Descriptif",
@@ -1799,6 +1867,11 @@
     "noStrategyDescription": "Discutez du plan dans le chat Architect, puis utilisez Générer la stratégie pour créer ce graphe.",
     "noBranchesMatchingFilters": "Aucune branche ne correspond aux filtres actuels.",
     "planCompleted": "Plan terminé",
+    "newPlanPlaceholder": "Nouveau plan",
+    "planValidationBranchesCreated_one": "Plan validé. {{count}} branche préparée.",
+    "planValidationBranchesCreated_other": "Plan validé. {{count}} branches préparées.",
+    "planValidationBranchesCurrent": "Plan validé. Les branches sont déjà à jour.",
+    "finalizationTaskTitle": "Finaliser le plan : {{name}}",
     "planValidated": "Plan validé",
     "validatingPlan": "Validation...",
     "noActivePlan": "Aucun plan actif",
@@ -1898,6 +1971,13 @@
     "emptyDescription": "Ajoutez un fournisseur pour connecter Macro à un service d’IA.",
     "configuredTitle": "Providers configurés",
     "unconfiguredTitle": "Providers à configurer",
+    "connectionModelsFound_one": "Connexion réussie. {{count}} modèle trouvé.",
+    "connectionModelsFound_other": "Connexion réussie. {{count}} modèles trouvés.",
+    "connectionLmStudioModelsFound_one": "Connexion réussie. {{count}} modèle LM Studio trouvé.",
+    "connectionLmStudioModelsFound_other": "Connexion réussie. {{count}} modèles LM Studio trouvés.",
+    "connectionModelVerified": "Connexion réussie avec le modèle {{model}}.",
+    "connectionModelsFound_zero": "Connexion réussie. {{count}} modèles trouvés.",
+    "connectionLmStudioModelsFound_zero": "Connexion réussie. {{count}} modèles LM Studio trouvés.",
     "testSaveFirst": "Enregistrez le provider avant de le tester.",
     "testConnection": "Tester la connexion",
     "saveProvider": "Enregistrer le provider",
@@ -2206,6 +2286,7 @@
         "resourcePressure": { "title": "Macro est temporairement surchargé", "body": "Le système a trop de fichiers ouverts ; Macro a donc suspendu les actualisations automatiques des dépôts avant de réessayer.", "nextStep": "Patientez un instant, puis réessayez. Si le problème persiste, fermez des fenêtres de projet ou des terminaux supplémentaires." },
         "replicaRepair": { "title": "Les métadonnées du plan doivent être réparées", "body": "Macro a trouvé des métadonnées de plan incohérentes et doit réparer la copie canonique avant de continuer.", "nextStep": "Réparez les métadonnées du plan, puis réessayez." },
         "metadataMissing": { "title": "Les métadonnées du plan sont incomplètes", "body": "Macro a trouvé une tâche ou une conversation qui pointe vers des métadonnées de plan manquantes ou seulement partiellement enregistrées.", "nextStep": "Réparez les liens des métadonnées, puis réessayez." },
+        "conflictAssistantContextChanged": {"title": "Le contexte Git a changé", "body": "Le contexte Git sélectionné a changé pendant l’ouverture de l’assistant.", "nextStep": "Actualisez la vue Git et rouvrez l’assistant."},
         "workspaceUnavailable": { "title": "L’état de l’espace de travail est temporairement indisponible", "body": "Macro n’a pas pu lire l’état de l’espace de travail nécessaire à cette action.", "nextStep": "Réessayez après la fin de la mise à jour de l’espace de travail. Si le problème persiste, rouvrez le projet." },
         "gitNotReady": { "title": "Ce projet n’est pas prêt pour les modifications", "body": "Macro peut toujours utiliser ce projet comme contexte, mais ne peut pas y écrire tant que Git n’est pas prêt.", "nextStep": "Ouvrez les réglages du projet et terminez la configuration de Git." },
         "fallback": { "title": "Une intervention est nécessaire", "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez." }
@@ -2213,6 +2294,12 @@
     }
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Mode Architect",
+        "description": "Invite système de base pour les conversations Architect."
+      }
+    },
     "loadFailed": "Impossible de charger les invites système. Réessayez avant d’enregistrer.", "title": "Prompts système", "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.", "restoreAll": "Tout restaurer", "saveFailed": "Impossible d’enregistrer les prompts système." },
   "toast": {
     "languageChanged": "La langue a été modifiée en {{language}}",

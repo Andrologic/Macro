@@ -413,6 +413,14 @@ export interface NormalizedToolSecurityCall {
   canApproveForConversation: boolean;
 }
 
+export const getToolSecuritySummaryPresentation = (
+  call: Pick<NormalizedToolSecurityCall, 'toolId' | 'summary'>,
+  translate: (key: string, fallback: string) => string,
+): string =>
+  call.toolId === 'edit_source_passage' && call.summary === TOOL_SECURITY_DEFINITIONS.edit_source_passage.summary
+    ? translate('chat.sourcePassageEditApproval', 'Edit a saved source passage')
+    : call.summary;
+
 export interface ToolSecurityEvaluation {
   decision: ToolSecurityDecision;
   denialReason?: string;

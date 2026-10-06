@@ -167,8 +167,9 @@ export const loadConversationMessages = async (
   }
 
   const dbMessages = await adapters.ipc.listMessages(params.conversationId);
+  const conversationById = buildConversationById(params.conversations);
   return dbMessages.map((message) =>
-    mapDbMessageToChatMessage(message, buildConversationById(params.conversations)),
+    mapDbMessageToChatMessage(message, conversationById),
   );
 };
 

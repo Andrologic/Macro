@@ -1,3 +1,4 @@
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
@@ -77,6 +78,7 @@ import {
   clearConflictAssistantInternalAgentProfile,
   getConflictAssistantInternalAgentProfile,
 } from '../../services/conflictAssistantService';
+import { getConflictAssistantContext, isConflictAssistantContextAllowed } from '../../services/conflictAssistantContext';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -108,7 +110,7 @@ import {
 } from './CompactionTranscriptUi';
 import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
 import { notify } from '../ui/toastService';
-import { toServiceError } from '../../services/contracts/errors';
+import { toServiceError, type ServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
@@ -1230,7 +1232,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addComposerContextRef,
     clearComposerContextRefs,
     questionnaireDraftsByConversationId,
-    getPendingToolApproval,
+    activePendingToolApproval,
     approvePendingToolApprovalOnce,
     approvePendingToolApprovalForConversation,
     denyPendingToolApproval,
@@ -1295,7 +1297,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addComposerContextRef: state.addComposerContextRef,
     clearComposerContextRefs: state.clearComposerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
-    getPendingToolApproval: state.getPendingToolApproval,
+    activePendingToolApproval: state.selectedConversationId
+      ? state.pendingToolApprovalByConversationId[state.selectedConversationId] ?? null
+      : null,
     approvePendingToolApprovalOnce: state.approvePendingToolApprovalOnce,
     approvePendingToolApprovalForConversation:
       state.approvePendingToolApprovalForConversation,
@@ -1355,6 +1359,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
 
   const [inputValue, setInputValue] = useState('');
+  const [composerSubmissionErrors, setComposerSubmissionErrors] =
+    useState<Partial<Record<string, ServiceError>>>({});
+  const clearComposerSubmissionError = useCallback((contextKey: string) => {
+    setComposerSubmissionErrors((current) => {
+      if (!current[contextKey]) return current;
+      const next = { ...current };
+      delete next[contextKey];
+      return next;
+    });
+  }, []);
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
@@ -1642,42 +1656,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setManualCompactionPhase('idle');
   }, [selectedConversationId]);
 
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    let cancelled = false;
-
-    // The LazyComposerEditor loads its underlying editor module
-    // asynchronously. composerEditorRef.current may be null on the first
-    // render. We peek (read) the draft without consuming it, then retry
-    // until the editor is ready, and only then acknowledge (consume) it.
-    const tryApplyDraft = (attemptsLeft: number) => {
-      if (cancelled) return;
-      const handle = composerEditorRef.current;
-      const draft = peekComposerDraft(selectedConversationId);
-      if (draft === null) {
-        return;
-      }
-      if (handle) {
-        handle.setText(draft);
-        handle.focus();
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      if (attemptsLeft <= 0) {
-        // Editor never came up. Drop the draft so we don't leak it.
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      window.setTimeout(() => tryApplyDraft(attemptsLeft - 1), 50);
-    };
-
-    tryApplyDraft(10);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedConversationId, peekComposerDraft, acknowledgeComposerDraft]);
-
   const isStreaming = isContextStreaming;
   const isTranscriptActivityActive =
     isContextStreaming ||
@@ -1735,9 +1713,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeQuestionnaireDraft = selectedConversationId
     ? questionnaireDraftsByConversationId[selectedConversationId]
     : undefined;
-  const activePendingToolApproval = selectedConversationId
-    ? getPendingToolApproval(selectedConversationId)
-    : null;
   const activeQuestionnaire = useMemo(
     () =>
       selectedConversationId
@@ -1781,7 +1756,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       !selectedConversationRuntime.lastErrorDisplayTarget)
       ? selectedConversationRuntime.lastError
       : null;
-  const composerError = composerRuntimeError ?? lastError;
+  const composerError = composerRuntimeError ?? lastError ??
+    composerSubmissionErrors[composerDraftContextKey];
+  const composerErrorMessage = composerError ? toServiceError(composerError).message : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1876,16 +1853,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     )
       ? null
       : getComposerDraftForContext(composerDraftContextKey);
+    const pendingDraft = selectedConversationId
+      ? peekComposerDraft(selectedConversationId)
+      : null;
     skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
-    if (!previousContextKey && !savedNextDraft) {
+    if (!previousContextKey && !savedNextDraft && pendingDraft === null) {
       return;
     }
-    const nextDraft = savedNextDraft ?? {
-      text: '',
-      images: [],
-      contextRefs: [],
+    // One restoration owns the text. A newly prepared prompt takes precedence
+    // over local text while retaining the saved images and context references.
+    const nextDraft = {
+      ...savedNextDraft,
+      text: pendingDraft ?? savedNextDraft?.text ?? '',
+      images: savedNextDraft?.images ?? [],
+      contextRefs: savedNextDraft?.contextRefs ?? [],
     };
+    if (pendingDraft !== null) {
+      pendingSentComposerDraftContextKeysRef.current.delete(composerDraftContextKey);
+      saveComposerDraftForContext(composerDraftContextKey, nextDraft);
+    }
     setComposerEditSession(null);
     goalComposerEditSessionRef.current = null;
     setGoalComposerEditSession(null);
@@ -1903,10 +1890,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     let cancelled = false;
     const applyText = (attemptsLeft: number) => {
-      if (cancelled) return;
+      if (cancelled || renderedComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
       const editor = composerEditorRef.current;
       if (editor) {
         editor.setText(nextDraft.text, nextDraft.contextRefs);
+        if (pendingDraft !== null && selectedConversationId &&
+            peekComposerDraft(selectedConversationId) === pendingDraft) {
+          editor.focus();
+          acknowledgeComposerDraft(selectedConversationId);
+        }
         return;
       }
       if (attemptsLeft > 0) {
@@ -1922,6 +1914,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerEditSession,
     goalComposerEditSession,
     getComposerDraftForContext,
+    peekComposerDraft,
+    acknowledgeComposerDraft,
     replaceComposerContextRefs,
     resetPromptHistoryNavigation,
     saveComposerDraftForContext,
@@ -2162,7 +2156,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isImplementComposerInKickoffMode =
     selectedTaskRequiresKickoff && currentMessages.length === 0;
-  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
+  const conflictAssistantContext = useMemo(
+    () => selectedConversationId ? getConflictAssistantContext(selectedConversationId) : undefined,
+    [selectedConversationId]
+  );
+  const hasVerifiedConflictContext = useMemo(() => isConflictAssistantContextAllowed(conflictAssistantContext, {
+    mode, selectedTaskId, selectedProjectId, selectedGroupId, selectedConversationId,
+    conversation: currentConversation ? {
+      id: currentConversation.id, scope_mode: currentConversation.scope_mode, task_id: currentConversation.task_id,
+      project_id: currentConversation.project_id, group_id: currentConversation.group_id,
+    } : null,
+    projects: [...standaloneProjects, ...projectGroups.flatMap(group => group.projects)],
+    groups: projectGroups,
+  }), [conflictAssistantContext, mode, selectedTaskId, selectedProjectId, selectedGroupId,
+    selectedConversationId, currentConversation, standaloneProjects, projectGroups]);
+  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask && !hasVerifiedConflictContext;
+  const isConflictContextInvalid = Boolean(conflictAssistantContext) && !hasVerifiedConflictContext;
   const isSelectedConversationArchived = useConversationArchiveStore((state) =>
     mode === 'Chat' && selectedConversationId
       ? state.archivedConversationIds.has(selectedConversationId)
@@ -2178,6 +2187,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
+    isConflictContextInvalid ||
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
@@ -2255,7 +2265,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Implement') {
       return {
         icon: 'check-square' as const,
-        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || t('implement.selectTaskShort', 'Select a task')}`,
+        title: `${t('header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -2267,13 +2277,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    hasVerifiedConflictContext,
     activePlanContext,
     focusedProjectName,
     isModeProjectWorkspaceMissing,
     mode,
     projectScopeLabel,
     selectedGlobalProjectName,
-    selectedTask?.title,
+    selectedTask,
     t,
   ]);
 
@@ -2959,6 +2970,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
+    clearComposerSubmissionError(composerDraftContextKey);
     if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
@@ -3129,6 +3141,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
+    clearComposerSubmissionError(composerDraftContextKey);
     if (!goalComposerEditSession) {
       saveComposerDraftForContext(composerDraftContextKey, {
         text,
@@ -3315,7 +3328,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, trackedGoal);
       }
       if (clearsComposerImmediately) restoreSentDraft();
-      // Keep the draft intact. The visible error feedback comes from the chat store.
+      // Source prevalidation can reject before the chat store publishes a runtime error.
+      const submissionError = toServiceError(error);
+      setComposerSubmissionErrors((current) => ({
+        ...current,
+        [conversationDraftKey]: submissionError,
+      }));
     } finally {
       if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
@@ -3832,7 +3850,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
-              {mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
+              {hasVerifiedConflictContext && conflictAssistantContext ? (
+                <div className="mt-0.5 truncate text-xs text-muted-foreground" data-testid="conflict-assistant-context">
+                  {t('footer.sync.conflictReadOnly', 'Read-only conflict inspection')} · {conflictAssistantContext.kind === 'metadata' ? '@macro' : t('footer.sync.remoteNeededCode', 'code')} · {conflictAssistantContext.repositories.map(repo => `${projectNameById.get(repo.projectId) ?? repo.projectId}: ${repo.branch}`).join(', ')}
+                </div>
+              ) : mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
                 <div
                   className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground"
                   data-testid="implement-active-task-context"
@@ -4111,11 +4133,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 className="shadow-lg shadow-black/15 backdrop-blur"
                 compact
                 presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                  fallbackBody: composerErrorMessage === 'No available provider or model could be restored for this conversation.'
                     ? t(
                         'chat.providerRestoreUnavailable',
                         'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
                       )
+                    : composerErrorMessage === 'The selected conversation has no completed text to cite.'
+                      ? t('chat.conversationSourceEmpty', 'The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.')
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
               />
@@ -4514,8 +4538,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                               ? t('chat.selectProvider')
                               : t('chat.typeMessage')
                         }
-                        onTextChange={(text) => {
-                          if (composerError) {
+                        onTextChange={(text, origin) => {
+                          if (origin !== 'programmatic' && composerError) {
+                            clearComposerSubmissionError(composerDraftContextKey);
                             clearConversationRuntimeError(selectedConversationId ?? '');
                             clearLastError();
                           }

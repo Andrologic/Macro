@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
+import { createInstance } from 'i18next';
+import fr from '../../i18n/locales/fr.json';
+import { evaluateToolSecurity } from '../../services/toolSecurityPolicy';
+const frenchTranslator = createInstance();
+await frenchTranslator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: fr } } });
+let frenchApproval = false;
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
@@ -19,6 +25,7 @@ const loadToolApprovalFooter = async () => {
         fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
         maybeOptions?: { defaultValue?: string; [key: string]: unknown }
       ) => {
+        if (frenchApproval) return frenchTranslator.t(_key);
         const template =
           typeof fallbackOrOptions === 'string'
             ? fallbackOrOptions
@@ -81,6 +88,7 @@ describe('ToolApprovalFooter', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    frenchApproval = false;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -95,6 +103,25 @@ describe('ToolApprovalFooter', () => {
     container = null;
     root = null;
     mock.restore();
+  });
+
+  it('localizes a source deletion approval while preserving the pending request and allow-once action', async () => {
+    frenchApproval = true;
+    const evaluation = evaluateToolSecurity('edit_source_passage', { action: 'delete', citation_id: 'source-été' }, { mode: 'Chat', riskLevel: 'balanced', workspacePath: '/repo' });
+    expect(evaluation.decision).toBe('ask');
+    const pendingApproval = { ...evaluation.normalizedCall, conversationId: 'c', assistantMessageId: 'm', toolCallId: 't', riskLevel: 'balanced' as const, args: { action: 'delete', citation_id: 'source-été' } };
+    const before = structuredClone(pendingApproval);
+    const allowOnce = mock(() => undefined);
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+    await act(async () => root?.render(<ToolApprovalFooter pendingApproval={pendingApproval} onAllowOnce={allowOnce} onAllowForConversation={() => {}} onDeny={() => {}} />));
+    expect(container?.textContent).toContain('Modifier un passage enregistré');
+    expect(container?.textContent).not.toContain('Edit a saved source passage');
+    const button = Array.from(container!.querySelectorAll('button')).find(candidate => candidate.textContent === fr.chat.toolApprovalAllowOnce)!;
+    await act(async () => button.click());
+    expect(allowOnce).toHaveBeenCalledTimes(1);
+    expect(pendingApproval).toEqual(before);
+    expect(pendingApproval.rememberKey).toBe('tool:edit_source_passage');
+    expect(pendingApproval.isDestructive).toBe(true);
   });
 
   it('shows MCP identity and nested arguments, masks secrets and marks truncation', async () => {
@@ -176,6 +203,43 @@ describe('ToolApprovalFooter', () => {
     });
 
     expect(onDeny).toHaveBeenCalledWith('Stay inside the repo only.');
+  });
+
+  it('keeps the same request draft but resets it for every identity change', async () => {
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+    const onDeny = mock(() => undefined);
+    let approval = {
+      conversationId: 'conv-1', assistantMessageId: 'msg-1', toolCallId: 'tool-1',
+      toolId: 'terminal_run', actionGroup: 'escape' as const, riskLevel: 'balanced' as const,
+      summary: 'Run command', rememberKey: 'terminal', canApproveForConversation: false,
+    };
+    const render = async () => {
+      await act(async () => { root?.render(<ToolApprovalFooter pendingApproval={{ ...approval }}
+        onAllowOnce={() => {}} onAllowForConversation={() => {}} onDeny={onDeny} />); });
+    };
+    const click = async (label: string) => {
+      const button = Array.from(container?.querySelectorAll('button') ?? [])
+        .find((item) => item.textContent === label);
+      expect(button).toBeDefined();
+      await act(async () => { button?.click(); });
+    };
+    await render();
+    for (const field of ['toolCallId', 'assistantMessageId', 'conversationId'] as const) {
+      await click('Refuse');
+      await act(async () => { latestTextareaOnChange?.({ target: { value: '  synthetic refusal  ' } }); });
+      await render();
+      expect(container?.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('  synthetic refusal  ');
+      await click('Confirm denial');
+      expect(onDeny).toHaveBeenLastCalledWith('synthetic refusal');
+      approval = { ...approval, [field]: `${approval[field]}-next` };
+      await render();
+      expect(container?.querySelector('textarea')).toBeNull();
+      expect(container?.textContent).not.toContain('Allow for this conversation');
+      await click('Refuse');
+      expect(container?.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('');
+      await click('Cancel');
+    }
+    expect(onDeny).toHaveBeenCalledTimes(3);
   });
 
   it('maps approval categories and risk icons for different request types', async () => {

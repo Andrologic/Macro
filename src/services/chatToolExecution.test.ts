@@ -451,6 +451,11 @@ function architectFixture(loadRuntime?: Parameters<typeof handleDeferredArchitec
       activeArchitectPlanId: "plan-a", activePlanContext: { targetBranch: selectedBranch },
       selectedProjectId: "project", selectedGroupId: null, projectGroups: [], standaloneProjects: [],
       getProjectById: () => undefined, activateArchitectPlan: activate, setStrategyMutationPreview: preview,
+      consumeArchitectPlanActivationPayload: () => ({
+        plan, targetBranch: plan.targetBranch, conversationId: plan.conversationId ?? null,
+        sharedConversation: false, resolutionMode: 'blank_fast_path',
+        chatMessages: [], chatMessagesLoaded: true, chatMessageCount: 0,
+      }),
     }),
     getTaskState: () => ({ tasks: [], refreshFromPlan: refresh }),
     ensureArchitectConversationForPlan: ensure,

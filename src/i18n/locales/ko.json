@@ -343,6 +343,50 @@
     "cpu": "CPU",
     "memory": "메모리",
     "sync": {
+      "failure": {
+        "missing_origin": {
+          "title": "원격이 설정되지 않았습니다",
+          "body": "이 저장소를 동기화하려면 origin URL을 추가하세요. 로컬에서 계속 작업할 수도 있습니다."
+        },
+        "missing_upstream": {
+          "title": "추적 브랜치가 설정되지 않았습니다",
+          "body": "코드 브랜치를 origin에 게시해 추적 대상을 설정한 후 다시 시도하세요. 게시하면 로컬 커밋이 원격으로 전송됩니다."
+        },
+        "remote_unavailable": {
+          "title": "원격 저장소에 접근할 수 없습니다",
+          "body": "origin URL과 접근 권한을 확인하세요. 기존 URL은 Git 클라이언트에서 수정한 후 다시 시도하세요."
+        },
+        "auth": {
+          "title": "Git 인증이 필요합니다",
+          "body": "Git 인증 정보와 저장소 접근 권한을 확인한 후 다시 시도하세요."
+        },
+        "network": {
+          "title": "원격에 연결할 수 없습니다",
+          "body": "연결 상태와 origin URL을 확인한 후 다시 시도하세요."
+        },
+        "local_changes": {
+          "title": "로컬 파일 때문에 pull할 수 없습니다",
+          "body": "변경 사항을 보존하세요. 검토하거나 stash로 임시 저장한 후 pull을 다시 시도하세요."
+        },
+        "divergence": {
+          "title": "브랜치가 분기되었습니다",
+          "body": "브랜치 상태를 새로 고침하고 merge 또는 rebase로 원격 커밋을 통합하세요."
+        },
+        "unknown": {
+          "title": "Git 동기화에 실패했습니다",
+          "body": "기술 세부 정보를 검토하고 문제를 해결한 후 다시 시도하세요."
+        }
+      },
+      "publishCodeBranch": "코드 브랜치 게시",
+      "configureAndRetry": "설정 후 다시 시도",
+      "remoteConfigurationFailed": "원격 설정에 실패했습니다. URL과 기술 세부 정보를 확인하세요.",
+      "originUrl": "origin URL",
+      "metadataNeedsAttention": "코드 동기화가 완료되었습니다. 메타데이터 동기화에는 조치가 필요합니다.",
+      "reviewRecovery": "복구 검토",
+      "conflictedFiles_other": "충돌 파일 {{count}}개",
+      "conflictedFiles_one": "충돌 파일 {{count}}개",
+      "conflictContextChanged": "브랜치가 변경되었습니다. 도우미를 열기 전에 새로 고침하세요.",
+      "preflightUnavailable": "사용 불가",
       "done": "완료.",
       "macroClean": "@macro 클린",
       "macroPending": "@macro 보류 중",
@@ -467,7 +511,8 @@
       "conflictedFiles": "{{count}} conflicted files",
       "stashAndRetry": "Stash and retry",
       "discardLocalChanges": "Discard local changes",
-      "openConflictAssistant": "Open conflict assistant",
+      "openConflictAssistant": "Implement에서 충돌 도우미 열기",
+      "conflictReadOnly": "읽기 전용 충돌 검사",
       "abortMerge": "Abort merge",
       "fastForwardBlockedMergeInProgress": "Fast-forward is blocked while a merge is in progress.",
       "fastForwardBlockedLocalCommits": "Fast-forward is blocked by local commits.",
@@ -572,6 +617,7 @@
     "noProvidersConfigured": "구성된 제공업체가 없습니다.",
     "providerRestoreUnavailable": "이 대화에서 이전에 사용한 프로바이더 또는 모델을 더 이상 사용할 수 없습니다. 계속하려면 다른 항목을 선택하세요.",
     "runtimeErrorFallback": "Macro가 이 작업을 완료하지 못했습니다. 세부 정보를 확인한 후 다시 시도하세요.",
+    "conversationSourceEmpty": "선택한 대화에는 인용할 수 있는 완료된 텍스트가 없습니다. 이 참조를 제거하거나 다른 대화를 선택한 후 다시 전송하세요.",
     "noEnabledModels": "활성화된 모델이 없습니다. 설정에서 모델을 활성화하세요.",
     "selectProviderFirst": "먼저 제공업체를 선택하세요.",
     "agentTypeBuild": "짓다",
@@ -641,6 +687,7 @@
     "toolDenied": "denied",
     "toolApprovalRecoveryWarning": "저장된 도구 요청 일부를 복원하지 못했습니다. 데이터는 보존되었습니다. 이 알림을 닫고 대화를 계속할 수 있습니다.",
     "toolApprovalResumeCancelled": "새 턴이 시작되지 않았습니다. 다시 재개할 수 있습니다.",
+    "sourcePassageEditApproval": "저장된 구절 편집",
     "toolApprovalInterrupted": "이 도구 요청이 중단되었습니다.",
     "toolApprovalInterruptedHint": "재개하면 새 턴에서 현재 워크스페이스를 확인하고 필요한 경우 새 승인을 요청합니다. 원래 요청은 기록에 남습니다.",
     "toolApprovalResume": "새 턴으로 재개",
@@ -738,6 +785,14 @@
       "clipboardReadFailedTitle": "클립보드를 읽을 수 없습니다",
       "previewUnavailable": "미리보기를 사용할 수 없음",
       "removeFromContext": "컨텍스트에서 제거",
+      "toolDescriptions": {
+        "web_search": "출처를 인용하여 웹에서 정보 검색",
+        "web_fetch": "지정된 URL을 직접 가져와 읽기",
+        "question": "응답을 기다리는 구조화된 질문을 선택지와 함께 제시",
+        "read_file": "이 채팅에 첨부된 파일과 맥락 문서 읽기",
+        "terminal_create_session": "개별적으로 승인된 명령을 컴퓨터에서 실행",
+        "mark_source_passage": "관심 있는 구절과 AI가 사용한 구절 기록"
+      },
       "toolsUnavailableWarning": "현재 선택한 제공업체 또는 모델에서는 도구를 사용할 수 없습니다. 활성화하려면 기본 도구 호출 지원이 포함된 모델을 선택하세요.",
       "builtInTools": "내장 도구",
       "noToolsEnabled": "활성화된 도구가 없습니다.",
@@ -747,6 +802,8 @@
       "webFetchDisabledTooltip": "설정 > 도구 > 웹 검색에서 Web Fetch를 활성화하세요.",
       "nativeToolTooltip": "선택한 모델은 기본 도구 호출을 지원하지 않습니다.",
       "sourceSummary": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
+      "sourceSummary_one": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
+      "sourceSummary_other": "{{interesting}}발견됨 •{{used}}사용됨 •{{total}}구절",
       "collectionDisabledTitle": "컬렉션이 비활성화되었습니다.",
       "collectionDisabledDescription": "새로운 구절을 저장하려면 소스 도구를 활성화하세요.",
       "sourceSearchPlaceholder": "소스 검색",
@@ -1128,6 +1185,10 @@
       "maxTurnsLabel": "최대 에이전트 턴",
       "maxTurnsDescription": "Macro가 에이전트 루프를 중지하고 채팅에 안내를 표시하기 전까지의 최대 AI/도구 사이클 수입니다."
     },
+    "themeDark": "어두움",
+    "themeLight": "밝음",
+    "notificationChannelsUnsupportedDesc": "이 환경에서는 데스크톱 알림을 사용할 수 없습니다. 앱 내 알림을 선택하거나 알림을 끄세요.",
+    "desktopNotificationsUnsupportedHint": "이 환경에서는 데스크톱 알림을 사용할 수 없습니다. Macro는 앱 내 알림을 사용합니다.",
     "theme": "주제",
     "zoom": "줌",
     "zoom_auto": "자동",
@@ -1366,6 +1427,9 @@
     "parentFolderRequired": "상위 폴더는 필수 항목입니다.",
     "folderNameRequired": "폴더 이름은 단일 폴더 이름이어야 합니다.",
     "repoPathRequired": "먼저 기존 프로젝트 폴더를 선택하세요.",
+    "folderNotFound": "이 폴더가 존재하지 않습니다. 기존 폴더를 선택하세요.",
+    "pathNotDirectory": "이 경로는 폴더가 아닙니다. 기존 폴더를 선택하세요.",
+    "folderCheckFailed": "이 폴더를 읽을 수 없습니다. 경로와 접근 권한을 확인하세요.",
     "projectPathRequired": "프로젝트 경로는 필수 항목입니다.",
     "duplicateSubprojectName": "이 그룹에 같은 이름의 프로젝트가 이미 존재합니다.",
     "localFolder": "로컬 폴더",
@@ -1379,6 +1443,7 @@
     "attachedReposCount_one": "이 그룹의 프로젝트 {{count}}개",
     "attachedReposCount_other": "이 그룹의 프로젝트 {{count}}개",
     "folderAlreadyAttached": "이 폴더는 이미 다음에 첨부되어 있습니다.{{name}}.",
+    "folderAlreadyAttachedInWorkspace": "이 폴더는 이미 이 작업 공간의 프로젝트에 연결되어 있습니다.",
     "folderAlreadyAttachedNamed": "이 폴더는 이미 '에 첨부되어 있습니다.{{name}}\"",
     "saveFailed": "프로젝트를 저장하지 못했습니다.",
     "createProject": "프로젝트 생성",
@@ -1499,6 +1564,8 @@
     "projectGitPrepared": "{{projectName}}용 Git이 준비되었습니다.",
     "projectDirectEditEnabled": "이제 {{projectName}}을(를) Git 없이 편집할 수 있습니다.",
     "projectDirectEditDisabled": "{{projectName}}은(는) Git이 초기화될 때까지 읽기 전용입니다.",
+    "gitFlowInvalidBranch": "유효한 Git 브랜치 이름을 입력하세요.",
+    "projectActions": "{{name}} 작업",
     "gitFlowSaved": "Git workflow 설정이 저장되었습니다.",
     "readOnlyImpactTitle": "read-only로 전환할까요?",
     "readOnlyImpactDescription": "Macro는 이 프로젝트를 편집 가능한 계획/작업 대상에서 제거하지만, 컨텍스트와 읽기 전용 접근은 계속 유지합니다.",
@@ -1771,6 +1838,11 @@
     "noStrategyDescription": "Architect 채팅에서 계획을 논의한 다음 전략 생성을 사용해 이 그래프를 만드세요.",
     "noBranchesMatchingFilters": "현재 필터와 일치하는 브랜치가 없습니다.",
     "planCompleted": "계획 완료",
+    "newPlanPlaceholder": "새 계획",
+    "planValidationBranchesCreated_one": "계획을 검증했습니다. 브랜치 {{count}}개를 준비했습니다.",
+    "planValidationBranchesCreated_other": "계획을 검증했습니다. 브랜치 {{count}}개를 준비했습니다.",
+    "planValidationBranchesCurrent": "계획을 검증했습니다. 브랜치가 이미 최신 상태입니다.",
+    "finalizationTaskTitle": "계획 완료: {{name}}",
     "planValidated": "계획이 검증됨",
     "validatingPlan": "검증 중...",
     "noActivePlan": "활성 계획 없음",
@@ -1870,6 +1942,13 @@
     "searchPlaceholder": "프로바이더 검색...",
     "configuredTitle": "구성된 프로바이더",
     "unconfiguredTitle": "구성이 필요한 프로바이더",
+    "connectionModelsFound_one": "연결에 성공했습니다. 모델 {{count}}개를 찾았습니다.",
+    "connectionModelsFound_other": "연결에 성공했습니다. 모델 {{count}}개를 찾았습니다.",
+    "connectionLmStudioModelsFound_one": "연결에 성공했습니다. LM Studio 모델 {{count}}개를 찾았습니다.",
+    "connectionLmStudioModelsFound_other": "연결에 성공했습니다. LM Studio 모델 {{count}}개를 찾았습니다.",
+    "connectionModelVerified": "모델 {{model}}로 연결에 성공했습니다.",
+    "connectionModelsFound_zero": "연결에 성공했습니다. 모델 {{count}}개를 찾았습니다.",
+    "connectionLmStudioModelsFound_zero": "연결에 성공했습니다. LM Studio 모델 {{count}}개를 찾았습니다.",
     "testSaveFirst": "테스트 전에 프로바이더를 저장하세요.",
     "testConnection": "연결 테스트",
     "saveProvider": "프로바이더 저장",
@@ -2176,6 +2255,7 @@
         "resourcePressure": { "title": "Macro가 일시적으로 과부하 상태입니다", "body": "시스템에 열린 파일이 너무 많아 Macro가 다시 시도하기 전에 자동 저장소 새로 고침을 일시 중지했습니다.", "nextStep": "잠시 기다린 후 다시 시도하세요. 문제가 계속되면 추가 프로젝트 창이나 터미널을 닫으세요." },
         "replicaRepair": { "title": "계획 메타데이터를 복구해야 합니다", "body": "Macro가 일관되지 않은 계획 메타데이터를 발견했으므로 계속하기 전에 기준 복사본을 복구해야 합니다.", "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요." },
         "metadataMissing": { "title": "계획 메타데이터가 불완전합니다", "body": "Macro가 누락되었거나 일부만 저장된 계획 메타데이터를 가리키는 작업 또는 대화를 발견했습니다.", "nextStep": "메타데이터 연결을 복구한 후 다시 시도하세요." },
+        "conflictAssistantContextChanged": {"title": "Git 컨텍스트가 변경되었습니다", "body": "도우미를 여는 동안 선택한 Git 컨텍스트가 변경되었습니다.", "nextStep": "Git 보기를 새로 고침하고 도우미를 다시 여세요."},
         "workspaceUnavailable": { "title": "작업 공간 상태를 일시적으로 사용할 수 없습니다", "body": "Macro가 이 작업에 필요한 작업 공간 상태를 읽지 못했습니다.", "nextStep": "작업 공간 업데이트가 끝난 후 다시 시도하세요. 문제가 지속되면 프로젝트를 다시 여세요." },
         "gitNotReady": { "title": "이 프로젝트는 아직 편집할 준비가 되지 않았습니다", "body": "Macro는 이 프로젝트를 컨텍스트로 사용할 수 있지만 Git이 준비될 때까지 쓸 수 없습니다.", "nextStep": "프로젝트 설정을 열고 Git 설정을 완료하세요." },
         "fallback": { "title": "확인이 필요합니다", "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요." }
@@ -2185,6 +2265,12 @@
     "saveFailed": "제공업체를 저장하지 못했습니다."
   },
   "prompts": {
+    "editors": {
+      "promptArchitect": {
+        "label": "Architect 모드",
+        "description": "Architect 대화에 사용하는 기본 시스템 프롬프트."
+      }
+    },
     "loadFailed": "시스템 프롬프트를 불러올 수 없습니다. 저장하기 전에 다시 시도하세요.", "title": "시스템 프롬프트", "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.", "restoreAll": "모두 복원", "saveFailed": "시스템 프롬프트를 저장하지 못했습니다." },
   "toast": {
     "languageChanged": "언어가 다음으로 변경되었습니다.{{language}}",

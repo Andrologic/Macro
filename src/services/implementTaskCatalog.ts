@@ -534,7 +534,8 @@ export const buildImplementTaskCatalog = (params: {
           planId: task.plan_id,
         }) === planLocatorKey
       );
-      const actionablePlanTasks = planTasks.filter((task) => !task.archived_at);
+      const contributingNodeIds = new Set(derivePlanFinalizationDependencyState(plan.nodes || []).actionableNodeIds);
+      const actionablePlanTasks = planTasks.filter((task) => contributingNodeIds.has(getTaskBusinessId(task)));
       const taskCount = actionablePlanTasks.length;
       const completedTaskCount = actionablePlanTasks.filter((task) => task.status === 'Completed').length;
       const activeTaskCount = actionablePlanTasks.filter(
