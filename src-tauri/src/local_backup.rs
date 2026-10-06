@@ -299,6 +299,11 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&12) {
+        for statement in ["DROP TABLE engine_prepared_terminals", "DROP TABLE engine_approvals", "DROP TABLE engine_responses", "DROP TABLE engine_response_closures", "DROP TABLE engine_host_captures"] {
+            sqlx::query(statement).execute(&reference).await.map_err(|e| e.to_string())?;
+        }
+    }
     if !versions.contains(&11) {
         for statement in [
             "DROP TABLE engine_events",
@@ -1261,6 +1266,9 @@ mod tests {
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
         for statement in [
+            "DROP TABLE engine_prepared_terminals", "DROP TABLE engine_approvals", "DROP TABLE engine_responses",
+            "DROP TABLE engine_response_closures",
+            "DROP TABLE engine_host_captures",
             "DROP TABLE engine_events",
             "DROP TABLE engine_effects",
             "DROP TABLE engine_deliveries",
@@ -1452,7 +1460,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1485,7 +1493,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await

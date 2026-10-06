@@ -2,7 +2,15 @@
 //! These reexports expose data shapes, not application execution or transport authority.
 
 pub mod execution {
+    pub use crate::agsdl_host_catalogue::{
+        NativeModelCatalogue, NativeModelChoice, NativeModelEdition, UnavailableProvider,
+    };
+    pub use crate::db::agsdl_execution::diagnostics::{
+        DiagnosticRequest, PublicExecutionDiagnostic,
+    };
+    pub use crate::db::agsdl_execution::discovery::{RunListRequest, RunPage};
     pub use crate::db::agsdl_execution::dto::*;
+    pub use crate::db::agsdl_execution::public::*;
 }
 
 pub mod db {
@@ -74,13 +82,13 @@ pub mod files {
 }
 
 pub mod chat {
-    pub use crate::commands::http_resources::WebviewResourceRelease;
     pub use crate::ai::types::{
         AiAuthCancelledEvent, AiAuthErrorEvent, AiAuthStartedEvent, AiAuthSuccessEvent,
         AiChatImageUrl, AiChatMessage, AiChatMessageContent, AiChatMessagePart, AiChatRequest,
         AiProjectMount, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
         AiStreamTimelineEvent, AiStreamToolTraceEvent, AiToolCall, AiToolCallFunction, AiToolTrace,
     };
+    pub use crate::commands::http_resources::WebviewResourceRelease;
 }
 
 pub mod copilot {

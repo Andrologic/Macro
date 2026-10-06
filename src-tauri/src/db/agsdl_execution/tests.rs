@@ -45,6 +45,12 @@ impl CaptureAuthority for Compiler {
     type CommitGuard = ();
     async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
         Ok(TrustedCapture {
+            private: capture::PrivateCapture {
+                registry_json: "{\"version\":\"registry-v1\"}".into(),
+                native_catalogue_json: "{}".into(),
+                implementation_digest: "synthetic-adapter".into(),
+                call_scopes: vec![],
+            },
             snapshot: EngineSnapshot {
                 system_start_id: id.into(),
                 source: request.source.clone(),
@@ -439,7 +445,7 @@ async fn stop_keeps_active_lock_until_closed_effect_and_terminal_proof() {
             status: "ended".into(),
             evidence_json: "{\"ended\":true}".into(),
         },
-        Some("{\"result\":9007199254740993}".into()),
+        None,
     )
     .await
     .unwrap();
@@ -587,7 +593,11 @@ async fn effect_completion_preserves_exact_result_and_rejects_contradiction() {
     let d = delivery(&pool, &runtime, "second", "d").await;
     accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
     begin(&pool, &runtime, "d").await.unwrap();
-    let e = effect(&runtime, &d.work);
+    let mut e = effect(&runtime, &d.work);
+    e.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "exact-result-tool".into(),
+        provider_attempt_id: None,
+    };
     register_effect(&pool, e.clone()).await.unwrap();
     let settled = EngineSettlement {
         context: e.context.clone(),
@@ -957,4 +967,608 @@ async fn native_recovery_can_confirm_stop_without_replaying_a_tool() {
         stop(&pool, stop_request).await.unwrap(),
         EngineStopState::Confirmed { .. }
     ));
+}
+
+#[tokio::test]
+async fn host_revocation_is_scoped_and_cannot_rotate_a_replacement_epoch() {
+    let (_temp, pool, receipt, owner) = setup().await;
+    let mut other_request = request();
+    other_request.request_id = "other-system".into();
+    let other = start(&pool, other_request, &Compiler).await.unwrap();
+    let other_owner = resume(&pool, &other.system_start_id, &versions())
+        .await
+        .unwrap();
+    revoke_host_owners(&pool, &[owner.clone()]).await.unwrap();
+    let mut c = pool.acquire().await.unwrap();
+    assert_ne!(
+        load(&mut c, &receipt.system_start_id)
+            .await
+            .unwrap()
+            .state
+            .epoch,
+        owner.owner_epoch
+    );
+    assert_eq!(
+        load(&mut c, &other.system_start_id)
+            .await
+            .unwrap()
+            .state
+            .epoch,
+        other_owner.owner_epoch
+    );
+    drop(c);
+    let replacement = resume(&pool, &receipt.system_start_id, &versions())
+        .await
+        .unwrap();
+    revoke_host_owners(&pool, &[owner]).await.unwrap();
+    let mut c = pool.acquire().await.unwrap();
+    assert_eq!(
+        load(&mut c, &receipt.system_start_id)
+            .await
+            .unwrap()
+            .state
+            .epoch,
+        replacement.owner_epoch
+    );
+}
+
+#[tokio::test]
+async fn exact_response_journal_requires_attempt_receipts_and_physical_end_before_closure() {
+    let (_temp, pool, _receipt, runtime) = setup().await;
+    let d = delivery(&pool, &runtime, "second", "response-delivery").await;
+    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+    assert!(matches!(
+        begin(&pool, &runtime, &d.delivery_id).await.unwrap(),
+        Admission::Admitted(..)
+    ));
+    let provider = effect(&runtime, &d.work);
+    let mut emission = responses::Emission {
+        context: provider.context.clone(),
+        provider_attempt_id: "provider-1".into(),
+        sequence: "1".into(),
+        identity: "publication-1".into(),
+        kind: "publication".into(),
+        body_json: "{\"result\":9007199254740993}".into(),
+    };
+    assert!(responses::append(&pool, emission.clone()).await.is_err());
+    register_effect(&pool, provider.clone()).await.unwrap();
+    assert!(responses::append(&pool, emission.clone()).await.unwrap());
+    emission.body_json = r#"{ "result": 9007199254740993.0 }"#.into();
+    assert!(!responses::append(&pool, emission.clone()).await.unwrap());
+    let (events, digest) = responses::read(&pool, &runtime, &d.work).await.unwrap();
+    assert_eq!(events[0].body_json, "{\"result\":9007199254740993}");
+    let closure = responses::Closure {
+        owner: runtime.clone(),
+        work: d.work.clone(),
+        cursor: "1".into(),
+        digest,
+        validation_json: "{\"kind\":\"failure\",\"code\":\"OUTPUT_CONSTRAINT\"}".into(),
+    };
+    assert!(responses::close(&pool, closure.clone()).await.is_err());
+    let settlement = EngineSettlement {
+        context: provider.context,
+        effect: provider.effect,
+        status: "ended".into(),
+        evidence_json: "{\"requestEnded\":true}".into(),
+    };
+    assert!(
+        settle_effect(&pool, settlement.clone(), Some("null".into()))
+            .await
+            .is_err()
+    );
+    settle_effect(&pool, settlement, None).await.unwrap();
+    responses::close(&pool, closure.clone()).await.unwrap();
+    responses::close(&pool, closure.clone()).await.unwrap();
+    emission.sequence = "2".into();
+    emission.identity = "late".into();
+    assert!(responses::append(&pool, emission).await.is_err());
+    let mut changed = closure;
+    changed.digest = "wrong".into();
+    assert!(responses::close(&pool, changed).await.is_err());
+}
+
+#[tokio::test]
+async fn approval_survives_reload_and_reserves_the_exact_tool_once() {
+    let (temp, pool, _, runtime) = setup().await;
+    let delivery = delivery(&pool, &runtime, "second", "approval-work").await;
+    accept_delivery(&pool, &runtime, delivery.clone())
+        .await
+        .unwrap();
+    begin(&pool, &runtime, "approval-work").await.unwrap();
+    let mut tool = effect(&runtime, &delivery.work);
+    tool.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "terminal-1".into(),
+        provider_attempt_id: None,
+    };
+    tool.invocation_json = r#"{"tool":"terminal","arguments":{"command":"echo synthetic"}}"#.into();
+    let request = approvals::Request {
+        effect: tool.clone(),
+        tool_name: "terminal".into(),
+        summary: "echo synthetic".into(),
+    };
+    let pending = approvals::request(&pool, request.clone()).await.unwrap();
+    assert_eq!(
+        approvals::request(&pool, request)
+            .await
+            .unwrap()
+            .approval_id,
+        pending.approval_id
+    );
+    assert!(
+        approvals::consume_and_register(&pool, &pending.approval_id, tool.clone())
+            .await
+            .is_err()
+    );
+    assert!(read_effects(&pool, &delivery.work)
+        .await
+        .unwrap()
+        .is_empty());
+    pool.close().await;
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    assert_eq!(
+        approvals::pending(&pool, &runtime.system_start_id)
+            .await
+            .unwrap()[0]
+            .approval_id,
+        pending.approval_id
+    );
+    approvals::decide(&pool, &pending.approval_id, true)
+        .await
+        .unwrap();
+    let mut changed = tool.clone();
+    changed.invocation_json = r#"{"tool":"terminal","arguments":{"command":"changed"}}"#.into();
+    assert!(
+        approvals::consume_and_register(&pool, &pending.approval_id, changed)
+            .await
+            .is_err()
+    );
+    assert!(
+        approvals::consume_and_register(&pool, &pending.approval_id, tool.clone())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !approvals::consume_and_register(&pool, &pending.approval_id, tool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(read_effects(&pool, &delivery.work).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn stop_and_revocation_prevent_approved_but_unreserved_tools() {
+    for stop_activation in [true, false] {
+        let (_temp, pool, _, runtime) = setup().await;
+        let delivery = delivery(&pool, &runtime, "second", "approval-stop").await;
+        accept_delivery(&pool, &runtime, delivery.clone())
+            .await
+            .unwrap();
+        begin(&pool, &runtime, "approval-stop").await.unwrap();
+        let mut tool = effect(&runtime, &delivery.work);
+        tool.effect = EngineEffectIdentity::Tool {
+            tool_invocation_id: "waiting-tool".into(),
+            provider_attempt_id: None,
+        };
+        let request = approvals::Request {
+            effect: tool.clone(),
+            tool_name: "terminal".into(),
+            summary: "echo synthetic".into(),
+        };
+        let pending = approvals::request(&pool, request).await.unwrap();
+        approvals::decide(&pool, &pending.approval_id, true)
+            .await
+            .unwrap();
+        if stop_activation {
+            stop(
+                &pool,
+                EngineStopRequest {
+                    system_start_id: runtime.system_start_id.clone(),
+                    request_id: "approval-stop".into(),
+                    activation_id: Some(delivery.work.activation_id.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        } else {
+            revoke_host_owners(&pool, std::slice::from_ref(&runtime))
+                .await
+                .unwrap();
+        }
+        assert!(
+            approvals::consume_and_register(&pool, &pending.approval_id, tool)
+                .await
+                .is_err()
+        );
+        assert!(approvals::pending(&pool, &runtime.system_start_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(read_effects(&pool, &delivery.work)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn private_capture_is_immutable_and_bounds_calls_without_an_agent() {
+    struct Calls;
+    impl CaptureAuthority for Calls {
+        type CommitGuard = ();
+        async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+            let mut captured = Compiler.capture(request, id).await?;
+            captured.policies.push(StepPolicy {
+                step: vec!["call".into()],
+                agent_name: None,
+                max_visits: None,
+            });
+            captured.private.call_scopes.push(capture::CallScope {
+                step: vec!["call".into()],
+                permissions_json: "[]".into(),
+                scope_json: r#"{"project":"synthetic"}"#.into(),
+            });
+            Ok(captured)
+        }
+        async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    let receipt = start(&pool, request(), &Calls).await.unwrap();
+    let runtime = resume(&pool, &receipt.system_start_id, &versions())
+        .await
+        .unwrap();
+    let retained = capture::read(&pool, &runtime).await.unwrap();
+    assert_eq!(
+        retained.call_scopes[0].scope_json,
+        r#"{"project":"synthetic"}"#
+    );
+    assert!(sqlx::query(
+        "UPDATE engine_host_captures SET registry_json = '{}' WHERE system_id = ?"
+    )
+    .bind(&receipt.system_start_id)
+    .execute(&pool)
+    .await
+    .is_err());
+    let delivery = delivery(&pool, &runtime, "call", "call-work").await;
+    accept_delivery(&pool, &runtime, delivery.clone())
+        .await
+        .unwrap();
+    begin(&pool, &runtime, "call-work").await.unwrap();
+    let mut invocation = effect(&runtime, &delivery.work);
+    invocation.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "call-tool".into(),
+        provider_attempt_id: None,
+    };
+    assert!(register_effect(&pool, invocation.clone()).await.is_err());
+    invocation.context.scope_json = r#"{"project":"synthetic"}"#.into();
+    assert!(register_effect(&pool, invocation).await.unwrap());
+    pool.close().await;
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    assert!(record_equal(&retained, &capture::read(&pool, &runtime).await.unwrap()).unwrap());
+}
+
+#[tokio::test]
+async fn public_run_pages_keep_their_owner_and_creation_boundary() {
+    let (_temp, pool, original, _) = setup().await;
+    for name in ["second-start", "third-start"] {
+        let mut request = request();
+        request.request_id = name.into();
+        start(&pool, request, &Compiler).await.unwrap();
+    }
+    let owner = original.snapshot.source.owner.clone();
+    let first = discovery::list_runs(
+        &pool,
+        discovery::RunListRequest {
+            owner: owner.clone(),
+            after: None,
+            limit: Some(1),
+        },
+    )
+    .await
+    .unwrap();
+    let cursor = first.next_cursor.clone().unwrap();
+    let mut later = request();
+    later.request_id = "later-start".into();
+    let later = start(&pool, later, &Compiler).await.unwrap();
+    let rest = discovery::list_runs(
+        &pool,
+        discovery::RunListRequest {
+            owner: owner.clone(),
+            after: Some(cursor.clone()),
+            limit: Some(100),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(rest.runs.len(), 2);
+    assert!(rest
+        .runs
+        .iter()
+        .all(|run| run.system_start_id != later.system_start_id
+            && run.system_start_id != first.runs[0].system_start_id));
+    assert!(rest.next_cursor.is_none());
+    let mut foreign = owner.clone();
+    foreign.project_id = "other".into();
+    assert!(discovery::list_runs(
+        &pool,
+        discovery::RunListRequest {
+            owner: foreign.clone(),
+            after: Some(cursor),
+            limit: None
+        }
+    )
+    .await
+    .is_err());
+    assert!(discovery::find_start(&pool, &foreign, "start")
+        .await
+        .is_err());
+    assert!(discovery::find_start(&pool, &owner, "absent")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        discovery::find_start(&pool, &owner, "start")
+            .await
+            .unwrap()
+            .unwrap()
+            .system_start_id,
+        original.system_start_id
+    );
+}
+
+#[tokio::test]
+async fn public_diagnostics_are_historical_bounded_and_source_scoped() {
+    let (_temp, pool, receipt, runtime) = setup().await;
+    let delivery = delivery(&pool, &runtime, "second", "diagnostic-work").await;
+    accept_delivery(&pool, &runtime, delivery.clone())
+        .await
+        .unwrap();
+    begin(&pool, &runtime, "diagnostic-work").await.unwrap();
+    mark_uncertain(&pool, &runtime, &delivery.work, "private provider data")
+        .await
+        .unwrap();
+    let through = read_projection(&pool, &runtime.system_start_id)
+        .await
+        .unwrap()
+        .cursor;
+    let request = diagnostics::DiagnosticRequest {
+        system_start_id: runtime.system_start_id.clone(),
+        source: receipt.snapshot.source.clone(),
+        activation_id: Some(delivery.work.activation_id.clone()),
+        through,
+    };
+    let first = diagnostics::read(&pool, request.clone()).await.unwrap();
+    assert_eq!(first.diagnostics.len(), 1);
+    assert!(!serde_json::to_string(&first)
+        .unwrap()
+        .contains("private provider data"));
+    for _ in 0..66 {
+        mark_uncertain(&pool, &runtime, &delivery.work, "later private data")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&diagnostics::read(&pool, request.clone()).await.unwrap()).unwrap()
+    );
+    let mut latest = request.clone();
+    latest.through = read_projection(&pool, &runtime.system_start_id)
+        .await
+        .unwrap()
+        .cursor;
+    let page = diagnostics::read(&pool, latest).await.unwrap();
+    assert!(page.incomplete);
+    assert_eq!(page.diagnostics.len(), 64);
+    let mut foreign = request.clone();
+    foreign.source.owner.project_id = "other".into();
+    assert!(diagnostics::read(&pool, foreign).await.is_err());
+    let mut unknown = request;
+    unknown.activation_id = Some("foreign-activation".into());
+    assert!(diagnostics::read(&pool, unknown).await.is_err());
+}
+
+const ROUTED_SOURCE: &str = r#"{"flow":{"steps":{"second":{"type":"agent","agent":"a","next":["b"]},"b":{"type":"agent","agent":"b","next":[]}}}}"#;
+struct RoutedCompiler;
+impl CaptureAuthority for RoutedCompiler {
+    type CommitGuard = ();
+    async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+        let mut capture = Compiler.capture(request, id).await?;
+        capture.snapshot.authored_source = ROUTED_SOURCE.into();
+        Ok(capture)
+    }
+    async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+        Ok(())
+    }
+}
+async fn prepared_fixture() -> (TempDir, SqlitePool, EngineOwner, prepared::Prepare) {
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    let mut req = request();
+    req.source.source_sha256 = format!("{:x}", Sha256::digest(ROUTED_SOURCE.as_bytes()));
+    let receipt = start(&pool, req, &RoutedCompiler).await.unwrap();
+    let runtime = resume(&pool, &receipt.system_start_id, &versions())
+        .await
+        .unwrap();
+    let delivery = delivery(&pool, &runtime, "second", "prepared").await;
+    accept_delivery(&pool, &runtime, delivery.clone())
+        .await
+        .unwrap();
+    begin(&pool, &runtime, &delivery.delivery_id).await.unwrap();
+    let (_, digest) = responses::read(&pool, &runtime, &delivery.work)
+        .await
+        .unwrap();
+    responses::close(
+        &pool,
+        responses::Closure {
+            owner: runtime.clone(),
+            work: delivery.work.clone(),
+            cursor: "0".into(),
+            digest: digest.clone(),
+            validation_json: r#"{"kind":"success","text":"done","resultsJson":"{}","choice":null}"#
+                .into(),
+        },
+    )
+    .await
+    .unwrap();
+    let request = prepared::Prepare {
+        owner: runtime.clone(),
+        work: delivery.work.clone(),
+        outcome: EngineOutcome::Completed {
+            output: EngineValue {
+                origin: "agent".into(),
+                value_json: r#"{"text":"done","results":{}}"#.into(),
+            },
+        },
+        response_cursor: "0".into(),
+        termination_evidence_json: "{}".into(),
+        memory: Some(memory(&delivery.work, "1")),
+        validation: prepared::Validation {
+            snapshot_digest: prepared::snapshot_digest(&receipt.snapshot).unwrap(),
+            input: delivery.input,
+            declaration_json: Some(r#"{"type":"agent","agent":"a","next":["b"]}"#.into()),
+            closure_digest: digest,
+            selected_branch: None,
+        },
+    };
+    (temp, pool, runtime, request)
+}
+#[tokio::test]
+async fn prepared_terminal_retains_native_successor_and_final_receipt_after_reopen() {
+    let (temp, pool, runtime, request) = prepared_fixture().await;
+    let id = prepared::prepare(&pool, "generation", request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared::prepare(&pool, "generation", request.clone())
+            .await
+            .unwrap(),
+        id
+    );
+    let committed = prepared::commit(&pool, "generation", &runtime, &id)
+        .await
+        .unwrap();
+    assert_eq!(committed.outgoing.len(), 1);
+    assert_eq!(committed.outgoing[0].work.step, Some(vec!["b".into()]));
+    assert_ne!(
+        committed.outgoing[0].work.activation_id,
+        request.work.activation_id
+    );
+    pool.close().await;
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    assert!(record_equal(
+        &committed,
+        &prepared::commit(&pool, "generation", &runtime, &id)
+            .await
+            .unwrap()
+    )
+    .unwrap());
+    assert!(prepared::commit(&pool, "another-generation", &runtime, &id)
+        .await
+        .is_err());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_deliveries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+}
+#[tokio::test]
+async fn targeted_stop_between_prepare_and_commit_removes_the_retained_successor() {
+    let (_temp, pool, runtime, request) = prepared_fixture().await;
+    let id = prepared::prepare(&pool, "generation", request.clone())
+        .await
+        .unwrap();
+    stop(
+        &pool,
+        EngineStopRequest {
+            system_start_id: runtime.system_start_id.clone(),
+            request_id: "targeted".into(),
+            activation_id: Some(request.work.activation_id.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    let terminal = prepared::commit(&pool, "generation", &runtime, &id)
+        .await
+        .unwrap();
+    assert!(terminal.outgoing.is_empty());
+    assert!(prepared::commit(&pool, "generation", &runtime, &id)
+        .await
+        .unwrap()
+        .outgoing
+        .is_empty());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM engine_deliveries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+#[tokio::test]
+async fn terminal_witness_refuses_unrelated_input_declaration_and_publication() {
+    let (_temp, pool, _runtime, request) = prepared_fixture().await;
+    let mut wrong = request.clone();
+    wrong.validation.input.value_json = "{}".into();
+    assert!(prepared::prepare(&pool, "generation", wrong).await.is_err());
+    let mut wrong = request.clone();
+    wrong.validation.declaration_json = Some(r#"{"type":"agent","next":[]}"#.into());
+    assert!(prepared::prepare(&pool, "generation", wrong).await.is_err());
+    let mut wrong = request.clone();
+    wrong.validation.closure_digest = "unrelated".into();
+    assert!(prepared::prepare(&pool, "generation", wrong).await.is_err());
+    let mut wrong = request.clone();
+    wrong.outcome = EngineOutcome::Completed {
+        output: EngineValue {
+            origin: "agent".into(),
+            value_json: r#"{"text":"changed","results":{}}"#.into(),
+        },
+    };
+    assert!(prepared::prepare(&pool, "generation", wrong).await.is_err());
+    prepared::prepare(&pool, "generation", request)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn condition_route_uses_frozen_declaration_and_retains_exact_input_origin() {
+    let (_temp, pool, runtime, mut request) = prepared_fixture().await;
+    let mut snapshot = read_snapshot(&pool, &runtime.system_start_id)
+        .await
+        .unwrap();
+    let declaration = r#"{"type":"condition","test":{"equals":[{"path":["n"]},{"value":9007199254740993}]},"next":{"true":["b"],"false":[]}}"#;
+    snapshot.authored_source = format!(r#"{{"flow":{{"steps":{{"second":{declaration}}}}}}}"#);
+    // The proposed compiled routes do not grant authority.
+    snapshot.compiled_plan_json = r#"{"routes":{"true":[["invented"]]}}"#.into();
+    request.validation.declaration_json = Some(declaration.into());
+    request.validation.selected_branch = Some("true".into());
+    request.validation.input = EngineValue {
+        origin: "call".into(),
+        value_json: r#"{"n":9007199254740993}"#.into(),
+    };
+    request.outcome = EngineOutcome::Completed {
+        output: request.validation.input.clone(),
+    };
+    assert_eq!(
+        prepared::target(&snapshot, &request).unwrap(),
+        Some(vec!["b".into()])
+    );
+    request.validation.selected_branch = Some("false".into());
+    assert_eq!(prepared::target(&snapshot, &request).unwrap(), None);
+    request.validation.selected_branch = Some("invented".into());
+    assert!(prepared::target(&snapshot, &request).is_err());
+    request.validation.selected_branch = Some("true".into());
+    request.outcome = EngineOutcome::Completed {
+        output: EngineValue {
+            origin: "call".into(),
+            value_json: r#"{"n":9007199254740992}"#.into(),
+        },
+    };
+    assert!(prepared::target(&snapshot, &request).is_err());
+    request.outcome = EngineOutcome::Completed {
+        output: EngineValue {
+            origin: "entry".into(),
+            value_json: request.validation.input.value_json.clone(),
+        },
+    };
+    assert!(prepared::target(&snapshot, &request).is_err());
 }

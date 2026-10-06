@@ -2869,11 +2869,28 @@ pub(crate) async fn lock_execution_source(
     metadata_root: &Path,
     expected: &crate::db::agsdl_execution::dto::EngineSourceRevision,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    lock_execution_source_owner(
+        workspace_path,
+        metadata_root,
+        &expected.owner,
+        Some(expected),
+    )
+    .await
+}
+
+pub(crate) async fn lock_execution_source_owner(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
+    expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
+) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
     use crate::db::agsdl_execution::failure;
     use sha2::{Digest, Sha256};
     #[derive(Deserialize)]
     struct SourceEnvelope {
         source: String,
+        #[serde(default)]
+        display: serde_json::Value,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -2885,7 +2902,13 @@ pub(crate) async fn lock_execution_source(
         revision: Option<i64>,
         agsdl: SourceEnvelope,
     }
-    let owner = &expected.owner;
+    if expected.is_some_and(|value| &value.owner != owner) {
+        return Err(failure(
+            "CORRELATION",
+            "source.owner",
+            "Expected source belongs to another owner",
+        ));
+    }
     let valid_component = |name: &str| {
         !name.is_empty()
             && Path::new(name)
@@ -3094,10 +3117,14 @@ pub(crate) async fn lock_execution_source(
         if members.is_empty() && !registered_namespace {
             continue;
         }
+        let revision = crate::db::agsdl_execution::dto::EngineSourceRevision {
+            owner: owner.clone(),
+            revision: plan.revision.unwrap_or(1).to_string(),
+            source_sha256: format!("{:x}", Sha256::digest(plan.agsdl.source.as_bytes())),
+        };
         if plan.id != owner.plan_id
-            || plan.revision.unwrap_or(1).to_string() != expected.revision
-            || format!("{:x}", Sha256::digest(plan.agsdl.source.as_bytes()))
-                != expected.source_sha256
+            || plan.revision.unwrap_or(1) < 0
+            || expected.is_some_and(|expected| expected != &revision)
         {
             return Err(failure(
                 "CORRELATION",
@@ -3105,7 +3132,25 @@ pub(crate) async fn lock_execution_source(
                 "Canonical plan revision or source changed",
             ));
         }
-        sources.push(plan.agsdl.source);
+        let cards = plan
+            .agsdl
+            .display
+            .get("cards")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !cards.is_object() {
+            return Err(failure(
+                "CORRELATION",
+                "display.cards",
+                "Invalid canonical card annotations",
+            ));
+        }
+        sources.push((
+            plan.agsdl.source,
+            revision,
+            serde_json::to_string(&cards)
+                .map_err(|_| failure("CORRELATION", "display.cards", "Invalid card annotations"))?,
+        ));
     }
     if sources.is_empty() || sources.iter().any(|source| source != &sources[0]) {
         return Err(failure(
@@ -3114,8 +3159,11 @@ pub(crate) async fn lock_execution_source(
             "Canonical source is absent or ambiguous",
         ));
     }
+    let (source, revision, display_cards_json) = sources.remove(0);
     Ok(LockedExecutionSource {
-        source: sources.remove(0),
+        source,
+        revision,
+        display_cards_json,
         _guards: guards,
         _content_guards: content_guards,
         _state_guard: state_guard,
@@ -3129,6 +3177,8 @@ pub(crate) async fn lock_execution_source(
 #[allow(dead_code)]
 pub(crate) struct LockedExecutionSource {
     pub source: String,
+    pub revision: crate::db::agsdl_execution::dto::EngineSourceRevision,
+    pub display_cards_json: String,
     _guards: Vec<super::PlanLifecycleGuard>,
     _content_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
     _state_guard: tokio::sync::OwnedMutexGuard<()>,

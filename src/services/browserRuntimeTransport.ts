@@ -1,3 +1,4 @@
+import { browserRuntimePort } from '../shared/browserRuntimePort.mjs';
 import { RuntimeCommandError } from './runtimeCommandError';
 import type {
   InvokeArgs,
@@ -13,7 +14,7 @@ import type {
 import { BROWSER_RUNTIME_SESSION_REPLACED_EVENT } from './browserRuntimeEvents';
 import type { McpInteractionRequest } from '../types/generated/ipc';
 
-const BRIDGE_PORT = 1430;
+const BRIDGE_PORT = browserRuntimePort(import.meta.env.VITE_TAURI_BROWSER_BRIDGE_PORT);
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 const INVOKE_TIMEOUT_MS = 10 * 60_000;

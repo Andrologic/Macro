@@ -1,3 +1,5 @@
+#[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
+mod browser_runtime_port;
 // AppKit's standard Quit item and Dock Quit call terminate:, bypassing
 // Tauri CloseRequested. Cancel that termination and request the same guarded
 // window close as the title bar. Approved exits use AppHandle::exit directly.
@@ -94,6 +96,8 @@ mod app_updates;
 pub mod commands;
 pub mod config;
 pub mod core;
+mod agsdl_host;
+mod agsdl_host_catalogue;
 mod db;
 mod dev_overrides;
 mod diagnostics;
@@ -517,16 +521,19 @@ pub fn run() {
         .manage(DbPool::default())
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
+        .manage(agsdl_host::HostState::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
+            agsdl_host::install(app.handle())?;
             if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
                 tracing::error!(%error, "Failed to activate staged application update");
             }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                let bridge_port = browser_runtime_port::parse(std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT").ok().as_deref()).expect("Invalid QA browser bridge port");
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
                     "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
                 );
@@ -547,7 +554,7 @@ pub fn run() {
                 let browser_bridge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let bridge_config = RemoteUiConfig::default()
-                        .set_port(Some(1430))
+                        .set_port(Some(bridge_port))
                         .set_websocket_origin(&browser_origin)
                         .set_websocket_token(bridge_token);
                     match browser_bridge_handle.start_remote_ui(bridge_config).await {
@@ -786,6 +793,11 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
+            agsdl_host::execution_host_ready,
+            commands::agsdl_execution::execution_model_choices,
+            commands::agsdl_execution::execution_list_runs,
+            commands::agsdl_execution::execution_find_start,
+            commands::agsdl_execution::execution_read_diagnostic,
             commands::agsdl_execution::execution_start,
             commands::agsdl_execution::execution_stop,
             commands::agsdl_execution::execution_read_snapshot,

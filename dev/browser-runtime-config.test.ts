@@ -41,3 +41,11 @@ test('allows a different loopback UI port without accepting remote origins', () 
     expect(() => resolveQaBrowserOrigin({ build: { devUrl } })).toThrow('loopback');
   }
 });
+
+// Shared parser is also used by the browser transport and launcher.
+test('bridge ports are canonical, bounded, and default only when absent', async () => {
+  const { browserRuntimePort } = await import('../src/shared/browserRuntimePort.mjs');
+  expect(browserRuntimePort(undefined)).toBe(1430);
+  for (const value of ['1', '1430', '1450', '65535']) expect(browserRuntimePort(value)).toBe(Number(value));
+  for (const value of ['', '0', '01', '+1', ' 1430', '1430 ', '65536', '1.0', '1e3', '１２', null, 1430]) expect(() => browserRuntimePort(value)).toThrow('canonical');
+});

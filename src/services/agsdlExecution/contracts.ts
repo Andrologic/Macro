@@ -215,14 +215,40 @@ export interface ExecutionProjection {
   readonly activations: readonly ActivationRecord[];
   readonly systemStop: StopState;
 }
+export type PublicSnapshot = Pick<SystemSnapshot, 'systemStartId' | 'source' | 'authoredSource' | 'versions' | 'associations'>;
+export interface PublicStartReceipt { readonly systemStartId: SystemStartId; readonly flowInvocationId: FlowInvocationId; readonly snapshot: PublicSnapshot }
+export type PublicStopState =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'requested' | 'uncertain' | 'confirmed'; readonly requestId: string };
+export interface PublicActivation {
+  readonly work: WorkIdentity;
+  readonly deliveryId: DeliveryId;
+  readonly queueSequence: Sequence;
+  readonly workState: WorkState;
+  readonly stopState: PublicStopState;
+  readonly terminalKind: 'completed' | 'failed' | 'stopped' | null;
+}
+export interface PublicProjection {
+  readonly systemStartId: SystemStartId;
+  readonly source: SourceRevision;
+  readonly cursor: Sequence;
+  readonly agents: readonly { readonly agentInstanceId: AgentInstanceId; readonly agentName: string }[];
+  readonly activations: readonly PublicActivation[];
+  readonly systemStop: PublicStopState;
+}
+export interface PublicEventPage {
+  readonly events: readonly Pick<ExecutionEvent, 'systemStartId' | 'sequence' | 'work' | 'kind'>[];
+  readonly nextCursor: Sequence;
+  readonly hasMore: boolean;
+}
 /** Only API available to product UI/browser clients. No owner epoch intake. */
 export interface ExecutionPublicPort {
-  start(request: StartRequest): Promise<StartReceipt>;
+  start(request: StartRequest): Promise<PublicStartReceipt>;
   deliver(request: ExternalDeliveryRequest): Promise<AcceptedDelivery>;
-  stop(request: StopRequest): Promise<StopState>;
-  readSnapshot(id: SystemStartId): Promise<SystemSnapshot>;
-  readEvents(id: SystemStartId, after: Sequence | null, limit: number): Promise<EventPage>;
-  readProjection(id: SystemStartId): Promise<ExecutionProjection>;
+  stop(request: StopRequest): Promise<PublicStopState>;
+  readSnapshot(id: SystemStartId): Promise<PublicSnapshot>;
+  readEvents(id: SystemStartId, after: Sequence | null, limit: number): Promise<PublicEventPage>;
+  readProjection(id: SystemStartId): Promise<PublicProjection>;
 }
 /** Native-only transactions. Authenticate caller independently of DTOs. */
 export interface ExecutionRepositoryPort extends ExecutionRuntimePort {

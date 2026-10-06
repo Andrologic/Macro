@@ -619,6 +619,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "DiagnosticRequest",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::DiagnosticRequest",
+      "path": "DiagnosticRequest.ts"
+    },
+    {
+      "families": [
         "files"
       ],
       "name": "DirEntryDto",
@@ -1491,6 +1499,30 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "NativeModelCatalogue",
+      "origin": "macro_lib::agsdl_host_catalogue::NativeModelCatalogue",
+      "path": "NativeModelCatalogue.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "NativeModelChoice",
+      "origin": "macro_lib::agsdl_host_catalogue::NativeModelChoice",
+      "path": "NativeModelChoice.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "NativeModelEdition",
+      "origin": "macro_lib::agsdl_host_catalogue::NativeModelEdition",
+      "path": "NativeModelEdition.ts"
+    },
+    {
+      "families": [
         "config_extra"
       ],
       "name": "OrphanSecretDto",
@@ -1683,6 +1715,102 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "PublicActivation",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicActivation",
+      "path": "PublicActivation.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicAgent",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicAgent",
+      "path": "PublicAgent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicDiagnostic",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::PublicDiagnostic",
+      "path": "PublicDiagnostic.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicEvent",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicEvent",
+      "path": "PublicEvent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicEventPage",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicEventPage",
+      "path": "PublicEventPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicExecutionDiagnostic",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::PublicExecutionDiagnostic",
+      "path": "PublicExecutionDiagnostic.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicProjection",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicProjection",
+      "path": "PublicProjection.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicRunCounts",
+      "origin": "macro_lib::db::agsdl_execution::discovery::PublicRunCounts",
+      "path": "PublicRunCounts.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicRunSummary",
+      "origin": "macro_lib::db::agsdl_execution::discovery::PublicRunSummary",
+      "path": "PublicRunSummary.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicSnapshot",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicSnapshot",
+      "path": "PublicSnapshot.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicStartReceipt",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicStartReceipt",
+      "path": "PublicStartReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicStopState",
+      "origin": "macro_lib::db::agsdl_execution::public::PublicStopState",
+      "path": "PublicStopState.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "ReconcileProjectRegistryInput",
@@ -1768,6 +1896,22 @@
       "name": "ResumeConversationGoalAuditInput",
       "origin": "macro_lib::db::conversation_goals::ResumeConversationGoalAuditInput",
       "path": "ResumeConversationGoalAuditInput.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunListRequest",
+      "origin": "macro_lib::db::agsdl_execution::discovery::RunListRequest",
+      "path": "RunListRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "RunPage",
+      "origin": "macro_lib::db::agsdl_execution::discovery::RunPage",
+      "path": "RunPage.ts"
     },
     {
       "families": [
@@ -2016,6 +2160,14 @@
       "name": "TranscriptionResult",
       "origin": "macro_lib::speech::TranscriptionResult",
       "path": "TranscriptionResult.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "UnavailableProvider",
+      "origin": "macro_lib::agsdl_host_catalogue::UnavailableProvider",
+      "path": "UnavailableProvider.ts"
     },
     {
       "families": [

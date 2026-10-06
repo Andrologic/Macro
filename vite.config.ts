@@ -475,6 +475,7 @@ export default defineConfig(({ command }) => {
 
       // Code splitting configuration
       rollupOptions: {
+        input: { main: resolve(projectRoot, "index.html"), agsdlHost: resolve(projectRoot, "agsdl-runtime-host.html") },
         output: {
           // Manual chunks for optimal code splitting
           manualChunks: manualChunk,

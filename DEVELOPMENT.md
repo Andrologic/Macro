@@ -261,3 +261,11 @@ explicitly authorized emergency.
 - `src-tauri/` - Rust/Tauri backend.
 - `public/` - static assets and themes.
 - `docs/` - product, architecture, and roadmap references.
+
+The QA browser bridge defaults to port 1430. Set
+`MACRO_TAURI_BROWSER_BRIDGE_PORT` to an unused loopback port when another QA
+session owns that port. The launcher passes the same validated port to the native
+bridge and browser client. Values must be canonical decimal integers from 1 to
+65535. The UI port remains controlled by the QA config's `build.devUrl`.
+Use a separate `com.macro.desktop.qa.*` identifier and data directory; leave
+other sessions running.

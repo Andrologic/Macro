@@ -2467,6 +2467,14 @@ pub async fn list_models_by_provider(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> DbResult<Vec<AiModel>> {
+    let mut connection = pool.acquire().await?;
+    list_models_by_provider_on_connection(&mut connection, provider_id).await
+}
+
+pub(crate) async fn list_models_by_provider_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    provider_id: &str,
+) -> DbResult<Vec<AiModel>> {
     let rows = sqlx::query(
         r#"
         SELECT id, provider_id, model_id, name, description, owned_by,
@@ -2480,7 +2488,7 @@ pub async fn list_models_by_provider(
         "#,
     )
     .bind(provider_id)
-    .fetch_all(pool)
+    .fetch_all(connection)
     .await?;
 
     let models = rows

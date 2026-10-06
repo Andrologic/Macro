@@ -1,6 +1,13 @@
 //! Native transactional repository. No runtime mutator is exposed through IPC.
 //! The future native supervisor owns CaptureAuthority, RouteAuthority and epochs.
+pub(crate) mod approvals;
+pub(crate) mod capture;
+pub(crate) mod diagnostics;
+pub(crate) mod discovery;
 pub mod dto;
+pub(crate) mod prepared;
+pub(crate) mod public;
+pub(crate) mod responses;
 use super::exact_json::{equal_optional, record_equal};
 use dto::*;
 use serde::{Deserialize, Serialize};
@@ -83,6 +90,7 @@ pub(crate) struct StepPolicy {
 /// property names cannot determine whether a value came from secure Macro settings.
 pub(crate) struct TrustedCapture {
     pub snapshot: EngineSnapshot,
+    pub private: capture::PrivateCapture,
     pub policies: Vec<StepPolicy>,
     pub entry_step: Option<Vec<String>>,
 }
@@ -130,6 +138,7 @@ struct State {
     rejected: BTreeMap<String, String>,
 }
 struct Stored {
+    capture: Option<capture::PrivateCapture>,
     snapshot: EngineSnapshot,
     policies: Vec<StepPolicy>,
     state: State,
@@ -140,10 +149,16 @@ async fn load(db: &mut SqliteConnection, id: &str) -> Result<Stored> {
         "SELECT snapshot_json, policies_json, state_json FROM engine_systems WHERE system_id = ?",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(&mut *db)
     .await?
     .ok_or_else(|| failure("NOT_FOUND", "systemStartId", "Execution system not found"))?;
+    let private: Option<String> =
+        sqlx::query_scalar("SELECT registry_json FROM engine_host_captures WHERE system_id = ?")
+            .bind(id)
+            .fetch_optional(&mut *db)
+            .await?;
     Ok(Stored {
+        capture: private.map(|raw| serde_json::from_str(&raw)).transpose()?,
         snapshot: serde_json::from_str(row.get("snapshot_json"))?,
         policies: serde_json::from_str(row.get("policies_json"))?,
         state: serde_json::from_str(row.get("state_json"))?,
@@ -475,7 +490,9 @@ pub(crate) async fn start(
             )?;
         }
     }
+    capture::validate(&capture.private, &snapshot, &capture.policies)?;
     let mut stored = Stored {
+        capture: Some(capture.private),
         snapshot,
         policies: capture.policies,
         state,
@@ -515,6 +532,11 @@ pub(crate) async fn start(
         .bind(encode(&stored.snapshot)?)
         .bind(encode(&stored.policies)?)
         .bind(encode(&stored.state)?)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO engine_host_captures VALUES (?, ?)")
+        .bind(&id)
+        .bind(encode(stored.capture.as_ref().expect("validated capture"))?)
         .execute(&mut *tx)
         .await?;
     if let Some(entry) = request.entry {
@@ -740,6 +762,29 @@ fn context(stored: &Stored, context: &EngineContext) -> Result<()> {
             "Effect context exceeds frozen configuration",
         )?;
     }
+    if context.work.agent_instance_id.is_none() {
+        let scope = stored
+            .capture
+            .as_ref()
+            .and_then(|capture| {
+                capture
+                    .call_scopes
+                    .iter()
+                    .find(|scope| context.work.step.as_ref() == Some(&scope.step))
+            })
+            .ok_or_else(|| {
+                failure(
+                    "PERMISSION",
+                    "scope",
+                    "No captured Call scope for this work",
+                )
+            })?;
+        require(
+            super::exact_json::equal(&scope.permissions_json, &context.permissions_json)?
+                && super::exact_json::equal(&scope.scope_json, &context.scope_json)?,
+            "Call context exceeds captured scope",
+        )?;
+    }
     validate_json(&context.permissions_json)?;
     validate_json(&context.scope_json)?;
     Ok(())
@@ -765,11 +810,20 @@ fn effect_key(effect: &EngineEffectIdentity) -> Result<String> {
     }
 }
 pub(crate) async fn register_effect(pool: &SqlitePool, effect: EngineEffect) -> Result<bool> {
-    validate_json(&effect.invocation_json)?;
-    let key = effect_key(&effect.effect)?;
     let mut c = pool.acquire().await?;
     let mut tx = durable(&mut c).await?;
     let mut stored = load(&mut tx, &effect.context.work.system_start_id).await?;
+    let registered = register_effect_on(&mut tx, &mut stored, effect).await?;
+    tx.commit().await?;
+    Ok(registered)
+}
+async fn register_effect_on(
+    db: &mut SqliteConnection,
+    stored: &mut Stored,
+    effect: EngineEffect,
+) -> Result<bool> {
+    validate_json(&effect.invocation_json)?;
+    let key = effect_key(&effect.effect)?;
     owner(
         &stored.state,
         &effect.context.owner,
@@ -782,14 +836,13 @@ pub(crate) async fn register_effect(pool: &SqlitePool, effect: EngineEffect) -> 
     )
     .bind(&stored.snapshot.system_start_id)
     .bind(&key)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *db)
     .await?
     {
         require(
             record_equal(&serde_json::from_str::<EngineEffect>(&previous)?, &effect)?,
             "Conflicting effect registration",
         )?;
-        tx.commit().await?;
         return Ok(false);
     }
     context(&stored, &effect.context)?;
@@ -812,7 +865,7 @@ pub(crate) async fn register_effect(pool: &SqlitePool, effect: EngineEffect) -> 
         ..
     } = &effect.effect
     {
-        let exists:i64=sqlx::query_scalar("SELECT count(*) FROM engine_effects WHERE system_id = ? AND activation_id = ? AND effect_key = ?").bind(&stored.snapshot.system_start_id).bind(&effect.context.work.activation_id).bind(format!("provider:{id}")).fetch_one(&mut *tx).await?;
+        let exists:i64=sqlx::query_scalar("SELECT count(*) FROM engine_effects WHERE system_id = ? AND activation_id = ? AND effect_key = ?").bind(&stored.snapshot.system_start_id).bind(&effect.context.work.activation_id).bind(format!("provider:{id}")).fetch_one(&mut *db).await?;
         require(exists == 1, "Tool provider attempt is not registered")?;
     }
     sqlx::query("INSERT INTO engine_effects VALUES (?, ?, ?, ?, 'pending', NULL, NULL)")
@@ -820,10 +873,10 @@ pub(crate) async fn register_effect(pool: &SqlitePool, effect: EngineEffect) -> 
         .bind(&effect.context.work.activation_id)
         .bind(key)
         .bind(raw.clone())
-        .execute(&mut *tx)
+        .execute(&mut *db)
         .await?;
     event(
-        &mut tx,
+        &mut *db,
         &mut stored.state,
         &stored.snapshot.system_start_id,
         Some(effect.context.work.clone()),
@@ -831,8 +884,7 @@ pub(crate) async fn register_effect(pool: &SqlitePool, effect: EngineEffect) -> 
         raw,
     )
     .await?;
-    save(&mut tx, &stored.snapshot.system_start_id, &stored.state).await?;
-    tx.commit().await?;
+    save(&mut *db, &stored.snapshot.system_start_id, &stored.state).await?;
     Ok(true)
 }
 pub(crate) async fn settle_effect(
@@ -856,6 +908,14 @@ pub(crate) async fn settle_effect(
         && matches!(settlement.effect, EngineEffectIdentity::Tool { .. })
     {
         require(result.is_some(), "Ended tool requires a durable result")?;
+    }
+    if settlement.status == "ended"
+        && matches!(settlement.effect, EngineEffectIdentity::Provider { .. })
+    {
+        require(
+            result.is_none(),
+            "Provider settlement cannot contain a tool result",
+        )?;
     }
     let key = effect_key(&settlement.effect)?;
     let mut c = pool.acquire().await?;
@@ -999,7 +1059,10 @@ async fn commit_terminal_on(
     )?;
     let expected = if matches!(commit.outcome, EngineOutcome::Stopped { .. })
         || !matches!(stored.state.stop, EngineStopState::None)
-    {
+        || !matches!(
+            activation(&stored.state, &commit.work)?.stop_state,
+            EngineStopState::None
+        ) {
         Vec::new()
     } else {
         routes.outgoing(&stored.snapshot, &commit.work, &commit.outcome)?
@@ -1162,6 +1225,9 @@ pub(crate) async fn stop(pool: &SqlitePool, request: EngineStopRequest) -> Resul
             return Ok(previous.clone());
         }
     }
+    sqlx::query("UPDATE engine_approvals SET status = 'cancelled' WHERE system_id = ? AND (? IS NULL OR activation_id = ?) AND status IN ('pending', 'approved')")
+        .bind(&request.system_start_id).bind(&request.activation_id).bind(&request.activation_id)
+        .execute(&mut *tx).await?;
     let requested = EngineStopState::Requested {
         request_id: request.request_id.clone(),
     };
@@ -1419,6 +1485,23 @@ async fn invalidate_active(db: &mut SqliteConnection, stored: &mut Stored) -> Re
         )
         .await?;
     }
+    Ok(())
+}
+/// Revoke only the systems assigned to a lost physical host. Retries cannot
+/// rotate a replacement owner's epoch or turn an unknown effect into a replay.
+pub(crate) async fn revoke_host_owners(pool: &SqlitePool, owners: &[EngineOwner]) -> Result<()> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await?;
+    for retired in owners {
+        let mut stored = load(&mut tx, &retired.system_start_id).await?;
+        if stored.state.epoch != retired.owner_epoch {
+            continue;
+        }
+        stored.state.epoch = next(&stored.state.epoch);
+        invalidate_active(&mut tx, &mut stored).await?;
+        save(&mut tx, &retired.system_start_id, &stored.state).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 pub(crate) async fn reconcile_after_restart(pool: &SqlitePool) -> super::DbResult<()> {
