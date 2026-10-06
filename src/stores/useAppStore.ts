@@ -175,6 +175,8 @@ const MAX_REMEMBERED_PROJECTS = 50;
 let projectSwitchRequestId = 0;
 let projectRegistryMutationGeneration = 0;
 let architectPlanSwitchRequestId = 0;
+// Reload ownership is independent of the chat transition request, including requestId 0.
+let architectPlanActivationOwner: object | null = null;
 let architectPlanCatalogRequestId = 0;
 const architectPlanCatalogRequestIdsByKind = new Map<string, number>();
 let selectedTaskPersistenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -806,12 +808,13 @@ const hydrateArchitectPlanInStore = async (input: {
   lifecycle?: LifecycleContext;
   requestId: number;
   activationPayload: ArchitectPlanActivationPayload;
+  isCurrent: () => boolean;
 }): Promise<void> => {
   const lifecycle = input.lifecycle;
   lifecycle?.assertActive();
   const { activationPayload } = input;
   const rawPlan = activationPayload.plan;
-  if (!rawPlan || rawPlan.status === "deleted") {
+  if (!rawPlan || rawPlan.status === "deleted" || !input.isCurrent()) {
     return;
   }
   if (
@@ -867,6 +870,12 @@ const hydrateArchitectPlanInStore = async (input: {
     executionModesByProjectId: plan.executionModesByProjectId,
   });
   lifecycle?.assertActive();
+  const latest = useAppStore.getState();
+  if (!input.isCurrent() || latest.activeArchitectPlanId !== plan.id ||
+      resolveTargetBranch(latest.activePlanContext?.targetBranch) !==
+        resolveTargetBranch(reconciledActivationPayload.targetBranch)) {
+    return;
+  }
   const persistedPreview = runtime?.strategyPreview ?? null;
   if (!persistedPreview) {
     return;
@@ -993,6 +1002,23 @@ const activateArchitectPlanInStore = async (input: {
   const requestId = switchingArchitectPlan
     ? ++architectPlanSwitchRequestId
     : appStore.architectPlanSwitch.requestId;
+  const activationOwner = {};
+  architectPlanActivationOwner = activationOwner;
+  const activationGeneration = architectPlanSwitchRequestId;
+  const getActivationScopeKey = () => {
+    const state = useAppStore.getState();
+    return buildArchitectPlanCatalogScopeKey({
+      selectedGroupId: state.selectedGroupId,
+      selectedProjectId: state.selectedProjectId,
+      scopedProjectIds: getScopedProjectIds(
+        { standaloneProjects: state.standaloneProjects, projectGroups: state.projectGroups },
+        state.selectedGroupId,
+        state.selectedProjectId,
+      ),
+    });
+  };
+  let activationScopeKey = getActivationScopeKey();
+  let activationNavigationId = projectSwitchRequestId;
   if (switchingArchitectPlan) {
     beginArchitectPlanSwitchInStore({
       requestId,
@@ -1001,10 +1027,12 @@ const activateArchitectPlanInStore = async (input: {
       summaryHint: input.options?.planSummaryHint ?? null,
     });
   }
-
-  const activationGeneration = architectPlanSwitchRequestId;
   const isCurrentActivation = () =>
+    architectPlanActivationOwner === activationOwner &&
     architectPlanSwitchRequestId === activationGeneration &&
+    projectSwitchRequestId === activationNavigationId &&
+    useAppStore.getState().mode === appStore.mode &&
+    getActivationScopeKey() === activationScopeKey &&
     (!switchingArchitectPlan || isCurrentArchitectPlanSwitchRequest({
       requestId, planId: input.planId, targetBranch,
     }));
@@ -1054,8 +1082,7 @@ const activateArchitectPlanInStore = async (input: {
   } catch (error) {
     lifecycle?.assertActive();
     if (
-      switchingArchitectPlan &&
-      isCurrentArchitectPlanSwitchRequest({ requestId, planId: input.planId, targetBranch })
+      switchingArchitectPlan && isCurrentActivation()
     ) {
       useAppStore.setState((state) => ({
         pendingArchitectPlanActivationPayload: null,
@@ -1115,11 +1142,16 @@ const activateArchitectPlanInStore = async (input: {
     );
 
     if (planProjectId && !isPlanAlreadyInScope) {
-      await latestAppState.switchProjectContext(planProjectId, {
+      const scopeSwitch = latestAppState.switchProjectContext(planProjectId, {
         restoreProjectContext: false,
         ensureAutoPlan: false,
       });
+      // Only this requested navigation may replace the captured scope.
+      activationNavigationId = projectSwitchRequestId;
+      await scopeSwitch;
       lifecycle?.assertActive();
+      if (useAppStore.getState().selectedProjectId !== planProjectId) return null;
+      activationScopeKey = getActivationScopeKey();
       if (!isCurrentActivation()) {
         return null;
       }
@@ -1129,6 +1161,7 @@ const activateArchitectPlanInStore = async (input: {
   await hydrateArchitectPlanInStore({
     lifecycle,
     requestId,
+    isCurrent: isCurrentActivation,
     activationPayload:
       activationPayload ?? {
         plan,
@@ -1140,7 +1173,7 @@ const activateArchitectPlanInStore = async (input: {
       },
   });
   lifecycle?.assertActive();
-  if (architectPlanSwitchRequestId !== activationGeneration) return null;
+  if (!isCurrentActivation()) return null;
   const latestAppState = useAppStore.getState();
   if (input.options?.consolidateBlankPlans !== false) {
     scheduleScopedBlankPlanConsolidation({
@@ -2224,9 +2257,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const requestId = ++architectPlanCatalogRequestId;
     const state = get();
     const planSelectionGeneration = architectPlanSwitchRequestId;
+    const planActivationOwner = architectPlanActivationOwner;
     const isCurrentPlanSelection = () => {
       const latest = get();
-      return architectPlanSwitchRequestId === planSelectionGeneration &&
+      return architectPlanActivationOwner === planActivationOwner &&
+        architectPlanSwitchRequestId === planSelectionGeneration &&
         latest.mode === state.mode &&
         latest.activeArchitectPlanId === state.activeArchitectPlanId &&
         latest.activePlanContext?.targetBranch === state.activePlanContext?.targetBranch;
@@ -2344,9 +2379,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
             },
           });
           const hydrationGeneration = architectPlanSwitchRequestId;
+          const hydrationOwner = architectPlanActivationOwner;
           const activatedPlan = await activation;
           lifecycle?.assertActive();
-          if (!isCurrentScope() || architectPlanSwitchRequestId !== hydrationGeneration || get().mode !== state.mode) return null;
+          if (!isCurrentScope() || architectPlanActivationOwner !== hydrationOwner ||
+              architectPlanSwitchRequestId !== hydrationGeneration || get().mode !== state.mode) return null;
           if (activatedPlan) {
             await persistResolvedArchitectPlanContext({
               contextId,

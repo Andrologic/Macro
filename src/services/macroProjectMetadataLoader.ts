@@ -194,15 +194,16 @@ const selectCatalogPlan = (params: {
   visiblePlans: ArchitectPlanSummary[];
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
+  currentTargetBranch?: string | null;
 }): {
   plan: ArchitectPlanSummary | null;
   branchName: string | null;
   reason: ArchitectPlanCatalogSelectionReason;
 } => {
-  const currentPlan = findVisiblePlanById(
-    params.visiblePlans,
-    params.currentActivePlanId,
-  );
+  const currentPlan = params.currentTargetBranch
+    ? params.branches.find((branch) => branch.branchName === params.currentTargetBranch)
+      ?.plans.find((plan) => plan.id === params.currentActivePlanId && params.visiblePlans.includes(plan)) ?? null
+    : findVisiblePlanById(params.visiblePlans, params.currentActivePlanId);
   if (currentPlan) {
     return {
       plan: currentPlan,
@@ -341,6 +342,7 @@ export const loadMacroProjectMetadataForSelection = async (
     visiblePlans,
     rememberedPlanId: params.rememberedPlanId,
     currentActivePlanId: params.currentActivePlanId,
+    currentTargetBranch: params.currentTargetBranch ? deps.resolveTargetBranch(params.currentTargetBranch) : null,
   });
 
   const branchCatalogByBranch = Object.fromEntries(

@@ -196,6 +196,22 @@ describe('loadMacroProjectMetadataForSelection', () => {
     ]);
   });
 
+  it('keeps the explicit current branch when a newer branch has the same plan id', async () => {
+    const current = buildPlan({ id: 'shared-plan', targetBranch: 'develop', updatedAt: '2026-04-17T10:00:00.000Z' });
+    const newer = buildPlan({ id: current.id, targetBranch: 'release/2.0.0', updatedAt: '2026-04-17T12:00:00.000Z' });
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'], currentActivePlanId: current.id,
+      currentTargetBranch: 'refs/heads/develop', rememberedPlanId: current.id,
+      deps: createDeps({
+        develop: { activePlanId: null, plans: [current] },
+        'release/2.0.0': { activePlanId: null, plans: [newer] },
+      }),
+    });
+    expect(result.selectedPlan).toBe(current);
+    expect(result.selectedBranchName).toBe('develop');
+    expect(result.selectionReason).toBe('current_plan');
+  });
+
   it('keeps the branch of the selected plan when plan ids collide across branches', async () => {
     const olderDevelopPlan = buildPlan({
       id: 'shared-plan-id',
