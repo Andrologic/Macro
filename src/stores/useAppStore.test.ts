@@ -329,7 +329,7 @@ const planById = new Map<string, PlanRecord>();
 const activationPayloadByPlanId = new Map<string, ActivationPayloadOverride>();
 
 const listArchitectPlansMock = mock(async () => ({
-  activePlanId: null,
+  activePlanId: null as string | null,
   plans: Array.from(planById.values()).map(toPlanSummary),
 }));
 const getArchitectPlanMock = mock(async (_branchName: string, planId: string) =>
@@ -2032,6 +2032,164 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(useAppStore.getState().activeArchitectPlanId).toBe('plan-current');
     expect(projectContexts.get('group-1')?.lastPlanId).toBe('plan-current');
+  });
+
+  it('preserves the explicitly selected labeled plan during the mutation catalog refresh', async () => {
+    const oldPlan = buildPlan({ id: 'old-plan', conversationId: 'old-transcript', nodes: [{ id: 'old-task' }] });
+    const newPlan = buildPlan({
+      id: 'new-plan', label: 'Plan reprise été QA',
+      projectId: 'project-2', projectIds: ['project-1', 'project-2'],
+      expectedProjectIds: ['project-1', 'project-2'],
+    });
+    planById.set(oldPlan.id, oldPlan);
+    planById.set(newPlan.id, newPlan);
+    projectContexts.set('group-1', buildProjectContext({
+      lastPlanId: oldPlan.id, architectConversationId: oldPlan.conversationId,
+    }));
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-2',
+      activeArchitectPlanId: oldPlan.id, activePlanContext: {
+        id: oldPlan.id, title: oldPlan.title, status: oldPlan.status, targetBranch: oldPlan.targetBranch,
+      }, planNodes: oldPlan.nodes as never,
+    });
+    expect(await useAppStore.getState().activateArchitectPlan(newPlan.id, {
+      targetBranch: newPlan.targetBranch, planSummaryHint: toPlanSummary(newPlan),
+      scopedProjectIdsHint: ['project-1', 'project-2'],
+    })).toBe(true);
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(newPlan.id);
+
+    // Same call as ArchitectProjectNavigator.refreshAfterMutation after saving the label.
+    const refreshed = await useAppStore.getState().loadMacroProjectMetadataForSelection({
+      hydrateActivePlan: true, refreshTasks: true, includeArchivedInVisible: false, reason: 'manual',
+    });
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(newPlan.id);
+    expect(useAppStore.getState().activePlanContext?.label).toBe(newPlan.label);
+    expect(useAppStore.getState().planNodes).toEqual([]);
+    expect(refreshed?.selectionReason).toBe('current_plan');
+    expect(projectContexts.get('group-1')?.lastPlanId).toBe(newPlan.id);
+  });
+
+  it('does not let an older catalog hydration replace a newer explicit plan selection', async () => {
+    const oldPlan = buildPlan({ id: 'old-plan-race', nodes: [{ id: 'old-task' }] });
+    const newPlan = buildPlan({ id: 'new-plan-race', label: 'Plan reprise', projectId: 'project-2' });
+    planById.set(oldPlan.id, oldPlan);
+    planById.set(newPlan.id, newPlan);
+    projectContexts.set('group-1', buildProjectContext({ lastPlanId: oldPlan.id }));
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-2',
+      activeArchitectPlanId: oldPlan.id, activePlanContext: {
+        id: oldPlan.id, title: oldPlan.title, status: oldPlan.status, targetBranch: oldPlan.targetBranch,
+      }, planNodes: oldPlan.nodes as never,
+    });
+    let releaseCatalog!: () => void;
+    let catalogEntered!: () => void;
+    const entered = new Promise<void>(resolve => { catalogEntered = resolve; });
+    listArchitectPlansMock.mockImplementationOnce(async () => {
+      catalogEntered();
+      await new Promise<void>(resolve => { releaseCatalog = resolve; });
+      return { activePlanId: oldPlan.id, plans: [oldPlan, newPlan].map(toPlanSummary) };
+    });
+    const hydrating = useAppStore.getState().loadMacroProjectMetadataForSelection({
+      hydrateActivePlan: true, refreshTasks: true, reason: 'manual',
+    });
+    await entered;
+    expect(await useAppStore.getState().activateArchitectPlan(newPlan.id, {
+      targetBranch: newPlan.targetBranch, planSummaryHint: toPlanSummary(newPlan),
+      scopedProjectIdsHint: ['project-1', 'project-2'],
+    })).toBe(true);
+    const switchRequestId = useAppStore.getState().architectPlanSwitch.requestId;
+    releaseCatalog();
+    await hydrating;
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(newPlan.id);
+    expect(useAppStore.getState().architectPlanSwitch.requestId).toBe(switchRequestId);
+    expect(useAppStore.getState().planNodes).toEqual([]);
+    expect(useAppStore.getState().architectPlanCatalogStatus).toBe('ready');
+    expect(useAppStore.getState().visibleArchitectPlans.map((plan: ArchitectPlanSummary) => plan.id).sort()).toEqual([newPlan.id, oldPlan.id].sort());
+  });
+
+  it('does not publish a same-plan hydration head after a newer plan is selected', async () => {
+    const oldPlan = buildPlan({ id: 'old-plan-head', nodes: [{ id: 'old-task' }] });
+    const newPlan = buildPlan({ id: 'new-plan-head', label: 'Plan reprise', projectId: 'project-2' });
+    planById.set(oldPlan.id, oldPlan);
+    planById.set(newPlan.id, newPlan);
+    projectContexts.set('group-1', buildProjectContext({ lastPlanId: oldPlan.id }));
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-2',
+      activeArchitectPlanId: oldPlan.id, activePlanContext: {
+        id: oldPlan.id, title: oldPlan.title, status: oldPlan.status, targetBranch: oldPlan.targetBranch,
+      }, planNodes: oldPlan.nodes as never,
+    });
+    let releaseHead!: () => void;
+    let headEntered!: () => void;
+    const entered = new Promise<void>(resolve => { headEntered = resolve; });
+    getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => {
+      headEntered();
+      await new Promise<void>(resolve => { releaseHead = resolve; });
+      return { plan: oldPlan, chatMessages: [], conversationId: null,
+        sharedConversation: false, targetBranch: oldPlan.targetBranch, resolutionMode: 'full' };
+    });
+    const hydrating = useAppStore.getState().loadMacroProjectMetadataForSelection({
+      hydrateActivePlan: true, refreshTasks: true, reason: 'manual',
+    });
+    await entered;
+    expect(await useAppStore.getState().activateArchitectPlan(newPlan.id, {
+      targetBranch: newPlan.targetBranch, planSummaryHint: toPlanSummary(newPlan),
+      scopedProjectIdsHint: ['project-1', 'project-2'],
+    })).toBe(true);
+    const switchRequestId = useAppStore.getState().architectPlanSwitch.requestId;
+    upsertLocalProjectContextStateMock.mockClear();
+    releaseHead();
+    await hydrating;
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(newPlan.id);
+    expect(useAppStore.getState().architectPlanSwitch.requestId).toBe(switchRequestId);
+    expect(useAppStore.getState().planNodes).toEqual([]);
+    expect(upsertLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('restores a saved API-only strategy after switching plans without regenerating its tasks', async () => {
+    const oldPlan = buildPlan({ id: 'old-app-plan', nodes: [{ id: 'old-task', projectId: 'project-1' }] });
+    const savedPlan = buildPlan({
+      id: 'saved-api-plan', label: 'Plan reprise été QA', conversationId: 'saved-transcript',
+      projectId: 'project-2', projectIds: ['project-2'], expectedProjectIds: ['project-2'],
+      nodes: [{ id: 'api-task', projectId: 'project-2', todos: [{ id: 'api-todo', status: 'pending' }] }],
+      predictedBranches: [{ id: 'api-branch', projectId: 'project-2', branchName: 'feature/api-task' }],
+    });
+    planById.set(oldPlan.id, oldPlan);
+    planById.set(savedPlan.id, savedPlan);
+    projectContexts.set('group-1', buildProjectContext({ lastPlanId: oldPlan.id }));
+    const savedRecord = JSON.stringify(savedPlan);
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-2',
+    });
+    chatStoreState.beginArchitectPlanSwitch.mockClear();
+    for (const plan of [savedPlan, oldPlan, savedPlan]) {
+      expect(await useAppStore.getState().activateArchitectPlan(plan.id, {
+        targetBranch: plan.targetBranch, planSummaryHint: toPlanSummary(plan),
+        scopedProjectIdsHint: ['project-1', 'project-2'],
+      })).toBe(true);
+    }
+    const requestId = useAppStore.getState().architectPlanSwitch.requestId;
+    await useAppStore.getState().loadMacroProjectMetadataForSelection({
+      hydrateActivePlan: true, refreshTasks: true, reason: 'manual',
+    });
+    const state = useAppStore.getState();
+    expect(state.activeArchitectPlanId).toBe(savedPlan.id);
+    expect(state.activePlanContext?.label).toBe(savedPlan.label);
+    expect(state.planNodes).toEqual(savedPlan.nodes);
+    expect(state.predictedBranches).toEqual(savedPlan.predictedBranches);
+    expect(state.pendingArchitectPlanActivationPayload?.conversationId).toBe(savedPlan.conversationId);
+    expect(state.architectPlanSwitch.requestId).toBe(requestId);
+    expect(chatStoreState.beginArchitectPlanSwitch).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(planById.get(savedPlan.id))).toBe(savedRecord);
+    expect(projectContexts.get('group-1')?.lastPlanId).toBe(savedPlan.id);
   });
 
   it('falls back to the newest visible plan when the remembered plan is archived', async () => {

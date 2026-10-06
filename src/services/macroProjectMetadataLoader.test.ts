@@ -54,6 +54,27 @@ describe('loadMacroProjectMetadataForSelection', () => {
     ).toBe('group-1::project-2::project-1\u0000project-2');
   });
 
+  it('keeps the current visible plan and its branch before a remembered plan on another branch', async () => {
+    const current = buildPlan({ id: 'current', targetBranch: 'main', projectIds: ['project-2'] });
+    const remembered = buildPlan({ id: 'remembered', projectIds: ['project-1'] });
+    const deps = createDeps({
+      develop: { activePlanId: remembered.id, plans: [remembered] },
+      main: { activePlanId: current.id, plans: [current] },
+    });
+
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1', 'project-2'],
+      rememberedPlanId: remembered.id,
+      currentActivePlanId: current.id,
+      currentTargetBranch: 'main',
+      deps,
+    });
+
+    expect(result.selectedPlan?.id).toBe(current.id);
+    expect(result.selectedBranchName).toBe('main');
+    expect(result.selectionReason).toBe('current_plan');
+  });
+
   it('selects the remembered visible plan before branch active and recent plans', async () => {
     const remembered = buildPlan({
       id: 'remembered',

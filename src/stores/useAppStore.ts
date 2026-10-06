@@ -1002,16 +1002,16 @@ const activateArchitectPlanInStore = async (input: {
     });
   }
 
+  const activationGeneration = architectPlanSwitchRequestId;
+  const isCurrentActivation = () =>
+    architectPlanSwitchRequestId === activationGeneration &&
+    (!switchingArchitectPlan || isCurrentArchitectPlanSwitchRequest({
+      requestId, planId: input.planId, targetBranch,
+    }));
+
   if (input.options?.persistActiveSelection !== false) {
     void enqueueActiveArchitectPlanPersistence(targetBranch, input.planId).catch((error) => {
-      if (
-        !switchingArchitectPlan ||
-        isCurrentArchitectPlanSwitchRequest({
-          requestId,
-          planId: input.planId,
-          targetBranch,
-        })
-      ) {
+      if (isCurrentActivation()) {
         useAppStore.setState((state) => ({
           architectPlanSwitch: {
             ...state.architectPlanSwitch,
@@ -1068,14 +1068,7 @@ const activateArchitectPlanInStore = async (input: {
     }
     return null;
   }
-  if (
-    switchingArchitectPlan &&
-    !isCurrentArchitectPlanSwitchRequest({
-      requestId,
-      planId: input.planId,
-      targetBranch,
-    })
-  ) {
+  if (!isCurrentActivation()) {
     return null;
   }
   const plan = activationPayload?.plan ?? null;
@@ -1127,14 +1120,7 @@ const activateArchitectPlanInStore = async (input: {
         ensureAutoPlan: false,
       });
       lifecycle?.assertActive();
-      if (
-        switchingArchitectPlan &&
-        !isCurrentArchitectPlanSwitchRequest({
-          requestId,
-          planId: input.planId,
-          targetBranch,
-        })
-      ) {
+      if (!isCurrentActivation()) {
         return null;
       }
     }
@@ -1154,6 +1140,7 @@ const activateArchitectPlanInStore = async (input: {
       },
   });
   lifecycle?.assertActive();
+  if (architectPlanSwitchRequestId !== activationGeneration) return null;
   const latestAppState = useAppStore.getState();
   if (input.options?.consolidateBlankPlans !== false) {
     scheduleScopedBlankPlanConsolidation({
@@ -2236,6 +2223,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     lifecycle?.assertActive();
     const requestId = ++architectPlanCatalogRequestId;
     const state = get();
+    const planSelectionGeneration = architectPlanSwitchRequestId;
+    const isCurrentPlanSelection = () => {
+      const latest = get();
+      return architectPlanSwitchRequestId === planSelectionGeneration &&
+        latest.mode === state.mode &&
+        latest.activeArchitectPlanId === state.activeArchitectPlanId &&
+        latest.activePlanContext?.targetBranch === state.activePlanContext?.targetBranch;
+    };
     const registry = {
       standaloneProjects: state.standaloneProjects,
       projectGroups: state.projectGroups,
@@ -2334,9 +2329,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         architectPlanCatalogError: null,
       });
 
-      if (options.hydrateActivePlan !== false) {
+      if (options.hydrateActivePlan !== false && isCurrentPlanSelection()) {
         if (result.selectedPlan && result.selectedBranchName) {
-          const activatedPlan = await activateArchitectPlanInStore({
+          const activation = activateArchitectPlanInStore({
             lifecycle,
             planId: result.selectedPlan.id,
             options: {
@@ -2348,8 +2343,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
               scopedProjectIdsHint: scopedProjectIds,
             },
           });
+          const hydrationGeneration = architectPlanSwitchRequestId;
+          const activatedPlan = await activation;
           lifecycle?.assertActive();
-          if (!isCurrentScope()) return null;
+          if (!isCurrentScope() || architectPlanSwitchRequestId !== hydrationGeneration || get().mode !== state.mode) return null;
           if (activatedPlan) {
             await persistResolvedArchitectPlanContext({
               contextId,

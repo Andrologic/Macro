@@ -199,18 +199,6 @@ const selectCatalogPlan = (params: {
   branchName: string | null;
   reason: ArchitectPlanCatalogSelectionReason;
 } => {
-  const rememberedPlan = findVisiblePlanById(
-    params.visiblePlans,
-    params.rememberedPlanId,
-  );
-  if (rememberedPlan) {
-    return {
-      plan: rememberedPlan,
-      branchName: findBranchForPlan(params.branches, rememberedPlan),
-      reason: 'remembered_plan',
-    };
-  }
-
   const currentPlan = findVisiblePlanById(
     params.visiblePlans,
     params.currentActivePlanId,
@@ -220,6 +208,18 @@ const selectCatalogPlan = (params: {
       plan: currentPlan,
       branchName: findBranchForPlan(params.branches, currentPlan),
       reason: 'current_plan',
+    };
+  }
+
+  const rememberedPlan = findVisiblePlanById(
+    params.visiblePlans,
+    params.rememberedPlanId,
+  );
+  if (rememberedPlan) {
+    return {
+      plan: rememberedPlan,
+      branchName: findBranchForPlan(params.branches, rememberedPlan),
+      reason: 'remembered_plan',
     };
   }
 
