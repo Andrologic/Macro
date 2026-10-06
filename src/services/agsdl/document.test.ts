@@ -7,7 +7,7 @@ import {
   validateDocument,
 } from "./document";
 import { addAgent, addDefinition, addStep, renameStep } from "./editing";
-import { AGSDL_EXAMPLES, createExample } from "./examples";
+import { AGSDL_EXAMPLES, createLegacyExample as createExample } from "./examples";
 import { projectDocument } from "./projection";
 import { run, stringify } from "../../vendor/agsdl/browser-reader.mjs";
 
@@ -139,7 +139,7 @@ describe("AgSDL document authoring", () => {
     expect(
       failures(
         await validateDocument(source.replace("agsdl-0.1.0", "future")),
-      ).some((result) => result.unit === "D"),
+      ).some((result) => result.unit === "document"),
     ).toBe(true);
   });
 

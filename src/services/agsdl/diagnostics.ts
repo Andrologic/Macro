@@ -1,5 +1,5 @@
 import type { AgsdlReport } from "../../types/agsdl";
-import { keyId, list, object, readDocument, scanSource, text } from "./document";
+import { keyId, list, object, pointerPart, readDocument, scanSource, text } from "./document";
 import type { ViewerCard } from "./viewer";
 
 export interface LocalizedDiagnostic {
@@ -32,6 +32,23 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
     }
     return cards.filter(card => owners.some(owner => {
       if (owner === card.path || owner.startsWith(`${card.path}/`)) return true;
+      const agentName = text(card.details.agent);
+      const agent020 = agentName ? `/agents/${pointerPart(agentName)}` : undefined;
+      if (agent020 && (owner === agent020 || owner.startsWith(`${agent020}/`))) return true;
+      if (agentName) {
+        const agent = object(object(doc.agents)[agentName]);
+        const configurations = typeof agent.configuration === "string" ? [agent.configuration] : Object.values(object(object(agent.configuration).cases)).filter((value): value is string => typeof value === "string");
+        for (const name of configurations) {
+          const configurationPath = `/configurations/${pointerPart(name)}`;
+          if (owner === configurationPath || owner.startsWith(`${configurationPath}/`)) return true;
+          const configuration = object(object(doc.configurations)[name]);
+          for (const binding of [configuration.engine, ...Object.values(object(configuration.tools))]) {
+            if (typeof binding !== "string") continue;
+            const bindingPath = `/bindings/${pointerPart(binding)}`;
+            if (owner === bindingPath || owner.startsWith(`${bindingPath}/`)) return true;
+          }
+        }
+      }
       const agentPath = uniqueDefinition(card.details.agent);
       if (agentPath && (owner === agentPath || owner.startsWith(`${agentPath}/`))) return true;
       const definitionPath = /^\/definitions\/\d+/.exec(owner)?.[0];
@@ -50,7 +67,9 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
       const byte = finding.location.byte!;
       path = [...spans].filter(([, span]) => byte >= span.start && byte < span.end).sort((a, b) => (a[1].end - a[1].start) - (b[1].end - b[1].start))[0]?.[0];
     }
-    return { rule: finding.rule, details: finding.details, path, targets: targetsFor(path) };
+    const invocation = finding.invocation && spans.has(finding.invocation) ? finding.invocation : undefined;
+    const targets = [...new Set([...targetsFor(path), ...targetsFor(invocation)])];
+    return { rule: finding.rule, details: finding.details, path, targets };
   })));
   list(doc.unresolved).forEach((value, index) => {
     const unresolved = object(value);

@@ -1,0 +1,1891 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgSDL 0.2.0 persistent Agent flow shapes",
+  "$comment": "Derived from spec/0.2/. The normative text defines semantics and exclusions. No execution support is implied.",
+  "$ref": "#/$defs/Document",
+  "$defs": {
+    "Name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*(?![\\s\\S])"
+    },
+    "Edition": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "identity",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "Source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "value": {},
+            "mediaType": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "uri": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mediaType": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "uri"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Content": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Message": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "minItems": 0
+        },
+        "resources": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Content"
+          },
+          "minProperties": 0
+        },
+        "baseUri": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "Operand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "value": {}
+          },
+          "required": [
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                ]
+              },
+              "minItems": 0
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Predicate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "equals": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Operand"
+                },
+                {
+                  "$ref": "#/$defs/Operand"
+                }
+              ],
+              "items": false,
+              "minItems": 2
+            }
+          },
+          "required": [
+            "equals"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "all": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Predicate"
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "all"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/Predicate"
+            }
+          },
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Requirement": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/Edition"
+        },
+        "parameters": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "contract"
+      ],
+      "additionalProperties": false
+    },
+    "Binding": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/Edition"
+        },
+        "implementation": {
+          "$ref": "#/$defs/Edition"
+        },
+        "settings": {
+          "type": "object"
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "minItems": 0
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Claim"
+          }
+        },
+        "effects": {
+          "enum": [
+            "none",
+            "external",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "implementation"
+      ],
+      "additionalProperties": false
+    },
+    "Configuration": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/Name"
+        },
+        "model": {
+          "$ref": "#/$defs/Edition"
+        },
+        "tools": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Name"
+          },
+          "minProperties": 0
+        },
+        "settings": {
+          "type": "object"
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "minItems": 0
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Claim"
+          }
+        }
+      },
+      "required": [
+        "engine"
+      ],
+      "additionalProperties": false
+    },
+    "ResultRule": {
+      "type": "object",
+      "properties": {
+        "mediaTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "valueSchema": {
+          "$ref": "#/$defs/ValueConstraint"
+        }
+      },
+      "required": [
+        "mediaTypes"
+      ],
+      "additionalProperties": false
+    },
+    "Interface": {
+      "type": "object",
+      "properties": {
+        "inputMediaTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "outputMediaTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "results": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/ResultRule"
+          },
+          "minProperties": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "Agent": {
+      "type": "object",
+      "properties": {
+        "configuration": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Name"
+            },
+            {
+              "$ref": "#/$defs/ConfigurationSelection"
+            }
+          ]
+        },
+        "prompt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "minItems": 0
+        },
+        "resources": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Content"
+          },
+          "minProperties": 0
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Name"
+          },
+          "minItems": 0
+        },
+        "interface": {
+          "$ref": "#/$defs/Interface"
+        }
+      },
+      "required": [
+        "configuration"
+      ],
+      "additionalProperties": false
+    },
+    "Skill": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "minItems": 0
+        },
+        "resources": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Content"
+          },
+          "minProperties": 0
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "PreparedResource": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Content"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "select": {
+              "$ref": "#/$defs/Operand"
+            },
+            "mediaType": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "select"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "$ref": "#/$defs/Operand"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PreparedMessage": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Content"
+          },
+          "minItems": 0
+        },
+        "resources": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PreparedResource"
+          },
+          "minProperties": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "Step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "agent"
+            },
+            "next": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "minItems": 0
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/Name"
+                    },
+                    "minItems": 0
+                  },
+                  "minProperties": 1
+                }
+              ]
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "agent": {
+              "$ref": "#/$defs/Name"
+            },
+            "decision": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/Name"
+                },
+                "choices": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "binding",
+                "choices"
+              ],
+              "additionalProperties": false
+            },
+            "delivery": {
+              "enum": [
+                "queue",
+                "steering"
+              ]
+            },
+            "steers": {
+              "$ref": "#/$defs/Name"
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "call"
+            },
+            "next": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "binding": {
+              "$ref": "#/$defs/Name"
+            },
+            "arguments": {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "#/$defs/Name"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/Operand"
+              },
+              "minProperties": 0
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            }
+          },
+          "required": [
+            "type",
+            "binding"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "condition"
+            },
+            "next": {
+              "type": "object",
+              "properties": {
+                "true": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "minItems": 0
+                },
+                "false": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "minItems": 0
+                }
+              },
+              "required": [
+                "true",
+                "false"
+              ],
+              "additionalProperties": false
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "test": {
+              "$ref": "#/$defs/Predicate"
+            }
+          },
+          "required": [
+            "type",
+            "test",
+            "next"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "prepare"
+            },
+            "next": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "message": {
+              "$ref": "#/$defs/PreparedMessage"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "join"
+            },
+            "next": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 0
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "after": {
+              "$ref": "#/$defs/Name"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              },
+              "minItems": 2
+            },
+            "mode": {
+              "enum": [
+                "all",
+                "first"
+              ]
+            },
+            "accept": {
+              "$ref": "#/$defs/Predicate"
+            },
+            "remaining": {
+              "enum": [
+                "stop-and-wait",
+                "finish"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "after",
+            "members"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "approval"
+            },
+            "call": {
+              "$ref": "#/$defs/Name"
+            },
+            "binding": {
+              "$ref": "#/$defs/Name"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "validForMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "next": {
+              "type": "object",
+              "properties": {
+                "approved": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "minItems": 1
+                },
+                "denied": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  }
+                }
+              },
+              "required": [
+                "approved",
+                "denied"
+              ],
+              "additionalProperties": false
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              }
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "type",
+            "call",
+            "binding",
+            "timeoutMs",
+            "validForMs",
+            "next"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "compose"
+            },
+            "composition": {
+              "$ref": "#/$defs/Name"
+            },
+            "agents": {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "#/$defs/Name"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/Name"
+              }
+            },
+            "next": {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "#/$defs/Name"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Name"
+                }
+              }
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Name"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "composition",
+            "agents",
+            "next"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Document": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "agsdl-0.2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/Name"
+        },
+        "content": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Source"
+          },
+          "minProperties": 0
+        },
+        "skills": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Skill"
+          },
+          "minProperties": 0
+        },
+        "bindings": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Binding"
+          },
+          "minProperties": 0
+        },
+        "configurations": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Configuration"
+          },
+          "minProperties": 0
+        },
+        "agents": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Agent"
+          },
+          "minProperties": 0
+        },
+        "flow": {
+          "type": "object",
+          "properties": {
+            "entry": {
+              "$ref": "#/$defs/Name"
+            },
+            "steps": {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "#/$defs/Name"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/Step"
+              },
+              "minProperties": 1
+            }
+          },
+          "required": [
+            "entry",
+            "steps"
+          ],
+          "additionalProperties": false
+        },
+        "baseUri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "compositions": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Composition"
+          }
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "agents",
+        "configurations",
+        "bindings"
+      ],
+      "additionalProperties": false
+    },
+    "ConfigurationSelection": {
+      "type": "object",
+      "properties": {
+        "select": {
+          "$ref": "#/$defs/Operand"
+        },
+        "cases": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Name"
+          }
+        }
+      },
+      "required": [
+        "select",
+        "cases"
+      ],
+      "additionalProperties": false
+    },
+    "Completion": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "results": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Source"
+          }
+        },
+        "choice": {
+          "$ref": "#/$defs/Name"
+        },
+        "responseMessages": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "baseUri": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": [
+            "CONFIGURATION",
+            "INITIALIZATION",
+            "INPUT_CONSTRAINT",
+            "CONTENT_UNAVAILABLE",
+            "UNSUPPORTED",
+            "OPERAND",
+            "CALL_FAILED",
+            "CALL_RESULT",
+            "OUTPUT_CONSTRAINT",
+            "AGENT_FAILED",
+            "INTERRUPTED",
+            "CORRELATION",
+            "VISIT_LIMIT",
+            "MEMBER_FAILED",
+            "NO_ACCEPTABLE_RESULT",
+            "STEERING_UNSUPPORTED",
+            "STEERING_REJECTED",
+            "STEERING_LATE",
+            "APPROVAL"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^(?:/(?:[^~/]|~[01])*)*(?![\\s\\S])"
+              },
+              "rule": {
+                "type": "string"
+              },
+              "expected": {}
+            },
+            "required": [
+              "path",
+              "rule",
+              "expected"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "details"
+      ],
+      "additionalProperties": false
+    },
+    "DeliveryRecord": {
+      "type": "object",
+      "properties": {
+        "origin": {
+          "enum": [
+            "entry",
+            "prepare",
+            "agent",
+            "call",
+            "join",
+            "error"
+          ]
+        },
+        "input": {},
+        "message": {
+          "$ref": "#/$defs/Message"
+        },
+        "configuration": {
+          "$ref": "#/$defs/Name"
+        },
+        "retainedConfiguration": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "origin",
+        "input",
+        "message",
+        "configuration"
+      ],
+      "additionalProperties": false
+    },
+    "CallResult": {
+      "type": "object",
+      "properties": {
+        "data": {}
+      },
+      "required": [
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorInput": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "JoinResult": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/MemberResult"
+          }
+        }
+      },
+      "required": [
+        "members"
+      ],
+      "additionalProperties": false
+    },
+    "MemberResult": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Completion"
+        },
+        {
+          "$ref": "#/$defs/Message"
+        },
+        {
+          "$ref": "#/$defs/CallResult"
+        },
+        {
+          "$ref": "#/$defs/JoinResult"
+        },
+        {
+          "$ref": "#/$defs/ErrorInput"
+        }
+      ]
+    },
+    "ExternalDeliveryRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/Name"
+            },
+            "message": {
+              "$ref": "#/$defs/Message"
+            },
+            "delivery": {
+              "const": "queue"
+            }
+          },
+          "required": [
+            "agent",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/Name"
+            },
+            "message": {
+              "$ref": "#/$defs/Message"
+            },
+            "delivery": {
+              "const": "steering"
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "agent",
+            "message",
+            "delivery",
+            "owner"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ValueConstraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "null"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "boolean"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "number"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "integer"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "string"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "array"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            },
+            "items": {
+              "$ref": "#/$defs/ValueConstraint"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "object"
+            },
+            "enum": {
+              "type": "array",
+              "items": {},
+              "minItems": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/ValueConstraint"
+              }
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Claim": {
+      "type": "object",
+      "properties": {
+        "requirement": {
+          "$ref": "#/$defs/Requirement"
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        }
+      },
+      "required": [
+        "requirement",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "Scope": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "context": {
+          "$ref": "#/$defs/Operand"
+        }
+      },
+      "required": [
+        "action",
+        "resources",
+        "context"
+      ],
+      "additionalProperties": false
+    },
+    "BodyTarget": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Name"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "output": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "required": [
+            "output"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BodyErrorTarget": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Name"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "const": true
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BodyStep": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "agent"
+            },
+            "next": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/BodyTarget"
+                  },
+                  "minItems": 0
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/BodyTarget"
+                    },
+                    "minItems": 0
+                  },
+                  "minProperties": 1
+                }
+              ]
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyErrorTarget"
+              }
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "agent": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "parameter": {
+                      "$ref": "#/$defs/Name"
+                    }
+                  },
+                  "required": [
+                    "parameter"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "decision": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/Name"
+                },
+                "choices": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Name"
+                  },
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "binding",
+                "choices"
+              ],
+              "additionalProperties": false
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "call"
+            },
+            "next": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyTarget"
+              },
+              "minItems": 0
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyErrorTarget"
+              }
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "binding": {
+              "$ref": "#/$defs/Name"
+            },
+            "arguments": {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "#/$defs/Name"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/Operand"
+              },
+              "minProperties": 0
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            }
+          },
+          "required": [
+            "type",
+            "binding"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "condition"
+            },
+            "next": {
+              "type": "object",
+              "properties": {
+                "true": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/BodyTarget"
+                  },
+                  "minItems": 0
+                },
+                "false": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/BodyTarget"
+                  },
+                  "minItems": 0
+                }
+              },
+              "required": [
+                "true",
+                "false"
+              ],
+              "additionalProperties": false
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyErrorTarget"
+              }
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "test": {
+              "$ref": "#/$defs/Predicate"
+            }
+          },
+          "required": [
+            "type",
+            "test",
+            "next"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "prepare"
+            },
+            "next": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyTarget"
+              },
+              "minItems": 0
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyErrorTarget"
+              }
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "message": {
+              "$ref": "#/$defs/PreparedMessage"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "approval"
+            },
+            "call": {
+              "$ref": "#/$defs/Name"
+            },
+            "binding": {
+              "$ref": "#/$defs/Name"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "validForMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "next": {
+              "type": "object",
+              "properties": {
+                "approved": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/BodyTarget"
+                  },
+                  "minItems": 1
+                },
+                "denied": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/BodyTarget"
+                  }
+                }
+              },
+              "required": [
+                "approved",
+                "denied"
+              ],
+              "additionalProperties": false
+            },
+            "onError": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BodyErrorTarget"
+              }
+            },
+            "maxVisits": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "type",
+            "call",
+            "binding",
+            "timeoutMs",
+            "validForMs",
+            "next"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Composition": {
+      "type": "object",
+      "properties": {
+        "entry": {
+          "$ref": "#/$defs/Name"
+        },
+        "steps": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/BodyStep"
+          },
+          "minProperties": 1
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Name"
+          },
+          "minItems": 1
+        },
+        "agentParameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Name"
+          }
+        }
+      },
+      "required": [
+        "entry",
+        "steps",
+        "outputs"
+      ],
+      "additionalProperties": false
+    },
+    "StepAddress": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Name"
+      },
+      "minItems": 1
+    },
+    "ApprovalDecision": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "$ref": "#/$defs/StepAddress"
+        },
+        "occurrence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invocation": {
+          "type": "object"
+        },
+        "binding": {
+          "$ref": "#/$defs/Binding"
+        },
+        "enteredAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decidedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decision": {
+          "enum": [
+            "approved",
+            "denied"
+          ]
+        },
+        "authorityConfirmed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "gate",
+        "occurrence",
+        "invocation",
+        "binding",
+        "enteredAt",
+        "decidedAt",
+        "decision",
+        "authorityConfirmed"
+      ],
+      "additionalProperties": false
+    },
+    "AdmissionRecord": {
+      "type": "object",
+      "properties": {
+        "occurrence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "origin": {
+          "enum": [
+            "entry",
+            "prepare",
+            "agent",
+            "call",
+            "join",
+            "error"
+          ]
+        },
+        "input": {},
+        "invocation": {
+          "type": "object"
+        },
+        "admittedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalDecision"
+          }
+        },
+        "retainedConfiguration": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "occurrence",
+        "origin",
+        "input",
+        "invocation",
+        "admittedAt",
+        "decisions"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

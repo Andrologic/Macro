@@ -1,7 +1,12 @@
 import { parse, run, stringify } from "../../vendor/agsdl/browser-reader.mjs";
+import { read as read020 } from "../../vendor/agsdl/v0.2/reader.mjs";
+import { stringify as stringify020 } from "../../vendor/agsdl/v0.2/values.mjs";
 import type { AgsdlChange, AgsdlReport } from "../../types/agsdl";
 
-export const AGSDL_CONTRACT = "agsdl-0.1.0";
+export const AGSDL_CONTRACT = "agsdl-0.2.0";
+export const LEGACY_AGSDL_CONTRACT = "agsdl-0.1.0";
+export const isSupportedContract = (contract: unknown): boolean =>
+  contract === AGSDL_CONTRACT || contract === LEGACY_AGSDL_CONTRACT;
 export const MAX_AGSDL_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -68,9 +73,10 @@ function decodePointer(path: string): string[] {
 
 /** Apply one atomic batch. Existing values are replaced at their exact byte spans. */
 export function applyChanges(source: string, changes: AgsdlChange[]): string {
-  if (readDocument(source).contract !== AGSDL_CONTRACT)
+  const contract = readDocument(source).contract;
+  if (!isSupportedContract(contract))
     throw new Error(
-      "Structured editing requires AgSDL 0.1.0. The original source can still be exported.",
+      "Structured editing requires a supported AgSDL edition. The original source can still be exported.",
     );
   if (changes.length === 0 || changes.length > 100)
     throw new Error("Supply between 1 and 100 changes.");
@@ -135,7 +141,8 @@ export function applyChanges(source: string, changes: AgsdlChange[]): string {
       stringify(parent) +
       decoder.decode(parsed.bytes.subarray(parentSpan.end));
   }
-  readDocument(candidate);
+  if (readDocument(candidate).contract !== contract)
+    throw new Error("An edition change requires an explicit complete document replacement.");
   return candidate;
 }
 
@@ -153,6 +160,41 @@ export async function validateDocument(
     MAX_AGSDL_BYTES
   )
     throw new Error("AgSDL inputs exceed the 1 MiB editor limit.");
+  let contract: unknown;
+  try { contract = readDocument(source).contract; } catch {
+    // The official 0.2 parser supplies a scoped report for malformed byte input.
+  }
+  if (contract === AGSDL_CONTRACT || contract === undefined) {
+    const report = read020(primary);
+    const documentReportJson = stringify020(report);
+    return [{
+      operation: "readDocument",
+      contract: report.contract,
+      scope: report.scope,
+      executionSupport: report.executionSupport,
+      // Preserve the original lossless report for agent-facing evidence.
+      documentReportJson,
+      annexesAssessment: "not-used-by-contract",
+      results: [{
+        input: "primary", unit: "document", verdict: report.valid ? "pass" : "fail",
+        findings: report.findings.map(finding => ({
+          rule: finding.code, outcome: "fail",
+          details: finding.message ?? `AgSDL 0.2.0 ${finding.code} check at ${finding.path || "document root"}.`,
+          location: { pointer: finding.path },
+          ...(finding.invocation === undefined ? {} : { invocation: finding.invocation }),
+        })),
+      }],
+    }];
+  }
+  if (contract !== LEGACY_AGSDL_CONTRACT) return [{
+    operation: "readDocument", contract,
+    scope: "unsupported-contract", executionSupport: "not-assessed",
+    results: [{ input: "primary", unit: "document", verdict: "fail", findings: [{
+      rule: "UNSUPPORTED_CONTRACT", outcome: "fail",
+      details: "This AgSDL edition is not supported. Preserve the original source.",
+      location: { pointer: "/contract" },
+    }] }],
+  }];
   const operations = ["validateD", "validateG", "validateR", "resolveG"];
   return Promise.all(
     operations.map(async (operation) => {

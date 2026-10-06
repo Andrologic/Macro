@@ -1,8 +1,13 @@
+import type { DesignMetadata, AgsdlDisplayMetadata, AgsdlMigrationMetadata } from "../services/agsdl/design";
+
 /** Macro editor metadata. The AgSDL document itself remains unmodified source text. */
 export interface AgsdlEditorDocument {
   revision: number;
   source: string;
   annexes: Record<string, string>;
+  design?: DesignMetadata;
+  display?: AgsdlDisplayMetadata;
+  migration?: AgsdlMigrationMetadata;
 }
 
 export interface AgsdlChange {
@@ -17,6 +22,8 @@ export interface AgsdlFinding {
   outcome: string;
   details: string;
   location: { pointer?: string; byte?: number };
+  /** Source pointer of the composition use associated with this finding. */
+  invocation?: string;
 }
 
 export interface AgsdlResult {
