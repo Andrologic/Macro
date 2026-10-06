@@ -213,6 +213,8 @@
       "noRecipient": "선언된 수신 대상 없음",
       "tools": "도구 및 연결",
       "noTools": "선언된 도구 없음",
+      "structuredSource": "구조화된 콘텐츠",
+      "engineSettings": "엔진 설정",
       "engineUnset": "엔진 미설정",
       "selected": "선택됨"
     },

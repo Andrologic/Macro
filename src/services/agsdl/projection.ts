@@ -17,7 +17,7 @@ export function projectDocument(
 ): { nodes: AgsdlGraphNode[]; edges: AgsdlGraphEdge[] } {
   const doc = readDocument(source);
   if (doc.contract === "agsdl-0.2.0") {
-    const viewer = projectViewer020(doc);
+    const viewer = projectViewer020(doc, source);
     const graph = viewer.graphs[graphIndex];
     const cards = view === "process" ? graph?.cards ?? [] : viewer.declarations;
     const nodes = cards.map((card, index) => ({ id: card.path, path: card.path, title: card.title,

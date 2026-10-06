@@ -148,3 +148,13 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-detail-modal > footer button { display: inline-flex; align-items: center; gap: 6px; }
 .agsdl-disclosure-summary > span { display: inline-flex; align-items: center; gap: 8px; }
 .agsdl-change-aspect { display: inline-block; margin: 8px 6px 0 0; padding: 3px 7px; border-radius: 4px; background: rgb(var(--muted)); font-size: 11px; color: rgb(var(--muted-foreground)); }
+
+.agsdl-prompt-source + .agsdl-prompt-source { margin-top: 12px; }
+.agsdl-source-meta { margin-top: 6px; }
+.agsdl-source-uri { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.agsdl-source-uri > svg { flex-shrink: 0; color: rgb(var(--muted-foreground)); }
+.agsdl-source-uri > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agsdl-source-uri small, .agsdl-source-structured small { color: rgb(var(--muted-foreground)); font-size: 10px; flex-shrink: 0; }
+.agsdl-source-value { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.6; margin: 8px 0 0; }
+.agsdl-source-structured > summary { padding: 4px 0; font-size: 12px; }
+.agsdl-engine-reference { margin: 6px 0; }

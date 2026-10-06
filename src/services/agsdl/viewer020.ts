@@ -1,6 +1,6 @@
-import { list, object, pointerPart, text } from "./document";
+import { list, object, pointerPart, scanSource, text } from "./document";
 import type { AgsdlEnvelopeMetadata } from "./design";
-import type { ViewerCard, ViewerFlowInput, ViewerGraph, ViewerPort, ViewerReference } from "./viewer";
+import type { ViewerCard, ViewerFlowInput, ViewerGraph, ViewerPort, ViewerPromptSource, ViewerReference } from "./viewer";
 
 type Value = Record<string, unknown>;
 const display = (value: unknown): string => typeof value === "string" ? value : JSON.stringify(value) ?? "";
@@ -18,7 +18,13 @@ export function flowRoutes(step: Value): Array<{ label: string; target: unknown;
 }
 
 /** Reading model for the closed 0.2 contract. No runtime state or instances are inferred. */
-export function projectViewer020(doc: Value, metadata?: AgsdlEnvelopeMetadata) {
+export function projectViewer020(doc: Value, inputSource: string, metadata?: AgsdlEnvelopeMetadata) {
+  let scanned: ReturnType<typeof scanSource> | undefined;
+  const rawValue = (path: string) => {
+    scanned ??= scanSource(inputSource);
+    const span = scanned.spans.get(path);
+    return span ? new TextDecoder().decode(scanned.bytes.subarray(span.start, span.end)) : undefined;
+  };
   const agents = object(doc.agents);
   const content = object(doc.content);
   const skills = object(doc.skills);
@@ -33,28 +39,34 @@ export function projectViewer020(doc: Value, metadata?: AgsdlEnvelopeMetadata) {
     const use = object(value);
     return typeof use.ref === "string" ? object(content[use.ref]) : use;
   };
-  const contentReference = (value: unknown): ViewerReference => {
+  const contentReference = (value: unknown, path?: string): ViewerReference => {
     const use = object(value);
     if (typeof use.ref === "string") return named("content", use.ref);
     const resolved = source(value);
-    if (Object.hasOwn(resolved, "value")) return { label: display(resolved.value), source: "literal" };
-    if (typeof resolved.uri === "string") return { label: resolved.uri, source: "unknown" };
+    if (Object.hasOwn(resolved, "value")) return { label: display(resolved.value), source: "literal",
+      ...(typeof resolved.value !== "string" && path ? { valueJson: rawValue(`${path}/value`) } : {}) };
+    if (typeof resolved.uri === "string") return { label: resolved.uri, uri: resolved.uri, source: "unknown" };
     return { label: display(value), source: "unknown", unresolved: true };
   };
-  const prompt = (agent: Value): string => [
-    ...list(agent.skills).flatMap(name => list(object(skills[text(name)]).prompt)),
-    ...list(agent.prompt),
-  ].flatMap(use => {
-    const resolved = source(use);
-    // Media URIs and structured values remain sources, never guessed text or transcripts.
-    return typeof resolved.value === "string" ? [resolved.value] : [];
-  }).join("\n\n");
-  const resources = (agent: Value): ViewerPort[] => {
+  const promptSources = (agent: Value, path: string): ViewerPromptSource[] => [
+    ...list(agent.skills).flatMap(name => list(object(skills[text(name)]).prompt).map((use, index) => ({ use, path: `${pathFor("skills", text(name))}/prompt/${index}` }))),
+    ...list(agent.prompt).map((use, index) => ({ use, path: `${path}/prompt/${index}` })),
+  ].map(({ use, path }): ViewerPromptSource => {
+    const resolved = source(use), ref = text(object(use).ref);
+    const owner = ref ? pathFor("content", ref) : path;
+    const common = { mediaType: text(resolved.mediaType), ...(ref ? { reference: named("content", ref) } : {}) };
+    if (typeof resolved.value === "string") return { ...common, kind: "text", text: resolved.value };
+    if (typeof resolved.uri === "string") return { ...common, kind: "uri", uri: resolved.uri };
+    if (Object.hasOwn(resolved, "value")) return { ...common, kind: "structured", valueJson: rawValue(`${owner}/value`) };
+    return { ...common, kind: "unknown" };
+  });
+  const prompt = (agent: Value, path: string): string => promptSources(agent, path).flatMap(item => item.kind === "text" ? [item.text ?? ""] : []).join("\n\n");
+  const resources = (agent: Value, path: string): ViewerPort[] => {
     const entries = [
-      ...list(agent.skills).flatMap(name => Object.entries(object(object(skills[text(name)]).resources))),
-      ...Object.entries(object(agent.resources)),
+      ...list(agent.skills).flatMap(name => Object.entries(object(object(skills[text(name)]).resources)).map(([key, use]) => ({ name: key, use, path: `${pathFor("skills", text(name))}/resources/${pointerPart(key)}` }))),
+      ...Object.entries(object(agent.resources)).map(([name, use]) => ({ name, use, path: `${path}/resources/${pointerPart(name)}` })),
     ];
-    return entries.map(([name, use]) => ({ name, type: text(source(use).mediaType), binding: contentReference(use) }));
+    return entries.map(({ name, use, path }) => ({ name, type: text(source(use).mediaType), binding: contentReference(use, path) }));
   };
   const results = (agent: Value): ViewerPort[] => Object.entries(object(object(agent.interface).results)).map(([name, rule]) => ({
     name, type: list(object(rule).mediaTypes).map(text).join(" · "),
@@ -65,15 +77,16 @@ export function projectViewer020(doc: Value, metadata?: AgsdlEnvelopeMetadata) {
   const details = (value: Value, extras: Value = {}) => ({ ...value, ...extras, contract: "agsdl-0.2.0" });
   const agentCard = (name: string, value: unknown): ViewerCard => {
     const agent = object(value);
-    return { path: pathFor("agents", name), id: name, title: name, kind: "Agent", mission: prompt(agent), unresolved: false,
-      inputs: resources(agent), outputs: results(agent), tools: tools(agent), resources: list(agent.skills).map(name => named("skills", name)),
+    return { path: pathFor("agents", name), id: name, title: name, kind: "Agent", mission: prompt(agent, pathFor("agents", name)), promptSources: promptSources(agent, pathFor("agents", name)), unresolved: false,
+      inputs: resources(agent, pathFor("agents", name)), outputs: results(agent), tools: tools(agent), resources: list(agent.skills).map(name => named("skills", name)),
       branches: [], details: details(agent, { agentName: name, agentPath: pathFor("agents", name) }) };
   };
   const declarations = Object.entries(agents).map(([name, value]) => agentCard(name, value));
   for (const [map, kind] of [["content", "Resource"], ["skills", "Skill"], ["configurations", "Configuration"], ["bindings", "Binding"], ["compositions", "Composition"]]) {
     for (const [name, value] of Object.entries(object(doc[map]))) {
       const declaration = object(value);
-      declarations.push({ path: pathFor(map, name), id: name, title: name, kind, mission: map === "skills" ? prompt(declaration) : "",
+      declarations.push({ path: pathFor(map, name), id: name, title: name, kind, mission: map === "skills" ? prompt(declaration, pathFor(map, name)) : map === "content" ? text(declaration.uri) || text(declaration.value) : "",
+        ...(map === "skills" ? { promptSources: promptSources(declaration, pathFor(map, name)) } : {}),
         unresolved: false, inputs: [], outputs: [], branches: [], details: details(declaration) });
     }
   }
@@ -101,10 +114,11 @@ export function projectViewer020(doc: Value, metadata?: AgsdlEnvelopeMetadata) {
       const agent = Object.hasOwn(agents, agentName) ? object(agents[agentName]) : undefined;
       const participant = parameter && composition ? { label: parameter, source: "unknown" as const,
         unresolved: !list(flow.agentParameters).includes(parameter) } : named("agents", step.agent);
-      const card: ViewerCard = { path: `${path}/steps/${pointerPart(name)}`, id: name, title: name, kind: type, mission: agent ? prompt(agent) : "",
+      const card: ViewerCard = { path: `${path}/steps/${pointerPart(name)}`, id: name, title: name, kind: type, mission: agent ? prompt(agent, pathFor("agents", agentName)) : "",
+        ...(agent ? { promptSources: promptSources(agent, pathFor("agents", agentName)) } : {}),
         unresolved: type === "agent" ? !!participant.unresolved : type === "compose" ? !!named("compositions", step.composition).unresolved
           : ["call", "approval"].includes(type) ? !!named("bindings", step.binding).unresolved : false,
-        inputs: agent ? resources(agent) : [], outputs: agent ? results(agent) : [],
+        inputs: agent ? resources(agent, pathFor("agents", agentName)) : [], outputs: agent ? results(agent) : [],
         branches: flowRoutes(step).map(route => ({ label: route.label, reference: reference(route.target), path: `${path}/steps/${pointerPart(name)}${route.path}` })),
         details: details(step, { ...(composition ? { composition } : {}), ...(agent ? { agentDefinition: agent, agentName, agentPath: pathFor("agents", agentName) } : {}) }),
       };
@@ -115,12 +129,13 @@ export function projectViewer020(doc: Value, metadata?: AgsdlEnvelopeMetadata) {
       if (type === "join") card.dependencies = list(step.members).map(reference);
       if (type === "prepare") {
         const message = object(step.message);
-        card.mission = prompt(message);
+        card.mission = prompt(message, `${card.path}/message`);
+        card.promptSources = promptSources(message, `${card.path}/message`);
         card.inputs = Object.entries(object(message.resources)).map(([name, use]) => {
           const item = object(use);
           const operand = object(item.source ?? item.select);
           const binding = Object.hasOwn(operand, "value")
-            ? Object.hasOwn(item, "source") ? contentReference(operand.value) : { label: display(operand.value), source: "literal" as const }
+            ? Object.hasOwn(item, "source") ? contentReference(operand.value, `${card.path}/message/resources/${pointerPart(name)}/source/value`) : { label: display(operand.value), source: "literal" as const }
             : Object.hasOwn(item, "select") || Object.hasOwn(item, "source") ? { label: display(item), source: "unknown" as const } : contentReference(use);
           return { name, type: text(item.mediaType) || text(source(Object.hasOwn(item, "source") ? operand.value : use).mediaType), binding };
         });

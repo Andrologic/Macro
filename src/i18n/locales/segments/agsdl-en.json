@@ -213,6 +213,8 @@
       "noRecipient": "No recipient declared",
       "tools": "Tools and connections",
       "noTools": "No tools declared",
+      "structuredSource": "Structured content",
+      "engineSettings": "Engine settings",
       "engineUnset": "Engine not configured",
       "selected": "Selected"
     },

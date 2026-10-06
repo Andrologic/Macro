@@ -213,6 +213,8 @@
       "noRecipient": "No hay destinatarios declarados",
       "tools": "Herramientas y conexiones",
       "noTools": "No hay herramientas declaradas",
+      "structuredSource": "Contenido estructurado",
+      "engineSettings": "Configuración del motor",
       "engineUnset": "Motor sin configurar",
       "selected": "Seleccionada"
     },

@@ -1,7 +1,7 @@
 import { DisclosureSummary } from "./DisclosureSummary";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, Bot, Box, Settings2, Terminal, Wrench } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, Bot, Box, Braces, FileText, Settings2, Terminal, Wrench } from "lucide-react";
 import type { ViewerCard, ViewerReference } from "../../services/agsdl/viewer";
 import { agentConfigurations, outputRecipients } from "../../services/agsdl/agentDetails";
 import { useProviderStore } from "../../stores/useProviderStore";
@@ -48,7 +48,10 @@ function ReferencePreview({ reference, cards, onSelect }: {
     return () => { window.removeEventListener("resize", close); window.removeEventListener("scroll", close, true); };
   }, [open]);
   if (!target) return <span className={reference.unresolved ? "agsdl-unresolved" : "agsdl-muted"}>{reference.label}</span>;
-  const Icon = ["Agent", "invoke", "agent"].includes(target.kind) ? Bot : Box;
+  const isAgent = ["Agent", "invoke", "agent"].includes(target.kind);
+  const Icon = isAgent ? Bot : Box;
+  const preview = target.mission || target.promptSources?.find(item => item.uri)?.uri ||
+    (target.promptSources?.some(item => item.kind === "structured") ? t("agsdl.viewer.detail.structuredSource") : isAgent ? t("agsdl.viewer.noMission") : "");
   return <>
     <button ref={anchor} className="agsdl-reference-chip" aria-describedby={open ? id : undefined}
       onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={() => setOpen(false)}
@@ -58,7 +61,7 @@ function ReferencePreview({ reference, cards, onSelect }: {
     {open && portal && createPortal(<div ref={tooltip} id={id} role="tooltip" className="agsdl-reference-preview"
       style={position} onMouseEnter={show} onMouseLeave={hide}>
       <strong><Icon size={15} />{target.title}</strong>
-      <p>{target.mission || t("agsdl.viewer.noMission")}</p>
+      {preview && <p>{preview}</p>}
     </div>, portal)}
   </>;
 }
@@ -86,7 +89,13 @@ export function AgentDetails({ card, cards, source, onSelect }: {
     {card.participant && <p>{reference(card.participant)}</p>}
     <section className="agsdl-prompt-section">
       <h4><Terminal size={14} />{t("agsdl.viewer.detail.prompt")}</h4>
-      <p className={card.mission ? "agsdl-prompt" : "agsdl-muted"}>{card.mission || t("agsdl.viewer.noMission")}</p>
+      {card.promptSources?.length ? card.promptSources.map((item, index) => <div className="agsdl-prompt-source" key={index}>
+        {item.kind === "text" ? <p className="agsdl-prompt">{item.text}</p>
+          : item.kind === "uri" ? <div className="agsdl-source-uri"><FileText size={14} /><span title={item.uri}>{item.uri}</span>{item.mediaType && <small>{item.mediaType}</small>}</div>
+            : item.kind === "structured" ? <details className="agsdl-source-structured"><DisclosureSummary><Braces size={14} />{t("agsdl.viewer.detail.structuredSource")}{item.mediaType && <small>{item.mediaType}</small>}</DisclosureSummary><pre className="agsdl-source-value">{item.valueJson}</pre></details>
+              : <span className="agsdl-unresolved">{t("agsdl.viewer.detail.unspecifiedSource")}</span>}
+        {item.reference && <div className="agsdl-source-meta">{reference(item.reference)}</div>}
+      </div>) : <p className={card.mission ? "agsdl-prompt" : "agsdl-muted"}>{card.mission || t("agsdl.viewer.noMission")}</p>}
     </section>
     <div className="agsdl-agent-io">
       <section><h4><ArrowDownToLine size={14} />{t("agsdl.viewer.detail.inputs")}</h4>
@@ -99,9 +108,12 @@ export function AgentDetails({ card, cards, source, onSelect }: {
           <strong>{port.name}</strong>
           <div className="agsdl-io-origin">
             {(port.binding?.source === "step" || port.binding?.target) ? <>{reference(port.binding)}{port.binding.port && <small>{t("agsdl.viewer.detail.fromPort", { port: port.binding.port })}</small>}</>
-              : <span className="agsdl-muted">{port.binding?.source === "input" ? <>{t("agsdl.viewer.detail.systemInput")}{port.binding.label !== port.name && <small>{port.binding.label}</small>}</>
-                : port.binding?.source === "literal" ? <>{t("agsdl.viewer.literal")}<small>{port.binding.label}</small></>
-                  : t("agsdl.viewer.detail.unspecifiedSource")}</span>}
+              : <div className="agsdl-muted">{port.binding?.source === "input" ? <>{t("agsdl.viewer.detail.systemInput")}{port.binding.label !== port.name && <small>{port.binding.label}</small>}</>
+                : port.binding?.source === "literal" ? port.binding.valueJson
+                  ? <details className="agsdl-source-structured"><DisclosureSummary><Braces size={14} />{t("agsdl.viewer.detail.structuredSource")}</DisclosureSummary><pre className="agsdl-source-value">{port.binding.valueJson}</pre></details>
+                  : <>{t("agsdl.viewer.literal")}<small>{port.binding.label}</small></>
+                  : port.binding?.uri ? <span className="agsdl-source-uri"><FileText size={14} /><span title={port.binding.uri}>{port.binding.uri}</span>{port.type && <small>{port.type}</small>}</span>
+                    : t("agsdl.viewer.detail.unspecifiedSource")}</div>}
           </div>
         </div>) : !card.flowInputs?.length && <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>}
         {!!card.dependencies?.length && <div className="agsdl-agent-dependencies"><span className="agsdl-muted">{t("agsdl.viewer.dependencies")}</span>{card.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
@@ -137,15 +149,17 @@ export function AgentDetails({ card, cards, source, onSelect }: {
           return <div className="agsdl-runtime-empty" key={`${config.id}-${index}`}><Settings2 size={13} />{config.engine || t("agsdl.viewer.detail.engineUnset")}</div>;
         }
         return <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>
-          <summary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro && providerId ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></summary>
+          <DisclosureSummary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro && providerId ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></DisclosureSummary>
+          {config.engineReference && <div className="agsdl-engine-reference">{reference(config.engineReference)}</div>}
+          {!!Object.keys(config.engineParameters ?? {}).length && <details className="agsdl-details"><DisclosureSummary>{t("agsdl.viewer.detail.engineSettings")}</DisclosureSummary><Parameters value={config.engineParameters ?? {}} /></details>}
           {macro && <dl className="agsdl-configuration-values">
             {configurations.length > 1 && <div><dt>{t("agsdl.macroConfig.title", { defaultValue: "Agent configuration" })}</dt><dd>{config.id}</dd></div>}
             <div><dt>{t("agsdl.macroConfig.provider", { defaultValue: "Provider" })}</dt><dd>{provider?.name || unavailable(providerId)}</dd></div>
             <div><dt>{t("agsdl.macroConfig.model", { defaultValue: "Model" })}</dt><dd>{model?.name || unavailable(modelId)}</dd></div>
           </dl>}
-          {!!Object.keys(parameters).length && (macro
-            ? <details className="agsdl-details"><DisclosureSummary>{t("agsdl.macroConfig.parameters", { defaultValue: "Additional settings" })}</DisclosureSummary><Parameters value={parameters} /></details>
-            : <Parameters value={parameters} />)}
+          {!!Object.keys(parameters).length && <details className="agsdl-details"><DisclosureSummary>{macro
+            ? t("agsdl.macroConfig.parameters", { defaultValue: "Additional settings" })
+            : t("agsdl.macroConfig.title", { defaultValue: "Agent configuration" })}</DisclosureSummary><Parameters value={parameters} /></details>}
           {config.tools.map((tool, i) => <div className="agsdl-tool-connection" key={i}>{reference(tool.reference)}
             {tool.choices.map((choice, j) => <div key={j}><p>{choice.implementation || choice.id}{choice.selected && <small> · {t("agsdl.viewer.detail.selected")}</small>}</p><Parameters value={choice.parameters} /></div>)}
           </div>)}

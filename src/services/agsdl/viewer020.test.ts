@@ -199,3 +199,30 @@ describe("AgSDL 0.2 reading projection", () => {
     expect(JSON.parse(serialized)).not.toHaveProperty("annotations");
   });
 });
+
+it('preserves ordered URI and structured prompt declarations with exact values and owners', async () => {
+  const { content, bindings, configurations, skills, agents } = document();
+  const doc = { contract: 'agsdl-0.2.0', id: 'source-inspection', content, bindings, configurations, skills, agents };
+  doc.agents.reviewer.prompt = [
+    { uri: 'https://example.com/instructions.md', mediaType: 'text/markdown' },
+    { value: { limit: 0 } }, { ref: 'brief' },
+  ] as unknown as typeof doc.agents.reviewer.prompt;
+  doc.agents.reviewer.resources = { diagram: { uri: 'https://example.com/diagram.png', mediaType: 'image/png' } } as unknown as typeof doc.agents.reviewer.resources;
+  (doc.bindings.engine as Record<string, unknown>).settings = { endpoint: 'https://example.com/runtime', workspace: 'sandbox' };
+  let serialized = JSON.stringify(doc);
+  serialized = serialized.replace('"limit":0', '"limit":9007199254740993');
+  expect((await validateDocument(serialized))[0].results[0].verdict).toBe('pass');
+  const card = projectViewer(serialized).declarations[0];
+  expect(card.promptSources).toMatchObject([
+    { kind: 'text', text: 'Use the evidence.' },
+    { kind: 'uri', uri: 'https://example.com/instructions.md', mediaType: 'text/markdown' },
+    { kind: 'structured', valueJson: '{"limit":9007199254740993}' },
+    { kind: 'text', text: 'Review the change.', reference: { target: '/content/brief' } },
+  ]);
+  expect(card.inputs[0].binding).toMatchObject({ uri: 'https://example.com/diagram.png' });
+  expect(card.inputs[0].binding?.target).toBeUndefined();
+  const configuration = agentConfigurations(serialized, card)[0];
+  expect(configuration.parameters).toEqual({ temperature: 0 });
+  expect(configuration.engineReference).toMatchObject({ target: '/bindings/engine', unresolved: false });
+  expect(configuration.engineParameters).toEqual({ endpoint: 'https://example.com/runtime', workspace: 'sandbox' });
+});

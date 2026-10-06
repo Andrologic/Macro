@@ -6,6 +6,8 @@ import { projectViewer020 } from "./viewer020";
 type Value = Record<string, unknown>;
 export interface ViewerReference {
   label: string;
+  uri?: string;
+  valueJson?: string;
   target?: string;
   port?: string;
   unresolved?: boolean;
@@ -15,6 +17,14 @@ export interface ViewerPort {
   name: string;
   type: string;
   binding?: ViewerReference;
+}
+export interface ViewerPromptSource {
+  kind: "text" | "uri" | "structured" | "unknown";
+  mediaType: string;
+  text?: string;
+  uri?: string;
+  valueJson?: string;
+  reference?: ViewerReference;
 }
 export interface ViewerFlowInput {
   origin: "entry" | "agent" | "call" | "prepare" | "join" | "error" | "unknown";
@@ -27,6 +37,7 @@ export interface ViewerCard {
   title: string;
   kind: string;
   mission: string;
+  promptSources?: ViewerPromptSource[];
   unresolved: boolean;
   dependencies?: ViewerReference[];
   outcome?: string;
@@ -70,7 +81,7 @@ const ports = (value: unknown): ViewerPort[] =>
 /** A reading model only. Unresolved and ambiguous references never become links. */
 export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata) {
   const doc = readDocument(source);
-  if (doc.contract === "agsdl-0.2.0") return projectViewer020(doc, metadata);
+  if (doc.contract === "agsdl-0.2.0") return projectViewer020(doc, source, metadata);
   if (doc.contract !== "agsdl-0.1.0")
     throw new Error("Unsupported or missing AgSDL contract.");
   const definitions = list(doc.definitions).map(object);

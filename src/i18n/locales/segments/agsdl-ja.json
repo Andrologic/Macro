@@ -213,6 +213,8 @@
       "noRecipient": "受信先の宣言なし",
       "tools": "ツールと接続",
       "noTools": "ツールの宣言なし",
+      "structuredSource": "構造化されたコンテンツ",
+      "engineSettings": "エンジン設定",
       "engineUnset": "エンジンが未設定",
       "selected": "選択済み"
     },

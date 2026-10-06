@@ -20,6 +20,8 @@ export interface AgentConfiguration {
   engineIdentity: string;
   engineVersion: string;
   parameters: Record<string, unknown>;
+  engineReference?: ViewerReference;
+  engineParameters?: Record<string, unknown>;
   tools: Array<{
     reference: ViewerReference;
     choices: Array<{ id: string; selected: boolean; implementation: string; parameters: Record<string, unknown> }>;
@@ -46,6 +48,8 @@ export function agentConfigurations(source: string, card: ViewerCard): AgentConf
       return [{ id, selected: fixed,
         macro: configuration.model === undefined && ["identity", "version"].every(key => object(engine.contract)[key] === MACRO_ENGINE_CONTRACT[key as keyof typeof MACRO_ENGINE_CONTRACT] && implementation[key] === MACRO_ENGINE_IMPLEMENTATION[key as keyof typeof MACRO_ENGINE_IMPLEMENTATION]) && Object.keys(object(engine.contract)).length === 2 && Object.keys(implementation).length === 2,
         engine: edition(implementation), engineIdentity: text(implementation.identity), engineVersion: text(implementation.version),
+        engineReference: { label: text(configuration.engine), source: "unknown" as const, target: Object.hasOwn(bindings, text(configuration.engine)) ? `/bindings/${pointerPart(text(configuration.engine))}` : undefined, unresolved: !Object.hasOwn(bindings, text(configuration.engine)) },
+        engineParameters: object(engine.settings),
         parameters: { ...object(configuration.settings), ...(configuration.model ? { model: configuration.model } : {}) },
         tools: Object.entries(object(configuration.tools)).map(([localName, bindingName]) => {
           const binding = object(bindings[text(bindingName)]);

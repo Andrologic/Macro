@@ -213,6 +213,8 @@
       "noRecipient": "Kein Empfänger deklariert",
       "tools": "Werkzeuge und Verbindungen",
       "noTools": "Keine Werkzeuge deklariert",
+      "structuredSource": "Strukturierter Inhalt",
+      "engineSettings": "Engine-Einstellungen",
       "engineUnset": "Engine nicht konfiguriert",
       "selected": "Ausgewählt"
     },
