@@ -13808,8 +13808,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
               projectGroups: app.projectGroups,
               tasks: tasks.tasks,
               branchWorktrees: tasks.branchWorktrees,
+              // Loading a merge review does not activate its integration workspace.
               workspacePathOverridesByProjectId: Object.fromEntries(
-                (merge?.repositories ?? []).map(repository => [repository.projectId, repository.repoPath]),
+                (merge?.repositories ?? [])
+                  .filter(repository => captured.workspacePathsByProjectId[repository.projectId] === repository.repoPath)
+                  .map(repository => [repository.projectId, repository.repoPath]),
               ),
             });
           },

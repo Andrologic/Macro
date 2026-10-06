@@ -120,6 +120,26 @@ describe('sendMessage use case without UI stores', () => {
     });
   }
 
+  it('returns cancelled before persistence when configuration outlives its send lease', async () => {
+    const f = fixture('Implement');
+    const started = deferred();
+    const configuration = deferred<null>();
+    const timeline: string[] = [];
+    f.ports.projection.timeline = phase => { timeline.push(phase); };
+    f.ports.configuration.load = async () => { started.resolve(); return configuration.promise; };
+    const sending = f.run();
+    await started.promise;
+    const original = f.runtimes.get('conversation-1')!;
+    f.runtimes.set('conversation-1', { ...original, sessionId: 'successor' });
+    configuration.resolve(null);
+    expect((await sending).status).toBe('cancelled');
+    expect(timeline).toEqual(['send_requested', 'messages_ready']);
+    expect(f.ports.tasks.assertReady).not.toHaveBeenCalled();
+    expect(f.ports.projection.launchError).not.toHaveBeenCalled();
+    expect(f.createMessage).not.toHaveBeenCalled();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+  });
+
   it('returns sent and publishes the saved user message when stopped during persistence', async () => {
     const f = fixture(); const original = f.createMessage.getMockImplementation()!;
     f.createMessage.mockImplementation(async (...args) => { const message = await original(...args); f.stop(); return message; });

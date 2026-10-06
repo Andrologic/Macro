@@ -3265,7 +3265,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(updateConversationDetailsMock).toHaveBeenCalled();
   });
 
-  it('resumes the same Implement conversation after a todo-gated merge and completes the task without reloading or duplicating the message', async () => {
+  for (const scenario of ['without_review', 'with_review', 'owned_resolution', 'changed_workspace'] as const) it(`resumes the same Implement conversation after a todo-gated merge, ${scenario}`, async () => {
+    const loadReviewBeforeRefusal = scenario !== 'without_review';
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
     providerState.selectedSupportsNativeToolCalling = () => true;
@@ -3376,25 +3377,80 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const chatState = canonicalChat.useChatStore === chat ? null : spyOn(canonicalChat.useChatStore, 'getState').mockImplementation(() => chat.getState());
     try {
       const beforeRuntime = chat.getState().conversationRuntimeById['implement-conv'];
+      if (loadReviewBeforeRefusal) {
+        const review = await tasks.getState().loadMergeWorkflowReview('task-1', { force: true });
+        expect(review?.repositories[0]?.repoPath).toBe('/worktrees/plan-1');
+        expect(review?.repositories[0]?.sourceBranchName).toBe('feature/implement-checkout');
+        expect(review?.repositories[0]?.mergeInProgress).toBe(false);
+      }
       await expect(tasks.getState().finishTask('task-1')).rejects.toThrow(todo.title);
       expect(tasks.getState().lastError).toContain(todo.title);
-      expect(tasks.getState().getTaskById('task-1')?.status).toBe('InReview');
-      expect(tasks.getState().getMergeWorkflowRuntime('task-1')).toBeNull();
+      expect(tasks.getState().getTaskById('task-1')?.status).toBe(loadReviewBeforeRefusal ? 'InProgress' : 'InReview');
+      if (loadReviewBeforeRefusal) {
+        expect(tasks.getState().getMergeWorkflowRuntime('task-1')?.phase).toBe('ready');
+        expect(runtimeFiles.size).toBeGreaterThan(0);
+        expect(gitWorkflow.mock.calls.every(([input]) => input.action === 'inspect')).toBe(true);
+      } else {
+        expect(tasks.getState().getMergeWorkflowRuntime('task-1')).toBeNull();
+        expect(gitWorkflow).not.toHaveBeenCalled();
+        expect(runtimeFiles.size).toBe(0);
+      }
       expect(chat.getState().conversationRuntimeById['implement-conv']).toBe(beforeRuntime);
-      expect(gitWorkflow).not.toHaveBeenCalled();
-      expect(runtimeFiles.size).toBe(0);
 
+      if (scenario === 'owned_resolution') {
+        receipt = { taskId: task.id, sessionId: 'session-checkout', sourceBranch: task.branch_name!,
+          targetBranch: 'plan/plan-1', sourceCommit: 'source', targetCommit: 'target',
+          integratedCommit: null, status: 'conflicted', output: 'Owned integration conflict.' };
+        const repository = tasks.getState().getMergeWorkflowRuntime(task.id)!.repositories[0]!;
+        repository.workflowSession = receipt;
+        repository.mergeInProgress = true;
+        repository.conflictFiles = ['checkout.ts'];
+        await tasks.getState().activateTask(task.id);
+        expect(tasks.getState().activeWorkspacePathOverridesByProjectId).toEqual({ 'project-1': '/worktrees/plan-1' });
+      }
+
+      const configurationStarted = createDeferred<void>();
+      const configurationReady = createDeferred<ScopedTurnConfiguration | null>();
+      if (scenario === 'changed_workspace') {
+        mock.module('../services/configurationClient', () => ({ ...actualConfigurationClient,
+          loadScopedTurnConfiguration: async () => {
+            configurationStarted.resolve();
+            return configurationReady.promise;
+          },
+        }));
+      }
       const content = 'Ferme le todo de la checklist, puis reprenons la fusion.';
-      const result = await chat.getState().sendMessage({ conversationId: 'implement-conv', taskId: 'task-1', content });
+      const sending = chat.getState().sendMessage({ conversationId: 'implement-conv', taskId: 'task-1', content }).then(
+        result => ({ kind: result.status, error: null, result }),
+        (error: Error) => ({ kind: 'throw', error: error.message, result: null }),
+      );
+      if (scenario === 'changed_workspace') {
+        await configurationStarted.promise;
+        expect(chat.getState().conversationRuntimeById['implement-conv']?.phase).toBe('preparing');
+        tasks.setState({ branchWorktrees: { 'task-1-project-1': '/worktrees/illicit' } });
+        configurationReady.resolve(null);
+        expect(await sending).toMatchObject({ kind: 'throw',
+          error: 'The captured execution project or workspace changed during preparation.', result: null });
+        expect(createMessageMock).not.toHaveBeenCalled();
+        expect(streamChatMock).not.toHaveBeenCalled();
+        expect(chat.getState().lastError).toContain('captured execution project or workspace changed');
+        return;
+      }
+      const outcome = await sending;
+      expect(outcome).toMatchObject({ kind: 'sent', error: null });
+      if (!outcome.result) throw new Error(outcome.error ?? 'No send result');
+      const result = outcome.result;
       expect(result.status).toBe('sent');
       expect(streamChatMock).toHaveBeenCalledTimes(1);
       const options = getLatestStreamOptions<{ internalAgentProfile: string; workspacePath: string; allowedToolIds: string[] }>();
-      expect(options.internalAgentProfile).toBe('task_reviewer');
+      expect(options.internalAgentProfile).toBe(loadReviewBeforeRefusal ? 'default_executor' : 'task_reviewer');
       expect(options.allowedToolIds).toContain('task_todo_get');
       expect(options.allowedToolIds).toContain('task_todo_update');
-      expect(options.allowedToolIds).not.toContain('git_merge');
-      expect(options.allowedToolIds).not.toContain('git_commit');
-      expect(options.workspacePath).toBe('/worktrees/task-1');
+      if (!loadReviewBeforeRefusal) {
+        expect(options.allowedToolIds).not.toContain('git_merge');
+        expect(options.allowedToolIds).not.toContain('git_commit');
+      }
+      expect(options.workspacePath).toBe(scenario === 'owned_resolution' ? '/worktrees/plan-1' : '/worktrees/task-1');
       const users = chat.getState().getConversationMessages('implement-conv').filter(message => message.role === 'user');
       expect(users).toHaveLength(1);
       expect(users[0]).toMatchObject({ id: result.userMessageId, content, conversation_id: 'implement-conv', task_id: 'task-1' });
