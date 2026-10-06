@@ -66,3 +66,22 @@ describe('queued submissions local recovery', () => {
     expect(usePersistenceHealth.getState().issues[QUEUED_SUBMISSIONS_STORAGE_KEY]).toBeDefined();
   });
 });
+
+
+describe('queued durable direction subtype', () => {
+  it('round-trips the exact user, original turn and delivery receipt in the existing storage key', () => {
+    const f = chatSendFixture();
+    const entry = captureQueuedSubmission('direction', { ...f.input, hiddenContext: 'retained local context' }, f.snapshot);
+    entry.direction = { userMessageId: 'user', target: { sessionId: 'session', turnId: 'original-turn', assistantMessageId: null },
+      delivery: { requestId: 'request', assistantMessageId: 'assistant', requestEnded: false } };
+    expect(saveQueuedSubmissions([entry])).toBe(true); expect(loadQueuedSubmissions()).toEqual([entry]);
+  });
+  it('preserves malformed direction receipts rather than replacing corrupt storage', () => {
+    const f = chatSendFixture(); const entry = captureQueuedSubmission('direction', f.input, f.snapshot);
+    const raw = JSON.stringify([{ ...entry, direction: { userMessageId: 'user', target: { sessionId: 'session', turnId: 'turn', assistantMessageId: null },
+      delivery: { requestId: 'request', assistantMessageId: 'assistant', requestEnded: 'yes' } } }]);
+    window.localStorage.setItem(QUEUED_SUBMISSIONS_STORAGE_KEY, raw);
+    expect(loadQueuedSubmissions()).toEqual([]); expect(saveQueuedSubmissions([])).toBe(false);
+    expect(window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY)).toBe(raw);
+  });
+});

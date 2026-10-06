@@ -412,6 +412,8 @@ Une continuation automatique conserve le mode, le modèle et les références au
 
 Une instruction mise en file reste récupérable après sa sauvegarde tant que l’assistant n’a pas démarré. Réessayer reprend le message existant. Si le démarrage a pu avoir lieu, Macro demande de vérifier la réponse et les effets des outils avant de retirer l’entrée de récupération et de continuer manuellement. Une direction ne devient consommable qu’après sa sauvegarde, par le tour auquel elle était destinée. Si ce tour s’est terminé pendant la sauvegarde, Macro conserve le message et signale sa non-transmission.
 
+Une direction pendant un tour actif est enregistrée dans la même file de récupération avant toute écriture DB et livraison au modèle. Elle conserve l'identité de son message utilisateur, ses images et le tour d'origine. La compaction et la dernière requête autorisée du budget ne la consomment pas. Une fin de tour, Stop ou un redémarrage laisse les directions restantes récupérables ; Réessayer reprend le même message sans doublon. Une remise possible au modèle exige une vérification manuelle des effets avant toute nouvelle exécution. Le retrait de l'entrée livrée exige une vraie fin de requête et l'enregistrement confirmé de l'assistant correspondant. Ce suivi local ne confirme pas l'application sémantique de l'instruction.
+
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
 - il ne travaille pas par défaut sur un contexte d'exécution de projet

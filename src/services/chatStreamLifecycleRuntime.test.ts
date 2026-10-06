@@ -528,3 +528,19 @@ test("a cleanup error mentioning context overflow cannot trigger provider recove
   await runtime.onError(new StreamStopUnconfirmedError("maximum context length: local cleanup receipt missing"), makeControls());
   expect(adapters.tryRecoverFromOverflow).not.toHaveBeenCalled();
 });
+
+
+describe("direction retirement after assistant persistence", () => {
+  for (const outcome of ['success', 'failure', 'aborted', 'incomplete'] as const) {
+    test(`requires confirmed persistence and a normal response: ${outcome}`, async () => {
+      const confirmed = mock(() => undefined);
+      const h = makeRuntime({ overrides: {
+        persistAssistantStreamResult: async () => { if (outcome === 'failure') throw new Error('DB unavailable'); },
+        isAbortSignalAborted: () => outcome === 'aborted', onAssistantPersisted: confirmed,
+      } });
+      await h.runtime.onComplete({ visibleContent: 'Saved response', toolTraces: [],
+        completionReason: outcome === 'incomplete' ? 'incomplete' : 'completed' }, makeControls());
+      expect(confirmed).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+    });
+  }
+});

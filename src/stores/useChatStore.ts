@@ -1370,8 +1370,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
     cancelTransport: cancelStream,
     settled: (id) => { void drainQueuedSubmissions(id); },
+    directions: {
+      attempt: (ids, identity, requestId) => queueRuntime!.markDirectionDelivery(ids, identity, requestId),
+      ended: (ids, identity, requestId) => {
+        queueRuntime?.directionRequestEnded(ids, requestId);
+        queueRuntime?.directionRecoveryRequestEnded(identity.assistantMessageId);
+      },
+      confirmed: (ids, identity) => {
+        queueRuntime?.confirmDirections(ids, identity.assistantMessageId);
+        queueRuntime?.confirmDirectionRecovery(identity.assistantMessageId);
+      },
+      recover: id => queueRuntime?.pause(id),
+      pending: id => queueRuntime?.hasDirections(id) ?? false,
+    },
   });
-  const continuationIntents = new Map<string, QueuedSubmission>();
+  const continuationIntents = new Map<string, QueuedSubmission & { ownerSessionId?: string; ownerTurnId?: string }>();
   let queueRuntime: QueuedSubmissionRuntime | undefined;
   let queueRuntimeLoading: Promise<QueuedSubmissionRuntime> | undefined;
   const notifiedQueuedSubmissionErrors = new Map<string, string>();
@@ -1382,7 +1395,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, id)),
       cancelled: id => deletedConversationIds.has(id) || isAppShutdownGateActive(),
       read: id => loadConversationMessages(chatPersistenceAdapters, { conversationId: id, conversations: get().conversations }),
-      send: (entry, saved) => get().sendMessage({ ...entry.input, persistedUserMessage: saved }, entry),
+      send: (entry, saved) => get().sendMessage({ ...entry.input, persistedUserMessage: saved,
+        ...(entry.direction ? { userMessageId: entry.direction.userMessageId } : {}),
+      }, entry),
       publish: message => {
         if (!getOrderedConversationMessages(message.conversation_id).some(item => item.id === message.id)) get().addMessage(message);
       },
@@ -6170,7 +6185,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const fileCitations = contextCitations.filter(
       (c) => c.type === "file" || c.type === "document",
     );
-    const orderedMessages = getOrderedConversationMessages(conversationId);
+    await getQueueRuntime();
+    const excludedDirections = queueRuntime?.excludedDirectionMessageIds(conversationId, messageWithImagesId);
+    const orderedMessages = getOrderedConversationMessages(conversationId)
+      .filter(message => !excludedDirections?.has(message.id));
     const lastUserIndex = orderedMessages
       .map((m) => m.role)
       .lastIndexOf("user");
@@ -6358,7 +6376,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageContent = `${messageContent}\n\n${agsdlContext}`;
         persistableMessageContent = `${persistableMessageContent}\n\n${agsdlContext}`;
       }
-      const needsProviderContentRefresh = Boolean(agsdlContext) || (
+      const needsProviderContentRefresh = (message.role === "user" && Boolean(message.hidden_context)) || (
         index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock));
 
       if (
@@ -8872,6 +8890,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
+    queueRuntime?.removeDirectionMessages(params.conversationId,
+      replayMessages.filter(message => !plan.keptMessageIds.has(message.id)).map(message => message.id));
     applyReplayTrimToState(plan);
     useCitationsStore.getState().pruneConversationCitations(
       params.conversationId,
@@ -8910,6 +8930,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       onFailedBeforeProgress: () => Promise<void>;
     };
   }): Promise<boolean> => {
+    continuationIntents.set(params.conversationId, { ...captureQueuedSubmission(params.turnId, {
+      conversationId: params.conversationId, content: params.userContent, taskId: params.taskId,
+      contextRefs: findChatMessageInState(get(), params.messageId)?.context_refs ?? [],
+    }, {
+      mode: params.modeAtSend, agentType: params.agentTypeAtSend, architectPlan: params.architectPlanAtSend,
+      conversationTaskId: params.taskId, selectedTaskId: params.taskId, executionContext: params.executionContext,
+      composerContextRefs: [], composerRevision: -1,
+      provider: { selectedProviderId: params.providerId, selectedModelId: params.modelId,
+        selectedReasoningEffort: params.reasoningEffort ?? null, isLoading: false, providerConfigs: [] },
+    }), ownerSessionId: params.sessionId, ownerTurnId: params.turnId });
     let assistantMessageId: string | null = null;
     const agentTypeAtSend = params.agentTypeAtSend;
     const cleanupCancelledAssistantPlaceholder = async (
@@ -8919,6 +8949,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         removeEmptyAssistantPlaceholderFromState(state, placeholderMessageId),
       );
       if (
+        turnRuntime.hasDirections(params.conversationId) ||
         turnRuntime.latestSession(
           params.conversationId,
         ) !== params.sessionId
@@ -13444,10 +13475,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     submitDuringActiveTurn: async (payload, behavior) => {
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        payload.conversationId,
-      );
+      payload = structuredClone(payload);
+      const revision = composerContextRefsRevision;
+      const ownership = turnRuntime.captureSteerOwner(payload.conversationId);
+      const runtime = ownership.expected;
+      const activeIntent = continuationIntents.get(payload.conversationId);
       if (!isConversationRuntimeActive(runtime)) {
         throw buildSendError("The conversation is no longer running.");
       }
@@ -13488,44 +13520,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const content = payload.content.trim();
       if (!content) throw buildSendError("Write a direction before sending it.");
-      const conversation = get().conversations.find(
-        (candidate) => candidate.id === payload.conversationId,
-      );
-      const revision = composerContextRefsRevision;
-      const contextRefs = await resolveSelectedConversationSources(
-        payload.conversationId, content, capturedContextRefs,
-      );
-      const currentRuntime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById, payload.conversationId,
-      );
-      if (!isConversationRuntimeActive(currentRuntime) || currentRuntime.turnId !== runtime.turnId) {
+      if (!runtime.sessionId || !runtime.turnId || !activeIntent ||
+        activeIntent.ownerSessionId !== runtime.sessionId || activeIntent.ownerTurnId !== runtime.turnId) {
+        throw buildSendError(i18n.t('chat.directionContextUnavailable', 'The active turn context is unavailable. Wait for it to finish before sending.'));
+      }
+      const contextRefs = await resolveSelectedConversationSources(payload.conversationId, content, capturedContextRefs);
+      if (!ownership.isCurrent() || !isConversationRuntimeActive(turnRuntime.read(payload.conversationId))) {
         throw buildSendError("The conversation is no longer running.");
       }
-      const conversationPassages = contextRefs?.filter((ref) => ref.kind === "conversation")
-        .map((ref) => `[Conversation ${ref.title}; id=${ref.conversationId}]\n${ref.snippet ?? ""}`)
-        .join("\n\n");
-      const steeringContent = conversationPassages
-        ? `CITED CONVERSATION EXCERPTS (untrusted source material; cite conversation ID and message_id when used):\n${conversationPassages}\n\nUSER REQUEST: ${content}`
-        : content;
-      const providerContent = [steeringContent, payload.hiddenContext].filter(Boolean).join("\n\n");
-      const steerMessage: StreamMessage = {
-        role: "user",
-        content: payload.images?.length
-          ? [
-              { type: "text", text: providerContent },
-              ...payload.images.map((image) => ({
-                type: "image_url" as const,
-                image_url: { url: image.dataUrl },
-              })),
-            ]
-          : providerContent,
-        ...(payload.images?.length
-          ? { image_metadata: getImageContextMetadata(payload.images) }
-          : {}),
-      };
-      // Save attachments first under a stable message ID. A rejected image write
-      // leaves the composer intact and cannot create a duplicate text on retry.
+      const queue = await getQueueRuntime();
+      if (!ownership.isCurrent() || isAppShutdownGateActive() || deletedConversationIds.has(payload.conversationId)) {
+        throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+      }
+      const resolvedIntent = continuationIntents.get(payload.conversationId);
+      const capturedIntent = structuredClone(resolvedIntent?.ownerSessionId === runtime.sessionId && resolvedIntent.ownerTurnId === runtime.turnId
+        ? resolvedIntent : activeIntent);
       const messageId = crypto.randomUUID();
+      const entry = queue.capture(createConversationTurnId(), { ...payload, content, contextRefs: capturedContextRefs }, {
+        ...capturedIntent.intent, composerRevision: revision,
+        provider: { ...capturedIntent.intent.provider, isLoading: false, providerConfigs: [] },
+      });
+      entry.direction = { userMessageId: messageId, target: {
+        sessionId: runtime.sessionId, turnId: runtime.turnId, assistantMessageId: runtime.assistantMessageId ?? null,
+      } };
       if (payload.images?.length) {
         const next = { ...get().messageImagesByMessageId, [messageId]: payload.images };
         if (!saveMessageImagesToStorage(next)) {
@@ -13533,18 +13550,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         set({ messageImagesByMessageId: next });
       }
-      let userMessage: ChatMessage;
-      try {
-        userMessage = await buildUserMessageForSend({
-          id: messageId,
-          conversationId: payload.conversationId,
-          turnId: runtime.turnId ?? createConversationTurnId(),
-          taskId: payload.taskId ?? conversation?.task_id ?? "",
-          content,
-          hiddenContext: payload.hiddenContext,
-          contextRefs,
-        });
-      } catch (error) {
+      // Durable intent precedes the DB await and any possible model delivery.
+      try { queue.accept(entry); }
+      catch (error) {
         if (payload.images?.length) {
           const remaining = { ...get().messageImagesByMessageId };
           delete remaining[messageId];
@@ -13552,12 +13560,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         throw error;
       }
-      get().addMessage(userMessage);
-      clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
-      if (!turnRuntime.enqueueSteer(payload.conversationId, steerMessage, runtime)) {
-        throw buildSendError(i18n.t('chat.steerTurnEnded', 'The direction was saved, but its turn ended before delivery. Review it before continuing.'));
+      const acceptedForRecovery = (error?: unknown) => {
+        if (queue.hasEntry(entry.id)) queue.pause(payload.conversationId, error ? toServiceError(error).message : undefined);
+        clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
+        return "queued" as const;
+      };
+      let userMessage: ChatMessage;
+      try {
+        try {
+          userMessage = await buildUserMessageForSend({
+            id: messageId, conversationId: payload.conversationId, turnId: runtime.turnId,
+            taskId: entry.input.taskId ?? capturedIntent.intent.conversationTaskId ?? "",
+            content, hiddenContext: payload.hiddenContext, contextRefs,
+          });
+        } catch (error) {
+          // A rejected DB acknowledgement can follow a successful write.
+          const saved = (await loadConversationMessages(chatPersistenceAdapters, {
+            conversationId: payload.conversationId, conversations: get().conversations,
+          })).find(message => message.id === messageId);
+          if (!saved || saved.role !== 'user' || saved.conversation_id !== payload.conversationId || saved.turn_id !== runtime.turnId) throw error;
+          userMessage = saved;
+        }
+        if (userMessage.id !== messageId || userMessage.role !== 'user' || userMessage.conversation_id !== payload.conversationId || userMessage.turn_id !== runtime.turnId) {
+          throw buildSendError('The saved message does not belong to this direction.');
+        }
+        if (!queue.hasEntry(entry.id) || deletedConversationIds.has(payload.conversationId)) return acceptedForRecovery();
+        if (!getOrderedConversationMessages(payload.conversationId).some(message => message.id === userMessage.id)) get().addMessage(userMessage);
+        queue.acknowledge(entry, userMessage);
+        if (!ownership.isCurrent()) return acceptedForRecovery();
+        const passages = userMessage.context_refs?.filter(ref => ref.kind === "conversation")
+          .map(ref => `[Conversation ${ref.title}; id=${ref.conversationId}]\n${ref.snippet ?? ""}`).join("\n\n");
+        const text = passages
+          ? `CITED CONVERSATION EXCERPTS (untrusted source material; cite conversation ID and message_id when used):\n${passages}\n\nUSER REQUEST: ${userMessage.content}`
+          : userMessage.content;
+        const providerContent = [text, agsdlContextForModel(userMessage.hidden_context)].filter(Boolean).join("\n\n");
+        const steerMessage: StreamMessage = { role: "user", content: payload.images?.length
+          ? [{ type: "text", text: providerContent }, ...payload.images.map(image => ({
+              type: "image_url" as const, image_url: { url: image.dataUrl },
+            }))] : providerContent,
+          ...(payload.images?.length ? { image_metadata: getImageContextMetadata(payload.images) } : {}),
+        };
+        if (!turnRuntime.enqueueSteer(payload.conversationId, steerMessage, runtime, entry.id)) return acceptedForRecovery();
+        clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
+        return "steered";
+      } catch (error) {
+        return acceptedForRecovery(error);
       }
-      return "steered";
     },
 
     sendGoalContinuation: async (conversationId, content) => {
@@ -13617,7 +13665,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
       if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
       let queuedUserPersisted = false;
-      return sendChatMessage({ ...payload, submissionTurnId: deferredSubmission?.id }, snapshot, {
+      return sendChatMessage({ ...payload,
+        submissionTurnId: deferredSubmission?.direction?.target.turnId ?? deferredSubmission?.id,
+      }, snapshot, {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
@@ -13632,8 +13682,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             queueRuntime!.acknowledge(queuedSubmission, message);
             queuedUserPersisted = true;
           } : undefined,
-          beforeAssistantStart: queuedSubmission ? () => queueRuntime!.beforeAssistantStart(queuedSubmission) : undefined,
-          onAssistantStarted: queuedSubmission ? () => queueRuntime!.complete(queuedSubmission) : undefined,
+          beforeAssistantStart: queuedSubmission ? assistant => queueRuntime!.beforeAssistantStart(queuedSubmission, assistant) : undefined,
+          onAssistantStarted: queuedSubmission && !queuedSubmission.direction ? () => queueRuntime!.complete(queuedSubmission) : undefined,
+          canDeleteAfter: id => !turnRuntime.hasDirections(id),
+          readUser: async (id, messageId) => (await loadConversationMessages(chatPersistenceAdapters, {
+            conversationId: id, conversations: get().conversations,
+          })).find(message => message.id === messageId),
           ensureLoaded: ensureMessagesLoadedForConversation,
           list: getOrderedConversationMessages,
           hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
@@ -13650,6 +13704,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             useConversationArchiveStore.getState().archivedConversationIds.has(id)),
           createSessionId: createConversationSessionId,
           createTurnId: createConversationTurnId,
+          onTurnCaptured: (id, lease) => {
+            continuationIntents.set(id, { ...captureQueuedSubmission(lease.turnId, payload, snapshot),
+              ownerSessionId: lease.sessionId, ownerTurnId: lease.turnId });
+          },
           hasPendingArchitectConversation: (id) => pendingArchitectConversationDetailsById.has(id),
           materializeArchitectConversation: materializePendingArchitectConversationIfNeeded,
           bindArchitectConversation: bindPendingArchitectConversationIfNeeded,
@@ -13739,13 +13797,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         stream: {
           prepare: (request) => {
-            continuationIntents.set(request.conversationId, captureQueuedSubmission(
-              deferredSubmission?.id ?? createConversationTurnId(),
+            const current = turnRuntime.read(request.conversationId);
+            continuationIntents.set(request.conversationId, { ...captureQueuedSubmission(
+              current.turnId ?? deferredSubmission?.id ?? createConversationTurnId(),
               { ...payload, conversationId: request.conversationId, contextRefs: payload.contextRefs ?? snapshot.composerContextRefs },
               { ...snapshot, mode: request.modeAtSend, agentType: request.agentTypeAtSend ?? null,
+                executionContext: request.executionContext ?? snapshot.executionContext,
                 provider: { ...snapshot.provider, selectedProviderId: request.providerId,
                   selectedModelId: request.modelId, selectedReasoningEffort: request.reasoningEffort ?? null } },
-            ));
+            ), ownerSessionId: current.sessionId ?? undefined, ownerTurnId: current.turnId ?? undefined });
+            const captured = continuationIntents.get(request.conversationId)!;
+            queueRuntime?.bindDirectionIntent(request.conversationId, captured.ownerSessionId!, captured.ownerTurnId!, captured.intent);
             return prepareAssistantStreamLaunch(request);
           },
           start: (request, launch) => startAssistantStream({
@@ -13797,19 +13859,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       setConversationRuntime(conversationId, null);
     },
 
-    retryAssistantPersistence: (messageId) => retryAssistantPersistence(messageId, {
-      persistence: chatPersistenceAdapters,
-      messages: {
-        read: id => findChatMessageInState(get(), id),
-        patch: (id, fields) => get().updateMessageFields(id, fields),
-        failed: markAssistantPersistenceFailure,
-      },
-      recovery: {
-        removeSavedCopy: removeUnsavedAssistantResponseFromStorage,
-        clearError: clearAssistantPersistenceError,
-        resumeQueue: id => { void drainQueuedSubmissions(id); },
-      },
-    }),
+    retryAssistantPersistence: async (messageId) => {
+      await getQueueRuntime();
+      return retryAssistantPersistence(messageId, {
+        persistence: chatPersistenceAdapters,
+        messages: {
+          read: id => findChatMessageInState(get(), id),
+          patch: (id, fields) => get().updateMessageFields(id, fields),
+          failed: markAssistantPersistenceFailure,
+        },
+        recovery: {
+          removeSavedCopy: removeUnsavedAssistantResponseFromStorage,
+          clearError: clearAssistantPersistenceError,
+          onSaved: message => queueRuntime?.confirmPersistedAssistant(message),
+          resumeQueue: id => { void drainQueuedSubmissions(id); },
+        },
+      });
+    },
 
     deleteUnsavedAssistantResponse: async (messageId) => {
       const assistantMessage = findChatMessageInState(get(), messageId);
@@ -13859,6 +13925,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
 
+      queueRuntime?.removeDirectionMessages(assistantMessage.conversation_id,
+        orderedMessages.filter(message => getMessageTurnId(message) === targetTurnId).map(message => message.id));
       set((state) => {
         const currentConversationMessages = sortMessagesChronologically(
           getConversationMessagesFromState(

@@ -176,7 +176,7 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       c.streamChatMock.mockImplementationOnce(() => streaming.promise);
       await store.getState().sendMessage({ conversationId: 'queued-conv', content: 'Start work' });
       await c.flushAsyncWork();
-      const options = c.getLatestStreamOptions<{ consumePendingSteers: () => unknown[] }>();
+      const options = c.getLatestStreamOptions<{ preparePendingSteers: (id: string) => unknown[] }>();
       const images = [{ id: 'direction-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-09-22T00:00:00Z' }];
       const payload = { conversationId: 'queued-conv', content: 'Inspect this image', images };
       const storage = window.localStorage;
@@ -188,17 +188,17 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       };
       try {
         await expect(store.getState().submitDuringActiveTurn(payload, 'steer')).rejects.toThrow('images');
-        expect(options.consumePendingSteers()).toEqual([]);
+        expect(options.preparePendingSteers('mock-followup-request')).toEqual([]);
         expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(usersBefore);
       } finally { storage.setItem = originalSetItem; }
       expect(await store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
       const savedUser = c.createMessageMock.mock.calls.filter(call => call[1] === 'user').at(-1)!;
       expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(usersBefore + 1);
       expect(JSON.parse(storage.getItem('macro_chat_message_images')!)[savedUser[3]!.id!]).toEqual(images);
-      expect(options.consumePendingSteers()).toMatchObject([{ role: 'user', content: [
+      expect(options.preparePendingSteers('mock-followup-request')).toMatchObject([{ role: 'user', content: [
         { type: 'text', text: payload.content }, { type: 'image_url', image_url: { url: images[0].dataUrl } },
       ] }]);
-      expect(options.consumePendingSteers()).toEqual([]);
+      expect(options.preparePendingSteers('mock-followup-request')).toEqual([]);
       streaming.resolve({ usage: null });
       await c.flushAsyncWork();
     });
@@ -210,7 +210,7 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       c.streamChatMock.mockImplementationOnce(() => streaming.promise);
       await store.getState().sendMessage({ conversationId: 'queued-conv', content: 'Start work' });
       await c.flushAsyncWork();
-      const options = c.getLatestStreamOptions<{ consumePendingSteers: () => unknown[] }>();
+      const options = c.getLatestStreamOptions<{ preparePendingSteers: (id: string) => unknown[] }>();
       let rejectSave!: (error: Error) => void;
       const saving = c.createDeferred<Awaited<ReturnType<typeof c.createMessageMock>>>();
       const saveResult = Promise.race([saving.promise, new Promise<never>((_resolve, reject) => { rejectSave = reject; })]);
@@ -219,23 +219,25 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       const submission = store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Durable direction' }, 'steer');
       const observed = submission.then((value: string) => value, (error: Error) => error.message);
       await c.flushAsyncWork();
-      expect(options.consumePendingSteers()).toEqual([]);
+      expect(options.preparePendingSteers('mock-followup-request')).toEqual([]);
       if (outcome === 'successor') store.setState({ conversationRuntimeById: { 'queued-conv': {
         phase: 'streaming', sessionId: 'successor-session', turnId: 'successor-turn', assistantMessageId: 'successor-assistant',
       } } });
       if (outcome === 'failure') rejectSave(new Error('disk unavailable'));
       else saving.resolve(await originalCreate('queued-conv', 'user', 'Durable direction', {
         turnId: c.createMessageMock.mock.calls.at(-1)?.[3]?.turnId,
+        id: c.createMessageMock.mock.calls.at(-1)?.[3]?.id,
       }));
       const result = await observed;
       if (outcome === 'success') {
         expect(result).toBe('steered');
-        expect(options.consumePendingSteers()).toMatchObject([{ role: 'user', content: 'Durable direction' }]);
+        expect(options.preparePendingSteers('mock-followup-request')).toMatchObject([{ role: 'user', content: 'Durable direction' }]);
       } else {
-        expect(result).toContain(outcome === 'failure' ? 'disk unavailable' : 'turn ended');
-        expect(options.consumePendingSteers()).toEqual([]);
+        expect(result).toBe('queued');
+        expect(loadQueuedSubmissions()).toHaveLength(1);
+        expect(options.preparePendingSteers('mock-followup-request')).toEqual([]);
       }
-      expect(options.consumePendingSteers()).toEqual([]);
+      expect(options.preparePendingSteers('mock-followup-request')).toEqual([]);
       streaming.resolve({ usage: null });
       await c.flushAsyncWork();
     });
@@ -250,13 +252,20 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
         content: 'The deployment decision requires review.', created_at: '2026-09-28T10:00:00Z',
       }];
       const store = await prepare();
+      release(store);
+      const streaming = c.createDeferred<{ usage: null }>();
+      c.streamChatMock.mockImplementationOnce(() => streaming.promise);
+      await store.getState().sendMessage({ conversationId: 'queued-conv', content: 'Start' });
+      await c.flushAsyncWork();
       store.setState({ composerContextRefs: [{ id: 'foreign', kind: 'file', title: 'Foreign', path: 'foreign.txt' }] });
       await store.getState().submitDuringActiveTurn({
         conversationId: 'queued-conv', content: 'What was the deployment decision?',
         composerContextRefs: [{ id: 'source-conv', kind: 'conversation', title: 'Prior work',
           data: { conversationId: 'source-conv' } }],
       }, 'steer');
-      const refs = c.createMessageMock.mock.calls.find(call => call[1] === 'user')?.[3]?.contextRefs;
+      const refs = c.createMessageMock.mock.calls.filter(call => call[1] === 'user').at(-1)?.[3]?.contextRefs;
+      streaming.resolve({ usage: null });
+      await c.flushAsyncWork();
       expect(refs).toMatchObject([{ id: 'source-conv', conversationId: 'source-conv' }]);
       expect(JSON.stringify(refs)).toContain('message_id=source-message');
       expect(JSON.stringify(refs)).not.toContain('foreign');

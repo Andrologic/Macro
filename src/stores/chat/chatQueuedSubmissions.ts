@@ -9,12 +9,20 @@ export type QueuedSendIntent = Omit<ChatSendSnapshot, 'provider' | 'composerRevi
   provider: Pick<ChatSendSnapshot['provider'],
     'selectedProviderId' | 'selectedModelId' | 'selectedReasoningEffort'>;
 };
+export interface QueuedDirection {
+  userMessageId: string;
+  target: { sessionId: string; turnId: string; assistantMessageId: string | null };
+  delivery?: { requestId: string; assistantMessageId: string; requestEnded: boolean };
+  recoveryAssistantMessageId?: string;
+  recoveryRequestEnded?: boolean;
+}
 export interface QueuedSubmission {
   id: string;
   input: ChatSendInput;
   intent: QueuedSendIntent;
   /** Written before handing control to the assistant. An interrupted handoff is never replayed. */
   assistantStartAttempted?: boolean;
+  direction?: QueuedDirection;
 }
 
 export function captureQueuedSubmission(
@@ -26,6 +34,7 @@ export function captureQueuedSubmission(
       conversationId: input.conversationId, content: input.content,
       taskId: input.taskId, images: input.images,
       internalAgentProfile: input.internalAgentProfile,
+      hiddenContext: input.hiddenContext,
       contextRefs: input.contextRefs ?? snapshot.composerContextRefs ?? [],
     },
     intent: {
@@ -68,10 +77,25 @@ function parseQueue(raw: string): QueuedSubmission[] {
       !record(entry.input) || !record(entry.intent) ||
       (entry.assistantStartAttempted !== undefined && typeof entry.assistantStartAttempted !== 'boolean')) throw new Error('Invalid queued submission. Original data preserved.');
     ids.add(entry.id);
+    if (entry.direction !== undefined) {
+      const direction = entry.direction;
+      if (!record(direction) || !text(direction.userMessageId) || !direction.userMessageId ||
+        !record(direction.target) || !text(direction.target.sessionId) || !direction.target.sessionId ||
+        !text(direction.target.turnId) || !direction.target.turnId || !nullableText(direction.target.assistantMessageId) ||
+        (direction.recoveryRequestEnded !== undefined && typeof direction.recoveryRequestEnded !== 'boolean') ||
+        (direction.recoveryAssistantMessageId !== undefined && (!text(direction.recoveryAssistantMessageId) || !direction.recoveryAssistantMessageId)) ||
+        (direction.delivery !== undefined && (!record(direction.delivery) ||
+          !text(direction.delivery.requestId) || !direction.delivery.requestId ||
+          !text(direction.delivery.assistantMessageId) || !direction.delivery.assistantMessageId ||
+          typeof direction.delivery.requestEnded !== 'boolean'))) {
+        throw new Error('Invalid queued direction. Original data preserved.');
+      }
+    }
     const input = entry.input;
     const intent = entry.intent;
     const scope = intent.executionContext;
-    if (!text(input.conversationId) || !input.conversationId ||
+    if ((input.hiddenContext !== undefined && (typeof input.hiddenContext !== 'string')) ||
+      !text(input.conversationId) || !input.conversationId ||
       (input.taskId !== undefined && !nullableText(input.taskId)) ||
       (input.internalAgentProfile != null && !['default_executor', 'plan_explorer', 'task_reviewer', 'repo_auditor', 'goal_auditor'].includes(String(input.internalAgentProfile))) ||
       !parseComposerDraft({ text: input.content, images: input.images ?? [], contextRefs: input.contextRefs ?? [] }) ||

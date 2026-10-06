@@ -163,6 +163,10 @@ export interface StreamingChatOptions {
     | StreamMessage[]
     | void;
   consumePendingSteers?: () => StreamMessage[];
+  hasPendingSteers?: () => boolean;
+  preparePendingSteers?: (requestId: string) => StreamMessage[];
+  onSteerRequestEnded?: (requestId: string) => void;
+  isRequestCurrent?: () => boolean;
   fileToolContext?: Array<{
     title: string;
     source: string;

@@ -1,8 +1,9 @@
 import i18n from '../../i18n';
+import { isSuccessfulCompletionReason } from '../../services/ai/completionRecovery';
 import type { ChatMessage } from '../../types';
 import type { ChatSendResult, SendImage } from '../../services/chatSend/contracts';
 import { toServiceError } from '../../services/contracts/errors';
-import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, type QueuedSubmission } from './chatQueuedSubmissions';
+import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, type QueuedSubmission, type QueuedSendIntent } from './chatQueuedSubmissions';
 
 export type QueuedSubmissionRecoveries = Record<string, { count: number; error?: string }>;
 export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string };
@@ -25,7 +26,9 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
   const attempted = new Map<string, string>();
-  let recoveries: QueuedSubmissionRecoveries = {};
+  let recoveries: QueuedSubmissionRecoveries = Object.fromEntries(Array.from(paused, id => [id, {
+    count: entries.filter(entry => entry.input.conversationId === id).length,
+  }]));
   const publishRecovery = () => {
     ports.recovery(recoveries);
     ports.pending(entries.map(entry => ({ id: entry.id, conversationId: entry.input.conversationId })));
@@ -44,7 +47,8 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     mutating.add(id);
     try {
       const persisted = await ports.read(entry.input.conversationId);
-      if (!allowSaved && persisted.some(message => message.role === 'user' && message.turn_id === id)) {
+      if (!allowSaved && persisted.some(message => message.role === 'user' &&
+        (entry.direction ? message.id === entry.direction.userMessageId : message.turn_id === id))) {
         throw new Error(i18n.t('chat.queueAlreadySent', 'This message was already saved. Retry recovery instead.'));
       }
       if (!entries.includes(entry) || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)) {
@@ -84,28 +88,52 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     }
   };
   const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
-  const beforeAssistantStart = (entry: QueuedSubmission) => {
-    if (!entries.some(candidate => candidate.id === entry.id)) throw new Error('The queued submission is no longer available.');
-    persist(entries.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true } : candidate));
+  const retireConfirmed = (confirmed: (entry: QueuedSubmission) => boolean) => {
+    const selected = entries.filter(confirmed);
+    if (!selected.length) return;
+    persist(entries.filter(entry => !selected.includes(entry)));
+    for (const id of new Set(selected.map(entry => entry.input.conversationId))) {
+      if (!entries.some(entry => entry.input.conversationId === id && entry.direction) && !recoveries[id]?.error) paused.delete(id);
+    }
+    publishRecovery();
   };
-  const drain = async (id: string): Promise<void> => {
+  const confirmedBy = (entry: QueuedSubmission, assistant: ChatMessage) => entry.direction &&
+    entry.input.conversationId === assistant.conversation_id && entry.direction.target.turnId === assistant.turn_id &&
+    isSuccessfulCompletionReason(assistant.completion_reason) && (
+      (entry.direction.delivery?.assistantMessageId === assistant.id && entry.direction.delivery.requestEnded) ||
+      (entry.direction.recoveryAssistantMessageId === assistant.id && entry.direction.recoveryRequestEnded));
+  const beforeAssistantStart = (entry: QueuedSubmission, assistant?: ChatMessage) => {
+    if (!entries.some(candidate => candidate.id === entry.id)) throw new Error('The queued submission is no longer available.');
+    persist(entries.map(candidate => candidate.id === entry.id ? {
+      ...candidate, assistantStartAttempted: true,
+      ...(candidate.direction ? { direction: { ...candidate.direction, recoveryAssistantMessageId: assistant?.id } } : {}),
+    } : candidate));
+  };
+  const drain = async (id: string, explicit = false): Promise<void> => {
     if (draining.has(id) || paused.has(id) || ports.blocked(id)) return;
     const next = entries.find(entry => entry.input.conversationId === id);
-    if (!next || ports.cancelled(id)) return;
+    if (!next || ports.cancelled(id) || (next.direction && !explicit)) return;
     draining.add(id);
     let continueQueue = false;
     try {
       const persisted = await ports.read(id);
       if (ports.cancelled(id) || !entries.some(entry => entry.id === next.id)) return;
-      const saved = persisted.find(message => message.role === 'user' && message.turn_id === next.id);
+      const saved = persisted.find(message => message.role === 'user' &&
+        (next.direction ? message.id === next.direction.userMessageId : message.turn_id === next.id));
+      if (saved && (saved.conversation_id !== id || (next.direction && saved.turn_id !== next.direction.target.turnId))) {
+        throw new Error('The saved message does not belong to this direction.');
+      }
       if (saved) {
         ports.publish(saved);
         acknowledge(next, saved);
       }
-      const assistant = persisted.find(message => message.role === 'assistant' && message.turn_id === next.id);
-      if (assistant?.completion_reason === 'completed') {
+      const assistant = persisted.find(message => message.role === 'assistant' &&
+        (next.direction ? message.id === (next.direction.delivery?.assistantMessageId ?? next.direction.recoveryAssistantMessageId) : message.turn_id === next.id));
+      if (saved && assistant && confirmedBy(next, assistant)) {
+        retireConfirmed(entry => entry.id === next.id);
+      } else if (!next.direction && assistant?.completion_reason === 'completed') {
         complete(next);
-      } else if (next.assistantStartAttempted || assistant) {
+      } else if (next.assistantStartAttempted || next.direction?.delivery || assistant) {
         throw new Error(i18n.t('chat.queueAssistantInterrupted',
           'This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.'));
       } else {
@@ -126,6 +154,57 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   };
   return {
     capture: captureQueuedSubmission,
+    excludedDirectionMessageIds(conversationId: string, resumedMessageId?: string) {
+      return new Set(entries.filter(entry => entry.input.conversationId === conversationId && entry.direction &&
+        !entry.direction.delivery?.requestEnded && entry.direction.userMessageId !== resumedMessageId)
+        .map(entry => entry.direction!.userMessageId));
+    },
+    bindDirectionIntent(conversationId: string, sessionId: string, turnId: string, intent: QueuedSendIntent) {
+      const belongs = (entry: QueuedSubmission) => entry.input.conversationId === conversationId &&
+        entry.direction?.target.sessionId === sessionId && entry.direction.target.turnId === turnId && !entry.direction.delivery;
+      if (entries.some(belongs)) persist(entries.map(entry => belongs(entry) ? {
+        ...entry, intent: { ...intent, composerContextRefs: entry.input.contextRefs ?? [] },
+      } : entry));
+    },
+    hasDirections(conversationId: string) { return entries.some(entry => entry.input.conversationId === conversationId && entry.direction); },
+    hasEntry(id: string) { return entries.some(entry => entry.id === id); },
+    markDirectionDelivery(ids: string[], identity: { conversationId: string; sessionId: string; turnId: string | null; assistantMessageId: string }, requestId: string) {
+      for (const id of ids) {
+        const entry = entries.find(candidate => candidate.id === id);
+        const target = entry?.direction?.target;
+        if (!target || entry?.input.conversationId !== identity.conversationId || target.sessionId !== identity.sessionId ||
+          target.turnId !== identity.turnId || (target.assistantMessageId !== null && target.assistantMessageId !== identity.assistantMessageId) || entry.direction?.delivery) {
+          throw new Error('The direction no longer belongs to this request.');
+        }
+      }
+      persist(entries.map(entry => ids.includes(entry.id) && entry.direction ? { ...entry, direction: {
+        ...entry.direction, delivery: { requestId, assistantMessageId: identity.assistantMessageId, requestEnded: false },
+      } } : entry));
+    },
+    directionRequestEnded(ids: string[], requestId: string) {
+      if (!ids.length) return;
+      persist(entries.map(entry => ids.includes(entry.id) && entry.direction?.delivery?.requestId === requestId ? {
+        ...entry, direction: { ...entry.direction, delivery: { ...entry.direction.delivery, requestEnded: true } },
+      } : entry));
+    },
+    confirmDirections(ids: string[], assistantMessageId: string) {
+      retireConfirmed(entry => ids.includes(entry.id) && entry.direction?.delivery?.requestEnded === true &&
+        entry.direction.delivery.assistantMessageId === assistantMessageId);
+    },
+    directionRecoveryRequestEnded(assistantMessageId: string) {
+      const affected = entries.some(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId);
+      if (affected) persist(entries.map(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId ? {
+        ...entry, direction: { ...entry.direction, recoveryRequestEnded: true },
+      } : entry));
+    },
+    confirmDirectionRecovery(assistantMessageId: string) {
+      retireConfirmed(entry => entry.direction?.recoveryAssistantMessageId === assistantMessageId && entry.direction.recoveryRequestEnded === true);
+    },
+    confirmPersistedAssistant(assistant: ChatMessage) { retireConfirmed(entry => Boolean(confirmedBy(entry, assistant))); },
+    removeDirectionMessages(conversationId: string, messageIds: readonly string[]) {
+      persist(entries.filter(entry => entry.input.conversationId !== conversationId ||
+        !entry.direction || !messageIds.includes(entry.direction.userMessageId)));
+    },
     accept(entry: QueuedSubmission) {
       persist([...entries, entry]);
       queueMicrotask(() => void drain(entry.input.conversationId));
@@ -145,7 +224,7 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
         recoveries = { ...recoveries, [id]: { count: recoveries[id].count } };
       }
       publishRecovery();
-      await drain(id);
+      await drain(id, true);
     },
     async edit(id: string, content: string) {
       await pendingEntry(id);

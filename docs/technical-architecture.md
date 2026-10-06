@@ -537,10 +537,9 @@ configurations et les droits sur la cible capturée ; un changement de cible
 bloque la reprise. Le panneau commun de récupération porte l'action de réessai,
 indépendamment des préférences de notification et sans état parallèle dans `ChatZone`.
 
-Une direction avec images sauvegarde d’abord les images sous l’identifiant prévu
-du message, puis le texte. Un refus de sauvegarde des images conserve le brouillon
-sans créer de message utilisateur. Le runtime ne publie la direction qu’après
-confirmation de ces écritures et contrôle son tour propriétaire.
+Une direction active est un sous-type de l'entrée existante, avec une identité propre et l'UUID de son message utilisateur. Le `turn_id` reste celui du tour d'origine. Son intention durable précède l'écriture DB ; les images sont sauvegardées sous ce même UUID avant le texte. Un refus d'intention ou d'images garde le brouillon. Après acceptation, un échec DB ou la perte du propriétaire retourne une récupération acceptée. Une écriture DB ambiguë se résout par lecture de l'UUID dans la conversation et le tour attendus.
+
+La préparation commune normale, replay et overflow exclut les directions non livrées, sauf le message précisément repris. Le contexte réservé au modèle utilise le même filtre AgSDL pour le texte et les `provider_input_items`. La compaction ne prend aucun batch. La boucle choisit les directions juste avant une nouvelle requête autorisée par le budget, écrit le marqueur de remise possible, puis recontrôle Stop et la génération propriétaire. Un remplacement de stream garde la récupération et abandonne son ancien batch volatile. Une fin de requête réelle et une persistance assistant confirmée autorisent le retrait, y compris après un réessai de persistance. L'assistant est associé par UUID, jamais par le seul `turn_id`. Une remise incertaine ne déclenche aucun replay automatique ; ce marqueur ne constitue pas un acknowledgement sémantique AgSDL.
 
 `chatTurnRuntime` possède les identités de session, les promesses de stream,
 les instructions en attente et les propriétaires de persistance. Le record des

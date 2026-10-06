@@ -95,6 +95,8 @@ export async function runToolCallingLoop(
     generationAttempts: generationAttempts.map((attempt) => ({ ...attempt })),
   });
   const consumeSteers = () => {
+    if (maxTurns !== null && turnCount + 1 >= maxTurns) return false;
+    if (options.hasPendingSteers?.()) { turnCount += 1; return true; }
     const steers = options.consumePendingSteers?.() ?? [];
     if (!steers.length) return false;
     messages.push(...steers.map(cloneStreamMessage));
@@ -103,7 +105,7 @@ export async function runToolCallingLoop(
   };
   try {
     while (maxTurns === null || turnCount < maxTurns) {
-      if (options.signal?.aborted) return complete();
+      if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
       const recovering = recoveryCause !== null;
       const bufferOutput = enforceGuidedRetry || recovering;
       let streamedContent = '';
@@ -115,7 +117,13 @@ export async function runToolCallingLoop(
         acceptedText: bufferOutput ? '' : streamedContent,
         costUsd: null,
       });
+      if (turnCount > 0) {
+        const pending = options.preparePendingSteers?.(attemptId) ?? [];
+        if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
+        messages.push(...pending.map(cloneStreamMessage));
+      }
       options.onGenerationAttemptProgress?.(interruptedAttempt());
+      if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
       let turn: Awaited<ReturnType<ToolCallingAdapter['streamTurn']>>;
       try {
         turn = await adapter.streamTurn({
@@ -150,6 +158,7 @@ export async function runToolCallingLoop(
         accumulator.appendSystemChunk(turn.stopped, true);
         return complete();
       }
+      options.onSteerRequestEnded?.(attemptId);
       const result = turn.result;
       result.toolTraces?.forEach(accumulator.upsertToolTraceFromProvider);
       if (result.hiddenContext) accumulator.addHiddenContextBlock(result.hiddenContext);

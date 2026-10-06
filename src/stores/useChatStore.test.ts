@@ -22,6 +22,7 @@ import { allowChatToolInvocationJournal } from '../test-utils/chatToolInvocation
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
+import { registerChatDirectionRecoveryScenarios } from './__tests__/chatDirectionRecovery.scenarios';
 import { registerQueuedSubmissionRecoveryScenarios } from './__tests__/queuedSubmissionRecovery.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
 import { registerArchitectStrategyScenarios } from './__tests__/architectStrategy.scenarios';
@@ -3767,6 +3768,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   }
 
+  registerChatDirectionRecoveryScenarios(useChatStoreScenarioContext);
   registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });
