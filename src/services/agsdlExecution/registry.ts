@@ -1,5 +1,6 @@
 import { MACRO_TOOL_REGISTRY } from '../../shared/macroToolRegistry';
 import type { MCPTool } from '../../types';
+import { assertUniqueMCPToolIds } from '../mcp/normalization';
 import { read } from '../../vendor/agsdl/v0.2/reader.mjs';
 import { schema, satisfies, type as valueType } from '../../vendor/agsdl/v0.2/values.mjs';
 import type { ExactJsonText, FrozenAgentConfiguration } from './contracts';
@@ -48,6 +49,11 @@ export interface CapturedRegistry {
   readonly models: readonly ModelCatalogueEntry[];
   readonly configurations: readonly ConfigurationAttestation[];
   readonly mcpTools: readonly MCPTool[];
+}
+/** Same global ID policy as Macro discovery/dispatch, including disabled descriptors. */
+function requireUniqueMcpTools(tools: readonly MCPTool[]): void {
+  try { assertUniqueMCPToolIds(tools); }
+  catch { return fail('UNSUPPORTED', '/registry/mcpTools', 'MCP catalogue contains ambiguous tool identities.'); }
 }
 /** Validate and copy the transport boundary. Native provenance still belongs to Hosting. */
 export function captureRegistry(value: unknown): CapturedRegistry {
@@ -102,6 +108,7 @@ export function captureRegistry(value: unknown): CapturedRegistry {
     if (entry.inputSchema !== undefined) tool.inputSchema = captureNativeJson(metadataObject(entry.inputSchema, `${pointer}/inputSchema`), `${pointer}/inputSchema`) as Record<string, unknown>;
     return tool;
   });
+  requireUniqueMcpTools(mcpTools);
   return { version, bindings, models, configurations, mcpTools };
 }
 function requiredCapabilities(entry: BindingAttestation, required: readonly string[]): void {
@@ -171,6 +178,7 @@ export function validateRegisteredResult(entry: BindingAttestation, resultJson: 
   if (!satisfies(decode(resultJson), decode(entry.resultConstraintJson))) return fail('CALL_RESULT', '/data', 'Result violates the captured binding constraint.');
 }
 export function resolveBinding(document: ExactObject, name: string, registry: CapturedRegistry, role: 'engine' | 'tool' | 'call' | 'publication'): BindingAttestation {
+  requireUniqueMcpTools(registry.mcpTools);
   const declaration = record(record(document.bindings)[name]);
   const matches = registry.bindings.filter(entry => equal(decode(entry.declarationJson), declaration));
   if (matches.length !== 1) return fail('UNSUPPORTED', `/bindings/${name}`, 'Binding has no unique complete trusted declaration.');
@@ -209,11 +217,13 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   for (const name of Object.values(record(configuration.tools ?? {}))) resolveBinding(document, text(name), registry, 'tool');
   if (!has(configuration, 'model')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Provider and Model must be explicit.');
   const models = registry.models.filter(model => equal(decode(model.editionJson), configuration.model));
-  if (models.length !== 1) return fail('UNSUPPORTED', '', 'Model has no unique captured native catalogue entry.');
+  if (models.length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Model has no unique captured native catalogue entry.');
   const providerId = metadataIdentity(models[0].providerId, '/registry/models/providerId');
   const modelId = metadataIdentity(models[0].modelId, '/registry/models/modelId');
-  const proofs = registry.configurations.filter(proof => proof.agentName === agentName && equal(decode(proof.agentDeclarationJson), agent) && equal(decode(proof.configurationDeclarationJson), configuration));
-  if (proofs.length !== 1) return fail('UNSUPPORTED', '', 'Agent configuration has no unique end-to-end verification.');
+  // Native model dispatch identifies a model by provider and model ID.
+  if (registry.models.filter(model => model.providerId === providerId && model.modelId === modelId).length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Selected native Model identity is ambiguous.');
+  const proofs = registry.configurations.filter(proof => proof.agentName === agentName);
+  if (proofs.length !== 1 || !equal(decode(proofs[0].agentDeclarationJson), agent) || !equal(decode(proofs[0].configurationDeclarationJson), configuration)) return fail('UNSUPPORTED', '/registry/configurations', 'Agent configuration has no unique end-to-end verification.');
   const proof = proofs[0];
   const skillRequirements = list(agent.skills ?? []).flatMap(name => list(record(record(document.skills ?? {})[text(name)]).requires ?? []));
   requireExactRequirements([...list(configuration.requires ?? []), ...skillRequirements], proof.verifiedRequirementsJson);

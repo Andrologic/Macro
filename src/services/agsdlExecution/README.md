@@ -143,6 +143,23 @@ de résultat et leurs contrôles d'accès restent des attestations de l'adaptate
 car le DTO `MCPTool` actuel ne fournit pas ce contrat de sortie. Une absence de
 preuve bloque le chemin.
 
+Le catalogue MCP conserve les identifiants littéraux issus de la découverte.
+`captureRegistry` et `resolveBinding` réutilisent `assertUniqueMCPToolIds`, le
+helper pur de Macro. Deux descriptors avec le même ID sont refusés globalement,
+même sur des serveurs distincts, même identiques et même désactivés. Le contrôle
+précède le filtre du binding par serveur et activation ; aucun ID n'est normalisé.
+Ce refus donne `UNSUPPORTED` sous `/registry/mcpTools`, sans recopier le message
+brut qui contient les noms des Tools. Des IDs distincts restent acceptés dans
+le même serveur ou entre serveurs ; un Tool sélectionné désactivé reste refusé.
+
+Les identités de catalogue utilisées doivent également être univoques : une
+seule édition correspondant au modèle authored, un seul couple natif provider/
+model pour le modèle sélectionné, et une seule attestation de configuration
+pour chaque Agent capturé. Les déclarations complètes de bindings doivent garder
+leur unique attestation, par égalité JSON exacte indépendamment de l'ordre des
+clés. Le même modelId sur des providers différents reste une identité distincte.
+Ces contrôles ne créent pas de catalogue parallèle ni de preuve native.
+
 Le catalogue Model capturé doit fournir une édition explicite, un provider et
 un modèle uniques. `ConfigurationAttestation` doit correspondre à l'Agent et à
 sa configuration authored et couvrir les requirements de configuration et des
