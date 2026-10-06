@@ -337,6 +337,9 @@ const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'chat.typeMessage': 'Type your message',
   'chat.conversationSourceEmpty': fr.chat.conversationSourceEmpty,
+  'errors.degraded.service.resourcePressure.title': fr.errors.degraded.service.resourcePressure.title,
+  'errors.degraded.service.resourcePressure.body': fr.errors.degraded.service.resourcePressure.body,
+  'errors.degraded.service.resourcePressure.nextStep': fr.errors.degraded.service.resourcePressure.nextStep,
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
@@ -573,8 +576,6 @@ const loadChatZoneModule = async (useRichComposer = false) => {
     PlanSelector: () => null,
   }));
 
-  // Initialize Lexical before its React plugins to avoid Bun's dev import cycle.
-  if (useRichComposer) await import('lexical');
   const RichComposer = useRichComposer
     ? (await import(`./composer/LazyComposerEditor.tsx?rich-chat-zone-test=${importCounter}`)).default
     : null;
@@ -1887,6 +1888,86 @@ describe('ChatZone', () => {
     }));
   });
 
+  it('keeps B refusal when A rejects late after a context switch', async () => {
+    const releaseA = createDeferred<void>();
+    const failure = 'The selected conversation has no completed text to cite.';
+    chatState.sendMessage = mock(async (payload: { conversationId: string }) => {
+      if (payload.conversationId === 'conv-1') {
+        await releaseA.promise;
+        throw new Error('A late failure');
+      }
+      throw new Error(failure);
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    await setComposerText('B draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { releaseA.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(getComposerEditor().value).toBe('B draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('A late failure');
+  });
+
+  it.each(['remove_image', 'send', 'type'])('preserves A refusal after a user action in B: %s', async (action) => {
+    const failure = 'The selected conversation has no completed text to cite.';
+    const image = { id: 'b-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    chatState.sendMessage = mock(async () => { throw new Error(failure); });
+    composerDraftsByContextKey['conversation:conv-2'] = { text: 'B draft', images: [image], contextRefs: [] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).not.toBeNull();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    if (action === 'remove_image') {
+      const remove = requireContainer().querySelector('button[title="Remove image"]');
+      expect(remove).not.toBeNull();
+      await act(async () => { remove?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+      expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    } else if (action === 'send') {
+      await clickSendButton();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    } else {
+      await setComposerText('B edited draft');
+    }
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    // Editing A dismisses A's refusal; it must not remove B's refusal either.
+    await setComposerText('A edited draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    if (action === 'send') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-2' }); });
+      expect(getComposerEditor().value).toBe('B draft');
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+  });
+
+  it('preserves structured pre-provider code and details', async () => {
+    chatState.sendMessage = mock(async () => {
+      throw { code: 'RESOURCE_PRESSURE', message: 'Failed to read workspace state', details: { errno: 24, reason: 'Too many open files' } };
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    const notice = requireContainer().querySelector('[data-chat-floating-notices]');
+    expect(notice?.textContent).toContain(fr.errors.degraded.service.resourcePressure.title);
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('Too many open files');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('"errno": 24');
+  });
+
   it.each([
     { publishedByStore: false, retry: 'edit' },
     { publishedByStore: true, retry: 'send' },
@@ -1958,7 +2039,7 @@ describe('ChatZone', () => {
     expect(details).toBeDefined();
     expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
     await act(async () => { details?.click(); });
-    expect(requireContainer().querySelector('pre')?.textContent).toBe(failureMessage);
+    expect(requireContainer().querySelector('pre')?.textContent).toContain(failureMessage);
     // Passive rerenders and programmatic restoration keep the notice durable.
     await act(async () => { requireRoot().render(<ChatZone />); await new Promise((resolve) => setTimeout(resolve, 10)); });
     expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);

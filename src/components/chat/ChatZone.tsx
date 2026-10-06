@@ -110,7 +110,7 @@ import {
 } from './CompactionTranscriptUi';
 import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
 import { notify } from '../ui/toastService';
-import { toServiceError } from '../../services/contracts/errors';
+import { toServiceError, type ServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
 import { isTauriAvailable } from '../../services/ipc/runtime';
@@ -1357,7 +1357,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
 
   const [inputValue, setInputValue] = useState('');
-  const [composerSubmissionError, setComposerSubmissionError] = useState<{ contextKey: string; message: string } | null>(null);
+  const [composerSubmissionErrors, setComposerSubmissionErrors] =
+    useState<Partial<Record<string, ServiceError>>>({});
+  const clearComposerSubmissionError = useCallback((contextKey: string) => {
+    setComposerSubmissionErrors((current) => {
+      if (!current[contextKey]) return current;
+      const next = { ...current };
+      delete next[contextKey];
+      return next;
+    });
+  }, []);
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
@@ -1785,7 +1794,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? selectedConversationRuntime.lastError
       : null;
   const composerError = composerRuntimeError ?? lastError ??
-    (composerSubmissionError?.contextKey === composerDraftContextKey ? composerSubmissionError.message : null);
+    composerSubmissionErrors[composerDraftContextKey];
+  const composerErrorMessage = composerError ? toServiceError(composerError).message : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -2980,7 +2990,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
-    setComposerSubmissionError(null);
+    clearComposerSubmissionError(composerDraftContextKey);
     if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
@@ -3151,7 +3161,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
-    setComposerSubmissionError(null);
+    clearComposerSubmissionError(composerDraftContextKey);
     if (!goalComposerEditSession) {
       saveComposerDraftForContext(composerDraftContextKey, {
         text,
@@ -3339,7 +3349,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
       if (clearsComposerImmediately) restoreSentDraft();
       // Source prevalidation can reject before the chat store publishes a runtime error.
-      setComposerSubmissionError({ contextKey: conversationDraftKey, message: toServiceError(error).message });
+      const submissionError = toServiceError(error);
+      setComposerSubmissionErrors((current) => ({
+        ...current,
+        [conversationDraftKey]: submissionError,
+      }));
     } finally {
       if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
@@ -4139,12 +4153,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 className="shadow-lg shadow-black/15 backdrop-blur"
                 compact
                 presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                  fallbackBody: composerErrorMessage === 'No available provider or model could be restored for this conversation.'
                     ? t(
                         'chat.providerRestoreUnavailable',
                         'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
                       )
-                    : composerError === 'The selected conversation has no completed text to cite.'
+                    : composerErrorMessage === 'The selected conversation has no completed text to cite.'
                       ? t('chat.conversationSourceEmpty', 'The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.')
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
@@ -4546,7 +4560,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         }
                         onTextChange={(text, origin) => {
                           if (origin !== 'programmatic' && composerError) {
-                            setComposerSubmissionError(null);
+                            clearComposerSubmissionError(composerDraftContextKey);
                             clearConversationRuntimeError(selectedConversationId ?? '');
                             clearLastError();
                           }
