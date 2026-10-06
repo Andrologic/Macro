@@ -42,6 +42,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
         try {
           turnResult = await streamNativeTurnViaTauri({
             sessionId: options.sessionId,
+            nativeExecution: options.nativeExecution,
             providerId,
             providerType,
             modelId,
@@ -77,7 +78,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
           }, resources);
           break;
         } catch (error) {
-          if (options.signal?.aborted || error instanceof StreamStopUnconfirmedError) throw error;
+          if (options.executionPolicy === 'native-serial' || options.signal?.aborted || error instanceof StreamStopUnconfirmedError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           const rejection = classifyReasoningRejection(message);
           const rejectedEffort = currentReasoningEffort;

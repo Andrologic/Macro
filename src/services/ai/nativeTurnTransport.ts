@@ -49,6 +49,7 @@ const DONE_SUBMISSION_GRACE_MS = 5_000;
 
 export const streamNativeTurnViaTauri = async (params: {
   sessionId?: string;
+  nativeExecution?: StreamingChatOptions['nativeExecution'];
   providerId: string;
   providerType: string;
   modelId: string;
@@ -97,6 +98,7 @@ export const streamNativeTurnViaTauri = async (params: {
   }
 
   let fullContent = '';
+  let executionRegistered = false;
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
@@ -382,6 +384,7 @@ export const streamNativeTurnViaTauri = async (params: {
           resources.tauriRequestId = null;
           if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
         }
+        if (executionRegistered) await params.nativeExecution?.requestEnded(requestId);
         fn();
       })();
       // Event callbacks cannot await the receipt, but Stop returns this same join.
@@ -558,6 +561,12 @@ export const streamNativeTurnViaTauri = async (params: {
         }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
+        if (params.nativeExecution) {
+          const receipt = await own(params.nativeExecution.beforeRequest(requestId));
+          if (receipt !== 'registered') throw new Error('CORRELATION: a duplicate provider effect cannot be redispatched.');
+          executionRegistered = true;
+          if (stopped() || params.signal?.aborted) { signalHandler(); return; }
+        }
         await own(tauriIpc.aiStreamChat({
           requestId,
           providerId: params.providerId,
@@ -592,5 +601,8 @@ export const streamNativeTurnViaTauri = async (params: {
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     })();
+  }).then(async result => {
+    if (executionRegistered) await params.nativeExecution?.visibleMessage(requestId, result.content);
+    return result;
   });
 };

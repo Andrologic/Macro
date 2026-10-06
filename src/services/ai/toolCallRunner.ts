@@ -99,7 +99,11 @@ async function runSequentialToolBatch(params: ToolBatchParams & {
     // Disabled tools historically publish hidden output, but no onToolResult.
     let notifyResult = true;
     try {
-      if (isRepeatedToolCallLoop(messages, call)) {
+      if (options.onRawToolCall) {
+        resolution = allowedTools.has(name)
+          ? await options.onRawToolCall(call)
+          : { kind: 'result', result: 'Tool is not admitted for this activation.', isError: true, errorKind: 'permission' };
+      } else if (isRepeatedToolCallLoop(messages, call)) {
         resolution = { kind: 'result', result: 'Tool execution aborted: repeated identical tool call.', isError: true, errorKind: 'aborted' };
       } else {
         const args: unknown = JSON.parse(call.function.arguments);
@@ -237,7 +241,7 @@ export async function runToolBatch(params: ToolBatchParams): Promise<ToolBatchRe
   for (let index = 0; index < params.calls.length;) {
     throwIfToolAborted(params.options.signal);
     let readCount = 0;
-    while (readCount < MAX_PARALLEL_READS &&
+    while (params.options.executionPolicy !== 'native-serial' && readCount < MAX_PARALLEL_READS &&
       isParallelSafeReadTool(params.calls[index + readCount]?.function.name ?? '')) readCount += 1;
     const count = readCount > 1 ? readCount : 1;
     const batch = { ...params, calls: params.calls.slice(index, index + count), orderOffset: index, questionCount };

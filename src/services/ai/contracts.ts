@@ -119,6 +119,16 @@ export interface StreamingFollowUpCompactionResult {
 }
 
 export interface StreamingChatOptions {
+  /** Opt-in for resident execution; ordinary chat keeps its transport strategy. */
+  executionPolicy?: 'native-serial';
+  nativeExecution?: {
+    beforeRequest(requestId: string): Promise<'registered' | 'duplicate'>;
+    requestEnded(requestId: string): Promise<void>;
+    visibleMessage(requestId: string, text: string): Promise<void>;
+  };
+  /** Owns exact decoding, validation and durable dispatch before any JSON.parse. */
+  onRawToolCall?: (call: ToolCall) => Promise<ToolCallResolution>;
+
   sessionId?: string;
   conversationId?: string;
   mode?: AppMode;

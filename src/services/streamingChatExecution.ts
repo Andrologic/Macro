@@ -72,6 +72,15 @@ export async function streamChat(options: StreamingChatOptions, resources: Activ
   const reasoningTransportMode =
     options.reasoningTransportMode;
   const effectiveOptions = { ...options, reasoningTransportMode };
+  if (options.executionPolicy === 'native-serial') {
+    // Callback-based native tools already decoded their arguments. Until their
+    // raw protocol is qualified, only the returned raw-call transports qualify.
+    if (!['openai', 'ollama', 'lmstudio'].includes(options.providerType) || options.apiKey ||
+        !tauriIpc.isTauriAvailable() || !nativeProviderSupportsReasoningTransport(options.providerType, reasoningTransportMode)) {
+      throw new Error('UNSUPPORTED: this provider transport is not qualified for resident execution.');
+    }
+    return streamChatViaNativeToolCallingProvider(effectiveOptions, resources, compatibility);
+  }
 
   if (options.providerType === 'chatgpt') {
     return streamChatViaChatGptProvider(effectiveOptions, resources, compatibility);

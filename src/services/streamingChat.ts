@@ -31,9 +31,9 @@ const disableReasoningEffortForSession = (
   }
 };
 
-const reasoningCompatibility = (options: Pick<StreamingChatOptions, 'providerId' | 'modelId'>) => ({
-  disableReasoning: () => disableReasoningForSession(options.providerId, options.modelId),
-  disableEffort: (effort: ReasoningEffort) => disableReasoningEffortForSession(options.providerId, options.modelId, effort),
+const reasoningCompatibility = (options: Pick<StreamingChatOptions, 'providerId' | 'modelId' | 'executionPolicy'>) => ({
+  disableReasoning: () => { if (options.executionPolicy !== 'native-serial') disableReasoningForSession(options.providerId, options.modelId); },
+  disableEffort: (effort: ReasoningEffort) => { if (options.executionPolicy !== 'native-serial') disableReasoningEffortForSession(options.providerId, options.modelId, effort); },
 });
 
 const resolveModelReasoningTransportMode = (
@@ -58,8 +58,8 @@ const captureInvocation = <T extends ChatOptions>(options: T) => {
   const abort = () => controller.abort();
   const captured = {
     ...options,
-    reasoningTransportMode: options.reasoningTransportMode ??
-      resolveModelReasoningTransportMode(options.providerId, options.modelId),
+    reasoningTransportMode: options.reasoningTransportMode ?? (options.executionPolicy === 'native-serial' ? 'none' :
+      resolveModelReasoningTransportMode(options.providerId, options.modelId)),
     signal: controller.signal,
   };
   const resources = createActiveStreamResources(captured.sessionId);

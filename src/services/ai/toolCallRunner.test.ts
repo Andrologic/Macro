@@ -429,3 +429,20 @@ it('joins a publication owner with a later read owner before releasing the batch
   await failure.whenStopped;
   expect(failure.stopped).toBe(true);
 });
+
+
+describe('resident exact arguments', () => {
+  it('delivers raw integer and decimal lexemes before parsing or fallback', async () => {
+    const seen: string[] = [];
+    const options = {
+      providerId: 'synthetic', providerType: 'openai', baseUrl: '', modelId: 'synthetic', messages: [],
+      onToken: () => {}, onComplete: () => {}, onError: () => {}, executionPolicy: 'native-serial' as const,
+      onRawToolCall: async (invocation: ToolCall) => { seen.push(invocation.function.arguments); return { kind: 'result' as const, result: 'refused before effect', isError: true, errorKind: 'validation' as const }; },
+      onToolCall: () => { throw new Error('Parsed handler must not run'); },
+    };
+    const calls = ['9007199254740993', '0.10000000000000001'].map((n, index) => ({ ...call('read', String(index)), function: { name: 'read', arguments: `{"number":${n}}` } }));
+    const result = await runToolBatch({ calls, messages: [], options, allowedTools: new Set(['read']), schemas: new Map(), accumulator: accumulator(), batchId: 'batch', usedToolNames: new Set() });
+    expect(seen).toEqual(['{"number":9007199254740993}', '{"number":0.10000000000000001}']);
+    expect(result.toolResults.map(result => result.error_kind)).toEqual(['validation', 'validation']);
+  });
+});

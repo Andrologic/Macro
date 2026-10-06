@@ -671,3 +671,35 @@ test('native diagnostic exceptions cannot replace an outstanding tool receipt or
   const { cancelStream } = await import('./streamResources');
   await cancelStream('diagnostic-owner');
 });
+
+test('resident attempt registration precedes physical dispatch and its receipt precedes visible publication', async () => {
+  const registration = deferred<'registered'>();
+  const stopped = deferred<void>();
+  const events: string[] = [];
+  cancelGate = () => stopped.promise;
+  const pending = turn({ providerType: 'openai', providerId: 'fixture', nativeExecution: {
+    beforeRequest: async id => { events.push(`register:${id}`); return registration.promise; },
+    requestEnded: async id => { expect(id).toBe(requestId); events.push('ended'); },
+    visibleMessage: async (id, text) => { expect(id).toBe(requestId); expect(text).toBe('Original'); events.push('visible'); },
+  } });
+  await waitFor(() => events.length === 1);
+  expect(requestId).toBe('');
+  registration.resolve('registered');
+  await started;
+  expect(events[0]).toBe(`register:${requestId}`);
+  emit('ai:done', { request_id: requestId, output_text: 'Original', tool_calls: [] });
+  await waitFor(() => cancelCount > 0);
+  expect(events).toHaveLength(1);
+  stopped.resolve();
+  await pending;
+  expect(events.slice(1)).toEqual(['ended', 'visible']);
+});
+
+test('a recovered duplicate provider effect never authorizes a new native dispatch', async () => {
+  const ended = mock(async () => {});
+  await expect(turn({ nativeExecution: {
+    beforeRequest: async () => 'duplicate', requestEnded: ended, visibleMessage: async () => {},
+  } })).rejects.toThrow('cannot be redispatched');
+  expect(requestId).toBe('');
+  expect(ended).not.toHaveBeenCalled();
+});
