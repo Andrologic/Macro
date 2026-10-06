@@ -2278,11 +2278,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }),
 
   activateArchitectPlan: async (planId, options) => {
-    const result = await activateArchitectPlanInStore({
-      planId,
-      options,
-    });
-    return result.status === 'activated';
+    const state = get();
+    const targetBranch = resolveTargetBranch(options?.targetBranch || state.activePlanContext?.targetBranch || getGitFlowBaseBranch());
+    const recover = options?.persistActiveSelection !== false && state.mode === 'Architect' &&
+      state.activeArchitectPlanId === planId && state.activePlanContext?.targetBranch === targetBranch
+      ? useChatStore.getState().captureArchitectPlanRecovery(planId, targetBranch) : null;
+    const activation = activateArchitectPlanInStore({ planId, options });
+    const owner = architectPlanActivationOwner;
+    const result = await activation;
+    if (result.status !== 'activated') return false;
+    const navigationId = projectSwitchRequestId;
+    if (architectPlanActivationOwner === owner) {
+      await recover?.(() => architectPlanActivationOwner === owner && projectSwitchRequestId === navigationId);
+    }
+    return true;
   },
 
   loadMacroProjectMetadataForSelection: async (options = {}) => {

@@ -260,6 +260,7 @@ const chatStoreState = {
   }>,
   selectedConversationId: null as string | null,
   beginArchitectPlanSwitch: mock(() => undefined),
+  captureArchitectPlanRecovery: mock((): ((isCurrentActivation: () => boolean) => Promise<void>) => async () => undefined),
   reconcileProjectRegistry: mock(() => undefined),
 };
 
@@ -2223,6 +2224,23 @@ describe('useAppStore architect plan resolution', () => {
       expect(useAppStore.getState().architectPlanSwitch.requestId).toBe(initialRequestId);
     });
   }
+
+  it('connects explicit same-plan activation to conversation recovery without a second caller action', async () => {
+    const plan = buildPlan({ conversationId: 'plan-conversation' });
+    planById.set(plan.id, plan);
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1', selectedProjectId: 'project-1', activeArchitectPlanId: plan.id,
+      activePlanContext: { id: plan.id, title: plan.title, status: plan.status, targetBranch: plan.targetBranch },
+    });
+    const recover = mock(async () => { chatStoreState.selectedConversationId = 'plan-conversation'; });
+    chatStoreState.captureArchitectPlanRecovery.mockImplementationOnce(() => recover);
+    chatStoreState.selectedConversationId = null;
+    expect(await useAppStore.getState().activateArchitectPlan(plan.id)).toBe(true);
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(String(chatStoreState.selectedConversationId)).toBe('plan-conversation');
+  });
 
   it('does not publish an initial same-plan head after leaving its group', async () => {
     const plan = buildPlan({ id: 'scope-plan', nodes: [{ id: 'old-task' }] });

@@ -55,6 +55,119 @@ export const registerArchitectLifecycleScenarios = (
   } = context;
 
   describe('useChatStore Architect lifecycle', () => {
+    it('keeps the same conversation and provider while its own strategy turn is ahead of the exact replica', async () => {
+      context.projectGroups[0].projects.push({ ...context.projectGroups[0].projects[0], id: 'project-2', name: 'API', path: '/repos/api', mountName: 'api' });
+      const plan = createPlan({ conversationId: 'plan-conv', projectIds: ['project-1', 'project-2'] });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      setArchitectStoreState(useChatStore);
+      await useChatStore.getState().ensureConversationForCurrentMode();
+      const streamFinished = createDeferred<void>();
+      streamChatMock.mockImplementationOnce(async () => { await streamFinished.promise; return { usage: null }; });
+      const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, { content: 'Generate the strategy once.' });
+      const user = useChatStore.getState().getConversationMessages('plan-conv').find((message: ChatMessage) => message.role === 'user')!;
+      const replica: Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }> = [{ id: user.id, role: 'user', content: user.content, createdAt: user.timestamp }];
+      const ownHead = async () => ({
+        plan: architectPlans.get(plan.id)!, targetBranch: 'develop', conversationId: 'plan-conv', sharedConversation: false,
+        resolutionMode: 'full', chatMessages: replica, chatMessagesLoaded: true,
+        chatTranscriptRevision: 'own-turn-head', chatMessageCount: 1,
+        replicaScopeKey: 'group:group-1', replicaProjectId: 'project-1',
+      });
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
+      const provider = [providerState.selectedProviderId, providerState.selectedModelId];
+      providerState.commitRestoredSelection.mockClear();
+      updateArchitectPlanMock.mockClear();
+      dbUpsertArchitectPlanConversationSyncMock.mockClear();
+
+      const result = await onToolCall('strategy_generate', { nodes: [{ title: 'Implement once' }] }, 'own-strategy-once');
+      expect(JSON.stringify(result)).toContain('Strategy updated');
+      expect(JSON.stringify(result)).not.toContain('follow_up_failures');
+      expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
+      context.tauriAvailable = true;
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe('plan-conv');
+      expectArchitectSelection(useChatStore, { planId: plan.id, conversationId: 'plan-conv' });
+      expect([providerState.selectedProviderId, providerState.selectedModelId]).toEqual(provider);
+      expect(providerState.commitRestoredSelection).not.toHaveBeenCalled();
+      expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().lastError).toBeNull();
+      const liveAssistant = useChatStore.getState().getConversationMessages('plan-conv').find((message: ChatMessage) => message.role === 'assistant')!;
+      replica.push({ id: liveAssistant.id, role: 'assistant', content: liveAssistant.content, createdAt: liveAssistant.timestamp });
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe('plan-conv');
+      expect(providerState.commitRestoredSelection).not.toHaveBeenCalled();
+      replica.pop();
+
+      const syncEntered = createDeferred<void>();
+      const syncFinished = createDeferred<void>();
+      context.syncMacroMetadataAfterStreamMock.mockClear();
+      context.syncMacroMetadataAfterStreamMock.mockImplementationOnce(async () => {
+        syncEntered.resolve();
+        await syncFinished.promise;
+        const assistant = useChatStore.getState().getConversationMessages('plan-conv').find((message: ChatMessage) => message.role === 'assistant')!;
+        replica.push({ id: assistant.id, role: 'assistant', content: assistant.content, createdAt: assistant.timestamp });
+      });
+      context.getLatestStreamOptions<{ onComplete: (result: { visibleContent: string; toolTraces: [] }) => void }>()
+        .onComplete({ visibleContent: 'Strategy saved.', toolTraces: [] });
+      await syncEntered.promise;
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(ownHead);
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe('plan-conv');
+      expect(providerState.commitRestoredSelection).not.toHaveBeenCalled();
+      syncFinished.resolve();
+      streamFinished.resolve();
+      await flushAsyncWork();
+      expect(context.syncMacroMetadataAfterStreamMock).toHaveBeenCalledTimes(1);
+      expect(context.syncMacroMetadataAfterStreamMock).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'Architect', conversationId: 'plan-conv', architectPlan: { planId: plan.id, targetBranch: 'develop' },
+      }));
+      expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
+      expect(replica).toHaveLength(2);
+    });
+
+    it('does not excuse an unrelated local suffix just because an Architect turn is active', async () => {
+      const plan = createPlan({ conversationId: 'plan-conv' });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      setArchitectStoreState(useChatStore, { messages: [{
+        id: 'older-local', conversation_id: 'plan-conv', task_id: '', role: 'user',
+        content: 'Unsynchronized older request', timestamp: '2026-03-19T00:01:00.000Z',
+      }] });
+      await sendArchitectMessageAndGetToolHandler(useChatStore, { content: 'A new request' });
+      await expect(useChatStore.getState().ensureArchitectConversationForPlan({
+        plan, targetBranch: 'develop', chatMessagesHint: [], chatMessagesLoaded: true,
+        replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+      })).rejects.toThrow('plus récent');
+      expect(useChatStore.getState().getConversationMessages('plan-conv')[0]?.id).toBe('older-local');
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+    });
+
+    for (const revoke of ['branch', 'conversation', 'stop'] as const) {
+      it(`does not defer an own-turn transcript after ${revoke} revokes its selection or runtime`, async () => {
+        const plan = createPlan({ conversationId: 'plan-conv' });
+        architectPlans.set(plan.id, plan);
+        appState.activeArchitectPlanId = plan.id;
+        appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+        const { useChatStore } = await loadChatStore();
+        setArchitectStoreState(useChatStore, { conversations: [createConversation('plan-conv'), createConversation('other')] });
+        await sendArchitectMessageAndGetToolHandler(useChatStore, { content: 'Current request' });
+        const user = useChatStore.getState().getConversationMessages('plan-conv').find((message: ChatMessage) => message.role === 'user')!;
+        if (revoke === 'branch') appState.activePlanContext = { id: plan.id, targetBranch: 'release' };
+        if (revoke === 'conversation') await useChatStore.getState().selectConversation('other');
+        if (revoke === 'stop') useChatStore.getState().stopConversationStream('plan-conv');
+        const selected = useChatStore.getState().selectedConversationId;
+        await expect(useChatStore.getState().ensureArchitectConversationForPlan({
+          plan, targetBranch: 'develop', chatMessagesLoaded: true,
+          chatMessagesHint: [{ id: user.id, role: 'user', content: user.content, createdAt: user.timestamp }],
+          replicaScopeKey: 'project:project-1', replicaProjectId: 'project-1',
+        })).rejects.toThrow('plus récent');
+        expect(useChatStore.getState().selectedConversationId).toBe(selected);
+      });
+    }
+
     it('keeps strategy mutations isolated when the strategy guard loads before the plan service mocks', async () => {
       mock.restore();
       await import('../../services/architectStrategyMutationGuard');
