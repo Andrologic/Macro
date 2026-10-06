@@ -343,6 +343,9 @@ pas utilisés pour réécrire le document entier. Une mutation d’outil vérifi
 conversation propriétaire, le statut brouillon et la révision lue. Ces outils
 sont exposés uniquement dans Architect, avec la politique partagée des outils.
 Aucun moteur d’exécution AgSDL n’est introduit à cette étape.
+Les [contrats du moteur à construire](agsdl-engine-architecture.md) définissent
+le propriétaire natif, le profil initial et les garanties attendues. Ces contrats
+ne rendent pas encore les documents exécutables.
 
 ### 5.3 Découpage des panneaux
 

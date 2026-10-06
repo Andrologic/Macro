@@ -322,6 +322,9 @@ L’ancienne interface de stratégie et ses outils de rédaction ne sont plus ex
 Le moteur Implement conserve ses données historiques pour les tâches existantes.
 Cette étape ne fournit pas de moteur d’exécution AgSDL. Le parcours et les limites
 sont décrits dans [Visualisateur AgSDL](agsdl-editor.md).
+Les [contrats du moteur à construire](agsdl-engine-architecture.md) définissent
+le propriétaire natif, le profil initial et les garanties attendues. Ces contrats
+ne rendent pas encore les documents exécutables.
 
 ### 7.2 Mode Implement
 
