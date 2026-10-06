@@ -17,3 +17,4 @@ export type { AiToolCall } from '../AiToolCall';
 export type { AiToolCallFunction } from '../AiToolCallFunction';
 export type { AiToolTrace } from '../AiToolTrace';
 export type { JsonValue } from '../serde_json/JsonValue';
+export type { WebviewResourceRelease } from '../WebviewResourceRelease';

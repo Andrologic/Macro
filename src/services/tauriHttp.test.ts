@@ -8,6 +8,7 @@ test('sérialise une réponse HTTP et libère son corps lors d’une annulation'
     command: string,
     args?: InvokeArgs,
   ): Promise<T> => {
+    if (command === 'http_release_webview_resource') return 'removed' as T;
     calls.push({ command, args });
     switch (command) {
       case 'plugin:http|fetch':
@@ -99,6 +100,7 @@ for (const runtime of ['bridge', 'native'] as const) {
         ? 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
         : 'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
       const invoke: RuntimeInvoke = async <T>(command: string): Promise<T> => {
+        if (command === 'http_release_webview_resource') return 'removed' as T;
         if (command === 'plugin:http|fetch') return 7 as T;
         if (command === 'plugin:http|fetch_send') return { status: 200, statusText: 'OK', url: 'https://example.invalid', headers: [], rid: 9 } as T;
         if (command === 'plugin:http|fetch_read_body') {
@@ -167,6 +169,7 @@ for (const runtime of ['bridge', 'native'] as const) {
 test('runtime HTTP preserves client options, response metadata, cloning and received EOF', async () => {
   const calls: Array<{ command: string; args?: InvokeArgs }> = [];
   const invoke: RuntimeInvoke = async <T>(command: string, args?: InvokeArgs): Promise<T> => {
+    if (command === 'http_release_webview_resource') return 'removed' as T;
     calls.push({ command, args });
     if (command === 'plugin:http|fetch') return 7 as T;
     if (command === 'plugin:http|fetch_send') return { status: 201, statusText: 'Created', url: 'https://example.invalid/final', headers: [['set-cookie', 'synthetic=1'], ['content-type', 'text/plain']], rid: 9 } as T;
@@ -190,6 +193,7 @@ test('runtime HTTP waits for disposal of a null response body', async () => {
   const cleanup = deferred<void>();
   const started = deferred<void>();
   const invoke: RuntimeInvoke = async <T>(command: string): Promise<T> => {
+    if (command === 'http_release_webview_resource') return 'removed' as T;
     if (command === 'plugin:http|fetch') return 7 as T;
     if (command === 'plugin:http|fetch_send') return { status: 204, statusText: 'No Content', url: 'https://example.invalid', headers: [], rid: 9 } as T;
     if (command === 'plugin:http|fetch_cancel_body') { started.resolve(); await cleanup.promise; }

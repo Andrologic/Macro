@@ -62,7 +62,7 @@ for (const runtime of ['native', 'browser'] as const) {
       let cleanups = 0;
       dispatch = async command => {
         if (command.endsWith('|fetch')) return phase === 'refused' ? { status: 'error', payload: 'Synthetic refusal' } : { status: 'success', payload: 7 };
-        if (command === 'plugin:resources|close') { cleanups++; return { status: phase === 'send-cleanup-error' ? 'error' : 'success', payload: null }; }
+        if (command === 'http_release_webview_resource') { cleanups++; return { status: phase === 'send-cleanup-error' ? 'error' : 'success', payload: 'removed' }; }
         if (command.endsWith('|fetch_send') && (phase === 'send-error' || phase === 'send-cleanup-error')) return { status: 'error', payload: 'Synthetic send failure' };
         if (command.endsWith('|fetch_cancel')) return { status: 'success', payload: null };
         if (command.endsWith('|fetch_send')) return { status: 'success', payload: { status: 401, statusText: 'Unauthorized', headers: [], url: 'https://example.invalid', rid: 9 } };
@@ -87,7 +87,7 @@ for (const runtime of ['native', 'browser'] as const) {
       } else {
         expect(error).not.toBeInstanceOf(StreamStopUnconfirmedError);
         expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).not.toThrow();
-        expect(cleanups).toBe(phase === 'send-error' ? 3 : phase === 'read-error' ? 1 : 0);
+        expect(cleanups).toBe(phase === 'send-error' ? 3 : phase === 'read-error' ? 2 : 0);
       }
       expect(callbacks.size).toBe(0);
       loseResponse = false;
@@ -108,6 +108,7 @@ for (const status of [401, 503]) for (const streaming of [true, false]) {
     const receipt = new StreamStopUnconfirmedError('Body still owned', new Promise<void>(resolve => { confirm = resolve; }));
     let requests = 0;
     pipelineFetch = http.createBrowserRuntimeFetch(async <T>(command: string): Promise<T> => {
+      if (command === 'http_release_webview_resource') return 'removed' as T;
       if (command.endsWith('|fetch')) { requests++; return 7 as T; }
       if (command.endsWith('|fetch_send')) return { status, statusText: 'Failure', url: 'https://example.invalid', headers: [], rid: 9 } as T;
       if (command.endsWith('|fetch_read_body')) throw receipt;
@@ -152,6 +153,7 @@ test('send success after cancellation failure still joins its newly created body
   const owner = new StreamStopUnconfirmedError('Cancellation still owned', new Promise<void>(resolve => { confirm = resolve; }));
   let cleanupStarted = false;
   const run = http.createBrowserRuntimeFetch(async <T>(command: string): Promise<T> => {
+      if (command === 'http_release_webview_resource') return 'removed' as T;
     if (command.endsWith('|fetch')) return 7 as T;
     if (command.endsWith('|fetch_send')) {
       controller.abort();
@@ -195,3 +197,51 @@ test('browser timeout is not a command error reply', async () => {
   finish({ status: 'error', payload: 'late reply' });
   await tick();
 });
+
+
+for (const phase of ['aborted-send', 'successful-send', 'lost-release'] as const) {
+  test(`request retirement preserves the distinct body: ${phase}`, async () => {
+    const controller = new AbortController();
+    const resources = new Set<number>();
+    const releases: number[] = [];
+    let releaseResult: string | undefined;
+    const fetch = http.createBrowserRuntimeFetch(async <T>(command: string, args?: import('@tauri-apps/api/core').InvokeArgs): Promise<T> => {
+      if (command.endsWith('|fetch')) { resources.add(7); return 7 as T; }
+      if (command.endsWith('|fetch_send')) {
+        if (phase === 'aborted-send') {
+          resources.delete(7);
+          controller.abort();
+          throw new RuntimeCommandError('Synthetic aborted send reply');
+        }
+        resources.add(9);
+        return { status: 200, statusText: 'OK', url: 'https://example.invalid', headers: [], rid: 9 } as T;
+      }
+      if (command === 'http_release_webview_resource') {
+        const rid = (args as { rid: number }).rid;
+        releases.push(rid);
+        if (phase === 'lost-release') throw new Error('Retirement response lost');
+        releaseResult = resources.delete(rid) ? 'removed' : 'alreadyAbsent';
+        return releaseResult as T;
+      }
+      if (command.endsWith('|fetch_cancel')) throw new RuntimeCommandError('Synthetic missing abort sender');
+      if (command.endsWith('|fetch_cancel_body')) resources.delete(9);
+      if (command.endsWith('|fetch_read_body')) { expect(resources.has(9)).toBe(true); resources.delete(9); return [65, 1] as T; }
+      return undefined as T;
+    });
+    const result = await fetch('https://example.invalid', { signal: controller.signal }).catch(error => error);
+    expect(releases).toEqual([7]);
+    if (phase === 'successful-send') {
+      expect(result).toBeInstanceOf(Response);
+      expect(releaseResult).toBe('removed');
+      expect(resources.has(7)).toBe(false);
+      expect(await result.text()).toBe('A');
+    } else if (phase === 'aborted-send') {
+      expect(releaseResult).toBe('alreadyAbsent');
+      expect(result).not.toBeInstanceOf(StreamStopUnconfirmedError);
+      expect(resources.size).toBe(0);
+    } else {
+      expect(result).toBeInstanceOf(StreamStopUnconfirmedError);
+      expect(resources.has(9)).toBe(false);
+    }
+  });
+}

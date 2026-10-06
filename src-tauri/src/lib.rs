@@ -853,6 +853,7 @@ pub fn run() {
             commands::ai::ai_sync_provider_models,
             commands::ai::ai_stream_chat,
             commands::ai::ai_cancel_stream,
+            commands::http_resources::http_release_webview_resource,
             commands::ai::ai_submit_tool_result,
             // Git metadata commands
             commands::db_upsert_git_repository,

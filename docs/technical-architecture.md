@@ -2176,3 +2176,10 @@ proves that read ended, but releasing its owner also requires successful body
 cleanup. A failed send also joins request-resource closure before release.
 Cleanup failure alone does not prove resource closure. HTTP error-body
 diagnostics preserve stop receipts before classifying status codes or retrying.
+
+`http_release_webview_resource` retires a finished HTTP request from the caller's
+webview table under one lock. Its typed `removed` or `alreadyAbsent` reply proves
+only table absence. HTTP joins send before retiring the request, on success and
+failure, and keeps the response body's separate resource alive until EOF or body
+cleanup. The command never searches window or app tables. A lost retirement reply
+remains uncertain; removing a table entry never stands in for joining active reads.

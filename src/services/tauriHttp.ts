@@ -1,6 +1,7 @@
 import type { fetch as nativeTauriFetch } from '@tauri-apps/plugin-http';
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { invokeWithReceipt } from './tauriRuntimeBridge';
+import { httpReleaseWebviewResource } from './ipc/httpResources';
 import { RuntimeCommandError } from './runtimeCommandError';
 import { StreamStopUnconfirmedError, preserveStreamStopError, withStreamCleanup } from './ai/streamCancellation';
 
@@ -88,25 +89,23 @@ export const createBrowserRuntimeFetch = (
       else if (!(error instanceof RuntimeCommandError)) failure = missingReceipt('request cancellation', error);
       // A fulfilled send is the request's receipt, even if its cancel failed.
     }
-    if (failure) {
-      // fetch_send may fail before consuming its request, or leave its completed
-      // future in the table. A received error alone cannot discharge that resource.
-      try { await receivedInvoke('plugin:resources|close', { rid }); }
-      catch (error) {
-        const owner = missingReceipt('request cleanup', error);
-        failure = failure instanceof StreamStopUnconfirmedError ? preserveStreamStopError(failure, owner) : preserveStreamStopError(owner, failure);
-      }
-      if (outcome) {
-        // Cancellation can fail while send succeeds and creates a body resource.
-        // Its cleanup belongs to this invocation even though no Response escapes.
-        try { await receivedInvoke('plugin:http|fetch_cancel_body', { rid: outcome.rid }); }
-        catch (error) {
-          const owner = missingReceipt('body cleanup', error);
-          failure = failure instanceof StreamStopUnconfirmedError ? preserveStreamStopError(failure, owner) : preserveStreamStopError(owner, failure);
-        }
-      }
-      throw failure;
+    // fetch_send may fail before consuming its request, or leave its completed
+    // future in the table. A received error alone cannot discharge that resource.
+    try { await httpReleaseWebviewResource(rid, receivedInvoke); }
+    catch (error) {
+      const owner = missingReceipt('request cleanup', error);
+      failure = failure instanceof StreamStopUnconfirmedError ? preserveStreamStopError(failure, owner) : failure ? preserveStreamStopError(owner, failure) : owner;
     }
+    if (failure && outcome) {
+      // Cancellation can fail while send succeeds and creates a body resource.
+      // Its cleanup belongs to this invocation even though no Response escapes.
+      try { await receivedInvoke('plugin:http|fetch_cancel_body', { rid: outcome.rid }); }
+      catch (error) {
+        const owner = missingReceipt('body cleanup', error);
+        failure = failure instanceof StreamStopUnconfirmedError ? preserveStreamStopError(failure, owner) : failure ? preserveStreamStopError(owner, failure) : owner;
+      }
+    }
+    if (failure) throw failure;
     return outcome!;
   }, () => signal?.removeEventListener('abort', cancelRequest));
 

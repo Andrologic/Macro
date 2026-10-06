@@ -652,3 +652,5 @@ export type {
   MCPRuntimeSnapshotDto,
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
+
+export { httpReleaseWebviewResource } from "./ipc/httpResources";

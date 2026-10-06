@@ -70,6 +70,7 @@ pub mod files {
 }
 
 pub mod chat {
+    pub use crate::commands::http_resources::WebviewResourceRelease;
     pub use crate::ai::types::{
         AiAuthCancelledEvent, AiAuthErrorEvent, AiAuthStartedEvent, AiAuthSuccessEvent,
         AiChatImageUrl, AiChatMessage, AiChatMessageContent, AiChatMessagePart, AiChatRequest,
