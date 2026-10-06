@@ -1276,13 +1276,14 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "agsdl_update",
-    "Edit and save the calling draft plan's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, or design_json. Design metadata is stored outside closed 0.2 source. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
+    "Edit and save the calling draft plan's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, example, design_json, or display_json. Design and display metadata are stored outside closed 0.2 source. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
     { type: "object", properties: {
       plan_id: { type: "string" }, target_branch: { type: "string" }, expected_revision: { type: "string" },
       changes: { type: "array", items: { type: "object", properties: { op: { type: "string", enum: ["set", "remove"] }, path: { type: "string", allowEmpty: true }, value_json: { type: "string", description: "Exact JSON value as text, required for set." } }, required: ["op", "path"] } },
       source: { type: "string", description: "Complete replacement document; prefer changes for focused edits." },
       example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document." },
       design_json: { type: "string", description: "Complete Macro design metadata as JSON text. Read design_context from agsdl_get first. Metadata stays outside 0.2 source; requirement targetPath values explicitly adapt supported source fields." },
+      display_json: { type: "string", description: "AgSDL 0.2 Macro display metadata patch as JSON text. Read display_context first. Use title and cards mapping existing JSON pointers to title, description or macroGroup strings. Omitted fields remain unchanged; empty strings clear display overrides. Keeps source identities and bytes unchanged." },
     }, required: ["plan_id", "target_branch", "expected_revision"] },
   ),
   objectTool(

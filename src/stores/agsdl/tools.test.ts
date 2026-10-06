@@ -191,6 +191,9 @@ describe("shared AgSDL authoring session", () => {
       }),
     );
     expect(result.persisted_revision).toBe(1);
+    expect(result.design_context).toMatchObject({ version: 1, kind: "system" });
+    expect(result.display_context).toMatchObject({ title: "Release", cards: { "/agents/checklist": { title: "Checklist" }, "/flow/steps/checklist": { title: "Checklist" } } });
+    expect((plan as ArchitectPlanRecord).agsdl?.display).toEqual(result.display_context);
     const subtree = JSON.parse(
       await call("agsdl_get", { path: "/flow/entry" }),
     );
@@ -300,4 +303,57 @@ it("keeps unsupported source and reports distinct without assigning 0.1 or 0.2 s
   expect(read.outline).toEqual({ supported: false, contract: "agsdl-exp-flow-0.2-c1" });
   expect(read.diagnostics[0]).toMatchObject({ scope: "unsupported-contract", executionSupport: "not-assessed" });
   expect(plan.agsdl.source).toBe(source);
+});
+
+
+it("patches 0.2 display labels and groups while preserving exact source, identities and unknown metadata", async () => {
+  const source = '{"contract":"agsdl-0.2.0","id":"system","agents":{"helper":{"configuration":"project"}},"configurations":{"project":{"engine":"desktop","settings":{"opaque":12345678901234567890.123456789}}},"bindings":{"desktop":{"contract":{"identity":"macro/agent-engine","version":"1"},"implementation":{"identity":"macro/desktop","version":"1"}}},"flow":{"entry":"work","steps":{"work":{"type":"agent","agent":"helper"}}}}';
+  const design = { version: 1 as const, kind: "system" as const, purpose: "Purpose", context: "", rules: [], requirements: [] };
+  const display = { title: "Original", future: { opaque: true }, cards: { "/agents/helper": { title: "Helper", description: "Preserved", extension: ["future"] }, "/flow/steps/work": { title: "Work", macroTaskId: "task-owned" } } };
+  plan.agsdl = { source, annexes: { archive: "original" }, revision: 1, design, display, migration: { version: 1, from: "agsdl-0.1.0", issues: [] } };
+  const read = JSON.parse(await call("agsdl_get"));
+  expect(read.display_context).toEqual(display);
+  const update = { title: "Équipe", cards: { "/agents/helper": { title: "Vérification", macroGroup: "Contrôles" }, "/flow/steps/work": { macroGroup: "Contrôles" } } };
+  const result = JSON.parse(await call("agsdl_update", { expected_revision: read.revision, display_json: JSON.stringify(update) }));
+  const expected = { ...display, title: "Équipe", cards: { "/agents/helper": { ...display.cards["/agents/helper"], title: "Vérification", macroGroup: "Contrôles" }, "/flow/steps/work": { ...display.cards["/flow/steps/work"], macroGroup: "Contrôles" } } };
+  expect(result.display_context).toEqual(expected);
+  expect(result.source).toBe(source);
+  expect(new TextEncoder().encode(plan.agsdl?.source)).toEqual(new TextEncoder().encode(source));
+  expect(plan.agsdl).toMatchObject({ source, display: expected, design, annexes: { archive: "original" }, migration: { version: 1, from: "agsdl-0.1.0", issues: [] } });
+  expect(result.revision).not.toBe(read.revision);
+  expect(result.persisted_revision).toBe(2);
+  const { projectViewer } = await import("../../services/agsdl/viewer");
+  const viewer = projectViewer(source, plan.agsdl);
+  expect(viewer.title).toBe("Équipe");
+  expect(viewer.declarations.find(card => card.path === "/agents/helper")).toMatchObject({ title: "Vérification", details: { displayAnnotations: { macroGroup: "Contrôles" } } });
+  await expect(call("agsdl_update", { expected_revision: read.revision, display_json: '{}' })).rejects.toThrow("changed");
+  const cleared = JSON.parse(await call("agsdl_update", { expected_revision: result.revision, display_json: '{"cards":{"/agents/helper":{"macroGroup":""}}}' }));
+  expect(cleared.display_context.cards["/agents/helper"].macroGroup).toBe("");
+  expect(cleared.display_context.cards["/flow/steps/work"]).toEqual(expected.cards["/flow/steps/work"]);
+  expect(cleared.source).toBe(source);
+});
+
+it("rejects invalid display shapes, missing paths and combined mutations without changing the session", async () => {
+  plan.agsdl = { source: '{"contract":"agsdl-0.2.0","id":"draft","agents":{},"configurations":{},"bindings":{}}', annexes: {}, revision: 1, display: { title: "Original" } };
+  const read = JSON.parse(await call("agsdl_get"));
+  for (const display_json of ['null', '[]', '{"title":42}', '{"cards":[]}', '{"cards":{"/agents":null}}', '{"cards":{"/agents":{"macroGroup":false}}}', '{"cards":{"/missing":{"title":"Missing"}}}', '{"cards":{"/agents~2":{"title":"Invalid"}}}', '{"title":"A","title":"B"}']) {
+    await expect(call("agsdl_update", { expected_revision: read.revision, display_json })).rejects.toThrow();
+    expect(current().version).toBe(read.revision);
+    expect(current().source).toBe(read.source);
+    expect(current().display).toEqual({ title: "Original" });
+  }
+  await expect(call("agsdl_update", { expected_revision: read.revision, source: read.source, display_json: '{}' })).rejects.toThrow("exactly one");
+  expect(plan.agsdl.display).toEqual({ title: "Original" });
+});
+
+it("limits display_json to 0.2 documents and preserves legacy and unsupported editions", async () => {
+  for (const source of [createExample("release"), '{"contract":"agsdl-exp-flow-0.2-c1"}']) {
+    useAgsdlStore.setState({ sessions: {} });
+    plan.agsdl = { source, annexes: {}, revision: 1 };
+    const read = JSON.parse(await call("agsdl_get"));
+    expect(read.display_context).toBeUndefined();
+    await expect(call("agsdl_update", { expected_revision: read.revision, display_json: '{"title":"New"}' })).rejects.toThrow("requires AgSDL 0.2.0");
+    expect(plan.agsdl.source).toBe(source);
+    expect(current().version).toBe(read.revision);
+  }
 });

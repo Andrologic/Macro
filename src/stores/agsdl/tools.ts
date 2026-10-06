@@ -1,9 +1,9 @@
 import { getArchitectPlan } from "../../services/architectPlanService";
 import { agsdlSessionKey, useAgsdlStore } from "../useAgsdlStore";
 import { list, object, readDocument, sourceAt, text, pointerPart, scanSource } from "../../services/agsdl/document";
-import { AGSDL_EXAMPLES, createExample, type AgsdlExample } from "../../services/agsdl/examples";
+import { AGSDL_EXAMPLES, createExampleDocument, type AgsdlExample } from "../../services/agsdl/examples";
 import type { AgsdlChange } from "../../types/agsdl";
-import { readDesign, updateDesignMetadata, type DesignMetadata } from "../../services/agsdl/design";
+import { readDesign, updateDesignMetadata, type DesignMetadata, type AgsdlDisplayMetadata } from "../../services/agsdl/design";
 import { useProviderStore } from "../useProviderStore";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
@@ -38,7 +38,7 @@ const guide02 = {
   runtime: "Macro remains the engine selected for Macro-authored configurations. Declare a named binding with contract:{identity:'macro/agent-engine',version:'1'} and implementation:{identity:'macro/desktop',version:'1'}, then configuration.engine names that binding. Select providerId and modelId from macro_models and put them in configuration.settings; preserve all other settings, Engine/Tool declarations and explicit Model editions. The identities are external declarations and confer no support. The manual selector edits only fixed configurations with this exact Engine declaration and no separate model edition. Shared configurations affect every Agent that names them; dynamic cases remain explicit. Imported foreign bindings remain readable and require deliberate conversion. Configuration and skill changes require stop, edit and start in a consuming integration. This editor does not execute a 0.2.0 process.",
   support: "bindings separate versioned contract and implementation, with optional settings, requires, claims and effects. Configuration tools map local names to declared bindings. Requirements name an exact contract edition plus optional parameters. Claims use requirement, status supported/unsupported/unknown and optional evidence SHA-256. Exact claims cover only their owning declaration, including settings and selected Engine/Model/Tools. Reassess or remove configuration claims after editing that declaration; preserve unchanged binding claims. Missing/unknown claims or support without evidence remain unknown. declared-supported is an assertion whose evidence was not verified. Report incompatible and unknown requirements independently. executionSupport stays not-assessed; structural validity, available provider names and human Agent responses do not prove execution or approval enforcement.",
   design: "Macro design intent lives in the editor envelope's design metadata, outside this closed AgSDL source. design_context supplies {version:1,kind:system|blueprint,purpose,context,rules:[{id,title,instructions}],requirements:[{id,label,description,value,targetPath?}],origin?:{planId,name,revision}}. Edit it through agsdl_update design_json with the full desired design_context serialized as JSON and the current revision. Keep requirement and rule ids stable; empty values identify information still needed. Apply agreed values to prompt/resources, settings and declared flow controls. Design intent grants no runtime enforcement. Use explicit scopes and approval declarations for protected admission; actual Tool invocation admission remains an external integration requirement. Preserve unknown editor metadata and provenance.",
-  presentation: "Use descriptive Agent and step map names. Keep executable instructions in Agent/skill prompts or prepared Messages. Display titles and grouping belong to Macro editor metadata; closed declarations do not accept annotations or presentation-only fields. Routes show declared flow; distinguish their delivery roles and provenance from executable support.",
+  presentation: "Use descriptive Agent and step map names. Keep executable instructions in Agent/skill prompts or prepared Messages. Read display_context for Macro presentation metadata {title?:string,cards?:{JSONPointer:{title?:string,description?:string,macroGroup?:string}}}. Edit it through agsdl_update display_json, a JSON object patch with the current revision. Supplied cards paths must exist in the document. Omitted fields and cards retain their values; an empty string clears a display override. Preserve unknown metadata and keep source map names and pointer identities stable when changing labels. Closed declarations do not accept annotations or presentation-only fields. Routes show declared flow; distinguish their delivery roles and provenance from executable support.",
   scope: "Plan document authoring and scoped static declaration checks only. No described Agents are executed, dependency code or URI payloads are not fetched, and external evidence is not verified. Retain original edition markers, reports, annexes and migration provenance. A draft may contain diagnostics while its design is refined.",
 };
 
@@ -65,6 +65,31 @@ function outline02(source: string, doc: Record<string, unknown>) {
       steps: Object.entries(object(object(doc.flow).steps)).slice(0, 100).map(([name, value]) => ({ name, path: `/flow/steps/${pointerPart(name)}`, type: object(value).type })) } : undefined,
     compositions: Object.keys(object(doc.compositions)).map(name => ({ name, path: `/compositions/${pointerPart(name)}` })),
   };
+}
+
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const displayFields = ["title", "description", "macroGroup", "macroTaskId", "macroLegacyNodeId", "macroStatus"];
+function validDisplay(value: unknown): value is AgsdlDisplayMetadata {
+  if (!isRecord(value) || (value.title !== undefined && typeof value.title !== "string")) return false;
+  if (value.cards === undefined) return true;
+  return isRecord(value.cards) && Object.values(value.cards).every(card => isRecord(card) && displayFields.every(field => card[field] === undefined || typeof card[field] === "string"));
+}
+/** Merge supplied display fields without changing source identities or discarding unknown metadata. */
+export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDisplayMetadata | undefined, update: unknown): AgsdlDisplayMetadata {
+  if (readDocument(source).contract !== "agsdl-0.2.0") throw new Error("display_json requires AgSDL 0.2.0.");
+  if (!validDisplay(update) || (previous !== undefined && !validDisplay(previous))) throw new Error("The display metadata is malformed. Its original contents have been preserved.");
+  const next = { ...structuredClone(previous), ...structuredClone(update) };
+  if (update.cards !== undefined) {
+    const parsed = scanSource(source);
+    const cards = { ...structuredClone(previous?.cards) };
+    for (const [path, card] of Object.entries(update.cards)) {
+      if (!path.startsWith("/") || /~(?![01])/u.test(path) || !parsed.spans.has(path)) throw new Error(`Display card path does not exist: ${path}`);
+      cards[path] = { ...structuredClone(previous?.cards?.[path]), ...structuredClone(card) };
+    }
+    next.cards = cards;
+  }
+  return next;
 }
 
 export async function handleAgsdlToolCall(params: {
@@ -105,11 +130,11 @@ export async function handleAgsdlToolCall(params: {
       args.expected_revision !== current().version
     )
       throw new Error("The document changed. Read agsdl_get before editing.");
-    const alternatives = ["changes", "source", "example", "design_json"].filter((key) =>
+    const alternatives = ["changes", "source", "example", "design_json", "display_json"].filter((key) =>
       Object.hasOwn(args, key),
     );
     if (alternatives.length !== 1)
-      throw new Error("Supply exactly one of changes, source, example, or design_json.");
+      throw new Error("Supply exactly one of changes, source, example, design_json, or display_json.");
     if (alternatives[0] === "changes") {
       if (!Array.isArray(args.changes))
         throw new Error("changes must be an array.");
@@ -135,6 +160,12 @@ export async function handleAgsdlToolCall(params: {
       scanSource(args.design_json);
       const design = updateDesignMetadata(readDesign(current().source, current().design), JSON.parse(args.design_json) as DesignMetadata);
       store().setDesign(target, design, args.expected_revision);
+    } else if (alternatives[0] === "display_json") {
+      if (typeof args.display_json !== "string") throw new Error("display_json must be a JSON string.");
+      scanSource(args.display_json);
+      const session = current();
+      const display = updateAgsdlDisplayMetadata(session.source, session.display, JSON.parse(args.display_json));
+      store().replace(target, session.source, undefined, args.expected_revision, { design: session.design, display, migration: session.migration });
     } else if (alternatives[0] === "example") {
       if (!AGSDL_EXAMPLES.includes(args.example as AgsdlExample))
         throw new Error("Unknown AgSDL example.");
@@ -142,12 +173,8 @@ export async function handleAgsdlToolCall(params: {
         throw new Error(
           "Examples initialize empty documents. Edit the existing document through changes or source.",
         );
-      store().replace(
-        target,
-        createExample(args.example as AgsdlExample),
-        {},
-        args.expected_revision,
-      );
+      const example = createExampleDocument(args.example as AgsdlExample);
+      store().replace(target, example.source, example.annexes, args.expected_revision, { design: example.design, display: example.display, migration: example.migration });
     } else {
       if (typeof args.source !== "string")
         throw new Error("source must be a JSON string.");
@@ -225,6 +252,7 @@ export async function handleAgsdlToolCall(params: {
     error: session.error,
     authoring_guide: pointer ? undefined : agsdlAuthoringGuide(doc.contract, !session.source),
     design_context: pointer ? undefined : designContext,
+    display_context: pointer || doc.contract !== "agsdl-0.2.0" ? undefined : session.display ?? {},
     macro_models: pointer ? undefined : providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
       providerId: provider.id, name: provider.name,
       models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name })),

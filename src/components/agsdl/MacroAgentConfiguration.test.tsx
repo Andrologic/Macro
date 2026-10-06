@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AgentDetails } from "./AgentDetails";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
-import { createExample } from "../../services/agsdl/examples";
+import { createLegacyExample as createExample, createExample as createExample020 } from "../../services/agsdl/examples";
 import { projectViewer } from "../../services/agsdl/viewer";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
 import { useProviderStore } from "../../stores/useProviderStore";
@@ -19,8 +19,7 @@ afterEach(() => {
   useAgsdlStore.setState({ sessions: {}, save: originalSave });
   useProviderStore.setState({ providers: originalProviders.providers, modelsByProvider: originalProviders.modelsByProvider });
 });
-async function mount() {
-  const source = createExample("release");
+async function mount(source = createExample("release")) {
   useProviderStore.setState({
     providers: [{ id: "demo-provider", name: "Demo provider", status: "online" }],
     modelsByProvider: { "demo-provider": [{ id: "demo-model", name: "Demo model", provider_id: "demo-provider" }] },
@@ -78,4 +77,23 @@ it("shows Macro provider and model names while keeping opaque parameters collaps
   act(() => useProviderStore.setState({ providers: [], modelsByProvider: {} }));
   expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("Unavailable locally");
   expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("demo-model");
+});
+
+
+it("saves an explicit 0.2 model selection in settings without rewriting Engine or Tool bindings", async () => {
+  const source = createExample020("release");
+  const before = JSON.parse(source);
+  await mount(source);
+  choose(0, "demo-provider"); choose(1, "demo-model");
+  let persisted = "";
+  useAgsdlStore.setState({ save: async () => { persisted = useAgsdlStore.getState().sessions[key].source; } });
+  await submit();
+  const after = JSON.parse(persisted);
+  expect(after.configurations.project.settings).toEqual({ providerId: "demo-provider", modelId: "demo-model" });
+  expect(after.configurations.project.engine).toBe(before.configurations.project.engine);
+  expect(after.bindings).toEqual(before.bindings);
+  expect(after.agents).toEqual(before.agents);
+  expect(after.flow).toEqual(before.flow);
+  expect(after.runtime).toBeUndefined();
+  expect(document.body.querySelector("form")).toBeNull();
 });
