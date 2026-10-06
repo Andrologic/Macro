@@ -1,6 +1,10 @@
 //! Authoritative native wire contracts grouped by domain.
 //! These reexports expose data shapes, not application execution or transport authority.
 
+pub mod execution {
+    pub use crate::db::agsdl_execution::dto::*;
+}
+
 pub mod db {
     pub use crate::commands::goal_auditor_read::GoalAuditorReadInput;
     pub use crate::db::conversation_goals::{

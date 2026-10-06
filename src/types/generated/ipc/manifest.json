@@ -635,6 +635,166 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "EngineAcceptedDelivery",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineAcceptedDelivery",
+      "path": "EngineAcceptedDelivery.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineActivation",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineActivation",
+      "path": "EngineActivation.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineAgentConfiguration",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineAgentConfiguration",
+      "path": "EngineAgentConfiguration.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineAssociations",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineAssociations",
+      "path": "EngineAssociations.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineEntry",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineEntry",
+      "path": "EngineEntry.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineEvent",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineEvent",
+      "path": "EngineEvent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineEventPage",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineEventPage",
+      "path": "EngineEventPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineFailure",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineFailure",
+      "path": "EngineFailure.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineOutcome",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineOutcome",
+      "path": "EngineOutcome.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineProjection",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineProjection",
+      "path": "EngineProjection.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineSnapshot",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineSnapshot",
+      "path": "EngineSnapshot.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineSourceOwner",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineSourceOwner",
+      "path": "EngineSourceOwner.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineSourceRevision",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineSourceRevision",
+      "path": "EngineSourceRevision.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStartReceipt",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineStartReceipt",
+      "path": "EngineStartReceipt.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStartRequest",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineStartRequest",
+      "path": "EngineStartRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStopRequest",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineStopRequest",
+      "path": "EngineStopRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineStopState",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineStopState",
+      "path": "EngineStopState.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineValue",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineValue",
+      "path": "EngineValue.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineVersions",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineVersions",
+      "path": "EngineVersions.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "EngineWork",
+      "origin": "macro_lib::db::agsdl_execution::dto::EngineWork",
+      "path": "EngineWork.ts"
+    },
+    {
+      "families": [
         "external"
       ],
       "name": "ExternalAppCatalogDto",

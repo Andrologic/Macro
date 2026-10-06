@@ -62,8 +62,16 @@ Les configurations, settings effectifs, bindings, contenu initial, permissions
 et scopes sont capturés sans secrets. Les identifiants fournisseur et modèle
 sont explicites. Aucun fournisseur ni modèle par défaut n'est choisi.
 Les credentials restent dans les services sécurisés Macro et sont résolus au
-moment de l'invocation. Un champ secret dans la source ou les settings bloque
-la capture plutôt que d'être copié dans le snapshot ou dans un diagnostic.
+moment de l'invocation. L'autorité de capture native exporte explicitement les
+champs publics des configurations et settings typés du catalogue ; elle ne
+sérialise pas `ProviderConfig` en bloc et ne charge pas les credentials dans
+le snapshot. Cette frontière doit être implémentée avant de rendre le démarrage
+disponible. Le repository valide les valeurs JSON exactes sans en déduire la
+confidentialité à partir des noms de propriétés. Un `password` dans un schéma
+Tool ou un `authorization` dans une ressource publique reste une donnée
+légitime ; source, paramètres et bindings sont conservés sans suppression ni
+reformatage. Un credential issu des services sécurisés Macro doit rester
+hors de la capture et des diagnostics, indépendamment de son nom de champ.
 
 `ExactJsonText` est une chaîne JSON exacte validée par le lecteur vendor.
 Les DTO transportent les valeurs durables sous cette forme, y compris arguments,
@@ -249,3 +257,80 @@ Les tests de ce lot vérifient les invariants purs, pas ces garanties natives.
 La persistance, les permissions effectives, l'hébergement, la compilation,
 l'exécution, les crashs et la reprise doivent être prouvés dans leurs lots avant
 que l'interface annonce le moteur disponible.
+
+## Repository natif durable
+
+Les migrations 10 et 11 ajoutent les résultats du journal conversation et le
+repository AgSDL. `tool_invocations` conserve ses clés et sa relation à une
+conversation existante. Un système AgSDL peut fonctionner sans conversation,
+donc `engine_effects` porte les clés système, activation et effet fournisseur ou
+outil. Les deux journaux enregistrent l'intention avant dispatch, ne réautorisent
+jamais une intention existante et conservent le résultat exact avec sa preuve
+dans la même transaction. Les anciens reçus sans résultat restent sans résultat.
+
+Pour le profil sériel initial, `engine_systems` conserve un snapshot immuable et
+un état transactionnel par système. Cet état contient instances, checkpoints,
+activations, compteurs, arrêt et fermetures de réponses. Les livraisons ont des
+clés SQL uniques pour livraison et activation. Les événements et effets ont
+leurs propres tables. `BEGIN IMMEDIATE` sérialise les modifications, avec
+`synchronous=FULL` avant confirmation. Les chaînes JSON exactes restent des
+chaînes, y compris les valeurs numériques hors de la précision JavaScript.
+
+Le repository n'est pas un scheduler. Sa capture et ses routes exigent des
+autorités Rust internes. La capture native lit `agsdl.source` dans `plan.json`
+après résolution du projet par les métadonnées existantes et vérifie révision
+et SHA. L'autorité de capture doit garder le verrou des métadonnées pendant
+la vérification finale et le commit. Le futur superviseur doit authentifier
+sa webview avant d'exposer les méthodes privées. Aucune de ces méthodes, ni
+la rotation d'epoch, n'est une commande produit dans ce lot.
+
+Les commandes produit exposent lecture, pagination et arrêt. `execution_start`
+refuse `RUNTIME_UNAVAILABLE` jusqu'au raccordement du host de confiance.
+La reprise compare toutes les versions capturées aux versions disponibles.
+Elle rend les activités engagées incertaines, conserve leurs verrous et fence
+les anciens propriétaires. Une résolution opérateur native avec preuve reste
+nécessaire pour libérer un effet dont la terminaison est inconnue.
+
+### Résolution native après une perte du propriétaire
+
+Une reprise renouvelle l’epoch et conserve l’incarnation admise dans les
+activations et les intentions d’effets. Les lectures d’effets exposent leur
+statut durable `pending`, `uncertain` ou `ended`. Un ancien host ne peut plus
+committer, même s’il reçoit tardivement une réponse valide.
+
+`resolve_recovered` est une frontière Rust privée. Le nouveau propriétaire
+présente les versions exactes et une preuve portant sur le travail, l’epoch
+initiale, chaque effet enregistré, sa terminaison et la fermeture des réponses.
+Une `RecoveryAuthority` native vérifie cette preuve. La transaction vérifie
+l’attribution originale, termine les effets prouvés, conserve leurs résultats,
+committe le checkpoint et le terminal puis admet l’unique route validée. Un
+échec de cette transaction laisse tous les verrous et résultats antérieurs
+intacts. Une répétition équivalente conserve le premier texte et ne route rien
+une seconde fois. Aucun effet incertain n’est réenregistré ni redispatché.
+La confirmation d’un arrêt exige cette même preuve de terminaison.
+
+Un refus `VISIT_LIMIT` réserve une résolution sans effet au propriétaire.
+Le commit terminal commun vérifie le refus, garde la mémoire inchangée et
+résout la route d’erreur éventuelle une seule fois. La réservation ne consomme
+pas de visite supplémentaire et interdit tout fournisseur ou outil.
+
+Les reçus comparent les JSON par structure et valeur numérique exacte,
+sans flottants. L’ordre des clés et la notation numérique ne changent pas la
+valeur ; les booléens restent distincts des nombres. Le texte du premier reçu
+reste intact. Les objets aux clés dupliquées sont rejetés. Le lecteur des
+valeurs externes impose une profondeur maximale de 128 niveaux avant toute
+descente récursive supplémentaire ; cette borne ne change pas l’égalité.
+
+La capture finale retourne un `LockedExecutionSource` qui garde les verrous
+natifs de contenu des `plan.json`, également pris par le vrai writer
+`fs_write_file`. Le writer de l’éditeur AgSDL ne prend pas le verrou de cycle
+de vie. La capture conserve aussi les verrous de cycle de vie et du registre
+projet pour leurs opérations respectives. Elle résout les racines avant les
+verrous, puis prend les verrous de cycle de vie, les clés de contenu canoniques
+triées, le registre workspace et enfin SQLite. Les mutations natives par batch
+trient les mêmes clés de contenu ; le writer direct ne prend que son verrou de
+contenu. La capture ne résout plus de racine et ne reprend plus de verrou de
+cycle de vie pendant cette période. `CaptureAuthority::CommitGuard` reste
+vivant entre la revérification et le commit SQL. Le host, le compilateur et
+l’autorité de preuve restent à raccorder ; aucun IPC produit ne peut fournir
+ces autorités et `execution_start` reste indisponible.

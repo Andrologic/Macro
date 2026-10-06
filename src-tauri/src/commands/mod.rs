@@ -10,6 +10,7 @@ pub mod skills;
 pub mod speech;
 pub mod terminal;
 pub mod tool_invocations;
+pub mod agsdl_execution;
 pub mod web_search;
 pub mod workspace;
 pub mod workspace_tools;

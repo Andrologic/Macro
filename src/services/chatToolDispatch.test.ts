@@ -270,5 +270,50 @@ for (const errorKind of ['permission', 'validation'] as const) {
     f.execute.mockImplementation(async () => ({ kind: 'result', result: 'Refused', isError: true, errorKind }));
     f.preserve.mockImplementation(async () => { throw new ToolResultPreservationError('Refused'); });
     expect(await f.dispatch('write', {}, 'refused')).toMatchObject({ errorKind, result: 'Refused' });
+    const completion = (f.journal.complete as ReturnType<typeof mock>).mock.calls[0]?.[0] as { resultJson: string };
+    expect(JSON.parse(completion.resultJson)).toMatchObject({ errorKind, result: 'Refused' });
+    expect(f.events).toContain('complete');
+    expect(f.events).not.toContain('unknown');
   });
 }
+
+test('persists short structured and refused results before continuation', async () => {
+  for (const value of ['short', { kind: 'result' as const, result: 'Denied', isError: true, errorKind: 'permission' as const }]) {
+    const f = fixture();
+    f.execute.mockImplementation(async () => value);
+    let release!: () => void;
+    const persisted = new Promise<void>(resolve => { release = resolve; });
+    let payload: string | undefined;
+    f.journal.complete = async input => {
+      payload = input.resultJson;
+      await persisted;
+      f.events.push('complete');
+      return invocation;
+    };
+    let continued = false;
+    const running = f.dispatch('write', {}, 'result').then(result => { continued = true; return result; });
+    for (let index = 0; index < 10 && payload === undefined; index++) await Promise.resolve();
+    expect(payload).toBe(JSON.stringify(value));
+    expect(continued).toBe(false);
+    release();
+    expect(await running).toEqual(value);
+    expect(continued).toBe(true);
+  }
+});
+
+test('stores exactly the normalized result supplied to continuation', async () => {
+  const f = fixture();
+  f.execute.mockImplementation(async () => 'Cannot safely write the file');
+  const result = await f.dispatch('write', {}, 'normalized');
+  const input = (f.journal.complete as ReturnType<typeof mock>).mock.calls[0]?.[0] as { resultJson: string };
+  expect(JSON.parse(input.resultJson)).toEqual(JSON.parse(JSON.stringify(result)));
+  expect(JSON.parse(input.resultJson)).toMatchObject({ kind: 'result', isError: true, errorKind: 'execution' });
+});
+
+test('does not continue with a refusal before its durable completion is confirmed', async () => {
+  const f = fixture();
+  f.execute.mockImplementation(async () => ({ kind: 'result', result: 'Denied', isError: true, errorKind: 'permission' }));
+  f.journal.complete = async () => { throw new Error('completion response lost'); };
+  expect(await f.dispatch('write', {}, 'denied-unconfirmed')).toMatchObject({ errorKind: 'uncertain' });
+  expect(f.events).toContain('unknown');
+});

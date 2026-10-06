@@ -49,6 +49,22 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
 }
 
 async fn drop_v9(connection: &mut SqliteConnection) {
+    for statement in [
+        "DROP TABLE engine_events",
+        "DROP TABLE engine_effects",
+        "DROP TABLE engine_deliveries",
+        "DROP TABLE engine_systems",
+        "DROP TRIGGER tool_result_requires_completion_insert",
+        "DROP TRIGGER tool_result_requires_completion_update",
+        "ALTER TABLE tool_invocations DROP COLUMN result_json",
+        "DELETE FROM schema_migrations WHERE version >= 10",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+    }
+
     sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
         .execute(&mut *connection)
         .await
@@ -571,4 +587,56 @@ async fn published_baseline_preserves_provider_and_model_data_through_v5() {
     );
     assert!(sqlx::query("INSERT INTO ai_models (id, provider_id, model_id, name, first_seen_at, last_seen_at) VALUES ('orphan', 'absent', 'x', 'x', 'x', 'x')")
         .execute(&pool).await.is_err());
+}
+
+#[tokio::test]
+async fn durable_engine_migrations_keep_missing_legacy_results_and_roll_back_failed_stamp() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("legacy-v9.db");
+    let pool = create_pool(&path).await.unwrap();
+    sqlx::query("INSERT INTO conversations (id,title,created_at,updated_at) VALUES ('legacy','Synthetic','date','date')").execute(&pool).await.unwrap();
+    let mut c = pool.acquire().await.unwrap();
+    for statement in [
+        "DROP TABLE engine_events",
+        "DROP TABLE engine_effects",
+        "DROP TABLE engine_deliveries",
+        "DROP TABLE engine_systems",
+        "DROP TRIGGER tool_result_requires_completion_insert",
+        "DROP TRIGGER tool_result_requires_completion_update",
+        "ALTER TABLE tool_invocations DROP COLUMN result_json",
+        "DELETE FROM schema_migrations WHERE version >= 10",
+    ] {
+        sqlx::query(statement).execute(&mut *c).await.unwrap();
+    }
+    sqlx::query("INSERT INTO tool_invocations (conversation_id,turn_id,message_id,call_id,tool_name,effect_class,arguments_sha256,status,receipt_id,created_at,updated_at) VALUES ('legacy','turn','message','call','write','workspace_mutation',?,'completed','receipt','date','date')").bind("a".repeat(64)).execute(&mut *c).await.unwrap();
+    sqlx::raw_sql("CREATE TRIGGER fail_engine_stamp BEFORE INSERT ON schema_migrations WHEN NEW.version = 11 BEGIN SELECT RAISE(ABORT,'synthetic'); END;").execute(&mut *c).await.unwrap();
+    drop(c);
+    pool.close().await;
+    assert!(create_pool(&path).await.is_err());
+    let mut c = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    assert!(!table_columns(&mut c, "tool_invocations".into())
+        .await
+        .unwrap()
+        .contains("result_json"));
+    assert!(!table_exists(&mut c, "engine_systems".into()).await.unwrap());
+    sqlx::query("DROP TRIGGER fail_engine_stamp")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    c.close().await.unwrap();
+    let upgraded = create_pool(&path).await.unwrap();
+    let result: Option<String> =
+        sqlx::query_scalar("SELECT result_json FROM tool_invocations WHERE call_id='call'")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap();
+    assert!(result.is_none());
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tool_invocations WHERE call_id='call'")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap();
+    assert_eq!(status, "completed");
 }

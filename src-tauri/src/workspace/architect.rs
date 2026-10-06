@@ -2697,4 +2697,310 @@ mod tests {
         assert_eq!(listed.plans[0].id, plan_id);
         assert!(!project_path.join(".git").exists());
     }
+
+    #[tokio::test]
+    async fn execution_source_capture_locks_the_exact_envelope_and_rechecks_revision() {
+        use crate::db::agsdl_execution::dto::{EngineSourceOwner, EngineSourceRevision};
+        use sha2::{Digest, Sha256};
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let project_path = temp.path().join("project");
+        let metadata_root = workspace.join(".macro");
+        std_fs::create_dir_all(&project_path).unwrap();
+        let mut state = WorkspaceState::default();
+        let mut project = project("source-project", &project_path.to_string_lossy());
+        project.git_setup_state = "not_git".into();
+        project.direct_edit = true;
+        state.standalone_projects = vec![project];
+        write_json(&metadata_root.join("workspace.json"), &state);
+        let source = "{ \"large\":9007199254740993,\"text\":\"é\\n\" }";
+        let expected = EngineSourceRevision {
+            owner: EngineSourceOwner {
+                project_id: "source-project".into(),
+                plan_id: "source-plan".into(),
+                branch: "develop".into(),
+            },
+            revision: "3".into(),
+            source_sha256: format!("{:x}", Sha256::digest(source.as_bytes())),
+        };
+        let canonical_root = project_path.join(".macro");
+        let plan_path =
+            architect_plan_dir(&canonical_root, "develop", "source-plan").join("plan.json");
+        write_json(
+            &plan_path,
+            &serde_json::json!({"id":"source-plan","projectId":"source-project","revision":3,"agsdl":{"source":source,"editorState":{}}}),
+        );
+        let captured = lock_execution_source(&workspace, &metadata_root, &expected)
+            .await
+            .unwrap();
+        assert_eq!(captured.source, source);
+        let original = std_fs::read(&plan_path).unwrap();
+        let file_revision = crate::fs::operations::content_revision(&original);
+        let changed = serde_json::to_string(&serde_json::json!({"id":"source-plan","projectId":"source-project","revision":4,"agsdl":{"source":source}})).unwrap();
+        // This is the real internal writer called by fs_write_file. It does not
+        // acquire a lifecycle lease; only the shared content lock stops it.
+        let writer = crate::fs::operations::write_file_internal_with_revision(
+            &canonical_root,
+            "branches/develop/plans/source-plan/plan.json".into(),
+            changed,
+            Some(true),
+            Some(false),
+            Some(&file_revision),
+        );
+        tokio::pin!(writer);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut writer)
+                .await
+                .is_err()
+        );
+        assert_eq!(std_fs::read(&plan_path).unwrap(), original);
+        drop(captured);
+        let written = tokio::time::timeout(std::time::Duration::from_secs(2), writer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(written.revision, file_revision);
+        assert!(matches!(
+            lock_execution_source(&workspace, &metadata_root, &expected).await,
+            Err(error) if error.code == "CORRELATION" && error.pointer == "source"
+        ));
+        let mut wrong = expected;
+        wrong.owner.project_id = "unknown-project".into();
+        assert!(lock_execution_source(&workspace, &metadata_root, &wrong)
+            .await
+            .is_err());
+    }
+}
+
+/// Native execution capture reads the authored string directly, never through PlanDto Value.
+/// The caller is the native capture authority and supplies trusted workspace roots.
+#[allow(dead_code)]
+pub(crate) async fn lock_execution_source(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    expected: &crate::db::agsdl_execution::dto::EngineSourceRevision,
+) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    use crate::db::agsdl_execution::failure;
+    use sha2::{Digest, Sha256};
+    #[derive(Deserialize)]
+    struct SourceEnvelope {
+        source: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SourcePlan {
+        id: String,
+        project_id: Option<String>,
+        revision: Option<i64>,
+        agsdl: SourceEnvelope,
+    }
+    let owner = &expected.owner;
+    let valid_component = |name: &str| {
+        !name.is_empty()
+            && Path::new(name)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+    };
+    if !valid_component(&owner.branch)
+        || !valid_component(&owner.plan_id)
+        || owner.plan_id.contains('/')
+        || owner.plan_id.contains('\\')
+    {
+        return Err(failure(
+            "CORRELATION",
+            "source.owner",
+            "Invalid metadata identity",
+        ));
+    }
+    // Project identity comes from the native workspace registry, not the
+    // caller's hint that resolve_project_scopes may attach to workspace roots.
+    let state = super::load_raw_state(metadata_root)
+        .await
+        .map_err(|_| {
+            failure(
+                "SOURCE_UNAVAILABLE",
+                "source.owner",
+                "Cannot read project registry",
+            )
+        })?
+        .ok_or_else(|| {
+            failure(
+                "SOURCE_UNAVAILABLE",
+                "source.owner",
+                "Project registry is absent",
+            )
+        })?;
+    let requested_projects = HashSet::from([owner.project_id.clone()]);
+    let initial_projects = collect_workspace_state_project_paths(&state, Some(&requested_projects));
+    if initial_projects.is_empty() {
+        return Err(failure(
+            "CORRELATION",
+            "source.owner.projectId",
+            "Project is absent from native metadata",
+        ));
+    }
+    let scopes = resolve_project_scopes(
+        workspace_path,
+        metadata_root,
+        std::slice::from_ref(&owner.project_id),
+    )
+    .await
+    .map_err(|_| {
+        failure(
+            "SOURCE_UNAVAILABLE",
+            "source",
+            "Cannot resolve metadata project",
+        )
+    })?;
+    let mut scopes = scopes
+        .into_iter()
+        .filter(|scope| scope.project_id.as_deref() == Some(&owner.project_id))
+        .collect::<Vec<_>>();
+    scopes.sort_by(|a, b| a.metadata_root.cmp(&b.metadata_root));
+    scopes.dedup_by(|a, b| a.metadata_root == b.metadata_root);
+    let mut guards = Vec::new();
+    for scope in &scopes {
+        guards.push(
+            super::lock_plan_lifecycle(&scope.metadata_root, &owner.branch, &owner.plan_id)
+                .await
+                .map_err(|_| {
+                    failure("SOURCE_UNAVAILABLE", "source", "Cannot lock canonical plan")
+                })?,
+        );
+    }
+    // Resolve roots before locking. Lifecycle -> sorted canonical content keys ->
+    // workspace registry -> SQLite. Direct FS writes acquire only content; native
+    // workspace batches acquire those keys in the same sorted order. Do not
+    // resolve roots or acquire lifecycle locks again while content locks are held.
+    let mut content_keys = Vec::with_capacity(scopes.len());
+    for scope in &scopes {
+        let path = architect_plan_dir(&scope.metadata_root, &owner.branch, &owner.plan_id)
+            .join("plan.json");
+        content_keys.push(crate::fs::mutation_locks::native_content_mutation_key(&path).await);
+    }
+    content_keys.sort();
+    content_keys.dedup();
+    let mut content_guards = Vec::with_capacity(content_keys.len());
+    for key in &content_keys {
+        content_guards.push(
+            crate::fs::mutation_locks::content_mutation_lock(key)
+                .lock_owned()
+                .await,
+        );
+    }
+    let state_guard = super::lock_workspace_state(metadata_root).await;
+    let locked_root = metadata_root.to_path_buf();
+    let file_guard =
+        tokio::task::spawn_blocking(move || super::lock_workspace_state_file(&locked_root))
+            .await
+            .map_err(|_| {
+                failure(
+                    "SOURCE_UNAVAILABLE",
+                    "source.owner",
+                    "Cannot acquire project registry lock",
+                )
+            })?
+            .map_err(|_| {
+                failure(
+                    "SOURCE_UNAVAILABLE",
+                    "source.owner",
+                    "Cannot lock project registry",
+                )
+            })?;
+    let current = super::load_raw_state(metadata_root)
+        .await
+        .map_err(|_| {
+            failure(
+                "SOURCE_UNAVAILABLE",
+                "source.owner",
+                "Cannot recheck project registry",
+            )
+        })?
+        .ok_or_else(|| {
+            failure(
+                "CORRELATION",
+                "source.owner",
+                "Project registry disappeared",
+            )
+        })?;
+    if collect_workspace_state_project_paths(&current, Some(&requested_projects))
+        != initial_projects
+    {
+        return Err(failure(
+            "CORRELATION",
+            "source.owner",
+            "Project mapping changed during capture",
+        ));
+    }
+    let mut sources = Vec::new();
+    for scope in scopes
+        .into_iter()
+        .filter(|scope| scope.project_id.as_deref() == Some(&owner.project_id))
+    {
+        let path = architect_plan_dir(&scope.metadata_root, &owner.branch, &owner.plan_id)
+            .join("plan.json");
+        let locked_key = crate::fs::mutation_locks::native_content_mutation_key(&path).await;
+        if !content_keys.contains(&locked_key) {
+            return Err(failure(
+                "CORRELATION",
+                "source",
+                "Canonical plan path changed during capture",
+            ));
+        }
+        let contents = match fs::read_to_string(path).await {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                return Err(failure(
+                    "SOURCE_UNAVAILABLE",
+                    "source",
+                    "Cannot read canonical plan",
+                ))
+            }
+        };
+        let plan: SourcePlan = serde_json::from_str(&contents)
+            .map_err(|_| failure("CORRELATION", "source", "Invalid canonical source envelope"))?;
+        if plan.id != owner.plan_id
+            || plan
+                .project_id
+                .as_ref()
+                .is_some_and(|id| id != &owner.project_id)
+            || plan.revision.unwrap_or(1).to_string() != expected.revision
+            || format!("{:x}", Sha256::digest(plan.agsdl.source.as_bytes()))
+                != expected.source_sha256
+        {
+            return Err(failure(
+                "CORRELATION",
+                "source",
+                "Canonical plan revision or source changed",
+            ));
+        }
+        sources.push(plan.agsdl.source);
+    }
+    if sources.is_empty() || sources.iter().any(|source| source != &sources[0]) {
+        return Err(failure(
+            "CORRELATION",
+            "source",
+            "Canonical source is absent or ambiguous",
+        ));
+    }
+    Ok(LockedExecutionSource {
+        source: sources.remove(0),
+        _guards: guards,
+        _content_guards: content_guards,
+        _state_guard: state_guard,
+        _file_guard: file_guard,
+    })
+}
+
+/// Held by CaptureAuthority::CommitGuard through the repository commit.
+/// Content guards, also used by fs_write_file, fence the actual editor writes.
+/// Lifecycle guards additionally fence plan lifecycle operations.
+#[allow(dead_code)]
+pub(crate) struct LockedExecutionSource {
+    pub source: String,
+    _guards: Vec<super::PlanLifecycleGuard>,
+    _content_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+    _state_guard: tokio::sync::OwnedMutexGuard<()>,
+    _file_guard: super::WorkspaceFileLock,
 }

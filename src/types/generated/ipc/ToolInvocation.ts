@@ -2,4 +2,4 @@
 import type { ToolEffectClass } from "./ToolEffectClass";
 import type { ToolInvocationStatus } from "./ToolInvocationStatus";
 
-export type ToolInvocation = { conversation_id: string, turn_id: string, message_id: string, call_id: string, tool_name: string, effect_class: ToolEffectClass, arguments_sha256: string, remote_execution_id: string | null, status: ToolInvocationStatus, receipt_id: string | null, created_at: string, updated_at: string, };
+export type ToolInvocation = { conversation_id: string, turn_id: string, message_id: string, call_id: string, tool_name: string, effect_class: ToolEffectClass, arguments_sha256: string, remote_execution_id: string | null, status: ToolInvocationStatus, receipt_id: string | null, result_json: string | null, created_at: string, updated_at: string, };

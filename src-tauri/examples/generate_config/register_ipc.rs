@@ -3,6 +3,13 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::execution::EngineStartRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineStartReceipt>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineStopRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineStopState>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineProjection>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineEventPage>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineFailure>("execution")?;
     registry.add::<ipc_contracts::db::ConversationGoal>("db")?;
     registry.add::<ipc_contracts::db::ConversationGoalAudit>("db")?;
     registry.add::<ipc_contracts::db::ActivateConversationGoalInput>("db")?;

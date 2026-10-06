@@ -652,3 +652,5 @@ export type {
   MCPRuntimeSnapshotDto,
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
+
+export { startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';

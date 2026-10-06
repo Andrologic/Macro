@@ -286,6 +286,9 @@ async fn check_database(path: &Path) -> Result<()> {
         || !versions.contains(&1)
         || !versions.contains(&3)
         || !versions.contains(&4)
+        || versions
+            .iter()
+            .any(|v| *v >= 6 && !versions.contains(&(v - 1)))
     {
         return Err("Incompatible database schema".into());
     }
@@ -296,6 +299,31 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&11) {
+        for statement in [
+            "DROP TABLE engine_events",
+            "DROP TABLE engine_effects",
+            "DROP TABLE engine_deliveries",
+            "DROP TABLE engine_systems",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !versions.contains(&10) {
+        for statement in [
+            "DROP TRIGGER tool_result_requires_completion_insert",
+            "DROP TRIGGER tool_result_requires_completion_update",
+            "ALTER TABLE tool_invocations DROP COLUMN result_json",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if !versions.contains(&9) {
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&reference)
@@ -340,6 +368,7 @@ async fn check_database(path: &Path) -> Result<()> {
             || table == "agent_run_transitions"
             || table == "conversation_goals"
             || table.starts_with("conversation_goal_")
+            || table.starts_with("engine_")
         {
             // This table has no legacy schema variants. Compare its full DDL
             // so a backup cannot omit its CHECK constraints while retaining
@@ -1231,6 +1260,18 @@ mod tests {
     }
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
+        for statement in [
+            "DROP TABLE engine_events",
+            "DROP TABLE engine_effects",
+            "DROP TABLE engine_deliveries",
+            "DROP TABLE engine_systems",
+            "DROP TRIGGER tool_result_requires_completion_insert",
+            "DROP TRIGGER tool_result_requires_completion_update",
+            "ALTER TABLE tool_invocations DROP COLUMN result_json",
+            "DELETE FROM schema_migrations WHERE version >= 10",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&mut *db)
             .await
@@ -1411,7 +1452,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            9
+            11
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1444,7 +1485,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 11);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -2787,5 +2828,45 @@ mod tests {
                 Some(&serde_json::json!(expected_secret))
             );
         }
+    }
+    #[tokio::test]
+    async fn engine_snapshot_constraint_tampering_is_rejected() {
+        let (_temp, data, _config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=ON")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK (json_valid(snapshot_json))', '') WHERE name='engine_systems'").execute(&mut db).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=OFF")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path)
+            .await
+            .unwrap_err()
+            .contains("constraints"));
+    }
+    #[tokio::test]
+    async fn tool_result_constraint_tampering_is_rejected() {
+        let (_temp, data, _config) = profile().await;
+        let path = data.join("macro.db");
+        let mut db = connection(&path).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=ON")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sqlite_master SET sql = replace(sql, 'CHECK (result_json IS NULL OR json_valid(result_json))', '') WHERE name='tool_invocations'").execute(&mut db).await.unwrap();
+        sqlx::query("PRAGMA writable_schema=OFF")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert!(check_database(&path)
+            .await
+            .unwrap_err()
+            .contains("constraints"));
     }
 }

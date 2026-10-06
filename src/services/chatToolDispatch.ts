@@ -185,43 +185,55 @@ export function createChatToolDispatch(
       return typeof resolution === "object" && resolution?.kind === "result" && resolution.errorKind === "permission"
         ? resolution : ABORTED;
     }
-    // A typed refusal confirms that no effect was dispatched, even if retaining
-    // its diagnostic later fails. Do not turn it into a possible mutation.
+    // A pre-effect refusal is already a bounded result. If its diagnostic
+    // artifact fails, retain that result through the same durable completion.
     const refusal = typeof resolution === 'object' && resolution?.kind === 'result' &&
       (resolution.errorKind === 'permission' || resolution.errorKind === 'validation') ? resolution : undefined;
     let preserved: ToolCallResolution | string | void;
     try {
       preserved = await ports.preserve(operation, normalizedName, toolCallId, resolution);
     } catch (error) {
-      await markUnknown();
-      if (!isCurrent()) return ABORTED;
-      if (journalState.localIntent) {
-        if (refusal) return refusal;
-        const failure = uncertain('The tool result could not be preserved.',
-          error instanceof ToolResultPreservationError ? error.preview : undefined);
-        // Losing the full text artifact must not discard already bounded media.
-        return typeof resolution === 'object' && resolution?.kind === 'result' && resolution.blocks
-          ? { ...failure, blocks: [{ type: 'text' as const, text: failure.result }, ...resolution.blocks.filter(block => block.type !== 'text')] }
-          : failure;
+      if (refusal && isCurrent()) {
+        preserved = refusal;
+      } else {
+        await markUnknown();
+        if (!isCurrent()) return ABORTED;
+        if (journalState.localIntent) {
+          const failure = uncertain('The tool result could not be preserved.',
+            error instanceof ToolResultPreservationError ? error.preview : undefined);
+          // Losing the full text artifact must not discard already bounded media.
+          return typeof resolution === 'object' && resolution?.kind === 'result' && resolution.blocks
+            ? { ...failure, blocks: [{ type: 'text' as const, text: failure.result }, ...resolution.blocks.filter(block => block.type !== 'text')] }
+            : failure;
+        }
+        throw await ports.boundError(operation, normalizedName, toolCallId, error);
       }
-      throw await ports.boundError(operation, normalizedName, toolCallId, error);
     }
     if (!isCurrent()) {
       await markUnknown();
       return ABORTED;
     }
     if (journalState.localIntent) {
+      if (preserved === undefined && refusal) preserved = refusal;
       if (preserved === undefined) {
         await markUnknown();
-        return refusal ?? uncertain('The tool result could not be preserved.');
+        return uncertain('The tool result could not be preserved.');
       }
       try {
-        // Confirm the executor response after optional large-result preservation.
-        // Short results are not journaled; Copilot acceptance is separate.
-        await ports.journal.complete({ ...journalState.localIntent, receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response' });
+        // Persist the exact result delivered to continuation, including short
+        // results and refusals. Provider acceptance remains a separate receipt.
+        preserved = normalizeLegacyToolExecutionResult(normalizedName, preserved);
+        const resultJson = JSON.stringify(preserved);
+        if (resultJson === undefined) throw new Error('Tool result is not JSON serializable');
+        const completion: CompleteToolInvocationInput = {
+          ...journalState.localIntent,
+          receiptId: globalThis.crypto?.randomUUID?.() ?? 'local-executor-response',
+          resultJson,
+        };
+        await ports.journal.complete(completion);
       } catch {
         await markUnknown();
-        return refusal ?? uncertain('The tool result was preserved, but durable completion could not be confirmed.');
+        return uncertain('The tool result was preserved, but durable completion could not be confirmed.');
       }
     }
     return normalizeLegacyToolExecutionResult(normalizedName, preserved);
