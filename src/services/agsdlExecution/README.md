@@ -72,10 +72,12 @@ coordinateur.
    au host résident. La révision actuelle est celle du fichier metadata du plan,
    pas une révision interne AgSDL. Aucun helper local ne prouve le propriétaire
    ni la fraîcheur du fichier.
-2. `compilePlan` copie synchroniquement la source et le registre avant toute
-   attente, valide le document vendor, revérifie le SHA-256 des octets UTF-8,
-   contrôle le profil et toutes les configurations Agents, puis renvoie séparément
-   `static` et `runtime`. Un refus produit un diagnostic structuré et aucun plan.
+2. `compilePlan` valide et copie synchroniquement les champs de source et du
+   registre avant toute attente. Il valide le document vendor, revérifie le SHA-256
+   des octets UTF-8 et contrôle le profil et toutes les configurations Agents.
+   Il renvoie séparément `static` et `runtime`. `supported` devient true seulement
+   après construction, sérialisation exacte et contrôle lexical du plan sérialisé.
+   Tout refus reste non supporté, sans plan ni `compiledPlanJson`.
 3. Avant une livraison, `validateOrigin` puis `deliveryMessage` et `validateInput`
    contrôlent la frontière. `prepareMessage` applique seulement les sélecteurs de
    l'entrée courante. `conditionResult` conserve la même valeur et son origine.
@@ -92,6 +94,27 @@ coordinateur.
    `completionResult` et `selectedRoute` contrôlent les sorties requises et le
    choix avant une continuation. Le natif conserve la terminaison, la mémoire,
    le curseur et les livraisons dans une transaction unique.
+
+La frontière de métadonnées exige des chaînes primitives pour les identités,
+versions et JSON exacts. Une identité vide ou composée seulement d'espaces est
+refusée ; le contrôle conserve tout texte accepté sans le réécrire. La révision
+source est un entier décimal canonique non négatif sans limite de précision et
+le SHA est une chaîne de 64 caractères hexadécimaux minuscules. `captureRegistry`
+vérifie les conteneurs, les bindings, leurs capacités et preuves, les entrées du
+catalogue Model, les configurations et les descriptors MCP. Ces contrôles de
+forme ne prouvent toujours pas la provenance native du registre.
+
+`RuntimeAssessment.source` peut être `null` uniquement si la capture source est
+structurellement invalide. Ce refus porte `CORRELATION` et un pointeur sous
+`/source`, sans recopier l'entrée malformée. Une source valablement capturée reste
+complète dans les refus ultérieurs, notamment un SHA différent, un registre
+incomplet ou un profil hors périmètre. `registryVersion` est vide quand aucune
+version de registre n'a été capturée. Ces absences représentent un refus, jamais
+un propriétaire ou une version de remplacement. Le host doit refuser tout
+assessment sans source avant une ouverture durable. `CompiledPlan.source` et
+`SystemSnapshot.source` restent complets et obligatoires ; un succès conserve
+une source complète. Seuls les champs déclarés des DTO sont copiés, sans
+propriétés supplémentaires ou valeurs non transportables provenant du caller.
 
 `toDispatchValue` est une conversion facultative pour les DTO ordinaires du
 registre Macro actuel. Elle exige que chaque nombre converti ait exactement la
@@ -188,8 +211,8 @@ Les `number`, `bigint`, objets `String` et valeurs omises ou `undefined` sont re
 avant signature ou insertion, sans consommer la séquence. Les pointeurs d'erreur
 sont `/sequence`, `/cursor` et `/ownerEpoch`. Les séquences sont positives et
 communes aux Messages et publications. Elles commencent à `1`. Les événements
-peuvent arriver dans le désordre, mais la fermeture exige la continuité jusqu'au curseur inclus. `0` ferme une collection
-vide. Les retransmissions identiques avant fermeture sont idempotentes. Les
+peuvent arriver dans le désordre, mais la fermeture exige la continuité jusqu'au
+curseur inclus. `0` ferme une collection vide. Les retransmissions identiques avant fermeture sont idempotentes. Les
 conflits, trous, mauvaises attributions et émissions après fermeture échouent
 avec `CORRELATION`. Une fermeture répétée au même curseur conserve le résultat.
 Les bornes par défaut sont 10 000 événements et 2 000 000 octets de texte visible.

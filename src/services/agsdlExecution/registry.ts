@@ -5,6 +5,8 @@ import { schema, satisfies, type as valueType } from '../../vendor/agsdl/v0.2/va
 import type { ExactJsonText, FrozenAgentConfiguration } from './contracts';
 import { NumberToken, clone, decimal, decode, encode, equal, fail, has, list, record, shape, text, type ExactObject, type ExactValue } from './exact';
 
+import { captureNativeJson, metadataArray, metadataIdentity, metadataJson, metadataObject, metadataText } from './metadata';
+
 export const PUBLICATION_PROTOCOL = 'macro-agsdl-publication/1' as const;
 export const ENGINE_CAPABILITIES = ['agent-continuity', 'prompt-instructions', 'resources-information', 'inline-text-json', 'tool-admission', 'response-attribution'] as const;
 export const INVOCATION_CAPABILITIES = ['actual-permission-scope', 'termination-evidence'] as const;
@@ -46,6 +48,61 @@ export interface CapturedRegistry {
   readonly models: readonly ModelCatalogueEntry[];
   readonly configurations: readonly ConfigurationAttestation[];
   readonly mcpTools: readonly MCPTool[];
+}
+/** Validate and copy the transport boundary. Native provenance still belongs to Hosting. */
+export function captureRegistry(value: unknown): CapturedRegistry {
+  const registry = metadataObject(value, '/registry');
+  const version = metadataIdentity(registry.version, '/registry/version');
+  const objects = (field: string) => metadataArray(registry[field], `/registry/${field}`).map((entry, index) => ({ entry: metadataObject(entry, `/registry/${field}/${index}`), pointer: `/registry/${field}/${index}` }));
+  const jsons = (value: unknown, pointer: string) => metadataArray(value, pointer).map((json, index) => metadataJson(json, `${pointer}/${index}`));
+  const bindings = objects('bindings').map(({ entry, pointer }): BindingAttestation => {
+    const targetPointer = `${pointer}/target`, target = metadataObject(entry.target, targetPointer);
+    let capturedTarget: BindingTarget;
+    switch (target.kind) {
+      case 'engine':
+        if (target.adapter !== 'macro-streaming-v1') return fail('UNSUPPORTED', `${targetPointer}/adapter`, 'Unknown Engine adapter.');
+        capturedTarget = { kind: 'engine', adapter: 'macro-streaming-v1' }; break;
+      case 'publication':
+        if (target.protocol !== PUBLICATION_PROTOCOL) return fail('UNSUPPORTED', `${targetPointer}/protocol`, 'Unknown publication protocol.');
+        capturedTarget = { kind: 'publication', protocol: PUBLICATION_PROTOCOL }; break;
+      case 'macro-tool':
+        capturedTarget = { kind: 'macro-tool', toolId: metadataIdentity(target.toolId, `${targetPointer}/toolId`) }; break;
+      case 'mcp-tool':
+        capturedTarget = { kind: 'mcp-tool', serverId: metadataIdentity(target.serverId, `${targetPointer}/serverId`), toolId: metadataIdentity(target.toolId, `${targetPointer}/toolId`), descriptorJson: metadataJson(target.descriptorJson, `${targetPointer}/descriptorJson`) }; break;
+      default: return fail('UNSUPPORTED', `${targetPointer}/kind`, 'Unknown binding target.');
+    }
+    return {
+      declarationJson: metadataJson(entry.declarationJson, `${pointer}/declarationJson`), target: capturedTarget,
+      argumentSchemaJson: metadataJson(entry.argumentSchemaJson, `${pointer}/argumentSchemaJson`),
+      resultConstraintJson: metadataJson(entry.resultConstraintJson, `${pointer}/resultConstraintJson`),
+      capabilities: metadataArray(entry.capabilities, `${pointer}/capabilities`).map((capability, index) => metadataIdentity(capability, `${pointer}/capabilities/${index}`)),
+      verifiedRequirementsJson: jsons(entry.verifiedRequirementsJson, `${pointer}/verifiedRequirementsJson`),
+    };
+  });
+  const models = objects('models').map(({ entry, pointer }): ModelCatalogueEntry => {
+    const editionJson = metadataJson(entry.editionJson, `${pointer}/editionJson`);
+    if (!shape(decode(editionJson), schema.$defs.Edition)) return fail('UNSUPPORTED', `${pointer}/editionJson`, 'Model catalogue edition is incomplete.');
+    return { editionJson, providerId: metadataIdentity(entry.providerId, `${pointer}/providerId`), modelId: metadataIdentity(entry.modelId, `${pointer}/modelId`) };
+  });
+  const configurations = objects('configurations').map(({ entry, pointer }): ConfigurationAttestation => ({
+    agentName: metadataIdentity(entry.agentName, `${pointer}/agentName`),
+    agentDeclarationJson: metadataJson(entry.agentDeclarationJson, `${pointer}/agentDeclarationJson`),
+    configurationDeclarationJson: metadataJson(entry.configurationDeclarationJson, `${pointer}/configurationDeclarationJson`),
+    verifiedRequirementsJson: jsons(entry.verifiedRequirementsJson, `${pointer}/verifiedRequirementsJson`),
+    effectiveSettingsJson: metadataJson(entry.effectiveSettingsJson, `${pointer}/effectiveSettingsJson`),
+    permissionsJson: metadataJson(entry.permissionsJson, `${pointer}/permissionsJson`), scopeJson: metadataJson(entry.scopeJson, `${pointer}/scopeJson`),
+  }));
+  const mcpTools = objects('mcpTools').map(({ entry, pointer }): MCPTool => {
+    const tool: MCPTool = { id: metadataIdentity(entry.id, `${pointer}/id`), serverId: metadataIdentity(entry.serverId, `${pointer}/serverId`), name: metadataIdentity(entry.name, `${pointer}/name`) };
+    for (const key of ['description', 'discoveredAt'] as const) if (entry[key] !== undefined) tool[key] = metadataText(entry[key], `${pointer}/${key}`);
+    if (entry.enabled !== undefined) {
+      if (typeof entry.enabled !== 'boolean') return fail('UNSUPPORTED', `${pointer}/enabled`, 'Expected a native enabled flag.');
+      tool.enabled = entry.enabled;
+    }
+    if (entry.inputSchema !== undefined) tool.inputSchema = captureNativeJson(metadataObject(entry.inputSchema, `${pointer}/inputSchema`), `${pointer}/inputSchema`) as Record<string, unknown>;
+    return tool;
+  });
+  return { version, bindings, models, configurations, mcpTools };
 }
 function requiredCapabilities(entry: BindingAttestation, required: readonly string[]): void {
   if (required.some(value => !entry.capabilities.includes(value))) return fail('UNSUPPORTED', '', 'The trusted path has unverified capabilities.');
@@ -152,7 +209,9 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   for (const name of Object.values(record(configuration.tools ?? {}))) resolveBinding(document, text(name), registry, 'tool');
   if (!has(configuration, 'model')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Provider and Model must be explicit.');
   const models = registry.models.filter(model => equal(decode(model.editionJson), configuration.model));
-  if (models.length !== 1 || !models[0].providerId || !models[0].modelId) return fail('UNSUPPORTED', '', 'Model has no unique captured native catalogue entry.');
+  if (models.length !== 1) return fail('UNSUPPORTED', '', 'Model has no unique captured native catalogue entry.');
+  const providerId = metadataIdentity(models[0].providerId, '/registry/models/providerId');
+  const modelId = metadataIdentity(models[0].modelId, '/registry/models/modelId');
   const proofs = registry.configurations.filter(proof => proof.agentName === agentName && equal(decode(proof.agentDeclarationJson), agent) && equal(decode(proof.configurationDeclarationJson), configuration));
   if (proofs.length !== 1) return fail('UNSUPPORTED', '', 'Agent configuration has no unique end-to-end verification.');
   const proof = proofs[0];
@@ -162,7 +221,7 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   decode(proof.permissionsJson);
   decode(proof.scopeJson);
   return {
-    agentName, configurationName, providerId: models[0].providerId, modelId: models[0].modelId,
+    agentName, configurationName, providerId, modelId,
     configurationJson: encode({ agent: clone(agent), configuration: clone(configuration), initialization: clone(initialization), bindings: clone(record(document.bindings)) }),
     settingsJson: proof.effectiveSettingsJson, permissionsJson: proof.permissionsJson, scopeJson: proof.scopeJson,
   };

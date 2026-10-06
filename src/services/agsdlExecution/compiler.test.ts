@@ -65,16 +65,16 @@ describe('versioned compiler and fail-closed runtime assessment', () => {
     expect(source.revision).toBe('not-canonical');
     expect(result.plan!.documentJson).toBe(authoredSource);
   });
-  it('does not replace an invalid captured SHA with a later caller mutation', async () => {
+  it('does not replace a mismatched captured SHA with a later caller mutation', async () => {
     const doc = documentFixture(), authoredSource = encode(doc);
     const validSha = id<'sha256'>(await sourceDigest(authoredSource));
-    const source = { owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '7', sourceSha256: id<'sha256'>('invalid') };
+    const source = { owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '7', sourceSha256: id<'sha256'>('f'.repeat(64)) };
     const pending = compilePlan(authoredSource, source, registryFixture(doc));
     source.sourceSha256 = validSha;
     const result = await pending;
     expect(result.runtime.supported).toBe(false);
     expect(result.runtime.diagnostics[0].code).toBe('CORRELATION');
-    expect(result.runtime.source.sourceSha256).toBe(id<'sha256'>('invalid'));
+    expect(result.runtime.source?.sourceSha256).toBe(id<'sha256'>('f'.repeat(64)));
     expect(result.plan).toBeNull();
   });
   it('requires a unique native model and complete verified configuration', async () => {

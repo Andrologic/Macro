@@ -2,7 +2,8 @@ import { read } from '../../vendor/agsdl/v0.2/reader.mjs';
 import { agentContent, inlineSource } from './content';
 import type { Diagnostic, EngineVersions, ExactJsonText, FrozenAgentConfiguration, RuntimeAssessment, SourceRevision, StaticAssessment, StepAddress } from './contracts';
 import { ConformanceError, NumberToken, at, clone, decode, encode, fail, has, list, record, text, type ExactObject, type ExactValue } from './exact';
-import { PUBLICATION_PROTOCOL, captureAgent, resolveBinding, type CapturedRegistry } from './registry';
+import { PUBLICATION_PROTOCOL, captureAgent, captureRegistry, resolveBinding, type CapturedRegistry } from './registry';
+import { captureSourceRevision, metadataIdentity, metadataObject } from './metadata';
 
 export const COMPILER_VERSION = 'macro-agsdl-inline-compiler/1' as const;
 export const CONFORMANCE_VERSION = 'macro-agsdl-conformance/1' as const;
@@ -107,16 +108,23 @@ export async function sourceDigest(authoredSource: string): Promise<string> {
  * No registration, admission, provider dispatch or side effects are performed.
  */
 export async function compilePlan(authoredSource: string, source: SourceRevision, capturedRegistry: CapturedRegistry): Promise<CompilationResult> {
-  const capturedSource = clone(source);
   const report = read(new TextEncoder().encode(authoredSource));
   const staticAssessment: StaticAssessment = { valid: report.valid, diagnostics: report.findings.map(finding => ({ code: finding.code, pointer: finding.path, message: finding.message ?? 'Document declaration is invalid.' })) };
-  const registry = clone(capturedRegistry);
-  let runtime: RuntimeAssessment = { profile: 'macro-serial-inline-v1', registryVersion: registry.version, source: clone(capturedSource), supported: false, diagnostics: [], unassessed: [] };
+  let runtime: RuntimeAssessment = { profile: 'macro-serial-inline-v1', registryVersion: '', source: null, supported: false, diagnostics: [], unassessed: [] };
   const unavailable = (): CompilationResult => ({ static: staticAssessment, runtime, plan: null, compiledPlanJson: null, productRuntimeAvailable: false });
-  if (!report.valid) return unavailable();
   try {
-    if (!registry.version) return fail('UNSUPPORTED', '', 'Registry version is required.');
-    if (!/^(0|[1-9][0-9]*)$/.test(capturedSource.revision) || !capturedSource.owner.projectId || !capturedSource.owner.planId || !capturedSource.owner.branch || capturedSource.sourceSha256 !== await sourceDigest(authoredSource)) return fail('CORRELATION', '', 'Canonical source revision or SHA does not match.');
+    let capturedSource: SourceRevision;
+    try { capturedSource = captureSourceRevision(source); }
+    catch (error) {
+      if (error instanceof ConformanceError) throw error;
+      return fail('CORRELATION', '/source', 'Source capture is structurally invalid.');
+    }
+    runtime = { ...runtime, source: clone(capturedSource) };
+    const registryInput = metadataObject(capturedRegistry, '/registry');
+    runtime = { ...runtime, registryVersion: metadataIdentity(registryInput.version, '/registry/version') };
+    const registry = captureRegistry(registryInput);
+    if (!report.valid) return unavailable();
+    if (capturedSource.sourceSha256 !== await sourceDigest(authoredSource)) return fail('CORRELATION', '/source/sourceSha256', 'Captured source SHA does not match the authored bytes.');
     const document = record(decode(authoredSource));
     rejectAuthoredSettingsSecrets(document);
     profilePreflight(document);
@@ -162,13 +170,14 @@ export async function compilePlan(authoredSource: string, source: SourceRevision
       versions: { snapshot: '1', contract: 'agsdl-0.2.0', compiler: COMPILER_VERSION, runtime: CONFORMANCE_VERSION, registry: registry.version, profile: 'macro-serial-inline-v1' },
       source: clone(capturedSource), documentJson: encode(document), entry: has(flow, 'entry') ? [text(flow.entry)] : null, steps, agents, graphlessPublicationContracts,
     };
-    runtime = { ...runtime, supported: true };
     // DTO numeric fields are exact JSON strings; declarations never traverse ordinary JSON parsing.
     const compiledPlanJson = encode(plan as unknown as ExactObject);
+    decode(compiledPlanJson);
+    runtime = { ...runtime, supported: true };
     return { static: staticAssessment, runtime, plan, compiledPlanJson, productRuntimeAvailable: PRODUCT_RUNTIME_AVAILABLE };
   } catch (error) {
     const diagnostic: Diagnostic = error instanceof ConformanceError ? { code: error.code, pointer: error.pointer, message: error.message } : { code: 'UNSUPPORTED', pointer: '', message: 'Incomplete or invalid trusted registry input.' };
-    runtime = { ...runtime, diagnostics: [diagnostic] };
+    runtime = { ...runtime, supported: false, diagnostics: [diagnostic] };
     return unavailable();
   }
 }
