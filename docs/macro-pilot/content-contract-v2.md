@@ -376,3 +376,28 @@ unknown. Runtime preparing/overflow_recovery/streaming maps to busy, idle to
 idle, error to error and missing runtime to unknown. Neither mapping bypasses
 export safety. The helper's `validatePageContinuation` checks adjacent pages;
 consumers also retain all earlier identities and the outstanding cursor.
+
+
+## Latest-first conversation history
+
+The optional `conversation-history-1` capability depends on `conversations-1`.
+Select it only when the client, relay and producer all advertise support.
+A `conversation.window` request may then set `body.direction: "backward"`.
+The producer attests both capabilities in the delivery. Without the history
+capability the existing forward pagination remains unchanged.
+
+An untargeted first backward window ends at `page.total`. Items remain in
+chronological order, with absolute `position` values. The page contains at most
+50 items and remains under the content envelope byte budget. Its `page.direction`
+is `"backward"`; `next_cursor` addresses older messages and is null exactly when
+`page.offset` is zero. For continuation, the older page's offset plus item count
+must equal the previous page's offset. Snapshot, total, revision, expiry, policy
+and direction stay identical. Targeted windows must contain `message_id`.
+Cursors are bound to direction, target, account and source session.
+
+Mobile clients open at the last message, prepend older pages when requested,
+and preserve the visible reading anchor. Read tokens cover only the returned
+page, not every locally accumulated message. Refreshing a capture can restore
+the number of pages already loaded, but must never reuse an expired cursor or
+acknowledge messages that were not observed. The relay retains only bounded
+transient captures under the existing expiry rules; it is not a history store.

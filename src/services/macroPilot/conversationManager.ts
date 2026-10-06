@@ -129,24 +129,25 @@ export class ConversationManager {
     const bytes = utf8Bytes(stableJson(items)) * 2 + 2048; this.quota(bytes);
     const key = crypto.randomUUID(); this.snapshots.set(key, { binding, fingerprint: catalog.fingerprint, revision: catalog.revision, observed: this.now(), items: structuredClone(items), cursors: new Map(), bytes, ref, nativeSnapshot }); return key;
   }
-  private page(snapshotId: string, offset: number, policy: TextPolicy): { page: PageMetadata; items: Items } {
+  private page(snapshotId: string, offset: number, policy: TextPolicy, backward = false): { page: PageMetadata; items: Items } {
     const snapshot = this.snapshots.get(snapshotId)!;
     const items: Items = [];
     let bytes = 4096;
-    for (const item of snapshot.items.slice(offset, offset + 50)) {
+    for (const item of (backward ? snapshot.items.slice(Math.max(0, offset - 50), offset).reverse() : snapshot.items.slice(offset, offset + 50))) {
       const size = utf8Bytes(stableJson(item)) + 1;
       if (bytes + size > 240 * 1024) break;
       (items as Array<Items[number]>).push(item); bytes += size;
     }
-    if (!items.length && offset < snapshot.items.length) fail('resource_limit');
+    if (!items.length && (backward ? offset > 0 : offset < snapshot.items.length)) fail('resource_limit');
+    if (backward) { items.reverse(); offset -= items.length; }
     const end = offset + items.length;
     let cursor: string | null = null;
-    if (end < snapshot.items.length) {
-      cursor = [...snapshot.cursors].find(([,p]) => p === end)?.[0] ?? crypto.randomUUID();
-      this.quota(128); snapshot.cursors.set(cursor,end);
+    if (backward ? offset > 0 : end < snapshot.items.length) {
+      cursor = [...snapshot.cursors].find(([,p]) => p === (backward ? offset : end))?.[0] ?? crypto.randomUUID();
+      this.quota(128); snapshot.cursors.set(cursor,backward ? offset : end);
     }
     return { page: { snapshot_id: snapshotId, revision: snapshot.revision, observed_at: new Date(snapshot.observed).toISOString(), expires_at: new Date(snapshot.observed + 300000).toISOString(), export_policy_revision: policy.revision,
-      offset, total: snapshot.items.length, next_cursor: cursor }, items };
+      offset, total: snapshot.items.length, next_cursor: cursor, ...(backward ? { direction: 'backward' as const } : {}) }, items };
   }
   async handle(delivery: ContentDelivery, policy: TextPolicy, authorize: () => Promise<string>): Promise<unknown> {
     const epoch = this.epoch;
@@ -156,6 +157,8 @@ export class ConversationManager {
     const request = delivery.request;
     const body = request.body as Record<string, unknown>;
     const catalog = await this.catalog(policy); check();
+    const backward = body.direction === 'backward';
+    if (backward && !delivery.capabilities?.includes('conversation-history-1')) fail('validation_failed');
     if (request.operation === 'conversation.action' || request.operation === 'conversation.create') {
       const input = request.body;
       const deadline = await authorize(); check();
@@ -242,14 +245,15 @@ export class ConversationManager {
         page = await this.deps.captures.conversationRead(scope, request.body.ref, { snapshot_id: nativeSnapshot, cursor: page.page.next_cursor }); items.push(...page.items);
         if (utf8Bytes(stableJson(items)) > 4 * 1024 * 1024) fail('resource_limit');
       }
-      if (request.body.message_id) { const position = items.findIndex(m => m.message_id === request.body.message_id); if (position < 0) fail('not_found'); offset = Math.max(0,position-5); }
+      if (request.body.message_id) { const position = items.findIndex(m => m.message_id === request.body.message_id); if (position < 0) fail('not_found'); offset = backward ? Math.min(items.length, position + 6) : Math.max(0,position-5); }
+      if (backward && !request.body.message_id) offset = items.length;
       key = this.allocate(binding, catalog, items, request.body.ref, nativeSnapshot);
     } else return fail('validation_failed');
     check();
     const snapshot = this.snapshots.get(key!)!;
     if (request.operation === 'conversation.window') {
       await this.deps.captures.validateCached({ accountId: delivery.account_id, sessionId: delivery.source_session_id, instanceId: delivery.instance_id, reliability: true }, 'conversation.read', request.body.ref, snapshot.nativeSnapshot!);
-      const result = this.page(key!, offset, policy);
+      const result = this.page(key!, offset, policy, backward);
       const observed: number[] = [];
       for (const item of result.items as MessageItem[]) {
         if (item.role !== 'assistant' || !('text' in item) || item.completion !== 'complete') continue;

@@ -208,10 +208,11 @@ export class PilotRuntime {
     let extended = true;
     let reliability = true;
     let conversations = true;
+    let history = true;
     let advertised = false;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1'] : [])] } : {}) }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : [])] : [])] } : {}) }, signal);
         if (signal.aborted) break;
         advertised = true;
         if (reliability) host.enableReliability();
@@ -241,7 +242,7 @@ export class PilotRuntime {
       } catch (error) {
         if (signal.aborted) break;
         const status = object(error).status;
-        if (!advertised && extended && (status === 400 || status === 422)) { if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
+        if (!advertised && extended && (status === 400 || status === 422)) { if (history) history = false; else if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
         this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal);
       }
     }

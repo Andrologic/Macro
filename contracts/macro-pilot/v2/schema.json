@@ -410,6 +410,9 @@
               "type": "null"
             }
           ]
+        },
+        "direction": {
+          "const": "backward"
         }
       }
     },
@@ -2552,14 +2555,15 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 4,
+          "maxItems": 5,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
               "network-reliability-1",
-              "conversations-1"
+              "conversations-1",
+              "conversation-history-1"
             ]
           }
         }
@@ -2613,14 +2617,15 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 4,
+          "maxItems": 5,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
               "network-reliability-1",
-              "conversations-1"
+              "conversations-1",
+              "conversation-history-1"
             ]
           }
         }
@@ -3137,14 +3142,15 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 4,
+          "maxItems": 5,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
               "network-reliability-1",
-              "conversations-1"
+              "conversations-1",
+              "conversation-history-1"
             ]
           }
         }
@@ -3174,14 +3180,15 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 4,
+          "maxItems": 5,
           "uniqueItems": true,
           "items": {
             "enum": [
               "task-details-1",
               "task-actions-1",
               "network-reliability-1",
-              "conversations-1"
+              "conversations-1",
+              "conversation-history-1"
             ]
           }
         }
@@ -5203,6 +5210,9 @@
             },
             "continuation": {
               "$ref": "#/$defs/continuation"
+            },
+            "direction": {
+              "const": "backward"
             }
           },
           "required": [

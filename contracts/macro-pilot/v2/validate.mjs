@@ -34,6 +34,7 @@ export function validateMessage(message) {
   if (['negotiate', 'negotiated', 'poll'].includes(message.type)) {
     reject(message.type === 'negotiated' && !message.instance_id && (message.capabilities ?? []).length > 0, 'account cannot select instance capabilities');
     reject((message.capabilities ?? []).includes('task-actions-1') && !(message.capabilities ?? []).includes('task-details-1'), 'task actions require details capability');
+    reject((message.capabilities ?? []).includes('conversation-history-1') && !(message.capabilities ?? []).includes('conversations-1'), 'conversation history requires conversations capability');
   }
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
   if (message.type === 'delivery') {
@@ -42,6 +43,7 @@ export function validateMessage(message) {
     reject(scope.instance_id !== message.instance_id, 'delivery instance mismatch');
     reject(message.request.body.consistency === 'network-reliability-1' && !(message.capabilities ?? []).includes('network-reliability-1'), 'unattested reliability selection');
     reject(isConversationOperation(message.request.operation) && !(message.capabilities ?? []).includes('conversations-1'), 'unattested conversations capability');
+    reject(message.request.body.direction === 'backward' && !(message.capabilities ?? []).includes('conversation-history-1'), 'unattested history capability');
     reject(!validateMessage(message.request).valid, 'invalid delivered request');
   }
   if (message.type === 'delivery.result') {
@@ -54,7 +56,8 @@ export function validateMessage(message) {
   if (page) {
     reject(Date.parse(page.expires_at) <= Date.parse(page.observed_at) || Date.parse(page.expires_at) - Date.parse(page.observed_at) > 300000, 'page lifetime must be within five minutes');
     reject(page.offset + result.items.length > page.total, 'page exceeds total');
-    reject((page.next_cursor === null) !== (page.offset + result.items.length === page.total), 'cursor does not match remaining items');
+    reject(page.direction && message.operation !== 'conversation.window', 'history direction outside window');
+    reject((page.next_cursor === null) !== (page.direction === 'backward' ? page.offset === 0 : page.offset + result.items.length === page.total), 'cursor does not match remaining items');
     reject(result.items.length === 0 && page.next_cursor !== null, 'empty nonterminal page');
     const identities = result.items.map((item) => item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
     reject(new Set(identities).size !== identities.length, 'duplicate page identities');
@@ -151,7 +154,11 @@ export function validateExchange(request, response) {
       const expectedSnapshot = body.snapshot_id ?? body.continuation?.snapshot_id;
       if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
-      if (result.page && !body.continuation && !(request.operation === 'conversation.window' && body.message_id)) reject(result.page.offset !== 0, 'initial page starts after zero');
+      if (request.operation === 'conversation.window') {
+        reject((body.direction ?? null) !== (result.page.direction ?? null), 'window direction mismatch');
+        if (body.direction === 'backward' && !body.continuation && !body.message_id) reject(result.page.offset + result.items.length !== result.page.total, 'initial window must end at latest message');
+      }
+      if (result.page && !body.continuation && !(request.operation === 'conversation.window' && (body.message_id || body.direction === 'backward'))) reject(result.page.offset !== 0, 'initial page starts after zero');
       if (['conversations.catalog', 'conversations.search'].includes(request.operation)) {
         for (const item of result.items) reject(item.ref.instance_id !== body.instance_id || item.ref.kind !== body.kind, 'conversation catalog scope mismatch');
       }
@@ -196,11 +203,11 @@ export function validatePageContinuation(previous, next) {
   const a = previous.result?.page;
   const b = next.result?.page;
   if (!a || !b || previous.type !== 'response' || next.type !== 'response') return { valid: false, errors: ['expected page responses'] };
-  for (const field of ['snapshot_id', 'revision', 'observed_at', 'expires_at', 'export_policy_revision', 'total']) {
+  for (const field of ['snapshot_id', 'revision', 'observed_at', 'expires_at', 'export_policy_revision', 'total', 'direction']) {
     if (a[field] !== b[field]) errors.push(`page ${field} changed`);
   }
   if (previous.account_id !== next.account_id || previous.operation !== next.operation) errors.push('page scope changed');
-  if (a.next_cursor === null || b.offset !== a.offset + previous.result.items.length) errors.push('page continuation gap');
+  if (a.next_cursor === null || (a.direction === 'backward' ? b.offset + next.result.items.length !== a.offset : b.offset !== a.offset + previous.result.items.length)) errors.push('page continuation gap');
   const identity = (item) => item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
   const seen = new Set(previous.result.items.map(identity));
   if (next.result.items.some((item) => seen.has(identity(item)))) errors.push('repeated page identity');

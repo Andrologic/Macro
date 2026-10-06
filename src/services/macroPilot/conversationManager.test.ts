@@ -48,7 +48,7 @@ function setup(count = 1) {
   const captures = new ConversationCaptures({instanceId:'instance',workspaceId:'workspace',source,storage:memory(),policy:()=>policy,now:()=>clock});
   const manager = new ConversationManager({instanceId:'instance',source,captures,storage:memory(),now:()=>clock});
   let req = 0;
-  const delivery = (operation: string, body: unknown, session = 'session', account = 'account'): ContentDelivery => ({transport_version:'2.0',type:'delivery',request_id:`request-${++req}`,instance_id:'instance',account_id:account,source_session_id:session,expires_at:new Date(clock+300000).toISOString(),capabilities:['conversations-1'],request:{contract_version:'2.0',type:'request',request_id:`request-${req}`,account_id:account,operation,body} as ContentRequest});
+  const delivery = (operation: string, body: unknown, session = 'session', account = 'account'): ContentDelivery => ({transport_version:'2.0',type:'delivery',request_id:`request-${++req}`,instance_id:'instance',account_id:account,source_session_id:session,expires_at:new Date(clock+300000).toISOString(),capabilities:['conversations-1',...((body as {direction?:string}).direction==='backward'?['conversation-history-1']:[])],request:{contract_version:'2.0',type:'request',request_id:`request-${req}`,account_id:account,operation,body} as ContentRequest});
   const read = async (operation:string,body:unknown,session?:string,account?:string) => {const input=delivery(operation,body,session,account);expect(validateMessage(input).valid).toBe(true);const result=await manager.handle(input,policy,async()=>new Date(clock+10000).toISOString());expect(validateExchange(input.request,{contract_version:'2.0',type:'response',request_id:input.request_id,account_id:input.account_id,operation,result})).toEqual({valid:true,errors:[]});return result;};
   const add = (m:DbMessage) => {messages.push(m);const state=metadata.find(s=>s.conversation_id===m.conversation_id)!;state.response_revision++;revisions.set(m.id,state.response_revision);};
   const ref = {instance_id:'instance',kind:'conversation' as const,conversation_id:conversations[0].id};
@@ -155,4 +155,32 @@ test('missing descriptions use only the latest controlled user preview and never
   const cards=()=>s.read('conversations.catalog',{instance_id:'instance',kind:'conversation'}) as Promise<CapturePage<ContentConversationCard>>;
   expect((await cards()).items[0].description).toBe('Demande utile avec accents');expect(s.counts().transcriptReads).toBe(0);
   s.messages[0].content='Visible prefix '+ 'x'.repeat(20000)+' synthetic-secret';expect((await cards()).items[0].description).toBe('');expect(JSON.stringify(await cards())).not.toContain('synthetic-secret');
+});
+
+
+test('backward windows open at the latest page, prepend bounded chronological pages and isolate cursors',async()=>{
+  const s=setup();for(let i=0;i<140;i++)s.add(message(`answer-${String(i).padStart(3,'0')}`,s.ref.conversation_id));
+  const first=await s.read('conversation.window',{ref:s.ref,direction:'backward'}) as CapturePage<MessageItem>;
+  expect(first.page.offset).toBe(90);expect(first.items.length).toBe(50);expect(first.items[49].position).toBe(139);
+  const continuation={snapshot_id:first.page.snapshot_id,cursor:first.page.next_cursor};
+  const next=await s.read('conversation.window',{ref:s.ref,direction:'backward',continuation}) as CapturePage<MessageItem>;
+  expect(next.page.offset).toBe(40);expect(next.items[49].position).toBe(89);
+  const last=await s.read('conversation.window',{ref:s.ref,direction:'backward',continuation:{snapshot_id:next.page.snapshot_id,cursor:next.page.next_cursor}}) as CapturePage<MessageItem>;
+  expect(last.page.offset).toBe(0);expect(last.page.next_cursor).toBeNull();expect(last.items.length).toBe(40);
+  expect([...last.items,...next.items,...first.items].map(m=>m.position)).toEqual(Array.from({length:140},(_,i)=>i));
+  await expect(s.read('conversation.window',{ref:s.ref,continuation})).rejects.toThrow('validation_failed');
+  await expect(s.read('conversation.window',{ref:s.ref,direction:'backward',continuation},'other')).rejects.toThrow('validation_failed');
+  const legacy=await s.read('conversation.window',{ref:s.ref}) as CapturePage<MessageItem>;
+  expect(legacy.page.offset).toBe(0);expect(legacy.items[0].position).toBe(0);
+  const targeted=await s.read('conversation.window',{ref:s.ref,direction:'backward',message_id:'answer-020'}) as CapturePage<MessageItem>;
+  expect(targeted.items.some(m=>m.message_id==='answer-020')).toBe(true);
+  const denied=s.delivery('conversation.window',{ref:s.ref,direction:'backward'});denied.capabilities=['conversations-1'];
+  expect(validateMessage(denied).valid).toBe(false);await expect(s.manager.handle(denied,policy,async()=>new Date(s.clock()+10000).toISOString())).rejects.toThrow('validation_failed');
+});
+test('backward Unicode windows respect the byte limit and contiguous cursor boundaries',async()=>{
+  const s=setup();for(let i=0;i<60;i++)s.add(message(`big-${String(i).padStart(3,'0')}`,s.ref.conversation_id,'😀'.repeat(5000)));
+  const first=await s.read('conversation.window',{ref:s.ref,direction:'backward'}) as CapturePage<MessageItem>;
+  expect(first.items.length).toBeLessThan(50);expect(first.items.at(-1)!.position).toBe(59);expect(new TextEncoder().encode(JSON.stringify(first)).length).toBeLessThan(240*1024);
+  const next=await s.read('conversation.window',{ref:s.ref,direction:'backward',continuation:{snapshot_id:first.page.snapshot_id,cursor:first.page.next_cursor}}) as CapturePage<MessageItem>;
+  expect(next.page.offset+next.items.length).toBe(first.page.offset);
 });
