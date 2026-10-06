@@ -398,6 +398,39 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
       } finally { await h.close(); }
     });
 
+    it('recovers a legacy direction from its saved user passages without reinterpreting the source', async () => {
+      const h = await createHarness(); const dbRelease = c.createDeferred<void>();
+      try {
+        c.chatSnapshotConversations = [c.createChatSnapshotConversation(conversationId, { project_id: 'project-1' }),
+          c.createChatSnapshotConversation('legacy-source', { project_id: 'project-1' })];
+        c.chatSnapshotMessages = [{ id: 'original-source', conversation_id: 'legacy-source', role: 'user',
+          content: 'ORIGINAL LEGACY PASSAGE', created_at: '2026-01-01' }];
+        await h.start(); await h.entered.promise;
+        const create = c.createMessageMock.getMockImplementation()!;
+        c.createMessageMock.mockImplementation(async (...args) => { const row = await create(...args); if (args[2] === content) await dbRelease.promise; return row; });
+        const submitting = h.store.getState().submitDuringActiveTurn({ ...payload, contextRefs: [
+          { id: 'legacy-source', kind: 'conversation', title: 'Source', conversationId: 'legacy-source' },
+        ] }, 'steer');
+        await c.flushAsyncWork(); h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        dbRelease.resolve(); await submitting;
+        const entry = loadQueuedSubmissions()[0];
+        const originalRefs = JSON.parse(h.rows.find(row => row.id === entry.direction!.userMessageId)!.context_refs_json!);
+        entry.input.contextRefs = entry.input.contextRefs!.map(({ snippet: _snippet, sourceUpdatedAt: _version, ...ref }) => ref);
+        window.localStorage.setItem(QUEUED_SUBMISSIONS_STORAGE_KEY, JSON.stringify([entry]));
+        c.chatSnapshotMessages = [{ id: 'changed-source', conversation_id: 'legacy-source', role: 'user',
+          content: 'CHANGED LEGACY PASSAGE', created_at: '2026-01-02' }];
+        const { useChatStore: restarted } = await c.loadChatStore();
+        restarted.setState(c.createIdleChatStoreState({ conversations: h.store.getState().conversations }));
+        await restarted.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(h.rows.filter(row => row.id === entry.direction!.userMessageId)).toHaveLength(1);
+        expect(JSON.parse(h.rows.find(row => row.id === entry.direction!.userMessageId)!.context_refs_json!)).toEqual(originalRefs);
+        expect(h.requests).toHaveLength(2);
+        expect(JSON.stringify(h.requests[1])).toContain('ORIGINAL LEGACY PASSAGE');
+        expect(JSON.stringify(h.requests[1])).not.toContain('CHANGED LEGACY PASSAGE');
+        expect(loadQueuedSubmissions()).toEqual([]);
+      } finally { dbRelease.resolve(); await h.close(); }
+    });
+
     it('omits a stopped empty placeholder from reload and resumed provider history while retaining the user', async () => {
       const h = await createHarness();
       c.streamChatMock.mockImplementation(async options => {

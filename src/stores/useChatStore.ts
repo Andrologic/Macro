@@ -13656,9 +13656,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (hasMultipleAgsdlContexts(payload.contextRefs ?? snapshot.composerContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
       }
+      const capturedSourceRefs = deferredSubmission?.direction && payload.persistedUserMessage
+        ? payload.persistedUserMessage.context_refs ?? payload.contextRefs ?? snapshot.composerContextRefs
+        : payload.contextRefs ?? snapshot.composerContextRefs;
       const resolvedRefs = await resolveSelectedConversationSources(
-        payload.conversationId, payload.content,
-        payload.contextRefs ?? snapshot.composerContextRefs,
+        payload.conversationId, payload.content, capturedSourceRefs,
         Boolean(deferredSubmission?.direction),
       );
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
