@@ -1,3 +1,5 @@
+import { readAgsdlSelectionPayload, stripAgsdlChatContext } from '../../services/agsdl/chatContextPayload';
+export { agsdlContextForModel } from '../../services/agsdl/chatContextPayload';
 import { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
 export { serializeAgsdlChatContext } from "../../services/agsdl/selectionContext";
 import i18n from "../../i18n";
@@ -66,43 +68,25 @@ export function isAgsdlChatContextCurrent(context: AgsdlChatContext): boolean {
 
 /** Read only the display metadata from our persisted selection envelope. */
 export function readAgsdlChatSelection(hiddenContext?: string): { title: string; review: boolean } | undefined {
-  const match = hiddenContext?.match(/<agsdl_selection>\s*([\s\S]*?)\s*<\/agsdl_selection>/);
-  if (!match) return undefined;
-  try {
-    const selection: unknown = JSON.parse(match[1]);
-    if (!selection || typeof selection !== "object") return undefined;
-    const value = selection as Record<string, unknown>;
-    if (value.document !== "agsdl" || typeof value.title !== "string") return undefined;
-    return { title: value.title, review: typeof value.diagnostic === "string" && value.diagnostic.length > 0 };
-  } catch { return undefined; }
+  const selection = readAgsdlSelectionPayload(hiddenContext);
+  return selection ? { title: selection.title, review: !!selection.diagnostic } : undefined;
 }
 
 /** Replace only selection context when editing; preserve unrelated message context. */
 export function replaceAgsdlChatContext(hiddenContext: string | undefined, context: AgsdlChatContext | undefined): string | undefined {
-  const previous = hiddenContext?.replace(/<agsdl_selection>[\s\S]*?<\/agsdl_selection>\nUse agsdl_get[^\n]*/g, '').trim();
+  const previous = stripAgsdlChatContext(hiddenContext);
   return [previous, serializeAgsdlChatContext(context)].filter(Boolean).join('\n\n') || undefined;
 }
 
 /** Compatibility reader for messages sent before selections became normal references. */
 export function legacyAgsdlReference(hiddenContext: string | undefined, conversationId: string, messageId: string): ContextReference | undefined {
-  const match = hiddenContext?.match(/<agsdl_selection>\s*([\s\S]*?)\s*<\/agsdl_selection>/);
-  if (!match) return undefined;
-  try {
-    const value = JSON.parse(match[1]) as Record<string, unknown>;
-    if (value.document !== 'agsdl' || !['plan_id', 'target_branch', 'revision', 'path', 'title'].every(key => typeof value[key] === 'string')) return undefined;
-    const context: AgsdlChatContext = {
-      id: `legacy-agsdl:${messageId}`, conversationId, document: 'agsdl',
-      planId: value.plan_id as string, branchName: value.target_branch as string,
-      version: value.revision as string, persistedRevision: typeof value.persisted_revision === 'number' ? value.persisted_revision : 0,
-      path: value.path as string, title: value.title as string,
-      diagnostic: typeof value.diagnostic === 'string' ? value.diagnostic : undefined,
-      relatedPaths: Array.isArray(value.related_paths) ? value.related_paths.filter((path): path is string => typeof path === 'string') : undefined,
-    };
-    return { id: context.id, kind: 'agsdl', title: context.title, data: context };
-  } catch { return undefined; }
-}
-
-/** Only AgSDL selection payloads are model context. */
-export function agsdlContextForModel(hiddenContext: string | undefined): string | undefined {
-  return hiddenContext?.startsWith("<agsdl_selection>\n") ? hiddenContext : undefined;
+  const value = readAgsdlSelectionPayload(hiddenContext, true);
+  if (!value) return undefined;
+  const context: AgsdlChatContext = {
+    id: `legacy-agsdl:${messageId}`, conversationId, document: 'agsdl',
+    planId: value.plan_id, branchName: value.target_branch,
+    version: value.revision, persistedRevision: value.persisted_revision ?? 0,
+    path: value.path, title: value.title, diagnostic: value.diagnostic, relatedPaths: value.related_paths,
+  };
+  return { id: context.id, kind: 'agsdl', title: context.title, data: context };
 }

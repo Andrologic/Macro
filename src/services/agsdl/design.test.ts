@@ -115,3 +115,40 @@ describe('AgSDL 0.2 design envelopes', () => {
     }
   });
 });
+
+import { adaptationChanges, defaultDesign } from './design';
+
+describe('adaptation support assertions', () => {
+  const requirement = { contract: { identity: 'example/support', version: '1' } };
+  const claims = [{ requirement, status: 'supported', evidence: 'a'.repeat(64) }];
+  const source = JSON.stringify({ contract: 'agsdl-0.2.0', id: 'adapted', agents: {},
+    configurations: { changed: { engine: 'changed', settings: { region: 'old', locale: 'old' }, requires: [requirement], claims }, untouched: { engine: 'untouched', claims } },
+    bindings: { changed: { contract: { identity: 'example/engine', version: '1' }, implementation: { identity: 'example/local', version: '1' }, settings: { region: 'old' }, claims }, untouched: { contract: { identity: 'example/tool', version: '1' }, implementation: { identity: 'example/tool-local', version: '1' }, claims } },
+    content: { guidance: { value: 'old' } },
+  });
+  const designFor = (paths: string[]) => ({ ...defaultDesign(), requirements: paths.map((targetPath, index) => ({ id: `field-${index}`, label: 'Field', description: '', value: 'old', targetPath })) });
+  it('invalidates only the adapted configuration and binding, once per declaration', () => {
+    const before = designFor(['/configurations/changed/settings/region', '/configurations/changed/settings/locale', '/bindings/changed/settings/region']);
+    const changes = adaptationChanges(source, before, { ...before, requirements: before.requirements.map(row => ({ ...row, value: 'new' })) });
+    expect(changes.filter(change => change.op === 'remove')).toEqual([
+      { op: 'remove', path: '/configurations/changed/claims' }, { op: 'remove', path: '/bindings/changed/claims' },
+    ]);
+    const updated = JSON.parse(applyChanges(source, changes));
+    expect(updated.configurations.changed.settings).toEqual({ region: 'new', locale: 'new' });
+    expect(updated.bindings.changed.settings.region).toBe('new');
+    expect(updated.configurations.changed.claims).toBeUndefined();
+    expect(updated.bindings.changed.claims).toBeUndefined();
+    expect(updated.configurations.untouched.claims).toEqual(claims);
+    expect(updated.bindings.untouched.claims).toEqual(claims);
+  });
+  it('preserves assertions when content changes or the source value already matches', () => {
+    const content = designFor(['/content/guidance/value']);
+    const updated = JSON.parse(applyChanges(source, adaptationChanges(source, content, { ...content, requirements: [{ ...content.requirements[0], value: 'new' }] })));
+    expect(updated.content.guidance.value).toBe('new');
+    expect(updated.configurations.changed.claims).toEqual(claims);
+    expect(updated.bindings.changed.claims).toEqual(claims);
+    const before = designFor(['/configurations/changed/settings/region']);
+    before.requirements[0].value = '';
+    expect(adaptationChanges(source, before, { ...before, requirements: [{ ...before.requirements[0], value: 'old' }] })).toEqual([]);
+  });
+});

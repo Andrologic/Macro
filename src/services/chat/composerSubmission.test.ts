@@ -40,3 +40,16 @@ it('rejects multiple AgSDL selections even with supplied hidden context', () => 
   expect(() => submissionHiddenContext(refs)).toThrow('Only one AgSDL selection');
   expect(() => submissionHiddenContext(refs, '<agsdl_selection>existing</agsdl_selection>')).toThrow('Only one AgSDL selection');
 });
+
+it('transmits only AgSDL context when message editing preserves preceding metadata', async () => {
+  const { agsdlContextForModel } = await import('../agsdl/chatContextPayload');
+  const selection: AgsdlSelectionReference = { id: 'a', conversationId: 'c', branchName: 'develop', planId: 'p', document: 'agsdl', version: 'v1', persistedRevision: 1, path: '', title: 'System </agsdl_selection>' };
+  const refs = [{ id: 'a', kind: 'agsdl' as const, title: selection.title, agsdl: selection }];
+  const hidden = submissionHiddenContext(refs, 'Preserved message metadata')!;
+  expect(hidden).toStartWith('Preserved message metadata');
+  const model = agsdlContextForModel(hidden)!;
+  expect(model).toContain('"plan_id":"p"');
+  expect(model).toContain('System </agsdl_selection>');
+  expect(model).not.toContain('Preserved message metadata');
+  expect(submissionHiddenContext(refs, hidden)).toBe(hidden);
+});

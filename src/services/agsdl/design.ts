@@ -123,13 +123,25 @@ export function createLegacyEmptySystem(title: string): string {
 
 /** Apply a changed adaptation only to its already-authored, existing string slot. */
 export function adaptationChanges(source: string, previous: DesignMetadata, design: DesignMetadata): AgsdlChange[] {
-  if (readDocument(source).contract !== AGSDL_CONTRACT) return [];
+  const doc = readDocument(source);
+  if (doc.contract !== AGSDL_CONTRACT) return [];
   const old = new Map(previous.requirements.map(item => [item.id, item]));
-  return design.requirements.flatMap(item => {
+  const changedDeclarations = new Set<string>();
+  const changes: AgsdlChange[] = design.requirements.flatMap(item => {
     const before = old.get(item.id);
     if (!item.targetPath || item.targetPath !== before?.targetPath || item.value === before.value) return [];
     const value: unknown = JSON.parse(sourceAt(source, item.targetPath));
     if (typeof value !== 'string') throw new Error('The adaptation target must be an existing string value.');
+    if (value === item.value) return [];
+    const declaration = /^(\/(?:configurations|bindings)\/[^/]+)\//.exec(item.targetPath)?.[1];
+    if (declaration) changedDeclarations.add(declaration);
     return [{ op: 'set' as const, path: item.targetPath, valueJson: JSON.stringify(item.value) }];
   });
+  // Support assertions describe the exact declaration before adaptation.
+  for (const path of changedDeclarations) {
+    const [, catalog, name] = path.split('/');
+    const declaration = object(object(doc[catalog])[name.replaceAll('~1', '/').replaceAll('~0', '~')]);
+    if (declaration.claims !== undefined) changes.push({ op: 'remove', path: `${path}/claims` });
+  }
+  return changes;
 }

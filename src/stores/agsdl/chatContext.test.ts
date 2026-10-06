@@ -75,3 +75,48 @@ it("ignores malformed selection metadata rather than exposing hidden context", (
   expect(readAgsdlChatSelection("<agsdl_selection>not json</agsdl_selection>")).toBeUndefined();
   expect(readAgsdlChatSelection('<agsdl_selection>{"document":"agsdl","title":42}</agsdl_selection>')).toBeUndefined();
 });
+
+import { agsdlContextForModel, readAgsdlSelectionPayload } from '../../services/agsdl/chatContextPayload';
+import { replaceAgsdlChatContext, legacyAgsdlReference } from './chatContext';
+
+it('shares a validated prefixed selection across display, legacy restoration, replacement and model context', async () => {
+  await prepareAgsdlChatContext(target, { path: '/definitions/0', title: 'Agent </agsdl_selection> title', diagnostic: 'Review </agsdl_selection> data' });
+  const context = getAgsdlContext(refs)!;
+  const serialized = serializeAgsdlChatContext(context)!;
+  const hidden = `Earlier metadata\n\n${serialized}\n\nLater metadata`;
+  expect(readAgsdlChatSelection(hidden)).toEqual({ title: context.title, review: true });
+  expect(legacyAgsdlReference(hidden, 'conversation-a', 'message-a')?.data).toMatchObject({ ...context, id: 'legacy-agsdl:message-a' });
+  expect(agsdlContextForModel(hidden)).toBe(serialized);
+  expect(agsdlContextForModel(hidden)).not.toContain('Earlier metadata');
+  expect(agsdlContextForModel(hidden)).not.toContain('Later metadata');
+  const replaced = replaceAgsdlChatContext(hidden, { ...context, title: 'Updated' })!;
+  expect(readAgsdlSelectionPayload(replaced)?.title).toBe('Updated');
+  expect(replaced.match(/^<agsdl_selection>$/gm)).toHaveLength(1);
+  expect(replaced).toContain('Earlier metadata');
+  expect(replaced).toContain('Later metadata');
+  const removed = replaceAgsdlChatContext(hidden, undefined)!;
+  expect(removed).toContain('Earlier metadata');
+  expect(removed).toContain('Later metadata');
+  expect(removed).not.toContain('<agsdl_selection>');
+  expect(removed).not.toContain('Use agsdl_get');
+});
+
+it('rejects malformed or ambiguous context consistently and does not forward unknown payload fields', async () => {
+  await prepareAgsdlChatContext(target, { path: '', title: 'System' });
+  const serialized = serializeAgsdlChatContext(getAgsdlContext(refs)!)!;
+  const payload = readAgsdlSelectionPayload(serialized)!;
+  const block = (value: unknown) => `<agsdl_selection>\n${JSON.stringify(value)}\n</agsdl_selection>`;
+  for (const hidden of [block(null), block([]), block({ ...payload, plan_id: 42 }), block({ ...payload, related_paths: [42] }), block({ ...payload, persisted_revision: -1 }), block({ ...payload, diagnostic: {} }), `${serialized}\n\n${serialized}`]) {
+    expect(readAgsdlChatSelection(hidden)).toBeUndefined();
+    expect(legacyAgsdlReference(hidden, 'conversation-a', 'message-a')).toBeUndefined();
+    expect(agsdlContextForModel(hidden)).toBeUndefined();
+  }
+  expect(agsdlContextForModel(block({ ...payload, unrelated: 'Hidden private metadata' }))).not.toContain('Hidden private metadata');
+});
+
+it('keeps old display-only selection labels readable without treating them as model targets', () => {
+  const hidden = '<agsdl_selection>\n{"document":"agsdl","title":"Historical","path":"/definitions/0"}\n</agsdl_selection>';
+  expect(readAgsdlChatSelection(hidden)).toEqual({ title: 'Historical', review: false });
+  expect(legacyAgsdlReference(hidden, 'conversation-a', 'message-a')).toBeUndefined();
+  expect(agsdlContextForModel(hidden)).toBeUndefined();
+});
