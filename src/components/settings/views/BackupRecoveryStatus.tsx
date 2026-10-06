@@ -16,7 +16,7 @@ export function BackupRecoveryStatus({ status }: { status: LocalBackupStatus }) 
   return <div className="space-y-2 break-words text-xs">
     <p role="status">{t(key || 'backup.resultLegacy')}</p>
     {status.path && <p className="break-all">{status.path}</p>}
-    {status.message && <details><summary>{t('backup.diagnostics')}</summary><pre className="whitespace-pre-wrap">{status.message}</pre></details>}
+    {status.message && <details><summary>{t('backup.diagnostics')}</summary><pre className="whitespace-pre-wrap break-all">{status.message}</pre></details>}
   </div>;
 }
 
@@ -25,6 +25,6 @@ export function BackupStartupRecovery({ error }: { error: unknown }) {
   return <section role="alert" className="space-y-3 p-4 text-sm">
     <h1>{t('backup.startupTitle')}</h1>
     <p>{t('backup.startupRecovery')}</p>
-    <details><summary>{t('backup.diagnostics')}</summary><pre className="whitespace-pre-wrap">{String(error)}</pre></details>
+    <details><summary>{t('backup.diagnostics')}</summary><pre className="whitespace-pre-wrap break-all">{String(error)}</pre></details>
   </section>;
 }

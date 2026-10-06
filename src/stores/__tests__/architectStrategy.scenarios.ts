@@ -97,7 +97,11 @@ export const registerArchitectStrategyScenarios = (
       await expect(onToolCall('agsdl_get', {
         plan_id: foreignPlan.id,
         target_branch: 'develop',
-      })).rejects.toThrow('calling plan conversation');
+      })).resolves.toMatchObject({
+        kind: 'result', isError: true, errorKind: 'uncertain',
+        result: expect.stringContaining('calling plan conversation'),
+      });
+      expect(updateArchitectPlanMock).not.toHaveBeenCalled();
     });
 
     it('launches Architect conversations with the plan explorer internal profile', async () => {

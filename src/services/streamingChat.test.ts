@@ -188,7 +188,7 @@ const loadStreamingChat = async (
       visibleContent?: string | null;
       interrupt?: boolean;
       isError?: boolean;
-      errorKind?: 'validation' | 'permission' | 'execution' | 'aborted';
+      errorKind?: 'validation' | 'permission' | 'execution' | 'aborted' | 'uncertain';
     }) =>
       invokeImpl('ai_submit_tool_result', {
         request: {
@@ -4566,9 +4566,17 @@ describe('streamingChat transport lifetime', () => {
       expect(live.at(-1)?.hiddenContext ?? '').not.toContain('Question queued');
       expect(result?.hiddenContext ?? '').not.toContain('rejected result');
       expect(JSON.stringify(result?.providerInputItems)).not.toContain('Question queued');
-      expect(JSON.stringify(result?.providerInputItems)).toContain('result submission failed');
+      expect(result?.providerInputItems).toContainEqual(expect.objectContaining({
+        type: 'function_call_output', call_id: 'rejected-question', output: submissions[1].result,
+      }));
+      expect(JSON.parse(submissions[1].result)).toMatchObject({
+        outcome: 'unknown', invocation: { callId: 'rejected-question' },
+        instruction: expect.stringContaining('Inspect'),
+      });
     }
-    expect(result?.toolTraces?.[0]).toMatchObject({ status: 'done', recovery_state: 'completed' });
+    expect(result?.toolTraces?.[0]).toMatchObject({
+      status: 'done', recovery_state: bridgeAcceptsFirst ? 'completed' : 'unknown',
+    });
   });
 
   for (const acceptedByBridge of [true, false]) it(`keeps only bridge-accepted native interrupt context when completion races submission (${acceptedByBridge})`, async () => {

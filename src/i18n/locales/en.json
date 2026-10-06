@@ -568,6 +568,7 @@
     "queueSaveFailed": "Queued messages could not be saved. Keep this session open and try again.",
     "queuePlanUnavailable": "The original plan is unavailable for this queued message.",
     "queueContextChanged": "The queued message target has changed. Restore its original context before retrying.",
+    "sendImagesSaveFailed": "The message could not be saved with its images. Retry the draft.",
     "queueImagesSaveFailed": "The message is saved, but its images still need saving. Retry the queued submission.",
     "queueRecoveryTitle": "Queued messages need attention",
     "queueRecoveryDescription": "{{count}} queued message(s) are retained. Retry resumes them in their original context.",
@@ -578,6 +579,10 @@
     "queueAlreadySent": "This message was already saved. Retry recovery instead.",
     "queueEditInProgress": "Wait for the queued message change to finish.",
     "queueEmptyMessage": "The queued message cannot be empty.",
+    "queueAssistantInterrupted": "This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.",
+    "steerImagesSaveFailed": "The direction could not be saved with its images. Retry the draft.",
+    "steerTurnEnded": "The direction was saved, but its turn ended before delivery. Review it before continuing.",
+    "goalExecutorContextUnavailable": "The Goal executor context is unavailable. Send a message in this conversation before resuming.",
     "queueInterrupted": "The queued send was interrupted. Its content is retained.",
     "queueUnavailable": "This conversation can no longer accept queued messages.",
     "secondaryAction": "Alternate action",
@@ -769,6 +774,7 @@
       "binaryFileRejected": "{{file}} contains binary or invalid UTF-8 data.",
       "conversationRequired": "Select a task or plan before attaching files.",
       "urlPreviewFailedTitle": "Could not fetch URL preview",
+      "urlPreviewBlockedDescription": "For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.",
       "clipboardEmptyTitle": "Clipboard is empty",
       "clipboardReadFailedTitle": "Could not read clipboard",
       "previewUnavailable": "Preview unavailable",
@@ -1888,6 +1894,7 @@
     "totalChanges": "total changes"
   },
   "providers": {
+    "backToProviders": "Back to providers",
     "macroAi": {
       "included": "AI included with the Macro beta",
       "dropdownNotice": "AI included with the beta"
@@ -2358,6 +2365,7 @@
     }
   },
   "prompts": {
+    "loadFailed": "Unable to load system prompts. Retry before saving.",
     "title": "System Prompts",
     "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.",
     "restoreAll": "Restore All",
@@ -2779,6 +2787,16 @@
     "slashMenuLabel": "Insert context or command"
   },
   "backup": {
+    "confirmReplace": "Prepare replacement",
+    "destination": "New archive destination",
+    "source": "Archive to restore",
+    "scheduledTitle": "Operation prepared",
+    "desktopRequired": "Open Macro on the desktop to back up or restore its local data.",
+    "restoreHelp": "Replace the local data with an archive. Keep the previous profile for recovery.",
+    "exportHelp": "Save the local data to a new archive at the next startup.",
+    "limits": "Maximum archive size: 256 MiB. Restore with the same Macro version. Project paths are kept as recorded; restoring does not reconnect moved projects or merge profiles.",
+    "limitsTitle": "Compatibility, limits and private data",
+    "exclusions": "Project folders and their Git history are excluded, as are provider credentials. Keep a separate copy of your projects.",
     "scheduled": "Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.",
     "resultExported": "Backup saved.",
     "resultRestored": "Profile restored. The previous profile is retained at the path below.",
@@ -2790,15 +2808,15 @@
     "startupTitle": "Profile recovery required",
     "startupRecovery": "Browser data restoration could not finish. The native recovery archive is retained. Check the diagnostic details, free local storage if necessary, then restart Macro to retry.",
     "title": "Backup and restore",
-    "scope": "Local profile: conversations, stored attachments, code checkpoints, drafts and global preferences. Project folders and their Git metadata are excluded. Keep a separate copy of your projects. Maximum archive size: 256 MiB; restore with the same Macro version.",
-    "secrets": "Provider credentials, MCP environment variables and headers are excluded from portable exports. Reconnect providers after restoring. Conversation and file contents remain private data; store the archive securely.",
+    "scope": "Macro’s local data: conversations, stored attachments, code checkpoints, drafts, queued instructions, recovery responses and global preferences.",
+    "secrets": "Portable exports exclude provider credentials, MCP environment variables and headers. Credentials already on this installation remain here. On another installation, reconnect providers. Conversation and file contents may contain private data; store the archive securely.",
     "recovery": "Recovery required. Original data preserved.",
     "path": "Absolute path to the local backup file",
     "export": "Prepare backup",
     "restore": "Restore backup",
     "confirmTitle": "Confirm profile operation",
-    "confirmRestore": "At the next startup, this archive will replace your local profile. Macro validates it first and keeps the previous profile for recovery. Stop current tasks and quit immediately after confirming. Restore this file?",
-    "confirmExport": "Stop current tasks before continuing. Macro will create the archive at the next startup, while the database and configuration are closed. Prepare this backup?",
+    "confirmRestore": "At the next startup, this archive will replace Macro’s local data without merging. Macro validates it first and saves a recovery copy of the replaced data. Queued instructions stay paused. Stop running tasks now, then quit immediately after confirming and reopen Macro.",
+    "confirmExport": "Stop running tasks now. Macro will create this archive at the next startup. Choose a new file; existing archives are never overwritten. After confirming, quit without editing the session, then reopen Macro.",
     "confirm": "Confirm"
   }
 }

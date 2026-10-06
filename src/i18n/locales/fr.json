@@ -567,6 +567,7 @@
     "queueSaveFailed": "Impossible d’enregistrer les messages en file d’attente. Gardez cette session ouverte et réessayez.",
     "queuePlanUnavailable": "Le plan d’origine n’est pas disponible pour ce message en file d’attente.",
     "queueContextChanged": "La cible du message en file d’attente a changé. Restaurez son contexte d’origine avant de réessayer.",
+    "sendImagesSaveFailed": "Le message n’a pas pu être enregistré avec ses images. Réessayez depuis le brouillon.",
     "queueImagesSaveFailed": "Le message est enregistré, mais ses images doivent encore l’être. Réessayez l’envoi en file d’attente.",
     "queueRecoveryTitle": "Des messages en file d’attente nécessitent votre attention",
     "queueRecoveryDescription": "{{count}} message(s) en file d’attente sont conservé(s). Réessayer les reprend dans leur contexte d’origine.",
@@ -577,6 +578,10 @@
     "queueAlreadySent": "Ce message est déjà enregistré. Réessayez plutôt la récupération.",
     "queueEditInProgress": "Attendez la fin de la modification du message en attente.",
     "queueEmptyMessage": "Le message en attente ne peut pas être vide.",
+    "queueAssistantInterrupted": "Cette instruction enregistrée a peut-être commencé à être exécutée. Vérifiez la réponse et les effets des outils, puis retirez cette entrée de récupération avant de continuer manuellement.",
+    "steerImagesSaveFailed": "La direction et ses images n’ont pas pu être enregistrées. Réessayez le brouillon.",
+    "steerTurnEnded": "La direction est enregistrée, mais son tour s’est terminé avant sa transmission. Vérifiez-la avant de continuer.",
+    "goalExecutorContextUnavailable": "Le contexte d’exécution du but est indisponible. Envoyez un message dans cette conversation avant de reprendre.",
     "queueInterrupted": "L’envoi en file d’attente a été interrompu. Son contenu est conservé.",
     "queueUnavailable": "Cette conversation ne peut plus accepter de messages en file d’attente.",
     "secondaryAction": "Autre action",
@@ -768,6 +773,7 @@
       "binaryFileRejected": "{{file}} contient des données binaires ou UTF-8 non valides.",
       "conversationRequired": "Sélectionnez une tâche ou un plan avant de joindre des fichiers.",
       "urlPreviewFailedTitle": "Impossible de récupérer l’aperçu de l’URL",
+      "urlPreviewBlockedDescription": "Pour des raisons de sécurité, les aperçus ne peuvent pas accéder aux adresses réseau locales, privées, réservées ou link-local. Utilise une URL publique.",
       "clipboardEmptyTitle": "Le presse-papiers est vide",
       "clipboardReadFailedTitle": "Impossible de lire le presse-papiers",
       "previewUnavailable": "Aperçu indisponible",
@@ -1887,6 +1893,7 @@
     "totalChanges": "changements totaux"
   },
   "providers": {
+    "backToProviders": "Retour aux fournisseurs",
     "macroAi": {
       "included": "IA incluse avec la bêta de Macro",
       "dropdownNotice": "IA incluse avec la bêta"
@@ -2357,6 +2364,7 @@
     }
   },
   "prompts": {
+    "loadFailed": "Impossible de charger les invites système. Réessayez avant d’enregistrer.",
     "title": "Prompts système",
     "description": "Personnalisez les prompts de base des modes et les profils internes utilisés pendant la planification, la revue et l’audit du dépôt.",
     "restoreAll": "Tout restaurer",
@@ -2778,16 +2786,26 @@
     "slashMenuLabel": "Insérer un contexte ou une commande"
   },
   "backup": {
+    "confirmReplace": "Préparer le remplacement",
+    "destination": "Destination de la nouvelle archive",
+    "source": "Archive à restaurer",
+    "scheduledTitle": "Opération préparée",
+    "desktopRequired": "Ouvrez Macro sur ordinateur pour sauvegarder ou restaurer ses données locales.",
+    "restoreHelp": "Remplacer les données locales par une archive. Conserver le profil précédent pour récupération.",
+    "exportHelp": "Enregistrer les données locales dans une nouvelle archive au prochain démarrage.",
+    "limits": "Taille maximale : 256 Mio. Restaurez avec la même version de Macro. Les chemins des projets restent ceux enregistrés ; la restauration ne réassocie pas les projets déplacés et ne fusionne pas les profils.",
+    "limitsTitle": "Compatibilité, limites et données privées",
+    "exclusions": "Les dossiers des projets et leur historique Git sont exclus, ainsi que les identifiants des fournisseurs. Conservez une copie séparée de vos projets.",
     "title": "Sauvegarde et restauration",
-    "scope": "Profil local : conversations, pièces jointes enregistrées, checkpoints de code, brouillons et préférences globales. Les dossiers des projets et leurs métadonnées Git sont exclus. Conservez une copie séparée de vos projets. Archive limitée à 256 Mio ; restauration avec la même version de Macro.",
-    "secrets": "Les identifiants des fournisseurs, les variables d’environnement et les en-têtes MCP sont exclus des exports portables. Reconnectez les fournisseurs après restauration. Les conversations et fichiers restent des données privées ; conservez l’archive en lieu sûr.",
+    "scope": "Données locales de Macro : conversations, pièces jointes enregistrées, checkpoints de code, brouillons, instructions en file, réponses de secours et préférences générales.",
+    "secrets": "Les exports excluent les identifiants des fournisseurs, les variables d’environnement et les en-têtes MCP. Les identifiants déjà présents sur cette installation y restent. Sur une autre installation, reconnectez les fournisseurs. Les conversations et fichiers peuvent contenir des données privées ; protégez l’archive.",
     "recovery": "Récupération nécessaire. Les données originales sont conservées.",
     "path": "Chemin absolu du fichier de sauvegarde local",
     "export": "Préparer une sauvegarde",
     "restore": "Restaurer une sauvegarde",
     "confirmTitle": "Confirmer l’opération sur le profil",
-    "confirmRestore": "Au prochain démarrage, cette archive remplacera votre profil local. Macro la valide d’abord et conserve le profil précédent pour récupération. Arrêtez les tâches en cours et quittez immédiatement après confirmation. Restaurer ce fichier ?",
-    "confirmExport": "Arrêtez les tâches en cours avant de continuer. Macro créera l’archive au prochain démarrage, avant l’ouverture de la base et de la configuration. Préparer cette sauvegarde ?",
+    "confirmRestore": "Au prochain démarrage, cette archive remplacera les données locales de Macro sans fusion. Macro la vérifie et conserve une copie de récupération des données remplacées. Les instructions en file restent en pause. Arrêtez les tâches en cours, puis quittez immédiatement après confirmation et rouvrez Macro.",
+    "confirmExport": "Arrêtez les tâches en cours. Macro créera cette archive au prochain démarrage. Choisissez un nouveau fichier ; les archives existantes ne sont jamais écrasées. Après confirmation, quittez sans modifier la session, puis rouvrez Macro.",
     "confirm": "Confirmer",
     "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter.",
     "resultExported": "Sauvegarde enregistrée.",

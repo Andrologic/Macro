@@ -25,7 +25,7 @@ test('renders every native recovery status in French with separate technical dia
   }
   const legacy = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupRecoveryStatus status={{ message: 'Backup saved: legacy', browser: null }} /></I18nextProvider>);
   expect(legacy).toContain('Le résultat d’une version précédente');
-  expect(legacy).toContain('<pre class="whitespace-pre-wrap">Backup saved: legacy</pre>');
+  expect(legacy).toContain('<pre class="whitespace-pre-wrap break-all">Backup saved: legacy</pre>');
   const startup = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupStartupRecovery error="Synthetic quota failure" /></I18nextProvider>);
   expect(startup).toContain('Récupération du profil nécessaire');
   expect(startup).toContain('redémarrez Macro');

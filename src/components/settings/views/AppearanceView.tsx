@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../../stores/useAppStore';
 import { ThemeManifest, ThemeManifestItem, Theme } from '../../../types/theme'; // Adjust import based on usage
@@ -25,6 +25,7 @@ export const AppearanceView: React.FC = () => {
   } = useAppStore();
   const [themes, setThemes] = useState<LoadedTheme[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const zoomInputId = useId();
   const zoomPercent = Math.round(uiZoomLevel * 100);
 
   useEffect(() => {
@@ -90,7 +91,7 @@ export const AppearanceView: React.FC = () => {
           </div>
 
           <div className="flex items-center justify-between gap-4">
-            <label className="text-sm text-foreground">
+            <label htmlFor={zoomInputId} className="text-sm text-foreground">
               {t('settings.zoom_level') || 'Interface zoom'}
             </label>
             <span className="text-xs font-medium px-2 py-1 rounded-md bg-muted text-muted-foreground min-w-[56px] text-center">
@@ -99,6 +100,7 @@ export const AppearanceView: React.FC = () => {
           </div>
 
           <input
+            id={zoomInputId}
             type="range"
             min={75}
             max={200}

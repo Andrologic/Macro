@@ -567,6 +567,7 @@
     "queueSaveFailed": "저장하지 못했습니다. 세션을 열어 둔 채 다시 시도하세요.",
     "queuePlanUnavailable": "원래 계획을 사용할 수 없습니다.",
     "queueContextChanged": "전송 대상이 변경되었습니다. 원래 컨텍스트를 복원한 뒤 다시 시도하세요.",
+    "sendImagesSaveFailed": "메시지와 이미지를 저장하지 못했습니다. 초안에서 다시 전송하세요.",
     "queueImagesSaveFailed": "메시지는 저장되었습니다. 이미지 저장을 다시 시도하세요.",
     "queueRecoveryTitle": "대기 중인 전송을 확인하세요",
     "queueRecoveryDescription": "{{count}}개가 보존되어 있습니다. 다시 시도하면 원래 컨텍스트에서 재개됩니다.",
@@ -577,6 +578,10 @@
     "queueAlreadySent": "이 메시지는 이미 저장되었습니다. 복구를 다시 시도하세요.",
     "queueEditInProgress": "대기 중인 메시지 변경이 끝날 때까지 기다리세요.",
     "queueEmptyMessage": "대기 중인 메시지는 비워 둘 수 없습니다.",
+    "queueAssistantInterrupted": "저장된 지시의 실행이 이미 시작되었을 수 있습니다. 응답과 도구의 영향을 확인하고 이 복구 항목을 삭제한 후 수동으로 계속하세요.",
+    "steerImagesSaveFailed": "지시와 이미지를 저장하지 못했습니다. 초안을 다시 전송하세요.",
+    "steerTurnEnded": "지시는 저장되었지만 전달되기 전에 해당 턴이 종료되었습니다. 계속하기 전에 확인하세요.",
+    "goalExecutorContextUnavailable": "목표 실행 컨텍스트를 사용할 수 없습니다. 재개하기 전에 이 대화에서 메시지를 보내세요.",
     "queueInterrupted": "전송이 중단되었습니다. 내용은 보존되어 있습니다.",
     "queueUnavailable": "이 대화에는 전송을 추가할 수 없습니다.",
     "secondaryAction": "대체 작업",
@@ -769,6 +774,7 @@
       "binaryFileRejected": "{{file}}에 바이너리 데이터 또는 잘못된 UTF-8이 포함되어 있습니다.",
       "conversationRequired": "파일을 첨부하기 전에 작업 또는 계획을 선택하세요.",
       "urlPreviewFailedTitle": "URL 미리보기를 가져올 수 없습니다",
+      "urlPreviewBlockedDescription": "보안을 위해 미리보기는 로컬, 사설, 예약 또는 링크 로컬 네트워크 주소에 접근할 수 없습니다. 공개 URL을 사용하세요.",
       "clipboardEmptyTitle": "클립보드가 비어 있습니다",
       "clipboardReadFailedTitle": "클립보드를 읽을 수 없습니다",
       "previewUnavailable": "미리보기를 사용할 수 없음",
@@ -1888,6 +1894,7 @@
     "totalChanges": "총 변경사항"
   },
   "providers": {
+    "backToProviders": "공급자 목록으로 돌아가기",
     "collectionTitle": "공급자",
     "collectionDescription": "구성된 연결을 관리합니다",
     "emptyDescription": "공급자를 추가하여 Macro를 AI 서비스에 연결하세요.",
@@ -2358,6 +2365,7 @@
     "saveFailed": "제공업체를 저장하지 못했습니다."
   },
   "prompts": {
+    "loadFailed": "시스템 프롬프트를 불러올 수 없습니다. 저장하기 전에 다시 시도하세요.",
     "title": "시스템 프롬프트",
     "description": "계획, 검토, 저장소 감사 흐름에서 사용하는 모드별 기본 프롬프트와 내부 프로필을 사용자 지정합니다.",
     "restoreAll": "모두 복원",
@@ -2779,6 +2787,16 @@
     "slashMenuLabel": "컨텍스트 또는 명령 삽입"
   },
   "backup": {
+    "exclusions": "프로젝트 폴더, Git 기록, 공급자 인증 정보는 제외됩니다. 프로젝트는 별도로 복사해 두세요.",
+    "limitsTitle": "호환성, 제한 및 개인 데이터",
+    "limits": "최대 크기는 256 MiB입니다. 같은 Macro 버전으로 복원하세요. 프로젝트 경로는 유지되며 이동한 프로젝트를 다시 연결하거나 프로필을 병합하지 않습니다.",
+    "exportHelp": "다음 시작 시 로컬 데이터를 새 보관 파일에 저장합니다.",
+    "restoreHelp": "보관 파일로 로컬 데이터를 교체합니다. 이전 프로필은 복구용으로 보관합니다.",
+    "desktopRequired": "로컬 데이터를 백업하거나 복원하려면 데스크톱에서 Macro를 여세요.",
+    "scheduledTitle": "작업 준비 완료",
+    "source": "복원할 보관 파일",
+    "destination": "새 보관 파일 저장 위치",
+    "confirmReplace": "교체 준비",
     "scheduled": "작업이 준비되었습니다. Macro를 완전히 종료한 뒤 다시 여세요. 종료 전까지 이 세션을 변경하지 마세요.",
     "resultExported": "백업이 저장되었습니다.",
     "resultRestored": "프로필이 복원되었습니다. 이전 프로필은 아래 경로에 보관됩니다.",
@@ -2790,15 +2808,15 @@
     "startupTitle": "프로필 복구 필요",
     "startupRecovery": "브라우저 데이터 복원을 완료하지 못했습니다. 기본 복구 아카이브는 보관됩니다. 진단을 확인하고 필요한 경우 로컬 저장 공간을 확보한 후 Macro를 다시 시작하세요.",
     "title": "백업 및 복원",
-    "scope": "로컬 프로필: 대화, 저장된 첨부 파일, 코드 체크포인트, 초안 및 전역 설정. 프로젝트 폴더와 Git 메타데이터는 제외됩니다. 프로젝트는 별도로 복사하세요. 최대 256 MiB이며 동일한 Macro 버전으로 복원해야 합니다.",
+    "scope": "Macro 로컬 데이터: 대화, 저장된 첨부 파일, 코드 체크포인트, 초안, 대기 중인 지시, 복구용 응답 및 일반 설정.",
     "secrets": "공급자 자격 증명, MCP 환경 변수 및 헤더는 이식용 내보내기에서 제외됩니다. 복원 후 공급자를 다시 연결하세요. 대화와 파일에는 개인 데이터가 포함되므로 안전하게 보관하세요.",
     "recovery": "복구가 필요합니다. 원본 데이터는 보존됩니다.",
     "path": "로컬 백업 파일의 절대 경로",
     "export": "백업 준비",
     "restore": "백업 복원",
     "confirmTitle": "프로필 작업 확인",
-    "confirmRestore": "다음 시작 시 이 백업이 로컬 프로필을 대체합니다. Macro는 먼저 검증하고 복구를 위해 이전 프로필을 보존합니다. 실행 중인 작업을 중지하고 확인 후 즉시 종료하세요. 이 파일을 복원할까요?",
-    "confirmExport": "실행 중인 작업을 중지하세요. 다음 시작 시 데이터베이스와 설정을 열기 전에 백업을 만듭니다. 이 백업을 준비할까요?",
+    "confirmRestore": "다음 시작 시 이 보관 파일로 로컬 데이터를 병합 없이 교체합니다. Macro는 파일을 검증하고 교체될 데이터의 복구 사본을 보관합니다. 대기 중인 지시는 일시 정지 상태를 유지합니다. 실행 중인 작업을 중지하고 확인 후 즉시 Macro를 종료한 다음 다시 여세요.",
+    "confirmExport": "실행 중인 작업을 중지하세요. Macro는 다음 시작 시 보관 파일을 만듭니다. 기존 파일은 덮어쓰지 않으므로 새 파일을 선택하세요. 확인 후 세션을 변경하지 말고 종료한 다음 다시 여세요.",
     "confirm": "확인"
   }
 }

@@ -176,6 +176,7 @@ export const loadConversationMessages = async (
 export const createUserMessage = async (
   adapters: ChatPersistenceAdapters,
   params: {
+    id?: string;
     conversationId: string;
     turnId: string;
     taskId: string;
@@ -193,7 +194,7 @@ export const createUserMessage = async (
 
   if (!adapters.isTauriAvailable()) {
     return {
-      id: `msg-${now().getTime()}`,
+      id: params.id ?? `msg-${now().getTime()}`,
       turn_id: params.turnId,
       task_id: params.taskId,
       conversation_id: params.conversationId,
@@ -213,6 +214,7 @@ export const createUserMessage = async (
     "user",
     params.content,
     {
+      ...(params.id ? { id: params.id } : {}),
       turnId: params.turnId,
       hiddenContext: params.hiddenContext,
       providerInputItems: params.providerInputItems,

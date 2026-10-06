@@ -3382,9 +3382,22 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     citationPersistenceError = new Error('injected citation persistence failure');
 
-    const preview = String(
-      await onToolCall('grep', { query: 'needle' }, 'failed-large-output'),
-    );
+    const complete = allowChatToolInvocationJournal.complete;
+    const markUnknown = allowChatToolInvocationJournal.markUnknown;
+    let completions = 0, unknowns = 0;
+    allowChatToolInvocationJournal.complete = async input => { completions++; return complete(input); };
+    allowChatToolInvocationJournal.markUnknown = async input => { unknowns++; return markUnknown(input); };
+    let result;
+    try { result = await onToolCall('grep', { query: 'needle' }, 'failed-large-output'); }
+    finally { allowChatToolInvocationJournal.complete = complete; allowChatToolInvocationJournal.markUnknown = markUnknown; }
+    expect(result).toMatchObject({ errorKind: 'uncertain', isError: true });
+    expect(completions).toBe(0);
+    expect(unknowns).toBe(1);
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    const payload = JSON.parse(result.result);
+    expect(payload).toMatchObject({ outcome: 'unknown', invocation: { callId: 'failed-large-output' },
+      instruction: expect.stringContaining('Inspect') });
+    const preview: string = payload.diagnostic;
 
     expect(preview).toContain('Full output unavailable');
     expect(preview).not.toContain('tool-output://');
@@ -3462,15 +3475,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       }) as unknown as () => Promise<undefined>,
     );
 
-    let caught: unknown;
-    try {
-      await onToolCall('grep', { query: 'needle' }, 'large-error-call');
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect(caught).not.toBe(oversizedError);
-    const boundedMessage = caught instanceof Error ? caught.message : '';
+    const result = await onToolCall('grep', { query: 'needle' }, 'large-error-call');
+    expect(result).toMatchObject({ errorKind: 'uncertain' });
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    const boundedMessage: string = JSON.parse(result.result).diagnostic;
     expect(boundedMessage.startsWith('Error executing tool')).toBe(false);
     expect(boundedMessage).toContain('BEGIN-');
     expect(boundedMessage.trim().endsWith('-END')).toBe(true);
@@ -3528,13 +3536,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     citationPersistenceError = new Error('injected citation persistence failure');
 
-    let caught: unknown;
-    try {
-      await onToolCall('grep', { query: 'needle' }, 'failed-large-error');
-    } catch (error) {
-      caught = error;
-    }
-    const boundedMessage = caught instanceof Error ? caught.message : '';
+    const result = await onToolCall('grep', { query: 'needle' }, 'failed-large-error');
+    expect(result).toMatchObject({ errorKind: 'uncertain' });
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    const boundedMessage: string = JSON.parse(result.result).diagnostic;
     expect(boundedMessage).toContain('Full output unavailable');
     expect(boundedMessage).not.toContain('tool-output://');
     expect(citationRecords).toEqual([]);
@@ -3543,7 +3548,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
   });
 
-  it('leaves small tool execution errors untouched', async () => {
+  it('retains small tool error diagnostics without creating an artifact', async () => {
     const { onToolCall } = await startImplementToolConversation(
       'Inspecte une petite erreur.',
     );
@@ -3554,13 +3559,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       }) as unknown as () => Promise<undefined>,
     );
 
-    let caught: unknown;
-    try {
-      await onToolCall('grep', { query: 'needle' }, 'small-error-call');
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBe(smallError);
+    const result = await onToolCall('grep', { query: 'needle' }, 'small-error-call');
+    expect(result).toMatchObject({ errorKind: 'uncertain' });
+    if (!result || typeof result !== 'object' || !('result' in result) || typeof result.result !== 'string') throw new Error('Expected structured result');
+    expect(JSON.parse(result.result).diagnostic).toBe(smallError.message);
     expect(
       citationRecords.some((citation) =>
         citation.path?.startsWith('tool-output://') ?? false,
@@ -3683,6 +3685,88 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
   registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
+  it('ordinary image send retains the draft on quota failure and retries once after storage reconstruction', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true; c.appState.mode = 'Chat';
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('image-recovery'), scope_mode: 'Chat' as const, task_id: null };
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+    const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
+    const local = await import('./chat/chatLocalSessionState');
+    const accepted = mock((messageId: string) => {
+      expect(local.loadMessageImagesFromStorage()[messageId]).toEqual(images);
+      expect(store.getState().messages).toContainEqual(expect.objectContaining({ id: messageId, role: 'user' }));
+    });
+    const draft = { text: 'Inspect this diagram', images, contextRefs: [] };
+    local.saveComposerDraftsToStorage({ ['conversation:' + conversation.id]: draft });
+    const storage = window.localStorage, setItem = storage.setItem;
+    storage.setItem = (key, value) => {
+      if (key === 'macro_chat_message_images') throw new Error('synthetic image quota');
+      setItem.call(storage, key, value);
+    };
+    try {
+      await expect(store.getState().sendMessage({ conversationId: conversation.id, content: draft.text, images, onUserMessagePublished: accepted }))
+        .rejects.toMatchObject({ message: expect.stringContaining('images') });
+    } finally { storage.setItem = setItem; }
+    expect(c.streamChatMock).not.toHaveBeenCalled();
+    expect(c.createMessageMock).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+    const recovered = local.loadComposerDraftsFromStorage()['conversation:' + conversation.id];
+    expect(recovered).toEqual(draft);
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id,
+      messageImagesByMessageId: local.loadMessageImagesFromStorage() }));
+    const result = await store.getState().sendMessage({ conversationId: conversation.id, content: recovered.text, images: recovered.images, onUserMessagePublished: accepted });
+    await c.flushAsyncWork();
+    expect(result.status).toBe('sent');
+    expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    if (result.status !== 'sent') throw new Error('Expected accepted message');
+    expect(local.loadMessageImagesFromStorage()[result.userMessageId]).toEqual(images);
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(result.userMessageId);
+    const options = c.getLatestStreamOptions<{ messages: Array<{ content: unknown }> }>();
+    expect(options.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))).toBe(true);
+  });
+
+  for (const stopAfterText of [false, true]) {
+    it(`ordinary image send keeps durable attachments when storage fails after text, stop=${stopAfterText}`, async () => {
+      const c = useChatStoreScenarioContext;
+      c.tauriAvailable = true; c.appState.mode = 'Chat';
+      const { useChatStore: store } = await c.loadChatStore();
+      const conversation = { ...c.createConversation('late-image-quota'), scope_mode: 'Chat' as const, task_id: null };
+      store.setState(c.createIdleChatStoreState({ conversations: [conversation], selectedConversationId: conversation.id }));
+      const local = await import('./chat/chatLocalSessionState');
+      const images = [{ id: 'synthetic-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' }];
+      const storage = window.localStorage, setItem = storage.setItem;
+      const original = c.createMessageMock.getMockImplementation()!;
+      c.createMessageMock.mockImplementation(async (...args) => {
+        const message = await original(...args);
+        if (args[1] === 'user') {
+          expect(local.loadMessageImagesFromStorage()[message.id]).toEqual(images);
+          storage.setItem = (key, value) => {
+            if (key === 'macro_chat_message_images') throw new Error('late synthetic quota');
+            setItem.call(storage, key, value);
+          };
+          if (stopAfterText) store.getState().stopConversationStream(conversation.id);
+        }
+        return message;
+      });
+      try {
+        const result = await store.getState().sendMessage({ conversationId: conversation.id, content: 'Inspect', images });
+        await c.flushAsyncWork();
+        expect(result.status).toBe('sent');
+        expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+        expect(c.streamChatMock).toHaveBeenCalledTimes(stopAfterText ? 0 : 1);
+        if (result.status !== 'sent') throw new Error('Expected accepted message');
+        expect(local.loadMessageImagesFromStorage()[result.userMessageId]).toEqual(images);
+        if (stopAfterText) expect(result.assistantMessageId).toBeNull();
+      } finally {
+        storage.setItem = setItem;
+        c.createMessageMock.mockImplementation(original);
+      }
+    });
+  }
+
   registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });

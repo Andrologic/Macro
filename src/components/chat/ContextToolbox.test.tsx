@@ -227,10 +227,11 @@ const clipboardWriteTextMock = mock(async (_text: string) => undefined);
 const notifyErrorMock = mock((_title: string, _options?: unknown) => undefined);
 let clipboardReadTextMock = mock(async () => 'clipboard text');
 let fetchWebPageShouldFail = false;
+let fetchWebPageFailure: unknown = null;
 let webFetchEnabledMock = true;
 const fetchWebPageMock = mock(async (url: string) => {
   if (fetchWebPageShouldFail) {
-    throw new Error('preview failed');
+    throw fetchWebPageFailure ?? new Error('preview failed');
   }
   const isSecond = url.includes('second');
   const favicon = isSecond
@@ -515,6 +516,7 @@ describe('ContextToolbox', () => {
     citationVersion = 0;
     citationSubscribers.clear();
     fetchWebPageShouldFail = false;
+    fetchWebPageFailure = null;
     webFetchEnabledMock = true;
     focusEvents.length = 0;
     inputChangeHandlers.clear();
@@ -974,6 +976,37 @@ describe('ContextToolbox', () => {
       expect(notifyErrorMock).toHaveBeenCalledWith(
         'Could not fetch URL preview',
         expect.objectContaining({ description: 'https://example.net/story' }),
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
+  it('explains a native network policy refusal while keeping the URL citation', async () => {
+    fetchWebPageShouldFail = true;
+    fetchWebPageFailure = {
+      code: 'WEB_FETCH_DESTINATION_BLOCKED',
+      message: 'Web fetch destination blocked: local network address',
+    };
+    const originalConsoleError = console.error;
+    console.error = mock(() => undefined) as never;
+    const { ContextToolbox } = await loadContextToolbox();
+    try {
+      await act(async () => {
+        root?.render(<ContextToolbox />);
+        await Promise.resolve();
+      });
+      await changeInputByPlaceholder('https://example.com/article', 'http://127.0.0.1:54579/accentuee');
+      await act(async () => {
+        findButtonByExactText(container!, 'Add').click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(fetchWebPageMock).toHaveBeenCalledWith('http://127.0.0.1:54579/accentuee');
+      expect(container?.textContent).toContain('127.0.0.1');
+      expect(notifyErrorMock).toHaveBeenCalledWith(
+        'Could not fetch URL preview',
+        expect.objectContaining({ description: 'For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.' }),
       );
     } finally {
       console.error = originalConsoleError;

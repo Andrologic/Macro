@@ -31,6 +31,8 @@ const CLIENT_KEYS: &[&str] = &[
     "macro_chat_message_images",
     "macro_chat_composer_drafts_v1",
     "macro_chat_questionnaire_drafts",
+    "macro_chat_queued_submissions_v1",
+    "macro_chat_unsaved_assistant_responses_v1",
 ];
 type Result<T> = std::result::Result<T, String>;
 
@@ -2040,6 +2042,74 @@ mod tests {
                 .unwrap(),
             b"modified"
         );
+    }
+    #[tokio::test]
+    async fn recovery_browser_state_round_trips_and_historical_restore_preserves_replaced_values() {
+        let (temp, data, config) = profile().await;
+        let browser = BTreeMap::from([
+            (
+                "macro_chat_queued_submissions_v1".into(),
+                r#"[{"id":"accepted-turn","input":{"content":"Queued instruction"}}]"#.into(),
+            ),
+            (
+                "macro_chat_unsaved_assistant_responses_v1".into(),
+                r#"{"fallback":{"id":"fallback","content":"Recovered answer"}}"#.into(),
+            ),
+        ]);
+        let archive = capture(&data, &config, browser.clone(), true)
+            .await
+            .unwrap();
+        validate(&archive).await.unwrap();
+        let path = temp.path().join("recovery.json");
+        write_new(&path, &serde_json::to_vec(&archive).unwrap()).unwrap();
+        assert_eq!(load_restore_archive(&path).await.unwrap().browser, browser);
+
+        // Version 1 archives predating recovery keys remain valid and replace the whole browser profile.
+        let historical = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        atomic(
+            &dir.join("incoming.json"),
+            &serde_json::to_vec(&historical).unwrap(),
+        )
+        .unwrap();
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "restore".into(),
+                path: path.to_string_lossy().into(),
+                browser: browser.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status.browser, Some(BTreeMap::new()));
+        let preserved = PathBuf::from(status.path.unwrap());
+        let original = load_archive(&preserved).unwrap();
+        validate_raw(&original).unwrap();
+        assert_eq!(original.browser, browser);
+
+        // An interrupted native replacement recovers the same complete browser snapshot.
+        atomic(
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&RestoreJournal {
+                preserved: preserved.file_name().unwrap().to_string_lossy().into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(data.join("macro.db"), b"partial replacement").unwrap();
+        process_startup(&data, &config).await.unwrap();
+        check_database(&data.join("macro.db")).await.unwrap();
+        let recovered: BackupStatus =
+            serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+        assert_eq!(recovered.browser, Some(browser));
+        assert!(preserved.exists());
     }
     #[tokio::test]
     async fn rejects_tampering_and_future_versions_without_touching_original() {

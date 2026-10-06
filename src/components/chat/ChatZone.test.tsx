@@ -2008,11 +2008,14 @@ describe('ChatZone', () => {
         relativePath: 'failure.md',
       },
     };
+    let attempts = 0;
     chatState = {
       ...chatState,
       composerContextRefs: [draftRef],
       sendMessage: mock(async () => {
-        throw new Error('Envoi refusé');
+        attempts += 1;
+        if (attempts === 1) throw new Error('Enregistrement des images refusé');
+        return { status: 'sent', conversationId: 'conv-1', turnId: 'turn', userMessageId: 'user', assistantMessageId: 'assistant' };
       }),
     };
 
@@ -2031,6 +2034,11 @@ describe('ChatZone', () => {
       images: [expect.objectContaining({ mimeType: 'image/png' })],
       contextRefs: [draftRef],
     });
+    await clickSendButton();
+    expect(attempts).toBe(2);
+    expect(getComposerEditor().value).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
 
   it('saves and restores text, images, and context refs when the conversation changes', async () => {

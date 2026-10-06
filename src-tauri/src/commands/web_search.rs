@@ -337,7 +337,7 @@ fn validate_web_fetch_url(url: &reqwest::Url) -> CommandResult<()> {
         || normalized_host.ends_with(".local")
     {
         return Err(command_error(
-            "web_fetch refuse les hôtes locaux et privés.",
+            "Web fetch destination blocked: les hôtes locaux et privés sont interdits.",
         ));
     }
     Ok(())
@@ -368,7 +368,7 @@ async fn resolve_public_web_fetch_target(
     }
     if addresses.iter().any(|address| !ip_is_public(address.ip())) {
         return Err(command_error(
-            "web_fetch refuse les adresses locales, privées, réservées et link-local.",
+            "Web fetch destination blocked: les adresses locales, privées, réservées et link-local sont interdites.",
         ));
     }
     Ok((host, addresses[0]))
@@ -1003,6 +1003,24 @@ mod tests {
         let error = result.expect_err("cancellation must return an error");
         assert!(error.message.contains("a été annulée"));
         assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn blocked_destinations_return_a_stable_error_code_before_fetching() {
+        for url in [
+            "http://127.0.0.1:54579/accentuee",
+            "http://10.0.0.1/",
+            "http://localhost/",
+            "http://service.local/",
+        ] {
+            let url = reqwest::Url::parse(url).unwrap();
+            let error = resolve_public_web_fetch_target(&url, None)
+                .await
+                .unwrap_err();
+            let payload = serde_json::to_value(error).unwrap();
+            assert_eq!(payload["code"], "WEB_FETCH_DESTINATION_BLOCKED");
+            assert!(payload["message"].as_str().unwrap().contains("interdit"));
+        }
     }
 
     #[test]

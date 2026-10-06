@@ -567,6 +567,7 @@
     "queueSaveFailed": "Wartende Nachrichten konnten nicht gespeichert werden. Lassen Sie diese Sitzung geöffnet und versuchen Sie es erneut.",
     "queuePlanUnavailable": "Der ursprüngliche Plan ist für diese wartende Nachricht nicht verfügbar.",
     "queueContextChanged": "Das Ziel der wartenden Nachricht hat sich geändert. Stellen Sie den ursprünglichen Kontext wieder her, bevor Sie es erneut versuchen.",
+    "sendImagesSaveFailed": "Die Nachricht konnte nicht mit ihren Bildern gespeichert werden. Versuchen Sie, den Entwurf erneut zu senden.",
     "queueImagesSaveFailed": "Die Nachricht ist gespeichert, aber ihre Bilder müssen noch gespeichert werden. Versuchen Sie die wartende Übermittlung erneut.",
     "queueRecoveryTitle": "Wartende Nachrichten benötigen Aufmerksamkeit",
     "queueRecoveryDescription": "{{count}} wartende Nachricht(en) bleiben erhalten. Beim erneuten Versuch wird der ursprüngliche Kontext verwendet.",
@@ -577,6 +578,10 @@
     "queueAlreadySent": "Diese Nachricht wurde bereits gespeichert. Versuche die Wiederherstellung erneut.",
     "queueEditInProgress": "Warte, bis die Änderung der wartenden Nachricht abgeschlossen ist.",
     "queueEmptyMessage": "Die wartende Nachricht darf nicht leer sein.",
+    "queueAssistantInterrupted": "Diese gespeicherte Anweisung wurde möglicherweise bereits ausgeführt. Prüfen Sie die Antwort und die Auswirkungen der Werkzeuge und entfernen Sie dann diesen Wiederherstellungseintrag, bevor Sie manuell fortfahren.",
+    "steerImagesSaveFailed": "Die Anweisung konnte nicht mit ihren Bildern gespeichert werden. Versuchen Sie, den Entwurf erneut zu senden.",
+    "steerTurnEnded": "Die Anweisung wurde gespeichert, aber ihr Durchlauf endete vor der Übermittlung. Prüfen Sie sie, bevor Sie fortfahren.",
+    "goalExecutorContextUnavailable": "Der Ausführungskontext des Ziels ist nicht verfügbar. Senden Sie vor dem Fortsetzen eine Nachricht in dieser Unterhaltung.",
     "queueInterrupted": "Die wartende Übermittlung wurde unterbrochen. Ihr Inhalt bleibt erhalten.",
     "queueUnavailable": "Diese Unterhaltung kann keine wartenden Nachrichten mehr annehmen.",
     "secondaryAction": "Alternative Aktion",
@@ -769,6 +774,7 @@
       "binaryFileRejected": "{{file}} enthält Binärdaten oder ungültiges UTF-8.",
       "conversationRequired": "Wählen Sie eine Aufgabe oder einen Plan aus, bevor Sie Dateien anhängen.",
       "urlPreviewFailedTitle": "URL-Vorschau konnte nicht geladen werden",
+      "urlPreviewBlockedDescription": "Aus Sicherheitsgründen können Vorschauen nicht auf lokale, private, reservierte oder Link-Local-Netzwerkadressen zugreifen. Verwende eine öffentliche URL.",
       "clipboardEmptyTitle": "Die Zwischenablage ist leer",
       "clipboardReadFailedTitle": "Die Zwischenablage konnte nicht gelesen werden",
       "previewUnavailable": "Vorschau nicht verfügbar",
@@ -1888,6 +1894,7 @@
     "totalChanges": "totale Veränderungen"
   },
   "providers": {
+    "backToProviders": "Zurück zu den Anbietern",
     "collectionTitle": "Anbieter",
     "collectionDescription": "Konfigurierte Verbindungen verwalten",
     "emptyDescription": "Fügen Sie einen Anbieter hinzu, um Macro mit einem KI-Dienst zu verbinden.",
@@ -2358,6 +2365,7 @@
     }
   },
   "prompts": {
+    "loadFailed": "Systemprompts konnten nicht geladen werden. Vor dem Speichern erneut versuchen.",
     "title": "System-Prompts",
     "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.",
     "restoreAll": "Alle wiederherstellen",
@@ -2779,6 +2787,16 @@
     "slashMenuLabel": "Kontext oder Befehl einfügen"
   },
   "backup": {
+    "exclusions": "Projektordner, deren Git-Verlauf und Anbieter-Zugangsdaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat.",
+    "limitsTitle": "Kompatibilität, Grenzen und private Daten",
+    "limits": "Maximale Größe: 256 MiB. Verwenden Sie dieselbe Macro-Version. Projektpfade bleiben unverändert; verschobene Projekte werden nicht neu zugeordnet und Profile nicht zusammengeführt.",
+    "exportHelp": "Lokale Daten beim nächsten Start in einem neuen Archiv speichern.",
+    "restoreHelp": "Lokale Daten durch ein Archiv ersetzen. Das vorherige Profil zur Wiederherstellung behalten.",
+    "desktopRequired": "Öffnen Sie Macro auf dem Desktop, um lokale Daten zu sichern oder wiederherzustellen.",
+    "scheduledTitle": "Vorgang vorbereitet",
+    "source": "Wiederherzustellendes Archiv",
+    "destination": "Ziel der neuen Archivdatei",
+    "confirmReplace": "Ersetzung vorbereiten",
     "scheduled": "Der Vorgang ist vorbereitet. Beenden Sie Macro vollständig und öffnen Sie es erneut. Ändern Sie diese Sitzung bis dahin nicht.",
     "resultExported": "Sicherung gespeichert.",
     "resultRestored": "Profil wiederhergestellt. Das vorherige Profil bleibt unter dem unten angegebenen Pfad erhalten.",
@@ -2790,15 +2808,15 @@
     "startupTitle": "Profilwiederherstellung erforderlich",
     "startupRecovery": "Die Wiederherstellung der Browserdaten konnte nicht abgeschlossen werden. Das native Wiederherstellungsarchiv bleibt erhalten. Prüfen Sie die Diagnose, geben Sie bei Bedarf lokalen Speicher frei und starten Sie Macro erneut.",
     "title": "Sicherung und Wiederherstellung",
-    "scope": "Lokales Profil: Gespräche, gespeicherte Anhänge, Code-Checkpoints, Entwürfe und globale Einstellungen. Projektordner und Git-Metadaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat. Maximal 256 MiB; Wiederherstellung mit derselben Macro-Version.",
+    "scope": "Lokale Macro-Daten: Unterhaltungen, gespeicherte Anhänge, Code-Checkpoints, Entwürfe, wartende Anweisungen, Wiederherstellungsantworten und allgemeine Einstellungen.",
     "secrets": "Zugangsdaten der Anbieter, MCP-Umgebungsvariablen und Header sind von portablen Exporten ausgeschlossen. Verbinden Sie Anbieter nach der Wiederherstellung erneut. Gespräche und Dateien bleiben private Daten; bewahren Sie das Archiv sicher auf.",
     "recovery": "Wiederherstellung erforderlich. Die Originaldaten bleiben erhalten.",
     "path": "Absoluter Pfad zur lokalen Sicherungsdatei",
     "export": "Sicherung vorbereiten",
     "restore": "Sicherung wiederherstellen",
     "confirmTitle": "Profilvorgang bestätigen",
-    "confirmRestore": "Beim nächsten Start ersetzt dieses Archiv Ihr lokales Profil. Macro prüft es zuvor und bewahrt das vorherige Profil zur Wiederherstellung auf. Stoppen Sie laufende Aufgaben und beenden Sie Macro sofort nach der Bestätigung. Diese Datei wiederherstellen?",
-    "confirmExport": "Stoppen Sie laufende Aufgaben. Macro erstellt das Archiv beim nächsten Start, bevor Datenbank und Konfiguration geöffnet werden. Sicherung vorbereiten?",
+    "confirmRestore": "Beim nächsten Start ersetzt dieses Archiv die lokalen Daten ohne Zusammenführung. Macro prüft es und sichert die ersetzten Daten zur Wiederherstellung. Wartende Anweisungen bleiben pausiert. Stoppen Sie laufende Aufgaben, bestätigen Sie, beenden Sie Macro sofort und öffnen Sie es erneut.",
+    "confirmExport": "Stoppen Sie laufende Aufgaben. Macro erstellt das Archiv beim nächsten Start. Wählen Sie eine neue Datei; vorhandene Archive werden nicht überschrieben. Beenden Sie Macro nach der Bestätigung ohne weitere Änderungen und öffnen Sie es erneut.",
     "confirm": "Bestätigen"
   }
 }
