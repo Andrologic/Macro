@@ -284,7 +284,7 @@ test('failed native submission offers one error fallback and stays unknown witho
   expect(traces.at(-1)).toMatchObject({ tool_call_id: 'read-call', status: 'running', recovery_state: 'unknown' });
   expect(live).not.toHaveBeenCalled();
   expect(completed).not.toHaveBeenCalled();
-  expect(cancelCount).toBe(0);
+  expect(cancelCount).toBe(1);
 });
 
 for (const acceptedIndex of [0, 1]) {
@@ -555,3 +555,49 @@ test('a tool stop uncertainty survives draining and does not publish a fictitiou
   await stop;
   expect(activeStreamResourcesBySessionId.has('uncertain-tool')).toBe(false);
 });
+
+
+for (const event of ['ai:error', 'ai:done']) {
+  test(`${event} retains native ownership and concurrent Stop until the supervisor receipt`, async () => {
+    const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+    const receipt = deferred<void>();
+    cancelGate = () => receipt.promise;
+    const run = turn({ sessionId: 'event-receipt' });
+    void run.catch(() => undefined);
+    let ended = false;
+    void run.then(() => { ended = true; }, () => { ended = true; });
+    await started;
+    emit(event, { request_id: requestId, message: 'Malformed runtime event', output_text: 'Done', tool_calls: [] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ended).toBe(false);
+    expect(activeStreamResourcesBySessionId.get('event-receipt')?.tauriRequestId).toBe(requestId);
+    let stopped = false;
+    const stop = cancelStream('event-receipt').then(() => { stopped = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(stopped).toBe(false);
+    expect(cancelCount).toBe(1);
+    receipt.resolve();
+    if (event === 'ai:error') await expect(run).rejects.toThrow('Malformed runtime event');
+    else await expect(run).resolves.toMatchObject({ content: 'Done' });
+    await stop;
+    expect(activeStreamResourcesBySessionId.has('event-receipt')).toBe(false);
+  });
+
+  test(`${event} with failed cleanup retains a typed owner rather than a provider outcome`, async () => {
+    const { cancelStream, activeStreamResourcesBySessionId } = await import('./streamResources');
+    cancelGate = async () => { throw new Error('Tree reap was not confirmed'); };
+    const run = turn({ sessionId: 'failed-event-receipt' });
+    void run.catch(() => undefined);
+    await started;
+    emit(event, { request_id: requestId, message: 'Malformed runtime event', output_text: 'Done', tool_calls: [] });
+    const failure = await run.then(() => { throw new Error('Expected missing supervisor receipt'); }, error => error as StreamStopUnconfirmedError);
+    expect(failure).toBeInstanceOf(StreamStopUnconfirmedError);
+    expect(failure.message).toContain('Tree reap was not confirmed');
+    expect(failure.stopped).toBe(false);
+    expect(activeStreamResourcesBySessionId.get('failed-event-receipt')?.tauriRequestId).toBe(requestId);
+    cancelGate = async () => undefined;
+    await cancelStream('failed-event-receipt');
+    await failure.whenStopped;
+    expect(activeStreamResourcesBySessionId.has('failed-event-receipt')).toBe(false);
+  });
+}

@@ -1,3 +1,4 @@
+import { StreamStopUnconfirmedError } from './ai/streamCancellation';
 import { ToolResultPreservationError } from './toolResultArtifacts';
 import { describe, expect, mock, test } from 'bun:test';
 import { createChatToolDispatch, classifyChatToolEffect, type ChatToolDispatchPorts, type ChatToolInvocationJournal } from './chatToolDispatch';
@@ -295,3 +296,19 @@ for (const errorKind of ['permission', 'validation'] as const) {
     expect(f.preserve).not.toHaveBeenCalled();
   });
 }
+
+
+test('keeps a terminal local-stop receipt and journal unknown through dispatch after Stop', async () => {
+  const f = fixture();
+  let confirm!: () => void;
+  const receipt = new Promise<void>(resolve => { confirm = resolve; });
+  const failure = new StreamStopUnconfirmedError('Run and kill receipts missing', receipt);
+  f.execute.mockImplementation(async () => { f.controller.abort(); throw failure; });
+  await expect(f.dispatch('terminal_run', {}, 'terminal-call')).rejects.toBe(failure);
+  expect(f.events).toEqual(['record:terminal_run:external_effect', 'unknown']);
+  expect(f.journal.complete).not.toHaveBeenCalled();
+  expect(f.preserve).not.toHaveBeenCalled();
+  expect(failure.stopped).toBe(false);
+  confirm();
+  await failure.whenStopped;
+});

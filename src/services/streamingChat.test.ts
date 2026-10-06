@@ -361,7 +361,7 @@ describe('streamingChat native request ownership', () => {
 
     expect(firstTokens).toEqual(['first']);
     expect(secondTokens).toEqual(['second']);
-    expect(cancelledRequestIds).toEqual([requestIds[1]]);
+    expect(cancelledRequestIds).toEqual([requestIds[0], requestIds[1]]);
 
     emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
     await second;
@@ -3352,7 +3352,7 @@ describe('streamingChat tool rendering helpers', () => {
       messages: [
         {
           role: 'user',
-          content: 'Utilise l outil question pour m aider a choisir une couleur.',
+          content: 'Utilise l’outil question pour m’aider à choisir une couleur.',
         },
       ],
       allowedToolIds: ['question'],
@@ -3366,7 +3366,7 @@ describe('streamingChat tool rendering helpers', () => {
       onToolCall,
     });
 
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual(['ai_stream_chat', 'ai_cancel_stream']);
     const invokePayload = (invokeMock.mock.calls[0]?.[1] ?? {}) as {
       request?: {
         tools?: Array<{ function?: { name?: string } }>;
@@ -4596,6 +4596,7 @@ describe('streamingChat transport lifetime', () => {
         return () => listeners.delete(name);
       }),
       invokeImpl: mock(async (command: string, params: { request?: { request_id?: string; submission_id?: string } }) => {
+        if (command === 'ai_cancel_stream') return;
         const requestId = params.request!.request_id!;
         if (command === 'ai_stream_chat') {
           queueMicrotask(() => listeners.get('ai:tool-request')!({ payload: {
@@ -4778,7 +4779,7 @@ describe('streamingChat partial native listener setup', () => {
     let successorReady!: () => void;
     const ready = new Promise<void>((resolve) => { successorReady = resolve; });
     let successorId = '';
-    const cancel = mock(() => undefined);
+    const cancel = mock((_requestId?: string) => undefined);
     const { streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
       listenImpl: mock((name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
@@ -4790,8 +4791,8 @@ describe('streamingChat partial native listener setup', () => {
         if (index > 2 && index < 6) return new Promise<() => void>((resolve) => { late.push(() => resolve(dispose)); });
         return Promise.resolve(dispose);
       }),
-      invokeImpl: mock(async (command: string, params: { request?: { request_id: string } }) => {
-        if (command === 'ai_cancel_stream') cancel();
+      invokeImpl: mock(async (command: string, params: { request?: { request_id: string }; requestId?: string }) => {
+        if (command === 'ai_cancel_stream') cancel(params.requestId);
         if (command === 'ai_stream_chat') {
           successorId = params.request!.request_id;
           successorReady();
@@ -4820,7 +4821,8 @@ describe('streamingChat partial native listener setup', () => {
     for (const index of [0, 1, 3, 4, 5]) expect(disposers[index]).toHaveBeenCalledTimes(1);
     for (const dispose of disposers.slice(6)) expect(dispose).not.toHaveBeenCalled();
     controller.abort();
-    expect(cancel).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel.mock.calls[0]?.[0]).not.toBe(successorId);
     callbacks.slice(6).find(({ name }) => name === 'ai:done')!.callback({
       payload: { request_id: successorId, output_text: 'successor', tool_calls: [] },
     });
@@ -4952,4 +4954,56 @@ describe('Stop ownership through the native transport and composer pipeline', ()
     expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).not.toThrow();
     expect(getActiveStreamingSessionIds()).not.toContain('stop-pipeline');
   });
+});
+
+
+it('a spontaneous provider error with missing native cleanup proof retains the composer owner and cannot retry reasoning or fall back', async () => {
+  const { createChatTurnRuntime } = await import('./chatTurnRuntime');
+  const { runAssistantStream } = await import('./chatStreamOrchestrator');
+  const { EMPTY_CONVERSATION_RUNTIME } = await import('../domains/chat/runtimeState');
+  const { StreamStopUnconfirmedError } = await import('./ai/streamCancellation');
+  const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+  let requestId = '';
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  let confirmsEnd = false;
+  const invokeImpl = mock(async (command: string, params: { request?: { request_id?: string } }) => {
+    if (command === 'ai_stream_chat') { requestId = params.request!.request_id!; started(); }
+    if (command === 'ai_cancel_stream' && !confirmsEnd) throw new Error('Native tree reap failed');
+  });
+  const fetchImpl = mock(async () => { throw new Error('Provider fallback must not run'); });
+  const { streamChat, cancelStream } = await loadStreamingChat(fetchImpl, {
+    forceTauriAvailable: true, invokeImpl,
+    listenImpl: mock(async (name: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(name, handler);
+      return () => { listeners.delete(name); };
+    }),
+  });
+  const controller = new AbortController();
+  let state = { ...EMPTY_CONVERSATION_RUNTIME, phase: 'streaming', sessionId: 'error-pipeline',
+    turnId: 'turn', assistantMessageId: 'assistant', abortController: controller } as import('../types').ConversationRuntimeState;
+  const settled = mock(() => undefined);
+  const owner = createChatTurnRuntime({
+    state: { read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false },
+    cancelTransport: cancelStream, settled,
+  });
+  const stream = runAssistantStream({
+    sessionId: 'error-pipeline', providerId: 'chatgpt', providerType: 'chatgpt', modelId: 'model', reasoningEffort: 'high',
+    baseUrl: 'https://example.invalid', messages: [], signal: controller.signal, streamChatImpl: streamChat,
+    lifecycle: { appendTokenChunk: () => {}, onComplete: () => {}, onError: () => {} },
+  });
+  void stream.catch(() => undefined);
+  owner.track('conversation', stream);
+  await ready;
+  listeners.get('ai:error')!({ payload: { request_id: requestId, message: 'Unsupported reasoning effort: high', status: 400 } });
+  await expect(stream).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(invokeImpl.mock.calls.filter(([command]) => command === 'ai_stream_chat')).toHaveLength(1);
+  expect(fetchImpl).not.toHaveBeenCalled();
+  expect(state.phase).toBe('error');
+  expect(() => owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false })).toThrow('already running');
+  expect(settled).not.toHaveBeenCalled();
+  confirmsEnd = true;
+  await owner.stop('conversation');
+  owner.assertCanSend('conversation', { available: true, hasUnsavedResponse: false });
 });

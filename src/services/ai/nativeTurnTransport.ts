@@ -102,6 +102,8 @@ export const streamNativeTurnViaTauri = async (params: {
     let settled = false;
     let cancellationRequested = false;
     let cancellation: Promise<void> | undefined;
+    let finalization: Promise<void> | undefined;
+    let nativeStop: Promise<void> | undefined;
     let stopUnconfirmed = false;
     let confirmLocalStop!: () => void;
     const localStopConfirmed = new Promise<void>(resolve => { confirmLocalStop = resolve; });
@@ -333,26 +335,36 @@ export const streamNativeTurnViaTauri = async (params: {
       else nativeUnlisteners.push(unlisten);
       return unlisten;
     };
-    const finish = (fn: () => void) => {
-      if (settled) return;
+    const joinNativeOwner = () => nativeStop ??= own(
+      Promise.resolve().then(() => tauriIpc.aiCancelStream(requestId)).then(() => { confirmLocalStop(); }),
+    );
+    const finish = (fn: () => void): Promise<void> => {
+      if (finalization) return finalization;
       settled = true;
       if (deferredDoneTimer) clearTimeout(deferredDoneTimer);
       params.signal?.removeEventListener('abort', signalObserver);
       nativeUnlisteners.splice(0).forEach(disposeListener);
-      // The result may stop publication before a tool or the admission IPC
-      // settles. Keep the invocation alive until every owned operation ends.
-      void drainOwnedWork().then(() => {
-        if (unconfirmedWork.size) {
+      // Events publish diagnostics/content, not a native task completion receipt.
+      // Every exit joins the supervisor, including spontaneous errors and done.
+      finalization = (async () => {
+        let nativeFailed = false;
+        let nativeFailure: unknown;
+        try { await joinNativeOwner(); }
+        catch (error) { nativeFailed = true; nativeFailure = error; }
+        await drainOwnedWork();
+        if (nativeFailed || unconfirmedWork.size) {
           stopUnconfirmed = true;
-          reject(uncertainStop([...unconfirmedWork][0]));
-          return;
+          throw uncertainStop(nativeFailed ? nativeFailure : [...unconfirmedWork][0]);
         }
-        if (!stopUnconfirmed && resources.tauriRequestId === requestId) {
+        if (resources.tauriRequestId === requestId) {
           resources.tauriRequestId = null;
           if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
         }
         fn();
-      });
+      })();
+      // Event callbacks cannot await the receipt, but Stop returns this same join.
+      void finalization.catch(error => reject(error));
+      return finalization;
     };
 
     const completeDone = (payload: tauriIpc.AiStreamDoneEvent) => {
@@ -428,25 +440,8 @@ export const streamNativeTurnViaTauri = async (params: {
 
     const signalHandler = (): Promise<void> => {
       if (cancellation) return cancellation;
-      if (settled) return Promise.resolve();
       cancellationRequested = true;
-      // Joining this provider future says nothing about terminal/MCP effects.
-      const nativeStop = own(Promise.resolve().then(() => tauriIpc.aiCancelStream(requestId)));
-      cancellation = (async () => {
-        let failure: unknown;
-        try { await nativeStop; } catch (error) { failure = error; }
-        await drainOwnedWork();
-        if (failure !== undefined || unconfirmedWork.size) {
-          stopUnconfirmed = true;
-          const uncertain = uncertainStop(failure ?? [...unconfirmedWork][0]);
-          finish(() => reject(uncertain));
-          throw uncertain;
-        }
-        confirmLocalStop();
-        finish(() => reject(new DOMException('Aborted', 'AbortError')));
-      })();
-      // AbortSignal observers cannot await or handle a rejected stop receipt.
-      void cancellation.catch(() => undefined);
+      cancellation = finish(() => reject(new DOMException('Aborted', 'AbortError')));
       return cancellation;
     };
 

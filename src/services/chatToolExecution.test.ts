@@ -405,7 +405,7 @@ describe("agent terminal isolation", () => {
     f.resolve({ kind: "allow_once" });
     await checkpoint();
     f.abort.abort();
-    command.resolve(terminalSession);
+    command.resolve({ ...terminalSession, status: "killed" });
     await running;
     expect(f.ports.terminal.runCommand).toHaveBeenCalledWith({ sessionId: "terminal", command: "pwd", timeoutMs: 1_800_000, executionId: expect.any(String) });
     expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String));

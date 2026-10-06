@@ -1770,7 +1770,11 @@ La commande d’annulation attend la destruction de la tâche possédée. Les wr
 ChatGPT, OpenAI compatibles et Copilot exécutent leur travail dans cette tâche.
 Le superviseur joint également le processus Copilot confiné, ses descendants et
 sa lecture stderr ; une erreur de terminaison conserve un reçu d’arrêt incertain.
-Copilot publie sa fin seulement après ce contrôle.
+Copilot publie sa fin seulement après ce contrôle. Les événements de fin ou
+d’erreur fournisseur ne sont pas des reçus du superviseur : le transport joint
+le registre natif sur chaque sortie avant de libérer l’identité. Une erreur de
+cleanup conserve `StreamStopUnconfirmedError`, sans fallback ni nouvelle requête
+fournisseur. Un Stop concurrent joint cette même finalisation.
 
 Chat conserve sa réservation pendant la préparation, le transport et les outils
 déjà lancés, même si un exécuteur ignore le signal. L’annulation du transport
@@ -1788,6 +1792,11 @@ dispatchés. Les outils terminaux rendent des refus et erreurs typés ; un code 
 sortie métier non nul reste un résultat exécuté. Après dispatch, une interruption,
 un résultat non final ou une réponse de transport perdue reste `uncertain` et
 maintient le journal en `unknown`, sans déclaration de réussite ni rejeu aveugle.
+Un résultat final du run terminal confirme sa fin locale même si le kill échoue ;
+son résultat métier peut rester incertain. En revanche, la perte de ce reçu ou un
+état non final conserve le propriétaire avec `StreamStopUnconfirmedError`. Le
+simple accusé de réception du kill ou la projection de session ne prouve pas la
+récupération du processus ; ils ne libèrent pas ce propriétaire.
 
 ### 15.2 Couplage avec les plans
 
