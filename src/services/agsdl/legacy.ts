@@ -1,6 +1,10 @@
 import type { AgsdlEditorDocument } from "../../types/agsdl";
 import type { ArchitectPlanRecord } from "../architectPlanService";
 
+import { AGSDL_CONTRACT } from "./document";
+import { defaultDesign } from "./design";
+import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
+
 const CONTRACT = "agsdl-0.1.0";
 const VERSION = "1";
 
@@ -90,7 +94,7 @@ const nodeBody = (node: LegacyPlan["nodes"][number]): string => {
  * Instructions are descriptive declarations only; no AgSDL graph or execution
  * configuration is emitted.
  */
-export const convertLegacyPlan = (plan: LegacyPlan): AgsdlEditorDocument | null => {
+export const convertLegacyPlan01 = (plan: LegacyPlan): AgsdlEditorDocument | null => {
   if (plan.nodes.length === 0 && plan.predictedBranches.length === 0) return null;
 
   const scope = `macro-plan-${safeId(plan.id, "legacy")}`;
@@ -191,4 +195,34 @@ export const convertLegacyPlan = (plan: LegacyPlan): AgsdlEditorDocument | null 
     2,
   );
   return { revision: 1, source, annexes: {} };
+};
+
+/**
+ * Imports an old Macro plan as descriptive persistent Agents in a new 0.2 draft.
+ * Original records and migration limits remain in the Macro editor envelope.
+ * Topology and executable behavior require deliberate authoring after import.
+ */
+export const convertLegacyPlan = (plan: LegacyPlan): AgsdlEditorDocument | null => {
+  if (!plan.nodes.length && !plan.predictedBranches.length) return null;
+  const agents: Record<string, unknown> = {};
+  const cards: Record<string, { title: string; description: string; macroLegacyNodeId: string; macroStatus: string }> = {};
+  plan.nodes.forEach((node, index) => {
+    const id = `agent-${index + 1}`;
+    agents[id] = { configuration: 'legacy', prompt: [{ value: nodeBody(node) }] };
+    cards[`/agents/${id}`] = { title: node.title, description: nodeBody(node), macroLegacyNodeId: node.id, macroStatus: node.status };
+  });
+  const issues = issueCodes(plan);
+  if (plan.nodes.some(node => node.dependencies.length)) issues.push('topology-not-migrated');
+  const source = JSON.stringify({
+    contract: AGSDL_CONTRACT, id: `legacy-${safeId(plan.id, 'plan').replace(/[^A-Za-z0-9_-]/g, '-')}`,
+    agents,
+    configurations: { legacy: { engine: 'legacyEngine' } },
+    bindings: { legacyEngine: { contract: MACRO_ENGINE_CONTRACT, implementation: MACRO_ENGINE_IMPLEMENTATION } },
+  }, null, 2);
+  return {
+    revision: 1, source, annexes: {},
+    design: { ...defaultDesign(), purpose: plan.description },
+    display: { title: plan.label || plan.title, cards },
+    migration: { version: 1, from: 'macro-legacy-plan', issues, original: structuredClone(plan) },
+  };
 };

@@ -1,4 +1,6 @@
-import { AGSDL_CONTRACT } from "./document";
+import { AGSDL_CONTRACT, LEGACY_AGSDL_CONTRACT } from "./document";
+import { defaultDesign, type AgsdlEnvelopeMetadata, type AgsdlDisplayMetadata } from "./design";
+import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 
 export const AGSDL_EXAMPLES = [
   "release",
@@ -76,7 +78,7 @@ const workflows: Record<AgsdlExample, Array<[string, string, string]>> = {
 };
 
 /** Illustrative documents, with explicit missing engines and no executable adapter claims. */
-export function createExample(kind: AgsdlExample): string {
+export function createLegacyExample(kind: AgsdlExample): string {
   const scope = `example-${kind}`;
   const key = (id: string) => ({ scope, id, version: "1" });
   const root = key("system");
@@ -190,7 +192,7 @@ export function createExample(kind: AgsdlExample): string {
   );
   return JSON.stringify(
     {
-      contract: AGSDL_CONTRACT,
+      contract: LEGACY_AGSDL_CONTRACT,
       root: {
         key: root,
         kind: "System",
@@ -218,4 +220,43 @@ export function createExample(kind: AgsdlExample): string {
     null,
     2,
   );
+}
+
+/** Example bindings describe implementation choices without claiming runtime support. */
+export function createExample(kind: AgsdlExample, contract = AGSDL_CONTRACT): string {
+  if (contract === LEGACY_AGSDL_CONTRACT) return createLegacyExample(kind);
+  if (contract !== AGSDL_CONTRACT) throw new Error('Unsupported AgSDL example contract.');
+  const stages = workflows[kind];
+  const agents = Object.fromEntries(stages.map(([id, _title, body]) => [id, {
+    configuration: 'project',
+    prompt: [{ value: body }, { ref: 'projectGuidance' }],
+    interface: { inputMediaTypes: ['text/plain', 'application/json'], outputMediaTypes: ['text/plain'], results: { report: { mediaTypes: ['text/plain'], required: true } } },
+  }]));
+  const steps = Object.fromEntries(stages.flatMap(([id], index) => {
+    const next = stages[index + 1]?.[0];
+    return [
+      [id, { type: 'agent', agent: id, next: next ? [`prepare-${next}`] : [] }],
+      ...(next ? [[`prepare-${next}`, { type: 'prepare', message: { resources: { report: { source: { path: ['results', 'report'] } } } }, next: [next] }]] : []),
+    ];
+  }));
+  return JSON.stringify({
+    contract: AGSDL_CONTRACT, id: `example-${kind}`,
+    content: { projectGuidance: { value: 'Replace with the project checklist, commands and conventions before execution.' } },
+    bindings: { engine: { contract: MACRO_ENGINE_CONTRACT, implementation: MACRO_ENGINE_IMPLEMENTATION } },
+    configurations: { project: { engine: 'engine' } },
+    agents, flow: { entry: stages[0][0], steps },
+  }, null, 2);
+}
+
+/** Human labels travel with the Macro envelope; AgSDL names remain stable source identities. */
+export function createExampleDocument(kind: AgsdlExample): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
+  const cards: NonNullable<AgsdlDisplayMetadata['cards']> = {};
+  for (const [id, title] of workflows[kind]) {
+    cards[`/agents/${id}`] = { title };
+    cards[`/flow/steps/${id}`] = { title };
+    cards[`/flow/steps/prepare-${id}`] = { title: `Report for ${title}` };
+  }
+  // The first Agent receives the entry Message directly, so it has no Prepare step.
+  delete cards[`/flow/steps/prepare-${workflows[kind][0][0]}`];
+  return { source: createExample(kind), annexes: {}, design: defaultDesign(), display: { title: kind[0].toUpperCase() + kind.slice(1), cards } };
 }

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { adaptationChanges, readDesign, withDocumentDesign, type AgsdlEnvelopeMetadata, type DesignMetadata } from "../services/agsdl/design";
 import {
   migrateArchitectPlanToAgsdl,
   updateArchitectPlan,
@@ -17,7 +18,7 @@ export interface AgsdlTarget {
 }
 export const agsdlSessionKey = (target: AgsdlTarget) =>
   JSON.stringify([target.branchName, target.planId]);
-interface Snapshot {
+interface Snapshot extends AgsdlEnvelopeMetadata {
   source: string;
   annexes: Record<string, string>;
 }
@@ -40,7 +41,9 @@ interface AgsdlState {
     source: string,
     annexes?: Record<string, string>,
     expectedVersion?: string,
+    metadata?: AgsdlEnvelopeMetadata,
   ) => void;
+  setDesign: (target: AgsdlTarget, design: DesignMetadata, expectedVersion?: string) => void;
   edit: (
     target: AgsdlTarget,
     changes: AgsdlChange[],
@@ -51,9 +54,11 @@ interface AgsdlState {
   validate: (target: AgsdlTarget) => Promise<void>;
 }
 const pendingLoads = new Map<string, Promise<AgsdlSession>>();
-const snapshot = ({ source, annexes }: Snapshot): Snapshot => ({
-  source,
-  annexes,
+const snapshot = ({ source, annexes, design, display, migration }: Snapshot): Snapshot => structuredClone({
+  source, annexes,
+  ...(design !== undefined ? { design } : {}),
+  ...(display !== undefined ? { display } : {}),
+  ...(migration !== undefined ? { migration } : {}),
 });
 const historyBudget = (history: Snapshot[]) => {
   let bytes = 0;
@@ -63,7 +68,7 @@ const historyBudget = (history: Snapshot[]) => {
     .filter(
       (item) =>
         (bytes +=
-          item.source.length + Object.values(item.annexes).join("").length) <=
+          new TextEncoder().encode(item.source + Object.values(item.annexes).join("") + JSON.stringify({ design: item.design, display: item.display, migration: item.migration })).length) <=
         4 * MAX_AGSDL_BYTES,
     )
     .reverse();
@@ -98,6 +103,9 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         const next: AgsdlSession = {
           source: plan.agsdl?.source ?? "",
           annexes: plan.agsdl?.annexes ?? {},
+          design: plan.agsdl?.design,
+          display: plan.agsdl?.display,
+          migration: plan.agsdl?.migration,
           version: crypto.randomUUID(),
           persistedRevision: plan.agsdl?.revision ?? 0,
           dirty: false,
@@ -118,27 +126,32 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         pendingLoads.delete(key);
       }
     },
-    replace(target, source, annexes, expectedVersion) {
+    replace(target, source, annexes, expectedVersion, metadata) {
       const current = session(target);
       if (current.status !== "draft")
         throw new Error("AgSDL editing requires a draft plan.");
       if (expectedVersion !== undefined && expectedVersion !== current.version)
         throw new Error("The document changed. Read it again before editing.");
       const nextAnnexes = annexes ?? current.annexes;
+      const nextMetadata = metadata === undefined ? { design: current.design, display: current.display, migration: current.migration } : structuredClone(metadata);
       if (
-        new TextEncoder().encode(source + Object.values(nextAnnexes).join(""))
+        new TextEncoder().encode(source + Object.values(nextAnnexes).join("") + JSON.stringify(nextMetadata))
           .length > MAX_AGSDL_BYTES
       )
         throw new Error("AgSDL inputs exceed the 1 MiB editor limit.");
       if (
         source === current.source &&
-        JSON.stringify(nextAnnexes) === JSON.stringify(current.annexes)
+        JSON.stringify(nextAnnexes) === JSON.stringify(current.annexes) &&
+        JSON.stringify(nextMetadata) === JSON.stringify({ design: current.design, display: current.display, migration: current.migration })
       )
         return;
       update(target, {
         ...current,
         source,
-        annexes: nextAnnexes,
+        design: nextMetadata.design,
+        display: nextMetadata.display,
+        migration: nextMetadata.migration,
+        annexes: structuredClone(nextAnnexes),
         version: crypto.randomUUID(),
         dirty: true,
         history: historyBudget([...current.history, snapshot(current)]),
@@ -146,6 +159,15 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
         reports: [],
         error: null,
       });
+    },
+    setDesign(target, design, expectedVersion) {
+      const current = session(target);
+      if (expectedVersion !== undefined && expectedVersion !== current.version) throw new Error("The document changed. Read it again before editing.");
+      const previous = readDesign(current.source, current.design);
+      const changes = adaptationChanges(current.source, previous, design);
+      const adapted = changes.length ? applyChanges(current.source, changes) : current.source;
+      const next = withDocumentDesign(adapted, design, { design: current.design, display: current.display, migration: current.migration });
+      get().replace(target, next.source, undefined, expectedVersion ?? current.version, { design: next.design, display: next.display, migration: next.migration });
     },
     edit(target, changes, expectedVersion) {
       const current = session(target);

@@ -1,11 +1,11 @@
 import { createArchitectPlan, getArchitectPlan, listArchitectPlans, listArchitectPlanTargetBranches, type ArchitectPlanRecord } from '../../services/architectPlanService';
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from '../useAgsdlStore';
-import { AGSDL_EXAMPLES, createExample } from '../../services/agsdl/examples';
-import { applyChanges, object, readDocument, text } from '../../services/agsdl/document';
-import { readDesign, withDesign, type DesignMetadata } from '../../services/agsdl/design';
+import { AGSDL_EXAMPLES, createExampleDocument } from '../../services/agsdl/examples';
+import { applyChanges, LEGACY_AGSDL_CONTRACT, object, readDocument, text } from '../../services/agsdl/document';
+import { readDesign, withDocumentDesign, type AgsdlEnvelopeMetadata, type DesignMetadata } from '../../services/agsdl/design';
 import { useAppStore } from '../useAppStore';
 
-export interface DesignSource {
+export interface DesignSource extends AgsdlEnvelopeMetadata {
   id: string;
   name: string;
   kind: 'system' | 'blueprint';
@@ -26,9 +26,10 @@ const examplePurposes = {
 };
 export function builtInDesignSources(): DesignSource[] {
   return AGSDL_EXAMPLES.map(kind => {
-    const source = createExample(kind);
+    const document = createExampleDocument(kind);
+    const source = document.source;
     const name = kind[0].toUpperCase() + kind.slice(1);
-    return { id: `builtin:${kind}`, name, origin: { planId: `builtin:${kind}`, name, revision: 1 }, kind: 'blueprint', builtin: true, source: withDesign(source, { ...readDesign(source), kind: 'blueprint', purpose: examplePurposes[kind], requirements: [{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '' }] }), annexes: {} };
+    return { id: `builtin:${kind}`, name, origin: { planId: `builtin:${kind}`, name, revision: 1 }, kind: 'blueprint', builtin: true, ...withDocumentDesign(source, { ...readDesign(source, document.design), kind: 'blueprint', purpose: examplePurposes[kind], requirements: [{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '', targetPath: '/content/projectGuidance/value' }] }, document), annexes: {} };
   });
 }
 /** Injection uses the same metadata and editor contracts, without a parallel persistence layer. */
@@ -67,9 +68,9 @@ export async function listDesignSources(deps = dependencies()): Promise<DesignSo
             // after undo). It is not a malformed document and should not hide the
             // usable entries or show a misleading load error.
             if (!plan?.agsdl || !plan.agsdl.source.trim()) return { source: undefined, failureCount: 0 };
-            const name = plan.label || text(object(object(readDocument(plan.agsdl.source).root).annotations).title) || plan.title;
+            const name = plan.label || plan.agsdl.display?.title || text(object(object(readDocument(plan.agsdl.source).root).annotations).title) || plan.title;
             return {
-              source: { id: JSON.stringify([branch, plan.id]), name, kind: readDesign(plan.agsdl.source).kind, source: plan.agsdl.source, annexes: { ...plan.agsdl.annexes }, origin: { planId: plan.id, name, revision: plan.agsdl.revision } } satisfies DesignSource,
+              source: { id: JSON.stringify([branch, plan.id]), name, kind: readDesign(plan.agsdl.source, plan.agsdl.design).kind, source: plan.agsdl.source, design: structuredClone(plan.agsdl.design), display: structuredClone(plan.agsdl.display), migration: structuredClone(plan.agsdl.migration), annexes: { ...plan.agsdl.annexes }, origin: { planId: plan.id, name, revision: plan.agsdl.revision } } satisfies DesignSource,
               failureCount: 0,
             };
           } catch {
@@ -96,11 +97,13 @@ export async function saveBlueprint(target: AgsdlTarget, name: string, deps = de
   if (!session.source.trim()) throw new Error('Create a system before saving a blueprint.');
   if (session.saving) throw new Error('Wait for the current save to finish.');
   // Snapshot before any await: subsequent edits never leak into this saved blueprint.
-  const source = applyChanges(withDesign(session.source, { ...readDesign(session.source), kind: 'blueprint' }), [{ op: 'set', path: '/root/annotations/title', valueJson: JSON.stringify(name.trim()) }]);
+  const copy = withDocumentDesign(session.source, { ...readDesign(session.source, session.design), kind: 'blueprint' }, { design: session.design, display: session.display, migration: session.migration });
+  const source = readDocument(copy.source).contract === LEGACY_AGSDL_CONTRACT ? applyChanges(copy.source, [{ op: 'set', path: '/root/annotations/title', valueJson: JSON.stringify(name.trim()) }]) : copy.source;
+  const metadata = { design: copy.design, display: { ...copy.display, title: name.trim() }, migration: copy.migration };
   const annexes = { ...session.annexes };
   const plan = await deps.getPlan(target.branchName, target.planId);
   if (!plan || plan.status === 'deleted') throw new Error('The source plan is unavailable.');
-  const created = await deps.createPlan({ branchName: target.branchName, label: name.trim(), title: name.trim(), description: readDesign(source).purpose, status: 'draft', projectIds: plan.projectIds ?? (plan.projectId ? [plan.projectId] : []), contextProjectIds: plan.contextProjectIds, setActive: false, agsdl: { source, annexes } });
+  const created = await deps.createPlan({ branchName: target.branchName, label: name.trim(), title: name.trim(), description: readDesign(source, copy.design).purpose, status: 'draft', projectIds: plan.projectIds ?? (plan.projectId ? [plan.projectId] : []), contextProjectIds: plan.contextProjectIds, setActive: false, agsdl: { source, annexes, ...metadata } });
   // Keep the Architect navigator/sidebar in sync with the newly persisted plan.
   // A refresh failure must not turn a successful save into a reported failure.
   if (deps.refreshCatalog) {
@@ -110,15 +113,15 @@ export async function saveBlueprint(target: AgsdlTarget, name: string, deps = de
 }
 export async function instantiateDesign(target: AgsdlTarget, source: DesignSource, expectedVersion: string, options: { replace?: boolean; onApplied?: (version: string) => void } = {}, deps = dependencies()): Promise<void> {
   // A library entry is already a pinned snapshot, including its annexes and revision.
-  const design = readDesign(source.source);
-  const copy = withDesign(source.source, { ...design, kind: 'system', origin: source.origin });
+  const design = readDesign(source.source, source.design);
+  const copy = withDocumentDesign(source.source, { ...design, kind: 'system', origin: source.origin }, { design: source.design, display: source.display, migration: source.migration });
   const annexes = { ...source.annexes };
   await deps.store().load(target);
   const session = deps.store().sessions[agsdlSessionKey(target)];
   if (!session || session.version !== expectedVersion) throw new Error('The document changed. Read it again before editing.');
   if (session.saving) throw new Error('Wait for the current save to finish.');
   if (session.source.trim() && !options.replace) throw new Error('Replacing a nonempty system requires explicit confirmation.');
-  deps.store().replace(target, copy, annexes, expectedVersion);
+  deps.store().replace(target, copy.source, annexes, expectedVersion, { design: copy.design, display: copy.display, migration: copy.migration });
   options.onApplied?.(deps.store().sessions[agsdlSessionKey(target)].version);
   // Save failures deliberately retain the editable snapshot, error and undo history.
   await deps.store().save(target);

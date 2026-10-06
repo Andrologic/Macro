@@ -1,5 +1,5 @@
 import type { AgsdlChange } from '../../types/agsdl';
-import { AGSDL_CONTRACT, object, readDocument, applyChanges, sourceAt } from './document';
+import { AGSDL_CONTRACT, LEGACY_AGSDL_CONTRACT, object, readDocument, applyChanges, sourceAt } from './document';
 
 export interface DesignMetadata {
   version: 1;
@@ -13,7 +13,7 @@ export interface DesignMetadata {
 export class DesignMetadataError extends Error {
   constructor() { super('The design metadata is malformed or uses an unsupported version. Its original contents have been preserved.'); this.name = 'DesignMetadataError'; }
 }
-const defaults = (): DesignMetadata => ({ version: 1, kind: 'system', purpose: '', context: '', rules: [], requirements: [] });
+export const defaultDesign = (): DesignMetadata => ({ version: 1, kind: 'system', purpose: '', context: '', rules: [], requirements: [] });
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const strings = (value: Record<string, unknown>, keys: string[]) => keys.every(key => typeof value[key] === 'string');
 function valid(value: unknown): value is DesignMetadata {
@@ -31,15 +31,17 @@ function annotations(source: string): Record<string, unknown> {
   return object(root.annotations);
 }
 /** Missing metadata is a draft; malformed or future versions remain explicitly unreadable. */
-export function readDesign(source: string): DesignMetadata {
-  const value = annotations(source).macroDesign;
-  if (value === undefined) return defaults();
+export function readDesign(source: string, metadata?: DesignMetadata): DesignMetadata {
+  const doc = readDocument(source);
+  const value = doc.contract === AGSDL_CONTRACT ? metadata : annotations(source).macroDesign;
+  if (value === undefined) return defaultDesign();
   if (!valid(value)) throw new DesignMetadataError();
   return structuredClone(value);
 }
 /** Patch owned fields only, keeping opaque fields and unrelated source spans intact. */
 export function designChanges(source: string, design: DesignMetadata): AgsdlChange[] {
   if (!valid(design)) throw new DesignMetadataError();
+  if (readDocument(source).contract === AGSDL_CONTRACT) throw new Error('AgSDL 0.2 design metadata belongs in the editor envelope. Use setDesign.');
   const previous = readDesign(source);
   const root = object(readDocument(source).root);
   if (root.annotations === undefined) return [{ op: 'set', path: '/root/annotations', valueJson: JSON.stringify({ macroDesign: design }) }];
@@ -59,7 +61,7 @@ export function designChanges(source: string, design: DesignMetadata): AgsdlChan
           ? { op: 'remove', path: `/row/${field}` }
           : { op: 'set', path: `/row/${field}`, valueJson: JSON.stringify(after[field]) });
         if (!edits.length) return raw;
-        return sourceAt(applyChanges(`{"contract":"${AGSDL_CONTRACT}","row":${raw}}`, edits), '/row');
+        return sourceAt(applyChanges(`{"contract":"${LEGACY_AGSDL_CONTRACT}","row":${raw}}`, edits), '/row');
       });
       const valueJson = `[${rows.join(',')}]`;
       if (JSON.stringify(previous[key]) !== JSON.stringify(JSON.parse(valueJson))) changes.push({ op: 'set', path: `/root/annotations/macroDesign/${key}`, valueJson });
@@ -74,6 +76,76 @@ export function withDesign(source: string, design: DesignMetadata): string {
   const changes = designChanges(source, design);
   return changes.length ? applyChanges(source, changes) : source;
 }
-export function createEmptySystem(title: string): string {
-  return JSON.stringify({ contract: AGSDL_CONTRACT, root: { key: { scope: 'macro', id: crypto.randomUUID(), version: '1' }, kind: 'System', annotations: { title, macroDesign: defaults() } }, definitions: [], relations: [], exports: [], dependencies: [], unresolved: [], extensions: [] }, null, 2);
+export interface AgsdlDisplayMetadata {
+  title?: string;
+  cards?: Record<string, { title?: string; description?: string; macroGroup?: string; macroTaskId?: string; macroLegacyNodeId?: string; macroStatus?: string }>;
+}
+export interface AgsdlMigrationMetadata {
+  version: 1;
+  from: 'macro-legacy-plan' | 'agsdl-0.1.0';
+  issues: string[];
+  /** Original artifact and evidence remain available for deliberate remapping. */
+  original?: unknown;
+}
+export interface AgsdlEnvelopeMetadata {
+  design?: DesignMetadata;
+  display?: AgsdlDisplayMetadata;
+  migration?: AgsdlMigrationMetadata;
+}
+/** Preserve unrelated metadata and row extensions while updating owned design fields. */
+export function updateDesignMetadata(previous: DesignMetadata | undefined, design: DesignMetadata): DesignMetadata {
+  if (!valid(design) || (previous !== undefined && !valid(previous))) throw new DesignMetadataError();
+  const merged = { ...structuredClone(previous), ...structuredClone(design) };
+  for (const key of ['rules', 'requirements'] as const) {
+    const rows = new Map((previous?.[key] ?? []).map(item => [item.id, item]));
+    // Assign through a record because the two arrays have distinct row contracts.
+    (merged as unknown as Record<string, unknown>)[key] = design[key].map(item => {
+      const row = { ...structuredClone(rows.get(item.id)), ...structuredClone(item) };
+      if (key === 'requirements' && !Object.hasOwn(item, 'targetPath')) delete (row as Record<string, unknown>).targetPath;
+      return row;
+    });
+  }
+  if (design.origin === undefined) delete merged.origin;
+  return merged;
+}
+/** Source text is immutable when only Macro design metadata changes in 0.2. */
+export function withDocumentDesign(source: string, design: DesignMetadata, metadata: AgsdlEnvelopeMetadata = {}): { source: string } & AgsdlEnvelopeMetadata {
+  if (readDocument(source).contract === AGSDL_CONTRACT) return { ...structuredClone(metadata), source, design: updateDesignMetadata(metadata.design, design) };
+  return { ...structuredClone(metadata), source: withDesign(source, design) };
+}
+export function createEmptySystem(_title: string): string {
+  return JSON.stringify({ contract: AGSDL_CONTRACT, id: `system-${crypto.randomUUID()}`, agents: {}, configurations: {}, bindings: {} }, null, 2);
+}
+export function createEmptySystemDocument(title: string): { source: string; annexes: Record<string, string> } & AgsdlEnvelopeMetadata {
+  return { source: createEmptySystem(title), annexes: {}, design: defaultDesign(), display: { title } };
+}
+/** Migration requires a separately authored target and a reviewed loss list. */
+export function manualMigrationInventory(source: string) {
+  const doc = readDocument(source);
+  if (doc.contract !== LEGACY_AGSDL_CONTRACT) throw new Error('Manual migration inventory requires an AgSDL 0.1 document.');
+  return {
+    from: LEGACY_AGSDL_CONTRACT,
+    to: AGSDL_CONTRACT,
+    originalSource: source,
+    original: structuredClone(doc),
+    requiresAuthoring: ['system-boundary-and-identities', 'typed-relations-and-dependencies', 'prompt-versus-resources', 'persistent-agent-lifecycle', 'flow-data-and-failure-paths', 'configuration-bindings-and-evidence', 'authority-and-approval-controls'],
+  };
+}
+
+/** Explicit historical fixture and editor support for the unchanged 0.1 edition. */
+export function createLegacyEmptySystem(title: string): string {
+  return JSON.stringify({ contract: LEGACY_AGSDL_CONTRACT, root: { key: { scope: 'macro', id: crypto.randomUUID(), version: '1' }, kind: 'System', annotations: { title, macroDesign: defaultDesign() } }, definitions: [], relations: [], exports: [], dependencies: [], unresolved: [], extensions: [] }, null, 2);
+}
+
+/** Apply a changed adaptation only to its already-authored, existing string slot. */
+export function adaptationChanges(source: string, previous: DesignMetadata, design: DesignMetadata): AgsdlChange[] {
+  if (readDocument(source).contract !== AGSDL_CONTRACT) return [];
+  const old = new Map(previous.requirements.map(item => [item.id, item]));
+  return design.requirements.flatMap(item => {
+    const before = old.get(item.id);
+    if (!item.targetPath || item.targetPath !== before?.targetPath || item.value === before.value) return [];
+    const value: unknown = JSON.parse(sourceAt(source, item.targetPath));
+    if (typeof value !== 'string') throw new Error('The adaptation target must be an existing string value.');
+    return [{ op: 'set' as const, path: item.targetPath, valueJson: JSON.stringify(item.value) }];
+  });
 }

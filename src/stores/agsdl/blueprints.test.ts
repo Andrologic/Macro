@@ -13,12 +13,12 @@ function harness(source = '') {
   const state: ReturnType<typeof useAgsdlStore.getState> = {
     sessions: { [agsdlSessionKey(target)]: session },
     load: async () => session,
-    replace: (_target, next, annexes, version) => {
+    replace: (_target, next, annexes, version, metadata) => {
       if (version !== session.version) throw new Error('Conflict');
-      session.source = next; session.annexes = annexes!; session.version = 'v2'; session.dirty = true;
+      session.source = next; Object.assign(session, metadata); session.annexes = annexes!; session.version = 'v2'; session.dirty = true;
     },
     save: async () => { saved++; session.dirty = false; },
-    edit: () => { throw new Error('Unexpected edit'); }, undo: () => {}, validate: async () => {},
+    setDesign: () => { throw new Error('Unexpected design edit'); }, edit: () => { throw new Error('Unexpected edit'); }, undo: () => {}, validate: async () => {},
   };
   const deps: BlueprintDependencies = {
     store: () => state,
@@ -37,9 +37,11 @@ describe('design snapshots through Architect metadata', () => {
     const original = JSON.stringify(template);
     await instantiateDesign(target, template, 'v1', {}, h.deps);
     expect(h.saved()).toBe(1);
-    expect(readDesign(h.session.source).origin?.revision).toBe(7);
-    expect(readDesign(h.session.source).kind).toBe('system');
+    expect(readDesign(h.session.source, h.session.design).origin?.revision).toBe(7);
+    expect(readDesign(h.session.source, h.session.design).kind).toBe('system');
     expect(JSON.stringify(template)).toBe(original);
+    expect(h.session.source).toBe(template.source);
+    expect(JSON.parse(h.session.source).annotations).toBeUndefined();
     h.session.annexes.guidance = 'Changed';
     expect(template.annexes.guidance).toBe('Evidence required');
   });
@@ -55,7 +57,7 @@ describe('design snapshots through Architect metadata', () => {
     h.state.save = async () => { throw new Error('Persistence conflict'); };
     await expect(instantiateDesign(target, builtInDesignSources()[0], 'v1', {}, h.deps)).rejects.toThrow('Persistence conflict');
     expect(h.session.dirty).toBe(true);
-    expect(readDesign(h.session.source).kind).toBe('system');
+    expect(readDesign(h.session.source, h.session.design).kind).toBe('system');
   });
   it('creates a separate blueprint plan without mutating or activating the original', async () => {
     const h = harness(builtInDesignSources()[0].source);
@@ -65,6 +67,8 @@ describe('design snapshots through Architect metadata', () => {
     expect(h.created()?.setActive).toBe(false);
     expect(h.created()?.projectIds).toEqual(['project']);
     expect(h.created()?.agsdl?.annexes).toEqual(h.session.annexes);
+    expect(h.created()?.agsdl?.source).toBe(h.session.source);
+    expect(h.created()?.agsdl?.design?.kind).toBe('blueprint');
     expect(JSON.stringify(h.session)).toBe(before);
     expect(h.saved()).toBe(0);
   });
@@ -138,12 +142,14 @@ describe('blueprint async version boundaries', () => {
 describe('included blueprint adaptation', () => {
   it('offers explicit project guidance to complete without inventing runtime access', () => {
     for (const template of builtInDesignSources()) {
-      const design = readDesign(template.source);
+      const design = readDesign(template.source, template.design);
       expect(design.purpose.length).toBeGreaterThan(0);
       expect(design.context).toBe('');
-      expect(design.requirements).toEqual([{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '' }]);
-      const runtime = JSON.parse(template.source).runtime;
-      expect(runtime.configurations[0].agents.every((agent: { engine: unknown; tools: unknown[] }) => agent.engine === null && agent.tools.length === 0)).toBe(true);
+      expect(design.requirements).toEqual([{ id: 'projectGuidance', label: 'Project instructions', description: 'Project checklist, commands and conventions to apply.', value: '', targetPath: '/content/projectGuidance/value' }]);
+      const doc = JSON.parse(template.source);
+      expect(doc.configurations.project.engine).toBe('engine');
+      expect(doc.bindings.engine.implementation.identity).toBe('macro/desktop');
+      expect(doc.annotations).toBeUndefined();
     }
   });
 });

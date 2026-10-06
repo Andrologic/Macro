@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { validateDocument } from "./document";
-import { convertLegacyPlan } from "./legacy";
+import { convertLegacyPlan, convertLegacyPlan01 } from "./legacy";
 import type { ArchitectPlanRecord } from "../architectPlanService";
 
 const plan = (overrides: Partial<ArchitectPlanRecord> = {}): Pick<
@@ -39,12 +39,12 @@ const plan = (overrides: Partial<ArchitectPlanRecord> = {}): Pick<
 
 describe("legacy AgSDL conversion", () => {
   it("returns null for an empty legacy strategy", () => {
-    expect(convertLegacyPlan(plan({ nodes: [], predictedBranches: [] }))).toBeNull();
+    expect(convertLegacyPlan01(plan({ nodes: [], predictedBranches: [] }))).toBeNull();
   });
 
   it("preserves the exact legacy records in the reserved Resource payload", () => {
     const legacy = plan();
-    const converted = convertLegacyPlan(legacy)!;
+    const converted = convertLegacyPlan01(legacy)!;
     const document = JSON.parse(converted.source);
     const resource = document.definitions.find(
       (definition: { key: { id: string } }) => definition.key.id === "macro-legacy-plan",
@@ -59,7 +59,7 @@ describe("legacy AgSDL conversion", () => {
   });
 
   it("emits a valid D-only document and records topology warnings", async () => {
-    const converted = convertLegacyPlan(
+    const converted = convertLegacyPlan01(
       plan({
         nodes: [
           { ...plan().nodes[0], dependencies: ["missing"] },
@@ -85,7 +85,7 @@ describe("legacy AgSDL conversion", () => {
   });
 
   it("does not mark a simple dependency chain as nonlinear", () => {
-    const converted = convertLegacyPlan(
+    const converted = convertLegacyPlan01(
       plan({
         nodes: [
           plan().nodes[0],
@@ -101,7 +101,7 @@ describe("legacy AgSDL conversion", () => {
   });
 
   it("marks a diamond dependency graph as nonlinear", () => {
-    const converted = convertLegacyPlan(
+    const converted = convertLegacyPlan01(
       plan({
         nodes: [
           plan().nodes[0],
@@ -116,5 +116,25 @@ describe("legacy AgSDL conversion", () => {
       "nonlinear-dependencies",
       "execution-not-migrated",
     ]);
+  });
+});
+
+describe('legacy plan import to AgSDL 0.2', () => {
+  it('preserves complete original records outside the closed source document', async () => {
+    const original = plan(), converted = convertLegacyPlan(original)!;
+    const doc = JSON.parse(converted.source);
+    expect(doc.contract).toBe('agsdl-0.2.0');
+    expect(doc.root).toBeUndefined();
+    expect(doc.flow).toBeUndefined();
+    expect(converted.migration?.original).toEqual(original);
+    expect(converted.migration?.issues).toContain('execution-not-migrated');
+    expect(converted.display?.cards?.['/agents/agent-1'].title).toBe('First task');
+    expect(doc.agents['agent-1'].prompt[0].value).toContain('Read files');
+    expect((await validateDocument(converted.source)).flatMap(report => report.results).every(result => result.verdict === 'pass')).toBe(true);
+  });
+  it('records that dependency topology still needs deliberate authoring', () => {
+    const converted = convertLegacyPlan(plan({ nodes: [plan().nodes[0], { ...plan().nodes[0], id: 'two', dependencies: ['one'] }] }))!;
+    expect(converted.migration?.issues).toContain('topology-not-migrated');
+    expect(JSON.parse(converted.source).flow).toBeUndefined();
   });
 });

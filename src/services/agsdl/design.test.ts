@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { applyChanges, validateDocument } from './document';
-import { createEmptySystem, designChanges, readDesign } from './design';
+import { createLegacyEmptySystem as createEmptySystem, designChanges, readDesign } from './design';
 
 describe('system design metadata', () => {
   it('creates a valid declaration draft without inventing a graph or runtime', async () => {
@@ -54,5 +54,64 @@ describe('system design metadata', () => {
     source = JSON.stringify(extended);
     design.rules[0].title = 'Peer review';
     expect(JSON.parse(applyChanges(source, designChanges(source, design))).root.annotations.macroDesign.rules[0].extension).toBe('keep');
+  });
+});
+
+import { createEmptySystemDocument, manualMigrationInventory, withDocumentDesign } from './design';
+import { createExample, createExampleDocument, AGSDL_EXAMPLES } from './examples';
+
+describe('AgSDL 0.2 design envelopes', () => {
+  it('keeps Macro metadata outside the closed document and preserves source exactly', async () => {
+    const draft = createEmptySystemDocument('Préparer la release');
+    const source = draft.source.replace('"agents": {}', '"agents" : {}');
+    const changed = withDocumentDesign(source, { ...readDesign(source, draft.design), purpose: 'Publier après vérification' }, draft);
+    expect(changed.source).toBe(source);
+    expect(readDesign(changed.source, changed.design).purpose).toBe('Publier après vérification');
+    expect(JSON.parse(changed.source)).toEqual({ contract: 'agsdl-0.2.0', id: JSON.parse(source).id, agents: {}, configurations: {}, bindings: {} });
+    expect(changed.display?.title).toBe('Préparer la release');
+    expect((await validateDocument(source))[0].results.every(result => result.verdict === 'pass')).toBe(true);
+    expect(() => designChanges(source, readDesign(source))).toThrow('envelope');
+  });
+  it('rejects malformed envelope metadata without discarding it', () => {
+    const draft = createEmptySystemDocument('Test');
+    const malformed = { ...draft.design!, version: 2 };
+    expect(() => readDesign(draft.source, malformed as never)).toThrow('preserved');
+  });
+  it('keeps existing row extensions and supports removal of optional target paths', () => {
+    const draft = createEmptySystemDocument('Test');
+    const design = { ...draft.design!, requirements: [{ id: 'guide', label: 'Guide', description: '', value: '', targetPath: '/content/guide/value', extension: 'retained' }] };
+    const next = { ...design, requirements: [{ id: 'guide', label: 'Instructions', description: '', value: 'Check evidence' }] };
+    const updated = withDocumentDesign(draft.source, next, { design });
+    expect(updated.design?.requirements[0] as unknown).toEqual({ id: 'guide', label: 'Instructions', description: '', value: 'Check evidence', extension: 'retained' });
+  });
+  it('inventories a manual migration while retaining original source bytes', () => {
+    const source = createEmptySystem('Historical');
+    const inventory = manualMigrationInventory(source);
+    expect(inventory.originalSource).toBe(source);
+    expect(inventory.to).toBe('agsdl-0.2.0');
+    expect(inventory.requiresAuthoring).toContain('persistent-agent-lifecycle');
+    expect(JSON.parse(source).contract).toBe('agsdl-0.1.0');
+  });
+  it('ships human labels as presentation metadata without adding source fields', () => {
+    const document = createExampleDocument('release'), doc = JSON.parse(document.source);
+    expect(document.display?.cards?.['/agents/review'].title).toBe('PR review');
+    expect(document.display?.cards?.['/flow/steps/review'].title).toBe('PR review');
+    expect(doc.agents.review.title).toBeUndefined();
+    expect(doc.bindings.engine.contract.identity).toBe('macro/agent-engine');
+    expect(doc.configurations.project.settings?.providerId).toBeUndefined();
+    expect(doc.configurations.project.settings?.access).toBeUndefined();
+    expect(doc.bindings.engine.claims).toBeUndefined();
+  });
+  it('creates valid 0.2 examples with authored configurations and explicit transfer', async () => {
+    for (const kind of AGSDL_EXAMPLES) {
+      const source = createExample(kind), doc = JSON.parse(source);
+      expect(doc.contract).toBe('agsdl-0.2.0');
+      expect(doc.root).toBeUndefined();
+      expect(doc.configurations.project.engine).toBe('engine');
+      expect(doc.bindings.engine.implementation.identity).toBe('macro/desktop');
+      expect(Object.values(doc.flow.steps).some(step => (step as {type: string}).type === 'prepare')).toBe(true);
+      const reports = await validateDocument(source);
+      expect(reports.flatMap(report => report.results).every(result => result.verdict === 'pass')).toBe(true);
+    }
   });
 });

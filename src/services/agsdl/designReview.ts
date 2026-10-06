@@ -1,5 +1,5 @@
-import { readDesign } from "./design";
-import { keyId, list, object, readDocument } from "./document";
+import { readDesign, defaultDesign, type AgsdlEnvelopeMetadata } from "./design";
+import { AGSDL_CONTRACT, keyId, list, object, pointerPart, readDocument, text } from "./document";
 import { projectViewer, type ViewerCard } from "./viewer";
 
 export type DesignChangeAspect = "identity" | "instructions" | "connections" | "configuration";
@@ -14,7 +14,8 @@ function withoutPrompt(value: Record<string, unknown>, agentLike = false) {
   return copy;
 }
 interface Participant { card: ViewerCard; parts: Record<DesignChangeAspect, unknown> }
-function snapshot(source: string) {
+function snapshot(source: string, metadata?: AgsdlEnvelopeMetadata) {
+  if (readDocument(source).contract === AGSDL_CONTRACT) return snapshot020(source, metadata);
   const doc = readDocument(source), residual = structuredClone(doc);
   const viewer = projectViewer(source);
   const definitions = list(doc.definitions).map(object), relations = list(doc.relations).map(object);
@@ -74,10 +75,10 @@ function snapshot(source: string) {
 }
 
 /** Compare source identities and authored references, never neighboring display labels. */
-export function reviewDesignChanges(before: string, after: string): { changes: DesignChange[]; configuration: boolean; design: boolean; other: boolean; designDetails?: Array<{ label: string; before: string; after: string }> } {
+export function reviewDesignChanges(before: string, after: string, beforeMetadata?: AgsdlEnvelopeMetadata, afterMetadata?: AgsdlEnvelopeMetadata): { changes: DesignChange[]; configuration: boolean; design: boolean; other: boolean; designDetails?: Array<{ label: string; before: string; after: string }> } {
   try {
     const empty = { participants: new Map<string, Participant>(), residual: {}, doc: {} as Record<string, unknown> };
-    const old = before ? snapshot(before) : empty, next = after ? snapshot(after) : empty;
+    const old = before ? snapshot(before, beforeMetadata) : empty, next = after ? snapshot(after, afterMetadata) : empty;
     const changes: DesignChange[] = [];
     for (const [id, { card, parts }] of next.participants) {
       const previous = old.participants.get(id);
@@ -95,11 +96,14 @@ export function reviewDesignChanges(before: string, after: string): { changes: D
       }
     }
     for (const [id, { card }] of old.participants) if (!next.participants.has(id) && !(id.startsWith("definition:") && list(next.doc.definitions).some(value => keyId(object(value).key) === keyId(card.details.key) && stable(value) === stable(card.details)))) changes.push({ kind: "removed", title: card.title, before: card.mission });
-    const configuration = stable(old.doc.runtime) !== stable(next.doc.runtime);
-    const design = stable(object(object(old.doc.root).annotations).macroDesign) !== stable(object(object(next.doc.root).annotations).macroDesign);
+    const configurationValue = (doc: Record<string, unknown>) => doc.contract === AGSDL_CONTRACT ? { configurations: doc.configurations, bindings: doc.bindings } : doc.runtime;
+    const configuration = stable(configurationValue(old.doc)) !== stable(configurationValue(next.doc));
+    const previousDesign = before ? readDesign(before, beforeMetadata?.design) : defaultDesign();
+    const currentDesign = after ? readDesign(after, afterMetadata?.design) : defaultDesign();
+    const design = stable(previousDesign) !== stable(currentDesign);
     const designDetails: Array<{ label: string; before: string; after: string }> = [];
     if (design && before && after) {
-      const previous = readDesign(before), current = readDesign(after);
+      const previous = previousDesign, current = currentDesign;
       for (const field of ["purpose", "context"] as const) {
         if (previous[field] !== current[field]) designDetails.push({ label: `agsdl.design.${field}`, before: previous[field], after: current[field] });
       }
@@ -113,5 +117,36 @@ export function reviewDesignChanges(before: string, after: string): { changes: D
       }
     }
     return { changes, configuration, design, ...(designDetails.length ? { designDetails } : {}), other: stable(old.residual) !== stable(next.residual) };
-  } catch { return { changes: [], configuration: false, design: false, other: before !== after }; }
+  } catch { return { changes: [], configuration: false, design: false, other: before !== after || stable(beforeMetadata) !== stable(afterMetadata) }; }
+}
+
+function snapshot020(source: string, metadata?: AgsdlEnvelopeMetadata) {
+  const doc = readDocument(source), residual = structuredClone(doc);
+  const participants = new Map<string, Participant>();
+  const cards = metadata?.display?.cards ?? {};
+  const contentText = (value: unknown): string => list(value).map(item => {
+    const use = object(item), source = use.ref ? object(object(doc.content)[text(use.ref)]) : use;
+    return typeof source.value === 'string' ? source.value : text(source.uri);
+  }).filter(Boolean).join('\n\n');
+  const add = (id: string, path: string, kind: string, mission: string, details: Record<string, unknown>, parts: Participant['parts']) => {
+    const card: ViewerCard = { id, path, kind, title: cards[path]?.title || id, mission: mission || cards[path]?.description || '', unresolved: false, inputs: [], outputs: [], branches: [], details };
+    parts.identity = { title: card.title, kind };
+    participants.set(`${path}:0`, { card, parts });
+  };
+  for (const [id, raw] of Object.entries(object(doc.agents))) {
+    const agent = object(raw), { prompt, resources, configuration, ...rest } = agent;
+    const path = `/agents/${pointerPart(id)}`;
+    add(id, path, 'Agent', contentText(prompt), agent, { identity: {}, instructions: { prompt, mission: cards[path]?.description }, connections: { resources }, configuration: { configuration, ...rest } });
+  }
+  const flows: Array<[string, Record<string, unknown>]> = [['/flow', object(doc.flow)], ...Object.entries(object(doc.compositions)).map(([name, value]): [string, Record<string, unknown>] => [`/compositions/${pointerPart(name)}`, object(value)])];
+  for (const [base, flow] of flows) for (const [id, raw] of Object.entries(object(flow.steps))) {
+    const step = object(raw), { next, onError, call, after, members, steers, message, ...rest } = step;
+    const path = `${base}/steps/${pointerPart(id)}`;
+    add(id, path, text(step.type), contentText(object(message).prompt), step, { identity: {}, instructions: { message, mission: cards[path]?.description }, connections: { next, onError, call, after, members, steers }, configuration: rest });
+  }
+  delete residual.agents; delete residual.configurations; delete residual.bindings;
+  if (residual.flow) delete object(residual.flow).steps;
+  for (const composition of Object.values(object(residual.compositions))) delete object(composition).steps;
+  const remainingCards = Object.fromEntries(Object.entries(cards).map(([path, { title: _title, description: _description, ...rest }]) => [path, rest]).filter(([_, rest]) => Object.keys(rest as object).length));
+  return { participants, doc, residual: { document: residual, title: metadata?.display?.title, cards: remainingCards, migration: metadata?.migration } };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { readDesign, withDesign } from "./design";
-import { createExample } from './examples';
+import { createLegacyExample as createExample, createExample as createExample020 } from './examples';
 import { reviewDesignChanges } from './designReview';
 const original = () => createExample('release');
 const edit = (source: string, change: (doc: ReturnType<typeof JSON.parse>) => void) => { const doc = JSON.parse(source); change(doc); return JSON.stringify(doc); };
@@ -61,5 +61,33 @@ describe('authored design changes', () => {
     const before = original();
     const review = reviewDesignChanges(before, JSON.stringify(JSON.parse(before)));
     expect(review).toEqual({ changes: [], configuration: false, design: false, other: false });
+  });
+});
+
+describe('AgSDL 0.2 review', () => {
+  it('attributes source prompt and flow changes to their authored participant', () => {
+    const before = createExample020('release');
+    const changed = edit(before, doc => { doc.agents.checklist.prompt[0].value = 'Check each prerequisite and cite evidence.'; doc.flow.steps.review.next = []; });
+    const result = reviewDesignChanges(before, changed);
+    expect(result.changes.map(change => [change.title, change.aspects])).toEqual([['checklist', ['instructions']], ['review', ['connections']]]);
+    expect(result.other).toBe(false);
+  });
+  it('attributes composition instructions to the edited composition step', () => {
+    const before = edit(createExample020('release'), doc => {
+      doc.compositions = { audit: { agentParameters: [], entry: 'brief', outputs: ['done'], steps: { brief: { type: 'prepare', message: { prompt: [{ value: 'Check evidence.' }] }, next: [{ output: 'done' }] } } } };
+    });
+    const after = edit(before, doc => { doc.compositions.audit.steps.brief.message.prompt[0].value = 'Check evidence against the request.'; });
+    const result = reviewDesignChanges(before, after);
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0].path).toBe('/compositions/audit/steps/brief');
+    expect(result.changes[0].aspects).toEqual(['instructions']);
+    expect(result.other).toBe(false);
+  });
+  it('compares design metadata even when the source has identical bytes', () => {
+    const source = createExample020('release'), design = readDesign(source);
+    const result = reviewDesignChanges(source, source, { design }, { design: { ...design, purpose: 'Check release evidence' } });
+    expect(result.designDetails).toEqual([{ label: 'agsdl.design.purpose', before: '', after: 'Check release evidence' }]);
+    expect(result.changes).toEqual([]);
+    expect(result.other).toBe(false);
   });
 });
