@@ -94,6 +94,153 @@ describe('task review workflow without stores', () => {
     expect(await shared).toBe(latest);
     expect(git.gitWorkflow).toHaveBeenCalledTimes(2);
     expect(persisted).toHaveLength(1);
+    expect(await review.load(task.id)).toBe(latest);
+    expect(git.gitWorkflow).toHaveBeenCalledTimes(2);
+  });
+
+  for (const source of ['standalone', 'plan_finalization'] as const) {
+    for (const rejects of [false, true]) {
+      it(`discards a late ${source} review ${rejects ? 'rejection' : 'success'} after removal without clearing task B`, async () => {
+        const current = { ...task, task_source: source };
+        const other = { ...task, id: 'task-b' };
+        const tasks = [current, other];
+        const { ports, git, runtimes, persisted } = fixture(tasks);
+        const started = deferred<void>();
+        const gate = deferred<void>();
+        const wait = async () => {
+          started.resolve();
+          await gate.promise;
+          if (rejects) throw new Error('source branch missing');
+        };
+        if (source === 'plan_finalization') {
+          ports.findPlanSummary = () => ({ id: 'plan-a', storageBranch: 'develop' }) as ReturnType<TaskMergeWorkflowPorts['findPlanSummary']>;
+          ports.loadPlanReview = async () => {
+            await wait();
+            return { plan: { id: 'plan-a', title: 'Plan' }, tasks: [], repositories: [] } as unknown as Awaited<ReturnType<TaskMergeWorkflowPorts['loadPlanReview']>>;
+          };
+        } else {
+          git.gitWorkflow = async () => { await wait(); return receipt(); };
+        }
+        const otherRuntime = buildInitialMergeWorkflowRuntimeState({ taskId: other.id, kind: 'task_completion' });
+        runtimes.set(other.id, otherRuntime);
+        const operation = createTaskReviewWorkflow(ports).load(current.id);
+        await started.promise;
+        tasks.splice(0, 1);
+        runtimes.delete(current.id);
+        ports.reportError('task B error');
+        gate.resolve();
+        expect(await operation).toBeNull();
+        expect(persisted).toEqual([]);
+        expect(runtimes.has(current.id)).toBe(false);
+        expect(runtimes.get(other.id)).toBe(otherRuntime);
+        expect(ports.reportError).toHaveBeenLastCalledWith('task B error');
+      });
+    }
+  }
+
+  for (const terminal of [
+    { status: 'Completed' as const },
+    { archived_at: '2026-01-01' },
+    { plan_status: 'archived' as const },
+    { plan_status: 'completed' as const },
+  ]) {
+    for (const rejects of [false, true]) {
+      it(`discards a late review ${rejects ? 'rejection' : 'success'} when the catalog task becomes ${JSON.stringify(terminal)}`, async () => {
+        const tasks = [{ ...task }];
+        const { ports, git, runtimes, persisted } = fixture(tasks);
+        const gate = deferred<void>();
+        git.gitWorkflow = async () => {
+          await gate.promise;
+          if (rejects) throw new Error('late inspect failure');
+          return receipt();
+        };
+        const operation = createTaskReviewWorkflow(ports).load(task.id);
+        await Promise.resolve();
+        tasks[0] = { ...task, ...terminal };
+        runtimes.delete(task.id);
+        ports.reportError('current error');
+        gate.resolve();
+        expect(await operation).toBeNull();
+        expect(persisted).toEqual([]);
+        expect(runtimes.has(task.id)).toBe(false);
+        expect(ports.reportError).toHaveBeenLastCalledWith('current error');
+      });
+    }
+  }
+
+  it('checks task lifetime before the scheduled loading publication', async () => {
+    const tasks = [{ ...task }];
+    const { ports, persisted, runtimes } = fixture(tasks);
+    ports.publishRuntime = mock(ports.publishRuntime);
+    const operation = createTaskReviewWorkflow(ports).load(task.id);
+    tasks.length = 0;
+    expect(await operation).toBeNull();
+    expect(ports.publishRuntime).not.toHaveBeenCalled();
+    expect(ports.reportError).not.toHaveBeenCalled();
+    expect(persisted).toEqual([]);
+    expect(runtimes.size).toBe(0);
+  });
+
+  it('uses the refreshed task status and persisted session after an await', async () => {
+    const tasks = [{ ...task }];
+    const { ports, git, persisted } = fixture(tasks);
+    const gate = deferred<GitWorkflowSessionDto | null>();
+    git.gitWorkflow = () => gate.promise;
+    const operation = createTaskReviewWorkflow(ports).load(task.id);
+    await Promise.resolve();
+    tasks[0] = { ...task, status: 'AwaitingResponse', merge_workflow: {
+      ...toPersistedMergeWorkflowSession({ runtime: buildInitialMergeWorkflowRuntimeState({ taskId: task.id, kind: 'task_completion' }) }),
+      message: 'Current recovery receipt',
+    } };
+    gate.resolve(receipt());
+    const runtime = await operation;
+    expect(runtime).toMatchObject({ message: 'Current recovery receipt', taskStatus: 'AwaitingResponse' });
+    expect(persisted).toEqual([runtime]);
+    expect(ports.persistRuntime).toHaveBeenCalledWith(tasks[0], runtime);
+  });
+
+  for (const phase of ['merging', 'archiving'] as const) {
+    for (const rejects of [false, true]) {
+      it(`preserves the current ${phase} authority after an earlier review ${rejects ? 'rejection' : 'success'}`, async () => {
+        const { ports, git, runtimes, persisted } = fixture();
+        const gate = deferred<void>();
+        git.gitWorkflow = async () => {
+          await gate.promise;
+          if (rejects) throw new Error('late failure');
+          return receipt();
+        };
+        const operation = createTaskReviewWorkflow(ports).load(task.id);
+        await Promise.resolve();
+        const runtime = { ...runtimes.get(task.id)!, phase };
+        runtimes.set(task.id, runtime);
+        ports.reportError('current error');
+        gate.resolve();
+        expect(await operation).toBe(runtime);
+        expect(persisted).toEqual([]);
+        expect(ports.reportError).toHaveBeenLastCalledWith('current error');
+      });
+    }
+  }
+
+  it('keeps a failed active task retryable and preserves force-load error ownership', async () => {
+    const active = { ...task, status: 'Failed' as const };
+    const { ports, git, persisted } = fixture([active]);
+    const started = deferred<void>();
+    const gate = deferred<void>();
+    let calls = 0;
+    git.gitWorkflow = async () => {
+      if (++calls === 1) { started.resolve(); await gate.promise; throw new Error('superseded failure'); }
+      return receipt();
+    };
+    const review = createTaskReviewWorkflow(ports);
+    const first = review.load(active.id);
+    const settled = first.catch(error => error);
+    await started.promise;
+    const latest = await review.load(active.id, { force: true });
+    gate.resolve();
+    expect(await settled).toMatchObject({ message: 'superseded failure' });
+    expect(persisted).toEqual([latest]);
+    expect(ports.reportError).toHaveBeenLastCalledWith(null);
   });
 
   it('recognizes native integration before preparing or synchronizing the target', async () => {
@@ -108,12 +255,17 @@ describe('task review workflow without stores', () => {
     expect(git.gitStatus).not.toHaveBeenCalled();
   });
 
-  it('persists review errors and retains the task identity', async () => {
-    const { ports, git, persisted } = fixture();
-    git.gitWorkflow = async () => { throw new Error('inspect failed'); };
-    await expect(createTaskReviewWorkflow(ports).load(task.id)).rejects.toMatchObject({ message: 'inspect failed' });
-    expect(persisted.at(-1)).toMatchObject({ taskId: task.id, phase: 'failed' });
-  });
+  for (const status of ['InReview', 'Failed'] as const) {
+    it(`persists review errors and retains the active ${status} task identity`, async () => {
+      const active = { ...task, status };
+      const { ports, git, persisted } = fixture([active]);
+      git.gitWorkflow = async () => { throw new Error('inspect failed'); };
+      await expect(createTaskReviewWorkflow(ports).load(task.id)).rejects.toMatchObject({ message: 'inspect failed' });
+      expect(persisted.at(-1)).toMatchObject({ taskId: task.id, phase: 'failed' });
+      expect(ports.persistRuntime).toHaveBeenCalledWith(active, persisted.at(-1));
+      expect(ports.reportError).toHaveBeenLastCalledWith('inspect failed');
+    });
+  }
 });
 
 describe('task merge workflow without stores', () => {

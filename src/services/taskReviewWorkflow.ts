@@ -20,8 +20,16 @@ export async function loadTaskPlanFinalizationReview(
 export function createTaskReviewWorkflow(ports: TaskWorkflowPorts) {
   const tTask = ports.translate;
   const mergeWorkflowReviewLoads = new Map<string, { token: symbol; promise: Promise<MergeWorkflowRuntimeState | null> }>();
-  const load = async (taskId: string, options?: { force?: boolean }): Promise<MergeWorkflowRuntimeState | null> => {
+  // A catalog removal or terminal task/plan ends the lifetime of a review load.
+  const findActiveTask = (taskId: string) => {
     const task = ports.findTask(taskId);
+    return task && task.status !== 'Completed' && !task.archived_at &&
+      task.plan_status !== 'completed' && task.plan_status !== 'archived'
+      ? task
+      : undefined;
+  };
+  const load = async (taskId: string, options?: { force?: boolean }): Promise<MergeWorkflowRuntimeState | null> => {
+    const task = findActiveTask(taskId);
     if (!task) {
       return null;
     }
@@ -41,10 +49,12 @@ export function createTaskReviewWorkflow(ports: TaskWorkflowPorts) {
 
     const loadToken = Symbol(taskId);
     const loadPromise = Promise.resolve().then(async (): Promise<MergeWorkflowRuntimeState | null> => {
+      const loadingTask = findActiveTask(taskId);
+      if (!loadingTask) return null;
 
       ports.publishRuntime(taskId, mergeMergeWorkflowRuntimeState(ports.readRuntime(taskId) ?? undefined, {
         taskId, kind, phase: 'loading_review',
-        taskStatus: task.status === 'AwaitingResponse' ? 'AwaitingResponse' : resolveMergeWorkflowTaskStatus('loading_review', { kind }),
+        taskStatus: loadingTask.status === 'AwaitingResponse' ? 'AwaitingResponse' : resolveMergeWorkflowTaskStatus('loading_review', { kind }),
         message: null,
       }));
       ports.reportError(null);
@@ -94,45 +104,59 @@ export function createTaskReviewWorkflow(ports: TaskWorkflowPorts) {
           }
         }
 
-        const persistedSession = task.merge_workflow ?? null;
-        const resolvedRuntime = {
-          ...nextRuntime,
-          taskStatus:
-            task.status === 'AwaitingResponse'
-              ? 'AwaitingResponse'
-              : nextRuntime.taskStatus,
-        };
-        const mergedRuntime = overlayPersistedMergeWorkflowSession({
-          runtime: resolvedRuntime,
-          session: persistedSession,
-        });
-
+        const currentTask = findActiveTask(taskId);
+        if (!currentTask) return null;
         if (mergeWorkflowReviewLoads.get(taskId)?.token !== loadToken) {
           return ports.readRuntime(taskId) ?? null;
         }
+        const currentRuntime = ports.readRuntime(taskId);
+        if (currentRuntime?.phase === 'merging' || currentRuntime?.phase === 'archiving') {
+          return currentRuntime;
+        }
 
-        await ports.persistRuntime(task, mergedRuntime);
-        ports.reportError(null);
+        const persistedSession = currentTask.merge_workflow ?? null;
+        const mergedRuntime = overlayPersistedMergeWorkflowSession({
+          runtime: nextRuntime,
+          session: persistedSession,
+        });
+        if (currentTask.status === 'AwaitingResponse') {
+          mergedRuntime.taskStatus = 'AwaitingResponse';
+        }
+
+        await ports.persistRuntime(currentTask, mergedRuntime);
+        if (!findActiveTask(taskId)) return null;
+        if (mergeWorkflowReviewLoads.get(taskId)?.token === loadToken) {
+          ports.reportError(null);
+        }
 
         return mergedRuntime;
       } catch (error) {
+        const currentTask = findActiveTask(taskId);
+        if (!currentTask) return null;
         if (mergeWorkflowReviewLoads.get(taskId)?.token !== loadToken) {
           throw toServiceError(error);
+        }
+        const currentRuntime = ports.readRuntime(taskId);
+        if (currentRuntime?.phase === 'merging' || currentRuntime?.phase === 'archiving') {
+          return currentRuntime;
         }
         const failureState = buildMergeWorkflowFailureState(error, {
           taskId,
           kind,
         });
         const nextRuntime = mergeMergeWorkflowRuntimeState(
-          ports.readRuntime(taskId) ?? undefined,
+          currentRuntime ?? undefined,
           {
             taskId,
             kind,
             ...failureState.runtimePatch,
           }
         );
-        await ports.persistRuntime(task, nextRuntime);
-        ports.reportError(failureState.lastError);
+        await ports.persistRuntime(currentTask, nextRuntime);
+        if (!findActiveTask(taskId)) return null;
+        if (mergeWorkflowReviewLoads.get(taskId)?.token === loadToken) {
+          ports.reportError(failureState.lastError);
+        }
         throw toServiceError(error);
       }
     });
