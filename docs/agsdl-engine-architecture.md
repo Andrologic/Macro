@@ -100,7 +100,17 @@ profil. Une extension devra avoir son propre assessment et ses preuves.
 
 `StaticAssessment.valid` décrit uniquement le document. `RuntimeAssessment`
 porte sur le snapshot, le profil et la version du registre. Une assertion
-frontend `supported: true` ne permet aucun effet. Le service natif d'ouverture
+frontend `supported: true` ne permet aucun effet. Le compilateur pur annonce
+`supported` seulement après construction et sérialisation exactes réussies.
+Une erreur produit un refus transportable sans plan. `RuntimeAssessment.source`
+est nullable exclusivement lors d'une capture source structurellement invalide,
+avec un diagnostic CORRELATION et un pointeur utile. Après une capture valide,
+un refus de SHA ou de profil conserve la source complète. Les plans compilés,
+snapshots exécutables et succès exigent toujours une SourceRevision complète.
+Le host refuse un assessment sans source avant toute ouverture durable.
+Les identités, versions et JSON de métadonnées exigent des chaînes primitives,
+la révision source un texte décimal canonique et le SHA un texte hexadécimal
+minuscule de 64 caractères. Le service natif d'ouverture
 peut déléguer la compilation et les contrôles exacts à un service de confiance
 dans le host résident avant l'ouverture durable. Ce host travaille sur la source
 canonique fraîche vérifiée par le natif, avec une réponse liée à sa révision,

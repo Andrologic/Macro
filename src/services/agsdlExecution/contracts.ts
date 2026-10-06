@@ -74,8 +74,10 @@ export interface StaticAssessment {
 }
 export interface RuntimeAssessment {
   readonly profile: ExecutionProfile;
+  /** Empty when no registry version was captured. */
   readonly registryVersion: string;
-  readonly source: SourceRevision;
+  /** Null only for a structurally invalid source capture. Supported work always has a source. */
+  readonly source: SourceRevision | null;
   readonly supported: boolean;
   readonly diagnostics: readonly Diagnostic[];
   readonly unassessed: readonly string[];
