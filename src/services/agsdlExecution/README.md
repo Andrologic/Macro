@@ -27,6 +27,44 @@ valider ce format et ses versions avant d'appliquer son autorité de routage.
 Un `maxVisitsJson` reste un entier mathématique JSON, par exemple `1e20`.
 Le natif le convertit sans perte en compteur décimal canonique.
 
+## Format pour l'autorité de routage native
+
+Le JSON externe est un objet `CompiledPlan` au format
+`macro-agsdl-compiled-plan/1`. Ses valeurs de déclaration sont des chaînes JSON
+exactes. La désérialisation native doit préserver cette distinction et contrôler
+le format, les versions et l'association au snapshot capturé.
+
+| Champ | Lecture native |
+| --- | --- |
+| `documentJson` | Document authored complet sérialisé sans arrondi, avec bindings, interfaces et configurations. Les octets authored originaux et leur SHA restent dans le snapshot. |
+| `entry` | Adresse tableau d'un step, ou `null` pour absence de flow. |
+| `steps[].address` | Adresse complète et distincte du step. |
+| `steps[].declarationJson` | Déclaration exacte complète, dont type, delivery, scope, arguments, test, decision et politiques authored. |
+| `steps[].maxVisitsJson` | Token entier mathématique exact, ou `null` si absent. |
+| `steps[].routes.normal` | Route ordinaire d'un Agent sans décision, Call ou Prepare. |
+| `steps[].routes.true/false` | Routes d'une Condition, sélectionnées par l'évaluation exacte de son test. |
+| `steps[].routes[choice]` | Route d'un Agent avec décision, sélectionnée après validation complète des outputs et du choix. |
+| `steps[].errorRoutes` | Route `onError`, distincte de toutes les routes normales. |
+| `agents[]` | Configurations capturées, contenu développé, settings exacts, provider/model et plafonds de permissions/scope. |
+| `steps[].publicationContractJson` | Contrat de publication typée de ce step, ou `null`. |
+| `graphlessPublicationContracts` | Contrats de sorties nommées sans graphe, indexés par Agent. |
+
+Chaque route est un tableau d'adresses, par exemple `[["recover"]]`.
+Le premier profil en autorise zéro ou une. Une route vide termine ce chemin.
+L'interprétation de `routes` dépend du type et de la décision conservés dans
+`declarationJson`, donc un choix authored nommé `normal` reste un choix explicite.
+
+Le futur adaptateur natif relie ce format au trait synchrone
+`RouteAuthority.outgoing` de Durability. Il contrôle les destinations contre le
+snapshot, l'adresse source et l'unique issue terminale retenue. Il vérifie aussi
+la cohérence des champs compilés avec leur déclaration exacte avant de les
+utiliser. Une liste outgoing envoyée par le host n'établit jamais à elle seule
+une destination autorisée. `selectedRoute` valide une completion Agent avant de
+choisir la route ; `conditionResult` choisit true/false en conservant l'origine.
+Ces fonctions sont consultatives pour l'autorité native et ne dispatchent rien.
+Le trait Rust et ses conversions restent à réaliser dans Hosting avec le
+coordinateur.
+
 ## Raccord du futur host
 
 1. Le natif lit la source canonique du plan, contrôle son propriétaire et sa
