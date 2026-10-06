@@ -33,14 +33,23 @@ export interface CompilationResult {
   readonly compiledPlanJson: ExactJsonText | null;
   readonly productRuntimeAvailable: false;
 }
-export function rejectSecrets(value: ExactValue, pointer = ''): void {
+/** Credential key checks apply only to authored/effective settings, not public data or schemas. */
+function rejectSettingsSecrets(value: ExactValue, pointer: string): void {
   if (value === null || typeof value !== 'object' || value instanceof NumberToken) return;
   for (const [key, child] of Object.entries(value)) {
     const path = at(pointer, key);
     if (/^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credentials?)$/i.test(key)) {
       return fail('UNSUPPORTED', path, 'Secret-bearing input cannot be captured.');
     }
-    rejectSecrets(child, path);
+    rejectSettingsSecrets(child, path);
+  }
+}
+function rejectAuthoredSettingsSecrets(document: ExactObject): void {
+  for (const collection of ['bindings', 'configurations']) {
+    for (const [name, value] of Object.entries(record(document[collection]))) {
+      const declaration = record(value);
+      if (has(declaration, 'settings')) rejectSettingsSecrets(declaration.settings, at(at(`/${collection}`, name), 'settings'));
+    }
   }
 }
 function profilePreflight(document: ExactObject): void {
@@ -98,21 +107,22 @@ export async function sourceDigest(authoredSource: string): Promise<string> {
  * No registration, admission, provider dispatch or side effects are performed.
  */
 export async function compilePlan(authoredSource: string, source: SourceRevision, capturedRegistry: CapturedRegistry): Promise<CompilationResult> {
+  const capturedSource = clone(source);
   const report = read(new TextEncoder().encode(authoredSource));
   const staticAssessment: StaticAssessment = { valid: report.valid, diagnostics: report.findings.map(finding => ({ code: finding.code, pointer: finding.path, message: finding.message ?? 'Document declaration is invalid.' })) };
   const registry = clone(capturedRegistry);
-  let runtime: RuntimeAssessment = { profile: 'macro-serial-inline-v1', registryVersion: registry.version, source: clone(source), supported: false, diagnostics: [], unassessed: [] };
+  let runtime: RuntimeAssessment = { profile: 'macro-serial-inline-v1', registryVersion: registry.version, source: clone(capturedSource), supported: false, diagnostics: [], unassessed: [] };
   const unavailable = (): CompilationResult => ({ static: staticAssessment, runtime, plan: null, compiledPlanJson: null, productRuntimeAvailable: false });
   if (!report.valid) return unavailable();
   try {
     if (!registry.version) return fail('UNSUPPORTED', '', 'Registry version is required.');
-    if (!/^(0|[1-9][0-9]*)$/.test(source.revision) || !source.owner.projectId || !source.owner.planId || !source.owner.branch || source.sourceSha256 !== await sourceDigest(authoredSource)) return fail('CORRELATION', '', 'Canonical source revision or SHA does not match.');
+    if (!/^(0|[1-9][0-9]*)$/.test(capturedSource.revision) || !capturedSource.owner.projectId || !capturedSource.owner.planId || !capturedSource.owner.branch || capturedSource.sourceSha256 !== await sourceDigest(authoredSource)) return fail('CORRELATION', '', 'Canonical source revision or SHA does not match.');
     const document = record(decode(authoredSource));
-    rejectSecrets(document);
+    rejectAuthoredSettingsSecrets(document);
     profilePreflight(document);
     const agents = Object.keys(record(document.agents)).map(name => captureAgent(document, name, agentContent(document, name), registry));
     for (const agent of agents) {
-      for (const json of [agent.configurationJson, agent.settingsJson, agent.permissionsJson, agent.scopeJson]) rejectSecrets(decode(json));
+      rejectSettingsSecrets(decode(agent.settingsJson), at(at('/agents', agent.agentName), 'effectiveSettings'));
     }
     const graphlessPublicationContracts: Record<string, ExactJsonText | null> = {};
     for (const name of Object.keys(record(document.agents))) {
@@ -150,7 +160,7 @@ export async function compilePlan(authoredSource: string, source: SourceRevision
     const plan: CompiledPlan = {
       format: 'macro-agsdl-compiled-plan/1',
       versions: { snapshot: '1', contract: 'agsdl-0.2.0', compiler: COMPILER_VERSION, runtime: CONFORMANCE_VERSION, registry: registry.version, profile: 'macro-serial-inline-v1' },
-      source: clone(source), documentJson: encode(document), entry: has(flow, 'entry') ? [text(flow.entry)] : null, steps, agents, graphlessPublicationContracts,
+      source: clone(capturedSource), documentJson: encode(document), entry: has(flow, 'entry') ? [text(flow.entry)] : null, steps, agents, graphlessPublicationContracts,
     };
     runtime = { ...runtime, supported: true };
     // DTO numeric fields are exact JSON strings; declarations never traverse ordinary JSON parsing.

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
+import { validateToolArguments } from '../toolArgumentValidation';
+import { toDispatchValue } from './dispatchValues';
 import { MACRO_TOOL_REGISTRY } from '../../shared/macroToolRegistry';
-import { PRODUCT_RUNTIME_AVAILABLE, compilePlan } from './compiler';
-import { decode, encode, record } from './exact';
-import { compileFixture, documentFixture, invocationFixture, json, registryFixture } from './conformanceFixtures';
+import { PRODUCT_RUNTIME_AVAILABLE, compilePlan, sourceDigest } from './compiler';
+import { clone, decode, encode, equal, record } from './exact';
+import { compileFixture, documentFixture, invocationFixture, id, json, registryFixture } from './conformanceFixtures';
 import { argumentsSatisfy, requireExactRequirements, resolveBinding, validateRegisteredArguments, validateRegisteredResult, verifyArgumentSchema } from './registry';
 
 const callDeclaration = () => decode('{"contract":{"identity":"synthetic/search","version":"1"},"implementation":{"identity":"macro/web-search","version":"1"},"effects":"none"}');
@@ -44,6 +46,37 @@ describe('versioned compiler and fail-closed runtime assessment', () => {
     const source = { owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '01', sourceSha256: '0' as never };
     expect((await compilePlan(encode(doc), source, registryFixture(doc))).runtime.diagnostics[0].code).toBe('CORRELATION');
   });
+  it('captures source ownership, revision and SHA before the digest await', async () => {
+    const doc = documentFixture(), authoredSource = encode(doc);
+    const source = { owner: { projectId: 'synthetic-project', planId: 'synthetic-plan', branch: 'feature/original' }, revision: '7', sourceSha256: id<'sha256'>(await sourceDigest(authoredSource)) };
+    const captured = clone(source);
+    const pending = compilePlan(authoredSource, source, registryFixture(doc));
+    source.owner.projectId = 'changed-project';
+    source.owner.planId = 'changed-plan';
+    source.owner.branch = 'feature/changed-during-compile';
+    source.revision = 'not-canonical';
+    source.sourceSha256 = id<'sha256'>('invalid');
+    const result = await pending;
+    expect(result.runtime.supported).toBe(true);
+    expect(result.runtime.source).toEqual(captured);
+    expect(result.plan!.source).toEqual(captured);
+    expect(equal(record(decode(result.compiledPlanJson!)).source, captured)).toBe(true);
+    expect(result.plan!.source.sourceSha256).toBe(id<'sha256'>(await sourceDigest(authoredSource)));
+    expect(source.revision).toBe('not-canonical');
+    expect(result.plan!.documentJson).toBe(authoredSource);
+  });
+  it('does not replace an invalid captured SHA with a later caller mutation', async () => {
+    const doc = documentFixture(), authoredSource = encode(doc);
+    const validSha = id<'sha256'>(await sourceDigest(authoredSource));
+    const source = { owner: { projectId: 'p', planId: 'p', branch: 'feature/p' }, revision: '7', sourceSha256: id<'sha256'>('invalid') };
+    const pending = compilePlan(authoredSource, source, registryFixture(doc));
+    source.sourceSha256 = validSha;
+    const result = await pending;
+    expect(result.runtime.supported).toBe(false);
+    expect(result.runtime.diagnostics[0].code).toBe('CORRELATION');
+    expect(result.runtime.source.sourceSha256).toBe(id<'sha256'>('invalid'));
+    expect(result.plan).toBeNull();
+  });
   it('requires a unique native model and complete verified configuration', async () => {
     const doc = documentFixture(), registry = registryFixture(doc);
     for (const changed of [{ ...registry, models: [] }, { ...registry, configurations: [] }, { ...registry, models: [...registry.models, ...registry.models] }]) expect((await compileFixture(doc, changed)).runtime.supported).toBe(false);
@@ -81,6 +114,42 @@ describe('versioned compiler and fail-closed runtime assessment', () => {
     expect(result.runtime.supported).toBe(false);
     expect(result.plan).toBeNull();
     expect(JSON.stringify(result)).not.toContain('synthetic-sensitive-value');
+  });
+  it('accepts public schema properties, resource names and literal data named like credentials', async () => {
+    for (const name of ['password', 'authorization', 'credentials']) {
+      const doc = documentFixture();
+      const agent = record(record(doc.agents).worker);
+      agent.interface = { results: { report: { mediaTypes: ['application/json'], valueSchema: { type: 'object', properties: { [name]: { type: 'string' } }, required: [name] } } } };
+      agent.resources = { [name]: { value: { [name]: 'Public documentation example' }, mediaType: 'application/json' } };
+      const result = await compileFixture(doc);
+      expect(result.static.valid).toBe(true);
+      expect(result.runtime.supported).toBe(true);
+      expect(result.plan!.documentJson).toBe(encode(doc));
+      expect(result.plan!.agents[0].configurationJson).toContain(`"${name}"`);
+    }
+  });
+  it('accepts declared public output names such as authorization', async () => {
+    const doc = documentFixture();
+    record(record(doc.agents).worker).interface = { results: { authorization: { mediaTypes: ['application/json'] } } };
+    const result = await compileFixture(doc);
+    expect(result.static.valid).toBe(true);
+    expect(result.runtime.supported).toBe(true);
+    expect(result.plan!.steps[0].publicationContractJson).toContain('"authorization"');
+  });
+  it('still blocks credential fields in binding and effective native settings without leaking their values', async () => {
+    const doc = documentFixture();
+    record(record(doc.bindings).engine).settings = { nested: { credentials: { apiKey: 'synthetic-binding-secret' } } };
+    const authored = await compileFixture(doc);
+    expect(authored.static.valid).toBe(true);
+    expect(authored.runtime.supported).toBe(false);
+    expect(authored.plan).toBeNull();
+    expect(JSON.stringify(authored)).not.toContain('synthetic-binding-secret');
+    expect(authored.runtime.diagnostics[0].pointer).toBe('/bindings/engine/settings/nested/credentials');
+    const plain = documentFixture(), registry = registryFixture(plain);
+    const effective = await compileFixture(plain, { ...registry, configurations: registry.configurations.map(configuration => ({ ...configuration, effectiveSettingsJson: json('{"apiKey":"synthetic-native-secret"}') })) });
+    expect(effective.runtime.supported).toBe(false);
+    expect(effective.plan).toBeNull();
+    expect(JSON.stringify(effective)).not.toContain('synthetic-native-secret');
   });
   it('uses real Macro tool schemas and refuses unknown targets or schema mutations', async () => {
     const { doc, registry } = withCall();
@@ -128,6 +197,16 @@ describe('registered arguments and literal Call results', () => {
     expect(argumentsSatisfy(decode('{"query":"q","n":9007199254740993.0}'), definition)).toBe(true);
     for (const input of ['{}', '{"query":""}', '{"query":"q","n":9007199254740992}', '{"query":"q","n":true}', '{"query":"q","extra":1}']) expect(argumentsSatisfy(decode(input), definition)).toBe(false);
     expect(() => verifyArgumentSchema(decode('{"type":"string","format":"date"}'))).toThrow('unimplemented');
+  });
+  it('preserves authored whitespace while Macro still applies its required-string dispatch policy', () => {
+    const tool = MACRO_TOOL_REGISTRY.find(entry => entry.id === 'web_search')!;
+    const entry = invocationFixture(json('{}'), searchSchema());
+    const argumentsJson = json('{"query":"   "}');
+    expect(() => validateRegisteredArguments(entry, argumentsJson)).not.toThrow();
+    const ordinary = toDispatchValue(argumentsJson);
+    expect(validateToolArguments(ordinary, tool.parameters)).toContainEqual({ path: '$.query', message: 'required value is missing' });
+    expect(ordinary).toEqual({ query: '   ' });
+    expect(argumentsJson).toBe(json('{"query":"   "}'));
   });
   it('checks registered arguments and Call data without converting numbers', () => {
     const entry = invocationFixture(json('{}'), searchSchema());

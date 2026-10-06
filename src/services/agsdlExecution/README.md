@@ -72,7 +72,8 @@ coordinateur.
    au host résident. La révision actuelle est celle du fichier metadata du plan,
    pas une révision interne AgSDL. Aucun helper local ne prouve le propriétaire
    ni la fraîcheur du fichier.
-2. `compilePlan` valide le document vendor, revérifie le SHA-256 des octets UTF-8,
+2. `compilePlan` copie synchroniquement la source et le registre avant toute
+   attente, valide le document vendor, revérifie le SHA-256 des octets UTF-8,
    contrôle le profil et toutes les configurations Agents, puis renvoie séparément
    `static` et `runtime`. Un refus produit un diagnostic structuré et aucun plan.
 3. Avant une livraison, `validateOrigin` puis `deliveryMessage` et `validateInput`
@@ -122,7 +123,14 @@ preuve bloque le chemin.
 Le catalogue Model capturé doit fournir une édition explicite, un provider et
 un modèle uniques. `ConfigurationAttestation` doit correspondre à l'Agent et à
 sa configuration authored et couvrir les requirements de configuration et des
-skills. Les settings effectifs, permissions et scope sont capturés sans secrets.
+skills. Les champs de credentials sont refusés dans les settings authored des
+bindings et configurations et dans les settings effectifs du registre natif.
+Ce contrôle ne traite pas les noms de propriétés de valueSchema, de ressources
+ou de résultats comme des secrets. Les données publiques conservent leurs clés
+et leurs valeurs authored. L'autorité native reste responsable de garder ses
+credentials réels dans les services sécurisés Macro.
+
+Les settings effectifs, permissions et scope sont capturés sans secrets.
 Les vérifications de droits actuels et les approbations Macro restent nécessaires
 à chaque invocation réelle.
 
@@ -131,6 +139,20 @@ Le validateur d'arguments couvre le sous-ensemble effectivement utilisé ici,
 `minLength`, `allowEmpty` et `description`. Tout autre keyword MCP bloque le
 préflight. Les résultats utilisent le langage fermé `valueSchema` AgSDL, vérifié
 avec les règles vendor. Aucun validateur JSON Schema général n'est annoncé.
+
+Le dispatch Macro ajoute sa propre politique dans `validateToolArguments`.
+Une chaîne requise qui ne contient que des espaces y est absente, sauf
+`allowEmpty: true`. Par exemple, le schéma de `web_search` admet `query: "   "`
+par sa longueur, mais le validateur Macro réel refuse cet argument. Hosting doit
+exécuter ce validateur après la conversion exacte `toDispatchValue`, avant tout
+effet Macro, en plus du contrôle de schéma et des permissions. Cette politique
+ne s'applique pas automatiquement aux schémas MCP. Les données authored conservent
+tous leurs espaces et ne sont pas réécrites pour faire passer la validation.
+
+Les codes des helpers de lecture et de records, comme `PARSE` et
+`INVALID_RECORD`, ne sont pas tous des codes terminaux AgSDL. Hosting mappe les
+erreurs à la frontière concernée vers les codes normatifs avant de former un
+`ErrorInput` ou d'emprunter `onError`.
 
 ## Protocole de publication
 
@@ -150,6 +172,12 @@ Aucune phrase de sortie ne devient une publication. Un résultat doit être nomm
 par l'Interface, respecter son format et son `valueSchema`. Le choix doit être
 déclaré. Plusieurs publications peuvent compléter des résultats distincts,
 mais une seconde occurrence d'un même résultat ou choix est ambiguë et refusée.
+
+Chaque Message et chaque publication exigent un `providerAttemptId` explicite,
+non vide et présent dans les tentatives enregistrées. Omission, undefined et
+identifiant inconnu donnent `CORRELATION` avant toute insertion. Une collection
+sans tentative peut fermer sans émission ; elle ne peut accepter aucun événement.
+La clôture vérifie son contexte sans prendre l'identité d'une émission fournisseur.
 
 Les séquences sont canoniques, positives et communes aux Messages et publications.
 Elles commencent à `1`. Les événements peuvent arriver dans le désordre, mais la

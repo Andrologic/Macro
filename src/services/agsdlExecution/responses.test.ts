@@ -2,14 +2,14 @@ import { describe, expect, it } from 'bun:test';
 import { ExactResponseCollection } from './responses';
 import { contextFixture, id, json } from './conformanceFixtures';
 import { encode } from './exact';
-import type { TypedPublication, VisibleResponseMessage } from './contracts';
+import type { ProviderAttemptId, TypedPublication, VisibleResponseMessage } from './contracts';
 
 const context = contextFixture();
 const interfaceJson = json('{"outputMediaTypes":["text/plain","application/json"],"results":{"report":{"required":true,"mediaTypes":["application/json"],"valueSchema":{"type":"integer","enum":[9007199254740993]}}}}');
 const stepJson = json('{"type":"agent","agent":"worker","decision":{"binding":"publication","choices":["done","retry"]},"next":{"done":[],"retry":[]}}');
 const contractJson = encode({ protocol: 'macro-agsdl-publication/1', registryVersion: context.registryVersion, agent: 'worker', step: ['work'], interface: { outputMediaTypes: ['text/plain', 'application/json'], results: { report: { required: true, mediaTypes: ['application/json'], valueSchema: { type: 'integer', enum: [] } } } }, choices: ['done', 'retry'], decisionBinding: {} }).replace('"enum":[]', '"enum":[9007199254740993]') as typeof interfaceJson;
-function collector(publication = true) {
-  return new ExactResponseCollection({ context, providerAttempts: [id('attempt')], interfaceJson: publication ? interfaceJson : json('{}'), stepJson: publication ? stepJson : json('{"type":"agent","agent":"worker"}'), publicationContractJson: publication ? contractJson : null });
+function collector(publication = true, providerAttempts: readonly ProviderAttemptId[] = [id('attempt')]) {
+  return new ExactResponseCollection({ context, providerAttempts, interfaceJson: publication ? interfaceJson : json('{}'), stepJson: publication ? stepJson : json('{"type":"agent","agent":"worker"}'), publicationContractJson: publication ? contractJson : null });
 }
 const message = (sequence = '1', messageId = 'm1', textParts = ['visible']): VisibleResponseMessage => ({ context, providerAttemptId: id('attempt'), sequence: id(sequence), messageId: id(messageId), textParts });
 const publication = (sequence = '2', changes: Partial<TypedPublication> = {}): TypedPublication => ({ context, providerAttemptId: id('attempt'), publicationId: 'publication-1', sequence: id(sequence), contractJson, resultsJson: json('{"report":{"value":9007199254740993.0,"mediaType":"application/json"}}'), choice: 'done', ...changes });
@@ -28,6 +28,40 @@ describe('attributed ordered response collection', () => {
     expect(await collection.append(message())).toBe('duplicate');
     for (const changed of [message('1', 'm1', ['different']), message('2', 'm1'), message('1', 'm2'), { ...message('2', 'm2'), providerAttemptId: id<'providerAttempt'>('unknown') }]) await expect(collection.append(changed)).rejects.toThrow('');
     expect((await collection.close(context, id('1'))).text).toBe('visible');
+  });
+  it('requires an explicit registered attempt for every Message, including malformed runtime events', async () => {
+    const omitted = { ...message() };
+    delete (omitted as { providerAttemptId?: ProviderAttemptId }).providerAttemptId;
+    const inherited = Object.assign(Object.create({ providerAttemptId: id('attempt') }), omitted);
+    const invalid = [omitted, inherited, { ...message(), providerAttemptId: undefined }, { ...message(), providerAttemptId: id('') }, { ...message(), providerAttemptId: id('unknown') }];
+    for (const attempts of [[id<'providerAttempt'>('attempt')], []]) {
+      for (const event of invalid) {
+        const collection = collector(false, attempts);
+        await expect(collection.append(event as VisibleResponseMessage)).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/providerAttemptId' });
+        expect((await collection.close(context, id('0'))).text).toBe('');
+      }
+    }
+    const empty = collector(false, []);
+    await expect(empty.append(message())).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/providerAttemptId' });
+    expect((await empty.close(context, id('0'))).text).toBe('');
+  });
+  it('requires an explicit registered attempt for every typed publication', async () => {
+    const omitted = { ...publication('1') };
+    delete (omitted as { providerAttemptId?: ProviderAttemptId }).providerAttemptId;
+    const inherited = Object.assign(Object.create({ providerAttemptId: id('attempt') }), omitted);
+    const invalid = [omitted, inherited, publication('1', { providerAttemptId: undefined }), publication('1', { providerAttemptId: id('') }), publication('1', { providerAttemptId: id('unknown') })];
+    for (const attempts of [[id<'providerAttempt'>('attempt')], []]) {
+      for (const event of invalid) {
+        const collection = collector(true, attempts);
+        await expect(collection.publish(event as TypedPublication)).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/providerAttemptId' });
+        await expect(collection.close(context, id('0'))).rejects.toMatchObject({ code: 'OUTPUT_CONSTRAINT' });
+        if (attempts.length) {
+          expect(await collection.publish(publication('1'))).toBe('accepted');
+          expect((await collection.close(context, id('1'))).choice).toBe('done');
+        }
+      }
+    }
+    await expect(collector(true, []).publish(publication('1'))).rejects.toMatchObject({ code: 'CORRELATION', pointer: '/providerAttemptId' });
   });
   it('rejects every mismatched work/context field and fencing epoch', async () => {
     const changedContexts = [

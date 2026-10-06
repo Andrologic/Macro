@@ -48,11 +48,15 @@ export class ExactResponseCollection implements ResponseCollectionPort {
   private step(): ExactObject {
     return this.options.stepJson === null ? { type: 'agent', agent: this.options.agentName ?? '' } : record(decode(this.options.stepJson));
   }
-  private correlate(context: ExecutionContext, providerAttemptId?: ProviderAttemptId): void {
+  private correlateContext(context: ExecutionContext): void {
     const expected = this.options.context;
     if (!context || !context.owner || !context.work || context.work.step !== null && !Array.isArray(context.work.step)) fail('CORRELATION', '', 'Invalid response attribution envelope.');
     if (!sameWork(context.work, expected.work) || context.owner.systemStartId !== context.work.systemStartId || context.owner.systemStartId !== expected.owner.systemStartId || context.owner.ownerEpoch !== expected.owner.ownerEpoch || context.registryVersion !== expected.registryVersion || !equal(decode(context.permissionsJson), decode(expected.permissionsJson)) || !equal(decode(context.scopeJson), decode(expected.scopeJson))) fail('CORRELATION', '', 'Response is not attributed to the current work.');
-    if (providerAttemptId !== undefined && !this.options.providerAttempts.includes(providerAttemptId)) fail('CORRELATION', '', 'Provider attempt is not registered.');
+  }
+  private correlateEvent(event: Pick<VisibleResponseMessage, 'context' | 'providerAttemptId'>): void {
+    this.correlateContext(event.context);
+    const providerAttemptId = event.providerAttemptId;
+    if (!Object.hasOwn(event, 'providerAttemptId') || typeof providerAttemptId !== 'string' || providerAttemptId === '' || !this.options.providerAttempts.includes(providerAttemptId)) fail('CORRELATION', '/providerAttemptId', 'An explicit registered provider attempt is required.');
   }
   private inspect(sequence: Sequence, identity: string, signature: ExactJsonText, kind: 'message' | 'publication'): 'accepted' | 'duplicate' {
     if (this.closed) fail('CORRELATION', '', 'Response collection is closed.');
@@ -67,7 +71,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
     return 'accepted';
   }
   async append(message: VisibleResponseMessage): Promise<'accepted' | 'duplicate'> {
-    this.correlate(message.context, message.providerAttemptId);
+    this.correlateEvent(message);
     if (!Array.isArray(message.textParts) || message.textParts.some(part => typeof part !== 'string')) fail('CORRELATION', '', 'Visible parts must be attributed text.');
     const signature = encode(message as unknown as ExactObject);
     const status = this.inspect(message.sequence, message.messageId, signature, 'message');
@@ -81,7 +85,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
     return 'accepted';
   }
   async publish(publication: TypedPublication): Promise<'accepted' | 'duplicate'> {
-    this.correlate(publication.context, publication.providerAttemptId);
+    this.correlateEvent(publication);
     if (this.options.publicationContractJson === null || !equal(decode(publication.contractJson), decode(this.options.publicationContractJson))) fail('CORRELATION', '', 'Publication requires the explicit captured registry protocol.');
     const signature = encode(publication as unknown as ExactObject);
     const status = this.inspect(publication.sequence, publication.publicationId, signature, 'publication');
@@ -105,7 +109,7 @@ export class ExactResponseCollection implements ResponseCollectionPort {
     return 'accepted';
   }
   async close(context: ExecutionContext, finalCursor: Sequence): Promise<{ text: string; resultsJson: ExactJsonText; choice: string | null; cursor: Sequence }> {
-    this.correlate(context);
+    this.correlateContext(context);
     this.sequence(finalCursor, '/cursor');
     if (this.closed) {
       if (this.closed.cursor !== finalCursor) fail('CORRELATION', '', 'Conflicting closed cursor.');
