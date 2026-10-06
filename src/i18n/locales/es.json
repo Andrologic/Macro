@@ -1447,6 +1447,7 @@
     "attachedReposCount_one": "{{count}} proyecto en este grupo",
     "attachedReposCount_other": "{{count}} proyectos en este grupo",
     "folderAlreadyAttached": "Esta carpeta ya está adjunta a {{name}}.",
+    "folderAlreadyAttachedInWorkspace": "Esta carpeta ya está vinculada a un proyecto de este espacio de trabajo.",
     "folderAlreadyAttachedNamed": "Esta carpeta ya está adjunta a \"{{name}}\"",
     "saveFailed": "No se pudo guardar el proyecto",
     "createProject": "Crear proyecto",

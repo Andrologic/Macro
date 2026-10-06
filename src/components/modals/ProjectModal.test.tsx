@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
+import { createInstance } from 'i18next';
+import fr from '../../i18n/locales/fr.json';
 import { createRoot, type Root } from 'react-dom/client';
 import { useAppStore } from '../../stores/useAppStore';
 import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
 
+const frenchTranslator = createInstance();
+await frenchTranslator.init({
+  showSupportNotice: false, lng: 'fr', resources: { fr: { translation: fr } },
+  interpolation: { escapeValue: false },
+});
+let useFrenchCopy = false;
 let importCounter = 0;
 let fsListDirMock = mock(async (_params: Record<string, unknown>) => []);
 let previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
@@ -27,12 +35,13 @@ const loadProjectModal = async () => {
       t: (_key: string, fallbackOrOptions?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
         const fallback = typeof fallbackOrOptions === 'string' ? fallbackOrOptions : _key;
         const interpolation = typeof fallbackOrOptions === 'object' ? fallbackOrOptions : options;
+        if (useFrenchCopy) return frenchTranslator.t(_key, { defaultValue: fallback, ...interpolation });
         return fallback.replace(/\{\{(\w+)\}\}/g, (_match, key) =>
           String(interpolation?.[key] ?? '')
         );
       },
       i18n: {
-        language: 'en-US',
+        language: useFrenchCopy ? 'fr' : 'en-US',
         changeLanguage: mock(async () => undefined),
       },
     }),
@@ -147,6 +156,7 @@ describe('ProjectModal', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    useFrenchCopy = false;
     fsListDirMock = mock(async (_params: Record<string, unknown>) => []);
     previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
     createProjectMock = mock(async (payload: Record<string, unknown>) =>
@@ -294,6 +304,83 @@ describe('ProjectModal', () => {
     expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
     expect(createProjectMock).not.toHaveBeenCalled();
   });
+
+  it('keeps the French named raw-path duplicate error unique without contacting the backend', async () => {
+    useFrenchCopy = true;
+    useAppStore.setState({
+      projectGroups: [buildProjectGroup({ projects: [buildProject({ name: 'qa-api', path: '/synthetic/qa-api' })] })],
+    });
+    await renderModal();
+    await act(async () => { findButton(fr.project.existingRepo).click(); });
+    await changeInput(fr.project.localFolderPlaceholder, '/synthetic/qa-api');
+    await act(async () => { findButton(fr.project.addExistingRepo).click(); });
+    const alerts = document.body.querySelectorAll('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe('Ce dossier est déjà attaché à qa-api.');
+    expect(fsListDirMock).not.toHaveBeenCalled();
+    expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
+    expect(createProjectMock).not.toHaveBeenCalled();
+    expect(createProjectGroupMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('localizes a canonical backend alias refusal once in French, new group: %s', async (newGroup) => {
+    useFrenchCopy = true;
+    const existing = buildProject({ id: 'qa-app', name: 'qa-app', path: '/synthetic/qa-app' });
+    const standalone = buildProject({ id: 'qa-api', name: 'qa-api', path: '/synthetic/qa-api' });
+    const groups = [buildProjectGroup({ projects: [existing] })];
+    useAppStore.setState({ projectGroups: groups, standaloneProjects: [standalone] });
+    createProjectMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => {
+      throw { code: 'Validation', message: 'A project with this folder already exists in the workspace.' };
+    });
+    useAppStore.setState({ createProject: createProjectMock as never });
+    await renderModal();
+    await act(async () => { findButton(fr.project.existingRepo).click(); });
+    if (newGroup) {
+      await act(async () => { findButton(fr.project.newGlobalProject).click(); });
+      await changeInput(fr.project.globalProjectPlaceholder, 'Suite');
+      await clickLabelContaining('qa-api');
+    }
+    await changeInput(fr.project.localFolderPlaceholder, '/synthetic/qa-app-link');
+    expect(document.body.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    await act(async () => {
+      findButton(newGroup ? fr.project.createProjectGroupWithRepo : fr.project.addExistingRepo).click();
+      await Promise.resolve();
+    });
+    const alerts = document.body.querySelectorAll('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toBe('Ce dossier est déjà attaché à un projet de cet espace de travail.');
+    expect(previewProjectGitSetupMock).toHaveBeenCalledTimes(1);
+    expect(createProjectMock).toHaveBeenCalledTimes(1);
+    expect(createProjectMock.mock.calls[0][0]).toMatchObject({ path: '/synthetic/qa-app-link' });
+    expect(createProjectGroupMock).not.toHaveBeenCalled();
+    expect(createNewProjectRepoMock).not.toHaveBeenCalled();
+    expect(createProjectWithGitSetupMock).not.toHaveBeenCalled();
+    expect(closeProjectModalMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().projectGroups).toEqual(groups);
+    expect(useAppStore.getState().standaloneProjects).toEqual([standalone]);
+  });
+
+  for (const failure of [
+    { code: 'Validation', message: 'Project registry changed during creation.' },
+    { code: 'Git', message: 'A project with this folder already exists in the workspace.' },
+    { code: 'Validation', message: 'A project with this folder already exists in the workspace. Retry later.' },
+  ]) {
+    it(`preserves another backend failure in French: ${failure.code} ${failure.message}`, async () => {
+      useFrenchCopy = true;
+      createProjectMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => { throw failure; });
+      useAppStore.setState({ createProject: createProjectMock as never });
+      await renderModal();
+      await act(async () => { findButton(fr.project.existingRepo).click(); });
+      await changeInput(fr.project.localFolderPlaceholder, '/synthetic/new-project');
+      await act(async () => { findButton(fr.project.addExistingRepo).click(); });
+      const alerts = document.body.querySelectorAll('[role="alert"]');
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].textContent).toBe(failure.message);
+      expect(createProjectMock).toHaveBeenCalledTimes(1);
+      expect(createProjectGroupMock).not.toHaveBeenCalled();
+      expect(closeProjectModalMock).not.toHaveBeenCalled();
+    });
+  }
 
   for (const [code, message] of [
     ['FilesystemNotFound', 'This folder does not exist. Choose an existing folder.'],

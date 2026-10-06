@@ -35,6 +35,7 @@ import {
   buildPendingProjectSetupPrompt,
   buildProjectWithGitSetupPayload,
   findProjectByPath,
+  getProjectCreationErrorMessage,
   getAcceptedActionsAfterConfirmingPrompt,
   getAcceptedActionsAfterDecliningPrompt,
   getActiveProjectSetupPrompt,
@@ -337,7 +338,7 @@ export const ProjectModal: React.FC = () => {
         }),
       });
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -391,7 +392,7 @@ export const ProjectModal: React.FC = () => {
       closeProjectModal();
       clearProjectAddRequestId(requestId);
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -440,7 +441,7 @@ export const ProjectModal: React.FC = () => {
 
       await persistProject(payload);
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -467,7 +468,7 @@ export const ProjectModal: React.FC = () => {
       setPendingProjectSetupPrompt(null);
       await persistProject({ ...payload, directEdit: true });
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -558,7 +559,7 @@ export const ProjectModal: React.FC = () => {
         closeProjectModal();
         clearProjectAddRequestId(requestId);
       } catch (submitError: unknown) {
-        setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+        setError(getProjectCreationErrorMessage(submitError, t));
       } finally {
         setIsSubmitting(false);
       }
@@ -587,7 +588,7 @@ export const ProjectModal: React.FC = () => {
       }
       await continueProjectCreation(createPayload, trimmedSubProjectPath || undefined);
     } catch (submitError: unknown) {
-      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+      setError(getProjectCreationErrorMessage(submitError, t));
     } finally {
       setIsSubmitting(false);
     }

@@ -1442,6 +1442,7 @@
     "attachedReposCount_one": "이 그룹의 프로젝트 {{count}}개",
     "attachedReposCount_other": "이 그룹의 프로젝트 {{count}}개",
     "folderAlreadyAttached": "이 폴더는 이미 다음에 첨부되어 있습니다.{{name}}.",
+    "folderAlreadyAttachedInWorkspace": "이 폴더는 이미 이 작업 공간의 프로젝트에 연결되어 있습니다.",
     "folderAlreadyAttachedNamed": "이 폴더는 이미 '에 첨부되어 있습니다.{{name}}\"",
     "saveFailed": "프로젝트를 저장하지 못했습니다.",
     "createProject": "프로젝트 생성",

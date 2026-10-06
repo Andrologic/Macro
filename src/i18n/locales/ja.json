@@ -1442,6 +1442,7 @@
     "attachedReposCount_one": "このグループに{{count}}件のプロジェクト",
     "attachedReposCount_other": "このグループに{{count}}件のプロジェクト",
     "folderAlreadyAttached": "このフォルダーは既に添付されています{{name}}。",
+    "folderAlreadyAttachedInWorkspace": "このフォルダーは、このワークスペースのプロジェクトに既に関連付けられています。",
     "folderAlreadyAttachedNamed": "このフォルダはすでに「」に添付されています{{name}}」",
     "saveFailed": "プロジェクトの保存に失敗しました",
     "createProject": "プロジェクトの作成",

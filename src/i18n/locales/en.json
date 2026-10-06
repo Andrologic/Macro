@@ -1471,6 +1471,7 @@
     "attachedReposCount_one": "{{count}} project in this group",
     "attachedReposCount_other": "{{count}} projects in this group",
     "folderAlreadyAttached": "This folder is already attached to {{name}}.",
+    "folderAlreadyAttachedInWorkspace": "This folder is already attached to a project in this workspace.",
     "folderAlreadyAttachedNamed": "This folder is already attached to \"{{name}}\"",
     "saveFailed": "Failed to save project",
     "createProject": "Create project",
