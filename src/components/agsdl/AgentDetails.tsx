@@ -48,7 +48,7 @@ function ReferencePreview({ reference, cards, onSelect }: {
     return () => { window.removeEventListener("resize", close); window.removeEventListener("scroll", close, true); };
   }, [open]);
   if (!target) return <span className={reference.unresolved ? "agsdl-unresolved" : "agsdl-muted"}>{reference.label}</span>;
-  const Icon = ["Agent", "invoke"].includes(target.kind) ? Bot : Box;
+  const Icon = ["Agent", "invoke", "agent"].includes(target.kind) ? Bot : Box;
   return <>
     <button ref={anchor} className="agsdl-reference-chip" aria-describedby={open ? id : undefined}
       onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={() => setOpen(false)}
@@ -83,21 +83,27 @@ export function AgentDetails({ card, cards, source, onSelect }: {
   const tools = [...(card.tools ?? []), ...configTools].filter((ref, index, all) =>
     all.findIndex(other => other.target === ref.target && other.label === ref.label) === index);
   return <div className="agsdl-agent-details">
+    {card.participant && <p>{reference(card.participant)}</p>}
     <section className="agsdl-prompt-section">
       <h4><Terminal size={14} />{t("agsdl.viewer.detail.prompt")}</h4>
       <p className={card.mission ? "agsdl-prompt" : "agsdl-muted"}>{card.mission || t("agsdl.viewer.noMission")}</p>
     </section>
     <div className="agsdl-agent-io">
       <section><h4><ArrowDownToLine size={14} />{t("agsdl.viewer.detail.inputs")}</h4>
+        {card.flowInputs?.map((input, index) => <div className="agsdl-io-card" key={`flow-${index}`}>
+          <strong>{input.origin === "unknown" ? t("agsdl.viewer.detail.unspecifiedSource")
+            : t(`agsdl.edge.${({ entry: "Message", prepare: "Message", agent: "completion", call: "data", join: "members", error: "failure" } as const)[input.origin]}`)}</strong>
+          {input.reference.target && <div className="agsdl-io-origin">{reference(input.reference)}</div>}
+        </div>)}
         {card.inputs.length ? card.inputs.map((port, index) => <div className="agsdl-io-card" key={`${port.name}-${index}`}>
           <strong>{port.name}</strong>
           <div className="agsdl-io-origin">
-            {port.binding?.source === "step" ? <>{reference(port.binding)}{port.binding.port && <small>{t("agsdl.viewer.detail.fromPort", { port: port.binding.port })}</small>}</>
+            {(port.binding?.source === "step" || port.binding?.target) ? <>{reference(port.binding)}{port.binding.port && <small>{t("agsdl.viewer.detail.fromPort", { port: port.binding.port })}</small>}</>
               : <span className="agsdl-muted">{port.binding?.source === "input" ? <>{t("agsdl.viewer.detail.systemInput")}{port.binding.label !== port.name && <small>{port.binding.label}</small>}</>
                 : port.binding?.source === "literal" ? <>{t("agsdl.viewer.literal")}<small>{port.binding.label}</small></>
                   : t("agsdl.viewer.detail.unspecifiedSource")}</span>}
           </div>
-        </div>) : <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>}
+        </div>) : !card.flowInputs?.length && <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>}
         {!!card.dependencies?.length && <div className="agsdl-agent-dependencies"><span className="agsdl-muted">{t("agsdl.viewer.dependencies")}</span>{card.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
       </section>
       <section><h4><ArrowUpFromLine size={14} />{t("agsdl.viewer.detail.outputs")}</h4>
@@ -118,7 +124,7 @@ export function AgentDetails({ card, cards, source, onSelect }: {
         : <p className="agsdl-muted">{t("agsdl.viewer.detail.noTools")}</p>}
       {!!card.resources?.length && <div className="agsdl-resource-list"><span className="agsdl-muted">{t("agsdl.viewer.resources")}</span><div className="agsdl-reference-list">{card.resources.map((ref, index) => <span key={index}>{reference(ref)}</span>)}</div></div>}
       {configurations.map((config, index) => {
-        const macro = ["macro", "macro/desktop"].includes(config.engineIdentity) && config.engineVersion === "1";
+        const macro = config.macro ?? (["macro", "macro/desktop"].includes(config.engineIdentity) && config.engineVersion === "1");
         const providerId = typeof config.parameters.providerId === "string" ? config.parameters.providerId : "";
         const modelId = typeof config.parameters.modelId === "string" ? config.parameters.modelId : "";
         const provider = providers.find(value => value.id === providerId && value.isEnabled !== false);
@@ -127,11 +133,11 @@ export function AgentDetails({ card, cards, source, onSelect }: {
           ? `${id} · ${t("agsdl.macroConfig.unavailable", { defaultValue: "Unavailable locally" })}`
           : t("agsdl.macroConfig.unset", { defaultValue: "Not configured" });
         const parameters = macro ? Object.fromEntries(Object.entries(config.parameters).filter(([key]) => !["providerId", "modelId"].includes(key))) : config.parameters;
-        if (!macro && !Object.keys(parameters).length && !config.tools.length) {
+        if (card.details.contract !== "agsdl-0.2.0" && !macro && !Object.keys(parameters).length && !config.tools.length) {
           return <div className="agsdl-runtime-empty" key={`${config.id}-${index}`}><Settings2 size={13} />{config.engine || t("agsdl.viewer.detail.engineUnset")}</div>;
         }
         return <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>
-          <summary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></summary>
+          <summary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro && providerId ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></summary>
           {macro && <dl className="agsdl-configuration-values">
             {configurations.length > 1 && <div><dt>{t("agsdl.macroConfig.title", { defaultValue: "Agent configuration" })}</dt><dd>{config.id}</dd></div>}
             <div><dt>{t("agsdl.macroConfig.provider", { defaultValue: "Provider" })}</dt><dd>{provider?.name || unavailable(providerId)}</dd></div>

@@ -1,5 +1,7 @@
 import { keyId, list, object, readDocument, text } from "./document";
 import { successors } from "./projection";
+import type { AgsdlEnvelopeMetadata } from "./design";
+import { projectViewer020 } from "./viewer020";
 
 type Value = Record<string, unknown>;
 export interface ViewerReference {
@@ -13,6 +15,11 @@ export interface ViewerPort {
   name: string;
   type: string;
   binding?: ViewerReference;
+}
+export interface ViewerFlowInput {
+  origin: "entry" | "agent" | "call" | "prepare" | "join" | "error" | "unknown";
+  reference: ViewerReference;
+  projection: string;
 }
 export interface ViewerCard {
   path: string;
@@ -29,12 +36,17 @@ export interface ViewerCard {
   resources?: ViewerReference[];
   approvers?: ViewerReference[];
   approvalCall?: ViewerReference;
+  approvalBinding?: ViewerReference;
+  participant?: ViewerReference;
+  flowInputs?: ViewerFlowInput[];
+  composition?: ViewerReference;
   inputs: ViewerPort[];
   outputs: ViewerPort[];
-  branches: Array<{ label: string; reference: ViewerReference }>;
+  branches: Array<{ label: string; reference: ViewerReference; path?: string; transfers?: string[] }>;
   details: Value;
 }
 export interface ViewerGraph {
+  contract?: string;
   path: string;
   title: string;
   entry: ViewerReference;
@@ -56,8 +68,9 @@ const ports = (value: unknown): ViewerPort[] =>
   }));
 
 /** A reading model only. Unresolved and ambiguous references never become links. */
-export function projectViewer(source: string) {
+export function projectViewer(source: string, metadata?: AgsdlEnvelopeMetadata) {
   const doc = readDocument(source);
+  if (doc.contract === "agsdl-0.2.0") return projectViewer020(doc, metadata);
   if (doc.contract !== "agsdl-0.1.0")
     throw new Error("Unsupported or missing AgSDL contract.");
   const definitions = list(doc.definitions).map(object);
@@ -289,6 +302,7 @@ export function projectViewer(source: string) {
   });
   return {
     title: title(object(doc.root)),
+    contract: "agsdl-0.1.0",
     systemDetails: { root: doc.root, runtime: doc.runtime },
     graphs,
     legacyCards,

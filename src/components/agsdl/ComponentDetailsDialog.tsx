@@ -16,6 +16,8 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
+  const hasEditableConfiguration = card && session && macroAgentConfiguration(session.source, card).editable;
+  const hasEditablePrompt = card && session && componentFields(session.source, card).length > 0;
   const [draft, setDraft] = useState<{ fields: ComponentField[]; values: string[]; version: string; properties: ComponentProperties; propertyValues: string[]; source: string; configuration: MacroConfiguration; providerId: string; modelId: string }>();
   const [applied, setApplied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -43,7 +45,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
       const current = store.sessions[agsdlSessionKey(target)];
       if (!current || current.version !== draft.version) throw new Error(t("agsdl.viewer.editConflict"));
       if (!applied) {
-        const changes = [...componentChanges(draft.fields, draft.values), ...propertyChanges(draft.properties.fields, draft.propertyValues), ...(card ? macroConfigurationChanges(draft.source, card, draft.providerId, draft.modelId) : [])];
+        const changes = [...componentChanges(draft.fields, draft.values), ...propertyChanges(draft.properties.fields, draft.propertyValues), ...(card && draft.configuration.editable ? macroConfigurationChanges(draft.source, card, draft.providerId, draft.modelId) : [])];
         if (!changes.length) { setDraft(undefined); return; }
         store.edit(target, changes, draft.version);
         const version = useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version;
@@ -64,17 +66,18 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
         setBusy(true); setError("");
         void onAttach().then(onClose).catch((error: unknown) => setError(error instanceof Error ? error.message : String(error))).finally(() => setBusy(false));
       }}><MessageSquarePlus size={15} /></button>}
-      {!draft && canEdit && card && ["invoke", "Agent", "System", "Instructions", "Interface", "Tool", "Resource", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
+      {!draft && canEdit && card && (card.details.contract !== "agsdl-0.2.0" || hasEditableConfiguration || hasEditablePrompt) && ["invoke", "agent", "Agent", "System", "Instructions", "Interface", "Tool", "Resource", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button>
     </div></header>
     <div className="agsdl-inspector-body">
       {draft ? <form id="agsdl-component-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+        {draft.fields.some(field => field.shared) && <p className="agsdl-muted">{t("agsdl.viewer.sharedProperties")}</p>}
         {draft.fields.map((field, index) => <label className="agsdl-edit-field" key={field.path}>
           <span>{t(field.kind === "name" ? "agsdl.viewer.componentName" : field.kind === "description" ? "agsdl.viewer.property.description" : "agsdl.instructions")}{field.kind === "instructions" && draft.fields.length > 2 ? ` ${index}` : ""}</span>
           {field.kind === "name" ? <input required value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />
             : <textarea rows={7} value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />}
         </label>)}
-        {card && ["Agent", "invoke"].includes(card.kind) && <MacroAgentConfiguration configuration={draft.configuration} providerId={draft.providerId} modelId={draft.modelId} disabled={busy || applied} onChange={(providerId, modelId) => setDraft({ ...draft, providerId, modelId })} />}
+        {card && ["Agent", "invoke", "agent"].includes(card.kind) && <MacroAgentConfiguration configuration={draft.configuration} providerId={draft.providerId} modelId={draft.modelId} disabled={busy || applied} onChange={(providerId, modelId) => setDraft({ ...draft, providerId, modelId })} />}
         {(["tools", "resources"] as const).map(group => {
           const members = draft.properties.fields.map((field, index) => ({ field, index })).filter(({ field }) => {
             const category = ["tools", "addTool"].includes(field.label) ? "tools" : ["resources", "addResource"].includes(field.label) ? "resources" : "contracts";

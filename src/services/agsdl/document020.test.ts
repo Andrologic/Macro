@@ -89,6 +89,7 @@ describe("published AgSDL 0.2.0 reader", () => {
       path: `/flow/steps/${id}`, id, title: id, kind: "invoke", mission: "", unresolved: false,
       inputs: [], outputs: [], branches: [], details: { agent: "reviewer" },
     }));
+    cards.push({ path: "/agents/reviewer", id: "reviewer", title: "reviewer", kind: "Agent", mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details: { agentName: "reviewer" } });
     const diagnostics = localizeDiagnostics(original, await validateDocument(original), cards);
     expect(diagnostics.find(f => f.path === "/configurations/main/engine")?.targets).toEqual(cards.map(c => c.path));
   });

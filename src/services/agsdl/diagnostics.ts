@@ -32,7 +32,7 @@ export function localizeDiagnostics(source: string, reports: AgsdlReport[], card
     }
     return cards.filter(card => owners.some(owner => {
       if (owner === card.path || owner.startsWith(`${card.path}/`)) return true;
-      const agentName = text(card.details.agent);
+      const agentName = text(card.details.agentName) || text(card.details.agent);
       const agent020 = agentName ? `/agents/${pointerPart(agentName)}` : undefined;
       if (agent020 && (owner === agent020 || owner.startsWith(`${agent020}/`))) return true;
       if (agentName) {

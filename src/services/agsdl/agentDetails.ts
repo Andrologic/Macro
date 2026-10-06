@@ -1,4 +1,5 @@
-import { keyId, list, object, readDocument, text } from "./document";
+import { keyId, list, object, readDocument, text, pointerPart } from "./document";
+import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 import type { ViewerCard, ViewerReference } from "./viewer";
 
 export function outputRecipients(card: ViewerCard, cards: ViewerCard[], port: string) {
@@ -13,6 +14,7 @@ export function outputRecipients(card: ViewerCard, cards: ViewerCard[], port: st
 
 export interface AgentConfiguration {
   id: string;
+  macro?: boolean;
   selected: boolean;
   engine: string;
   engineIdentity: string;
@@ -27,6 +29,33 @@ export interface AgentConfiguration {
 /** Runtime declarations belong to the exact agent and graph, never to the global provider settings. */
 export function agentConfigurations(source: string, card: ViewerCard): AgentConfiguration[] {
   const doc = readDocument(source);
+  if (doc.contract === "agsdl-0.2.0") {
+    const agents = object(doc.agents);
+    const name = text(card.details.agentName);
+    if (!name || !Object.hasOwn(agents, name)) return [];
+    const agent = object(agents[name]);
+    const fixed = typeof agent.configuration === "string";
+    const names = fixed ? [text(agent.configuration)] : [...new Set(Object.values(object(object(agent.configuration).cases)).map(text))];
+    const edition = (value: unknown) => [text(object(value).identity), text(object(value).version)].filter(Boolean).join(" · ");
+    const bindings = object(doc.bindings);
+    return names.flatMap(id => {
+      if (!Object.hasOwn(object(doc.configurations), id)) return [];
+      const configuration = object(object(doc.configurations)[id]);
+      const engine = object(bindings[text(configuration.engine)]);
+      const implementation = object(engine.implementation);
+      return [{ id, selected: fixed,
+        macro: configuration.model === undefined && ["identity", "version"].every(key => object(engine.contract)[key] === MACRO_ENGINE_CONTRACT[key as keyof typeof MACRO_ENGINE_CONTRACT] && implementation[key] === MACRO_ENGINE_IMPLEMENTATION[key as keyof typeof MACRO_ENGINE_IMPLEMENTATION]) && Object.keys(object(engine.contract)).length === 2 && Object.keys(implementation).length === 2,
+        engine: edition(implementation), engineIdentity: text(implementation.identity), engineVersion: text(implementation.version),
+        parameters: { ...object(configuration.settings), ...(configuration.model ? { model: configuration.model } : {}) },
+        tools: Object.entries(object(configuration.tools)).map(([localName, bindingName]) => {
+          const binding = object(bindings[text(bindingName)]);
+          const exists = Object.hasOwn(bindings, text(bindingName));
+          return { reference: { label: localName, source: "unknown" as const, target: exists ? `/bindings/${pointerPart(text(bindingName))}` : undefined, unresolved: !exists },
+            choices: exists ? [{ id: text(bindingName), selected: true, implementation: edition(binding.implementation), parameters: object(binding.settings) }] : [] };
+        }),
+      }];
+    });
+  }
   const definitions = list(doc.definitions).map(object);
   const validKey = (key: unknown) => ["scope", "id", "version"].every(part => text(object(key)[part]));
   let agentKey = card.kind === "invoke" ? card.details.agent : card.details.key;

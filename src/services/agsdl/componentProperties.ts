@@ -28,6 +28,7 @@ const same = (a: unknown, b: unknown): boolean => {
 /** Project the real owners. Unsupported contracts stay readable and are never rewritten. */
 export function componentProperties(source: string, card: ViewerCard): ComponentProperties {
   const doc = readDocument(source);
+  if (doc.contract === "agsdl-0.2.0") return { fields: [], shared: false, unsupported: true };
   const parsed = scanSource(source);
   const decoder = new TextDecoder();
   const raw = (path: string) => {

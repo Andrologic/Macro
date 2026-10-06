@@ -5,14 +5,14 @@ import { FileText, MessageSquarePlus, ListChecks, Layers, X } from "lucide-react
 import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
-import { designChanges, readDesign, type DesignMetadata } from "../../services/agsdl/design";
+import { readDesign, type DesignMetadata } from "../../services/agsdl/design";
 import "./design.css";
 
 export function SystemDesignDialog({ target, onClose, canEdit = true, onAttach }: { target: AgsdlTarget; onClose: () => void; canEdit?: boolean; onAttach?: () => Promise<void> }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
   const [initial] = useState(() => {
-    try { return { design: readDesign(session.source), version: session.version }; }
+    try { return { design: readDesign(session.source, session.design), version: session.version }; }
     catch (error) { return { error: String(error) }; }
   });
   const [draft, setDraft] = useState(initial.design);
@@ -35,7 +35,7 @@ export function SystemDesignDialog({ target, onClose, canEdit = true, onAttach }
       const current = store.sessions[agsdlSessionKey(target)];
       if (current.version !== version) throw new Error(t("agsdl.viewer.editConflict"));
       if (!applied) {
-        store.edit(target, designChanges(current.source, draft), version);
+        store.setDesign(target, draft, version);
         setVersion(useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version);
         setApplied(true);
       }

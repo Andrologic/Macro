@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { createExample } from "./examples";
+import { createLegacyExample } from "./examples";
 import { projectViewer } from "./viewer";
 import { agentConfigurations, outputRecipients } from "./agentDetails";
 
 describe("agent details provenance and configuration", () => {
   it("finds real output consumers and distinguishes a system result from an agent", () => {
-    const doc = JSON.parse(createExample("feature"));
+    const doc = JSON.parse(createLegacyExample("feature"));
     let cards = projectViewer(JSON.stringify(doc)).graphs[0].cards;
     expect(outputRecipients(cards[0], cards, "report").map(item => [item.card.id, item.port])).toEqual([[cards[1].id, "brief"]]);
     expect(outputRecipients(cards[2], cards, "report")[0].card.kind).toBe("end");
@@ -17,7 +17,7 @@ describe("agent details provenance and configuration", () => {
     expect(outputRecipients(cards[0], cards, "report")).toEqual([]);
   });
   it("keeps runtime bindings scoped to the exact graph and agent without picking a configuration", () => {
-    const doc = JSON.parse(createExample("feature"));
+    const doc = JSON.parse(createLegacyExample("feature"));
     const runtime = doc.runtime.configurations[0];
     runtime.agents[0].engine = { identity: "example/engine", version: "1" };
     runtime.agents[0].parameters = { model: "example-model", temperature: 0 };

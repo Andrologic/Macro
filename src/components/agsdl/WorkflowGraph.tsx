@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { Bot, Boxes, ChevronDown, CircleHelp, GitBranch, Hand, Layers, LocateFixed, Minus, Plus } from "lucide-react";
+import { Bot, Box, Boxes, ChevronDown, CircleHelp, GitBranch, Hand, Layers, LocateFixed, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphNeighborhood, presentGraph, type GraphReadingMode } from "../../services/agsdl/graphPresentation";
@@ -29,7 +29,7 @@ type GraphNode = Node<{
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { card } = data;
   const { t } = useAgsdlTranslation();
-  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : Bot;
+  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   return (
@@ -114,12 +114,12 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       // cannot hide the card before pointer-up reaches its button.
       width: 210, height: card.kind === "approval" ? 68 : 52,
       style: { width: 210, height: card.kind === "approval" ? 68 : 52, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.25 : 1, transition: "opacity 140ms" },
-      data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind}`, { defaultValue: card.kind }), active: selected === card.path,
-        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "approval" ? card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
+      data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: selected === card.path,
+        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
         select, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),
-        pending: (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
+        pending: card.details.contract !== "agsdl-0.2.0" && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
         task: group ? groupTaskState(group.members.flatMap(member => trackedTasks[member.path] ? [trackedTasks[member.path]] : []), group.members.length) : trackedTasks[card.path],
       },
     };
@@ -135,7 +135,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   };
   const edges = presentation.edges.map(edge => {
     const transfer = edge.transfers?.join(", ");
-    const condition = edge.label === "true" ? t("agsdl.edge.true") : edge.label === "false" ? t("agsdl.edge.false") : undefined;
+    const condition = edge.label === "true" ? t("agsdl.edge.true") : edge.label === "false" ? t("agsdl.edge.false") : !["success", "next", "exchange", "dependency"].includes(edge.label) ? t(`agsdl.edge.${edge.label}`, { defaultValue: edge.label }) : undefined;
     const color = mode === "exchanges" ? "rgb(var(--primary))" : edge.dependency ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
     const semantic = mode === "exchanges" ? t("agsdl.designGraph.transfer", { defaultValue: "Data exchange" }) : edge.dependency ? t("agsdl.designGraph.dependency", { defaultValue: "Dependency" }) : t("agsdl.designGraph.sequence", { defaultValue: "Process sequence" });
     return {

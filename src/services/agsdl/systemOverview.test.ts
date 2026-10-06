@@ -1,15 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { projectSystemOverview } from "./systemOverview";
 import { projectViewer } from "./viewer";
-import { createExample } from "./examples";
+import { createLegacyExample } from "./examples";
 
-const document = () => JSON.parse(createExample("release"));
+const document = () => JSON.parse(createLegacyExample("release"));
 const overview = (doc = document()) => projectSystemOverview(projectViewer(JSON.stringify(doc)).graphs[0], []);
 describe("system overview", () => {
   it("keeps interfaces and terminals off the canvas without changing the source", () => {
     const result = overview();
     expect(result.cards.map(card => card.kind)).toEqual(["invoke", "invoke", "invoke"]);
-    const original = projectViewer(createExample("release")).graphs[0];
+    const original = projectViewer(createLegacyExample("release")).graphs[0];
     expect(original.inputs).toHaveLength(2);
     expect(original.outputs).toHaveLength(1);
     expect(original.cards.filter(card => card.kind === "end")).toHaveLength(2);
@@ -44,7 +44,7 @@ describe("system overview", () => {
     expect(transfer.transfers).toEqual(["report"]);
   });
   it("does not invent a user boundary or transfers for a legacy dependency graph", () => {
-    const cards = projectViewer(createExample("release")).graphs[0].cards.slice(0, 2).map(card => ({ ...card, branches: [] }));
+    const cards = projectViewer(createLegacyExample("release")).graphs[0].cards.slice(0, 2).map(card => ({ ...card, branches: [] }));
     cards[1].dependencies = [{ source: "step", label: "Checklist", target: cards[0].path }];
     const result = projectSystemOverview(undefined, cards);
     expect(result.cards).toEqual(cards);

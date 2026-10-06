@@ -80,6 +80,14 @@ export interface AgsdlDisplayMetadata {
   title?: string;
   cards?: Record<string, { title?: string; description?: string; macroGroup?: string; macroTaskId?: string; macroLegacyNodeId?: string; macroStatus?: string }>;
 }
+/** Validate the owned presentation fields while preserving unknown metadata. */
+export function validDisplayMetadata(value: unknown): value is AgsdlDisplayMetadata {
+  if (!isRecord(value) || (value.title !== undefined && typeof value.title !== 'string')) return false;
+  if (value.cards === undefined) return true;
+  const fields = ['title', 'description', 'macroGroup', 'macroTaskId', 'macroLegacyNodeId', 'macroStatus'];
+  return isRecord(value.cards) && Object.values(value.cards).every(card =>
+    isRecord(card) && fields.every(field => card[field] === undefined || typeof card[field] === 'string'));
+}
 export interface AgsdlMigrationMetadata {
   version: 1;
   from: 'macro-legacy-plan' | 'agsdl-0.1.0';

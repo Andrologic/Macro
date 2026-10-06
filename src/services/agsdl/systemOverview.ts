@@ -19,16 +19,17 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
   const cards = graph.cards.filter(card => card.kind !== "end");
   const byPath = new Map(cards.map(card => [card.path, card]));
   const edges: ViewerEdge[] = [];
-  const add = (source: string, target: string | undefined, label: string) => {
+  const add = (source: string, target: string | undefined, label: string, path?: string, transfers?: string[]) => {
     if (!target || !byPath.has(target)) return;
-    edges.push({ id: `${source}/${label}`, source, target, label, dependency: false });
+    edges.push({ id: path ?? `${source}/${label}`, source, target, label, dependency: false, ...(transfers?.length ? { transfers } : {}) });
   };
   for (const card of graph.cards) {
     if (!byPath.has(card.path)) continue;
     for (const branch of card.branches) {
-      // Operational failure routing stays in the technical inspector.
-      if (branch.label === "failure" || branch.reference.unresolved) continue;
-      add(card.path, branch.reference.target, branch.label);
+      // Legacy failure routing stays in the technical inspector. A 0.2
+      // decision named failure remains a normal authored choice.
+      if ((graph.contract !== "agsdl-0.2.0" && branch.label === "failure") || branch.reference.unresolved) continue;
+      add(card.path, branch.reference.target, branch.label, branch.path, branch.transfers);
     }
   }
   for (const card of cards) {

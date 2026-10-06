@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { SystemDesignDialog } from './SystemDesignDialog';
-import { createEmptySystem, readDesign, withDesign } from '../../services/agsdl/design';
+import { createEmptySystem, readDesign, withDesign, type DesignMetadata } from '../../services/agsdl/design';
+import { createLegacyExample } from '../../services/agsdl/examples';
 import { agsdlSessionKey, useAgsdlStore } from '../../stores/useAgsdlStore';
 
 const target = { branchName: 'develop', planId: 'system-design' };
@@ -15,8 +16,8 @@ afterEach(() => {
   host?.remove();
   useAgsdlStore.setState({ sessions: {}, save: originalSave });
 });
-async function mount(canEdit = true, onClose = () => {}, source = createEmptySystem('Release')) {
-  useAgsdlStore.setState({ sessions: { [key]: { source, annexes: {}, version: 'initial', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
+async function mount(canEdit = true, onClose = () => {}, source = createEmptySystem('Release'), design?: DesignMetadata) {
+  useAgsdlStore.setState({ sessions: { [key]: { source, design, annexes: {}, version: 'initial', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
   host = document.createElement('div'); document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => root!.render(<SystemDesignDialog target={target} onClose={onClose} canEdit={canEdit} />));
@@ -33,10 +34,18 @@ const submit = () => act(async () => {
 });
 
 describe('system design editing', () => {
+  it('preserves editing of design metadata in a 0.1 source', async () => {
+    const source = createLegacyExample('feature');
+    await mount(true, () => {}, withDesign(source, readDesign(source)));
+    purpose('A legacy design');
+    useAgsdlStore.setState({ save: async () => {} });
+    await submit();
+    expect(readDesign(useAgsdlStore.getState().sessions[key].source).purpose).toBe('A legacy design');
+  });
   it('fills a project value without exposing or changing its definition', async () => {
-    const source = createEmptySystem('Release');
-    const design = { ...readDesign(source), requirements: [{ id: 'command', label: 'Verification command', description: 'Use the project command.', value: '', targetPath: '/definitions/0' }] };
-    await mount(true, () => {}, withDesign(source, design));
+    const source = JSON.stringify({ ...JSON.parse(createEmptySystem('Release')), content: { guidance: { value: '' } } });
+    const design = { ...readDesign(source), requirements: [{ id: 'command', label: 'Verification command', description: 'Use the project command.', value: '', targetPath: '/content/guidance/value' }] };
+    await mount(true, () => {}, source, design);
     const input = document.body.querySelector<HTMLTextAreaElement>('.agsdl-requirement > textarea')!;
     expect(document.body.querySelector(`label[for="${input.id}"]`)?.textContent).toContain('Verification command');
     expect(document.body.querySelector('.agsdl-requirement-definition')).toBeNull();
@@ -46,20 +55,21 @@ describe('system design editing', () => {
     });
     useAgsdlStore.setState({ save: async () => {} });
     await submit();
-    expect(readDesign(useAgsdlStore.getState().sessions[key].source).requirements).toEqual([{ ...design.requirements[0], value: 'bun run check' }]);
+    expect(JSON.parse(useAgsdlStore.getState().sessions[key].source).content.guidance.value).toBe('bun run check');
+    expect(readDesign(useAgsdlStore.getState().sessions[key].source, useAgsdlStore.getState().sessions[key].design).requirements).toEqual([{ ...design.requirements[0], value: 'bun run check' }]);
   });
   it('allows an incomplete rule to remain a saved draft even when its section is collapsed', async () => {
     const source = createEmptySystem('Release');
-    await mount(true, () => {}, withDesign(source, { ...readDesign(source), rules: [{ id: 'draft', title: '', instructions: '' }] }));
+    await mount(true, () => {}, source, { ...readDesign(source), rules: [{ id: 'draft', title: '', instructions: '' }] });
     purpose('A draft process');
     expect(document.body.querySelector('form')!.checkValidity()).toBe(true);
     useAgsdlStore.setState({ save: async () => {} });
     await submit();
-    expect(readDesign(useAgsdlStore.getState().sessions[key].source).rules[0].instructions).toBe('');
+    expect(readDesign(useAgsdlStore.getState().sessions[key].source, useAgsdlStore.getState().sessions[key].design).rules[0].instructions).toBe('');
   });
   it('rejects a stale form while keeping the draft and concurrent source unchanged', async () => {
     await mount(); purpose('Prepare a release');
-    act(() => useAgsdlStore.getState().edit(target, [{ op: 'set', path: '/root/annotations/title', valueJson: '"Concurrent agent edit"' }], 'initial'));
+    act(() => useAgsdlStore.getState().edit(target, [{ op: 'set', path: '/id', valueJson: '"Concurrent agent edit"' }], 'initial'));
     const current = useAgsdlStore.getState().sessions[key].source;
     let saves = 0;
     useAgsdlStore.setState({ save: async () => { saves++; } });
@@ -89,7 +99,8 @@ describe('system design editing', () => {
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('Storage unavailable');
     expect(document.body.querySelector('textarea')?.disabled).toBe(true);
     const applied = useAgsdlStore.getState().sessions[key];
-    expect(readDesign(applied.source).purpose).toBe('Prepare a release');
+    expect(JSON.parse(applied.source)).not.toHaveProperty("annotations");
+    expect(readDesign(applied.source, applied.design).purpose).toBe('Prepare a release');
     expect(closed).toBe(0);
     await submit();
     expect(attempts).toBe(2);
@@ -102,7 +113,7 @@ describe('system design editing', () => {
     let attempts = 0;
     useAgsdlStore.setState({ save: async () => { attempts++; throw new Error('Storage unavailable'); } });
     await submit();
-    act(() => useAgsdlStore.getState().edit(target, [{ op: 'set', path: '/root/annotations/title', valueJson: '"Newer edit"' }]));
+    act(() => useAgsdlStore.getState().edit(target, [{ op: 'set', path: '/id', valueJson: '"Newer edit"' }]));
     const latest = useAgsdlStore.getState().sessions[key];
     await submit();
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('document changed');

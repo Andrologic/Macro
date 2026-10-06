@@ -52,7 +52,8 @@ const setSearch = (value: string) => act(() => {
 
 describe("design source library", () => {
   it("keeps healthy sources visible, invalidates filtered selections, and retries a partial load", async () => {
-    const source = blueprints.builtInDesignSources()[0];
+    const original = blueprints.builtInDesignSources()[0];
+    const source = { ...original, display: { ...original.display, cards: { "/flow/steps/checklist": { title: "Checklist" } } } };
     let resolveRetry!: (result: Awaited<ReturnType<typeof blueprints.listDesignSources>>) => void;
     const retryResult = new Promise<Awaited<ReturnType<typeof blueprints.listDesignSources>>>(resolve => { resolveRetry = resolve; });
     const list = spyOn(blueprints, "listDesignSources")

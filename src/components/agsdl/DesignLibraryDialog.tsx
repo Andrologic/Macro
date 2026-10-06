@@ -3,7 +3,7 @@ import { ArrowRight, BookOpen, Copy, Plus, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
-import { createEmptySystem, readDesign } from "../../services/agsdl/design";
+import { createEmptySystemDocument, readDesign } from "../../services/agsdl/design";
 import { builtInDesignSources, instantiateDesign, listDesignSources, saveBlueprint, type DesignSource } from "../../stores/agsdl/blueprints";
 import { projectViewer, type ViewerCard } from "../../services/agsdl/viewer";
 import "./design.css";
@@ -14,8 +14,8 @@ type DesignLibraryProps = { target: AgsdlTarget; mode: DesignLibraryMode; onClos
 
 const sourcePreview = (source: DesignSource) => {
   try {
-    const design = readDesign(source.source);
-    const viewer = projectViewer(source.source);
+    const design = readDesign(source.source, source.design);
+    const viewer = projectViewer(source.source, source);
     const graphCards = viewer.graphs.flatMap(graph => graph.cards).filter(card => card.kind !== "end" && card.title.trim());
     const declarationCards = viewer.declarations.filter(card => ["Agent", "System"].includes(card.kind) && card.title.trim());
     const cards = (graphCards.length ? graphCards : declarationCards).slice(0, 5);
@@ -86,7 +86,8 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
         await store.save(target);
       } else if (mode === "start") {
         if (current.source) throw new Error(t("agsdl.design.notEmpty"));
-        store.replace(target, createEmptySystem(name.trim()), {}, version);
+        const document = createEmptySystemDocument(name.trim());
+        store.replace(target, document.source, document.annexes, version, document);
         setVersion(useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version);
         setApplied(true);
         await store.save(target);
@@ -103,7 +104,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
     }
   };
   const description = (item: DesignSource) => {
-    try { return readDesign(item.source).purpose; } catch { return ""; }
+    try { return readDesign(item.source, item.design).purpose; } catch { return ""; }
   };
   return <Dialog title={title} onClose={() => { if (!busy) onClose(); }} closeOnBackdropClick
     backdropClassName="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" panelClassName="agsdl-detail-modal agsdl-design-modal">

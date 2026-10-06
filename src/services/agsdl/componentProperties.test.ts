@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { componentProperties, propertyChanges } from "./componentProperties";
 import { applyChanges } from "./document";
-import { createExample } from "./examples";
+import { createLegacyExample } from "./examples";
 import { projectViewer } from "./viewer";
 
 const setup = () => {
-  const doc = JSON.parse(createExample("release"));
+  const doc = JSON.parse(createLegacyExample("release"));
   return { doc, first: doc.graphs[0].steps[0] };
 };
 describe("essential component properties", () => {

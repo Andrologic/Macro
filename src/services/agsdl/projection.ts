@@ -1,5 +1,6 @@
 import type { AgsdlGraphEdge, AgsdlGraphNode } from "../../types/agsdl";
 import { keyId, list, object, readDocument, text } from "./document";
+import { projectViewer020 } from "./viewer020";
 
 export function successors(step: Record<string, unknown>): string[] {
   if (step.kind === "invoke") return ["success", "failure"];
@@ -15,6 +16,19 @@ export function projectDocument(
   focusPath?: string,
 ): { nodes: AgsdlGraphNode[]; edges: AgsdlGraphEdge[] } {
   const doc = readDocument(source);
+  if (doc.contract === "agsdl-0.2.0") {
+    const viewer = projectViewer020(doc);
+    const graph = viewer.graphs[graphIndex];
+    const cards = view === "process" ? graph?.cards ?? [] : viewer.declarations;
+    const nodes = cards.map((card, index) => ({ id: card.path, path: card.path, title: card.title,
+      subtitle: card.participant?.label || card.kind, kind: card.kind,
+      outputs: [...new Set(card.branches.map(branch => branch.label))], position: { x: 0, y: index * 145 } }));
+    const ids = new Set(nodes.map(node => node.id));
+    const edges = view === "process" ? cards.flatMap(card => card.branches.flatMap((branch, index) => branch.reference.target && !branch.reference.unresolved && ids.has(branch.reference.target)
+      ? [{ id: branch.path ?? `${card.path}/route/${index}`, source: card.path, target: branch.reference.target,
+        label: branch.label, handle: branch.label, path: branch.path ?? card.path }] : [])) : [];
+    return { nodes, edges };
+  }
   const definitions = list(doc.definitions).map(object);
   const nodes: AgsdlGraphNode[] = [];
   const edges: AgsdlGraphEdge[] = [];

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { createExample } from "./examples";
+import { createLegacyExample } from "./examples";
 import { projectViewer } from "./viewer";
 
-const example = () => JSON.parse(createExample("feature"));
+const example = () => JSON.parse(createLegacyExample("feature"));
 describe("AgSDL read-only projection", () => {
   it("shows agent names, full mission, data provenance and every control outcome separately", () => {
-    const graph = projectViewer(createExample("feature")).graphs[0];
+    const graph = projectViewer(createLegacyExample("feature")).graphs[0];
     expect(graph.cards[0].title).toBe("Specification");
     expect(graph.cards[0].mission).toContain("acceptance criteria");
     expect(graph.cards[1].inputs[0].binding).toEqual({

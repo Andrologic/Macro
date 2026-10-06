@@ -10,10 +10,12 @@ export function trackCardTasks(cards: ViewerCard[], target: AgsdlTarget, tasks: 
   const scoped = tasks.filter(task => task.plan_id === target.planId && (task.plan_storage_branch || task.plan_target_branch) === target.branchName && !task.archived_at);
   const result: Record<string, TrackedTask> = {};
   for (const card of cards) {
-    const taskId = text(object(card.details.displayAnnotations ?? card.details.annotations).macroTaskId);
+    const annotations = object(card.details.displayAnnotations ?? card.details.annotations);
+    const taskId = text(annotations.macroTaskId);
+    const legacyNodeId = text(annotations.macroLegacyNodeId) || (card.path.startsWith("/legacy/") ? card.id : "");
     // Never infer identity from a display title or a graph step's position.
     const matches = taskId ? scoped.filter(task => task.id === taskId)
-      : card.path.startsWith('/legacy/') ? scoped.filter(task => task.node_id === card.id) : [];
+      : legacyNodeId ? scoped.filter(task => task.node_id === legacyNodeId) : [];
     if (matches.length !== 1) continue;
     const task = matches[0];
     const merge = resolveTaskMergeWorkflowPresentationState(runtime[task.id] ?? null, task.merge_workflow_summary ?? null, task.status);

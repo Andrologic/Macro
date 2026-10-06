@@ -85,7 +85,15 @@
     "Knowledge": "ナレッジ",
     "State": "状態",
     "Topology": "トポロジー",
-    "Protocol": "プロトコル"
+    "Protocol": "プロトコル",
+    "agent": "エージェント",
+    "call": "呼び出し",
+    "prepare": "準備",
+    "join": "結合",
+    "compose": "サブプロセス",
+    "Configuration": "設定",
+    "Binding": "バインディング",
+    "Composition": "構成"
   },
   "edge": {
     "success": "成功",
@@ -99,7 +107,15 @@
     "exposes": "公開",
     "directedBy": "指示元",
     "uses": "使用",
-    "contains": "含む"
+    "contains": "含む",
+    "onError": "エラーからの復旧",
+    "next": "次へ",
+    "completion": "応答",
+    "Message": "メッセージ",
+    "data": "データ",
+    "members": "集約結果",
+    "prompt": "指示",
+    "resources": "リソース"
   },
   "example": {
     "release": "リリース",

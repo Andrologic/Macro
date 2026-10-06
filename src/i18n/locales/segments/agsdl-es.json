@@ -85,7 +85,15 @@
     "Knowledge": "Conocimientos",
     "State": "Estado",
     "Topology": "Topología",
-    "Protocol": "Protocolo"
+    "Protocol": "Protocolo",
+    "agent": "Agente",
+    "call": "Llamada",
+    "prepare": "Preparación",
+    "join": "Agrupación",
+    "compose": "Subproceso",
+    "Configuration": "Configuración",
+    "Binding": "Conexión",
+    "Composition": "Composición"
   },
   "edge": {
     "success": "Éxito",
@@ -99,7 +107,15 @@
     "exposes": "Expone",
     "directedBy": "Dirigido por",
     "uses": "Usa",
-    "contains": "Contiene"
+    "contains": "Contiene",
+    "onError": "Recuperación de errores",
+    "next": "Siguiente",
+    "completion": "Respuesta",
+    "Message": "Mensaje",
+    "data": "Datos",
+    "members": "Resultados agrupados",
+    "prompt": "Instrucciones",
+    "resources": "Recursos"
   },
   "example": {
     "release": "Lanzamiento",

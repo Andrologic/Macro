@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { layoutViewer } from "./graphLayout";
 import { projectViewer } from "./viewer";
 import { projectSystemOverview } from "./systemOverview";
-import { createExample } from "./examples";
+import { createLegacyExample } from "./examples";
 
-const overview = () => projectSystemOverview(projectViewer(createExample("release")).graphs[0], []);
+const overview = () => projectSystemOverview(projectViewer(createLegacyExample("release")).graphs[0], []);
 describe("AgSDL system layout", () => {
   it("orders the three agents without inventing input or result participants", () => {
     const input = overview();

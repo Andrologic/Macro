@@ -85,7 +85,15 @@
     "Knowledge": "지식",
     "State": "상태",
     "Topology": "토폴로지",
-    "Protocol": "프로토콜"
+    "Protocol": "프로토콜",
+    "agent": "에이전트",
+    "call": "호출",
+    "prepare": "준비",
+    "join": "결합",
+    "compose": "하위 프로세스",
+    "Configuration": "설정",
+    "Binding": "바인딩",
+    "Composition": "구성"
   },
   "edge": {
     "success": "성공",
@@ -99,7 +107,15 @@
     "exposes": "노출",
     "directedBy": "지시됨",
     "uses": "사용",
-    "contains": "포함"
+    "contains": "포함",
+    "onError": "오류 복구",
+    "next": "다음",
+    "completion": "응답",
+    "Message": "메시지",
+    "data": "데이터",
+    "members": "통합 결과",
+    "prompt": "지침",
+    "resources": "리소스"
   },
   "example": {
     "release": "릴리스",

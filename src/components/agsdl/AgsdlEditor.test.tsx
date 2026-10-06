@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { AgsdlEditor } from "./AgsdlEditor";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
 import * as chatContext from "../../stores/agsdl/chatContext";
-import { createExample } from "../../services/agsdl/examples";
+import { createLegacyExample, createExample } from "../../services/agsdl/examples";
 
 const target = { branchName: "develop", planId: "viewer-test" };
 const key = agsdlSessionKey(target);
@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 describe("AgSDL viewer", () => {
-  const mount = async (source = createExample("feature")) => {
+  const mount = async (source = createLegacyExample("feature")) => {
     // Document validation is tested in the service suite. Keep explicitly injected
     // diagnostics stable while testing the modal's asynchronous retry behavior.
     spyOn(useAgsdlStore.getState(), "validate").mockResolvedValue(undefined);
@@ -31,6 +31,19 @@ describe("AgSDL viewer", () => {
     root = createRoot(container);
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
+
+  it("reads 0.2 metadata and opens the persistent participant without creating a task from its prompt", async () => {
+    const source = createExample("feature");
+    await mount(source);
+    act(() => useAgsdlStore.setState(state => ({ sessions: { ...state.sessions, [key]: { ...state.sessions[key], display: { title: "Feature review", cards: { "/flow/steps/specify": { title: "Specification visit" } } } } } })));
+    expect(container!.querySelector("header strong")?.textContent).toBe("Feature review");
+    const first = container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!;
+    expect(first.textContent).toContain("Specification visit");
+    act(() => first.click());
+    expect(document.body.querySelector(".agsdl-agent-details")?.textContent).toContain("acceptance criteria");
+    expect(document.body.querySelector(".agsdl-reference-chip")?.textContent).toContain("specify");
+    expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
+  });
 
   it("returns from the expanded graph only after attaching context successfully", async () => {
     await mount();
@@ -120,7 +133,7 @@ describe("AgSDL viewer", () => {
     const output = document.body.querySelector<HTMLButtonElement>(".agsdl-agent-io .agsdl-reference-chip")!;
     act(() => output.click());
     expect(document.body.querySelector(".agsdl-detail-modal > header strong")?.textContent).toBe("Implementation");
-    expect(useAgsdlStore.getState().sessions[key].source).toBe(createExample("feature"));
+    expect(useAgsdlStore.getState().sessions[key].source).toBe(createLegacyExample("feature"));
   });
 
   it("keeps saved graphs quiet while preserving validation and unsaved-work notices", async () => {
@@ -151,7 +164,7 @@ describe("AgSDL viewer", () => {
   });
 
   it("resets details on graph navigation and clamps the selector after agent changes", async () => {
-    const document = JSON.parse(createExample("feature"));
+    const document = JSON.parse(createLegacyExample("feature"));
     document.graphs.push(...["second", "third"].map(id => ({ ...structuredClone(document.graphs[0]), id })));
     await mount(JSON.stringify(document));
     const selector = container!.querySelector("select")!;
@@ -176,7 +189,7 @@ describe("AgSDL viewer", () => {
       expect(save).toHaveBeenCalledWith(target);
       expect(load).not.toHaveBeenCalled();
       expect(validate).toHaveBeenCalledWith(target);
-      expect(useAgsdlStore.getState().sessions[key].source).toBe(createExample("feature"));
+      expect(useAgsdlStore.getState().sessions[key].source).toBe(createLegacyExample("feature"));
     } finally { save.mockRestore(); load.mockRestore(); validate.mockRestore(); }
   });
 
@@ -196,7 +209,7 @@ describe("AgSDL viewer", () => {
     useAgsdlStore.setState({
       sessions: {
         [key]: {
-          source: createExample("feature"),
+          source: createLegacyExample("feature"),
           annexes: {},
           version: "v1",
           persistedRevision: 1,
@@ -246,7 +259,7 @@ describe("AgSDL viewer", () => {
     const nextDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
     expect(nextDetails.querySelector(".agsdl-prompt")?.textContent).toBeTruthy();
     expect(nextDetails.textContent).not.toContain("Specification · report");
-    expect(useAgsdlStore.getState().sessions[key].source).toBe(createExample("feature"));
+    expect(useAgsdlStore.getState().sessions[key].source).toBe(createLegacyExample("feature"));
     expect(
       container.querySelector("textarea, input, [role=dialog]"),
     ).toBeNull();

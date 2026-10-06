@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 import { localizeDiagnostics } from "./diagnostics";
-import { createExample } from "./examples";
+import { createLegacyExample as createExample } from "./examples";
 import { projectViewer } from "./viewer";
 import { scanSource } from "./document";
 import type { AgsdlReport } from "../../types/agsdl";
