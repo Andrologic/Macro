@@ -617,6 +617,7 @@
     "noProvidersConfigured": "プロバイダーが構成されていません",
     "providerRestoreUnavailable": "この会話で以前使用したプロバイダーまたはモデルは利用できなくなりました。続行するには別のものを選択してください。",
     "runtimeErrorFallback": "Macro はこの操作を完了できませんでした。詳細を確認して、もう一度お試しください。",
+    "conversationSourceEmpty": "選択した会話には引用できる完了済みのテキストがありません。この参照元を削除するか、別の会話を選択してから、もう一度送信してください。",
     "noEnabledModels": "有効なモデルはありません。設定でモデルを有効にします。",
     "selectProviderFirst": "まずプロバイダーを選択してください",
     "agentTypeBuild": "建てる",

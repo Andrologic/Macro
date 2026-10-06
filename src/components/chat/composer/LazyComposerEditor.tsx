@@ -14,13 +14,14 @@ import type { MentionSurface } from './MentionNode';
 import type { ContextReference } from '../../../types';
 import { useChatStore } from '../../../stores/useChatStore';
 import { prepareContextualTextInsertion } from './composerTextInsertion';
+import type { ComposerTextChangeOrigin } from './composerTextChange';
 
 interface LazyComposerEditorProps {
   editable: boolean;
   readOnly?: boolean;
   placeholder: string;
   accessibleName?: string;
-  onTextChange: (text: string) => void;
+  onTextChange: (text: string, origin?: ComposerTextChangeOrigin) => void;
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
   className?: string;
@@ -132,7 +133,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         fallbackTextareaRef.current.value = initialText;
       }
 
-      onTextChange(initialText);
+      onTextChange(initialText, 'programmatic');
     }, [initialText, onTextChange]);
 
     useImperativeHandle(ref, () => ({
@@ -149,7 +150,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         if (fallbackTextareaRef.current) {
           fallbackTextareaRef.current.value = '';
         }
-        onTextChange('');
+        onTextChange('', 'programmatic');
       },
       setText: (text: string, contextRefs: readonly ContextReference[] = useChatStore.getState().composerContextRefs) => {
         fallbackTextRef.current = text;
@@ -164,7 +165,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         if (fallbackTextareaRef.current) {
           fallbackTextareaRef.current.value = text;
         }
-        onTextChange(text);
+        onTextChange(text, 'programmatic');
       },
       insertTextAtSelection: (text: string, spacing = 'preserve') => {
         if (loadedEditorRef.current) {

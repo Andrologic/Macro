@@ -617,6 +617,7 @@
     "noProvidersConfigured": "구성된 제공업체가 없습니다.",
     "providerRestoreUnavailable": "이 대화에서 이전에 사용한 프로바이더 또는 모델을 더 이상 사용할 수 없습니다. 계속하려면 다른 항목을 선택하세요.",
     "runtimeErrorFallback": "Macro가 이 작업을 완료하지 못했습니다. 세부 정보를 확인한 후 다시 시도하세요.",
+    "conversationSourceEmpty": "선택한 대화에는 인용할 수 있는 완료된 텍스트가 없습니다. 이 참조를 제거하거나 다른 대화를 선택한 후 다시 전송하세요.",
     "noEnabledModels": "활성화된 모델이 없습니다. 설정에서 모델을 활성화하세요.",
     "selectProviderFirst": "먼저 제공업체를 선택하세요.",
     "agentTypeBuild": "짓다",

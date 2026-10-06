@@ -646,6 +646,7 @@
     "noProvidersConfigured": "No providers configured",
     "providerRestoreUnavailable": "The provider or model previously used by this conversation is no longer available. Select another one to continue.",
     "runtimeErrorFallback": "Macro could not complete this action. Review the details, then try again.",
+    "conversationSourceEmpty": "The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.",
     "noEnabledModels": "No enabled models. Enable models in Settings.",
     "selectProviderFirst": "Select a provider first",
     "agentTypeBuild": "Build",

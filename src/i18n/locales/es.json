@@ -622,6 +622,7 @@
     "noProvidersConfigured": "No hay proveedores configurados",
     "providerRestoreUnavailable": "El proveedor o modelo usado anteriormente en esta conversación ya no está disponible. Selecciona otro para continuar.",
     "runtimeErrorFallback": "Macro no pudo completar esta acción. Revisa los detalles e inténtalo de nuevo.",
+    "conversationSourceEmpty": "La conversación seleccionada no contiene texto completado que se pueda citar. Quita esta fuente o elige otra conversación y vuelve a enviar el mensaje.",
     "noEnabledModels": "No hay modelos habilitados. Habilite los modelos en Configuración.",
     "selectProviderFirst": "Seleccione un proveedor primero",
     "agentTypeBuild": "construir",

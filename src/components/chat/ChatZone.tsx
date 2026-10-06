@@ -1357,6 +1357,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
 
   const [inputValue, setInputValue] = useState('');
+  const [composerSubmissionError, setComposerSubmissionError] = useState<{ contextKey: string; message: string } | null>(null);
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
@@ -1783,7 +1784,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       !selectedConversationRuntime.lastErrorDisplayTarget)
       ? selectedConversationRuntime.lastError
       : null;
-  const composerError = composerRuntimeError ?? lastError;
+  const composerError = composerRuntimeError ?? lastError ??
+    (composerSubmissionError?.contextKey === composerDraftContextKey ? composerSubmissionError.message : null);
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -2978,6 +2980,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
+    setComposerSubmissionError(null);
     if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
@@ -3148,6 +3151,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
+    setComposerSubmissionError(null);
     if (!goalComposerEditSession) {
       saveComposerDraftForContext(composerDraftContextKey, {
         text,
@@ -3334,7 +3338,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, trackedGoal);
       }
       if (clearsComposerImmediately) restoreSentDraft();
-      // Keep the draft intact. The visible error feedback comes from the chat store.
+      // Source prevalidation can reject before the chat store publishes a runtime error.
+      setComposerSubmissionError({ contextKey: conversationDraftKey, message: toServiceError(error).message });
     } finally {
       if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
@@ -4139,6 +4144,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         'chat.providerRestoreUnavailable',
                         'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
                       )
+                    : composerError === 'The selected conversation has no completed text to cite.'
+                      ? t('chat.conversationSourceEmpty', 'The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.')
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
               />
@@ -4537,8 +4544,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                               ? t('chat.selectProvider')
                               : t('chat.typeMessage')
                         }
-                        onTextChange={(text) => {
-                          if (composerError) {
+                        onTextChange={(text, origin) => {
+                          if (origin !== 'programmatic' && composerError) {
+                            setComposerSubmissionError(null);
                             clearConversationRuntimeError(selectedConversationId ?? '');
                             clearLastError();
                           }

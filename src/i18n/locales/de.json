@@ -618,6 +618,7 @@
     "noProvidersConfigured": "Keine Anbieter konfiguriert",
     "providerRestoreUnavailable": "Der zuvor in dieser Unterhaltung verwendete Provider oder das Modell ist nicht mehr verfügbar. Wähle einen anderen aus, um fortzufahren.",
     "runtimeErrorFallback": "Macro konnte diese Aktion nicht abschließen. Prüfe die Details und versuche es erneut.",
+    "conversationSourceEmpty": "Die ausgewählte Unterhaltung enthält keinen abgeschlossenen Text zum Zitieren. Entferne diese Quelle oder wähle eine andere Unterhaltung und sende die Nachricht erneut.",
     "noEnabledModels": "Keine aktivierten Modelle. Aktivieren Sie Modelle in den Einstellungen.",
     "selectProviderFirst": "Wählen Sie zunächst einen Anbieter aus",
     "agentTypeBuild": "Bauen",

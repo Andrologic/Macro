@@ -41,6 +41,7 @@ import {
   domSelectionBelongsToElement,
 } from './composerDomSelection';
 import { ComposerHistoryPlugin } from './ComposerHistoryPlugin';
+import { COMPOSER_PROGRAMMATIC_TEXT_TAG, type ComposerTextChangeOrigin } from './composerTextChange';
 import {
   prepareContextualTextInsertion,
   type TextInsertionSpacing,
@@ -61,7 +62,7 @@ interface ComposerEditorProps {
   readOnly?: boolean;
   placeholder: string;
   accessibleName?: string;
-  onTextChange: (text: string) => void;
+  onTextChange: (text: string, origin?: ComposerTextChangeOrigin) => void;
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
   className?: string;
@@ -297,7 +298,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
             setEditorPlainText('', surface, syncContextRefs, { selectEnd: false });
             $setSelection(null);
           },
-          { tag: [LEXICAL_UPDATE_TAGS.skipDomSelection, LEXICAL_UPDATE_TAGS.historyMerge] }
+          { tag: [LEXICAL_UPDATE_TAGS.skipDomSelection, LEXICAL_UPDATE_TAGS.historyMerge, COMPOSER_PROGRAMMATIC_TEXT_TAG] }
         );
         if (shouldClearDomSelection) {
           clearWindowSelection();
@@ -314,7 +315,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
                   contextRefs ?? useChatStore.getState().composerContextRefs,
               });
             },
-            { tag: [LEXICAL_UPDATE_TAGS.skipSelectionFocus, LEXICAL_UPDATE_TAGS.historyMerge] }
+            { tag: [LEXICAL_UPDATE_TAGS.skipSelectionFocus, LEXICAL_UPDATE_TAGS.historyMerge, COMPOSER_PROGRAMMATIC_TEXT_TAG] }
           );
         } finally {
           deferMentionRefRemovalResume();
@@ -357,12 +358,12 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
 
     // On-change: extract plain text (MentionNodes serialize to [kind: title])
     const handleChange = useCallback(
-      (editorState: EditorState) => {
+      (editorState: EditorState, _editor: LexicalEditor, tags: Set<string>) => {
         editorState.read(() => {
           const root = $getRoot();
           const text = root.getTextContent();
           textRef.current = text;
-          onTextChange(text);
+          onTextChange(text, tags.has(COMPOSER_PROGRAMMATIC_TEXT_TAG) ? 'programmatic' : 'user');
         });
       },
       [onTextChange]
