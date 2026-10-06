@@ -1,15 +1,7 @@
-import type { AgsdlChange } from '../../types/agsdl';
+import type { AgsdlChange, DesignMetadata, AgsdlDisplayMetadata, AgsdlEnvelopeMetadata } from '../../types/agsdl';
+export type { DesignMetadata, AgsdlDisplayMetadata, AgsdlMigrationMetadata, AgsdlEnvelopeMetadata } from '../../types/agsdl';
 import { AGSDL_CONTRACT, LEGACY_AGSDL_CONTRACT, object, readDocument, applyChanges, sourceAt } from './document';
 
-export interface DesignMetadata {
-  version: 1;
-  kind: 'system' | 'blueprint';
-  purpose: string;
-  context: string;
-  rules: Array<{ id: string; title: string; instructions: string }>;
-  requirements: Array<{ id: string; label: string; description: string; value: string; targetPath?: string }>;
-  origin?: { planId: string; name: string; revision: number };
-}
 export class DesignMetadataError extends Error {
   constructor() { super('The design metadata is malformed or uses an unsupported version. Its original contents have been preserved.'); this.name = 'DesignMetadataError'; }
 }
@@ -76,10 +68,6 @@ export function withDesign(source: string, design: DesignMetadata): string {
   const changes = designChanges(source, design);
   return changes.length ? applyChanges(source, changes) : source;
 }
-export interface AgsdlDisplayMetadata {
-  title?: string;
-  cards?: Record<string, { title?: string; description?: string; macroGroup?: string; macroTaskId?: string; macroLegacyNodeId?: string; macroStatus?: string }>;
-}
 /** Validate the owned presentation fields while preserving unknown metadata. */
 export function validDisplayMetadata(value: unknown): value is AgsdlDisplayMetadata {
   if (!isRecord(value) || (value.title !== undefined && typeof value.title !== 'string')) return false;
@@ -87,18 +75,6 @@ export function validDisplayMetadata(value: unknown): value is AgsdlDisplayMetad
   const fields = ['title', 'description', 'macroGroup', 'macroTaskId', 'macroLegacyNodeId', 'macroStatus'];
   return isRecord(value.cards) && Object.values(value.cards).every(card =>
     isRecord(card) && fields.every(field => card[field] === undefined || typeof card[field] === 'string'));
-}
-export interface AgsdlMigrationMetadata {
-  version: 1;
-  from: 'macro-legacy-plan' | 'agsdl-0.1.0';
-  issues: string[];
-  /** Original artifact and evidence remain available for deliberate remapping. */
-  original?: unknown;
-}
-export interface AgsdlEnvelopeMetadata {
-  design?: DesignMetadata;
-  display?: AgsdlDisplayMetadata;
-  migration?: AgsdlMigrationMetadata;
 }
 /** Preserve unrelated metadata and row extensions while updating owned design fields. */
 export function updateDesignMetadata(previous: DesignMetadata | undefined, design: DesignMetadata): DesignMetadata {
