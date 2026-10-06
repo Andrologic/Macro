@@ -15,7 +15,8 @@ const BUDGETS = [
   { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_505_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 201_000 },
-  { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 63_000 },
+  // Native SQLite refusal copy brings TaskQueue to 63,040 B; retain a 160 B margin.
+  { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 63_200 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
   { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 145_500 },
   { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 161_000 },

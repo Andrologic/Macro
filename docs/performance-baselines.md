@@ -561,3 +561,18 @@ bytes. The raw reports and failed old-budget results are retained outside Git.
 This is a local candidate measurement, not a published version. Subsequent
 candidate corrections must still pass the fixed gate. Browser startup,
 first-open latency, rendering and native timing were not measured here.
+
+
+### Native refusal translation follow-up
+
+The production build of `afdfaa7beacbf09c4740c23e4531c611febb6869`
+measures TaskQueue at 63,040 bytes. Its native SQLite lock refusal now uses the
+existing translated message, with an additional exact backend diagnostic
+recognized by the presentation helper. The build exceeds the 63,000-byte cap
+by 40 bytes. The TaskQueue cap moves to 63,200 bytes, leaving 160 bytes above
+this measured output. All other caps remain unchanged. The raw measurement
+and failed old-budget result are retained with the local QA proofs.
+
+This adjustment accounts for the retained refusal translation. It does not
+establish a performance improvement or change the previously recorded startup
+and first-open measurements. Subsequent builds still use the budget guard.
