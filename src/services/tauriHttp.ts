@@ -1,6 +1,7 @@
 import type { fetch as nativeTauriFetch } from '@tauri-apps/plugin-http';
 import type { InvokeArgs } from '@tauri-apps/api/core';
-import { invoke } from './tauriRuntimeBridge';
+import { invokeWithReceipt } from './tauriRuntimeBridge';
+import { RuntimeCommandError } from './runtimeCommandError';
 import { StreamStopUnconfirmedError, preserveStreamStopError, withStreamCleanup } from './ai/streamCancellation';
 
 const ERROR_REQUEST_CANCELLED = 'Request cancelled';
@@ -27,6 +28,13 @@ const missingReceipt = (operation: string, error: unknown): StreamStopUnconfirme
 export const createBrowserRuntimeFetch = (
   bridgeInvoke: RuntimeInvoke,
 ): typeof nativeTauriFetch => async (input, init) => {
+  const receivedInvoke: RuntimeInvoke = async <T>(command: string, args?: InvokeArgs): Promise<T> => {
+    try { return await bridgeInvoke<T>(command, args); }
+    catch (error) {
+      if (error instanceof RuntimeCommandError && error.payload instanceof StreamStopUnconfirmedError) throw error.payload;
+      throw error;
+    }
+  };
   const options = init as TauriRequestInit | undefined;
   const signal = options?.signal;
   if (signal?.aborted) throw new Error(ERROR_REQUEST_CANCELLED);
@@ -42,7 +50,7 @@ export const createBrowserRuntimeFetch = (
 
   let rid: number;
   try {
-    rid = await bridgeInvoke<number>('plugin:http|fetch', {
+    rid = await receivedInvoke<number>('plugin:http|fetch', {
       clientConfig: {
         method: request.method,
         url: request.url,
@@ -54,11 +62,11 @@ export const createBrowserRuntimeFetch = (
         danger: options?.danger,
       },
     });
-  } catch (error) { throw missingReceipt('admission', error); }
+  } catch (error) { throw error instanceof RuntimeCommandError ? error : missingReceipt('admission', error); }
 
   let cancellation: Promise<unknown> | undefined;
   const cancelRequest = () => {
-    cancellation ??= Promise.resolve().then(() => bridgeInvoke('plugin:http|fetch_cancel', { rid }));
+    cancellation ??= Promise.resolve().then(() => receivedInvoke('plugin:http|fetch_cancel', { rid }));
     void cancellation.catch(() => undefined);
   };
   signal?.addEventListener('abort', cancelRequest, { once: true });
@@ -67,17 +75,38 @@ export const createBrowserRuntimeFetch = (
   // Join its response; cancel merely requests interruption of that command.
   const response = await withStreamCleanup(async () => {
     let outcome: ClientResponse | undefined;
-    let failure: StreamStopUnconfirmedError | undefined;
-    try { outcome = await bridgeInvoke<ClientResponse>('plugin:http|fetch_send', { rid }); }
-    catch (error) { failure = missingReceipt('request', error); cancelRequest(); }
+    let failure: Error | undefined;
+    try { outcome = await receivedInvoke<ClientResponse>('plugin:http|fetch_send', { rid }); }
+    catch (error) {
+      failure = error instanceof RuntimeCommandError ? error : missingReceipt('request', error);
+      cancelRequest();
+    }
     signal?.removeEventListener('abort', cancelRequest);
     try { await cancellation; }
     catch (error) {
-      if (failure) failure = preserveStreamStopError(failure, error);
-      else if (error instanceof StreamStopUnconfirmedError) failure = error;
+      if (failure instanceof StreamStopUnconfirmedError) failure = preserveStreamStopError(failure, error);
+      else if (!(error instanceof RuntimeCommandError)) failure = missingReceipt('request cancellation', error);
       // A fulfilled send is the request's receipt, even if its cancel failed.
     }
-    if (failure) throw failure;
+    if (failure) {
+      // fetch_send may fail before consuming its request, or leave its completed
+      // future in the table. A received error alone cannot discharge that resource.
+      try { await receivedInvoke('plugin:resources|close', { rid }); }
+      catch (error) {
+        const owner = missingReceipt('request cleanup', error);
+        failure = failure instanceof StreamStopUnconfirmedError ? preserveStreamStopError(failure, owner) : preserveStreamStopError(owner, failure);
+      }
+      if (outcome) {
+        // Cancellation can fail while send succeeds and creates a body resource.
+        // Its cleanup belongs to this invocation even though no Response escapes.
+        try { await receivedInvoke('plugin:http|fetch_cancel_body', { rid: outcome.rid }); }
+        catch (error) {
+          const owner = missingReceipt('body cleanup', error);
+          failure = failure instanceof StreamStopUnconfirmedError ? preserveStreamStopError(failure, owner) : preserveStreamStopError(owner, failure);
+        }
+      }
+      throw failure;
+    }
     return outcome!;
   }, () => signal?.removeEventListener('abort', cancelRequest));
 
@@ -100,11 +129,14 @@ export const createBrowserRuntimeFetch = (
     closing = (async () => {
       const outcomes = await Promise.allSettled([
         read,
-        Promise.resolve().then(() => bridgeInvoke('plugin:http|fetch_cancel_body', { rid: response.rid })),
+        Promise.resolve().then(() => receivedInvoke('plugin:http|fetch_cancel_body', { rid: response.rid })),
       ]);
       let failure: StreamStopUnconfirmedError | undefined;
       for (const [index, outcome] of outcomes.entries()) {
         if (outcome.status !== 'rejected') continue;
+        // A read error response proves the read future ended. Cleanup must
+        // still succeed; a cleanup error response does not prove resource closure.
+        if (index === 0 && outcome.reason instanceof RuntimeCommandError) continue;
         // A received EOF proves that the backend also removed the body resource.
         // A typed rejection can still own separate work and must be conserved.
         if (eof && !(outcome.reason instanceof StreamStopUnconfirmedError)) continue;
@@ -138,7 +170,7 @@ export const createBrowserRuntimeFetch = (
     },
     async pull(controller) {
       if (bodyFinished) return;
-      const read = Promise.resolve().then(() => bridgeInvoke<number[]>('plugin:http|fetch_read_body', { rid: response.rid }));
+      const read = Promise.resolve().then(() => receivedInvoke<number[]>('plugin:http|fetch_read_body', { rid: response.rid }));
       activeRead = read;
       try {
         const bytes = await read;
@@ -156,7 +188,7 @@ export const createBrowserRuntimeFetch = (
         // Do not join pull itself: only its underlying IPC belongs to stopBody.
         try { await stopBody(); }
         catch (failure) { controller.error(failure); return; }
-        controller.error(missingReceipt('body read', error));
+        controller.error(error instanceof RuntimeCommandError ? error : missingReceipt('body read', error));
       } finally {
         if (activeRead === read) activeRead = undefined;
       }
@@ -178,4 +210,4 @@ export const createBrowserRuntimeFetch = (
 // The plugin's JS fetch wrapper does not join its body read/cancel IPCs. Use
 // the same Macro owner for native Tauri and its browser bridge, without forking
 // the plugin or bypassing its command permissions.
-export const tauriFetch: typeof nativeTauriFetch = createBrowserRuntimeFetch(invoke);
+export const tauriFetch: typeof nativeTauriFetch = createBrowserRuntimeFetch(invokeWithReceipt);

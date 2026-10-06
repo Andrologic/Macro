@@ -2166,3 +2166,13 @@ sans retirer un remplacement ou un autre dépôt. Les racines metadata en cache
 sont revalidées avant réutilisation et retirées après nettoyage du projet. Cette
 propriété native ne fait pas dépendre un handle Git du montage d'un panneau et
 n'ajoute ni TTL ni affirmation de fuite mesurée.
+
+HTTP opts into runtime reply provenance through `invokeWithReceipt`. Native
+error callbacks and browser `status: error` envelopes produce
+`RuntimeCommandError`; transport throws, disconnects and missing responses do
+not. Ordinary `invoke` consumers retain their existing error payloads. A received
+admission refusal proves no request was created. A received body-read error
+proves that read ended, but releasing its owner also requires successful body
+cleanup. A failed send also joins request-resource closure before release.
+Cleanup failure alone does not prove resource closure. HTTP error-body
+diagnostics preserve stop receipts before classifying status codes or retrying.
