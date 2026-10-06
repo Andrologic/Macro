@@ -1,4 +1,4 @@
-import { StreamStopUnconfirmedError, preserveStreamStopError } from "./streamCancellation";
+import { StreamStopUnconfirmedError, preserveStreamStopError, withStreamCleanup } from "./streamCancellation";
 import type { ProviderTurnState } from '../../types';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../../domains/chat/prompts';
 import { getMacroToolRegistryEntry, type JsonSchema } from '../../shared/macroToolRegistry';
@@ -101,6 +101,7 @@ export async function runToolCallingLoop(
     turnCount += 1;
     return true;
   };
+  return withStreamCleanup(async () => {
   try {
     while (maxTurns === null || turnCount < maxTurns) {
       if (options.signal?.aborted) return complete();
@@ -283,4 +284,5 @@ export async function runToolCallingLoop(
     if (error instanceof Error && error.name === 'AbortError') return complete();
     throw error;
   }
+  }, () => options.onExecutionMessages?.(messages.map(cloneStreamMessage)));
 }

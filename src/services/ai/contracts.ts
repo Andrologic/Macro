@@ -121,6 +121,8 @@ export interface StreamingFollowUpCompactionResult {
 export interface StreamingChatOptions {
   /** Opt-in for resident execution; ordinary chat keeps its transport strategy. */
   executionPolicy?: 'native-serial';
+  /** Provisional Agent checkpoint; durability belongs to the terminal transaction. */
+  onExecutionMessages?: (messages: readonly StreamMessage[]) => void;
   nativeExecution?: {
     beforeRequest(requestId: string): Promise<'registered' | 'duplicate'>;
     requestEnded(requestId: string): Promise<void>;
