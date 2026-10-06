@@ -55,10 +55,7 @@ interface AgsdlState {
 }
 const pendingLoads = new Map<string, Promise<AgsdlSession>>();
 const snapshot = ({ source, annexes, design, display, migration }: Snapshot): Snapshot => structuredClone({
-  source, annexes,
-  ...(design !== undefined ? { design } : {}),
-  ...(display !== undefined ? { display } : {}),
-  ...(migration !== undefined ? { migration } : {}),
+  source, annexes, design, display, migration,
 });
 const historyBudget = (history: Snapshot[]) => {
   let bytes = 0;
@@ -133,7 +130,8 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       if (expectedVersion !== undefined && expectedVersion !== current.version)
         throw new Error("The document changed. Read it again before editing.");
       const nextAnnexes = annexes ?? current.annexes;
-      const nextMetadata = metadata === undefined ? { design: current.design, display: current.display, migration: current.migration } : structuredClone(metadata);
+      const metadataSource = metadata === undefined ? current : metadata;
+      const nextMetadata = structuredClone({ design: metadataSource.design, display: metadataSource.display, migration: metadataSource.migration });
       if (
         new TextEncoder().encode(source + Object.values(nextAnnexes).join("") + JSON.stringify(nextMetadata))
           .length > MAX_AGSDL_BYTES

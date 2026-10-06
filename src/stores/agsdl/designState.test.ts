@@ -42,6 +42,39 @@ describe('Macro design metadata history', () => {
     expect(state().source).toBe(source);
     expect(state().design?.requirements[0].value).toBe('');
   });
+  it('clears newly added optional metadata when undo restores an envelope without those fields', () => {
+    const store = useAgsdlStore.getState(), source = state().source;
+    store.replace(target, source, {}, state().version, {});
+    const empty = structuredClone(state());
+    store.replace(target, source, {}, state().version, { design: readDesign(source), display: { title: 'Imported' }, migration: { version: 1, from: 'agsdl-0.1.0', issues: [] } });
+    store.undo(target);
+    expect(state().source).toBe(empty.source);
+    expect(state().design).toBeUndefined();
+    expect(state().display).toBeUndefined();
+    expect(state().migration).toBeUndefined();
+  });
+  it('clears suppressed optional metadata again when redoing its removal', () => {
+    const store = useAgsdlStore.getState(), source = state().source;
+    const metadata = { design: state().design!, display: { title: 'Imported' }, migration: { version: 1 as const, from: 'agsdl-0.1.0' as const, issues: [] } };
+    store.replace(target, source, {}, state().version, metadata);
+    store.replace(target, source, {}, state().version, {});
+    store.undo(target);
+    expect(state().migration).toEqual(metadata.migration);
+    expect(state().display).toEqual(metadata.display);
+    expect(state().design).toEqual(metadata.design);
+    store.undo(target, true);
+    expect(state().design).toBeUndefined();
+    expect(state().display).toBeUndefined();
+    expect(state().migration).toBeUndefined();
+  });
+  it('counts only envelope metadata when a full editor document is passed to replace', () => {
+    const document = createEmptySystemDocument('Large draft');
+    const source = JSON.stringify({ ...JSON.parse(document.source), content: { guide: { value: 'a'.repeat(600 * 1024) } } });
+    document.source = source;
+    useAgsdlStore.getState().replace(target, source, {}, state().version, document);
+    expect(state().source).toBe(source);
+    expect(state().display?.title).toBe('Large draft');
+  });
   it('rejects stale metadata updates before changing source or history', () => {
     const before = structuredClone(state());
     expect(() => useAgsdlStore.getState().setDesign(target, { ...state().design!, purpose: 'Stale' }, 'old')).toThrow('changed');
