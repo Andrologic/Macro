@@ -23,7 +23,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::{background_contained_tokio_command, ContainedBackgroundProcess};
+use crate::core::process::{
+    background_contained_tokio_command, process_error_diagnostic, ContainedBackgroundProcess,
+};
 use crate::fs::{normalize_path, validate_path};
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::project_path::{
@@ -495,9 +497,10 @@ fn run_contained_git_command(
             }
 
         };
-        process.terminate_with_grace(Duration::ZERO).await.map_err(|error| BackendError::Git {
-            message: format!("Git process tree termination could not be verified: {error}. Inspect repository state and remaining processes before retrying."),
-        })?;
+        verify_completed_git_termination(
+            status,
+            process.terminate_with_grace(Duration::ZERO).await,
+        )?;
         let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
             tokio::time::timeout(GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT, async {
                 let stdout = stdout_reader.await.map_err(|error| BackendError::Git {
@@ -555,6 +558,19 @@ pub(crate) fn configure_noninteractive_git_command(command: &mut tokio::process:
         .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
 }
 
+fn verify_completed_git_termination(
+    status: std::process::ExitStatus,
+    termination: std::io::Result<std::process::ExitStatus>,
+) -> Result<()> {
+    termination.map(|_| ()).map_err(|error| BackendError::Git {
+        message: format!(
+            "Git command finished with {status} (success={}). Git process tree termination could not be verified: {}. Inspect repository state and remaining processes before retrying.",
+            status.success(),
+            process_error_diagnostic(&error),
+        ),
+    })
+}
+
 fn git_termination_error(reason: String, termination: Option<std::io::Error>) -> BackendError {
     BackendError::Git {
         message: match termination {
@@ -566,6 +582,52 @@ fn git_termination_error(reason: String, termination: Option<std::io::Error>) ->
 
 #[cfg(test)]
 mod bounded_git_error_tests {
+    #[cfg(unix)]
+    #[test]
+    fn completed_git_cleanup_failure_keeps_nonzero_status_without_private_error_text() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let status = std::process::ExitStatus::from_raw(7 << 8);
+        let cleanup = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "/private/fixture-helper --token=fixture-secret PRIVATE_ENV=fixture-secret",
+        );
+        let error = super::verify_completed_git_termination(status, Err(cleanup))
+            .expect_err("incomplete cleanup must reject the completed command");
+        let message = error.to_string();
+        assert!(message.contains("exit status: 7"), "{message}");
+        assert!(message.contains("success=false"), "{message}");
+        assert!(
+            message.contains("termination could not be verified"),
+            "{message}"
+        );
+        assert!(message.contains("PermissionDenied"), "{message}");
+        assert!(!message.contains("fixture-secret"));
+        assert!(!message.contains("fixture-helper"));
+        assert!(!message.contains("PRIVATE_ENV"));
+        assert!(message.len() < 512);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_git_success_still_fails_when_cleanup_is_incomplete() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let error = super::verify_completed_git_termination(
+            std::process::ExitStatus::from_raw(0),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "process tree inspection deadline expired",
+            )),
+        )
+        .expect_err("a zero exit status must not override incomplete cleanup");
+        let message = error.to_string();
+        assert!(message.contains("exit status: 0"));
+        assert!(message.contains("success=true"));
+        assert!(message.contains("tree inspection deadline expired"));
+        assert!(message.contains("before retrying"));
+    }
+
     #[test]
     fn termination_failure_keeps_timeout_and_lock_recovery_details() {
         let temp = tempfile::TempDir::new().unwrap();
