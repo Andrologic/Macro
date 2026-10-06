@@ -1,4 +1,4 @@
-import { MacroServiceError, SERVICE_ERROR_CODES } from './contracts/errors';
+import { MacroServiceError, SERVICE_ERROR_CODES, toServiceError } from './contracts/errors';
 import { describe, expect, it } from 'bun:test';
 import {
   presentGitFlowBlockingIssue,
@@ -12,6 +12,49 @@ import {
 } from './degradedErrorPresentation';
 
 describe('degradedErrorPresentation', () => {
+  it.each([
+    { name: 'service', present: presentServiceError },
+    { name: 'worktree', present: presentWorktreeError },
+  ])('preserves the original message alongside an incomplete Error stack for $name', ({ present }) => {
+    const error = new Error('The selected conversation has no completed text to cite.');
+    error.stack = 'Error\n    at syntheticSourceValidation';
+    const normalized = toServiceError(error);
+    const presentation = present(normalized);
+
+    expect(presentation.technicalDetails).toBe(`${error.message}\n${error.stack}`);
+    expect(normalized.details).toBe(error);
+    expect(error.stack).toBe('Error\n    at syntheticSourceValidation');
+  });
+
+  it('keeps a complete Error stack without repeating its message', () => {
+    const error = new Error('Source validation failed.');
+    error.stack = `Error: ${error.message}\n    at syntheticSourceValidation`;
+
+    expect(presentServiceError(error).technicalDetails).toBe(error.stack);
+  });
+
+  it('keeps the original Error message when no stack is available', () => {
+    const error = new Error('Source validation failed.');
+    error.stack = undefined;
+
+    expect(presentServiceError(error).technicalDetails).toBe(error.message);
+  });
+
+  it('preserves a structured service code and its JSON details', () => {
+    const details = { errno: 24, reason: 'Too many open files' };
+    const error = {
+      code: SERVICE_ERROR_CODES.RESOURCE_PRESSURE,
+      message: 'Failed to read workspace state',
+      details,
+    };
+    const presentation = presentServiceError(error);
+
+    expect(presentation.title.key).toBe('errors.degraded.service.resourcePressure.title');
+    expect(presentation.technicalDetails).toBe(JSON.stringify(details, null, 2));
+    expect(error.details).toBe(details);
+    expect(toServiceError(error)).toBe(error);
+  });
+
   it('separates changed conflict context copy from its technical diagnostic identities', () => {
     const details = { stage: 'verification', taskId: 'task-api', projectId: 'project-1', repoPath: '/repo/api' };
     const error = new MacroServiceError(SERVICE_ERROR_CODES.CONFLICT_ASSISTANT_CONTEXT_CHANGED, 'Conflict assistant context changed.', details);
