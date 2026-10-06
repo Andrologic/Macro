@@ -24,7 +24,8 @@ import { isSuccessfulCompletionReason } from "./ai/completionRecovery";
 /** A placeholder has no transcript content; generation checkpoints alone are not a response. */
 export const isEmptyAssistantPlaceholder = (message: ChatMessage): boolean =>
   message.role === "assistant" && !message.completion_reason && !message.content.trim() &&
-  !message.tool_traces?.length && !message.provider_input_items?.length && !message.hidden_context &&
+  !message.tool_traces?.length && !message.provider_input_items?.length &&
+  !message.provider_turn_state?.output_items.length && !message.hidden_context &&
   !message.questionnaire && !message.choices?.length;
 
 export interface ChatPersistenceIpc {

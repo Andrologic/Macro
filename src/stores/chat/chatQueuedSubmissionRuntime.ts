@@ -28,6 +28,14 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   const attempted = new Map<string, string>();
   const directionWrites = new Map<string, Promise<unknown>>();
   const writeDirection = async <T>(id: string, write: () => Promise<T>): Promise<T> => {
+    if (!entries.some(entry => entry.id === id && !entry.direction?.deletionRequested)) {
+      throw new Error('The direction was invalidated before its write.');
+    }
+    // Keep the first IO tracked until it settles. A retry must never replace it.
+    if (directionWrites.has(id)) {
+      throw new Error(i18n.t('chat.queueWriteInProgress',
+        'This direction is still being saved. Wait for its save to finish before retrying.'));
+    }
     const pending = Promise.resolve().then(() => {
       if (!entries.some(entry => entry.id === id && !entry.direction?.deletionRequested)) {
         throw new Error('The direction was invalidated before its write.');

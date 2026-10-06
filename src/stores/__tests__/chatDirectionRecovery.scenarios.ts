@@ -261,6 +261,50 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
       } finally { storage.setItem = write; await h.close(); }
     });
 
+    it('prevents overlapping recovery writes, then waits through Stop and replay before reload', async () => {
+      const h = await createHarness(); const initialDb = c.createDeferred<void>();
+      let creates = 0; let trimmed = false;
+      try {
+        await h.start(); await h.entered.promise;
+        const create = c.createMessageMock.getMockImplementation()!;
+        c.createMessageMock.mockImplementation(async (...args) => {
+          if (args[2] === content) { creates++; if (creates === 1) await initialDb.promise; }
+          return create(...args);
+        });
+        const submitting = h.store.getState().submitDuringActiveTurn(payload, 'steer');
+        await c.flushAsyncWork(); expect(creates).toBe(1);
+        const entry = loadQueuedSubmissions()[0];
+        h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(h.store.getState().getConversationRuntime(conversationId).phase).toBe('idle');
+        await h.store.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork();
+        expect(creates).toBe(1);
+        expect(h.store.getState().queuedSubmissionRecoveryByConversationId[conversationId].error).toContain('still being saved');
+        expect(h.requests).toHaveLength(1);
+        const original = h.rows.find(row => row.role === 'user' && row.content === 'Initial request')!;
+        c.dbPrepareConversationReplayMock.mockImplementation(async params => {
+          h.rows.splice(h.rows.findIndex(row => row.id === params.messageId) + 1);
+          original.content = params.content; trimmed = true;
+        });
+        h.store.getState().stopConversationStream(conversationId);
+        const editing = h.store.getState().editMessage(original.id, 'Edited request', { skipAgentCodeReplayCheck: true });
+        await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(loadQueuedSubmissions()[0].direction?.deletionRequested).toBe(true);
+        expect(trimmed).toBe(false);
+        // A further retry after invalidation must not launch another create while replay waits.
+        await h.store.getState().retryQueuedSubmissions(conversationId);
+        expect(creates).toBe(1);
+        initialDb.resolve(); await submitting; await editing; await c.flushAsyncWork(); await c.flushAsyncWork();
+        expect(trimmed).toBe(true); expect(loadQueuedSubmissions()).toEqual([]); expect(creates).toBe(1);
+        expect(h.rows.some(row => row.id === entry.direction!.userMessageId)).toBe(false);
+        expect(h.store.getState().getConversationMessages(conversationId).some((m: ChatMessage) => m.id === entry.direction!.userMessageId)).toBe(false);
+        h.store.setState({ messageLoadStatusByConversationId: {}, messages: [], messagesByConversationId: {}, messageIndexById: {} });
+        await h.store.getState().ensureMessagesLoaded(conversationId);
+        expect(h.rows.some(row => row.id === entry.direction!.userMessageId)).toBe(false);
+        expect(h.store.getState().getConversationMessages(conversationId).some((m: ChatMessage) => m.id === entry.direction!.userMessageId)).toBe(false);
+        expect(directionMessages(h.requests[1])).toEqual([]);
+      } finally { initialDb.resolve(); await h.close(); }
+    });
+
     it('invalidates unpublished directions before awaiting their DB writes and deleting the turn', async () => {
       const h = await createHarness(); const dbRelease = c.createDeferred<void>();
       try {
