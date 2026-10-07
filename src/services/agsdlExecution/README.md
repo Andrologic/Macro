@@ -306,3 +306,24 @@ ce seul test différentiel est explicitement ignoré. Il n'effectue aucun résea
 Les ports de contenu et contraintes dérivés de `sources.py`, `check_delivery.py`
 et `check_completion.py` portent leur attribution Apache-2.0 en tête de module.
 Le NOTICE et la licence du lecteur vendor restent conservés.
+
+
+## Parcours privé de qualification
+
+En développement, `agsdl-host-qa.html` expose un formulaire manuel, refusé par
+le natif hors build `browser-runtime-debug` et identifiant de profil QA isolé.
+Un profil de navigateur à liste explicite de capabilities doit inclure
+`agsdl-host`, qui autorise uniquement l’écoute des événements dans le host.
+La page utilise les ports publics pour Preflight, Start graphless, Deliver,
+approbations, Stop et projection. Elle ne reçoit aucune epoch.
+
+Le déclenchement manuel transmet une livraison graphless existante à un slot
+natif de qualification. Seul le host authentifié peut le consommer ; un événement
+JS seul ne donne aucune autorisation. SQL begin reste propriétaire de l’admission.
+Le helper exécute un ResidentAgent et son témoin terminal sans parcourir une
+file ni démarrer la pompe Flow. La boucle compilateur reste disponible pendant
+cette exécution. La commande de remplacement QA emprunte le vrai chemin natif
+de révocation et de recréation, et non une simulation de propriétaire.
+
+Le formulaire n’est pas une entrée du build produit. Sa validation visuelle et
+les scénarios reload, perte du host et arrêt des IO exigent le runtime isolé réel.

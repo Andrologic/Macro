@@ -116,3 +116,9 @@ export function readExecutionApprovals(request: ApprovalScope): Promise<Approval
 export function decideExecutionApproval(request: ApprovalDecision): Promise<PublicApproval> {
   return invoke('execution_decide_approval', { request });
 }
+
+/** Isolated debug QA profile only; native code refuses ordinary app profiles. */
+export function executionQaAvailable(): Promise<boolean> { return invoke('execution_qa_available'); }
+export function executionQaRun(systemStartId: string, deliveryId: string): Promise<void> { return invoke('execution_qa_run', { systemStartId, deliveryId }); }
+export function executionHostQaTake(): Promise<[EngineOwner, string] | null> { return invoke('execution_host_qa_take'); }
+export function executionQaReplaceHost(): Promise<void> { return invoke('execution_qa_replace_host'); }

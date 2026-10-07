@@ -239,8 +239,8 @@ export async function runToolCallingLoop(
         messages.push({
           role: 'assistant', content: replayContent,
           ...(calls.length ? { tool_calls: calls } : {}),
-          ...(requestProjection.items.length ? { provider_input_items: requestProjection.items } : {}),
-          ...(requestProjection.state ? { provider_turn_state: requestProjection.state } : {}),
+          ...(options.executionPolicy !== 'native-serial' && requestProjection.items.length ? { provider_input_items: requestProjection.items } : {}),
+          ...(options.executionPolicy !== 'native-serial' && requestProjection.state ? { provider_turn_state: requestProjection.state } : {}),
         });
       }
       if (!calls.length) {
@@ -286,7 +286,8 @@ export async function runToolCallingLoop(
           transcript.splice(transcriptStart, transcript.length - transcriptStart, ...progress.items, ...completedItems);
           accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
           messages.push({ role: 'tool', content: toolResult.content,
-            tool_call_id: toolResult.tool_call_id, provider_input_items: [item] });
+            tool_call_id: toolResult.tool_call_id,
+            ...(options.executionPolicy !== 'native-serial' ? { provider_input_items: [item] } : {}) });
         },
       });
       if (interruptResolution) {

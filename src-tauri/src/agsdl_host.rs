@@ -18,6 +18,7 @@ struct Incarnation {
     ready: AtomicBool,
     loads: AtomicUsize,
     owners: Mutex<BTreeMap<String, EngineOwner>>,
+    qa_request: Mutex<Option<(String, String)>>,
 }
 struct HostResource(Arc<Incarnation>);
 impl tauri::Resource for HostResource {}
@@ -318,6 +319,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         ready: AtomicBool::new(false),
         loads: AtomicUsize::new(0),
         owners: Mutex::new(BTreeMap::new()),
+        qa_request: Mutex::new(None),
     });
     let navigation_database = app.state::<DbPool>().inner().clone();
     let load_database = navigation_database.clone();
@@ -392,7 +394,8 @@ pub(crate) fn execution_host_ready(
     if !host.ready.swap(true, Ordering::SeqCst) {
         // Do not await the compiler here: the JS mailbox starts after this handshake.
         let generation = host.generation.clone();
-        tokio::spawn(async move {
+        // This synchronous command runs on the main thread, outside a Tokio context.
+        tauri::async_runtime::spawn(async move {
             if let Err(error) = reattach_retained(&app, &generation).await {
                 tracing::warn!(code = %error.code, "Execution host recovery did not complete");
             }
@@ -414,6 +417,7 @@ mod tests {
             ready: AtomicBool::new(true),
             loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
         });
         let lease = HostStartLease {
             host: host.clone(),
@@ -445,6 +449,7 @@ mod tests {
             ready: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
         });
         let forged = Arc::new(Incarnation {
             generation: "same".into(),
@@ -454,6 +459,7 @@ mod tests {
             ready: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
             owners: Mutex::new(BTreeMap::new()),
+            qa_request: Mutex::new(None),
         });
         assert!(!Arc::ptr_eq(&first, &forged));
         let mut table = tauri::ResourceTable::default();
@@ -709,5 +715,124 @@ async fn reattach_retained(app: &tauri::AppHandle, generation: &str) -> Result<(
             lease.retain_committed_owner(owner)?;
         }
     }
+    Ok(())
+}
+
+// Manual qualification only. The native slot authorizes one existing delivery;
+// an event from another webview cannot manufacture an admission or owner.
+#[tauri::command]
+pub(crate) fn execution_qa_available(app: tauri::AppHandle) -> bool {
+    cfg!(all(debug_assertions, feature = "browser-runtime-debug"))
+        && app.config().identifier.starts_with("com.macro.desktop.qa.")
+}
+#[tauri::command]
+pub(crate) async fn execution_qa_run(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    system_start_id: String,
+    delivery_id: String,
+) -> Result<()> {
+    use tauri::Emitter;
+    if !execution_qa_available(app.clone()) {
+        return Err(failure(
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "Manual qualification is disabled",
+        ));
+    }
+    let lease = state.start_lease().await?;
+    let owner = lease.owner(&system_start_id)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Database unavailable"))?;
+    let inspection = repository::inspection::read(&pool, &owner).await?;
+    let plan: serde_json::Value = serde_json::from_str(&inspection.snapshot.compiled_plan_json)?;
+    let delivery = inspection
+        .projection
+        .activations
+        .iter()
+        .find(|activation| activation.delivery.delivery.delivery_id == delivery_id);
+    if plan.get("entry") != Some(&serde_json::Value::Null)
+        || !delivery.is_some_and(|activation| {
+            activation.work_state == "queued"
+                && activation
+                    .delivery
+                    .delivery
+                    .work
+                    .agent_instance_id
+                    .is_some()
+        })
+    {
+        return Err(failure(
+            "CORRELATION",
+            "delivery",
+            "Manual qualification requires a queued graphless Agent delivery",
+        ));
+    }
+    lease.ensure_live()?;
+    let mut slot = lease
+        .host
+        .qa_request
+        .lock()
+        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "QA request unavailable"))?;
+    if slot.is_some() {
+        return Err(failure(
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "A manual qualification request is pending",
+        ));
+    }
+    *slot = Some((system_start_id, delivery_id));
+    if app.emit_to(LABEL, "agsdl-qa-wake", ()).is_err() {
+        *slot = None;
+        return Err(failure("RUNTIME_UNAVAILABLE", "", "Host wake failed"));
+    }
+    Ok(())
+}
+#[tauri::command]
+pub(crate) fn execution_host_qa_take(
+    app: tauri::AppHandle,
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<Option<(EngineOwner, String)>> {
+    if !execution_qa_available(app) {
+        return Ok(None);
+    }
+    let host = state.authenticate(&webview)?;
+    let request = host
+        .qa_request
+        .lock()
+        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "QA request unavailable"))?
+        .take();
+    request
+        .map(|(system, delivery)| {
+            let owner = host
+                .owners
+                .lock()
+                .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Owner unavailable"))?
+                .get(&system)
+                .cloned()
+                .ok_or_else(|| failure("CORRELATION", "", "QA owner is absent"))?;
+            Ok((owner, delivery))
+        })
+        .transpose()
+}
+#[tauri::command]
+pub(crate) async fn execution_qa_replace_host(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+) -> Result<()> {
+    if !execution_qa_available(app.clone()) {
+        return Err(failure(
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "Manual qualification is disabled",
+        ));
+    }
+    let lease = state.start_lease().await?;
+    retire(&lease.host, database.inner(), &app);
     Ok(())
 }

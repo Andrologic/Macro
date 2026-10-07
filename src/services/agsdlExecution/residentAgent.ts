@@ -9,7 +9,7 @@ import { MacroAgentMemory } from './agentMemory';
 import type { ExecutionContext, ExactJsonText, FrozenAgentConfiguration, MemoryCheckpoint, ProviderAttemptId, Sequence } from './contracts';
 import { toDispatchValue } from './dispatchValues';
 import { decode, encode, fail, list, record, text } from './exact';
-import type { ResponseCollectionOptions } from './responses';
+import { ExactResponseCollection, type ResponseCollectionOptions } from './responses';
 import { closeRetainedResponses, type ResponseJournalPort, type RetainedEmission } from './retainedResponses';
 
 export interface ResidentAgentRequest {
@@ -63,6 +63,11 @@ export class ResidentAgent {
     if (!agent || request.context.permissionsJson !== request.configuration.permissionsJson || request.context.scopeJson !== request.configuration.scopeJson) {
       return fail('CORRELATION', '', 'Agent configuration does not match admitted work.');
     }
+    if (request.responses.stepJson === null && request.responses.agentName !== request.configuration.agentName) {
+      return fail('CORRELATION', '', 'Graphless response Agent differs from the captured configuration.');
+    }
+    // Validate the real collection contract before input adaptation or provider effects.
+    new ExactResponseCollection({ ...request.responses, context: request.context, providerAttempts: [] });
     const memory = await MacroAgentMemory.prepare(agent, request.configuration, request.memory);
     return new ResidentAgent(request, memory, ports, invokeTool);
   }

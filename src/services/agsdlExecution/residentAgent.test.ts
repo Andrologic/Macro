@@ -6,6 +6,7 @@ import type { RetainedEmission } from './retainedResponses';
 import type { Emission } from '../../types/generated/ipc';
 import type { AiStreamChatInput } from '../ipc/ai';
 import { StreamStopUnconfirmedError } from '../ai/streamCancellation';
+import type { Sequence } from './contracts';
 
 async function fixture(stream: ResidentAgentPorts['stream']) {
   const compiled = await compileFixture(documentFixture());
@@ -90,4 +91,74 @@ it('keeps unconfirmed physical ownership and treats turn exhaustion as failed', 
   const second = await ResidentAgent.prepare(f.request, noTool, f.ports);
   await second.acceptInput(() => json('{}'));
   expect((await second.executeReady()).failed).toBe(true);
+});
+
+async function graphlessFixture(stream: ResidentAgentPorts['stream']) {
+  const f = await fixture(stream);
+  const request: ResidentAgentRequest = { ...f.request, context: { ...f.request.context, work: { ...f.request.context.work, step: null } },
+    responses: { agentName: f.request.configuration.agentName, interfaceJson: json('{}'), stepJson: null, publicationContractJson: null } };
+  return { ...f, request };
+}
+it('closes a normal graphless response with the captured Agent identity', async () => {
+  const f = await graphlessFixture(async options => {
+    const native = options.nativeExecution!;
+    await native.beforeRequest('normal', attempt('normal'));
+    await native.dispatch!(attempt('normal'));
+    await native.requestEnded('normal');
+    await native.visibleMessage('normal', 'Retained graphless response');
+    options.onExecutionMessages!([...options.messages, { role: 'assistant', content: 'Retained graphless response' }]);
+    options.onComplete({ visibleContent: 'Retained graphless response', toolTraces: [] });
+  });
+  const agent = await ResidentAgent.prepare(f.request, noTool, f.ports);
+  await agent.acceptInput(() => json('{"prompt":[{"value":"Go"}]}'));
+  const result = await agent.executeReady();
+  expect(result.closure.validation).toEqual({ kind: 'success', text: 'Retained graphless response', resultsJson: json('{}'), choice: null });
+  expect(String(result.closure.cursor)).toBe('1');
+  expect(result.stopped).toBe(false);
+  expect(result.memory.stateJson).toContain('Retained graphless response');
+  expect(f.order).toEqual(['register:normal', 'dispatch:normal', 'end:normal', 'message', 'close']);
+});
+it('closes an empty graphless Stop journal only after the provider join', async () => {
+  let started!: () => void, stopping!: () => void, releaseJoin!: () => void;
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const stoppingAtJoin = new Promise<void>(resolve => { stopping = resolve; });
+  const joined = new Promise<void>(resolve => { releaseJoin = resolve; });
+  const f = await graphlessFixture(async options => {
+    const native = options.nativeExecution!;
+    await native.beforeRequest('held', attempt('held'));
+    await native.dispatch!(attempt('held'));
+    const aborted = new Promise<void>(resolve => options.signal!.addEventListener('abort', () => resolve(), { once: true }));
+    started();
+    await aborted;
+    stopping();
+    await joined;
+    await native.requestEnded('held');
+    options.onComplete({ visibleContent: '', toolTraces: [] });
+  });
+  const digest = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+  f.ports.journal.read = async () => ({ events: [], digest });
+  const agent = await ResidentAgent.prepare(f.request, noTool, f.ports);
+  await agent.acceptInput(() => json('{"prompt":[{"value":"QA-HOLD"}]}'));
+  const completion = agent.executeReady();
+  await running;
+  agent.requestStop();
+  await stoppingAtJoin;
+  expect(f.order).not.toContain('close');
+  releaseJoin();
+  const result = await completion;
+  expect(result.stopped).toBe(true);
+  expect(result.closure).toEqual({ cursor: '0' as Sequence, digest, validation: { kind: 'success', text: '', resultsJson: json('{}'), choice: null } });
+  expect(result.memory.stateJson).toContain('QA-HOLD');
+  expect(f.order).toEqual(['register:held', 'dispatch:held', 'end:held', 'close']);
+});
+it('rejects missing or foreign graphless names and malformed collection declarations before dispatch', async () => {
+  const f = await graphlessFixture(async () => { throw new Error('Must not dispatch'); });
+  for (const responses of [
+    { ...f.request.responses, agentName: undefined },
+    { ...f.request.responses, agentName: 'another-agent' },
+    { ...f.request.responses, interfaceJson: json('[]') },
+  ]) {
+    await expect(ResidentAgent.prepare({ ...f.request, responses }, noTool, f.ports)).rejects.toMatchObject({ code: 'CORRELATION' });
+    expect(f.order).toEqual([]);
+  }
 });

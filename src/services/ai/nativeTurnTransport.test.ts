@@ -12,6 +12,7 @@ type Handler = (event: { payload: Record<string, unknown> }) => void;
 
 let handlers = new Map<string, Handler>();
 let requestId = '';
+let nativeRequests: Parameters<typeof ipc.aiStreamChat>[0][] = [];
 let streamStarted!: () => void;
 let started: Promise<void>;
 let submissions: Submission[] = [];
@@ -33,6 +34,7 @@ mock.module('../tauriIpc', () => ({ ...ipc,
   aiCancelStream: async () => { cancelCount += 1; await cancelGate?.(); },
   aiStreamChat: async (request: Parameters<typeof ipc.aiStreamChat>[0]) => {
     requestId = request.requestId;
+    nativeRequests.push(request);
     streamStarted();
     await streamGate?.();
   },
@@ -52,6 +54,7 @@ type NativeParams = Parameters<typeof streamNativeTurnViaTauri>[0];
 beforeEach(() => {
   handlers = new Map();
   requestId = '';
+  nativeRequests = [];
   started = new Promise(resolve => { streamStarted = resolve; });
   submissions = [];
   cancelCount = 0;
@@ -724,4 +727,105 @@ test('resident dispatch receives the exact request envelope acknowledged at regi
   emit('ai:done', { request_id: requestId, output_text: 'Done', tool_calls: [] });
   await pending;
   expect(dispatch).toHaveBeenCalledTimes(1);
+});
+
+test('resident shared loop retains an ended tool and completes its second native turn without continuation annotations', async () => {
+  const { ResidentAgent, nativeResidentAgentPorts } = await import('../agsdlExecution/residentAgent');
+  const { createResidentToolDispatch } = await import('../agsdlExecution/nativeToolDispatch');
+  const { compileFixture, contextFixture, documentFixture, json } = await import('../agsdlExecution/conformanceFixtures');
+  const { decode, encode, record } = await import('../agsdlExecution/exact');
+  const compiled = await compileFixture(documentFixture());
+  const base = compiled.plan!.agents[0];
+  const expanded = record(decode(base.configurationJson));
+  const configuration = { ...base, settingsJson: json('{"maxTurns":3}'),
+    permissionsJson: json('{"mode":"Implement","allowedToolIds":["read"]}'),
+    configurationJson: encode({ ...expanded, configuration: { ...record(expanded.configuration), tools: { qa_read: 'read' } },
+      bindings: { ...record(expanded.bindings), read: { contract: { identity: 'macro/tool/read', version: '1' }, implementation: { identity: 'macro/desktop', version: '1' }, effects: 'none' } } }) };
+  const context = contextFixture();
+  const residentRequest = { context: { ...context, work: { ...context.work, step: null }, permissionsJson: configuration.permissionsJson, scopeJson: configuration.scopeJson },
+    configuration, memory: null, providerType: 'openai' as const, toolAliases: [{ name: 'qa_read', toolId: 'read' }],
+    responses: { agentName: configuration.agentName, interfaceJson: json('{}'), stepJson: null, publicationContractJson: null } };
+  const rawArguments = '{ "path" : "qa-9007199254740993.txt" }';
+  const toolResult = 'FILE: qa-9007199254740993.txt\nSOURCE: WORKSPACE_FILE\nExact retained result';
+  const requests: Parameters<typeof ipc.aiStreamChat>[0][] = [];
+  const emissions: import('../../types/generated/ipc').Emission[] = [];
+  const order: string[] = [];
+  const dispatchTool = createResidentToolDispatch(residentRequest, {
+    identity: () => 'native-tool-invocation', wait: async () => { throw new Error('Unexpected polling'); },
+    invoke: async invocation => {
+      expect(invocation.argumentsJson).toBe(rawArguments);
+      expect(invocation.providerAttemptId).toBe(requests[0].requestId);
+      expect(order).toEqual(['register:1', 'dispatch:1', 'ended:1', 'message']);
+      order.push('tool-ended');
+      return { kind: 'ended', resultJson: JSON.stringify(toolResult), failed: false };
+    },
+  });
+  const agent = await ResidentAgent.prepare(residentRequest, dispatchTool, {
+    ...nativeResidentAgentPorts, // stream is the real streamChat, adapter, loop and transport.
+    register: async (_context, request) => {
+      for (const message of request.messages) {
+        if ('provider_input_items' in message || 'provider_turn_state' in message) throw new Error('UNSUPPORTED: native inline guard');
+      }
+      expect(requests.some(previous => previous.requestId === request.requestId)).toBe(false);
+      requests.push(request); order.push(`register:${requests.length}`); return true;
+    },
+    dispatch: async (_context, envelope) => {
+      expect(envelope).toBe(requests.at(-1)!);
+      const turnNumber = requests.length;
+      order.push(`dispatch:${turnNumber}`);
+      await ipc.aiStreamChat(envelope);
+      queueMicrotask(() => emit('ai:done', { request_id: envelope.requestId,
+        output_text: turnNumber === 1 ? '' : 'Final native answer',
+        provider_turn_state: { response_id: `annotation-${turnNumber}`, output_items: [] },
+        tool_calls: turnNumber === 1 ? [{ id: 'call-read', type: 'function', function: { name: 'qa_read', arguments: rawArguments } }] : [] }));
+    },
+    end: async (_context, id) => {
+      const number = requests.findIndex(request => request.requestId === id) + 1;
+      expect(cancelCount).toBe(number); order.push(`ended:${number}`);
+    },
+    append: async emission => { emissions.push(emission); order.push('message'); return true; },
+    journal: {
+      read: async () => ({ events: emissions as unknown as import('../agsdlExecution/retainedResponses').RetainedEmission[], digest: 'native-retained-digest' }),
+      close: async closure => { order.push('close'); return closure; },
+    },
+  });
+  await agent.acceptInput(() => json('{"prompt":[{"value":"Read then answer"}]}'));
+  const completion = await agent.executeReady();
+  expect(requests).toHaveLength(2);
+  const followUp = requests[1].messages;
+  expect(followUp.find(message => message.role === 'assistant')?.tool_calls?.[0].function.arguments).toBe(rawArguments);
+  expect(followUp.find(message => message.role === 'tool')).toEqual({ role: 'tool', content: toolResult, tool_call_id: 'call-read' });
+  expect(completion.failed).toBe(false);
+  expect(completion.closure.validation).toEqual({ kind: 'success', text: 'Final native answer', resultsJson: json('{}'), choice: null });
+  expect(completion.memory.stateJson).toContain('Final native answer');
+  const memory = JSON.parse(completion.memory.stateJson).messages;
+  expect(memory.find((message: { role: string }) => message.role === 'tool').content).toBe(toolResult);
+  expect(memory.find((message: { role: string }) => message.role === 'assistant').tool_calls[0].function.arguments).toBe(rawArguments);
+  expect(order).toEqual(['register:1', 'dispatch:1', 'ended:1', 'message', 'tool-ended', 'register:2', 'dispatch:2', 'ended:2', 'message', 'close']);
+});
+
+test('ordinary native Chat keeps assistant and tool continuation annotations on the next turn', async () => {
+  const { createNativeAdapter } = await import('./nativeAdapter');
+  const { runToolCallingLoop } = await import('./toolCallingLoop');
+  const { createStreamAccumulator } = await import('./streamAccumulator');
+  const options: import('./contracts').StreamingChatOptions = {
+    providerId: 'fixture', providerType: 'chatgpt', modelId: 'fixture', baseUrl: '', mode: 'Chat', messages: [{ role: 'user', content: 'Read' }],
+    allowedToolIds: ['read'], onToken() {}, onComplete() {}, onError(error) { throw error; },
+    onToolCall: async () => 'Read result',
+  };
+  const accumulator = createStreamAccumulator(options);
+  streamGate = async () => {
+    const number = nativeRequests.length;
+    queueMicrotask(() => emit('ai:done', { request_id: requestId, output_text: number === 1 ? '' : 'Done',
+      tool_calls: number === 1 ? [{ id: 'ordinary-read', type: 'function', function: { name: 'read', arguments: '{"path":"qa.txt"}' } }] : [],
+      provider_turn_state: { response_id: `response-${number}`, output_items: [] } }));
+  };
+  const adapter = createNativeAdapter(options, accumulator, { disableReasoning() {}, disableEffort() {} });
+  await runToolCallingLoop(options, adapter, accumulator);
+  expect(nativeRequests).toHaveLength(2);
+  const assistant = nativeRequests[1].messages.find(message => message.role === 'assistant')!;
+  const tool = nativeRequests[1].messages.find(message => message.role === 'tool')!;
+  expect(assistant.provider_input_items?.length).toBeGreaterThan(0);
+  expect(assistant.provider_turn_state?.response_id).toBe('response-1');
+  expect(tool.provider_input_items).toEqual([{ type: 'function_call_output', call_id: 'ordinary-read', output: 'Read result' }]);
 });

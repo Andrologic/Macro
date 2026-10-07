@@ -1,3 +1,6 @@
+import { listen } from './services/tauriRuntimeBridge';
+import { executionHostQaTake } from './services/ipc/agsdlExecution';
+import { runQaGraphless } from './services/agsdlExecution/qaGraphless';
 import { prepareCall } from './services/agsdlExecution/constraints';
 import { assessNativeToolPolicy } from './services/agsdlExecution/nativeToolPolicy';
 import { executionHostFailed, executionHostCompleteCompile, executionHostNextCompile, executionHostReady } from './services/tauriIpc';
@@ -20,6 +23,11 @@ async function handshake(): Promise<string> {
   }
 }
 async function start(): Promise<void> {
+  // Only the native debug QA slot authorizes a delivery. Keep this listener
+  // outside the compiler await so Agent policy requests can still be answered.
+  await listen('agsdl-qa-wake', () => {
+    void executionHostQaTake().then(request => request === null ? undefined : runQaGraphless(...request)).catch(() => undefined);
+  });
   const generation = await handshake();
   for (;;) {
     const job = await executionHostNextCompile();
