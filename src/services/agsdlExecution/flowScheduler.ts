@@ -245,7 +245,11 @@ export class ResidentFlowHost {
         if (this.closed) return;
         pump.observe(inspection);
         void pump.wake();
-      } catch { pump.retire(); this.pumps.delete(owner.systemStartId); }
+      } catch (error) {
+        // A failed read does not establish owner loss. Preserve the current
+        // continuation; only the next successful owners read can retire it.
+        pump.lastError = error;
+      }
     }
   }
   close(): void {

@@ -207,3 +207,67 @@ it('retirement during begin prevents an old owner from executing, and bounded ca
   await new FlowPump('generation', flowOwner, many.ports).wake();
   expect(many.calls).toContain('yield');
 });
+
+it.each(['inspect', 'owners'] as const)('preserves an awaited Agent continuation after a lost %s read with an unchanged owner', async phase => {
+  const first = flowDelivery('first', '1'), f = await harness([first]);
+  const entered = deferred<void>(), ended = deferred<void>(), committed = deferred<void>();
+  const checkpoint: EngineMemory = { agentInstanceId: 'worker-instance', revision: '1', formatVersion: 'synthetic', stateJson: '{"retained":"checkpoint"}' };
+  let stops = 0, executions = 0, loseRead = false;
+  const inspect = f.ports.inspect, owners = f.ports.owners;
+  const failLostRead = () => {
+    if (loseRead) { loseRead = false; throw new Error('Synthetic transient IPC read failure'); }
+  };
+  if (phase === 'inspect') f.ports.inspect = async owner => { failLostRead(); return inspect(owner); };
+  else f.ports.owners = async () => { failLostRead(); return owners(); };
+  f.ports.execute = async (_owner, activation, _memory, _inspection, _capture, onAgent) => {
+    executions++;
+    onAgent({ requestStop: () => { stops++; } } as FlowAgent);
+    entered.resolve(); await ended.promise;
+    return preparedFixture(activation, { memory: checkpoint });
+  };
+  const commit = f.ports.commit;
+  f.ports.commit = async (...args) => { const receipt = await commit(...args); committed.resolve(); return receipt; };
+  const host = new ResidentFlowHost('generation', f.ports);
+  try {
+    await host.poll(); await entered.promise;
+    expect(first.stopState.kind).toBe('none'); expect(f.inspection.projection.systemStop.kind).toBe('none');
+    loseRead = true;
+    if (phase === 'owners') await expect(host.poll()).rejects.toThrow('Synthetic transient IPC read failure');
+    else await host.poll();
+    await host.poll();
+    expect(stops).toBe(0); expect(executions).toBe(1); expect(first.workState).toBe('active');
+    expect(f.calls.some(call => call.startsWith('uncertain') || call.startsWith('commit'))).toBe(false);
+    ended.resolve(); await committed.promise;
+    await host.poll();
+    expect(first.workState).toBe('terminal'); expect(first.terminal?.kind).toBe('completed');
+    expect(f.terminal()?.memory).toEqual(checkpoint);
+    expect(f.calls.filter(call => call === 'begin:delivery-first')).toHaveLength(1);
+    expect(f.calls.filter(call => call === 'prepare:first')).toHaveLength(1);
+    expect(f.calls.filter(call => call === 'commit:witness-first')).toHaveLength(1);
+    expect(f.calls.some(call => call.startsWith('uncertain'))).toBe(false);
+    expect(stops).toBe(0); expect(executions).toBe(1);
+  } finally { ended.resolve(); host.close(); }
+});
+it.each(['absent', 'replaced'] as const)('retires the awaited continuation only after its owner is established as %s', async change => {
+  const first = flowDelivery('first', '1'), f = await harness([first]);
+  const entered = deferred<void>(), ended = deferred<void>(), returned = deferred<void>();
+  let stops = 0;
+  f.ports.execute = async (_owner, activation, _memory, _inspection, _capture, onAgent) => {
+    onAgent({ requestStop: () => { stops++; } } as FlowAgent);
+    entered.resolve(); await ended.promise; returned.resolve();
+    return preparedFixture(activation);
+  };
+  const host = new ResidentFlowHost('generation', f.ports);
+  try {
+    await host.poll(); await entered.promise;
+    f.ports.owners = async () => change === 'absent' ? [] : [{ ...flowOwner, ownerEpoch: '2' }];
+    // The replacement's unavailable inspection does not undo established fencing.
+    f.ports.inspect = async () => { throw new Error('Replacement inspection unavailable'); };
+    await host.poll();
+    expect(stops).toBe(1);
+    ended.resolve(); await returned.promise;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(f.calls.filter(call => call.startsWith('begin'))).toEqual(['begin:delivery-first']);
+    expect(f.calls.some(call => call.startsWith('prepare') || call.startsWith('commit') || call.startsWith('uncertain'))).toBe(false);
+  } finally { ended.resolve(); host.close(); }
+});
