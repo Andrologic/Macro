@@ -116,6 +116,60 @@ describe('Dialog', () => {
     expect(document.body.querySelector('[inert]')).toBeNull();
   });
 
+  it('traps SVG keyboard focus and restores the exact edge after a nested dialog closes', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const GraphDialogs = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [detailsOpen, setDetailsOpen] = useState(false);
+      const initialFocusRef = useRef<HTMLButtonElement>(null);
+      return outerOpen ? <Dialog title="Graph" onClose={() => setOuterOpen(false)}>
+        <button type="button">Shrink graph</button>
+        <svg><g role="button" tabIndex={0} aria-label="Exact relation"
+          onKeyDown={event => { if (event.key === 'Enter') setDetailsOpen(true); }}>
+          <path d="M0 0 L10 10" />
+        </g></svg>
+        {detailsOpen && <Dialog title="Relation" initialFocusRef={initialFocusRef}
+          onClose={() => setDetailsOpen(false)}>
+          <button type="button">First action</button>
+          <button type="button" ref={initialFocusRef}>Initial details action</button>
+        </Dialog>}
+      </Dialog> : null;
+    };
+    await act(async () => root?.render(<GraphDialogs />));
+    const outer = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+    const fallback = outer.querySelector<HTMLButtonElement>('button')!;
+    const relation = outer.querySelector<SVGElement>('g[role="button"]')!;
+    expect(relation instanceof HTMLElement).toBe(false);
+    relation.focus();
+    expect(document.activeElement === relation).toBe(true);
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    relation.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement === fallback).toBe(true);
+    const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    fallback.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement === relation).toBe(true);
+    await act(async () => relation.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    const dialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(dialogs).toHaveLength(2);
+    expect(document.activeElement === dialogs[1].querySelectorAll('button')[1]).toBe(true);
+    expect(outer.parentElement?.hasAttribute('inert')).toBe(true);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(document.activeElement === relation).toBe(true);
+    expect(outer.parentElement?.hasAttribute('inert')).toBe(false);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement === trigger).toBe(true);
+    expect(document.body.querySelector('[inert]')).toBeNull();
+  });
+
   it('closes only a nested confirmation when Escape is pressed', async () => {
     container = document.createElement('div');
     document.body.appendChild(container);

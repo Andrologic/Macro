@@ -1,8 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
+import { Background, BaseEdge, getSmoothStepPath, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange, type Edge, type EdgeProps } from "@xyflow/react";
 import { Bot, Box, Boxes, ChevronDown, CircleHelp, GitBranch, Hand, Layers, LocateFixed, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { layoutViewer, routeViewerEdge, outsideViewerEdgePath, type ViewerEdgeRoute, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphNeighborhood, presentGraph, type GraphReadingMode } from "../../services/agsdl/graphPresentation";
 import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
@@ -65,6 +65,15 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   );
 }
 const nodeTypes = { workflow: WorkflowNode };
+type GraphEdge = Edge<{ route?: ViewerEdgeRoute }, "workflow">;
+function WorkflowEdge(props: EdgeProps<GraphEdge>) {
+  const route = props.data?.route;
+  const path = route?.kind === "outside" ? outsideViewerEdgePath(route, props)
+    : getSmoothStepPath({ ...props, centerY: route?.centerY })[0];
+  return <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd}
+    style={props.style} interactionWidth={props.interactionWidth} />;
+}
+const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
 function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {} }: {
@@ -84,18 +93,19 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   const [mode, setMode] = useState<GraphReadingMode>("overview");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [hovered, setHovered] = useState("");
+  const [heights, setHeights] = useState<Record<string, number>>({});
   const presentation = useMemo(() => presentGraph(cards, connections, collapsed, mode), [cards, connections, collapsed, mode]);
   // Layout always uses process relations, so changing the reading lens does not move cards.
   const overview = useMemo(() => presentGraph(cards, connections, collapsed, "overview"), [cards, connections, collapsed]);
-  const layout = useMemo(() => layoutViewer(presentation.cards, overview.edges), [presentation.cards, overview.edges]);
+  const layout = useMemo(() => layoutViewer(presentation.cards, overview.edges, heights), [presentation.cards, overview.edges, heights]);
   const neighborhood = graphNeighborhood(hovered || selected, presentation.edges);
   const hasFocus = Boolean(hovered || selected) && (presentation.cards.some(card => card.path === (hovered || selected)) || presentation.edges.some(edge => edge.id === (hovered || selected)));
   const fitted = useRef(false);
   useEffect(() => {
-    if (!width || !height || !layout.nodes.length || fitted.current) return;
+    if (!width || !height || !layout.nodes.length || fitted.current || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
     const timer = setTimeout(() => { fitted.current = true; void flow.fitView(fitOptions); }, 80);
     return () => clearTimeout(timer);
-  }, [width, height, layout.nodes.length, flow]);
+  }, [width, height, layout.nodes, heights, flow]);
   const groupMenu = useRef<HTMLDetailsElement>(null);
   const expandGroup = (id: string) => {
     if (groupMenu.current) groupMenu.current.open = false;
@@ -110,10 +120,9 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
     const group = presentation.groups.find(group => group.id === card.path);
     return {
       id: card.path, type: "workflow", position,
-      // Keep dimensions known when focus updates node data, so a pointer-down
-      // cannot hide the card before pointer-up reaches its button.
-      width: 210, height: card.kind === "approval" ? 68 : 52,
-      style: { width: 210, height: card.kind === "approval" ? 68 : 52, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.25 : 1, transition: "opacity 140ms" },
+      // Preserve measured dimensions on focus updates without fixing CSS height.
+      measured: heights[card.path] === undefined ? undefined : { width: 210, height: heights[card.path] },
+      style: { width: 210, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.25 : 1, transition: "opacity 140ms" },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: selected === card.path,
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
         select, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
@@ -124,6 +133,18 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       },
     };
   });
+  const measureNodes = (changes: NodeChange<GraphNode>[]) => {
+    setHeights(previous => {
+      let next = previous;
+      for (const change of changes) {
+        if (change.type !== "dimensions" || !change.dimensions || change.dimensions.height <= 0 ||
+            previous[change.id] === change.dimensions.height) continue;
+        if (next === previous) next = { ...previous };
+        next[change.id] = change.dimensions.height;
+      }
+      return next;
+    });
+  };
   const activateEdge = (id: string) => {
     const edge = presentation.edges.find(edge => edge.id === id);
     if (!edge) return;
@@ -133,13 +154,13 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
     }
     select(selected === edge.originals[0].id ? "" : edge.originals[0].id);
   };
-  const edges = presentation.edges.map(edge => {
+  const edges: GraphEdge[] = presentation.edges.map(edge => {
     const transfer = edge.transfers?.join(", ");
     const condition = edge.label === "true" ? t("agsdl.edge.true") : edge.label === "false" ? t("agsdl.edge.false") : !["success", "next", "exchange", "dependency"].includes(edge.label) ? t(`agsdl.edge.${edge.label}`, { defaultValue: edge.label }) : undefined;
     const color = mode === "exchanges" ? "rgb(var(--primary))" : edge.dependency ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
     const semantic = mode === "exchanges" ? t("agsdl.designGraph.transfer", { defaultValue: "Data exchange" }) : edge.dependency ? t("agsdl.designGraph.dependency", { defaultValue: "Dependency" }) : t("agsdl.designGraph.sequence", { defaultValue: "Process sequence" });
     return {
-      ...edge, type: "smoothstep", sourceHandle: "out", targetHandle: "in", label: undefined,
+      ...edge, type: "workflow", data: { route: routeViewerEdge(layout.nodes, edge) }, sourceHandle: "out", targetHandle: "in", label: undefined,
       ariaRole: "button" as const,
       domAttributes: {
         onFocus: () => setHovered(edge.id), onBlur: () => setHovered(""),
@@ -154,8 +175,8 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   });
   return (
     <div ref={ref} className="agsdl-canvas" onKeyDown={event => { if (event.key === "Escape") select(""); }}>
-      <ReactFlow<GraphNode>
-        nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      <ReactFlow<GraphNode, GraphEdge>
+        nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={measureNodes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false}
         edgesFocusable={true} edgesReconnectable={false} elementsSelectable={false}
         deleteKeyCode={null} selectionKeyCode={null} multiSelectionKeyCode={null}
