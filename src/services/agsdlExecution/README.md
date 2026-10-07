@@ -3,7 +3,7 @@
 Le compilateur pur évalue le profil `macro-serial-inline-v1`. Les raccords natifs
 et `ResidentAgent` ajoutent les frontières privées d’exécution.
 `PRODUCT_RUNTIME_AVAILABLE` et `CompilationResult.productRuntimeAvailable` restent
-`false` jusqu’à l’intégration et à la qualification du host et de Flow.
+`false` jusqu’à la qualification finale du point 15 et de ses parcours produit.
 
 ## Versions et représentation
 
@@ -55,7 +55,7 @@ Le premier profil en autorise zéro ou une. Une route vide termine ce chemin.
 L'interprétation de `routes` dépend du type et de la décision conservés dans
 `declarationJson`, donc un choix authored nommé `normal` reste un choix explicite.
 
-Le futur adaptateur natif relie ce format au trait synchrone
+Le témoin natif privé de Hosting relie ce format au trait synchrone
 `RouteAuthority.outgoing` de Durability. Il contrôle les destinations contre le
 snapshot, l'adresse source et l'unique issue terminale retenue. Il vérifie aussi
 la cohérence des champs compilés avec leur déclaration exacte avant de les
@@ -63,10 +63,11 @@ utiliser. Une liste outgoing envoyée par le host n'établit jamais à elle seul
 une destination autorisée. `selectedRoute` valide une completion Agent avant de
 choisir la route ; `conditionResult` choisit true/false en conservant l'origine.
 Ces fonctions sont consultatives pour l'autorité native et ne dispatchent rien.
-Le trait Rust et ses conversions restent à réaliser dans Hosting avec le
-coordinateur.
+Hosting prépare un témoin durable lié au snapshot, à l’entrée, à la clôture et
+aux effets. Son commit recharge ces références dans la transaction, applique
+Stop et conserve les premières identités de successeur.
 
-## Raccord du futur host
+## Raccord du host résident
 
 1. Le natif lit la source canonique du plan, contrôle son propriétaire et sa
    révision, puis fournit `SourceRevision` et un `CapturedRegistry` authentifié
@@ -132,7 +133,7 @@ frontend du même objet ne donne aucun droit d'exécuter un effet. Aucun champ
 Chaque `BindingAttestation` correspond par égalité JSON exacte à la déclaration
 complète, donc aux éditions contract et implementation, settings, effects et
 requirements. Les capacités vérifiées du chemin et les requirements complets
-sont des observations de l'autorité future. Des paramètres absents diffèrent
+proviennent des observations capturées par l’autorité native. Des paramètres absents diffèrent
 bien de `{}`. Aucun ordre de versions, sous-ensemble ou claim d'un Tool ne prouve
 la configuration Agent entière.
 
@@ -201,7 +202,7 @@ Le plan contient `publicationContractJson` par step Agent et
 `graphlessPublicationContracts` pour les sorties nommées sans graphe. Le contrat
 explicite contient le protocole/version, la version du registre, l'Agent,
 l'adresse ou `null`, l'Interface complète, les choix et le binding de décision.
-Ce contrat est injectable dans le futur adaptateur. Il exige une capacité
+ResidentAgent injecte ce contrat dans son canal de publication. Il exige une capacité
 `typed-publication` vérifiée du chemin Engine et un binding de décision explicite
 lorsque le step décide.
 
@@ -242,7 +243,7 @@ repository. Le contrôle natif exige la fin des effets enregistrés. Une erreur
 de transport, un trou de séquence ou un reçu absent ne deviennent pas une simple
 violation de contrainte de sortie.
 
-## Raccords Hosting en cours
+## Raccords Hosting
 
 `agsdl_host_capture` capture le plan canonique sous les verrous de metadata,
 le catalogue effectif et les configurations natives. La webview dédiée exécute
@@ -289,8 +290,9 @@ rejoués. Le port privé mark_uncertain vise un travail, sans arrêter les autre
 Agents. Les diagnostics publics permettent une sélection exacte ou une page
 récente bornée et ne révèlent pas la capture privée.
 
-Ces raccords restent soumis à la QA du host réel. La disponibilité produit
-reste false ; la pompe et l’ordonnancement appartiennent à Flow.
+Hosting fournit les frontières natives intégrées. Flow raccorde la pompe et
+les transformations à ces ports. La disponibilité produit reste false jusqu’à
+la qualification finale du point 15, avec le scheduler et les parcours produit.
 
 ## Vérifications
 
@@ -320,10 +322,11 @@ approbations, Stop et projection. Elle ne reçoit aucune epoch.
 Le déclenchement manuel transmet une livraison graphless existante à un slot
 natif de qualification. Seul le host authentifié peut le consommer ; un événement
 JS seul ne donne aucune autorisation. SQL begin reste propriétaire de l’admission.
-Le helper exécute un ResidentAgent et son témoin terminal sans parcourir une
-file ni démarrer la pompe Flow. La boucle compilateur reste disponible pendant
-cette exécution. La commande de remplacement QA emprunte le vrai chemin natif
-de révocation et de recréation, et non une simulation de propriétaire.
+L’entrée résidente consomme ce signal pour réveiller la même pompe Flow que
+les livraisons ordinaires. Aucun exécuteur manuel parallèle ni seconde admission
+n’en découle. La boucle compilateur reste disponible pendant le travail et les
+approbations. La commande de remplacement QA emprunte le vrai chemin natif de
+révocation et de recréation, et non une simulation de propriétaire.
 
 Le formulaire n’est pas une entrée du build produit. Sa validation visuelle et
 les scénarios reload, perte du host et arrêt des IO exigent le runtime isolé réel.
@@ -361,3 +364,36 @@ validées restent possédées par l’exécuteur physique jusqu’à sa fin.
 Les parcours Provider acquièrent eux aussi leurs gardes de source avant le
 verrou d’admission. Une compilation Start qui retient une source ne bloque donc
 pas Stop indirectement derrière un Provider en attente de cette source.
+
+
+## Pompe Flow résidente
+
+`flowScheduler` possède une pompe par système et owner dans la génération native
+courante. Les réveils sont coalescés ; un polling de 150 ms relit les owners et
+Stop indépendamment des attentes Agent, Call et compiler. Le rattrapage rend la
+main après 32 passages. La vue produit ne possède aucune pompe et ne fournit
+aucune donnée faisant autorité pour l’exécution.
+
+L’inspection privée fournit le snapshot, la capture originale et les candidats.
+Flow trie queueSequence, puis begin décide FIFO, activité et visites. Un Agent
+incertain reste verrouillé ; les autres Agents admissibles peuvent avancer.
+Une admission active sans continuation locale ni témoin préparé est conservée
+incertaine. La reprise d’un begin sans accusé exige la continuation pré-dispatch
+encore détenue dans cette génération et une frontière native sans effet.
+
+`flowActivation` initialise ResidentAgent avant l’adaptation d’entrée. Prepare
+et Condition utilisent les helpers purs ; Call garde scope évalué et plafond
+séparés et valide le résultat natif exact. Graphless conserve step null et le
+contrat de publication capturé. La mémoire vient de l’admission ; VISIT_LIMIT
+ne l’initialise ni ne l’incrémente.
+
+La clôture réelle précède prepareTerminal et son commit atomique. Une réponse
+perdue de clôture peut être retransmise à l’identique ; une perte de réponse
+prepare/commit conserve la même opération et n’appelle plus l’Agent ou Call.
+Un effet ou une attribution ambiguë reste incertain. Le journal SQL et le témoin
+natifs restent les seules preuves durables. Aucun Task ou chat artificiel n’est
+créé par ce service.
+
+Les tests Flow contrôlent les transformations et les courses avec les modules
+normatifs réels et des IO simulées. Ils ne qualifient pas SQLite, le fencing ou
+la survie au reload. Les scènes natives isolées du point 15 restent nécessaires.
