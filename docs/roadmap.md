@@ -101,33 +101,52 @@ connectée, un système de plugins, l'édition complète des fichiers en review 
 une nouvelle politique de merge automatique restent hors périmètre de la
 `0.1.4`.
 
-### 3.2 Stabilisation desktop en cours de qualification
+### 3.2 Stabilisation desktop intégrée sur develop
 
-Le code local postérieur à la 0.1.8 renforce la sauvegarde du profil,
-la récupération des messages et des effets d'outils incertains, le transport
-des conversations et les réglages. Un candidat séparé rassemble les
-corrections restantes de finalisation, de restauration des tâches, d'historique,
-de navigation entre projets, de dialogues, de MCP, de revue et de français.
-Ces corrections restent en qualification avant leur intégration à `develop`.
+Le chantier de stabilisation desktop est intégré localement à `develop`
+par le commit `0dad2a36`. Les corrections couvrent le transport et la reprise
+des conversations, la finalisation des plans, la création et la restauration
+des tâches, l'historique, la navigation entre projets, les dialogues, le MCP,
+la revue, les actions Git et les textes français.
 
-La sortie de cette stabilisation exige :
+Les audits indépendants et les parcours ciblés sur un profil QA synthétique
+ont été validés avant intégration. Le contrôle frontend a réussi sur le
+candidat `e43477a4`, dont les sources frontend sont identiques au candidat
+final `6b518c8d`. Ce dernier a aussi passé les contrôles natifs avec Rust 1.95,
+les vérifications des contrats générés et la recette du binaire QA reconstruit.
+L'arbre intégré est identique au candidat final qualifié.
 
-- des revues indépendantes favorables sur le candidat exact ;
-- les contrôles locaux pertinents et les parcours visuels des états modifiés ;
-- une vérification de l'intégration dans un `develop` propre ;
-- un périmètre et une version choisis avant la préparation de la release.
+Cette validation porte sur les critères convenus du chantier. Elle ne prouve
+pas la disparition de tout dépassement de délai Git : le diagnostic conserve
+maintenant les causes d'inspection et le statut déjà obtenu. Elle ne garantit
+pas non plus un précontrôle de divergence avant chaque Pull lorsque les
+compteurs affichés sont périmés.
 
 Le diagnostic des incidents Windows de création de tâche n'a pas établi
 de cause racine ni reproduit les incidents historiques. La prise en charge des
 chemins longs reste à vérifier sur Windows. Une compilation ou une recette
 macOS ne remplace pas cette validation.
 
-### 3.3 Travaux distincts de la stabilisation
+Ces changements restent dans le développement courant. Ils ne constituent
+pas une nouvelle version publiée et aucune préparation de version n'est
+engagée dans cette étape.
 
-L'éditeur AgSDL, Macro Pilot et la récupération Connect restent sur des
-branches de développement distinctes, non intégrées à `develop` lors de ce
-point d'état du 5 octobre 2026. Leur présence dans Git ne vaut pas livraison.
-Ils sont hors du périmètre de la stabilisation desktop décrite ci-dessus.
+### 3.3 Incréments de développement suivants
+
+La suite avance par changements vérifiés sur des branches `feature/*`, puis
+par intégrations locales successives sur `develop`. Elle comprend :
+
+- la visibilité des messages en attente, leur retrait sûr et l'explication de
+  la portée de l'action Arrêter ;
+- la lisibilité des tâches et dépendances dans le graphe agrandi ;
+- le contraste des descriptions dans Dracula et Tokyo Storm ;
+- la qualification Windows sur un environnement Windows identifié.
+
+L'éditeur et le moteur AgSDL, Macro Pilot et la récupération Connect restent
+sur des branches distinctes, non intégrées à `develop` lors de ce point
+local du 7 octobre 2026. AgSDL fait l'objet d'un chantier actif ; les candidats
+de ces travaux doivent être vérifiés avec leurs propriétaires avant leur
+intégration. Leur présence dans Git ne vaut pas livraison.
 
 La ligne publique 0.1 reste desktop local-first. Le kernel distant et la
 supervision mobile sont des objectifs futurs, selon la section 20 de la
@@ -315,9 +334,10 @@ spécification fonctionnelle ; ils ne sont pas annoncés comme disponibles.
 
 ## 5. Chantiers prioritaires
 
-La priorité immédiate est de terminer la qualification de la stabilisation
-desktop décrite en section 3.2, puis de fixer sa prochaine release.
-Les chantiers ci-dessous décrivent les acquis et les étapes suivantes.
+La stabilisation desktop décrite en section 3.2 est intégrée au développement
+local. La priorité immédiate est de vérifier et intégrer les incréments de
+la section 3.3, sans préparer de prochaine version. Les chantiers ci-dessous
+décrivent les acquis et les étapes suivantes.
 
 ### 5.1 Boucle d'attention desktop intégrée en 0.1.4
 
