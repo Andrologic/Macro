@@ -20,6 +20,7 @@
   "selectTaskForValidation": "Sélectionnez une tâche pour valider les changements",
   "activeCount": "{{count}} actif",
   "noTasks": "Aucune tâche pour l'instant",
+  "otherTasks": "Autres tâches",
   "readyTasks": "Tâches prêtes",
   "noReadyTasks": "Aucune tâche n'est actuellement exécutable.",
   "blockedTasks": "Tâches bloquées",
@@ -408,6 +409,10 @@
     "full": "Contexte complet du fichier"
   },
   "errors": {
+    "databaseLocked": "La base de données est verrouillée. Réessayez.",
+    "directProjectTaskAlreadyActiveWithTitle": "Ce projet en édition directe possède déjà une tâche active : {{title}}",
+    "taskTodosOpenForComplete": "Impossible de terminer la tâche tant que des todos restent ouverts : {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "Impossible de terminer la tâche tant que des todos restent ouverts.",
     "finalizationStrategyLocked": "La finalisation a déjà commencé. Terminez la fusion en attente ou reprenez sans changer sa stratégie.",
     "directTaskCompletionFailed": "La tâche en édition directe n’a pas pu être terminée.",
     "directTaskBranchChanged": "La branche courante est passée de {{expected}} à {{actual}}. Revenez sur la branche initiale avant de créer le commit de cette tâche Direct.",

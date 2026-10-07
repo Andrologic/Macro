@@ -374,7 +374,7 @@ L'utilisateur peut joindre explicitement jusqu'à trois autres conversations du 
 
 Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans la transcription à laquelle elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
 
-Pour chaque réponse, le chat rend consultable l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent consultables séparément. Un coût non attribuable à une tentative est affiché comme inconnu, jamais comme nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
+Pour chaque réponse, le chat affiche le nombre de tentatives de génération dans un simple message, espacé du contenu et de l'indicateur d'activité, sans bloc dépliant. L'historique conserve l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent enregistrés séparément. Un coût non attribuable à une tentative reste inconnu, jamais nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
@@ -720,6 +720,8 @@ L'IA doit :
 - organiser cette stratégie pour maximiser le parallélisme lorsque cela reste sans risque
 - maintenir chaque unité d'exécution à une taille limitée pour réduire la confusion de l'IA et les changements trop larges
 
+Si la stratégie est enregistrée mais que l'activation du plan ou la synchronisation de sa conversation échoue, le résultat signale la sauvegarde effective et l'échec du suivi. L'utilisateur sélectionne à nouveau le plan pour reprendre cette synchronisation, sans générer une nouvelle stratégie. Les nœuds, les todos et les contrats sauvegardés sont conservés. Un transcript local divergent reste intact et bloque la réconciliation.
+
 ### 11.3 Validation du plan
 
 Lorsqu'un plan est valide :
@@ -985,11 +987,20 @@ Chaque tâche complétée doit se conclure par :
 - une validation utilisateur
 - la génération d'un commit
 
+La review reste liée à la tâche sélectionnée et à tous ses dépôts concernés.
+Changer le filtre global de projet ne retire pas de dépôt de cette review et
+ne réinitialise pas les validations déjà acquises pour la même tâche.
+
 ### 15.2 Validation à l'échelle du plan
 
 Lorsque toutes les tâches d'un plan sont terminées, Macro doit imposer une validation globale du plan avant merge du plan vers la branche de base configurée.
 
 Cette validation est distincte de la review tâche par tâche.
+
+L'archivage automatique des tâches terminées après leur intégration conserve
+leur contribution à la finalisation du plan. Les tâches retirées ou annulées
+restent exclues. La finalisation reste accessible tant que le plan attend son
+intégration et disparaît lorsque le plan est archivé.
 
 ### 15.3 Génération des commits
 
@@ -1016,6 +1027,17 @@ Macro doit supporter une résolution automatique assistée par IA des merge conf
 Cette résolution automatique ne concerne que les conflits issus des merges pilotés par le logiciel et non les situations externes arbitraires.
 
 Chaque résolution est liée à sa tâche et à une session de fusion vérifiée. Une fusion externe ou appartenant à une autre tâche reste intacte. Une actualisation du statut conserve le brouillon du fichier ; le rechargement du contenu et le changement de fichier demandent confirmation si des modifications ne sont pas enregistrées. Choisir un côté supprimé conserve une intention de suppression jusqu'à l'enregistrement, distincte d'un fichier vide.
+
+Le diagnostic Git peut aussi ouvrir une conversation d'inspection sans tâche
+active. Elle se limite aux dépôts et conflits vérifiés et conserve des outils
+en lecture seule pendant ses échanges. Avant chaque envoi, y compris un envoi
+différé, Macro vérifie à nouveau la sélection, la tâche éventuelle, le chemin,
+la branche et le commit courant. Un changement incompatible conserve la
+demande et refuse son départ. Après redémarrage, l'utilisateur rouvre
+l'inspection depuis le diagnostic Git. Une nouvelle conversation reçoit alors
+un contexte vérifié. L'ancienne demande en attente reste conservée dans sa
+conversation d'origine et ne retrouve pas automatiquement l'autorisation
+d'envoi ; l'utilisateur doit reprendre sa demande dans la nouvelle inspection.
 
 Si le nettoyage échoue après l'intégration, une nouvelle tentative reprend les ressources restantes sans recréer les worktrees déjà supprimés. Un nouveau commit sur la branche source ou une cible ayant divergé du résultat enregistré bloque cette reprise.
 

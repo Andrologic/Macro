@@ -1,5 +1,6 @@
 import { hasMultipleAgsdlContexts, persistableContextRefs } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
+import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
@@ -14,7 +15,7 @@ import { cloneProviderInputItems, cloneStreamMessage, normalizeMessagesForProvid
 import { createChatTurnRuntime, ChatTurnSupersededError } from "../services/chatTurnRuntime";
 import { createAssistantStreamRuntime } from "../services/chatAssistantStreamRuntime";
 import { MCP_DISCOVERY_DEFINITIONS, shouldDiscoverMcpTools } from '../services/mcp/toolDiscovery';
-import type { PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
+import type { AssistantStreamLaunch, PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
 import { create } from "zustand";
 import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers } from "../services/toolApprovalRecovery";
 import {
@@ -58,6 +59,9 @@ import {
 import { toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
 import i18n from "../i18n";
+import { SUPPORTED_LANGUAGE_CODES } from "../i18n/languages";
+import { loadTranslation } from "../i18n/resources";
+import { createKeyedSerialQueue } from "../services/serialQueue";
 import {
   isContextOverflowErrorLike,
 } from "../services/contextOverflow";
@@ -940,22 +944,32 @@ interface ChatStore {
     taskId: string | null,
     projectId: string | null,
     groupId?: string | null,
+    options?: { selectConversation?: boolean },
   ) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   invalidateConversationResolution: () => void;
+  captureArchitectPlanRecovery: (planId: string, targetBranch: string) => (isCurrentActivation: () => boolean) => Promise<void>;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
     targetBranch: string;
     fallbackProjectId?: string;
     fallbackGroupId?: string;
     sharedConversation?: boolean;
+    conversationIdHint?: string | null;
+    chatMessagesHint?: ArchitectPlanActivationPayload["chatMessages"];
+    chatMessagesLoaded?: boolean;
+    chatTranscriptRevision?: string | null;
+    chatMessageCount?: number;
+    replicaScopeKey?: string | null;
+    replicaProjectId?: string | null;
   }) => Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
     createdConversation: boolean;
+    deferredUntilTurnCompletion?: boolean;
   }>;
   getPendingArchitectConversationTarget: (conversationId: string) => { planId: string; branchName: string } | null;
-  ensureConversationForCurrentMode: (lifecycle?: LifecycleContext) => Promise<string | null>;
+  ensureConversationForCurrentMode: (lifecycle?: LifecycleContext, isOwnerCurrent?: () => boolean) => Promise<string | null>;
   reapplySelectionForCurrentContext: (lifecycle?: LifecycleContext) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<boolean>;
@@ -1108,6 +1122,7 @@ interface TranscriptComparableMessage {
 interface ResolvedConversationForContext {
   conversationId: string | null;
   source: "active_plan" | "mode_fallback";
+  deferredUntilTurnCompletion?: boolean;
   planId?: string;
   targetBranch?: string;
   fallbackProjectId?: string | null;
@@ -1354,9 +1369,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   let conversationResolutionGeneration = 0;
+  const architectConversationRecoveryContexts = new Set<ChatContextKey>();
+  const architectTurns = new Map<string, {
+    planId: string;
+    targetBranch: string;
+    contextKey: ChatContextKey;
+    sessionId: string;
+    turnId: string;
+    assistantMessageId: string;
+    userMessageId: string;
+    syncInFlight: boolean;
+  }>();
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
+  const enqueueConversationMetadataWrite = createKeyedSerialQueue<string>();
+  const manuallyRenamedConversationIds = new Set<string>();
+  const manualConversationTitleKey = (id: string) => `conversation-manual-title:${id}`;
+  // A conversation can retain its creation language after the UI language changes.
+  let defaultChatTitles: Promise<Set<string>> | undefined;
+  const isDefaultChatTitle = async (title: string) => {
+    defaultChatTitles ??= Promise.all(SUPPORTED_LANGUAGE_CODES.map(loadTranslation))
+      .then((translations) => new Set([
+        'New Conversation',
+        ...translations.map((translation) => translation.chat.newConversation),
+      ]));
+    return (await defaultChatTitles).has(title.trim());
+  };
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const turnRuntime = createChatTurnRuntime({
@@ -1369,7 +1408,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       isDeleted: (id) => deletedConversationIds.has(id),
     },
     cancelTransport: cancelStream,
-    settled: (id) => { void drainQueuedSubmissions(id); },
+    settled: (id) => {
+      if (!architectTurns.get(id)?.syncInFlight && !isConversationRuntimeActive(turnRuntime.read(id))) {
+        architectTurns.delete(id);
+      }
+      void drainQueuedSubmissions(id);
+    },
     directions: {
       attempt: (ids, identity, requestId) => queueRuntime!.markDirectionDelivery(ids, identity, requestId),
       ended: (ids, identity, requestId) => {
@@ -1684,7 +1728,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const resolveConversationExecutionContext = (conversationId: string) => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
-    return resolveProjectExecutionContext({
+    const base = resolveProjectExecutionContext({
       mode: appState.mode,
       projects: [
         ...(appState.standaloneProjects ?? []),
@@ -1707,6 +1751,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
           )
         : undefined,
     });
+    const conflict = getConflictAssistantContext(conversationId);
+    return conflict ? scopeConflictAssistantExecutionContext(base, conflict) : base;
+  };
+
+  const conflictAssistantSelection = (conversationId: string) => {
+    const app = useAppStore.getState();
+    return {
+      mode: app.mode, selectedTaskId: app.selectedTaskId, selectedProjectId: app.selectedProjectId,
+      selectedGroupId: app.selectedGroupId, selectedConversationId: get().selectedConversationId,
+      conversation: get().conversations.find(conversation => conversation.id === conversationId),
+      projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+      groups: app.projectGroups,
+    };
+  };
+  const getSelectedConflictInspection = (): string | null => {
+    const id = get().selectedConversationId;
+    return id && isConflictAssistantContextAllowed(
+      getConflictAssistantContext(id), conflictAssistantSelection(id),
+    ) ? id : null;
+  };
+  const assertImplementConversationContext = (conversationId: string) => {
+    const conversation = get().conversations.find(conversation => conversation.id === conversationId);
+    if (conversation?.scope_mode === 'Implement' && !conversation.task_id && !getConflictAssistantContext(conversationId)) {
+      throw buildSendError('Open the conflict assistant from a verified Git context before sending.');
+    }
+  };
+  const assertConflictAssistantSend = async (conversationId: string, taskId?: string | null) => {
+    const conflict = getConflictAssistantContext(conversationId);
+    assertImplementConversationContext(conversationId);
+    if (!conflict) return;
+    if (taskId) throw buildSendError('A conflict inspection cannot send into a task.');
+    await revalidateConflictAssistantContext(conflict, conflictAssistantSelection(conversationId), tauriIpc, useTaskStore.getState().tasks);
+    if (!isConflictAssistantContextAllowed(conflict, conflictAssistantSelection(conversationId))) {
+      throw buildSendError('Conflict context changed during verification.');
+    }
   };
 
   const resolveConversationImplementTask = (
@@ -2355,11 +2434,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     activeContextKey?: ChatContextKey | null;
     shouldShowResolving?: boolean;
     clearPendingArchitectPlanSwitchRequestId?: boolean;
+    isOwnerCurrent?: () => boolean;
   }): Promise<boolean> => {
     const lifecycle = params.lifecycle;
     lifecycle?.assertActive();
     const stateAtStart = get();
-    if (stateAtStart.selectedConversationId !== params.conversationId ||
+    if (params.isOwnerCurrent?.() === false || stateAtStart.selectedConversationId !== params.conversationId ||
         useAppStore.getState().mode !== params.mode ||
         (params.requestId !== undefined && stateAtStart.selectionRequestId !== params.requestId)) {
       return false;
@@ -2382,7 +2462,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const isCurrentRequest = () => {
       const state = get();
-      if (state.selectionRequestId !== requestId ||
+      if (params.isOwnerCurrent?.() === false || state.selectionRequestId !== requestId ||
           state.selectedConversationId !== params.conversationId ||
           useAppStore.getState().mode !== params.mode) {
         return false;
@@ -3367,6 +3447,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     awaitingResponseReconciliationScheduled = false;
     // Invalidate request guards before any disposer can trigger a callback.
     conversationResolutionGeneration += 1;
+    architectTurns.clear();
+    architectConversationRecoveryContexts.clear();
     if (retired) {
       try { retired.stop(); } catch (error) { subscriptionCleanupFailures.push(error); }
       finally { subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain()]).then(() => undefined); }
@@ -7413,10 +7495,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const uniqueToolIds = filterStrategyMutationToolsForActivePlan(
         Array.from(new Set(toolIds)),
       );
+      const providerToolIds = filterForSelectedProvider(uniqueToolIds);
       const filteredToolIds = filterToolIdsForInternalAgentProfile(
-        filterForSelectedProvider(uniqueToolIds),
+        providerToolIds,
         internalAgentProfile,
       );
+      // Review must be able to close the task checklist that blocks completion.
+      // Retain mode/provider admission above and risk/task restrictions below.
+      if (mode === "Implement" && internalAgentProfile === "task_reviewer") {
+        for (const toolId of ["task_todo_get", "task_todo_update"]) {
+          if (providerToolIds.includes(toolId) && !filteredToolIds.includes(toolId)) {
+            filteredToolIds.push(toolId);
+          }
+        }
+      }
       const riskFilteredToolIds = filterDeniedToolIdsForRiskLevel(
         filteredToolIds,
         riskLevel,
@@ -8252,10 +8344,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       architectPlan,
     } = params;
 
+    const initialConversation = get().conversations.find((conversation) => conversation.id === conversationId);
+    const protectChatTitle = !architectPlan && initialConversation?.scope_mode === "Chat";
+    const canApplyChatTitle = () => !protectChatTitle || (
+      !manuallyRenamedConversationIds.has(conversationId) &&
+      get().conversations.some((conversation) => conversation.id === conversationId && conversation.title === initialConversation?.title)
+    );
+
     if (metadataGenerationInFlight.has(conversationId)) return;
     metadataGenerationInFlight.add(conversationId);
 
     try {
+      if (protectChatTitle) {
+        // Read the durable marker after earlier renames settle, including their
+        // rollback on failure. A tentative rename must not cancel auto naming.
+        const canGenerate = await enqueueConversationMetadataWrite(conversationId, async () => {
+          if (!canApplyChatTitle() || deletedConversationIds.has(conversationId)) return false;
+          if (!(await isDefaultChatTitle(initialConversation.title))) return false;
+          if (tauriIpc.isTauriAvailable() && await tauriIpc.dbGetAppSetting(manualConversationTitleKey(conversationId))) return false;
+          return canApplyChatTitle();
+        });
+        if (!canGenerate) return;
+      }
       const metadataProviderContext =
         await resolveMetadataGenerationProviderContext({
           providerId,
@@ -8319,7 +8429,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         description: getConversationFallbackDescription(firstUserContent),
       }));
 
-      await persistConversationMetadata(conversationId, metadata);
+      if (protectChatTitle) {
+        await enqueueConversationMetadataWrite(conversationId, async () => {
+          if (!canApplyChatTitle() || deletedConversationIds.has(conversationId)) return;
+          await persistConversationMetadata(conversationId, metadata);
+        });
+      } else {
+        await persistConversationMetadata(conversationId, metadata);
+      }
     } catch (error) {
       console.warn("Failed to update conversation metadata:", error);
     } finally {
@@ -8456,6 +8573,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const prepareAssistantStreamLaunch = async (params: PrepareAssistantStreamParams) => {
     const capturedRuntime = turnRuntime.read(params.conversationId);
+    assertImplementConversationContext(params.conversationId);
+    const conflict = getConflictAssistantContext(params.conversationId);
+    if (conflict) {
+      await assertConflictAssistantSend(params.conversationId, params.resolvedTaskId);
+      if (params.modeAtSend !== 'Implement') throw buildSendError('Conflict inspection requires Implement mode.');
+      params = { ...params, internalAgentProfile: 'repo_auditor',
+        executionContext: scopeConflictAssistantExecutionContext(params.executionContext ?? resolveConversationExecutionContext(params.conversationId), conflict),
+        ...(params.turnCapabilities ? { turnCapabilities: {
+          ...params.turnCapabilities, internalAgentProfile: 'repo_auditor',
+          allowedToolIds: filterToolIdsForInternalAgentProfile(params.turnCapabilities.allowedToolIds, 'repo_auditor'),
+          mcpTools: [], mcpServers: [], skillToolIds: [], runnableSkillToolIds: [],
+        } } : {}),
+      };
+    }
     const isCurrent = () => (capturedRuntime.phase === "preparing" || capturedRuntime.phase === "overflow_recovery") &&
       turnRuntime.read(params.conversationId) === capturedRuntime &&
       !capturedRuntime.abortController?.signal.aborted && !deletedConversationIds.has(params.conversationId);
@@ -9637,7 +9768,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     persistence: { persistConversationCompactionState, recordConversationCompactionEvent },
   });
 
-  const { start: startAssistantStream } = createAssistantStreamRuntime({
+  const { start: launchAssistantStream } = createAssistantStreamRuntime({
     owner: turnRuntime,
     transport: streamChat,
     isDeleted: (id) => deletedConversationIds.has(id),
@@ -9661,7 +9792,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       partial: message => persistAssistantPartialStreamResult(message),
       failed: markAssistantPersistenceFailure,
       sync: async (mode, conversationId, architectPlan) => {
-        await syncMacroMetadataAfterStreamService({ mode, conversationId, architectPlan, trigger: "send" });
+        const turn = architectTurns.get(conversationId);
+        if (turn) turn.syncInFlight = true;
+        try {
+          await syncMacroMetadataAfterStreamService({ mode, conversationId, architectPlan, trigger: "send" });
+        } finally {
+          if (architectTurns.get(conversationId) === turn) architectTurns.delete(conversationId);
+        }
       },
     },
     tasks: {
@@ -9690,6 +9827,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     tools: { journal: chatToolInvocationJournal, execute: handleToolCall, preserve: preserveLargeToolResult, boundError: buildBoundedToolCallError },
     replay: { finalize: params => tauriIpc.dbFinalizeConversationReplay(params) },
   });
+
+  const startAssistantStream = (params: AssistantStreamLaunch) => {
+    const appState = useAppStore.getState();
+    if (params.modeAtSend === "Architect" && params.architectPlanAtSend &&
+        appState.mode === "Architect" && appState.activeArchitectPlanId === params.architectPlanAtSend.planId &&
+        appState.activePlanContext?.targetBranch === params.architectPlanAtSend.targetBranch) {
+      architectTurns.set(params.conversationId, {
+        ...params.architectPlanAtSend,
+        contextKey: buildChatContextKey(appState),
+        sessionId: params.sessionId,
+        turnId: getMessageTurnId(params.assistantMessage),
+        assistantMessageId: params.assistantMessage.id,
+        userMessageId: params.replyToMessageId,
+        syncInFlight: false,
+      });
+    } else {
+      architectTurns.delete(params.conversationId);
+    }
+    launchAssistantStream(params);
+  };
 
   const persistAssistantPartialStreamResult = async (
     assistantMessage: ChatMessage,
@@ -10390,6 +10547,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string | null;
     restoredTranscript: boolean;
     createdConversation: boolean;
+    deferredUntilTurnCompletion?: boolean;
   }> => {
     params.lifecycle?.assertActive();
     // Drain this durable reconciliation as a whole, including its journal and
@@ -10408,6 +10566,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       replicaScopeKey = null,
       replicaProjectId = null,
     } = params;
+    const recoveryPlanContext = useAppStore.getState().activePlanContext;
+    const recoveryContextKey = buildChatContextKey(useAppStore.getState());
+    const recoveryGeneration = conversationResolutionGeneration;
+    const ownsRecoveryContext = () => {
+      const appState = useAppStore.getState();
+      return recoveryGeneration === conversationResolutionGeneration &&
+        appState.mode === "Architect" && appState.activeArchitectPlanId === plan.id &&
+        appState.activePlanContext === recoveryPlanContext && appState.activePlanContext?.targetBranch === targetBranch &&
+        buildChatContextKey(appState) === recoveryContextKey;
+    };
     const hasExactReplicaIdentity = Boolean(replicaScopeKey || replicaProjectId);
     const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
     const existingConversation = resolvedConversationId
@@ -10492,6 +10660,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
       localMessages,
       transcriptMessages,
     );
+
+    // The current turn has not persisted its final assistant transcript yet.
+    // Defer only its own suffix or matching live snapshot, never an older local message.
+    const ownTurn = architectTurns.get(conversation.id);
+    const suffix = localMessages.slice(transcriptMessages.length);
+    const onlyOwnSuffix = ownTurn && (
+      suffix.length === 1 && suffix[0].id === ownTurn.assistantMessageId && suffix[0].role === "assistant" ||
+      suffix.length === 2 && suffix[0].id === ownTurn.userMessageId && suffix[0].role === "user" &&
+        suffix[1].id === ownTurn.assistantMessageId && suffix[1].role === "assistant"
+    );
+    const ownTranscriptPending = ownTurn && (
+      transcriptState.relation === "metadata_prefix" && onlyOwnSuffix ||
+      transcriptState.relation === "equal" && localMessages.at(-1)?.id === ownTurn.assistantMessageId
+    );
+    if (!createdConversation && !sharedConversation && hasExactReplicaIdentity &&
+        ownTranscriptPending && ownTurn &&
+        ownTurn.planId === plan.id && ownTurn.targetBranch === targetBranch &&
+        ownTurn.contextKey === buildChatContextKey(useAppStore.getState()) &&
+        get().selectedConversationId === conversation.id &&
+        turnRuntime.latestSession(conversation.id) === ownTurn.sessionId &&
+        (turnRuntime.matches({ ...ownTurn, conversationId: conversation.id }, "streaming") ||
+          turnRuntime.matches({ ...ownTurn, conversationId: conversation.id }, "persisting") || ownTurn.syncInFlight) &&
+        !turnRuntime.read(conversation.id).abortController?.signal.aborted) {
+      if (ownsRecoveryContext()) architectConversationRecoveryContexts.delete(recoveryContextKey);
+      return { conversationId: conversation.id, restoredTranscript: false,
+        createdConversation: false, deferredUntilTurnCompletion: true };
+    }
 
     if (transcriptState.relation === "db_prefix") {
       const importedCount = await importTranscriptSuffix(
@@ -10618,6 +10813,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     } catch (error) {
+      if (ownsRecoveryContext()) architectConversationRecoveryContexts.add(recoveryContextKey);
       if (!createdConversation || !createdConversationId) {
         throw error;
       }
@@ -10689,6 +10885,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       throw error;
     }
 
+    if (ownsRecoveryContext()) architectConversationRecoveryContexts.delete(recoveryContextKey);
     return {
       conversationId: conversation.id,
       restoredTranscript,
@@ -11196,9 +11393,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       targetBranch: string;
       fallbackProjectId?: string | null;
       fallbackGroupId?: string | null;
+      deferredUntilTurnCompletion?: boolean;
     }): ResolvedConversationForContext => ({
       conversationId: params.conversationId,
       source: "active_plan",
+      deferredUntilTurnCompletion: params.deferredUntilTurnCompletion,
       planId: params.planId,
       targetBranch: params.targetBranch,
       fallbackProjectId: params.fallbackProjectId ?? null,
@@ -11428,6 +11627,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             );
             return activePlanResolution({
               conversationId: ensuredConversation.conversationId,
+              deferredUntilTurnCompletion: ensuredConversation.deferredUntilTurnCompletion,
               planId: activePlan.id,
               targetBranch,
               fallbackProjectId,
@@ -11451,12 +11651,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
 
+    const selectedInspection = getSelectedConflictInspection();
+    if (selectedInspection) return modeFallback(selectedInspection);
     const localProjectContext = selectedGroupId
       ? await getLocalProjectContextState(selectedGroupId)
       : null;
     lifecycle?.assertActive();
     if (!isCurrentRequest()) return modeFallback(null);
     state = get();
+    const inspectionAfterRead = getSelectedConflictInspection();
+    if (inspectionAfterRead) return modeFallback(inspectionAfterRead);
 
     const localContextConversationId =
       mode === "Architect"
@@ -11975,6 +12179,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.keys(get().conversationRuntimeById).forEach((conversationId) => {
         stopConversationRuntimeLocally(conversationId);
       });
+      architectTurns.clear();
+      architectConversationRecoveryContexts.clear();
       turnRuntime.reset();
       continuationIntents.clear();
       set({
@@ -12269,6 +12475,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!applied) {
         return false;
       }
+      conversationResolutionGeneration += 1;
       persistSelectionForConversationSwitch(
         mode,
         previousConversationId,
@@ -12292,10 +12499,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         requestId,
         shouldShowResolving: true,
       });
-      return true;
+      return isCurrent();
     },
 
-    createConversation: async (title, taskId, projectId, groupId) => {
+    createConversation: async (title, taskId, projectId, groupId, options) => {
       const appState = useAppStore.getState();
       const task = taskId ? useTaskStore.getState().getTaskById(taskId) : null;
       const executionTask = task
@@ -12307,16 +12514,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
           })
         : null;
 
+      if (options?.selectConversation !== false) conversationResolutionGeneration += 1;
       return createConversationRecord({
         title,
         taskId,
         projectId: executionTask?.project_id ?? projectId,
         groupId,
+        selectConversation: options?.selectConversation,
       });
     },
 
     beginArchitectPlanSwitch: (params) => {
       beginArchitectPlanSwitchSelection(params);
+    },
+
+    captureArchitectPlanRecovery: (planId, targetBranch) => {
+      const generation = conversationResolutionGeneration;
+      return async (isCurrentActivation) => {
+        const appState = useAppStore.getState();
+        if (!isCurrentActivation() || generation !== conversationResolutionGeneration || appState.mode !== "Architect" ||
+            appState.activeArchitectPlanId !== planId || appState.activePlanContext?.targetBranch !== targetBranch) return;
+        const state = get();
+        const contextKey = buildChatContextKey(appState);
+        const headConversationId = appState.pendingArchitectPlanActivationPayload?.conversationId;
+        if (!architectConversationRecoveryContexts.has(contextKey) &&
+            state.restoreStatus === "ready" && state.selectedConversationId &&
+            (!headConversationId || headConversationId === state.selectedConversationId) &&
+            state.selectedConversationContextKey === contextKey) return;
+        await get().ensureConversationForCurrentMode(undefined, isCurrentActivation);
+      };
     },
 
     invalidateConversationResolution: () => {
@@ -12333,6 +12559,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       fallbackProjectId,
       fallbackGroupId,
       sharedConversation = false,
+      ...transcriptParams
     }) => {
       const selectionAtStart = get();
       const appAtStart = useAppStore.getState();
@@ -12342,8 +12569,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         fallbackProjectId,
         fallbackGroupId,
         sharedConversation,
+        ...transcriptParams,
       });
 
+      if (ensuredConversation.deferredUntilTurnCompletion) return ensuredConversation;
       if (get().selectionRequestId !== selectionAtStart.selectionRequestId ||
           get().selectedConversationId !== selectionAtStart.selectedConversationId ||
           useAppStore.getState().mode !== appAtStart.mode ||
@@ -12382,17 +12611,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return ensuredConversation;
     },
 
-    ensureConversationForCurrentMode: async (lifecycle) => {
+    ensureConversationForCurrentMode: async (lifecycle, isOwnerCurrent = () => true) => {
       lifecycle?.assertActive();
       const resolutionGeneration = conversationResolutionGeneration;
+      const selectionRequestAtStart = get().selectionRequestId;
       await waitForHydration();
       lifecycle?.assertActive();
-      if (resolutionGeneration !== conversationResolutionGeneration) {
+      if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration ||
+          selectionRequestAtStart !== get().selectionRequestId) {
         return get().selectedConversationId;
       }
 
       let appState = useAppStore.getState();
-      if (appState.mode === "Implement") {
+      // A verified, currently selected inspection owns the taskless context.
+      // Restoring a remembered task would invalidate that deliberate selection.
+      if (appState.mode === "Implement" && !getSelectedConflictInspection()) {
         const contextBeforeRead = {
           mode: appState.mode,
           selectedGroupId: appState.selectedGroupId,
@@ -12404,7 +12637,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : null;
         lifecycle?.assertActive();
         const currentAppState = useAppStore.getState();
-        if (resolutionGeneration !== conversationResolutionGeneration ||
+        if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration ||
+          selectionRequestAtStart !== get().selectionRequestId ||
           currentAppState.mode !== contextBeforeRead.mode ||
           currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
           currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||
@@ -12428,7 +12662,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appState = useAppStore.getState();
         }
       }
-      if (resolutionGeneration !== conversationResolutionGeneration) {
+      if (!isOwnerCurrent() || resolutionGeneration !== conversationResolutionGeneration) {
         return get().selectedConversationId;
       }
       const mode = appState.mode;
@@ -12463,7 +12697,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const isCurrentRequest = () => {
         const state = get();
         return (
-          state.selectionRequestId === requestId &&
+          isOwnerCurrent() && state.selectionRequestId === requestId &&
           state.activeContextKey === contextKey &&
           isChatContextKeyCurrent(contextKey)
         );
@@ -12480,6 +12714,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return get().selectedConversationId;
         }
         const conversationId = resolution.conversationId;
+        if (resolution.deferredUntilTurnCompletion) {
+          set({ restoreStatus: "ready", lastError: null });
+          return get().selectedConversationId;
+        }
 
         const latestState = get();
         const isAlreadySelected =
@@ -12564,6 +12802,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             activeContextKey: contextKey,
             shouldShowResolving,
             clearPendingArchitectPlanSwitchRequestId: true,
+            isOwnerCurrent,
           });
           lifecycle?.assertActive();
           return conversationId;
@@ -12585,6 +12824,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           activeContextKey: contextKey,
           shouldShowResolving,
           clearPendingArchitectPlanSwitchRequestId: true,
+          isOwnerCurrent,
         });
         lifecycle?.assertActive();
         return null;
@@ -12614,19 +12854,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     renameConversation: async (conversationId, title) => {
-      await renamePersistedConversation(
-        chatPersistenceAdapters,
-        conversationId,
-        title,
+      const isChatConversation = get().conversations.some(
+        (conversation) => conversation.id === conversationId && conversation.scope_mode === "Chat",
       );
-      set((state) => ({
-        conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, title } : conv,
-        ),
-      }));
+      const writeRename = async () => {
+        await renamePersistedConversation(chatPersistenceAdapters, conversationId, title);
+        set((state) => ({
+          conversations: state.conversations.map((conv) =>
+            conv.id === conversationId ? { ...conv, title } : conv,
+          ),
+        }));
+      };
+      if (!isChatConversation) {
+        await writeRename();
+        return;
+      }
+      await enqueueConversationMetadataWrite(conversationId, async () => {
+        if (deletedConversationIds.has(conversationId)) return;
+        const persistManualTitle = tauriIpc.isTauriAvailable();
+        const markerKey = manualConversationTitleKey(conversationId);
+        const previousMarker = persistManualTitle ? await tauriIpc.dbGetAppSetting(markerKey) : null;
+        if (persistManualTitle) {
+          await tauriIpc.dbSetAppSetting({ key: markerKey, valueJson: JSON.stringify({ version: 1 }) });
+        }
+        try {
+          await writeRename();
+          manuallyRenamedConversationIds.add(conversationId);
+        } catch (error) {
+          if (persistManualTitle && !previousMarker) await tauriIpc.dbDeleteAppSetting(markerKey);
+          throw error;
+        }
+      });
     },
 
     clearSelectedConversation: () => {
+      conversationResolutionGeneration += 1;
       const mode = useAppStore.getState().mode;
       clearConversationSelection(mode);
       set({ activeContextKey: null, restoreStatus: "ready" });
@@ -12730,7 +12992,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       deletedConversationIds.add(conversationId);
+      clearConflictAssistantContext(conversationId);
       pendingConversationDeletionIds.add(conversationId);
+      architectTurns.delete(conversationId);
       turnRuntime.forget(conversationId);
       continuationIntents.delete(conversationId);
       let deletionSagaGeneration: string;
@@ -12817,6 +13081,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       uniqueIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
         pendingConversationDeletionIds.add(conversationId);
+        architectTurns.delete(conversationId);
         turnRuntime.forget(conversationId);
         continuationIntents.delete(conversationId);
         stopConversationRuntimeLocally(conversationId);
@@ -12918,6 +13183,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     completeLinkedTaskConversationDeletion: async (conversationId) => {
       deletedConversationIds.add(conversationId);
+      architectTurns.delete(conversationId);
       turnRuntime.forget(conversationId);
       continuationIntents.delete(conversationId);
       stopConversationRuntimeLocally(conversationId);
@@ -13474,21 +13740,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const ownership = turnRuntime.captureSteerOwner(payload.conversationId);
       const runtime = ownership.expected;
       const activeIntent = continuationIntents.get(payload.conversationId);
-      if (!isConversationRuntimeActive(runtime)) {
-        throw buildSendError("The conversation is no longer running.");
-      }
-      const capturedContextRefs = payload.composerContextRefs
+      assertImplementConversationContext(payload.conversationId);
+      const capturedContextRefs = structuredClone(payload.composerContextRefs
         ? persistableContextRefs(payload.composerContextRefs)
-        : payload.contextRefs ?? persistableContextRefs(get().composerContextRefs);
+        : payload.contextRefs ?? persistableContextRefs(get().composerContextRefs));
+      const capturedQueueSnapshot = behavior === "queue"
+        ? structuredClone(captureSendSnapshot(payload.conversationId)) : null;
       if (hasMultipleAgsdlContexts(capturedContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
+      }
+      if (getConflictAssistantContext(payload.conversationId)) {
+        await assertConflictAssistantSend(payload.conversationId, payload.taskId);
+        const current = turnRuntime.read(payload.conversationId);
+        if (!isConversationRuntimeActive(current) || current.abortController?.signal.aborted ||
+            current.sessionId !== runtime.sessionId || current.turnId !== runtime.turnId ||
+            current.assistantMessageId !== runtime.assistantMessageId ||
+            (behavior === 'steer' && !ownership.isCurrent())) {
+          throw buildSendError("The conversation is no longer running.");
+        }
+        payload = { ...payload, internalAgentProfile: 'repo_auditor' };
+      }
+      if (!isConversationRuntimeActive(runtime)) {
+        throw buildSendError("The conversation is no longer running.");
       }
       if (behavior === "queue") {
         if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
         const capturedInput = structuredClone({ ...payload, contextRefs: capturedContextRefs });
-        const capturedSnapshot = structuredClone(captureSendSnapshot(payload.conversationId));
         const queue = await getQueueRuntime();
-        const entry = queue.capture(createConversationTurnId(), capturedInput, capturedSnapshot);
+        const entry = queue.capture(createConversationTurnId(), capturedInput, capturedQueueSnapshot!);
         entry.input.hiddenContext = capturedInput.hiddenContext;
         if (entry.intent.mode === 'Architect' && !entry.intent.architectPlan) {
           throw buildSendError('Select a plan before sending an Architect message.');
@@ -13642,7 +13921,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
       const deferredSubmission = queuedSubmission ?? continuation;
-      const queuedExecutionContext = deferredSubmission
+      const conflict = getConflictAssistantContext(payload.conversationId);
+      if (conflict) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
+      if (conflict && deferredSubmission && (deferredSubmission.intent.mode !== 'Implement' ||
+        deferredSubmission.intent.conversationTaskId || deferredSubmission.intent.selectedTaskId)) {
+        throw buildSendError('The deferred conflict inspection cannot target another task or mode.');
+      }
+      if (conflict) payload = { ...payload, internalAgentProfile: 'repo_auditor' };
+      const queuedExecutionContext = conflict ? resolveConversationExecutionContext(payload.conversationId) : deferredSubmission
         ? await revalidateQueuedExecutionContext(deferredSubmission) : undefined;
       const provider = useProviderStore.getState();
       let snapshot: ChatSendSnapshot = deferredSubmission
@@ -13700,6 +13986,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (deferredSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
               throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
             }
+            assertImplementConversationContext(id);
+            if (conflict && !isConflictAssistantContextAllowed(conflict, conflictAssistantSelection(id))) {
+              throw buildSendError('Conflict context changed before sending.');
+            }
             assertConversationRuntimeAvailableForSend(id);
           },
           isDeleted: (id) => deletedConversationIds.has(id) || Boolean(queuedSubmission?.direction && !queueRuntime?.hasEntry(queuedSubmission.id)) || Boolean(deferredSubmission &&
@@ -13742,8 +14032,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
               projectGroups: app.projectGroups,
               tasks: tasks.tasks,
               branchWorktrees: tasks.branchWorktrees,
+              // Loading a merge review does not activate its integration workspace.
               workspacePathOverridesByProjectId: Object.fromEntries(
-                (merge?.repositories ?? []).map(repository => [repository.projectId, repository.repoPath]),
+                (merge?.repositories ?? [])
+                  .filter(repository => captured.workspacePathsByProjectId[repository.projectId] === repository.repoPath)
+                  .map(repository => [repository.projectId, repository.repoPath]),
               ),
             });
           },
@@ -14584,6 +14877,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
+      architectTurns.clear();
+      architectConversationRecoveryContexts.clear();
       turnRuntime.reset();
       continuationIntents.clear();
       deletedConversationIds.clear();

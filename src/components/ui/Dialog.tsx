@@ -137,6 +137,8 @@ export interface DialogProps {
   backdropClassName?: string;
   panelClassName?: string;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
+  /** Opener to restore when async preparation loses focus before the dialog mounts. */
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   closeOnBackdropClick?: boolean;
   ariaDescribedBy?: string;
 }
@@ -149,6 +151,7 @@ export const Dialog: React.FC<DialogProps> = ({
   backdropClassName = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4',
   panelClassName = 'flex w-full justify-center',
   initialFocusRef,
+  returnFocusRef,
   closeOnBackdropClick = false,
   ariaDescribedBy,
 }) => {
@@ -163,6 +166,7 @@ export const Dialog: React.FC<DialogProps> = ({
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const returnFocusRefRef = useRef(returnFocusRef);
   const escapeHandlersRef = useRef<Set<EscapeHandler>>(new Set());
   const portalsRef = useRef<Set<HTMLElement>>(new Set());
 
@@ -190,7 +194,8 @@ export const Dialog: React.FC<DialogProps> = ({
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    returnFocusRefRef.current = returnFocusRef;
+  }, [onClose, returnFocusRef]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -259,7 +264,11 @@ export const Dialog: React.FC<DialogProps> = ({
       document.removeEventListener('keydown', handleKeyDown, true);
       openDialogs.delete(root);
       synchronizeBackgroundInertness();
-      restoreFocusAfterDialogClose(previousFocusRef.current);
+      const returnFocusTarget = returnFocusRefRef.current?.current ?? null;
+      const canReturnToTarget = returnFocusTarget?.isConnected &&
+        !returnFocusTarget.matches(':disabled') &&
+        !returnFocusTarget.closest('[inert], [hidden]');
+      restoreFocusAfterDialogClose(canReturnToTarget ? returnFocusTarget : previousFocusRef.current);
     };
   }, [dialogOrder, effectiveZIndex, initialFocusRef]);
 

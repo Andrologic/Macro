@@ -1,3 +1,4 @@
+import { clearConflictAssistantContext, registerConflictAssistantContext, type VerifiedConflictAssistantContext } from '../../../services/conflictAssistantContext';
 import { expect, it } from 'bun:test';
 import { act, type ReactElement } from 'react';
 import type { Root } from 'react-dom/client';
@@ -32,6 +33,60 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     requireRoot,
     setComposerText,
   } = context;
+
+
+  const prepareConflict = (kind: 'code' | 'metadata'): VerifiedConflictAssistantContext => {
+    context.appState = { ...context.appState, mode: 'Implement', selectedTaskId: null, selectedProjectId: 'project-1' };
+    context.chatState = { ...context.chatState,
+      conversations: [{ id: 'conflict-ui', title: 'Conflict inspection', scope_mode: 'Implement', task_id: null, project_id: 'project-1', group_id: 'group-1' }],
+      selectedConversationId: 'conflict-ui', messages: [],
+    };
+    const verified = { conversationId: 'conflict-ui', projectId: 'project-1', groupId: 'group-1', kind,
+      repositories: [{ projectId: 'project-1', projectPath: '/tmp/api', repoPath: kind === 'metadata' ? '/tmp/metadata' : '/tmp/api',
+        branch: kind === 'metadata' ? '@macro' : 'feature/api', head: 'abc', conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+    };
+    registerConflictAssistantContext(verified);
+    return verified;
+  };
+  for (const kind of ['code', 'metadata'] as const) it(`allows the verified ${kind} inspection composer without selecting a task`, async () => {
+    prepareConflict(kind);
+    try {
+      await act(async () => { requireRoot().render(renderChatZone()); });
+      const composer = await setComposerText('Inspect this conflict');
+      expect(composer.disabled).toBe(false);
+      expect(requireContainer().querySelector('[data-testid="conflict-assistant-context"]')?.textContent).toContain('Read-only conflict inspection');
+      expect(requireContainer().querySelector('[data-testid="conflict-assistant-context"]')?.textContent).toContain(kind === 'metadata' ? '@macro' : 'feature/api');
+      const send = requireContainer().querySelector('span[data-icon="arrow-up"]')?.closest('button');
+      expect(send).not.toBeNull();
+      await act(async () => { send?.click(); });
+      expect(context.chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conflict-ui', taskId: null, internalAgentProfile: 'repo_auditor' }));
+    } finally { clearConflictAssistantContext('conflict-ui'); }
+  });
+
+  it('disables a conflict composer after a foreign task, project or group is selected', async () => {
+    prepareConflict('code');
+    try {
+      await act(async () => { requireRoot().render(renderChatZone()); });
+      const composer = await setComposerText('Inspect');
+      expect(composer.disabled).toBe(false);
+      for (const patch of [{ selectedTaskId: 'foreign' }, { selectedProjectId: 'foreign' }, { selectedGroupId: 'foreign' }]) {
+        await act(async () => {
+          context.appState = { ...context.appState, selectedTaskId: null, selectedProjectId: 'project-1', selectedGroupId: 'group-1', ...patch };
+          context.emitAppStore();
+        });
+        expect(composer.disabled).toBe(true);
+      }
+      expect(context.chatState.sendMessage).not.toHaveBeenCalled();
+    } finally { clearConflictAssistantContext('conflict-ui'); }
+  });
+
+  it('keeps an Implement conversation without a verified conflict context disabled', async () => {
+    prepareConflict('code'); clearConflictAssistantContext('conflict-ui');
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    const composer = await setComposerText('Inspect');
+    expect(composer.disabled).toBe(true);
+    expect(context.chatState.sendMessage).not.toHaveBeenCalled();
+  });
 
   it('shows the selected task plan, project, and branch in the Implement header', async () => {
     context.appState = {

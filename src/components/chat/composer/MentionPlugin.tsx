@@ -9,6 +9,7 @@ import {
   $createParagraphNode,
   $nodesOfType,
 } from 'lexical';
+import { COMPOSER_PROGRAMMATIC_TEXT_TAG } from './composerTextChange';
 import { useChatStore } from '../../../stores/useChatStore';
 import type { ContextRefKind } from '../../../types';
 import { MentionNode, $createMentionNode, $isMentionNode } from './MentionNode';
@@ -75,7 +76,7 @@ export const MentionPlugin: React.FC = () => {
             rootNode.append(para);
           }
         }
-      });
+      }, { tag: COMPOSER_PROGRAMMATIC_TEXT_TAG });
     }
 
     // Remove chips that were removed from the store
@@ -95,7 +96,7 @@ export const MentionPlugin: React.FC = () => {
               break;
             }
           }
-        });
+        }, { tag: COMPOSER_PROGRAMMATIC_TEXT_TAG });
       }
     }
   }, [composerContextRefs, editor]);
