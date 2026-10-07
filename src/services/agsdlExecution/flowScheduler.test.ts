@@ -1,6 +1,10 @@
 import { expect, it } from 'bun:test';
 import type { EngineActivation, EngineMemory, EngineTerminalCommit, HostAdmission, Prepare } from '../../types/generated/ipc';
-import { loadFlowCapture } from './flowActivation';
+import { executeFlowActivation, loadFlowCapture, prepareFlowAgent, type FlowActivationPorts } from './flowActivation';
+import { MacroAgentMemory } from './agentMemory';
+import type { FrozenAgentConfiguration, AgentInstanceId } from './contracts';
+import type { ResidentAgentPorts } from './residentAgent';
+import { decode, record } from './exact';
 import type { FlowAgent } from './flowActivation';
 import { FlowPump, ResidentFlowHost, type FlowSchedulerPorts } from './flowScheduler';
 import { deferred, flowDelivery, flowFixture, flowOwner, preparedFixture } from './flowTestFixtures';
@@ -270,4 +274,65 @@ it.each(['absent', 'replaced'] as const)('retires the awaited continuation only 
     expect(f.calls.filter(call => call.startsWith('begin'))).toEqual(['begin:delivery-first']);
     expect(f.calls.some(call => call.startsWith('prepare') || call.startsWith('commit') || call.startsWith('uncertain'))).toBe(false);
   } finally { ended.resolve(); host.close(); }
+});
+
+it.each([['work', 'system'], ['work', 'activation'], ['call', 'system'], ['prepare', 'activation']] as const)('resolves the retained lost-begin %s continuation after %s Stop without any new effect', async (step, target) => {
+  const first = flowDelivery('first', '1', step, step === 'work' ? 'worker-instance' : null), f = await harness([first]);
+  const begin = f.ports.begin, prepare = f.ports.prepare;
+  const inspections: unknown[] = [];
+  f.ports.inspect = async () => { const fresh = structuredClone(f.inspection); inspections.push(fresh); return fresh; };
+  let begins = 0;
+  f.ports.begin = async (...args) => {
+    if (begins++ === 0) { await begin(...args); throw new Error('Begin durably admitted, acknowledgement lost'); }
+    f.calls.push(`begin:${args[1]}`);
+    return { kind: 'waiting', reason: 'active' };
+  };
+  const unexpected = async () => { throw new Error('No provider, invocation, publication or dispatch is allowed after this Stop'); };
+  const resident: ResidentAgentPorts = {
+    register: unexpected, dispatch: unexpected, end: unexpected, append: unexpected, stream: unexpected,
+    journal: { read: unexpected, close: unexpected },
+  };
+  const activationPorts: FlowActivationPorts = {
+    prepareAgent: async request => { f.calls.push('initialize'); return prepareFlowAgent(request, resident); },
+    readResponses: async () => { f.calls.push('read-empty'); return [[], 'native-empty-digest']; },
+    closeResponses: async closure => { f.calls.push('close-empty'); expect(closure.cursor).toBe('0'); expect(closure.work).toEqual(first.delivery.work); return closure; },
+    invoke: unexpected, identity: () => { throw new Error('No invocation identity should be allocated'); },
+  };
+  // The activation-target case reuses an actual initialized checkpoint, including
+  // prior admitted input, rather than creating a transcript to satisfy the DTO.
+  if (step === 'work' && target === 'activation') {
+    const memory = await MacroAgentMemory.prepare('worker-instance' as AgentInstanceId, f.capture.plan.agents[0] as FrozenAgentConfiguration, null);
+    await memory.acceptInput(() => '{"prompt":[{"value":"Retained information"}]}' as import('./contracts').ExactJsonText);
+    f.inspection.agents[0].memory = memory.checkpoint();
+  }
+  const previous = structuredClone(f.inspection.agents[0].memory);
+  f.ports.execute = (owner, activation, memory, inspection, capture, onAgent) => executeFlowActivation(owner, activation, memory, inspection, capture,
+    agent => { onAgent(agent); expect(agent.stopRequested).toBe(true); }, activationPorts);
+  f.ports.prepare = async request => {
+    expect(f.calls.at(-1)).toBe('close-empty');
+    expect(first.stopState.kind).toBe('requested');
+    expect(f.inspection.agents[0].memory).toEqual(previous);
+    expect(request.outcome.kind).toBe('stopped'); expect(request.validation.selectedBranch).toBeNull();
+    return prepare(request);
+  };
+  const pump = new FlowPump('generation', flowOwner, f.ports);
+  await pump.wake(); expect(f.calls).toEqual(['begin:delivery-first']);
+  first.stopState = { kind: 'requested', requestId: 'stop' };
+  if (target === 'system') f.inspection.projection.systemStop = { kind: 'requested', requestId: 'stop' };
+  await pump.wake(); await pump.wake();
+  expect(f.calls).toEqual(['begin:delivery-first', 'begin:delivery-first', ...(step === 'work' ? ['initialize'] : []),
+    'read-empty', 'close-empty', 'prepare:first', 'commit:witness-first']);
+  expect(first.workState).toBe('terminal'); expect(first.terminal?.kind).toBe('stopped');
+  expect(f.terminal()?.outgoing).toEqual([]); expect(f.inspection.effects).toEqual([]);
+  expect(f.calls.some(call => call.startsWith('uncertain'))).toBe(false);
+  expect(new Set(inspections).size).toBe(inspections.length);
+  // JS requests a stopped terminal but does not fabricate a native confirmation.
+  expect(first.stopState.kind).toBe('requested');
+  if (step === 'work') {
+    const checkpoint = f.terminal()!.memory!;
+    expect(checkpoint.revision).toBe(previous ? '2' : '1');
+    expect(checkpoint.stateJson).toContain('Review.'); expect(checkpoint.stateJson).not.toContain('Go');
+    const messages = record(decode(checkpoint.stateJson)).messages;
+    expect(messages).toEqual(previous ? record(decode(previous.stateJson)).messages : [{ role: 'system', content: 'Review.' }]);
+  } else expect(f.terminal()?.memory).toBeNull();
 });

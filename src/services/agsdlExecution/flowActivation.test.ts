@@ -172,3 +172,39 @@ it('uses the official ErrorInput shape and the normative Stop/work/output failur
   expect(shape(decode(outputFailure.errorJson), schema.$defs.ErrorInput)).toBe(true);
   expect(JSON.parse(outputFailure.errorJson).error.details).toEqual([{ path: '/choice', rule: 'OUTPUT_CONSTRAINT', expected: ['normal'] }]);
 });
+
+it.each(['system', 'activation'] as const)('honors the initially retained %s Stop before Agent input without relying on its observer callback', async target => {
+  const { inspection } = await flowFixture(), capture = await loadFlowCapture(inspection), f = io();
+  const activation = flowDelivery('stopped', '1'); activation.workState = 'active';
+  if (target === 'system') inspection.projection.systemStop = { kind: 'requested', requestId: 'stop' };
+  else activation.stopState = { kind: 'requested', requestId: 'stop' };
+  const result = await executeFlowActivation(flowOwner, activation, null, structuredClone(inspection), capture, () => {}, f.ports);
+  expect(result.outcome.kind).toBe('stopped'); expect(f.order).toEqual(['initialize', 'read-empty', 'close-empty']);
+  expect(result.memory!.stateJson).toContain('Review.'); expect(result.memory!.stateJson).not.toContain('Go');
+  expect(result.validation.selectedBranch).toBeNull(); expect(result.responseCursor).toBe('0');
+  expect(activation.stopState.kind).toBe(target === 'system' ? 'none' : 'requested');
+});
+it.each(['call', 'prepare'] as const)('closes an initially stopped %s without invocation or pure input work, and requires the native receipt', async step => {
+  const { inspection } = await flowFixture(), capture = await loadFlowCapture(inspection), f = io();
+  const activation = flowDelivery('stopped', '1', step, null); activation.workState = 'active';
+  activation.stopState = { kind: 'requested', requestId: 'stop' };
+  // This input would fail the captured Prepare selector if evaluated at all.
+  const result = await executeFlowActivation(flowOwner, activation, null, structuredClone(inspection), capture, () => {}, f.ports);
+  expect(result.outcome.kind).toBe('stopped'); expect(result.memory).toBeNull(); expect(result.validation.selectedBranch).toBeNull();
+  expect(f.order).toEqual(['read-empty', 'close-empty']);
+  f.ports.closeResponses = async () => { throw new Error('No confirmed native closure'); };
+  await expect(executeFlowActivation(flowOwner, activation, null, inspection, capture, () => {}, f.ports)).rejects.toThrow('No confirmed native closure');
+  expect(f.order).not.toContain('call'); expect(f.order).not.toContain('initialize');
+});
+it('keeps the reserved VISIT_LIMIT memory unchanged when Stop wins before its no-effect closure', async () => {
+  const { inspection } = await flowFixture(), capture = await loadFlowCapture(inspection), f = io();
+  const activation = flowDelivery('limit', '1'); activation.workState = 'active'; activation.stopState = { kind: 'requested', requestId: 'stop' };
+  const initialized = await prepareFlowAgent({ context: { owner: flowOwner, work: activation.delivery.work, permissionsJson: capture.plan.agents[0].permissionsJson,
+    scopeJson: capture.plan.agents[0].scopeJson, registryVersion: capture.registry.version } as import('./contracts').ExecutionContext,
+    configuration: capture.plan.agents[0] as import('./contracts').FrozenAgentConfiguration, memory: null, providerType: 'openai', toolAliases: [],
+    responses: { agentName: 'worker', interfaceJson: json('{}'), stepJson: capture.plan.steps[0].declarationJson, publicationContractJson: capture.plan.steps[0].publicationContractJson } }, f.resident);
+  inspection.agents[0].memory = initialized.checkpoint();
+  const result = await resolveFlowVisitLimit(flowOwner, activation, structuredClone(inspection), capture, f.ports);
+  expect(result.outcome.kind).toBe('stopped'); expect(result.memory).toEqual(inspection.agents[0].memory);
+  expect(f.order).toEqual(['read-empty', 'close-empty']); expect(result.validation.selectedBranch).toBeNull();
+});

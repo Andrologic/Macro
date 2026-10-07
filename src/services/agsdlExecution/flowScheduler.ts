@@ -148,14 +148,16 @@ export class FlowPump {
           }
           if (admission.kind === 'admitted' || admission.kind === 'rejected' && admission.code === 'VISIT_LIMIT') selected = retained;
         }
-        this.lostAdmission = undefined;
+        if (!selected) this.lostAdmission = undefined;
       }
       const orphan = inspection.projection.activations.find(item => item.workState === 'active' && item !== selected);
       if (orphan) {
         this.uncertain = { work: orphan.delivery.work, reason: 'Resident continuation is unavailable; work cannot be redispatched.' };
         continue;
       }
-      if (inspection.projection.systemStop.kind !== 'none') return;
+      // Stop prevents new admissions, but the retained pre-dispatch continuation
+      // still needs a real no-effect closure, checkpoint and native stopped commit.
+      if (!selected && inspection.projection.systemStop.kind !== 'none') return;
       const candidates = inspection.projection.activations.filter(item => item.workState === 'queued' && item.stopState.kind === 'none')
         .sort((a, b) => compareSequence(a.delivery.queueSequence as Sequence, b.delivery.queueSequence as Sequence));
       for (const candidate of selected ? [] : candidates) {
@@ -178,7 +180,10 @@ export class FlowPump {
       }
       if (this.retired) return;
       this.currentWork = selected.delivery.work;
-      this.stopObserved = false;
+      this.stopObserved = stopped(inspection, this.currentWork);
+      // Consume the lost acknowledgement only when taking over its continuation,
+      // not before another active work or a Stop check can postpone it.
+      this.lostAdmission = undefined;
       try {
         let request: Prepare;
         if (admission.kind === 'admitted') {

@@ -98,6 +98,9 @@ function declaration(capture: FlowCapture, activation: EngineActivation): { step
   if (!compiled) fail('CORRELATION', '/step', 'Admitted step is absent from the captured plan.');
   return { step: record(decode(compiled.declarationJson)), declarationJson: compiled.declarationJson, publicationContractJson: compiled.publicationContractJson };
 }
+function stopRequested(activation: EngineActivation, inspection: HostInspection): boolean {
+  return activation.stopState.kind !== 'none' || inspection.projection.systemStop.kind !== 'none';
+}
 export async function executeFlowActivation(owner: EngineOwner, activation: EngineActivation, memory: EngineMemory | null,
   inspection: HostInspection, capture: FlowCapture, onAgent: (agent: FlowAgent) => void, ports = nativeFlowActivationPorts): Promise<Prepare> {
   const { work, input } = activation.delivery;
@@ -130,6 +133,7 @@ export async function executeFlowActivation(owner: EngineOwner, activation: Engi
         stepJson: declared.declarationJson as import('./contracts').ExactJsonText | null,
         publicationContractJson: work.step === null ? capture.plan.graphlessPublicationContracts[configuration.agentName] ?? null : declared.publicationContractJson } });
     onAgent(agent);
+    if (stopRequested(activation, inspection)) agent.requestStop();
     if (agent.stopRequested) {
       // A local abort is only a request. Native close proves this boundary has
       // no emissions and no unresolved effects before a stopped terminal exists.
@@ -168,6 +172,11 @@ export async function executeFlowActivation(owner: EngineOwner, activation: Engi
       selectedBranch = record(step.decision ?? {}).choices === undefined ? null : text(record(decode(outcome.output.valueJson)).choice);
     }
   } else {
+    if (stopRequested(activation, inspection)) {
+      closure = await closeEmpty(owner, work, ports);
+      outcome = { kind: 'stopped', evidenceJson: '{"kind":"native-no-effect-closure"}' };
+      return terminal();
+    }
     try {
       if (step.type === 'call') {
         const prepared = prepareCall(capture.document, step, flowInput(input), capture.registry);
@@ -214,7 +223,9 @@ export async function resolveFlowVisitLimit(owner: EngineOwner, activation: Engi
   const work = activation.delivery.work;
   const memory = inspection.agents.find(agent => agent.agentInstanceId === work.agentInstanceId)?.memory ?? null;
   const closure = await closeEmpty(owner, work, ports);
-  return { owner, work, memory, outcome: flowFailure(new ConformanceError('VISIT_LIMIT', '', 'Native visit admission exceeded the captured step limit.')),
+  return { owner, work, memory, outcome: stopRequested(activation, inspection)
+    ? { kind: 'stopped', evidenceJson: '{"kind":"native-no-effect-visit-limit"}' }
+    : flowFailure(new ConformanceError('VISIT_LIMIT', '', 'Native visit admission exceeded the captured step limit.')),
     responseCursor: closure.cursor, terminationEvidenceJson: '{"kind":"native-no-effect-visit-limit"}',
     validation: { snapshotDigest: inspection.snapshotDigest, input: activation.delivery.input, declarationJson: declared.declarationJson, closureDigest: closure.digest, selectedBranch: null } };
 }
