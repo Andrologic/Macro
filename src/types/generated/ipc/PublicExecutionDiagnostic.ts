@@ -3,4 +3,4 @@ import type { EngineSourceRevision } from "./EngineSourceRevision";
 import type { EngineWork } from "./EngineWork";
 import type { PublicDiagnostic } from "./PublicDiagnostic";
 
-export type PublicExecutionDiagnostic = { source: EngineSourceRevision, systemStartId: string, activation: EngineWork | null, through: string, diagnostics: Array<PublicDiagnostic>, incomplete: boolean, };
+export type PublicExecutionDiagnostic = { source: EngineSourceRevision, systemStartId: string, activation: EngineWork | null, through: string, diagnostics: Array<PublicDiagnostic>, incomplete: boolean, nextBefore: string | null, };

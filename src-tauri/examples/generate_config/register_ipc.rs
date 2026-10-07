@@ -3,6 +3,9 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::execution::ApprovalScope>("execution")?;
+    registry.add::<ipc_contracts::execution::ApprovalDecision>("execution")?;
+    registry.add::<ipc_contracts::execution::ApprovalPage>("execution")?;
     registry.add::<ipc_contracts::execution::DiagnosticRequest>("execution")?;
     registry.add::<ipc_contracts::execution::PublicExecutionDiagnostic>("execution")?;
     registry.add::<ipc_contracts::execution::RunListRequest>("execution")?;
@@ -20,6 +23,8 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::Closure>("execution")?;
     registry.add::<ipc_contracts::execution::EngineTerminalCommit>("execution")?;
     registry.add::<ipc_contracts::execution::HostCompileJob>("execution")?;
+    registry.add::<ipc_contracts::execution::HostToolInvocation>("execution")?;
+    registry.add::<ipc_contracts::execution::HostToolReceipt>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelChoice>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelCatalogue>("execution")?;
     registry.add::<ipc_contracts::execution::PublicStartReceipt>("execution")?;

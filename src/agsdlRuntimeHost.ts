@@ -1,3 +1,4 @@
+import { prepareCall } from './services/agsdlExecution/constraints';
 import { assessNativeToolPolicy } from './services/agsdlExecution/nativeToolPolicy';
 import { executionHostFailed, executionHostCompleteCompile, executionHostNextCompile, executionHostReady } from './services/tauriIpc';
 import { compilePlan } from './services/agsdlExecution/compiler';
@@ -65,9 +66,18 @@ async function start(): Promise<void> {
       } catch (error) { if (!(error instanceof ConformanceError)) throw error; }
       deliveryValidation = { input, valid };
     }
+    let callValidation;
+    if (Object.hasOwn(observation, 'callInput')) {
+      const input = observation.callInput;
+      let prepared = null;
+      try {
+        prepared = prepareCall(record(decode(job.authoredSource)), record(decode(input.declarationJson)), input.input, registry);
+      } catch (error) { if (!(error instanceof ConformanceError)) throw error; }
+      callValidation = { input, prepared };
+    }
     const toolPolicy = Object.hasOwn(observation, 'toolPolicyInput')
       ? assessNativeToolPolicy(observation.toolPolicyInput, registry) : undefined;
-    await executionHostCompleteCompile(job.ticket, JSON.stringify({ ...result, capturedRegistryJson: JSON.stringify(registry), entryValidation, deliveryValidation, toolPolicy }));
+    await executionHostCompleteCompile(job.ticket, JSON.stringify({ ...result, capturedRegistryJson: JSON.stringify(registry), entryValidation, deliveryValidation, toolPolicy, callValidation }));
   }
 }
 void start().catch(async () => {

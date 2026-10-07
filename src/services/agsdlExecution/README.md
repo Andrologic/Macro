@@ -269,10 +269,28 @@ Task relit les identités, le projet et la cible native au clic ; une preuve
 absente ou ambiguë donne `null`. Il ne déduit aucun lien du titre et ne reporte
 pas une Task globale sur toutes les cartes.
 
-Cette étape ne qualifie pas encore les adaptateurs Tool/Call, les approbations
-produit, les associations de Start ni l’ordonnancement Flow. Le catalogue natif
-ne publie donc pas encore de Tool disponible, et Start refuse les associations
-non qualifiées. Ces limites ne doivent pas être contournées par un fallback.
+Les adaptateurs Tool/Call workspace passent par le registre Macro existant.
+Leurs arguments exacts et leur scope évalué restent distincts du plafond natif.
+La réservation durable précède l’admission physique, avec les verrous de source
+et de politique conservés jusqu’à la fin de l’exécuteur. Stop demande l’arrêt ;
+le reçu ended attend la fin réelle de l’opération, y compris ses travaux natifs.
+Un échec terminé conserve un résultat exact marqué failed ; une perte de preuve
+reste uncertain. Terminal et MCP restent exclus de ce profil.
+
+Les approbations pending/decide sont natives et survivent à la navigation.
+L’UI fournit seulement run, source, approvalId et décision. La consommation et
+la réservation d’effet vérifient le travail, l’owner et Stop dans la transaction.
+Une Task de Start est facultative et doit désigner une cible Macro réelle.
+
+Le superviseur natif révoque l’incarnation perdue avant de recréer le webview.
+Le nouveau host réattache les captures conservées seulement si la compilation
+et les versions correspondent exactement. Les effets inconnus ne sont pas
+rejoués. Le port privé mark_uncertain vise un travail, sans arrêter les autres
+Agents. Les diagnostics publics permettent une sélection exacte ou une page
+récente bornée et ne révèlent pas la capture privée.
+
+Ces raccords restent soumis à la QA du host réel. La disponibilité produit
+reste false ; la pompe et l’ordonnancement appartiennent à Flow.
 
 ## Vérifications
 

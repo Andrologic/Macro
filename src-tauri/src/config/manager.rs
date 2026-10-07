@@ -163,6 +163,13 @@ impl Drop for McpConfigurationMutationGuard {
     }
 }
 
+/// Holds the approved project configuration stable through native effect admission.
+/// Its projection contains tool policy only, never providers or secret references.
+pub(crate) struct ExecutionToolsLease {
+    pub tools: Value,
+    _state: tokio::sync::OwnedRwLockReadGuard<ConfigState>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigApiError {
@@ -1451,6 +1458,55 @@ impl ConfigManager {
             )
         })?;
         Ok(document_with_diagnostics(&state, &key, stored))
+    }
+
+    pub(crate) async fn lock_execution_tools(
+        &self,
+        project_id: &str,
+    ) -> Result<ExecutionToolsLease, ConfigApiError> {
+        let registration = self
+            .lock_and_discover_project_documents(&[project_id.to_owned()])
+            .await?;
+        let state = self.state.clone().read_owned().await;
+        if !state.project_roots.contains_key(project_id)
+            || state.project_load_errors.contains_key(project_id)
+            || state.unresolved_project_repositories.contains(project_id)
+        {
+            return Err(ConfigApiError::new(
+                "PROJECT_SCOPE_UNAVAILABLE",
+                "Execution project configuration is unavailable",
+            ));
+        }
+        let user_documents = state
+            .documents
+            .iter()
+            .filter_map(|(key, stored)| {
+                matches!(key.scope, ConfigScope::User)
+                    .then_some((key.kind, stored.last_valid_value.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let project_documents = state
+            .documents
+            .iter()
+            .filter_map(|(key, stored)| match &key.scope {
+                ConfigScope::Project {
+                    project_id: current,
+                } if current == project_id => Some((key.kind, stored.last_valid_value.clone())),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let scoped = [(project_id, &project_documents)];
+        let (effective, _) =
+            effective_documents(&user_documents, &scoped, &state.session_documents);
+        let tools = effective.get("tools").ok_or_else(|| {
+            ConfigApiError::new("TOOLS_UNAVAILABLE", "Execution tool policy is unavailable")
+        })?;
+        let tools = serde_json::json!({"riskLevel":tools.get("riskLevel"),"builtIn":tools.get("builtIn"),"modes":tools.get("modes")});
+        drop(registration);
+        Ok(ExecutionToolsLease {
+            tools,
+            _state: state,
+        })
     }
 
     pub async fn get_snapshot(

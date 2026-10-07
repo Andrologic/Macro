@@ -1335,6 +1335,9 @@ async fn public_diagnostics_are_historical_bounded_and_source_scoped() {
         .unwrap()
         .cursor;
     let request = diagnostics::DiagnosticRequest {
+        selected: None,
+        before: None,
+        recent: false,
         system_start_id: runtime.system_start_id.clone(),
         source: receipt.snapshot.source.clone(),
         activation_id: Some(delivery.work.activation_id.clone()),
@@ -1359,9 +1362,27 @@ async fn public_diagnostics_are_historical_bounded_and_source_scoped() {
         .await
         .unwrap()
         .cursor;
-    let page = diagnostics::read(&pool, latest).await.unwrap();
+    let page = diagnostics::read(&pool, latest.clone()).await.unwrap();
     assert!(page.incomplete);
     assert_eq!(page.diagnostics.len(), 64);
+    let mut recent = latest.clone();
+    recent.recent = true;
+    let last = diagnostics::read(&pool, recent.clone()).await.unwrap();
+    assert_eq!(last.diagnostics[0].sequence, latest.through);
+    recent.before = last.next_before.clone();
+    let older = diagnostics::read(&pool, recent).await.unwrap();
+    assert_eq!(older.diagnostics.len(), 3);
+    assert!(!older.incomplete);
+    let chosen = &last.diagnostics[0];
+    latest.selected = Some(vec![diagnostics::DiagnosticIdentity {
+        id: chosen.id.clone(),
+        sequence: chosen.sequence.clone(),
+    }]);
+    let selected = diagnostics::read(&pool, latest.clone()).await.unwrap();
+    assert_eq!(selected.diagnostics.len(), 1);
+    assert_eq!(selected.diagnostics[0].id, chosen.id);
+    latest.selected.as_mut().unwrap()[0].id = "foreign:1".into();
+    assert!(diagnostics::read(&pool, latest).await.is_err());
     let mut foreign = request.clone();
     foreign.source.owner.project_id = "other".into();
     assert!(diagnostics::read(&pool, foreign).await.is_err());
@@ -1727,4 +1748,226 @@ async fn external_graphless_delivery_uses_native_ids_and_keeps_its_exact_receipt
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn call_witness_requires_exact_retained_result_and_matching_invocation() {
+    const DECLARATION: &str = r#"{"type":"call","binding":"read","next":[]}"#;
+    const BINDING: &str = r#"{"contract":{"identity":"macro/tool/read","version":"1"},"implementation":{"identity":"macro/desktop","version":"1"}}"#;
+    struct CallCompiler;
+    impl CaptureAuthority for CallCompiler {
+        type CommitGuard = ();
+        async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+            let mut capture = Compiler.capture(request, id).await?;
+            capture.snapshot.authored_source = format!(
+                r#"{{"bindings":{{"read":{BINDING}}},"flow":{{"steps":{{"second":{DECLARATION}}}}}}}"#
+            );
+            capture
+                .policies
+                .iter_mut()
+                .find(|p| p.step == ["second"])
+                .unwrap()
+                .agent_name = None;
+            capture.private.call_scopes.push(capture::CallScope {
+                step: vec!["second".into()],
+                permissions_json: "[]".into(),
+                scope_json: "{}".into(),
+            });
+            Ok(capture)
+        }
+        async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    let mut start_request = request();
+    let source = format!(
+        r#"{{"bindings":{{"read":{BINDING}}},"flow":{{"steps":{{"second":{DECLARATION}}}}}}}"#
+    );
+    start_request.source.source_sha256 = format!("{:x}", Sha256::digest(source.as_bytes()));
+    let started = start(&pool, start_request, &CallCompiler).await.unwrap();
+    let runtime = resume(&pool, &started.system_start_id, &versions())
+        .await
+        .unwrap();
+    let delivery = delivery(&pool, &runtime, "second", "native-call").await;
+    accept_delivery(&pool, &runtime, delivery.clone())
+        .await
+        .unwrap();
+    begin(&pool, &runtime, &delivery.delivery_id).await.unwrap();
+    let (_, digest) = responses::read(&pool, &runtime, &delivery.work)
+        .await
+        .unwrap();
+    responses::close(
+        &pool,
+        responses::Closure {
+            owner: runtime.clone(),
+            work: delivery.work.clone(),
+            cursor: "0".into(),
+            digest: digest.clone(),
+            validation_json: r#"{"kind":"success"}"#.into(),
+        },
+    )
+    .await
+    .unwrap();
+    let mut request = prepared::Prepare {
+        owner: runtime.clone(),
+        work: delivery.work.clone(),
+        outcome: EngineOutcome::Completed {
+            output: EngineValue {
+                origin: "call".into(),
+                value_json: "{}".into(),
+            },
+        },
+        response_cursor: "0".into(),
+        termination_evidence_json: "{}".into(),
+        memory: None,
+        validation: prepared::Validation {
+            snapshot_digest: prepared::snapshot_digest(&started.snapshot).unwrap(),
+            input: delivery.input,
+            declaration_json: Some(DECLARATION.into()),
+            closure_digest: digest,
+            selected_branch: None,
+        },
+    };
+    let binding = BINDING;
+    request.outcome = EngineOutcome::Completed {
+        output: EngineValue {
+            origin: "call".into(),
+            value_json: r#"{"data":9007199254740993}"#.into(),
+        },
+    };
+    assert!(
+        prepared::prepare(&pool, "generation", request.clone())
+            .await
+            .is_err(),
+        "no invocation cannot complete"
+    );
+    let mut tool = effect(&runtime, &request.work);
+    tool.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "call-result".into(),
+        provider_attempt_id: None,
+    };
+    tool.invocation_json =
+        serde_json::json!({"bindingJson":binding,"argumentsJson":"{}"}).to_string();
+    // Fixture inserts a retained physical receipt; validation itself reads the actual SQL row.
+    sqlx::query("INSERT INTO engine_effects VALUES (?,?,?,?,?,?,?)")
+        .bind(&runtime.system_start_id)
+        .bind(&request.work.activation_id)
+        .bind(effect_key(&tool.effect).unwrap())
+        .bind(encode(&tool).unwrap())
+        .bind("ended")
+        .bind(
+            encode(&EngineSettlement {
+                context: tool.context.clone(),
+                effect: tool.effect.clone(),
+                status: "ended".into(),
+                evidence_json: r#"{"failed":false}"#.into(),
+            })
+            .unwrap(),
+        )
+        .bind("9007199254740993")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut wrong = request.clone();
+    wrong.outcome = EngineOutcome::Completed {
+        output: EngineValue {
+            origin: "call".into(),
+            value_json: r#"{"data":9007199254740992}"#.into(),
+        },
+    };
+    assert!(
+        prepared::prepare(&pool, "generation", wrong).await.is_err(),
+        "rounded or changed result must fail"
+    );
+    let correct = encode(&tool).unwrap();
+    tool.invocation_json = r#"{"bindingJson":"{}","argumentsJson":"{}"}"#.into();
+    sqlx::query("UPDATE engine_effects SET record_json=? WHERE system_id=?")
+        .bind(encode(&tool).unwrap())
+        .bind(&runtime.system_start_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        prepared::prepare(&pool, "generation", request.clone())
+            .await
+            .is_err(),
+        "another binding must fail"
+    );
+    sqlx::query("UPDATE engine_effects SET record_json=? WHERE system_id=?")
+        .bind(correct)
+        .bind(&runtime.system_start_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    prepared::prepare(&pool, "generation", request)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn uncertainty_is_work_local_and_public_approval_rejects_foreign_source() {
+    let (_temp, pool, receipt, runtime) = setup().await;
+    let a = delivery(&pool, &runtime, "second", "work-local").await;
+    accept_delivery(&pool, &runtime, a.clone()).await.unwrap();
+    begin(&pool, &runtime, &a.delivery_id).await.unwrap();
+    let mut tool = effect(&runtime, &a.work);
+    tool.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "approval-local".into(),
+        provider_attempt_id: None,
+    };
+    let approval = approvals::request(
+        &pool,
+        approvals::Request {
+            effect: tool,
+            tool_name: "read".into(),
+            summary: "Read synthetic file".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let scope = approvals::ApprovalScope {
+        system_start_id: runtime.system_start_id.clone(),
+        source: receipt.snapshot.source.clone(),
+    };
+    assert_eq!(
+        approvals::pending_public(&pool, scope.clone())
+            .await
+            .unwrap()
+            .approvals
+            .len(),
+        1
+    );
+    let mut foreign = scope.clone();
+    foreign.source.owner.project_id = "foreign".into();
+    assert!(approvals::decide_public(
+        &pool,
+        approvals::ApprovalDecision {
+            scope: foreign,
+            approval_id: approval.approval_id.clone(),
+            approve: true
+        }
+    )
+    .await
+    .is_err());
+    mark_uncertain(&pool, &runtime, &a.work, "one work failed")
+        .await
+        .unwrap();
+    assert!(approvals::decide_public(
+        &pool,
+        approvals::ApprovalDecision {
+            scope,
+            approval_id: approval.approval_id,
+            approve: true
+        }
+    )
+    .await
+    .is_err());
+    let b = delivery(&pool, &runtime, "b", "other-agent").await;
+    accept_delivery(&pool, &runtime, b.clone()).await.unwrap();
+    assert!(matches!(
+        begin(&pool, &runtime, &b.delivery_id).await.unwrap(),
+        Admission::Admitted(..)
+    ));
 }

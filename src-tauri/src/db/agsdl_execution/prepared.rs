@@ -236,6 +236,74 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
             && closure.digest == request.validation.closure_digest,
         "Validation belongs to another response closure",
     )?;
+    if let EngineOutcome::Completed { output } = &request.outcome {
+        if output.origin == "call" {
+            let raw = declaration(&stored.snapshot, &request.work)?
+                .ok_or_else(|| failure("CORRELATION", "call", "Call declaration is absent"))?;
+            let step: Value = serde_json::from_str(&raw)?;
+            require(
+                step.get("type").and_then(Value::as_str) == Some("call"),
+                "Completed Call belongs to another step",
+            )?;
+            let document: Value = serde_json::from_str(&stored.snapshot.authored_source)?;
+            let binding = step
+                .get("binding")
+                .and_then(Value::as_str)
+                .and_then(|name| {
+                    document
+                        .get("bindings")
+                        .and_then(|bindings| bindings.get(name))
+                })
+                .ok_or_else(|| failure("CORRELATION", "call", "Call binding is absent"))?;
+            let rows = sqlx::query("SELECT record_json,status,result_json,settlement_json FROM engine_effects WHERE system_id=? AND activation_id=?")
+                .bind(&request.work.system_start_id).bind(&request.work.activation_id).fetch_all(&mut *db).await?;
+            require(
+                rows.len() == 1,
+                "Completed Call requires exactly its registered invocation",
+            )?;
+            let effect: EngineEffect = serde_json::from_str(rows[0].get("record_json"))?;
+            require(
+                effect.context.work == request.work
+                    && effect.context.owner == request.owner
+                    && matches!(
+                        effect.effect,
+                        EngineEffectIdentity::Tool {
+                            provider_attempt_id: None,
+                            ..
+                        }
+                    )
+                    && rows[0].get::<String, _>("status") == "ended",
+                "Completed Call has no ended native invocation",
+            )?;
+            let settlement: EngineSettlement =
+                serde_json::from_str(rows[0].get::<&str, _>("settlement_json"))?;
+            let evidence: Value = serde_json::from_str(&settlement.evidence_json)?;
+            require(
+                evidence.get("failed").and_then(Value::as_bool) == Some(false),
+                "A failed native invocation cannot complete a Call",
+            )?;
+            let invocation: Value = serde_json::from_str(&effect.invocation_json)?;
+            let called = invocation
+                .get("bindingJson")
+                .and_then(Value::as_str)
+                .ok_or_else(|| failure("CORRELATION", "call", "Invocation binding is absent"))?;
+            require(
+                super::super::exact_json::equal(called, &encode(binding)?)?,
+                "Call completed with another binding",
+            )?;
+            let result: String = rows[0]
+                .get::<Option<String>, _>("result_json")
+                .ok_or_else(|| failure("CORRELATION", "call", "Native Call result is absent"))?;
+            let completion: Value = serde_json::from_str(&output.value_json)?;
+            let data = completion.get("data").ok_or_else(|| {
+                failure("OUTPUT_CONSTRAINT", "data", "Call output data is absent")
+            })?;
+            require(
+                super::super::exact_json::equal(&encode(data)?, &result)?,
+                "Call output differs from the retained native result",
+            )?;
+        }
+    }
     if matches!(&request.outcome, EngineOutcome::Completed { output } if output.origin == "agent") {
         let validation: Value = serde_json::from_str(&closure.validation_json)?;
         require(

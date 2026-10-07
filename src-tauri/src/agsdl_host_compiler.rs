@@ -192,6 +192,31 @@ impl CompileBroker {
                 "Compiler result does not describe its native ticket",
             ));
         }
+        if let Some(input) = registry.get("callInput") {
+            if result.pointer("/callValidation/input") != Some(input) {
+                return Err(failure(
+                    "CORRELATION",
+                    "call",
+                    "Call validation differs from its native input ticket",
+                ));
+            }
+        }
+        if let Some(input) = registry.get("toolPolicyInput") {
+            if result.pointer("/toolPolicy/input") != Some(input)
+                || !matches!(
+                    result
+                        .pointer("/toolPolicy/decision")
+                        .and_then(Value::as_str),
+                    Some("allow" | "ask" | "deny")
+                )
+            {
+                return Err(failure(
+                    "CORRELATION",
+                    "policy",
+                    "Tool policy does not describe its native invocation ticket",
+                ));
+            }
+        }
         if let Some(input) = registry.get("deliveryInput") {
             if result.pointer("/deliveryValidation/input") != Some(input) {
                 return Err(failure(

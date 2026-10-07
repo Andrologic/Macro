@@ -64,6 +64,8 @@ pub(crate) struct CompilationCapture {
     pub native_catalogue: ModelCapture,
     pub result: Value,
     pub generation: String,
+    pub call_permissions_json: String,
+    pub call_scope_json: String,
 }
 
 pub(crate) fn project_scope(workspace: &Path, source: &LockedExecutionSource) -> Result<Value> {
@@ -131,12 +133,59 @@ pub(crate) fn project_scope(workspace: &Path, source: &LockedExecutionSource) ->
         json!({"projectId":project.id,"root":root,"rootIdentity":root_identity,"sourceOwner":source.revision.owner}),
     )
 }
+pub(crate) fn execution_scope(
+    workspace: &Path,
+    source: &LockedExecutionSource,
+    task: Option<(&str, &crate::git::GitState)>,
+) -> Result<Value> {
+    let mut scope = project_scope(workspace, source)?;
+    if let Some((task_id, git)) = task {
+        let reference = crate::db::agsdl_execution::card_associations::CardAssociation {
+            path: String::new(),
+            task_id: Some(task_id.into()),
+            legacy_node_id: None,
+        };
+        let (resolved_id, target, root) =
+            crate::agsdl_host_tasks::resolve_target(workspace, source, &reference, git)?
+                .ok_or_else(|| {
+                    failure(
+                        "PERMISSION",
+                        "associations.taskId",
+                        "Task has no current target in the captured source scope",
+                    )
+                })?;
+        let identity = crate::fs::operations::workspace_root_identity(&root)
+            .map_err(|_| {
+                failure(
+                    "SOURCE_UNAVAILABLE",
+                    "scope",
+                    "Task target identity is unavailable",
+                )
+            })?
+            .observation_key()
+            .ok_or_else(|| {
+                failure(
+                    "UNSUPPORTED",
+                    "scope",
+                    "Task target identity cannot be observed",
+                )
+            })?;
+        scope["root"] = serde_json::to_value(root)?;
+        scope["rootIdentity"] = Value::String(identity);
+        scope["taskId"] = Value::String(resolved_id);
+        scope["taskTarget"] = serde_json::to_value(target)?;
+    }
+    Ok(scope)
+}
+
 fn observation(
     workspace: &Path,
     source: &LockedExecutionSource,
     catalogue: &ModelCapture,
+    tools: &Value,
+    task: Option<(&str, &crate::git::GitState)>,
 ) -> Result<Value> {
-    let scope = project_scope(workspace, source)?;
+    let scope = execution_scope(workspace, source, task)?;
     let project = &source.project;
     let document: Value = serde_json::from_str(&source.source).unwrap_or(Value::Null);
     let mut configurations = Vec::new();
@@ -190,7 +239,7 @@ fn observation(
             configurations.push(json!({
                 "agentName": name, "verifiedRequirementsJson": [],
                 "effectiveSettingsJson": serde_json::to_string(&settings)?,
-                "permissionsJson": serde_json::to_string(&json!({"mode":mode,"allowedToolIds":[],"readOnly":project.user_read_only || project.is_read_only}))?,
+                "permissionsJson": serde_json::to_string(&crate::agsdl_host_tools::permissions(mode, project.user_read_only || project.is_read_only, tools)?)?,
                 "scopeJson": serde_json::to_string(&scope)?
             }));
         }
@@ -198,7 +247,8 @@ fn observation(
     let models = catalogue.catalogue.models.iter().map(|model| Ok(json!({
         "editionJson":serde_json::to_string(&model.edition)?,"providerId":model.provider_id,"modelId":model.model_id
     }))).collect::<Result<Vec<_>>>()?;
-    let mut observation = json!({"format":"macro-native-registry-observation/1","models":models,"tools":[],"configurations":configurations});
+    let mut observation = json!({"format":"macro-native-registry-observation/1","models":models,"tools":crate::agsdl_host_tools::observations(),"configurations":configurations,
+        "callPermissions":crate::agsdl_host_tools::permissions("Implement", project.user_read_only || project.is_read_only, tools)?,"callScope":scope});
     let version = format!(
         "sha256:{:x}",
         Sha256::digest(serde_json::to_vec(&(&observation, &catalogue.providers))?)
@@ -214,7 +264,7 @@ pub(crate) async fn compile(
     workspace: &Path,
     request: &ExecutionPreflightRequest,
 ) -> Result<CompilationCapture> {
-    compile_input(host, manager, pool, workspace, request, None).await
+    compile_input(host, manager, pool, workspace, request, None, None).await
 }
 
 pub(crate) async fn compile_input(
@@ -224,6 +274,7 @@ pub(crate) async fn compile_input(
     workspace: &Path,
     request: &ExecutionPreflightRequest,
     start_entry: Option<Option<&EngineEntry>>,
+    task: Option<(&str, &crate::git::GitState)>,
 ) -> Result<CompilationCapture> {
     let metadata = metadata_root(workspace)?;
     let locked = lock_execution_source_owner(
@@ -234,7 +285,13 @@ pub(crate) async fn compile_input(
     )
     .await?;
     let native_catalogue = agsdl_host_catalogue::capture(manager, pool).await?;
-    let mut registry = observation(workspace, &locked, &native_catalogue)?;
+    let policy = manager
+        .lock_execution_tools(&locked.revision.owner.project_id)
+        .await
+        .map_err(|_| failure("PERMISSION", "policy", "Project tool policy is unavailable"))?;
+    let mut registry = observation(workspace, &locked, &native_catalogue, &policy.tools, task)?;
+    let call_permissions_json = serde_json::to_string(&registry["callPermissions"])?;
+    let call_scope_json = serde_json::to_string(&registry["callScope"])?;
     if let Some(entry) = start_entry {
         registry["startEntry"] = serde_json::to_value(entry)?;
     }
@@ -252,6 +309,8 @@ pub(crate) async fn compile_input(
         native_catalogue,
         result: serde_json::from_str(&receipt.result_json)?,
         generation: receipt.generation,
+        call_permissions_json,
+        call_scope_json,
     })
 }
 
@@ -335,11 +394,16 @@ struct StartAuthority<'a> {
     manager: &'a ConfigManager,
     pool: &'a sqlx::SqlitePool,
     workspace: &'a Path,
+    git: &'a crate::git::GitState,
     captured: std::sync::Mutex<Option<(String, String, String, String)>>,
 }
 
+struct StartCommitGuard {
+    _source: LockedExecutionSource,
+    _policy: crate::config::ExecutionToolsLease,
+}
 impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
-    type CommitGuard = LockedExecutionSource;
+    type CommitGuard = StartCommitGuard;
     async fn capture(
         &self,
         request: &EngineStartRequest,
@@ -350,7 +414,8 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             StepPolicy, TrustedCapture,
         };
         if request.profile != "macro-serial-inline-v1"
-            || request.associations != EngineAssociations::default()
+            || request.associations.workspace_id.is_some()
+            || request.associations.conversation_id.is_some()
         {
             return Err(failure(
                 "UNSUPPORTED",
@@ -369,6 +434,11 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
                 expected: Some(request.source.clone()),
             },
             Some(request.entry.as_ref()),
+            request
+                .associations
+                .task_id
+                .as_deref()
+                .map(|id| (id, self.git)),
         )
         .await?;
         if captured.generation != self.lease.generation()
@@ -409,7 +479,7 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             .and_then(Value::as_array)
             .ok_or_else(|| failure("CORRELATION", "compiler", "Compiled steps are absent"))?;
         let mut policies = Vec::new();
-        let call_scopes: Vec<CallScope> = Vec::new();
+        let mut call_scopes: Vec<CallScope> = Vec::new();
         for step in steps {
             let declaration: Value = serde_json::from_str(
                 step.get("declarationJson")
@@ -431,6 +501,15 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
                     })
                 })
                 .transpose()?;
+            if declaration.get("type").and_then(Value::as_str) == Some("call") {
+                call_scopes.push(CallScope {
+                    step: serde_json::from_value(
+                        step.get("address").cloned().unwrap_or(Value::Null),
+                    )?,
+                    permissions_json: captured.call_permissions_json.clone(),
+                    scope_json: captured.call_scope_json.clone(),
+                });
+            }
             policies.push(StepPolicy {
                 step: serde_json::from_value(step.get("address").cloned().unwrap_or(Value::Null))?,
                 agent_name: if declaration.get("type").and_then(Value::as_str) == Some("agent") {
@@ -494,7 +573,22 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
         )
         .await?;
         let current_catalogue = agsdl_host_catalogue::capture(self.manager, self.pool).await?;
-        let current_observation = observation(self.workspace, &locked, &current_catalogue)?;
+        let policy = self
+            .manager
+            .lock_execution_tools(&locked.revision.owner.project_id)
+            .await
+            .map_err(|_| failure("PERMISSION", "policy", "Project tool policy is unavailable"))?;
+        let current_observation = observation(
+            self.workspace,
+            &locked,
+            &current_catalogue,
+            &policy.tools,
+            request
+                .associations
+                .task_id
+                .as_deref()
+                .map(|id| (id, self.git)),
+        )?;
         let catalogue = serde_json::to_string(&current_catalogue)?;
         let prior = self
             .captured
@@ -513,7 +607,10 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
             ));
         }
         self.lease.ensure_live()?;
-        Ok(locked)
+        Ok(StartCommitGuard {
+            _source: locked,
+            _policy: policy,
+        })
     }
 }
 
@@ -523,6 +620,7 @@ pub(crate) async fn start(
     pool: &sqlx::SqlitePool,
     workspace: &Path,
     request: EngineStartRequest,
+    git: &crate::git::GitState,
 ) -> Result<EngineStartReceipt> {
     let lease = host.start_lease().await?;
     let authority = StartAuthority {
@@ -531,6 +629,7 @@ pub(crate) async fn start(
         manager,
         pool,
         workspace,
+        git,
         captured: Default::default(),
     };
     let receipt = crate::db::agsdl_execution::start(pool, request, &authority).await?;

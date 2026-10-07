@@ -1,3 +1,4 @@
+import { createResidentToolDispatch } from './nativeToolDispatch';
 import type { AppMode } from '../../types';
 import type { EngineContext } from '../../types/generated/ipc';
 import type { StreamingChatOptions, StreamCompletionReason, ToolCall, ToolCallResolution } from '../ai/contracts';
@@ -57,7 +58,7 @@ export class ResidentAgent {
   private constructor(private readonly request: ResidentAgentRequest, private readonly memory: MacroAgentMemory,
     private readonly ports: ResidentAgentPorts, private readonly invokeTool: ResidentToolDispatch) {}
 
-  static async prepare(request: ResidentAgentRequest, invokeTool: ResidentToolDispatch, ports = nativeResidentAgentPorts): Promise<ResidentAgent> {
+  static async prepare(request: ResidentAgentRequest, invokeTool: ResidentToolDispatch = createResidentToolDispatch(request), ports = nativeResidentAgentPorts): Promise<ResidentAgent> {
     const agent = request.context.work.agentInstanceId;
     if (!agent || request.context.permissionsJson !== request.configuration.permissionsJson || request.context.scopeJson !== request.configuration.scopeJson) {
       return fail('CORRELATION', '', 'Agent configuration does not match admitted work.');

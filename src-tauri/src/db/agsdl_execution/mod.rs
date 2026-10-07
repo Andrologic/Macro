@@ -1765,3 +1765,23 @@ pub(crate) async fn authorize_reserved_effect(
     tx.commit().await?;
     Ok(())
 }
+
+/// Native supervisor enumeration. Neither caller-supplied versions nor current UI settings enter recovery.
+pub(crate) async fn retained_for_resume(
+    pool: &SqlitePool,
+    after: &str,
+) -> Result<Vec<(EngineSnapshot, capture::PrivateCapture)>> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = connection.begin().await?;
+    let ids: Vec<String> = sqlx::query_scalar("SELECT s.system_id FROM engine_systems s JOIN engine_host_captures c ON c.system_id=s.system_id WHERE s.system_id > ? ORDER BY s.system_id LIMIT 100")
+        .bind(after).fetch_all(&mut *tx).await?;
+    let mut result = Vec::new();
+    for id in ids {
+        let stored = load(&mut tx, &id).await?;
+        if let Some(capture) = stored.capture {
+            result.push((stored.snapshot, capture));
+        }
+    }
+    tx.commit().await?;
+    Ok(result)
+}

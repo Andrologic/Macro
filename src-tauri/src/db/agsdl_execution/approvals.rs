@@ -35,8 +35,8 @@ fn projection(id: String, request: Request, status: String) -> PublicApproval {
     PublicApproval {
         approval_id: id,
         work: request.effect.context.work,
-        tool_name: request.tool_name,
-        summary: request.summary,
+        tool_name: request.tool_name.chars().take(128).collect(),
+        summary: request.summary.chars().take(512).collect(),
         status,
     }
 }
@@ -81,6 +81,28 @@ pub(crate) async fn request(pool: &SqlitePool, request: Request) -> Result<Publi
     tx.commit().await?;
     Ok(projection(id, request, "pending".into()))
 }
+/// A policy change cannot bypass a decision already requested for this effect.
+pub(crate) async fn existing(
+    pool: &SqlitePool,
+    effect: &EngineEffect,
+) -> Result<Option<PublicApproval>> {
+    let key = effect_key(&effect.effect)?;
+    let row = sqlx::query("SELECT approval_id,request_json,status FROM engine_approvals WHERE system_id = ? AND effect_key = ?")
+        .bind(&effect.context.work.system_start_id).bind(key).fetch_optional(pool).await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let request: Request = serde_json::from_str(row.get("request_json"))?;
+    require(
+        record_equal(&request.effect, effect)?,
+        "Approval belongs to another invocation",
+    )?;
+    Ok(Some(projection(
+        row.get("approval_id"),
+        request,
+        row.get("status"),
+    )))
+}
 /// A remounted UI retrieves pending decisions; retained grants are never inferred.
 pub(crate) async fn pending(pool: &SqlitePool, system_id: &str) -> Result<Vec<PublicApproval>> {
     let mut connection = pool.acquire().await?;
@@ -104,6 +126,14 @@ pub(crate) async fn pending(pool: &SqlitePool, system_id: &str) -> Result<Vec<Pu
     Ok(result)
 }
 pub(crate) async fn decide(pool: &SqlitePool, id: &str, approve: bool) -> Result<PublicApproval> {
+    decide_inner(pool, id, approve, None).await
+}
+async fn decide_inner(
+    pool: &SqlitePool,
+    id: &str,
+    approve: bool,
+    scope: Option<&ApprovalScope>,
+) -> Result<PublicApproval> {
     let mut connection = pool.acquire().await?;
     let mut tx = durable(&mut connection).await?;
     let row = sqlx::query("SELECT request_json,status FROM engine_approvals WHERE approval_id = ?")
@@ -113,6 +143,13 @@ pub(crate) async fn decide(pool: &SqlitePool, id: &str, approve: bool) -> Result
         .ok_or_else(|| failure("NOT_FOUND", "approvalId", "Unknown approval"))?;
     let request: Request = serde_json::from_str(row.get("request_json"))?;
     let stored = load(&mut tx, &request.effect.context.work.system_start_id).await?;
+    if let Some(scope) = scope {
+        require(
+            stored.snapshot.system_start_id == scope.system_start_id
+                && stored.snapshot.source == scope.source,
+            "Approval does not belong to this retained run/source",
+        )?;
+    }
     dispatchable(&stored, &request.effect)?;
     let status: String = row.get("status");
     let desired = if approve { "approved" } else { "denied" };
@@ -184,4 +221,53 @@ pub(crate) async fn consume_and_register(
     }
     tx.commit().await?;
     Ok(registered)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalScope {
+    pub system_start_id: String,
+    pub source: EngineSourceRevision,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDecision {
+    pub scope: ApprovalScope,
+    pub approval_id: String,
+    pub approve: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalPage {
+    pub approvals: Vec<PublicApproval>,
+    pub incomplete: bool,
+}
+pub(crate) async fn pending_public(
+    pool: &SqlitePool,
+    scope: ApprovalScope,
+) -> Result<ApprovalPage> {
+    let snapshot = read_snapshot(pool, &scope.system_start_id).await?;
+    require(
+        snapshot.source == scope.source,
+        "Approval source differs from the retained snapshot",
+    )?;
+    let mut approvals = pending(pool, &scope.system_start_id).await?;
+    let incomplete = approvals.len() > 64;
+    approvals.truncate(64);
+    Ok(ApprovalPage {
+        approvals,
+        incomplete,
+    })
+}
+pub(crate) async fn decide_public(
+    pool: &SqlitePool,
+    request: ApprovalDecision,
+) -> Result<PublicApproval> {
+    decide_inner(
+        pool,
+        &request.approval_id,
+        request.approve,
+        Some(&request.scope),
+    )
+    .await
 }

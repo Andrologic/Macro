@@ -20,11 +20,19 @@ pub async fn execution_start(
         let state = app.state::<DbPool>();
         let host = app.state::<crate::agsdl_host::HostState>();
         let manager = app.state::<crate::config::ConfigManager>();
+        let git = app.state::<crate::git::GitState>();
         let workspace_state = app.state::<crate::WorkspaceMetadataRoot>();
         let workspace = workspace_state.0.read().await.clone();
-        crate::agsdl_host_capture::start(&host, &manager, &pool(&state).await?, &workspace, request)
-            .await
-            .map(Into::into)
+        crate::agsdl_host_capture::start(
+            &host,
+            &manager,
+            &pool(&state).await?,
+            &workspace,
+            request,
+            &git,
+        )
+        .await
+        .map(Into::into)
     })
     .await
     .map_err(|_| {
@@ -61,6 +69,7 @@ pub async fn execution_stop(
             if effect.status == "ended" {
                 continue;
             }
+            crate::agsdl_host_tools::cancel(&effect.registered);
             if let EngineEffectIdentity::Provider {
                 provider_attempt_id,
             } = effect.registered.effect
@@ -202,4 +211,19 @@ pub async fn execution_resolve_card_task(
 ) -> repository::Result<Option<crate::agsdl_host_tasks::ResolvedCardTask>> {
     let workspace = workspace.0.read().await.clone();
     crate::agsdl_host_tasks::resolve(&pool(&state).await?, &workspace, &git, request).await
+}
+
+#[tauri::command]
+pub async fn execution_pending_approvals(
+    state: State<'_, DbPool>,
+    request: repository::approvals::ApprovalScope,
+) -> repository::Result<repository::approvals::ApprovalPage> {
+    repository::approvals::pending_public(&pool(&state).await?, request).await
+}
+#[tauri::command]
+pub async fn execution_decide_approval(
+    state: State<'_, DbPool>,
+    request: repository::approvals::ApprovalDecision,
+) -> repository::Result<repository::approvals::PublicApproval> {
+    repository::approvals::decide_public(&pool(&state).await?, request).await
 }

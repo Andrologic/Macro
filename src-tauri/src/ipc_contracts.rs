@@ -10,6 +10,10 @@ pub mod execution {
     };
     pub use crate::agsdl_host_compiler::HostCompileJob;
     pub use crate::agsdl_host_tasks::{PublicTaskTarget, ResolveCardTask, ResolvedCardTask};
+    pub use crate::agsdl_host_tools::{HostToolInvocation, HostToolReceipt};
+    pub use crate::db::agsdl_execution::approvals::{
+        ApprovalDecision, ApprovalPage, ApprovalScope, PublicApproval,
+    };
     pub use crate::db::agsdl_execution::diagnostics::{
         DiagnosticRequest, PublicExecutionDiagnostic,
     };

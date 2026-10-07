@@ -53,9 +53,10 @@ fn effect(context: EngineContext, request: &AiChatRequest) -> Result<EngineEffec
     })
 }
 
-async fn scope_guard(
+pub(crate) async fn scope_guard(
     workspace: &std::path::Path,
     context: &EngineContext,
+    git: &crate::git::GitState,
 ) -> Result<crate::workspace::architect::LockedExecutionSource> {
     let scope: Value = serde_json::from_str(&context.scope_json)?;
     let owner: EngineSourceOwner = serde_json::from_value(
@@ -69,7 +70,14 @@ async fn scope_guard(
         workspace, &metadata, &owner, None,
     )
     .await?;
-    let current = crate::agsdl_host_capture::project_scope(workspace, &guard)?;
+    let current = crate::agsdl_host_capture::execution_scope(
+        workspace,
+        &guard,
+        scope
+            .get("taskId")
+            .and_then(Value::as_str)
+            .map(|id| (id, git)),
+    )?;
     let permissions: Value = serde_json::from_str(&context.permissions_json)?;
     if scope != current
         || permissions.get("readOnly").and_then(Value::as_bool)
@@ -174,6 +182,7 @@ pub(crate) async fn execution_host_register_provider(
     database: State<'_, DbPool>,
     manager: State<'_, ConfigManager>,
     workspace: State<'_, crate::WorkspaceMetadataRoot>,
+    git: State<'_, crate::git::GitState>,
     context: EngineContext,
     request: AiChatRequest,
 ) -> Result<bool> {
@@ -184,7 +193,7 @@ pub(crate) async fn execution_host_register_provider(
         .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
     let _gate = host.admission_gate().await;
     let root = workspace.0.read().await.clone();
-    let _scope = scope_guard(&root, &context).await?;
+    let _scope = scope_guard(&root, &context, &git).await?;
     let _provider = descriptor(&pool, &manager, &context, &request).await?;
     let effect = effect(context, &request)?;
     host.authenticate_owner(&webview, &effect.context.owner)?;
@@ -199,6 +208,7 @@ pub(crate) async fn execution_host_dispatch_provider(
     manager: State<'_, ConfigManager>,
     ai: State<'_, AiState>,
     workspace: State<'_, crate::WorkspaceMetadataRoot>,
+    git: State<'_, crate::git::GitState>,
     context: EngineContext,
     request: AiChatRequest,
 ) -> Result<()> {
@@ -209,7 +219,7 @@ pub(crate) async fn execution_host_dispatch_provider(
         .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
     let _gate = host.admission_gate().await;
     let root = workspace.0.read().await.clone();
-    let _scope = scope_guard(&root, &context).await?;
+    let _scope = scope_guard(&root, &context, &git).await?;
     let provider = descriptor(&pool, &manager, &context, &request).await?;
     repository::authorize_reserved_effect(&pool, &effect(context.clone(), &request)?).await?;
     host.authenticate_owner(&webview, &context.owner)?;

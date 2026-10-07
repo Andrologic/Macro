@@ -97,6 +97,7 @@ mod agsdl_host_catalogue;
 mod agsdl_host_compiler;
 mod agsdl_host_provider;
 mod agsdl_host_tasks;
+mod agsdl_host_tools;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -814,6 +815,7 @@ pub fn run() {
             agsdl_host::execution_host_close_responses,
             agsdl_host::execution_host_inspect,
             agsdl_host::execution_host_begin,
+            agsdl_host::execution_host_mark_uncertain,
             agsdl_host::execution_host_failed,
             agsdl_host::execution_host_next_compile,
             agsdl_host::execution_host_complete_compile,
@@ -822,6 +824,9 @@ pub fn run() {
             commands::agsdl_execution::execution_list_runs,
             commands::agsdl_execution::execution_find_start,
             commands::agsdl_execution::execution_read_diagnostic,
+            commands::agsdl_execution::execution_pending_approvals,
+            commands::agsdl_execution::execution_decide_approval,
+            crate::agsdl_host_tools::execution_host_invoke_tool,
             commands::agsdl_execution::execution_start,
             commands::agsdl_execution::execution_deliver,
             commands::agsdl_execution::execution_resolve_card_task,

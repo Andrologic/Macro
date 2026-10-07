@@ -2,7 +2,7 @@ import { invoke } from '../tauriRuntimeBridge';
 import { toNativeAiChatRequest, type AiStreamChatInput } from './ai';
 import type {
   PublicSnapshot as PublicSnapshotWire, PublicStartReceipt as PublicStartReceiptWire, PublicProjection as PublicProjectionWire, PublicEventPage as PublicEventPageWire, PublicStopState as PublicStopStateWire,
-  EngineOwner, EngineContext, EngineWork, EngineTerminalCommit, HostInspection, HostAdmission, Prepare, Emission, Closure,
+  ApprovalScope, ApprovalPage, ApprovalDecision, PublicApproval, HostToolInvocation, HostToolReceipt, EngineOwner, EngineContext, EngineWork, EngineTerminalCommit, HostInspection, HostAdmission, Prepare, Emission, Closure,
   ExecutionPreflightRequest, ExecutionPreflight, HostCompileJob, RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
 } from '../../types/generated/ipc';
 import type {
@@ -51,7 +51,7 @@ export async function findExecutionStart(owner: SourceOwner, requestId: string):
   const receipt = await invoke<PublicStartReceiptWire | null>('execution_find_start', { owner, requestId });
   return receipt === null ? null : nativeContract<PublicStartReceiptWire, PublicStartReceipt>(receipt);
 }
-export function readExecutionDiagnostic(request: DiagnosticRequest): Promise<PublicExecutionDiagnostic> {
+export function readExecutionDiagnostic(request: Omit<DiagnosticRequest, 'selected' | 'before' | 'recent'> & Partial<Pick<DiagnosticRequest, 'selected' | 'before' | 'recent'>>): Promise<PublicExecutionDiagnostic> {
   return invoke<PublicExecutionDiagnostic>('execution_read_diagnostic', { request });
 }
 export function executionModelChoices(): Promise<NativeModelCatalogue> {
@@ -101,4 +101,18 @@ export async function deliverExecution(request: ExternalDeliveryRequest): Promis
 
 export function resolveExecutionCardTask(request: import('../../types/generated/ipc').ResolveCardTask): Promise<import('../../types/generated/ipc').ResolvedCardTask | null> {
   return invoke('execution_resolve_card_task', { request });
+}
+
+export function executionHostInvokeTool(request: HostToolInvocation): Promise<HostToolReceipt> {
+  return invoke('execution_host_invoke_tool', { request });
+}
+export function executionHostMarkUncertain(owner: EngineOwner, work: EngineWork, reason: string): Promise<void> {
+  return invoke('execution_host_mark_uncertain', { owner, work, reason });
+}
+
+export function readExecutionApprovals(request: ApprovalScope): Promise<ApprovalPage> {
+  return invoke('execution_pending_approvals', { request });
+}
+export function decideExecutionApproval(request: ApprovalDecision): Promise<PublicApproval> {
+  return invoke('execution_decide_approval', { request });
 }

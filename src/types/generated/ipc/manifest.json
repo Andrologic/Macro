@@ -211,6 +211,30 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "ApprovalDecision",
+      "origin": "macro_lib::db::agsdl_execution::approvals::ApprovalDecision",
+      "path": "ApprovalDecision.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ApprovalPage",
+      "origin": "macro_lib::db::agsdl_execution::approvals::ApprovalPage",
+      "path": "ApprovalPage.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ApprovalScope",
+      "origin": "macro_lib::db::agsdl_execution::approvals::ApprovalScope",
+      "path": "ApprovalScope.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "ArchitectPlanConversationSyncRecord",
@@ -616,6 +640,14 @@
       "name": "DevProviderOverridesFile",
       "origin": "macro_lib::dev_overrides::DevProviderOverridesFile",
       "path": "DevProviderOverridesFile.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "DiagnosticIdentity",
+      "origin": "macro_lib::db::agsdl_execution::diagnostics::DiagnosticIdentity",
+      "path": "DiagnosticIdentity.ts"
     },
     {
       "families": [
@@ -1357,6 +1389,22 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "HostToolInvocation",
+      "origin": "macro_lib::agsdl_host_tools::HostToolInvocation",
+      "path": "HostToolInvocation.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "HostToolReceipt",
+      "origin": "macro_lib::agsdl_host_tools::HostToolReceipt",
+      "path": "HostToolReceipt.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",
@@ -1888,6 +1936,14 @@
       "name": "PublicAgent",
       "origin": "macro_lib::db::agsdl_execution::public::PublicAgent",
       "path": "PublicAgent.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicApproval",
+      "origin": "macro_lib::db::agsdl_execution::approvals::PublicApproval",
+      "path": "PublicApproval.ts"
     },
     {
       "families": [
