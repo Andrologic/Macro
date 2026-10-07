@@ -1,7 +1,7 @@
 import { MACRO_TOOL_REGISTRY } from '../../shared/macroToolRegistry';
 import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from '../agsdl/macroAgentConfiguration';
 import type { ExactJsonText } from './contracts';
-import { decode, encode, equal, fail, has, list, record, type ExactObject } from './exact';
+import { decode, encode, equal, fail, has, list, record, text, type ExactObject } from './exact';
 import { captureRegistry, ENGINE_CAPABILITIES, INVOCATION_CAPABILITIES, PUBLICATION_PROTOCOL, requireExactRequirements, type BindingAttestation, type CapturedRegistry, type ConfigurationAttestation, type ModelCatalogueEntry } from './registry';
 
 /** Native observations supplied only in the authenticated compiler ticket. No UI intake. */
@@ -61,6 +61,15 @@ export function buildNativeRegistry(authoredSource: string, observed: NativeRegi
     const agent = record(agents[observation.agentName]);
     if (typeof agent.configuration !== 'string') continue;
     const configuration: ExactObject = record(record(document.configurations)[agent.configuration]);
+    const permissions = record(decode(observation.permissionsJson));
+    const allowed = list(permissions.allowedToolIds).map(value => text(value));
+    for (const bindingName of Object.values(record(configuration.tools ?? {}))) {
+      const declaration = record(document.bindings)[text(bindingName)];
+      const adapter = bindings.find(binding => equal(decode(binding.declarationJson), declaration));
+      if (!adapter || adapter.target.kind !== 'macro-tool' || !allowed.includes(adapter.target.toolId)) {
+        return fail('PERMISSION', '/configurations/tools', 'Configured tool is outside the captured native policy.');
+      }
+    }
     configurations.push({ ...observation, agentDeclarationJson: encode(agent), configurationDeclarationJson: encode(configuration) });
   }
   return captureRegistry({ version: observed.version, bindings, models: observed.models, configurations, mcpTools: [] });

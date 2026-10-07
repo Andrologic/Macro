@@ -3,7 +3,7 @@ import { compilePlan, sourceDigest } from './compiler';
 import { documentFixture, id, json } from './conformanceFixtures';
 import { encode, record } from './exact';
 import { buildNativeRegistry, type NativeRegistryObservation } from './nativeRegistry';
-import { captureToolAliases, resolveBinding } from './registry';
+import { captureToolAliases } from './registry';
 
 function fixture() {
   const doc = documentFixture();
@@ -19,7 +19,7 @@ function fixture() {
     format: 'macro-native-registry-observation/1', version: 'native-fixture/1',
     models: [{ editionJson: encode(config.model), providerId: 'p', modelId: 'm' }],
     tools: [{ toolId: 'read', resultConstraintJson: json('{"type":"string"}'), effects: 'none', verifiedRequirementsJson: [] }],
-    configurations: [{ agentName: 'worker', verifiedRequirementsJson: [], effectiveSettingsJson: json('{}'), permissionsJson: json('["read"]'), scopeJson: json('{"projectId":"synthetic"}') }],
+    configurations: [{ agentName: 'worker', verifiedRequirementsJson: [], effectiveSettingsJson: json('{}'), permissionsJson: json('{"allowedToolIds":["read"]}'), scopeJson: json('{"projectId":"synthetic"}') }],
   };
   return { doc, config, observed };
 }
@@ -49,17 +49,15 @@ it.each(['version', 'implementation', 'settings', 'effect'])('refuses unimplemen
   if (field === 'implementation') record(binding.implementation).identity = 'other';
   if (field === 'settings') binding.settings = { workspacePath: '/untrusted' };
   if (field === 'effect') binding.effects = 'external';
-  const registry = buildNativeRegistry(encode(doc), observed);
-  expect(() => resolveBinding(doc, 'inspect', registry, 'tool')).toThrow('complete trusted declaration');
+  expect(() => buildNativeRegistry(encode(doc), observed)).toThrow('outside the captured native policy');
 });
 
 it('requires a real registered adapter, excludes MCP, and deduplicates identical declarations', () => {
   const { doc, observed } = fixture();
   record(doc.bindings).same = record(doc.bindings).inspect;
   expect(buildNativeRegistry(encode(doc), observed).bindings).toHaveLength(2);
-  const registry = buildNativeRegistry(encode(doc), { ...observed, tools: [] });
-  expect(() => resolveBinding(doc, 'inspect', registry, 'tool')).toThrow();
-  expect(registry.mcpTools).toEqual([]);
+  expect(() => buildNativeRegistry(encode(doc), { ...observed, tools: [] })).toThrow();
+  expect(buildNativeRegistry(encode(doc), observed).mcpTools).toEqual([]);
   expect(() => buildNativeRegistry(encode(doc), { ...observed, tools: [...observed.tools, ...observed.tools] })).toThrow('ambiguous');
 });
 
@@ -75,4 +73,10 @@ it.each([['a'.repeat(64), true], ['a'.repeat(65), false], ['résumé', false], [
     expect(result.plan).toBeNull();
     expect(() => captureToolAliases(doc, config, registry)).toThrow('transport');
   }
+});
+
+it('rejects a registered tool removed by the native project policy before compilation or provider admission', () => {
+  const { doc, observed } = fixture();
+  const restricted = { ...observed, configurations: observed.configurations.map(configuration => ({ ...configuration, permissionsJson: json('{"allowedToolIds":[]}') })) };
+  expect(() => buildNativeRegistry(encode(doc), restricted)).toThrow('outside the captured native policy');
 });

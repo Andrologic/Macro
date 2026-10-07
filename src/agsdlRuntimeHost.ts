@@ -1,3 +1,4 @@
+import { assessNativeToolPolicy } from './services/agsdlExecution/nativeToolPolicy';
 import { executionHostFailed, executionHostCompleteCompile, executionHostNextCompile, executionHostReady } from './services/tauriIpc';
 import { compilePlan } from './services/agsdlExecution/compiler';
 import { captureSourceRevision } from './services/agsdlExecution/metadata';
@@ -64,7 +65,9 @@ async function start(): Promise<void> {
       } catch (error) { if (!(error instanceof ConformanceError)) throw error; }
       deliveryValidation = { input, valid };
     }
-    await executionHostCompleteCompile(job.ticket, JSON.stringify({ ...result, capturedRegistryJson: JSON.stringify(registry), entryValidation, deliveryValidation }));
+    const toolPolicy = Object.hasOwn(observation, 'toolPolicyInput')
+      ? assessNativeToolPolicy(observation.toolPolicyInput, registry) : undefined;
+    await executionHostCompleteCompile(job.ticket, JSON.stringify({ ...result, capturedRegistryJson: JSON.stringify(registry), entryValidation, deliveryValidation, toolPolicy }));
   }
 }
 void start().catch(async () => {
