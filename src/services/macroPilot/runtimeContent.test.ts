@@ -594,14 +594,16 @@ it('falls back from the reliability offer while retaining negotiated task capabi
   const h = harness(); h.legacyRelay();
   try {
     await h.runtime.start();
-    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 4);
+    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 5);
     const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll'));
     expect(polls[0].body.capabilities).toContain('network-reliability-1');
     expect(polls[0].body.capabilities).toContain('conversations-1');
     expect(polls[0].body.capabilities).toContain('conversation-history-1');
-    expect(polls[1].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1']);
-    expect(polls[2].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1']);
-    expect(polls[3].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
+    expect(polls[0].body.capabilities).toContain('conversation-interactions-1');
+    expect(polls[1].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1']);
+    expect(polls[2].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1']);
+    expect(polls[3].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1']);
+    expect(polls[4].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
     const catalog = await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }));
     expect(JSON.stringify(catalog)).not.toContain('content_revision');
     conversations[0].title = 'Legacy edit';

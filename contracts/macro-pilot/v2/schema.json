@@ -2337,6 +2337,12 @@
         },
         {
           "$ref": "#/$defs/request_conversation.create"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.interactions"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.interact"
         }
       ]
     },
@@ -2419,6 +2425,12 @@
         },
         {
           "$ref": "#/$defs/response_conversation.create"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.interactions"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.interact"
         }
       ]
     },
@@ -2481,7 +2493,9 @@
             "conversation.window",
             "conversation.acknowledge",
             "conversation.action",
-            "conversation.create"
+            "conversation.create",
+            "conversation.interactions",
+            "conversation.interact"
           ]
         },
         "code": {
@@ -2555,7 +2569,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 5,
+          "maxItems": 6,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2563,7 +2577,8 @@
               "task-actions-1",
               "network-reliability-1",
               "conversations-1",
-              "conversation-history-1"
+              "conversation-history-1",
+              "conversation-interactions-1"
             ]
           }
         }
@@ -2617,7 +2632,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 5,
+          "maxItems": 6,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2625,7 +2640,8 @@
               "task-actions-1",
               "network-reliability-1",
               "conversations-1",
-              "conversation-history-1"
+              "conversation-history-1",
+              "conversation-interactions-1"
             ]
           }
         }
@@ -2938,6 +2954,28 @@
                   "maximum": 9007199254740991
                 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "scope",
+                "revision"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "conversation.interactions_changed"
+                },
+                "scope": {
+                  "$ref": "#/$defs/conversationRef"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
             }
           ]
         }
@@ -3142,7 +3180,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 5,
+          "maxItems": 6,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3150,7 +3188,8 @@
               "task-actions-1",
               "network-reliability-1",
               "conversations-1",
-              "conversation-history-1"
+              "conversation-history-1",
+              "conversation-interactions-1"
             ]
           }
         }
@@ -3180,7 +3219,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 5,
+          "maxItems": 6,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3188,7 +3227,8 @@
               "task-actions-1",
               "network-reliability-1",
               "conversations-1",
-              "conversation-history-1"
+              "conversation-history-1",
+              "conversation-interactions-1"
             ]
           }
         }
@@ -5651,6 +5691,390 @@
             "ref",
             "revision"
           ]
+        }
+      }
+    },
+    "conversationQuestionStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step_id",
+        "prompt",
+        "choices",
+        "free_text_allowed"
+      ],
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "choices": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "free_text_allowed": {
+          "type": "boolean"
+        },
+        "free_text_placeholder": {
+          "type": "string",
+          "maxLength": 300
+        }
+      }
+    },
+    "conversationQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assistant_message_id",
+        "steps"
+      ],
+      "properties": {
+        "assistant_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/conversationQuestionStep"
+          }
+        }
+      }
+    },
+    "conversationInteractions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "snapshot_id",
+        "revision",
+        "expires_at",
+        "question",
+        "generation_id",
+        "actions"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "question": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/conversationQuestion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "answer",
+              "stop"
+            ]
+          }
+        }
+      }
+    },
+    "request_conversation.interactions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.interactions"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.interactions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.interactions"
+        },
+        "result": {
+          "$ref": "#/$defs/conversationInteractions"
+        }
+      }
+    },
+    "request_conversation.interact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.interact"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "snapshot_id",
+            "expected_revision",
+            "idempotency_key",
+            "action"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "snapshot_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "action": {
+              "enum": [
+                "answer",
+                "stop"
+              ]
+            },
+            "assistant_message_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "generation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "answers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "step_id",
+                  "answer"
+                ],
+                "properties": {
+                  "step_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                  },
+                  "answer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.interact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.interact"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "revision"
+          ],
+          "properties": {
+            "outcome": {
+              "enum": [
+                "applied",
+                "duplicate"
+              ]
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
         }
       }
     }

@@ -1,7 +1,7 @@
 import type { ContentRequest } from './contentProtocol';
 import { PilotError, object } from './protocol';
 export function taskActionPermissions(request: ContentRequest): string[] | null {
-  if (['conversation.action', 'conversation.create', 'conversation.acknowledge'].includes(request.operation)) return ['respond'];
+  if (['conversation.action', 'conversation.create', 'conversation.acknowledge', 'conversation.interact'].includes(request.operation)) return ['respond'];
   if (request.operation !== 'task.action') return null;
   return request.body.action === 'run_commands' ? ['respond', 'approve_tools'] : ['respond'];
 }

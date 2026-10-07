@@ -1,0 +1,35 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "conversation.interactions",
+  "result": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "snapshot_id": "snapshot-demo",
+    "revision": 1,
+    "expires_at": "2026-01-01T00:05:00Z",
+    "question": {
+      "assistant_message_id": "assistant-demo",
+      "steps": [
+        {
+          "step_id": "format",
+          "prompt": "Quel format préférez-vous ?",
+          "choices": [
+            "Texte",
+            "PDF"
+          ],
+          "free_text_allowed": true
+        }
+      ]
+    },
+    "generation_id": null,
+    "actions": [
+      "answer"
+    ]
+  }
+}

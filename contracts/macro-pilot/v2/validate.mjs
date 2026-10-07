@@ -36,6 +36,18 @@ export function validateMessage(message) {
     reject((message.capabilities ?? []).includes('task-actions-1') && !(message.capabilities ?? []).includes('task-details-1'), 'task actions require details capability');
     reject((message.capabilities ?? []).includes('conversation-history-1') && !(message.capabilities ?? []).includes('conversations-1'), 'conversation history requires conversations capability');
   }
+  if (['negotiate','negotiated','poll','delivery'].includes(message.type)) reject((message.capabilities ?? []).includes('conversation-interactions-1') && !(message.capabilities ?? []).includes('conversations-1'), 'interactions require conversations capability');
+  if (message.type === 'delivery') reject(['conversation.interactions','conversation.interact'].includes(message.request.operation) && !(message.capabilities ?? []).includes('conversation-interactions-1'), 'unattested interactions capability');
+  if (message.type === 'request' && message.operation === 'conversation.interact') {
+    const b = message.body;
+    reject(b.action === 'answer' ? !b.assistant_message_id || !b.answers || 'generation_id' in b : !b.generation_id || 'answers' in b || 'assistant_message_id' in b, 'interaction payload mismatch');
+    if (b.answers) reject(new Set(b.answers.map(a => a.step_id)).size !== b.answers.length || b.answers.some(a => !a.answer.trim()), 'invalid answers');
+  }
+  if (message.type === 'response' && message.operation === 'conversation.interactions') {
+    const r = message.result;
+    reject(r.actions.includes('answer') && r.question === null || r.actions.includes('stop') && r.generation_id === null, 'missing action target');
+    if (r.question) reject(new Set(r.question.steps.map(s => s.step_id)).size !== r.question.steps.length, 'duplicate questions');
+  }
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
   if (message.type === 'delivery') {
     reject(message.request_id !== message.request.request_id || message.account_id !== message.request.account_id, 'delivery correlation mismatch');
@@ -177,6 +189,7 @@ export function validateExchange(request, response) {
         if (result.not_modified) reject(body.consistency !== 'network-reliability-1' || body.known_revision !== result.revision || body.continuation, 'invalid conditional response');
         for (const item of result.items ?? []) reject(item.instance_id !== body.instance_id, 'project instance mismatch');
       }
+      if (request.operation === 'conversation.interactions') reject(Object.keys(body.ref).length !== Object.keys(result.ref).length || Object.keys(body.ref).some(key => body.ref[key] !== result.ref[key]), 'interaction reference mismatch');
       if (request.operation === 'task.get') reject(['instance_id', 'workspace_id', 'task_id'].some(key => body.ref[key] !== result.ref[key]), 'task reference mismatch');
       if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');
       if (['task.artifact.read', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
@@ -214,4 +227,4 @@ export function validatePageContinuation(previous, next) {
   return { valid: errors.length === 0, errors };
 }
 
-export const isConversationOperation = operation => ['conversations.catalog', 'conversations.search', 'conversation.window', 'conversation.acknowledge', 'conversation.action', 'conversation.create'].includes(operation);
+export const isConversationOperation = operation => ['conversations.catalog', 'conversations.search', 'conversation.window', 'conversation.acknowledge', 'conversation.action', 'conversation.create', 'conversation.interactions', 'conversation.interact'].includes(operation);

@@ -1,3 +1,4 @@
+import { ConversationInteractions, INTERACTION_OPERATIONS, type InteractionSource } from './conversationInteractions';
 import { CONVERSATION_OPERATIONS, type ConversationManager } from './conversationManager';
 import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSource } from './taskCompletionHost';
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef, type CatalogObservation } from './conversationCaptures';
@@ -27,6 +28,7 @@ export interface ContentHostDependencies {
   resolveReview(ref: ContentReviewRef): Promise<ReviewTarget>;
   policy(): Promise<TextPolicy>;
   conversationManagement?: ConversationManager;
+  interactions?: { source: InteractionSource; storage: KernelStorage };
   taskCompletion?: { source: TaskCompletionSource; storage: KernelStorage };
   now?: () => number;
 }
@@ -50,9 +52,11 @@ export class ContentHost {
   private reliability = false;
   enableReliability(): void { this.reliability = true; }
   private readonly taskCompletion?: TaskCompletionHost;
+  private readonly interactions?: ConversationInteractions;
   private readonly now: () => number;
   constructor(private readonly deps: ContentHostDependencies) {
     this.now = deps.now ?? Date.now;
+    if (deps.interactions) this.interactions = new ConversationInteractions({ ...deps.interactions, now: this.now, emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
     if (deps.taskCompletion) this.taskCompletion = new TaskCompletionHost({ ...deps.taskCompletion, now: this.now,
       emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
   }
@@ -94,6 +98,7 @@ export class ContentHost {
       next.projects = 0; next.conversations = 0;
       await this.save(next);
       await this.taskCompletion?.initialize();
+      await this.interactions?.initialize();
     });
   }
   private async save(next: Journal, commit = (previous: string | null, value: string) => this.deps.storage.compareAndSwap(previous, value)): Promise<void> {
@@ -118,7 +123,7 @@ export class ContentHost {
     const policy = await this.deps.policy(); this.check();
     const key = await hash(policy); this.check();
     if (this.policyKey !== null && key !== this.policyKey) {
-      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.taskCompletion?.clear();
+      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.taskCompletion?.clear(); this.interactions?.clear();
       const snapshots = [...this.snapshots.values()]; this.snapshots.clear();
       await Promise.all(snapshots.map(snapshot => this.deps.reviews.release(snapshot.info.snapshot_id).catch(() => undefined)));
     }
@@ -170,6 +175,7 @@ export class ContentHost {
         next.refs = conversations.refs; next.resources = conversations.resources;
       }
       if (stableJson(next) !== stableJson(this.state)) await this.save(next);
+      await this.interactions?.observe(await this.policy());
       await this.taskCompletion?.observe(await this.policy());
       // Discover local reviews without a remote read. A bounded rotating batch
       // prevents a large task catalog from monopolizing the producer.
@@ -280,7 +286,7 @@ export class ContentHost {
       if (!validateContentMessage(input) || input.type !== 'delivery') failure('validation_failed');
       const delivery = input as ContentDelivery; const request = delivery.request;
       if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
-        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation))) failure('validation_failed');
+        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation))) failure('validation_failed');
       const body = request.body as { instance_id?: string; ref?: { instance_id: string } };
       if ((body.instance_id ?? body.ref?.instance_id) !== this.deps.instanceId) failure('validation_failed');
       const replyKey = await hash([delivery.account_id, delivery.source_session_id, delivery.request_id]);
@@ -295,7 +301,11 @@ export class ContentHost {
         await this.policy();
         const readingPolicy = this.policyKey;
         let result: unknown;
-        if (CONVERSATION_OPERATIONS.has(request.operation)) {
+        if (INTERACTION_OPERATIONS.has(request.operation)) {
+          if (!this.interactions) failure('content_unavailable');
+          await authorizeNow();
+          result = await this.interactions!.handle(delivery, await this.policy(), async () => { await authorizeNow(); await this.policy(); guard(); if (readingPolicy !== this.policyKey) failure('snapshot_expired'); });
+        } else if (CONVERSATION_OPERATIONS.has(request.operation)) {
           if (!this.deps.conversationManagement) failure('content_unavailable');
           // Authorization precedes every management read and write, including replay.
           await authorizeNow();
@@ -359,7 +369,7 @@ export class ContentHost {
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
         response = { contract_version: '2.0', type: 'response', request_id: request.request_id, account_id: request.account_id, operation: request.operation, result };
         if (!validateContentResponse(request, response)) failure('content_unavailable');
-        if (request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
+        if (request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }
@@ -369,7 +379,7 @@ export class ContentHost {
         if (!deadline) await authorizeNow(); else guard();
         const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
         const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict']);
-        const uncertainTaskAction = completedTaskAction || await this.taskCompletion?.hasActionReceipt(delivery);
+        const uncertainTaskAction = completedTaskAction || await this.taskCompletion?.hasActionReceipt(delivery) || await this.interactions?.hasReceipt(delivery);
         const code = uncertainTaskAction ? 'conflict' : error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
         response = { contract_version: '2.0', type: 'error', request_id: request.request_id, account_id: request.account_id, operation: request.operation, code, retryable: code === 'unavailable' };
         if (!validateContentResponse(request, response)) failure('unavailable');
@@ -393,7 +403,7 @@ export class ContentHost {
     }
   }
   async dispose(): Promise<void> {
-    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear();
-    await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear();
+    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.interactions?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear();
+    await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear(); this.interactions?.clear();
   }
 }
