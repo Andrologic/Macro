@@ -27,6 +27,15 @@ pub struct PublicStartReceipt {
     pub flow_invocation_id: String,
     pub snapshot: PublicSnapshot,
 }
+impl From<EngineStartReceipt> for PublicStartReceipt {
+    fn from(receipt: EngineStartReceipt) -> Self {
+        Self {
+            system_start_id: receipt.system_start_id,
+            flow_invocation_id: receipt.flow_invocation_id,
+            snapshot: receipt.snapshot.into(),
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(
     tag = "kind",

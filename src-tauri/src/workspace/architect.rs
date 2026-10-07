@@ -2732,6 +2732,23 @@ mod tests {
         assert!(!project_path.join(".git").exists());
     }
 
+    #[test]
+    fn execution_source_project_must_be_unique_and_live() {
+        let mut state = WorkspaceState::default();
+        state
+            .standalone_projects
+            .push(project("project", "/synthetic/project"));
+        assert!(execution_project(&state, "project").is_ok());
+        assert!(execution_project(&state, " project").is_err());
+        state.standalone_projects[0].archived_at = Some("2026-01-01".into());
+        assert!(execution_project(&state, "project").is_err());
+        state.standalone_projects[0].archived_at = None;
+        state
+            .standalone_projects
+            .push(state.standalone_projects[0].clone());
+        assert!(execution_project(&state, "project").is_err());
+    }
+
     #[tokio::test]
     async fn execution_source_capture_does_not_recover_a_corrupt_registry() {
         let temp = TempDir::new().unwrap();
@@ -2978,6 +2995,32 @@ async fn read_execution_registry(
     })
 }
 
+fn execution_project<'a>(
+    state: &'a super::WorkspaceState,
+    project_id: &str,
+) -> crate::db::agsdl_execution::Result<&'a super::metadata::ProjectDto> {
+    use crate::db::agsdl_execution::failure;
+    let matches: Vec<_> = state
+        .standalone_projects
+        .iter()
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .filter(|project| project.id == project_id)
+        .collect();
+    if matches.len() != 1 || matches[0].archived_at.is_some() || matches[0].status == "archived" {
+        return Err(failure(
+            "SOURCE_UNAVAILABLE",
+            "source.owner.projectId",
+            "Project is absent, archived or ambiguous",
+        ));
+    }
+    Ok(matches[0])
+}
+
 pub(crate) async fn lock_execution_source_owner(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -3000,6 +3043,8 @@ pub(crate) async fn lock_execution_source_owner(
         #[serde(default)]
         project_ids: Vec<String>,
         revision: Option<i64>,
+        archived_at: Option<String>,
+        deleted_at: Option<String>,
         agsdl: SourceEnvelope,
     }
     if expected.is_some_and(|value| &value.owner != owner) {
@@ -3029,6 +3074,7 @@ pub(crate) async fn lock_execution_source_owner(
     // Project identity comes from the native workspace registry, not the
     // caller's hint that resolve_project_scopes may attach to workspace roots.
     let state = read_execution_registry(metadata_root).await?;
+    let initial_project = execution_project(&state, &owner.project_id)?;
     let requested_projects = HashSet::from([owner.project_id.clone()]);
     let initial_projects = collect_workspace_state_project_paths(&state, Some(&requested_projects));
     if initial_projects.is_empty() {
@@ -3133,6 +3179,14 @@ pub(crate) async fn lock_execution_source_owner(
                 )
             })?;
     let current = read_execution_registry(metadata_root).await?;
+    let current_project = execution_project(&current, &owner.project_id)?;
+    if serde_json::to_value(current_project)? != serde_json::to_value(initial_project)? {
+        return Err(failure(
+            "CORRELATION",
+            "source.owner",
+            "Project configuration changed during capture",
+        ));
+    }
     if collect_workspace_state_project_paths(&current, Some(&requested_projects))
         != initial_projects
     {
@@ -3189,6 +3243,13 @@ pub(crate) async fn lock_execution_source_owner(
         if members.is_empty() && !registered_namespace {
             continue;
         }
+        if plan.archived_at.is_some() || plan.deleted_at.is_some() {
+            return Err(failure(
+                "SOURCE_UNAVAILABLE",
+                "source",
+                "Canonical plan is archived or deleted",
+            ));
+        }
         let revision = crate::db::agsdl_execution::dto::EngineSourceRevision {
             owner: owner.clone(),
             revision: plan.revision.unwrap_or(1).to_string(),
@@ -3236,6 +3297,8 @@ pub(crate) async fn lock_execution_source_owner(
         source,
         revision,
         display_cards_json,
+        project: current_project.clone(),
+        registry: current,
         _guards: guards,
         _content_guards: content_guards,
         _state_guard: state_guard,
@@ -3251,6 +3314,8 @@ pub(crate) struct LockedExecutionSource {
     pub source: String,
     pub revision: crate::db::agsdl_execution::dto::EngineSourceRevision,
     pub display_cards_json: String,
+    pub project: super::metadata::ProjectDto,
+    pub registry: super::metadata::WorkspaceState,
     _guards: Vec<super::PlanLifecycleGuard>,
     _content_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
     _state_guard: tokio::sync::OwnedMutexGuard<()>,

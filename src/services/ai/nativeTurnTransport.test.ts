@@ -703,3 +703,25 @@ test('a recovered duplicate provider effect never authorizes a new native dispat
   expect(requestId).toBe('');
   expect(ended).not.toHaveBeenCalled();
 });
+
+test('resident dispatch receives the exact request envelope acknowledged at registration', async () => {
+  let captured: Parameters<typeof ipc.aiStreamChat>[0] | undefined;
+  const dispatch = mock(async (envelope: Parameters<typeof ipc.aiStreamChat>[0]) => {
+    if (!captured) throw new Error('Registration envelope missing');
+    expect(envelope).toBe(captured);
+    expect(envelope.messages[0].content).toBe('9007199254740993');
+    await ipc.aiStreamChat(envelope);
+  });
+  const pending = turn({ providerType: 'openai', providerId: 'fixture', messages: [{ role: 'user', content: '9007199254740993' }], nativeExecution: {
+    beforeRequest: async (id, envelope) => {
+      expect(envelope?.requestId).toBe(id);
+      captured = envelope;
+      return 'registered';
+    },
+    dispatch, requestEnded: async () => {}, visibleMessage: async () => {},
+  } });
+  await started;
+  emit('ai:done', { request_id: requestId, output_text: 'Done', tool_calls: [] });
+  await pending;
+  expect(dispatch).toHaveBeenCalledTimes(1);
+});

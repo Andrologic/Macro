@@ -76,10 +76,21 @@ pub async fn stream_chat(
     _ai_state: AiState,
     request: AiChatRequest,
 ) -> Result<(), String> {
+    stream_chat_with_provider(app_handle, pool, request, None).await
+}
+
+/// Native execution supplies its revalidated descriptor to prevent a mutable
+/// provider row from changing the endpoint between admission and request build.
+pub(crate) async fn stream_chat_with_provider(
+    app_handle: AppHandle,
+    pool: SqlitePool,
+    request: AiChatRequest,
+    provider: Option<ProviderConfig>,
+) -> Result<(), String> {
     let request_id = request.request_id.clone();
     let provider_id = request.provider_id.clone();
     let started_at = Instant::now();
-    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, request).await {
+    if let Err(error) = stream_chat_inner(app_handle.clone(), pool, request, provider).await {
         emit_timeline(
             &app_handle,
             &request_id,
@@ -97,12 +108,16 @@ async fn stream_chat_inner(
     app_handle: AppHandle,
     pool: SqlitePool,
     request: AiChatRequest,
+    provider: Option<ProviderConfig>,
 ) -> Result<(), ChatCompletionError> {
     let started_at = Instant::now();
-    let provider = repository::get_provider_config(&pool, &request.provider_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
+    let provider = match provider {
+        Some(provider) => provider,
+        None => repository::get_provider_config(&pool, &request.provider_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?,
+    };
     let provider_type = provider.provider_type.clone();
     let capabilities = resolve_provider_capabilities(
         &request.provider_id,

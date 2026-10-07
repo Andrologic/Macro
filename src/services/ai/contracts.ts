@@ -128,7 +128,9 @@ export interface StreamingChatOptions {
     toolAliases?: readonly { readonly name: string; readonly toolId: string }[];
     /** Captured publication protocol, offered only to the resident native profile. */
     publication?: { readonly choices: readonly string[] };
-    beforeRequest(requestId: string): Promise<'registered' | 'duplicate'>;
+    beforeRequest(requestId: string, request?: Parameters<typeof import('../ipc/ai').aiStreamChat>[0]): Promise<'registered' | 'duplicate'>;
+    /** Private resident dispatch preserves the same request and shared native transport. */
+    dispatch?: typeof import('../ipc/ai').aiStreamChat;
     requestEnded(requestId: string): Promise<void>;
     visibleMessage(requestId: string, text: string): Promise<void>;
   };

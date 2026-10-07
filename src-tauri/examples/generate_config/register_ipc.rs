@@ -7,6 +7,18 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::PublicExecutionDiagnostic>("execution")?;
     registry.add::<ipc_contracts::execution::RunListRequest>("execution")?;
     registry.add::<ipc_contracts::execution::RunPage>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionPreflightRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionPreflight>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionExternalDelivery>("execution")?;
+    registry.add::<ipc_contracts::execution::ResolveCardTask>("execution")?;
+    registry.add::<ipc_contracts::execution::ResolvedCardTask>("execution")?;
+    registry.add::<ipc_contracts::execution::HostInspection>("execution")?;
+    registry.add::<ipc_contracts::execution::HostAdmission>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineOwner>("execution")?;
+    registry.add::<ipc_contracts::execution::Prepare>("execution")?;
+    registry.add::<ipc_contracts::execution::Emission>("execution")?;
+    registry.add::<ipc_contracts::execution::Closure>("execution")?;
+    registry.add::<ipc_contracts::execution::EngineTerminalCommit>("execution")?;
     registry.add::<ipc_contracts::execution::HostCompileJob>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelChoice>("execution")?;
     registry.add::<ipc_contracts::execution::NativeModelCatalogue>("execution")?;

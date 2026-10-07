@@ -56,10 +56,29 @@ fn qualified_transport(provider_type: &str) -> bool {
     matches!(provider_type, "openai" | "ollama" | "lmstudio")
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeProviderObservation {
+    pub provider_id: String,
+    pub provider_type: String,
+    /// Endpoint identity only. Credentials and URLs never enter the execution snapshot.
+    pub endpoint_digest: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelCapture {
+    pub catalogue: NativeModelCatalogue,
+    pub providers: Vec<NativeProviderObservation>,
+}
+
 pub(crate) async fn choices(
     manager: &ConfigManager,
     pool: &SqlitePool,
 ) -> Result<NativeModelCatalogue> {
+    Ok(capture(manager, pool).await?.catalogue)
+}
+
+pub(crate) async fn capture(manager: &ConfigManager, pool: &SqlitePool) -> Result<ModelCapture> {
     let document = manager
         .effective_user_document(ConfigDocumentKind::Providers)
         .await;
@@ -74,6 +93,7 @@ pub(crate) async fn choices(
         })?;
     let mut transaction = pool.begin().await?;
     let mut models = Vec::new();
+    let mut observations = Vec::new();
     let mut unavailable_providers = Vec::new();
     let mut identities = std::collections::BTreeSet::new();
     for provider in providers {
@@ -90,6 +110,11 @@ pub(crate) async fn choices(
         if !provider.is_enabled {
             continue;
         }
+        observations.push(NativeProviderObservation {
+            provider_id: provider.id.clone(),
+            provider_type: provider.provider_type.clone(),
+            endpoint_digest: format!("sha256:{:x}", Sha256::digest(provider.base_url.as_bytes())),
+        });
         let stored = crate::db::repository::list_models_by_provider_on_connection(
             &mut transaction,
             &provider.id,
@@ -134,10 +159,14 @@ pub(crate) async fn choices(
     unavailable_providers.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
     let bytes = serde_json::to_vec(&(&models, &unavailable_providers))
         .map_err(|_| failure("UNSUPPORTED", "model", "Model catalogue cannot be encoded"))?;
-    Ok(NativeModelCatalogue {
-        revision: format!("sha256:{:x}", Sha256::digest(bytes)),
-        models,
-        unavailable_providers,
+    observations.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
+    Ok(ModelCapture {
+        providers: observations,
+        catalogue: NativeModelCatalogue {
+            revision: format!("sha256:{:x}", Sha256::digest(bytes)),
+            models,
+            unavailable_providers,
+        },
     })
 }
 #[cfg(test)]

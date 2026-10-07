@@ -2,9 +2,11 @@
 //! The future native supervisor owns CaptureAuthority, RouteAuthority and epochs.
 pub(crate) mod approvals;
 pub(crate) mod capture;
+pub(crate) mod card_associations;
 pub(crate) mod diagnostics;
 pub(crate) mod discovery;
 pub mod dto;
+pub(crate) mod inspection;
 pub(crate) mod prepared;
 pub(crate) mod public;
 pub(crate) mod responses;
@@ -596,6 +598,72 @@ pub(crate) async fn accept_delivery(
     tx.commit().await?;
     Ok(result)
 }
+/// Called only after the resident compiler validates this exact Message against
+/// the immutable document. UI callers supply neither origin nor execution IDs.
+pub(crate) async fn accept_external_delivery(
+    pool: &SqlitePool,
+    runtime: &EngineOwner,
+    delivery_id: &str,
+    agent_name: &str,
+    message_json: &str,
+) -> Result<EngineAcceptedDelivery> {
+    opaque(delivery_id)?;
+    opaque(agent_name)?;
+    validate_json(message_json)?;
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await?;
+    let mut stored = load(&mut tx, &runtime.system_start_id).await?;
+    owner(&stored.state, runtime, &stored.snapshot.system_start_id)?;
+    require(
+        stored.policies.is_empty(),
+        "External delivery requires a graphless system",
+    )?;
+    let agent_id = stored
+        .state
+        .agents
+        .get(agent_name)
+        .ok_or_else(|| failure("CORRELATION", "agentName", "Agent is absent from snapshot"))?
+        .id
+        .clone();
+    let input = EngineValue {
+        origin: "entry".into(),
+        value_json: message_json.into(),
+    };
+    if let Some(raw) = sqlx::query_scalar::<_, String>(
+        "SELECT receipt_json FROM engine_deliveries WHERE delivery_id=?",
+    )
+    .bind(delivery_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        let retained: EngineAcceptedDelivery = serde_json::from_str(&raw)?;
+        require(
+            retained.delivery.work.system_start_id == runtime.system_start_id
+                && retained.delivery.work.step.is_none()
+                && retained.delivery.work.agent_instance_id.as_deref() == Some(agent_id.as_str())
+                && record_equal(&retained.delivery.input, &input)?,
+            "Conflicting external delivery retransmission",
+        )?;
+        tx.commit().await?;
+        return Ok(retained);
+    }
+    let delivery = EngineDelivery {
+        delivery_id: delivery_id.into(),
+        work: EngineWork {
+            system_start_id: runtime.system_start_id.clone(),
+            flow_invocation_id: stored.state.invocation_id.clone(),
+            activation_id: uuid::Uuid::new_v4().to_string(),
+            step: None,
+            agent_instance_id: Some(agent_id),
+        },
+        input,
+    };
+    let receipt = accept(&mut tx, &mut stored, delivery).await?;
+    save(&mut tx, &runtime.system_start_id, &stored.state).await?;
+    tx.commit().await?;
+    Ok(receipt)
+}
+
 pub(crate) async fn begin(
     pool: &SqlitePool,
     runtime: &EngineOwner,
@@ -1628,8 +1696,9 @@ pub(crate) async fn read_visits(
     }
     Ok(visits)
 }
-#[derive(Debug, Clone)]
-pub(crate) struct PersistedEffect {
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PersistedEffect {
     pub registered: EngineEffect,
     pub status: String,
     pub settlement: Option<EngineSettlement>,
@@ -1659,3 +1728,40 @@ pub(crate) async fn read_effects(
 }
 #[cfg(test)]
 mod tests;
+
+/// Called under the native host admission gate immediately before physical start.
+/// A registered receipt alone is never authorization to redispatch.
+pub(crate) async fn authorize_reserved_effect(
+    pool: &SqlitePool,
+    effect: &EngineEffect,
+) -> Result<()> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = connection.begin().await?;
+    let stored = load(&mut tx, &effect.context.work.system_start_id).await?;
+    context(&stored, &effect.context)?;
+    let activation = activation(&stored.state, &effect.context.work)?;
+    require(
+        activation.work_state == "active"
+            && matches!(activation.stop_state, EngineStopState::None)
+            && matches!(stored.state.stop, EngineStopState::None),
+        "Stopped work cannot physically dispatch",
+    )?;
+    let row = sqlx::query(
+        "SELECT record_json,status FROM engine_effects WHERE system_id=? AND effect_key=?",
+    )
+    .bind(&effect.context.work.system_start_id)
+    .bind(effect_key(&effect.effect)?)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| failure("CORRELATION", "effect", "Effect was not registered"))?;
+    require(
+        row.get::<&str, _>("status") == "pending"
+            && record_equal(
+                &serde_json::from_str::<EngineEffect>(row.get("record_json"))?,
+                effect,
+            )?,
+        "Effect reservation changed or already ended",
+    )?;
+    tx.commit().await?;
+    Ok(())
+}

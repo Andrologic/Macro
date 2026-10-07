@@ -1,8 +1,9 @@
-# Conformité et compilation AgSDL inline
+# Conformité et raccords natifs AgSDL inline
 
-Ces modules préparent le profil `macro-serial-inline-v1`. Ils ne démarrent aucun
-travail. `PRODUCT_RUNTIME_AVAILABLE` et `CompilationResult.productRuntimeAvailable`
-restent `false` tant que les lots host et flow ne sont pas intégrés.
+Le compilateur pur évalue le profil `macro-serial-inline-v1`. Les raccords natifs
+et `ResidentAgent` ajoutent les frontières privées d’exécution.
+`PRODUCT_RUNTIME_AVAILABLE` et `CompilationResult.productRuntimeAvailable` restent
+`false` jusqu’à l’intégration et à la qualification du host et de Flow.
 
 ## Versions et représentation
 
@@ -235,10 +236,43 @@ avec `CORRELATION`. Une fermeture répétée au même curseur conserve le résul
 Les bornes par défaut sont 10 000 événements et 2 000 000 octets de texte visible.
 Elles bloquent une collection trop grande sans tronquer ses sorties.
 
-Le collecteur est en mémoire. Le host et le repository devront persister l'ordre,
-les événements, leur attribution et la fermeture pour prouver la reprise. Ils
-devront aussi prouver les garanties d'effets et de terminaison. Aucun scheduler,
-SQL, commande IPC ou host physique n'est ajouté dans ce lot.
+Le collecteur exact reste pur et en mémoire. `retainedResponses` le reconstruit
+à partir du journal SQL natif, puis fait clôturer le curseur et le digest par le
+repository. Le contrôle natif exige la fin des effets enregistrés. Une erreur
+de transport, un trou de séquence ou un reçu absent ne deviennent pas une simple
+violation de contrainte de sortie.
+
+## Raccords Hosting en cours
+
+`agsdl_host_capture` capture le plan canonique sous les verrous de metadata,
+le catalogue effectif et les configurations natives. La webview dédiée exécute
+ce compilateur avec un ticket lié aux octets, à la source et à sa génération.
+Preflight n’admet aucun travail ; Start revalide la capture jusqu’au commit SQL.
+Une livraison externe exige un système sans graphe et un Agent capturé. Ses
+identités d’activation proviennent du natif ; un réessai conserve le reçu exact.
+
+`ResidentAgent.prepare` initialise la mémoire avant l’adaptation Flow.
+`executeReady` appelle le moteur Macro partagé avec des ressources propres à
+l’activation, sans conversation ni Task artificielle. Les tentatives passent par
+les ports privés register/dispatch/end. Les textes originaux et arguments de
+publication sont journalisés avant la présentation ou la conversion des nombres.
+Un reçu ambigu interdit la clôture. La mémoire reste provisoire jusqu’au témoin
+terminal natif ; l’Agent ne choisit ni n’insère une liste libre de successeurs.
+
+Le profil OpenAI-compatible conserve chaque alias authored et refuse ceux qui ne
+respectent pas `[A-Za-z0-9_-]{1,64}`. Cette borne relève de l’évaluation runtime,
+pas de la syntaxe générale AgSDL. Le loop vérifie à nouveau cette borne avant
+la requête fournisseur.
+
+Les liens de cartes conservent les associations explicites capturées. Le port
+Task relit les identités, le projet et la cible native au clic ; une preuve
+absente ou ambiguë donne `null`. Il ne déduit aucun lien du titre et ne reporte
+pas une Task globale sur toutes les cartes.
+
+Cette étape ne qualifie pas encore les adaptateurs Tool/Call, les approbations
+produit, les associations de Start ni l’ordonnancement Flow. Le catalogue natif
+ne publie donc pas encore de Tool disponible, et Start refuse les associations
+non qualifiées. Ces limites ne doivent pas être contournées par un fallback.
 
 ## Vérifications
 

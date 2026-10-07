@@ -1,10 +1,12 @@
 import { invoke } from '../tauriRuntimeBridge';
+import { toNativeAiChatRequest, type AiStreamChatInput } from './ai';
 import type {
   PublicSnapshot as PublicSnapshotWire, PublicStartReceipt as PublicStartReceiptWire, PublicProjection as PublicProjectionWire, PublicEventPage as PublicEventPageWire, PublicStopState as PublicStopStateWire,
-  HostCompileJob, RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
+  EngineOwner, EngineContext, EngineWork, EngineTerminalCommit, HostInspection, HostAdmission, Prepare, Emission, Closure,
+  ExecutionPreflightRequest, ExecutionPreflight, HostCompileJob, RunListRequest, RunPage, DiagnosticRequest, PublicExecutionDiagnostic, NativeModelCatalogue,
 } from '../../types/generated/ipc';
 import type {
-  SourceOwner, SystemStartId, Sequence, StartRequest, StopRequest, PublicStartReceipt, PublicSnapshot,
+  AcceptedDelivery, ExternalDeliveryRequest, SourceOwner, SystemStartId, Sequence, StartRequest, StopRequest, PublicStartReceipt, PublicSnapshot,
   PublicProjection, PublicEventPage, PublicStopState,
 } from '../agsdlExecution/contracts';
 
@@ -66,4 +68,37 @@ export function executionHostCompleteCompile(ticket: string, resultJson: string)
 
 export function executionHostFailed(): Promise<void> {
   return invoke<void>('execution_host_failed');
+}
+
+/** Canonical source discovery and assessment only; no Agent or effect admission. */
+export function preflightExecution(request: ExecutionPreflightRequest): Promise<ExecutionPreflight> {
+  return invoke<ExecutionPreflight>('execution_preflight', { request });
+}
+
+export function executionHostOwners(): Promise<EngineOwner[]> { return invoke('execution_host_owners'); }
+export function executionHostInspect(owner: EngineOwner): Promise<HostInspection> { return invoke('execution_host_inspect', { owner }); }
+export function executionHostBegin(owner: EngineOwner, deliveryId: string): Promise<HostAdmission> { return invoke('execution_host_begin', { owner, deliveryId }); }
+export function executionHostPrepareTerminal(request: Prepare): Promise<string> { return invoke('execution_host_prepare_terminal', { request }); }
+export function executionHostCommitTerminal(owner: EngineOwner, witnessId: string): Promise<EngineTerminalCommit> { return invoke('execution_host_commit_terminal', { owner, witnessId }); }
+export function executionHostAppendResponse(emission: Emission): Promise<boolean> { return invoke('execution_host_append_response', { emission }); }
+export function executionHostReadResponses(owner: EngineOwner, work: EngineWork): Promise<[Emission[], string]> { return invoke('execution_host_read_responses', { owner, work }); }
+export function executionHostCloseResponses(closure: Closure): Promise<Closure> { return invoke('execution_host_close_responses', { closure }); }
+export function executionHostRegisterProvider(context: EngineContext, request: AiStreamChatInput): Promise<boolean> {
+  return invoke('execution_host_register_provider', { context, request: toNativeAiChatRequest(request) });
+}
+export function executionHostDispatchProvider(context: EngineContext, request: AiStreamChatInput): Promise<void> {
+  return invoke('execution_host_dispatch_provider', { context, request: toNativeAiChatRequest(request) });
+}
+export function executionHostEndProvider(context: EngineContext, requestId: string): Promise<void> {
+  return invoke('execution_host_end_provider', { context, requestId });
+}
+
+/** External input targets a captured graphless Agent; native code allocates work IDs. */
+export async function deliverExecution(request: ExternalDeliveryRequest): Promise<AcceptedDelivery> {
+  const receipt = await invoke<import('../../types/generated/ipc').EngineAcceptedDelivery>('execution_deliver', { request });
+  return nativeContract<import('../../types/generated/ipc').EngineAcceptedDelivery, AcceptedDelivery>(receipt);
+}
+
+export function resolveExecutionCardTask(request: import('../../types/generated/ipc').ResolveCardTask): Promise<import('../../types/generated/ipc').ResolvedCardTask | null> {
+  return invoke('execution_resolve_card_task', { request });
 }

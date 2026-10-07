@@ -91,14 +91,17 @@ mod native_quit_consent {
     }
 }
 
+mod agsdl_host;
+mod agsdl_host_capture;
+mod agsdl_host_catalogue;
+mod agsdl_host_compiler;
+mod agsdl_host_provider;
+mod agsdl_host_tasks;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
 pub mod config;
 pub mod core;
-mod agsdl_host;
-mod agsdl_host_catalogue;
-mod agsdl_host_compiler;
 mod db;
 mod dev_overrides;
 mod diagnostics;
@@ -534,7 +537,12 @@ pub fn run() {
             }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
-                let bridge_port = browser_runtime_port::parse(std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT").ok().as_deref()).expect("Invalid QA browser bridge port");
+                let bridge_port = browser_runtime_port::parse(
+                    std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                        .ok()
+                        .as_deref(),
+                )
+                .expect("Invalid QA browser bridge port");
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
                     "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
                 );
@@ -794,15 +802,29 @@ pub fn run() {
             commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
+            agsdl_host_provider::execution_host_register_provider,
+            agsdl_host_provider::execution_host_dispatch_provider,
+            agsdl_host_provider::execution_host_end_provider,
             agsdl_host::execution_host_ready,
+            agsdl_host::execution_host_owners,
+            agsdl_host::execution_host_prepare_terminal,
+            agsdl_host::execution_host_commit_terminal,
+            agsdl_host::execution_host_append_response,
+            agsdl_host::execution_host_read_responses,
+            agsdl_host::execution_host_close_responses,
+            agsdl_host::execution_host_inspect,
+            agsdl_host::execution_host_begin,
             agsdl_host::execution_host_failed,
             agsdl_host::execution_host_next_compile,
             agsdl_host::execution_host_complete_compile,
             commands::agsdl_execution::execution_model_choices,
+            commands::agsdl_execution::execution_preflight,
             commands::agsdl_execution::execution_list_runs,
             commands::agsdl_execution::execution_find_start,
             commands::agsdl_execution::execution_read_diagnostic,
             commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_deliver,
+            commands::agsdl_execution::execution_resolve_card_task,
             commands::agsdl_execution::execution_stop,
             commands::agsdl_execution::execution_read_snapshot,
             commands::agsdl_execution::execution_read_projection,

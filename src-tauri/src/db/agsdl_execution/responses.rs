@@ -1,9 +1,9 @@
 //! Ordered exact response journal. Semantic validation belongs to the trusted host;
 //! attribution, retained bytes, sequence continuity and physical termination do not.
 use super::*;
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Emission {
+pub struct Emission {
     pub context: EngineContext,
     pub provider_attempt_id: String,
     pub sequence: String,
@@ -11,9 +11,9 @@ pub(crate) struct Emission {
     pub kind: String,
     pub body_json: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Closure {
+pub struct Closure {
     pub owner: EngineOwner,
     pub work: EngineWork,
     pub cursor: String,

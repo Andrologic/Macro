@@ -13,6 +13,7 @@ const ENTRY: &str = "agsdl-runtime-host.html";
 struct Incarnation {
     generation: String,
     compiler: crate::agsdl_host_compiler::CompileBroker,
+    lifecycle: Arc<tokio::sync::RwLock<()>>,
     live: AtomicBool,
     ready: AtomicBool,
     loads: AtomicUsize,
@@ -25,9 +26,90 @@ struct OwnedHost {
     resource: ResourceId,
 }
 #[derive(Default)]
-pub(crate) struct HostState(Mutex<Option<OwnedHost>>);
+pub(crate) struct HostState(Mutex<Option<OwnedHost>>, tokio::sync::Mutex<()>);
+
+/// Native Start holds this lease through the SQL commit and ownership attachment.
+/// Retirement marks the host unavailable immediately, then waits for these attachments.
+pub(crate) struct HostStartLease {
+    host: Arc<Incarnation>,
+    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+impl HostStartLease {
+    pub(crate) fn generation(&self) -> &str {
+        &self.host.generation
+    }
+    pub(crate) fn ensure_live(&self) -> Result<()> {
+        if !self.host.live.load(Ordering::SeqCst) {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "",
+                "Execution host was revoked",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn owner(&self, system_id: &str) -> Result<EngineOwner> {
+        self.ensure_live()?;
+        self.host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?
+            .get(system_id)
+            .cloned()
+            .ok_or_else(|| {
+                failure(
+                    "RUNTIME_UNAVAILABLE",
+                    "owner",
+                    "System has no resident owner",
+                )
+            })
+    }
+    pub(crate) fn retain_committed_owner(&self, owner: EngineOwner) -> Result<()> {
+        // Deliberately record even if retirement began during SQL commit. The
+        // retirement writer cannot inspect this map until this lease is dropped.
+        let mut owners = self
+            .host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
+        if owners
+            .get(&owner.system_start_id)
+            .is_some_and(|previous| previous != &owner)
+        {
+            return Err(failure(
+                "CORRELATION",
+                "",
+                "Host cannot replace an owned epoch",
+            ));
+        }
+        owners.insert(owner.system_start_id.clone(), owner);
+        Ok(())
+    }
+}
 
 impl HostState {
+    pub(crate) async fn admission_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.1.lock().await
+    }
+    pub(crate) async fn start_lease(&self) -> Result<HostStartLease> {
+        let host = self
+            .0
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host state unavailable"))?
+            .as_ref()
+            .map(|host| host.incarnation.clone())
+            .ok_or_else(|| failure("RUNTIME_UNAVAILABLE", "", "Host not installed"))?;
+        let guard = host.lifecycle.clone().read_owned().await;
+        if !host.ready.load(Ordering::SeqCst) {
+            return Err(failure("RUNTIME_UNAVAILABLE", "", "Host not ready"));
+        }
+        let lease = HostStartLease {
+            host,
+            _guard: guard,
+        };
+        lease.ensure_live()?;
+        Ok(lease)
+    }
     pub(crate) async fn compile(
         &self,
         source: repository::dto::EngineSourceRevision,
@@ -84,6 +166,25 @@ impl HostState {
         owners.insert(owner.system_start_id.clone(), owner);
         Ok(())
     }
+    pub(crate) fn authenticate_owner(
+        &self,
+        caller: &Webview,
+        owner: &EngineOwner,
+    ) -> Result<String> {
+        let host = self.authenticate(caller)?;
+        let owners = host
+            .owners
+            .lock()
+            .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
+        if owners.get(&owner.system_start_id) != Some(owner) {
+            return Err(failure(
+                "PERMISSION",
+                "owner",
+                "Execution is not owned by this host incarnation",
+            ));
+        }
+        Ok(host.generation.clone())
+    }
     fn authenticate(&self, caller: &Webview) -> Result<Arc<Incarnation>> {
         let host = self
             .0
@@ -123,20 +224,20 @@ fn retire(host: &Arc<Incarnation>, database: &DbPool) {
     }
     host.ready.store(false, Ordering::SeqCst);
     host.compiler.close();
-    // The same lock fences attach_owner. Any completed attachment is included;
-    // attachments reaching the lock later observe live=false and cannot succeed.
-    let owners = host
-        .owners
-        .lock()
-        .expect("host ownership")
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    if owners.is_empty() {
-        return;
-    }
     let database = database.clone();
+    let host = host.clone();
     tauri::async_runtime::spawn(async move {
+        let _retirement_guard = host.lifecycle.clone().write_owned().await;
+        let owners = host
+            .owners
+            .lock()
+            .expect("host ownership")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        if owners.is_empty() {
+            return;
+        }
         // Authority is already revoked in memory. Retain the retirement until the
         // native journal acknowledges it; shutdown recovery handles process loss.
         loop {
@@ -154,6 +255,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
     let incarnation = Arc::new(Incarnation {
         generation: uuid::Uuid::new_v4().to_string(),
         compiler: Default::default(),
+        lifecycle: Arc::new(tokio::sync::RwLock::new(())),
         live: AtomicBool::new(true),
         ready: AtomicBool::new(false),
         loads: AtomicUsize::new(0),
@@ -232,11 +334,43 @@ pub(crate) fn execution_host_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn retirement_waits_for_owner_committed_during_start() {
+        let host = Arc::new(Incarnation {
+            generation: "native-generation".into(),
+            compiler: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            live: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            loads: AtomicUsize::new(0),
+            owners: Mutex::new(BTreeMap::new()),
+        });
+        let lease = HostStartLease {
+            host: host.clone(),
+            _guard: host.lifecycle.clone().read_owned().await,
+        };
+        host.live.store(false, Ordering::SeqCst);
+        assert!(lease.ensure_live().is_err());
+        assert!(host.lifecycle.try_write().is_err());
+        let owner = EngineOwner {
+            system_start_id: "committed-system".into(),
+            owner_epoch: "0".into(),
+        };
+        lease.retain_committed_owner(owner.clone()).unwrap();
+        drop(lease);
+        let _retirement = host.lifecycle.write().await;
+        assert_eq!(
+            host.owners.lock().unwrap().get("committed-system"),
+            Some(&owner)
+        );
+    }
+
     #[test]
     fn physical_resource_cannot_be_replaced_by_a_matching_generation_string() {
         let first = Arc::new(Incarnation {
             generation: "same".into(),
             compiler: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
@@ -245,6 +379,7 @@ mod tests {
         let forged = Arc::new(Incarnation {
             generation: "same".into(),
             compiler: Default::default(),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             live: AtomicBool::new(true),
             ready: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
@@ -294,4 +429,125 @@ pub(crate) fn execution_host_failed(
     let host = state.authenticate(&webview)?;
     retire(&host, database.inner());
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn execution_host_owners(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+) -> Result<Vec<EngineOwner>> {
+    let host = state.authenticate(&webview)?;
+    let owners = host
+        .owners
+        .lock()
+        .map_err(|_| failure("RUNTIME_UNAVAILABLE", "", "Host ownership unavailable"))?;
+    Ok(owners.values().cloned().collect())
+}
+#[tauri::command]
+pub(crate) async fn execution_host_inspect(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    owner: EngineOwner,
+) -> Result<repository::inspection::HostInspection> {
+    state.authenticate_owner(&webview, &owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    let result = repository::inspection::read(&pool, &owner).await?;
+    state.authenticate_owner(&webview, &owner)?;
+    Ok(result)
+}
+#[tauri::command]
+pub(crate) async fn execution_host_begin(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    owner: EngineOwner,
+    delivery_id: String,
+) -> Result<repository::inspection::HostAdmission> {
+    state.authenticate_owner(&webview, &owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    let result = repository::begin(&pool, &owner, &delivery_id).await?;
+    state.authenticate_owner(&webview, &owner)?;
+    Ok(result.into())
+}
+
+#[tauri::command]
+pub(crate) async fn execution_host_prepare_terminal(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    request: repository::prepared::Prepare,
+) -> Result<String> {
+    let generation = state.authenticate_owner(&webview, &request.owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    repository::prepared::prepare(&pool, &generation, request).await
+}
+#[tauri::command]
+pub(crate) async fn execution_host_commit_terminal(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    owner: EngineOwner,
+    witness_id: String,
+) -> Result<repository::dto::EngineTerminalCommit> {
+    let generation = state.authenticate_owner(&webview, &owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    repository::prepared::commit(&pool, &generation, &owner, &witness_id).await
+}
+#[tauri::command]
+pub(crate) async fn execution_host_append_response(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    emission: repository::responses::Emission,
+) -> Result<bool> {
+    state.authenticate_owner(&webview, &emission.context.owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    repository::responses::append(&pool, emission).await
+}
+#[tauri::command]
+pub(crate) async fn execution_host_read_responses(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    owner: EngineOwner,
+    work: repository::dto::EngineWork,
+) -> Result<(Vec<repository::responses::Emission>, String)> {
+    state.authenticate_owner(&webview, &owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    let result = repository::responses::read(&pool, &owner, &work).await?;
+    state.authenticate_owner(&webview, &owner)?;
+    Ok(result)
+}
+#[tauri::command]
+pub(crate) async fn execution_host_close_responses(
+    webview: Webview,
+    state: tauri::State<'_, HostState>,
+    database: tauri::State<'_, DbPool>,
+    closure: repository::responses::Closure,
+) -> Result<repository::responses::Closure> {
+    state.authenticate_owner(&webview, &closure.owner)?;
+    let pool = database
+        .wait_until_ready()
+        .await
+        .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
+    repository::responses::close(&pool, closure).await
 }

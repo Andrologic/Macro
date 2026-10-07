@@ -1,3 +1,4 @@
+import { isNativeToolAlias } from '../../shared/nativeToolAlias';
 import type { WebSearchOptions } from '../webSearch';
 import { isMacroToolCopilotBuiltInOverride, type JsonSchema, type MacroToolRegistryEntry, requireMacroToolRegistryEntry, toFunctionToolShape } from '../../shared/macroToolRegistry';
 import { toMCPFunctionToolShape } from '../mcp';
@@ -280,8 +281,8 @@ export function buildNativeAliasedTools(
   const names = new Set<string>();
   const schemas = new Map<string, JsonSchema>();
   const tools = aliases.map(({ name, toolId }) => {
-    if (!name.trim() || name === NATIVE_PUBLICATION_TOOL_ID || names.has(name)) {
-      throw new Error('Captured tool alias is empty, reserved or ambiguous.');
+    if (!isNativeToolAlias(name) || name === NATIVE_PUBLICATION_TOOL_ID || names.has(name)) {
+      throw new Error('Captured tool alias is unsupported by the transport, reserved or ambiguous.');
     }
     if (!allowedCanonicalIds.has(toolId)) throw new Error('Captured tool alias exceeds the admitted catalogue.');
     const entry = requireMacroToolRegistryEntry(toolId);

@@ -46,6 +46,7 @@ impl CaptureAuthority for Compiler {
     async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
         Ok(TrustedCapture {
             private: capture::PrivateCapture {
+                card_associations: vec![],
                 registry_json: "{\"version\":\"registry-v1\"}".into(),
                 native_catalogue_json: "{}".into(),
                 implementation_digest: "synthetic-adapter".into(),
@@ -1598,4 +1599,132 @@ async fn prepared_failure_rejects_backend_diagnostics_and_mismatched_portable_co
     assert!(prepared::prepare(&pool, "generation", request)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn host_inspection_retains_exact_effect_results_and_refuses_stale_owner() {
+    let (_temp, pool, receipt, runtime) = setup().await;
+    let d = delivery(&pool, &runtime, "second", "inspect").await;
+    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+    begin(&pool, &runtime, "inspect").await.unwrap();
+    let mut e = effect(&runtime, &d.work);
+    e.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "inspect-tool".into(),
+        provider_attempt_id: None,
+    };
+    register_effect(&pool, e.clone()).await.unwrap();
+    let result = "{ \"n\": 9007199254740993 }";
+    settle_effect(
+        &pool,
+        EngineSettlement {
+            context: e.context,
+            effect: e.effect,
+            status: "ended".into(),
+            evidence_json: "{}".into(),
+        },
+        Some(result.into()),
+    )
+    .await
+    .unwrap();
+    let view = inspection::read(&pool, &runtime).await.unwrap();
+    assert_eq!(view.snapshot, receipt.snapshot);
+    assert_eq!(view.agents.len(), 2);
+    assert_eq!(view.effects[0].result_json.as_deref(), Some(result));
+    assert!(view.response_closures_json.is_empty());
+    assert!(view.prepared_terminals_json.is_empty());
+    let stale = EngineOwner {
+        owner_epoch: "0".into(),
+        ..runtime
+    };
+    assert!(inspection::read(&pool, &stale).await.is_err());
+}
+
+#[tokio::test]
+async fn external_graphless_delivery_uses_native_ids_and_keeps_its_exact_receipt() {
+    struct Graphless;
+    impl CaptureAuthority for Graphless {
+        type CommitGuard = ();
+        async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+            let mut capture = Compiler.capture(request, id).await?;
+            capture.entry_step = None;
+            capture.policies.clear();
+            Ok(capture)
+        }
+        async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("external.db")).await.unwrap();
+    let receipt = start(&pool, request(), &Graphless).await.unwrap();
+    let runtime = EngineOwner {
+        system_start_id: receipt.system_start_id.clone(),
+        owner_epoch: "0".into(),
+    };
+    assert!(read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap()
+        .activations
+        .is_empty());
+    let message =
+        r#"{"resources":{"item":{"mediaType":"application/json","value":9007199254740993}}}"#;
+    let first = accept_external_delivery(&pool, &runtime, "external", "a", message)
+        .await
+        .unwrap();
+    assert_eq!(first.delivery.input.origin, "entry");
+    assert!(first.delivery.work.step.is_none());
+    assert!(!first.delivery.work.activation_id.is_empty());
+    assert_eq!(first.delivery.input.value_json, message);
+    assert_eq!(
+        accept_external_delivery(&pool, &runtime, "external", "a", message)
+            .await
+            .unwrap(),
+        first
+    );
+    assert!(
+        accept_external_delivery(&pool, &runtime, "external", "b", message)
+            .await
+            .is_err()
+    );
+    assert!(accept_external_delivery(
+        &pool,
+        &runtime,
+        "external",
+        "a",
+        &message.replace("9007199254740993", "9007199254740992")
+    )
+    .await
+    .is_err());
+    assert!(
+        accept_external_delivery(&pool, &runtime, "missing", "unknown", message)
+            .await
+            .is_err()
+    );
+    stop(
+        &pool,
+        EngineStopRequest {
+            system_start_id: runtime.system_start_id.clone(),
+            request_id: "stop".into(),
+            activation_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accept_external_delivery(&pool, &runtime, "external", "a", message)
+            .await
+            .unwrap(),
+        first
+    );
+    assert!(
+        accept_external_delivery(&pool, &runtime, "new", "a", message)
+            .await
+            .is_err()
+    );
+    let (_temp, graph_pool, _receipt, graph_owner) = setup().await;
+    assert!(
+        accept_external_delivery(&graph_pool, &graph_owner, "graph", "a", message)
+            .await
+            .is_err()
+    );
 }

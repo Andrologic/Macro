@@ -1,5 +1,6 @@
 pub mod architect;
 pub mod metadata;
+pub(crate) mod task_target;
 
 use crate::core::error::{BackendError, Result};
 use crate::core::process::{background_command, background_tokio_command};

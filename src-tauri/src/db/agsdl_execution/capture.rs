@@ -12,6 +12,8 @@ pub(crate) struct CallScope {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PrivateCapture {
     pub registry_json: String,
+    #[serde(default)]
+    pub card_associations: Vec<super::card_associations::CardAssociation>,
     /// A typed native projection of descriptors, never ProviderConfig or secrets.
     pub native_catalogue_json: String,
     pub implementation_digest: String,

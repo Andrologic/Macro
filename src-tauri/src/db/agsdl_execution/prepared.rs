@@ -3,9 +3,9 @@
 use super::*;
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Validation {
+pub struct Validation {
     pub snapshot_digest: String,
     pub input: EngineValue,
     pub declaration_json: Option<String>,
@@ -14,9 +14,9 @@ pub(crate) struct Validation {
     /// Rust reconstructs the destination from the captured declaration, never this value alone.
     pub selected_branch: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Prepare {
+pub struct Prepare {
     pub owner: EngineOwner,
     pub work: EngineWork,
     pub outcome: EngineOutcome,

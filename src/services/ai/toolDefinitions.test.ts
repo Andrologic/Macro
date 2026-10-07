@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { collectAllowedTools, getFunctionToolName } from "./toolDefinitions";
+import { buildNativeAliasedTools, collectAllowedTools, getFunctionToolName } from "./toolDefinitions";
 import { applyEditingStrategyToToolIds } from "../aiEditingStrategy";
 import { getImplementAgentToolPolicy, getToolModePolicy } from "../toolModePolicy";
 import { runToolCallingLoop } from "./toolCallingLoop";
@@ -196,6 +196,9 @@ it('offers captured aliases with real schemas and retains exact alias calls', as
 
 it.each([
   [{ name: 'macro_agsdl_publish', toolId: 'read' }],
+  [{ name: 'a'.repeat(65), toolId: 'read' }],
+  [{ name: 'résumé', toolId: 'read' }],
+  [{ name: 'a.b', toolId: 'read' }],
   [{ name: 'alias', toolId: 'read' }, { name: 'alias', toolId: 'write' }],
   [{ name: 'alias', toolId: 'delete' }],
   [{ name: 'alias', toolId: 'mcp__unknown' }],
@@ -212,4 +215,10 @@ it.each([
     kind: 'native', streamTurn: provider, projectTool: result => result.content, afterToolResults: () => undefined,
   }, createStreamAccumulator(options))).rejects.toThrow();
   expect(provider).not.toHaveBeenCalled();
+});
+
+it('keeps the exact 64-character alias at the transport boundary', () => {
+  const alias = 'a'.repeat(64);
+  const shaped = buildNativeAliasedTools([{ name: alias, toolId: 'read' }], new Set(['read']));
+  expect(names(shaped.tools)).toEqual([alias]);
 });

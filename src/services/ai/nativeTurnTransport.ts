@@ -561,13 +561,7 @@ export const streamNativeTurnViaTauri = async (params: {
         }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
-        if (params.nativeExecution) {
-          const receipt = await own(params.nativeExecution.beforeRequest(requestId));
-          if (receipt !== 'registered') throw new Error('CORRELATION: a duplicate provider effect cannot be redispatched.');
-          executionRegistered = true;
-          if (stopped() || params.signal?.aborted) { signalHandler(); return; }
-        }
-        await own(tauriIpc.aiStreamChat({
+        const nativeRequest: Parameters<typeof tauriIpc.aiStreamChat>[0] = {
           requestId,
           providerId: params.providerId,
           modelId: params.modelId,
@@ -595,7 +589,14 @@ export const streamNativeTurnViaTauri = async (params: {
           focusedProjectId: params.focusedProjectId,
           allowedToolIds: params.allowedToolIds,
           copilotSendTimeoutMs: params.copilotSendTimeoutMs,
-        }));
+        };
+        if (params.nativeExecution) {
+          const receipt = await own(params.nativeExecution.beforeRequest(requestId, nativeRequest));
+          if (receipt !== 'registered') throw new Error('CORRELATION: a duplicate provider effect cannot be redispatched.');
+          executionRegistered = true;
+          if (stopped() || params.signal?.aborted) { signalHandler(); return; }
+        }
+        await own((params.nativeExecution?.dispatch ?? tauriIpc.aiStreamChat)(nativeRequest));
       } catch (error) {
         if (cancellationRequested) return;
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));

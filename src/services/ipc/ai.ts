@@ -127,7 +127,7 @@ export async function aiGetDevProviderOverrides(): Promise<DevProviderOverridesF
   );
 }
 
-export async function aiStreamChat(params: {
+export interface AiStreamChatInput {
   requestId: string;
   providerId: string;
   modelId: string;
@@ -144,9 +144,9 @@ export async function aiStreamChat(params: {
   focusedProjectId?: string | null;
   allowedToolIds?: string[];
   copilotSendTimeoutMs?: number | null;
-}): Promise<void> {
-  return invoke("ai_stream_chat", {
-    request: {
+}
+export function toNativeAiChatRequest(params: AiStreamChatInput) {
+  return {
       request_id: params.requestId,
       provider_id: params.providerId,
       model_id: params.modelId,
@@ -168,8 +168,10 @@ export async function aiStreamChat(params: {
       focused_project_id: params.focusedProjectId ?? null,
       allowed_tool_ids: params.allowedToolIds ?? [],
       copilot_send_timeout_ms: params.copilotSendTimeoutMs ?? null,
-    },
-  });
+    };
+}
+export async function aiStreamChat(params: AiStreamChatInput): Promise<void> {
+  return invoke("ai_stream_chat", { request: toNativeAiChatRequest(params) });
 }
 
 export async function aiCancelStream(requestId: string): Promise<void> {

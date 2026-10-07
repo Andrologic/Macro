@@ -192,6 +192,92 @@ impl CompileBroker {
                 "Compiler result does not describe its native ticket",
             ));
         }
+        if let Some(input) = registry.get("deliveryInput") {
+            if result.pointer("/deliveryValidation/input") != Some(input) {
+                return Err(failure(
+                    "CORRELATION",
+                    "message",
+                    "Delivery validation differs from its native ticket",
+                ));
+            }
+        }
+        if let Some(entry) = registry.get("startEntry") {
+            let expected_message = entry.get("messageJson").unwrap_or(&Value::Null);
+            if result.pointer("/entryValidation/messageJson") != Some(expected_message) {
+                return Err(failure(
+                    "CORRELATION",
+                    "entry",
+                    "Entry validation differs from the native ticket",
+                ));
+            }
+        }
+        if registry.get("format").and_then(Value::as_str)
+            == Some("macro-native-registry-observation/1")
+            && result
+                .pointer("/runtime/supported")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            let captured_json = result
+                .get("capturedRegistryJson")
+                .and_then(Value::as_str)
+                .ok_or_else(|| failure("CORRELATION", "registry", "Compiled registry is absent"))?;
+            validate_json(captured_json)?;
+            let captured: Value = serde_json::from_str(captured_json)?;
+            if captured.get("version") != registry.get("version")
+                || captured.get("models") != registry.get("models")
+            {
+                return Err(failure(
+                    "CORRELATION",
+                    "registry",
+                    "Compiled registry changed native observations",
+                ));
+            }
+            let observed = registry
+                .get("configurations")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    failure(
+                        "CORRELATION",
+                        "registry",
+                        "Native configurations are absent",
+                    )
+                })?;
+            let configurations = captured
+                .get("configurations")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    failure(
+                        "CORRELATION",
+                        "registry",
+                        "Compiled configurations are absent",
+                    )
+                })?;
+            if configurations.len() != observed.len() {
+                return Err(failure(
+                    "CORRELATION",
+                    "registry",
+                    "Configuration observations changed",
+                ));
+            }
+            for (native, compiled) in observed.iter().zip(configurations) {
+                for field in [
+                    "agentName",
+                    "effectiveSettingsJson",
+                    "permissionsJson",
+                    "scopeJson",
+                    "verifiedRequirementsJson",
+                ] {
+                    if native.get(field) != compiled.get(field) {
+                        return Err(failure(
+                            "CORRELATION",
+                            "registry",
+                            "Compiled configuration changed native authority",
+                        ));
+                    }
+                }
+            }
+        }
         if let Some(plan_json) = result.get("compiledPlanJson").and_then(Value::as_str) {
             validate_json(plan_json)?;
             let plan: Value = serde_json::from_str(plan_json)?;

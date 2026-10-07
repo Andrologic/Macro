@@ -1,3 +1,4 @@
+import { isNativeToolAlias } from '../../shared/nativeToolAlias';
 import { MACRO_TOOL_REGISTRY } from '../../shared/macroToolRegistry';
 import type { MCPTool } from '../../types';
 import { assertUniqueMCPToolIds } from '../mcp/normalization';
@@ -212,7 +213,7 @@ export function resolveBinding(document: ExactObject, name: string, registry: Ca
 /** Resolve model-facing names without rewriting authored declarations or schemas. */
 export function captureToolAliases(document: ExactObject, configuration: ExactObject, registry: CapturedRegistry): readonly { readonly name: string; readonly toolId: string }[] {
   return Object.entries(record(configuration.tools ?? {})).map(([name, binding]) => {
-    if (!name.trim() || name === 'macro_agsdl_publish') return fail('UNSUPPORTED', '/configurations/tools', 'Tool alias is empty or reserved for publication.');
+    if (!isNativeToolAlias(name) || name === 'macro_agsdl_publish') return fail('UNSUPPORTED', '/configurations/tools', 'Tool alias is reserved or unsupported by the qualified transport.');
     const resolved = resolveBinding(document, text(binding), registry, 'tool');
     if (resolved.target.kind !== 'macro-tool') return fail('UNSUPPORTED', '/configurations/tools', 'Tool has no qualified native Macro adapter.');
     return { name, toolId: resolved.target.toolId };
@@ -224,7 +225,7 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   const configuration = record(record(document.configurations)[configurationName]);
   resolveBinding(document, text(configuration.engine), registry, 'engine');
   for (const [alias, name] of Object.entries(record(configuration.tools ?? {}))) {
-    if (alias === 'macro_agsdl_publish') return fail('UNSUPPORTED', `/configurations/${configurationName}/tools`, 'Tool alias is reserved for publication.');
+    if (!isNativeToolAlias(alias) || alias === 'macro_agsdl_publish') return fail('UNSUPPORTED', `/configurations/${configurationName}/tools`, 'Tool alias is reserved or unsupported by the qualified transport.');
     resolveBinding(document, text(name), registry, 'tool');
   }
   if (!has(configuration, 'model')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Provider and Model must be explicit.');

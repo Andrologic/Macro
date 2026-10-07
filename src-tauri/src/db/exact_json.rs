@@ -249,3 +249,43 @@ mod tests {
         assert!(validate("1e9999").is_ok());
     }
 }
+
+/// Materialize a bounded positive native counter without passing through f64.
+pub(crate) fn positive_integer(token: &str) -> Option<String> {
+    let Exact::Number(canonical) = parse(token).ok()? else {
+        return None;
+    };
+    let (digits, exponent) = canonical.split_once('e')?;
+    if digits.starts_with('-') {
+        return None;
+    }
+    let exponent: usize = exponent.parse().ok()?;
+    if digits.len().checked_add(exponent)? > 4096 {
+        return None;
+    }
+    Some(format!("{}{}", digits, "0".repeat(exponent)))
+}
+
+#[cfg(test)]
+mod counter_tests {
+    #[test]
+    fn positive_counter_is_exact_and_bounded() {
+        for (token, expected) in [
+            ("1e20", "100000000000000000000"),
+            ("9007199254740993", "9007199254740993"),
+            ("1.20e2", "120"),
+        ] {
+            assert_eq!(super::positive_integer(token).as_deref(), Some(expected));
+        }
+        for token in [
+            "0",
+            "-1",
+            "0.1",
+            "1e999999999999999999999",
+            "1e4096",
+            "\"3\"",
+        ] {
+            assert!(super::positive_integer(token).is_none());
+        }
+    }
+}
