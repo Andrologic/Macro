@@ -23,6 +23,7 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import type { QueuedSubmissionPreview } from '../../stores/chat/chatQueuedSubmissionRuntime';
 import { useChatStore as draftLifecycleStore } from '../../stores/useChatStore';
 import { clearConflictAssistantContext, registerConflictAssistantContext } from '../../services/conflictAssistantContext';
 import {
@@ -81,6 +82,8 @@ export type MockMessage = {
 };
 
 export type MockChatState = {
+  queuedSubmissionPreviews?: QueuedSubmissionPreview[];
+  removeQueuedSubmission?: (id: string) => Promise<void>;
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
@@ -705,6 +708,7 @@ const loadChatZoneModule = async (
 
 const preloadChatZoneLazyComponents = async () => {
   await Promise.all([
+    import('./QueuedMessagesPanel'),
     import('./ConversationGoalBanner'),
     import('./QuestionnaireFooter'),
     import('./ToolApprovalFooter'),
@@ -1246,6 +1250,39 @@ describe('ChatZone', () => {
 
   afterAll(() => {
     mock.restore();
+  });
+
+  it('reveals the selected queue on queue-only publication and removes it reactively', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      queuedSubmissionPreviews: [],
+      messagesByConversationId: {},
+      getConversationRuntime: () => runtime,
+      removeQueuedSubmission: async id => {
+        realChatStore.setState(state => ({ queuedSubmissionPreviews: state.queuedSubmissionPreviews?.filter(entry => entry.id !== id) }));
+      },
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('section[aria-label="Queued messages"]')).toBeNull();
+    await act(async () => {
+      realChatStore.setState({ queuedSubmissionPreviews: [
+        { id: 'selected', conversationId: 'conv-1', content: 'Selected queued instruction', state: 'waiting' },
+        { id: 'foreign', conversationId: 'conv-2', content: 'Foreign queued instruction', state: 'waiting' },
+      ] });
+      await Promise.resolve();
+    });
+    const panel = requireContainer().querySelector('section[aria-label="Queued messages"]');
+    expect(panel?.textContent).toContain('Selected queued instruction');
+    expect(panel?.textContent).not.toContain('Foreign queued instruction');
+    await act(async () => {
+      panel?.querySelector('button')?.click();
+      await Promise.resolve();
+    });
+    expect(requireContainer().querySelector('section[aria-label="Queued messages"]')).toBeNull();
+    expect(realChatStore.getState().queuedSubmissionPreviews?.map(entry => entry.id)).toEqual(['foreign']);
   });
 
   it('reacts to approval-only publication and removal with a real Zustand subscription', async () => {

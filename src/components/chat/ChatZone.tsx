@@ -134,6 +134,10 @@ import {
   acquireAttachmentImport,
 } from '../../services/conversationFileAttachments';
 
+const QueuedMessagesPanel = React.lazy(() =>
+  import('./QueuedMessagesPanel').then((module) => ({ default: module.QueuedMessagesPanel })),
+);
+
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
     default: module.ConversationGoalBanner,
@@ -1211,6 +1215,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     toolApprovalRecoveryError,
     dismissToolApprovalRecoveryError,
     stopStreaming,
+    hasQueuedMessages,
     sendMessage,
     submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
@@ -1275,6 +1280,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     toolApprovalRecoveryError: state.toolApprovalRecoveryError,
     dismissToolApprovalRecoveryError: state.dismissToolApprovalRecoveryError,
     stopStreaming: state.stopStreaming,
+    hasQueuedMessages: (state.queuedSubmissionPreviews ?? []).some(entry => entry.conversationId === state.selectedConversationId),
     sendMessage: state.sendMessage,
     submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
@@ -4205,6 +4211,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {selectedConversationId && hasQueuedMessages && (
+              <Suspense fallback={null}>
+                <QueuedMessagesPanel conversationId={selectedConversationId} />
+              </Suspense>
+            )}
             {!activeQuestionnaire && !activePendingToolApproval && <input
               ref={composerFileInputRef}
               type="file"
@@ -4601,6 +4612,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       onClick={handleStopStreaming}
                       data-tour-id="chat-stop-button"
                       aria-label={t('chat.stop', 'Stop')}
+                      title={t('chat.stopQueueDescription', 'Stops the current response and pauses queued messages. Queued messages are retained.')}
                       className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
                     >
                       <Icon name="square" size={14} />

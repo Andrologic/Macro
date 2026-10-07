@@ -384,6 +384,21 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       expect(options.allowedToolIds).not.toContain('git_status');
     });
 
+    it('Stop pauses the selected conversation queue until an explicit retry', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Keep after Stop' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      store.getState().stopStreaming();
+      await c.flushAsyncWork();
+      release(store);
+      await c.flushAsyncWork();
+      expect(c.streamChatMock).not.toHaveBeenCalled();
+      expect(loadQueuedSubmissions().map(entry => entry.id)).toEqual([accepted.id]);
+      expect(store.getState().queuedSubmissionPreviews[0].state).toBe('paused');
+      await store.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
     it('publishes recovery during full hydration without depending on notifications', async () => {
       const store = await prepare();
       await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Recover after restart' }, 'queue');
@@ -395,6 +410,7 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
         id: loadQueuedSubmissions()[0].id,
         conversationId: 'queued-conv',
         content: 'Recover after restart',
+        state: 'paused',
       }]);
       await restarted.getState().retryQueuedSubmissions('queued-conv');
       expect(restarted.getState().queuedSubmissionRecoveryByConversationId).toEqual({});
