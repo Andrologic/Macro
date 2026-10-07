@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it, mock, spyOn } from 'bun:test';
 import { loadQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from '../chat/chatQueuedSubmissions';
 import { useConversationArchiveStore } from '../useConversationArchiveStore';
 import { beginAppShutdownGate } from '../../services/appShutdownGate';
@@ -384,6 +384,90 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       expect(options.allowedToolIds).not.toContain('git_status');
     });
 
+    it('Stop pauses the selected conversation queue until an explicit retry', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Keep after Stop' }, 'queue');
+      const [accepted] = loadQueuedSubmissions();
+      store.getState().stopStreaming();
+      await c.flushAsyncWork();
+      release(store);
+      await c.flushAsyncWork();
+      expect(c.streamChatMock).not.toHaveBeenCalled();
+      expect(loadQueuedSubmissions().map(entry => entry.id)).toEqual([accepted.id]);
+      expect(store.getState().queuedSubmissionPreviews[0].state).toBe('paused');
+      await store.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('remembers Stop before lazy queue initialization without pausing a later turn', async () => {
+      const store = await prepare();
+      const admission = store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Late admission' }, 'queue');
+      store.getState().stopStreaming();
+      await admission;
+      await c.flushAsyncWork();
+      expect(c.streamChatMock).not.toHaveBeenCalled();
+      expect(store.getState().queuedSubmissionPreviews).toMatchObject([{ content: 'Late admission', state: 'paused' }]);
+      await store.getState().removeQueuedSubmission(loadQueuedSubmissions()[0].id);
+      store.setState({ conversationRuntimeById: { 'queued-conv': {
+        phase: 'streaming', sessionId: 'later', turnId: 'later-turn',
+      } } });
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'New intent' }, 'queue');
+      expect(store.getState().queuedSubmissionPreviews).toMatchObject([{ content: 'New intent', state: 'waiting' }]);
+      release(store);
+      await store.getState().retryQueuedSubmissions('queued-conv');
+      expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+      expect(loadQueuedSubmissions()).toEqual([]);
+    });
+
+    for (const windowName of ['admission', 'dispatch'] as const) {
+      it(`retains a queued submission when Stop interrupts ${windowName} preparation, then retries once`, async () => {
+        const store = await prepare();
+        const reached = c.createDeferred<void>();
+        const proceed = c.createDeferred<void>();
+        const images = [{ id: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-01-01T00:00:00Z' }];
+        const refs = [{ id: 'file:context', kind: 'file' as const, title: 'Context', path: '/synthetic/context.txt' }];
+        const payload = { conversationId: 'queued-conv', content: 'Retain after Stop', images, contextRefs: refs };
+        const configuration = await import('../../services/configurationClient');
+        const context = await import('../chat/chatQueuedSubmissionContext');
+        const revalidate = context.revalidateQueuedExecutionContext;
+        const pendingSpy = windowName === 'admission'
+          ? spyOn(configuration, 'loadScopedTurnConfiguration').mockImplementationOnce(async () => {
+              reached.resolve(); await proceed.promise; return null;
+            })
+          : spyOn(context, 'revalidateQueuedExecutionContext').mockImplementationOnce(async (...args) => {
+              reached.resolve(); await proceed.promise; return revalidate(...args);
+            });
+        try {
+          let operation: Promise<unknown>;
+          if (windowName === 'admission') {
+            operation = store.getState().submitDuringActiveTurn(payload, 'queue');
+          } else {
+            await store.getState().submitDuringActiveTurn(payload, 'queue');
+            release(store);
+            operation = store.getState().retryQueuedSubmissions('queued-conv');
+          }
+          await reached.promise;
+          store.getState().stopStreaming();
+          // An early retry cannot revive the dispatch still awaiting revalidation.
+          if (windowName === 'dispatch') await store.getState().retryQueuedSubmissions('queued-conv');
+          proceed.resolve();
+          await operation;
+          await c.flushAsyncWork();
+          expect(c.streamChatMock).not.toHaveBeenCalled();
+          expect(c.createMessageMock).not.toHaveBeenCalled();
+          const [retained] = loadQueuedSubmissions();
+          expect(retained.input).toMatchObject(payload);
+          expect(store.getState().queuedSubmissionPreviews).toMatchObject([{ id: retained.id, state: 'paused' }]);
+          await store.getState().retryQueuedSubmissions('queued-conv');
+          await c.flushAsyncWork();
+          expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+          expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+          expect(c.createMessageMock.mock.calls.find(call => call[1] === 'user')?.[3]?.contextRefs).toEqual(refs);
+          expect(loadQueuedSubmissions()).toEqual([]);
+        } finally { proceed.resolve(); pendingSpy.mockRestore(); }
+      });
+    }
+
     it('publishes recovery during full hydration without depending on notifications', async () => {
       const store = await prepare();
       await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Recover after restart' }, 'queue');
@@ -395,6 +479,7 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
         id: loadQueuedSubmissions()[0].id,
         conversationId: 'queued-conv',
         content: 'Recover after restart',
+        state: 'paused',
       }]);
       await restarted.getState().retryQueuedSubmissions('queued-conv');
       expect(restarted.getState().queuedSubmissionRecoveryByConversationId).toEqual({});
