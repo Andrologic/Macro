@@ -1,4 +1,4 @@
-import type { EngineActivation, EngineOwner, EngineTerminalCommit, EngineWork, HostAdmission, HostInspection, Prepare } from '../../types/generated/ipc';
+import type { EngineActivation, EngineOwner, EngineTerminalCommit, EngineWork, EngineStopState, HostAdmission, HostInspection, Prepare } from '../../types/generated/ipc';
 import * as ipc from '../ipc/agsdlExecution';
 import { executeFlowActivation, loadFlowCapture, resolveFlowVisitLimit, type FlowAgent, type FlowCapture } from './flowActivation';
 import { decode, fail, record, text } from './exact';
@@ -30,10 +30,6 @@ function sameWork(left: EngineWork, right: EngineWork): boolean {
   return left.systemStartId === right.systemStartId && left.activationId === right.activationId && left.flowInvocationId === right.flowInvocationId
     && left.agentInstanceId === right.agentInstanceId && JSON.stringify(left.step) === JSON.stringify(right.step);
 }
-function stopped(inspection: HostInspection, work: EngineWork): boolean {
-  const activation = inspection.projection.activations.find(item => sameWork(item.delivery.work, work));
-  return inspection.projection.systemStop.kind !== 'none' || activation === undefined || activation.stopState.kind !== 'none';
-}
 interface Finishing { request?: Prepare; witnessId?: string }
 /** One disposable pump per native system/owner in this host generation. SQL owns
  * the queue and every durable boundary; this object retains only its continuations. */
@@ -46,6 +42,8 @@ export class FlowPump {
   private agent: FlowAgent | undefined;
   private currentWork: EngineWork | undefined;
   private stopObserved = false;
+  private systemStop: EngineStopState | undefined;
+  private activationStop: EngineStopState | undefined;
   private finishing: Finishing | undefined;
   private lostAdmission: EngineActivation | undefined;
   private uncertain: { work: EngineWork; reason: string } | undefined;
@@ -53,12 +51,44 @@ export class FlowPump {
   lastError: unknown;
   constructor(readonly generation: string, readonly owner: EngineOwner, private readonly ports = nativeFlowSchedulerPorts) {}
 
-  /** The supervisor calls this even while begin/execute/commit is awaiting IO. */
+  /** Native Stop is monotonic within this owner/system. A later completion of
+   * an older read must not erase a successful Stop read received during begin. */
   observe(inspection: HostInspection): void {
-    if (this.currentWork && stopped(inspection, this.currentWork)) {
-      this.stopObserved = true;
-      this.agent?.requestStop();
+    if (this.retired || inspection.snapshot.systemStartId !== this.owner.systemStartId
+      || inspection.projection.systemStartId !== this.owner.systemStartId
+      || this.snapshotDigest !== undefined && inspection.snapshotDigest !== this.snapshotDigest) return;
+    if (inspection.projection.systemStop.kind !== 'none') this.systemStop ??= structuredClone(inspection.projection.systemStop);
+    const activation = this.currentWork && inspection.projection.activations.find(item => sameWork(item.delivery.work, this.currentWork!));
+    if (activation) this.retainActivationStop(activation);
+    this.stopObserved ||= this.systemStop !== undefined;
+    if (this.stopObserved) this.agent?.requestStop();
+  }
+  private retainActivationStop(activation: EngineActivation): void {
+    if (!this.currentWork || !sameWork(activation.delivery.work, this.currentWork)
+      || activation.admittedEpoch !== undefined && activation.admittedEpoch !== null && activation.admittedEpoch !== this.owner.ownerEpoch) return;
+    if (activation.stopState.kind !== 'none') this.activationStop ??= structuredClone(activation.stopState);
+    this.stopObserved ||= this.activationStop !== undefined || this.systemStop !== undefined;
+  }
+  private watchAdmission(activation: EngineActivation, inspection: HostInspection): void {
+    if (!this.currentWork || !sameWork(this.currentWork, activation.delivery.work)) {
+      this.currentWork = activation.delivery.work;
+      this.activationStop = undefined;
+      this.stopObserved = this.systemStop !== undefined;
     }
+    this.observe(inspection);
+    this.retainActivationStop(activation);
+  }
+  private clearWork(): void {
+    this.agent = undefined;
+    this.currentWork = undefined;
+    this.activationStop = undefined;
+    this.stopObserved = false;
+  }
+  private stoppedInputs(activation: EngineActivation, inspection: HostInspection): [EngineActivation, HostInspection] {
+    // Relay only Stop fields from authenticated reads. Source, input, memory and
+    // admission stay unchanged; native close/prepare/commit still prove the boundary.
+    return [this.activationStop ? { ...activation, stopState: this.activationStop } : activation,
+      this.systemStop ? { ...inspection, projection: { ...inspection.projection, systemStop: this.systemStop } } : inspection];
   }
   retire(): void { this.retired = true; this.agent?.requestStop(); }
   wake(): Promise<void> {
@@ -133,6 +163,7 @@ export class FlowPump {
       let selected: EngineActivation | undefined;
       let admission: HostAdmission | undefined;
       if (this.lostAdmission) {
+        this.watchAdmission(this.lostAdmission, inspection);
         const retained = inspection.projection.activations.find(item => item.delivery.deliveryId === this.lostAdmission!.delivery.deliveryId);
         if (retained?.workState === 'active') {
           try { admission = await this.ports.begin(this.owner, retained.delivery.deliveryId); }
@@ -148,7 +179,7 @@ export class FlowPump {
           }
           if (admission.kind === 'admitted' || admission.kind === 'rejected' && admission.code === 'VISIT_LIMIT') selected = retained;
         }
-        if (!selected) this.lostAdmission = undefined;
+        if (!selected) { this.lostAdmission = undefined; this.clearWork(); }
       }
       const orphan = inspection.projection.activations.find(item => item.workState === 'active' && item !== selected);
       if (orphan) {
@@ -157,10 +188,12 @@ export class FlowPump {
       }
       // Stop prevents new admissions, but the retained pre-dispatch continuation
       // still needs a real no-effect closure, checkpoint and native stopped commit.
-      if (!selected && inspection.projection.systemStop.kind !== 'none') return;
+      if (!selected && this.systemStop) return;
       const candidates = inspection.projection.activations.filter(item => item.workState === 'queued' && item.stopState.kind === 'none')
         .sort((a, b) => compareSequence(a.delivery.queueSequence as Sequence, b.delivery.queueSequence as Sequence));
       for (const candidate of selected ? [] : candidates) {
+        if (this.systemStop) return;
+        this.watchAdmission(candidate, inspection);
         try { admission = await this.ports.begin(this.owner, candidate.delivery.deliveryId); }
         catch (error) {
           // Admission ack lost: we have no proof allowing an effect. Native
@@ -173,14 +206,14 @@ export class FlowPump {
           selected = candidate;
           break;
         }
+        this.clearWork();
       }
       if (!selected || !admission) {
         if (this.dirty) continue;
         return;
       }
       if (this.retired) return;
-      this.currentWork = selected.delivery.work;
-      this.stopObserved = stopped(inspection, this.currentWork);
+      this.watchAdmission(selected, inspection);
       // Consume the lost acknowledgement only when taking over its continuation,
       // not before another active work or a Stop check can postpone it.
       this.lostAdmission = undefined;
@@ -189,19 +222,23 @@ export class FlowPump {
         if (admission.kind === 'admitted') {
           if (!sameWork(admission.activation.delivery.work, selected.delivery.work)
             || admission.activation.delivery.deliveryId !== selected.delivery.deliveryId) fail('CORRELATION', '/admission', 'Admission belongs to another candidate.');
-          request = await this.ports.execute(this.owner, admission.activation, admission.memory, inspection, this.capture, agent => {
+          this.retainActivationStop(admission.activation);
+          const [activation, observed] = this.stoppedInputs(admission.activation, inspection);
+          request = await this.ports.execute(this.owner, activation, admission.memory, observed, this.capture, agent => {
             this.agent = agent;
             if (this.stopObserved || this.retired) agent.requestStop();
           });
-        } else request = await this.ports.visitLimit(this.owner, selected, inspection, this.capture);
+        } else {
+          const [activation, observed] = this.stoppedInputs(selected, inspection);
+          request = await this.ports.visitLimit(this.owner, activation, observed, this.capture);
+        }
         this.finishing = { request };
       } catch (error) {
         this.lastError = error;
         // Bounded phase-only reason; exception payloads may contain private data.
         this.uncertain = { work: selected.delivery.work, reason: 'Resident activation lacks a confirmed terminal boundary; no continuation dispatched.' };
       } finally {
-        this.agent = undefined;
-        this.currentWork = undefined;
+        this.clearWork();
       }
     }
   }

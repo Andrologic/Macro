@@ -336,3 +336,92 @@ it.each([['work', 'system'], ['work', 'activation'], ['call', 'system'], ['prepa
     expect(messages).toEqual(previous ? record(decode(previous.stateJson)).messages : [{ role: 'system', content: 'Review.' }]);
   } else expect(f.terminal()?.memory).toBeNull();
 });
+
+const admissionStopCases = (['first', 'repeat'] as const).flatMap(phase => (['system', 'activation'] as const)
+  .flatMap(target => (['work', 'call', 'prepare', 'check'] as const).map(step => [phase, target, step] as const)));
+it.each(admissionStopCases)('retains %s-begin %s Stop before %s work despite an older read completing later', async (phase, target, step) => {
+  const first = flowDelivery('first', '1', step, step === 'work' ? 'worker-instance' : null), f = await harness([first]);
+  const entered = deferred<void>(), release = deferred<void>(), begin = f.ports.begin;
+  const snapshots: unknown[] = [];
+  f.ports.inspect = async () => { const fresh = structuredClone(f.inspection); snapshots.push(fresh); return fresh; };
+  let begins = 0;
+  f.ports.begin = async (...args) => {
+    if (++begins === 1) {
+      const receipt = structuredClone(await begin(...args));
+      if (phase === 'repeat') throw new Error('First begin persisted, reply lost');
+      entered.resolve(); await release.promise; return receipt;
+    }
+    f.calls.push(`begin:${args[1]}`); entered.resolve(); await release.promise;
+    return { kind: 'waiting', reason: 'active' };
+  };
+  const forbidden = async () => { throw new Error('Stop was read before any provider or invocation boundary'); };
+  const resident: ResidentAgentPorts = { register: forbidden, dispatch: forbidden, end: forbidden, append: forbidden, stream: forbidden,
+    journal: { read: forbidden, close: forbidden } };
+  const activationPorts: FlowActivationPorts = {
+    prepareAgent: async request => { f.calls.push('initialize'); return prepareFlowAgent(request, resident); },
+    readResponses: async () => { f.calls.push('read-empty'); return [[], 'native-empty-digest']; },
+    closeResponses: async closure => { f.calls.push('close-empty'); return structuredClone(closure); },
+    invoke: forbidden, identity: () => { throw new Error('No invocation allocation after observed Stop'); },
+  };
+  if (step === 'work') {
+    const memory = await MacroAgentMemory.prepare('worker-instance' as AgentInstanceId, f.capture.plan.agents[0] as FrozenAgentConfiguration, null);
+    await memory.acceptInput(() => '{"prompt":[{"value":"Prior entry"}]}' as import('./contracts').ExactJsonText);
+    memory.retain([...memory.messages(), { role: 'assistant', content: 'Prior reply' }]);
+    f.inspection.agents[0].memory = memory.checkpoint();
+  }
+  const previous = structuredClone(f.inspection.agents[0].memory);
+  f.ports.execute = (owner, activation, memory, inspection, capture, onAgent) => executeFlowActivation(owner, activation, memory, inspection, capture,
+    agent => { onAgent(agent); expect(agent.stopRequested).toBe(true); }, activationPorts);
+  const pump = new FlowPump('generation', flowOwner, f.ports);
+  if (phase === 'repeat') await pump.wake();
+  const running = pump.wake();
+  try {
+    await entered.promise;
+    const oldRead = await f.ports.inspect(flowOwner);
+    first.stopState = { kind: 'requested', requestId: 'stop-during-begin' };
+    if (target === 'system') f.inspection.projection.systemStop = { kind: 'requested', requestId: 'stop-during-begin' };
+    pump.observe(await f.ports.inspect(flowOwner));
+    pump.observe(oldRead);
+    release.resolve(); await running; await pump.wake();
+    expect(first.workState).toBe('terminal'); expect(first.terminal?.kind).toBe('stopped');
+    expect(begins).toBe(phase === 'first' ? 1 : 2); expect(f.requests).toHaveLength(1);
+    expect(f.calls.filter(call => call === 'close-empty')).toHaveLength(1);
+    expect(f.calls.indexOf('close-empty')).toBeLessThan(f.calls.indexOf('prepare:first'));
+    expect(f.calls.indexOf('prepare:first')).toBeLessThan(f.calls.indexOf('commit:witness-first'));
+    expect(f.calls.some(call => call.startsWith('uncertain'))).toBe(false);
+    expect(f.terminal()?.outgoing).toEqual([]); expect(f.inspection.effects).toEqual([]);
+    expect(f.requests[0].validation.input).toEqual(first.delivery.input); expect(f.requests[0].validation.selectedBranch).toBeNull();
+    expect(new Set(snapshots).size).toBe(snapshots.length);
+    // Confirmation belongs to the native commit, not to this controlled JS observer.
+    expect(first.stopState.kind).toBe('requested');
+    if (step === 'work') {
+      expect(f.calls.filter(call => call === 'initialize')).toHaveLength(1);
+      expect(f.terminal()!.memory!.revision).toBe('2');
+      expect(record(decode(f.terminal()!.memory!.stateJson)).messages).toEqual(record(decode(previous!.stateJson)).messages);
+      expect(f.terminal()!.memory!.stateJson).not.toContain('Go');
+    } else expect(f.terminal()?.memory).toBeNull();
+  } finally { release.resolve(); pump.retire(); }
+});
+it.each(['system', 'work', 'epoch'] as const)('ignores a Stop observation with another %s correlation while begin is pending', async mismatch => {
+  const first = flowDelivery('first', '1'), f = await harness([first]);
+  const begin = f.ports.begin, entered = deferred<void>(), release = deferred<void>();
+  f.ports.inspect = async () => structuredClone(f.inspection);
+  f.ports.begin = async (...args) => { const receipt = structuredClone(await begin(...args)); entered.resolve(); await release.promise; return receipt; };
+  let stops = 0;
+  f.ports.execute = async (_owner, activation, _memory, inspection, _capture, onAgent) => {
+    onAgent({ requestStop: () => { stops++; } } as FlowAgent);
+    expect(stops).toBe(0); expect(activation.stopState.kind).toBe('none'); expect(inspection.projection.systemStop.kind).toBe('none');
+    return preparedFixture(activation);
+  };
+  const pump = new FlowPump('generation', flowOwner, f.ports), running = pump.wake();
+  try {
+    await entered.promise;
+    const foreign = await f.ports.inspect(flowOwner);
+    foreign.projection.activations[0].stopState = { kind: 'requested', requestId: 'foreign-stop' };
+    if (mismatch === 'system') { foreign.snapshot.systemStartId = 'different-system'; foreign.projection.systemStop = { kind: 'requested', requestId: 'foreign-stop' }; }
+    else if (mismatch === 'work') foreign.projection.activations[0].delivery.work.flowInvocationId = 'different-flow';
+    else foreign.projection.activations[0].admittedEpoch = 'different-epoch';
+    pump.observe(foreign); release.resolve(); await running;
+    expect(first.terminal?.kind).toBe('completed'); expect(stops).toBe(0);
+  } finally { release.resolve(); pump.retire(); }
+});
