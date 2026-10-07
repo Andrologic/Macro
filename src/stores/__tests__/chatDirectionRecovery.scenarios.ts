@@ -77,6 +77,95 @@ export function registerChatDirectionRecoveryScenarios(c: UseChatStoreScenarioCo
       } finally { await h.close(); }
     });
 
+    for (const kind of ['generic', 'native'] as const) for (const outcome of ['direct', 'reload', 'failed', 'stop'] as const) {
+      it(`keeps the logical delivery identity through a transport retry: ${kind}/${outcome}`, async () => {
+        const h = await createHarness(kind); const storage = window.localStorage, write = storage.setItem;
+        const prepared: string[] = []; const ended: string[] = []; let retries = 0;
+        c.streamChatMock.mockImplementation(async options => {
+          const actual = options as unknown as StreamingChatOptions;
+          const prepare = actual.preparePendingSteers!; const finish = actual.onSteerRequestEnded!;
+          actual.preparePendingSteers = id => { prepared.push(id); return prepare(id); };
+          actual.onSteerRequestEnded = id => { ended.push(id); finish(id); };
+          const result = await runToolCallingLoop({ ...actual, maxTurns: 3 }, {
+            kind, streamTurn: async ({ messages, onRetry }) => {
+              h.requests.push(structuredClone(messages));
+              if (h.requests.length === 1) { h.entered.resolve(); await h.release.promise; }
+              else {
+                retries++; await onRetry!();
+                if (outcome === 'failed') {
+                  if (kind === 'generic') return { stopped: 'Transport retry failed' };
+                  throw new Error('Transport retry failed');
+                }
+                if (outcome === 'stop') h.store.getState().stopConversationStream(conversationId);
+              }
+              return { result: { content: 'Confirmed after transport retry', toolCalls: [], completionReason: 'completed' },
+                projectAssistant: () => ({ items: [] }) };
+            }, projectTool: r => r.content, afterToolResults() {},
+          }, createStreamAccumulator(actual));
+          actual.onComplete(result); return { usage: null };
+        });
+        try {
+          const first = await h.start(); await h.entered.promise;
+          expect(await h.store.getState().submitDuringActiveTurn(payload, 'steer')).toBe('steered');
+          const entry = loadQueuedSubmissions()[0];
+          c.updateMessageMock.mockImplementation(async (id, answer, options) => {
+            Object.assign(h.rows.find(row => row.id === id)!, { content: answer ?? '', completion_reason: options?.completionReason,
+              generation_attempts_json: JSON.stringify(options?.generationAttempts) });
+          });
+          if (outcome === 'reload') storage.setItem = (key, value) => {
+            if (key === QUEUED_SUBMISSIONS_STORAGE_KEY && JSON.parse(value).length === 0) throw new Error('Removal unavailable');
+            write.call(storage, key, value);
+          };
+          h.release.resolve(); await c.flushAsyncWork(); await c.flushAsyncWork(); await c.flushAsyncWork();
+          expect(retries).toBe(1); expect(h.requests).toHaveLength(2);
+          expect(directionMessages(h.requests[1])).toHaveLength(1); assertFiltered(directionMessages(h.requests[1])[0]);
+          const final = h.rows.find(row => row.id === first.assistantMessageId)! as (typeof h.rows)[number] & DbMessage;
+          if (outcome === 'direct' || outcome === 'reload') {
+            expect(ended).toContain(prepared[0]);
+            expect(final.completion_reason).toBe('completed');
+            const attempts = JSON.parse(final.generation_attempts_json!);
+            expect(attempts.at(-1).id).not.toBe(prepared[0]);
+            expect(attempts.at(-2).status).toBe('abandoned');
+            if (outcome === 'direct') expect(loadQueuedSubmissions()).toEqual([]);
+            else {
+              expect(loadQueuedSubmissions()[0].direction?.delivery).toMatchObject({ requestId: prepared[0], requestEnded: true });
+              storage.setItem = write;
+              const saved = { ...final };
+              // A completed sibling of the same turn and progress on the exact assistant do not confirm.
+              h.rows.push({ ...final, id: 'other-final' });
+              Object.assign(final, { content: 'Partial checkpoint', completion_reason: undefined });
+              const { useChatStore: checkpointStore } = await c.loadChatStore();
+              checkpointStore.setState(c.createIdleChatStoreState({ conversations: h.store.getState().conversations }));
+              await checkpointStore.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork();
+              expect(loadQueuedSubmissions()).toHaveLength(1); expect(h.requests).toHaveLength(2);
+              Object.assign(final, saved);
+            }
+          } else {
+            expect(ended).not.toContain(prepared[0]);
+            expect(loadQueuedSubmissions()[0].direction?.delivery?.requestEnded).toBe(false);
+          }
+          storage.setItem = write;
+          const { useChatStore: restarted } = await c.loadChatStore();
+          restarted.setState(c.createIdleChatStoreState({ conversations: h.store.getState().conversations }));
+          await restarted.getState().retryQueuedSubmissions(conversationId); await c.flushAsyncWork();
+          if (outcome === 'direct' || outcome === 'reload') {
+            expect(loadQueuedSubmissions()).toEqual([]);
+            await restarted.getState().ensureMessagesLoaded(conversationId);
+            const loaded = restarted.getState().getConversationMessages(conversationId);
+            expect(loaded.find((m: ChatMessage) => m.id === entry.direction!.userMessageId)?.id).toBe(entry.direction!.userMessageId);
+          } else expect(loadQueuedSubmissions()).toHaveLength(1);
+          expect(h.requests).toHaveLength(2);
+          expect(h.rows.filter(row => row.id === entry.direction!.userMessageId)).toHaveLength(1);
+          if (outcome === 'direct' || outcome === 'reload') {
+            await restarted.getState().sendMessage({ conversationId, content: 'After successful retry', contextRefs: [] });
+            await c.flushAsyncWork(); await c.flushAsyncWork();
+            expect(h.requests).toHaveLength(3);
+            expect(directionMessages(h.requests[2])).toHaveLength(1);
+          }
+        } finally { storage.setItem = write; await h.close(); }
+      });
+    }
+
     it('returns late DB acceptance as recovery and retries the same user and images after navigation', async () => {
       const h = await createHarness(); const dbRelease = c.createDeferred<void>();
       try {

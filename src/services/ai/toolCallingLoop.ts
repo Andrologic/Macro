@@ -110,6 +110,8 @@ export async function runToolCallingLoop(
       const bufferOutput = enforceGuidedRetry || recovering;
       let streamedContent = '';
       let attemptId = `${attemptSessionId}:${++attemptSequence}`;
+      // A transport retry changes generation attempts, not the request carrying its directions.
+      const requestId = attemptId;
       const interruptedAttempt = (): GenerationAttempt => ({
         id: attemptId,
         status: bufferOutput ? 'abandoned' : 'partial',
@@ -118,7 +120,7 @@ export async function runToolCallingLoop(
         costUsd: null,
       });
       if (turnCount > 0) {
-        const pending = options.preparePendingSteers?.(attemptId) ?? [];
+        const pending = options.preparePendingSteers?.(requestId) ?? [];
         if (options.signal?.aborted || options.isRequestCurrent?.() === false) return complete();
         messages.push(...pending.map(cloneStreamMessage));
       }
@@ -158,7 +160,7 @@ export async function runToolCallingLoop(
         accumulator.appendSystemChunk(turn.stopped, true);
         return complete();
       }
-      options.onSteerRequestEnded?.(attemptId);
+      options.onSteerRequestEnded?.(requestId);
       const result = turn.result;
       result.toolTraces?.forEach(accumulator.upsertToolTraceFromProvider);
       if (result.hiddenContext) accumulator.addHiddenContextBlock(result.hiddenContext);
