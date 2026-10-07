@@ -1971,3 +1971,233 @@ async fn uncertainty_is_work_local_and_public_approval_rejects_foreign_source() 
         Admission::Admitted(..)
     ));
 }
+
+#[tokio::test]
+async fn public_projection_pages_all_retained_activations_at_one_cursor() {
+    let (_temp, pool, receipt, owner) = setup().await;
+    let first = delivery(&pool, &owner, "second", "page-000").await;
+    accept_delivery(&pool, &owner, first.clone()).await.unwrap();
+    assert!(matches!(
+        begin(&pool, &owner, "page-000").await.unwrap(),
+        Admission::Admitted(..)
+    ));
+    seal_responses(&pool, &owner, &first.work, "0")
+        .await
+        .unwrap();
+    commit_terminal(&pool, commit(&owner, &first.work), &NoRoutes)
+        .await
+        .unwrap();
+    for index in 1..130 {
+        let d = delivery(&pool, &owner, "second", &format!("page-{index:03}")).await;
+        accept_delivery(&pool, &owner, d).await.unwrap();
+    }
+    let all = read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap();
+    let first_page = public::projection(&pool, &receipt.system_start_id, None)
+        .await
+        .unwrap();
+    assert_eq!(first_page.activations.len(), 64);
+    let cursor = first_page.cursor.clone();
+    let mut ids = std::collections::BTreeSet::new();
+    let mut page = first_page;
+    let mut found_terminal = false;
+    loop {
+        assert_eq!(page.cursor, cursor);
+        assert!(page.activations.len() <= 64 && page.agents.len() <= 64);
+        if !ids.is_empty() {
+            assert!(page.agents.is_empty());
+        }
+        for a in &page.activations {
+            assert!(ids.insert(a.work.activation_id.clone()));
+            if a.work.activation_id == first.work.activation_id {
+                assert_eq!(a.terminal_kind.as_deref(), Some("completed"));
+                found_terminal = true;
+            }
+        }
+        match page.next_page {
+            Some(ref next) => {
+                page = public::projection(&pool, &receipt.system_start_id, Some(next))
+                    .await
+                    .unwrap()
+            }
+            None => break,
+        }
+    }
+    assert!(found_terminal);
+    assert_eq!(ids.len(), all.activations.len());
+    assert!(ids.len() >= 130);
+    let continuation = public::ProjectionPage { cursor, offset: 64 };
+    let next = delivery(&pool, &owner, "second", "page-new").await;
+    accept_delivery(&pool, &owner, next).await.unwrap();
+    assert!(
+        public::projection(&pool, &receipt.system_start_id, Some(&continuation))
+            .await
+            .is_err()
+    );
+    let fresh = public::projection(&pool, &receipt.system_start_id, None)
+        .await
+        .unwrap();
+    assert_ne!(fresh.cursor, continuation.cursor);
+    assert!(public::projection(
+        &pool,
+        &receipt.system_start_id,
+        Some(&public::ProjectionPage {
+            cursor: fresh.cursor,
+            offset: 999_999_936,
+        })
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn public_events_reject_future_and_keep_current_boundary_idempotent() {
+    let (_temp, pool, receipt, owner) = setup().await;
+    let d = delivery(&pool, &owner, "second", "events-boundary").await;
+    accept_delivery(&pool, &owner, d).await.unwrap();
+    let state = read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap();
+    assert!(read_events(
+        &pool,
+        &receipt.system_start_id,
+        Some("999999999999999999999"),
+        64
+    )
+    .await
+    .is_err());
+    for _ in 0..2 {
+        let end = read_events(&pool, &receipt.system_start_id, Some(&state.cursor), 64)
+            .await
+            .unwrap();
+        assert!(end.events.is_empty());
+        assert!(!end.has_more);
+        assert_eq!(end.next_cursor, state.cursor);
+    }
+    let mut after = "0".to_owned();
+    loop {
+        let page = read_events(&pool, &receipt.system_start_id, Some(&after), 1)
+            .await
+            .unwrap();
+        assert!(page.events.len() <= 1);
+        for event in &page.events {
+            assert!(order(&event.sequence, &after).is_gt());
+            assert!(order(&event.sequence, &state.cursor).is_le());
+        }
+        after = page.next_cursor;
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(after, state.cursor);
+}
+
+struct ManyAgentsCompiler;
+impl CaptureAuthority for ManyAgentsCompiler {
+    type CommitGuard = ();
+    async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+        let mut captured = Compiler.capture(request, id).await?;
+        captured
+            .snapshot
+            .agents
+            .extend((0..130).map(|i| configuration(&format!("paged-{i:03}"))));
+        Ok(captured)
+    }
+    async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn public_projection_pages_agents_after_activations_are_exhausted() {
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    let receipt = start(&pool, request(), &ManyAgentsCompiler).await.unwrap();
+    let mut page = public::projection(&pool, &receipt.system_start_id, None)
+        .await
+        .unwrap();
+    let mut names = Vec::new();
+    let mut lengths = Vec::new();
+    loop {
+        lengths.push(page.agents.len());
+        names.extend(page.agents.iter().map(|a| a.agent_name.clone()));
+        if lengths.len() > 1 {
+            assert!(page.activations.is_empty());
+        }
+        match page.next_page {
+            Some(ref next) => {
+                page = public::projection(&pool, &receipt.system_start_id, Some(next))
+                    .await
+                    .unwrap()
+            }
+            None => break,
+        }
+    }
+    assert_eq!(lengths, [64, 64, 4]);
+    let expected = receipt
+        .snapshot
+        .agents
+        .iter()
+        .map(|a| a.agent_name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(names, expected.into_iter().collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn public_projection_rejects_invalid_page_tokens() {
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+    let receipt = start(&pool, request(), &ManyAgentsCompiler).await.unwrap();
+    let current = public::projection(&pool, &receipt.system_start_id, None)
+        .await
+        .unwrap();
+    for cursor in [
+        "",
+        "00",
+        "01",
+        "-1",
+        "1.0",
+        " 1",
+        "1e2",
+        "999999999999999999999",
+    ] {
+        let page = public::ProjectionPage {
+            cursor: cursor.into(),
+            offset: 64,
+        };
+        assert!(
+            public::projection(&pool, &receipt.system_start_id, Some(&page))
+                .await
+                .is_err(),
+            "cursor {cursor:?}"
+        );
+    }
+    for offset in [0, 1, 63, 65, 192, u32::MAX] {
+        let page = public::ProjectionPage {
+            cursor: current.cursor.clone(),
+            offset,
+        };
+        assert!(
+            public::projection(&pool, &receipt.system_start_id, Some(&page))
+                .await
+                .is_err(),
+            "offset {offset}"
+        );
+    }
+    for raw in [
+        r#"{"cursor":"1","offset":-1}"#,
+        r#"{"cursor":"1","offset":1.5}"#,
+        r#"{"cursor":"1","offset":4294967296}"#,
+        r#"{"cursor":"1","offset":64,"extra":true}"#,
+    ] {
+        assert!(serde_json::from_str::<public::ProjectionPage>(raw).is_err());
+    }
+    for after in ["", "00", "-1", "1.0", " 1", "1e2"] {
+        assert!(
+            read_events(&pool, &receipt.system_start_id, Some(after), 64)
+                .await
+                .is_err()
+        );
+    }
+}

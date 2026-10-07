@@ -233,6 +233,7 @@ export type { ProjectMetadataDto } from './ProjectMetadataDto';
 export type { ProjectRegistryDbRepairReport } from './ProjectRegistryDbRepairReport';
 export type { ProjectRegistryDiagnosticsDto } from './ProjectRegistryDiagnosticsDto';
 export type { ProjectRegistryRepairReportDto } from './ProjectRegistryRepairReportDto';
+export type { ProjectionPage } from './ProjectionPage';
 export type { ProviderAuthMetadata } from './ProviderAuthMetadata';
 export type { ProviderConfig } from './ProviderConfig';
 export type { ProviderModelInput } from './ProviderModelInput';

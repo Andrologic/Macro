@@ -1631,9 +1631,14 @@ pub(crate) async fn read_events(
         (1..=500).contains(&limit),
         "Event page limit is out of bounds",
     )?;
-    let mut c = pool.acquire().await?;
-    load(&mut c, id).await?;
-    let rows:Vec<String>=sqlx::query_scalar("SELECT event_json FROM engine_events WHERE system_id = ? AND (length(sequence) > length(?) OR (length(sequence) = length(?) AND sequence > ?)) ORDER BY length(sequence), sequence LIMIT ?").bind(id).bind(after).bind(after).bind(after).bind(limit+1).fetch_all(&mut *c).await?;
+    // State and events must come from the same SQLite read snapshot.
+    let mut c = pool.begin().await?;
+    let stored = load(&mut c, id).await?;
+    require(
+        order(after, &stored.state.cursor).is_le(),
+        "Event cursor is beyond retained events",
+    )?;
+    let rows:Vec<String>=sqlx::query_scalar("SELECT event_json FROM engine_events WHERE system_id = ? AND (length(sequence) > length(?) OR (length(sequence) = length(?) AND sequence > ?)) AND (length(sequence) < length(?) OR (length(sequence) = length(?) AND sequence <= ?)) ORDER BY length(sequence), sequence LIMIT ?").bind(id).bind(after).bind(after).bind(after).bind(&stored.state.cursor).bind(&stored.state.cursor).bind(&stored.state.cursor).bind(limit+1).fetch_all(&mut *c).await?;
     let has_more = rows.len() > limit as usize;
     let events = rows
         .into_iter()

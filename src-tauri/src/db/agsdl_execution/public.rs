@@ -74,6 +74,13 @@ pub struct PublicAgent {
     pub agent_instance_id: String,
     pub agent_name: String,
 }
+/// Continuations are valid only while the durable cursor remains unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectionPage {
+    pub cursor: String,
+    pub offset: u32,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicProjection {
@@ -82,6 +89,7 @@ pub struct PublicProjection {
     pub cursor: String,
     pub agents: Vec<PublicAgent>,
     pub activations: Vec<PublicActivation>,
+    pub next_page: Option<ProjectionPage>,
     pub system_stop: PublicStopState,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
@@ -117,17 +125,57 @@ impl From<EngineEventPage> for PublicEventPage {
         }
     }
 }
-pub(crate) async fn projection(pool: &SqlitePool, id: &str) -> Result<PublicProjection> {
+pub(crate) async fn projection(
+    pool: &SqlitePool,
+    id: &str,
+    page: Option<&ProjectionPage>,
+) -> Result<PublicProjection> {
     let mut connection = pool.acquire().await?;
     let stored = load(&mut connection, id).await?;
+    const PAGE_SIZE: usize = 64;
+    let offset = if let Some(page) = page {
+        decimal(&page.cursor)?;
+        require(
+            page.cursor == stored.state.cursor,
+            "Projection page is stale; restart explicitly",
+        )?;
+        require(
+            page.offset > 0 && page.offset % PAGE_SIZE as u32 == 0,
+            "Invalid projection offset",
+        )?;
+        page.offset as usize
+    } else {
+        0
+    };
+    let total = stored
+        .state
+        .activations
+        .len()
+        .max(stored.state.agents.len());
+    require(
+        offset == 0 || offset < total,
+        "Projection offset is beyond retained state",
+    )?;
+    let next_page = if total > offset + PAGE_SIZE {
+        Some(ProjectionPage {
+            cursor: stored.state.cursor.clone(),
+            offset: u32::try_from(offset + PAGE_SIZE)
+                .map_err(|_| failure("INPUT_CONSTRAINT", "offset", "Projection offset overflow"))?,
+        })
+    } else {
+        None
+    };
     Ok(PublicProjection {
         system_start_id: id.into(),
         source: stored.snapshot.source,
         cursor: stored.state.cursor,
+        next_page,
         agents: stored
             .state
             .agents
             .into_iter()
+            .skip(offset)
+            .take(PAGE_SIZE)
             .map(|(agent_name, a)| PublicAgent {
                 agent_name,
                 agent_instance_id: a.id,
@@ -137,6 +185,8 @@ pub(crate) async fn projection(pool: &SqlitePool, id: &str) -> Result<PublicProj
             .state
             .activations
             .into_values()
+            .skip(offset)
+            .take(PAGE_SIZE)
             .map(|a| PublicActivation {
                 work: a.delivery.delivery.work,
                 delivery_id: a.delivery.delivery.delivery_id,

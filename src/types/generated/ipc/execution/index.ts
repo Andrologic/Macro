@@ -48,6 +48,7 @@ export type { NativeModelEdition } from '../NativeModelEdition';
 export type { PersistedEffect } from '../PersistedEffect';
 export type { PreflightDiagnostic } from '../PreflightDiagnostic';
 export type { Prepare } from '../Prepare';
+export type { ProjectionPage } from '../ProjectionPage';
 export type { PublicActivation } from '../PublicActivation';
 export type { PublicAgent } from '../PublicAgent';
 export type { PublicApproval } from '../PublicApproval';

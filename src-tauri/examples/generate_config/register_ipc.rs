@@ -29,6 +29,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::execution::NativeModelCatalogue>("execution")?;
     registry.add::<ipc_contracts::execution::PublicStartReceipt>("execution")?;
     registry.add::<ipc_contracts::execution::PublicStopState>("execution")?;
+    registry.add::<ipc_contracts::execution::ProjectionPage>("execution")?;
     registry.add::<ipc_contracts::execution::PublicProjection>("execution")?;
     registry.add::<ipc_contracts::execution::PublicEventPage>("execution")?;
     registry.add::<ipc_contracts::execution::EngineStartRequest>("execution")?;

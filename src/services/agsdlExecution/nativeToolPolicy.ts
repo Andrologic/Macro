@@ -1,3 +1,5 @@
+import { requireMacroToolRegistryEntry } from '../../shared/macroToolRegistry';
+import { validateToolArguments } from '../toolArgumentValidation';
 import type { AppMode, ToolRiskLevel } from '../../types';
 import { evaluateToolSecurity } from '../toolSecurityPolicy';
 import type { ExactJsonText } from './contracts';
@@ -42,6 +44,9 @@ export function assessNativeToolPolicy(input: NativeToolPolicyInput, registry: C
     record(decode(input.argumentsJson));
     const args = toDispatchValue(input.argumentsJson);
     if (!args || Array.isArray(args) || typeof args !== 'object') return fail('INPUT_CONSTRAINT', '', 'Tool arguments must be an object.');
+    if (validateToolArguments(args, requireMacroToolRegistryEntry(input.toolId).parameters).length) {
+      return fail('INPUT_CONSTRAINT', '', 'Tool arguments fail Macro validation.');
+    }
     const evaluation = evaluateToolSecurity(input.toolId, args, {
       mode: input.mode, riskLevel: input.riskLevel, workspacePath: input.root, defaultWorkspacePath: input.root, grants: [],
     });

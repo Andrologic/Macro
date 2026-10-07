@@ -1891,6 +1891,14 @@
     },
     {
       "families": [
+        "execution"
+      ],
+      "name": "ProjectionPage",
+      "origin": "macro_lib::db::agsdl_execution::public::ProjectionPage",
+      "path": "ProjectionPage.ts"
+    },
+    {
+      "families": [
         "db"
       ],
       "name": "ProviderAuthMetadata",

@@ -110,8 +110,9 @@ pub async fn execution_read_snapshot(
 pub async fn execution_read_projection(
     state: State<'_, DbPool>,
     system_start_id: String,
+    page: Option<ProjectionPage>,
 ) -> repository::Result<PublicProjection> {
-    repository::public::projection(&pool(&state).await?, &system_start_id).await
+    repository::public::projection(&pool(&state).await?, &system_start_id, page.as_ref()).await
 }
 #[tauri::command]
 pub async fn execution_read_events(

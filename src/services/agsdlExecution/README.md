@@ -327,3 +327,24 @@ de révocation et de recréation, et non une simulation de propriétaire.
 
 Le formulaire n’est pas une entrée du build produit. Sa validation visuelle et
 les scénarios reload, perte du host et arrêt des IO exigent le runtime isolé réel.
+
+
+## Pages de projection publique
+
+`execution_read_projection` accepte `page: null` pour la première page, puis
+le `nextPage` exact renvoyé par le natif. Chaque page contient au plus 64 Agents
+et 64 activations, terminaux compris. Les deux collections suivent l’ordre de
+leurs clés natives BTreeMap, respectivement nom d’Agent et identité d’activation.
+Le même offset est appliqué aux deux collections ; une collection épuisée reste
+vide sur les pages suivantes. `nextPage: null` indique la fin, toute autre valeur
+signale explicitement un résultat partiel. `cursor` est la frontière durable.
+
+Une continuation exige le même curseur durable. Si le run avance, le natif refuse
+la page obsolète et le client doit demander explicitement une nouvelle première
+page, sans fusionner les fragments de deux curseurs. Il n’existe pas de fallback
+vers un état mutable. `HostInspection`, privé, conserve son contrat intégral.
+Le wrapper public transmet la continuation sans construire de snapshot local.
+
+La page d’événements lit état et journal dans une transaction SQLite commune,
+refuse un `after` futur et limite la sélection au curseur durable de ce snapshot.
+Relire exactement ce curseur renvoie une page vide avec ce même curseur.

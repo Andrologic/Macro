@@ -228,12 +228,17 @@ export interface PublicActivation {
   readonly stopState: PublicStopState;
   readonly terminalKind: 'completed' | 'failed' | 'stopped' | null;
 }
+export interface ProjectionPage {
+  readonly cursor: Sequence;
+  readonly offset: number;
+}
 export interface PublicProjection {
   readonly systemStartId: SystemStartId;
   readonly source: SourceRevision;
   readonly cursor: Sequence;
   readonly agents: readonly { readonly agentInstanceId: AgentInstanceId; readonly agentName: string }[];
   readonly activations: readonly PublicActivation[];
+  readonly nextPage: ProjectionPage | null;
   readonly systemStop: PublicStopState;
 }
 export interface PublicEventPage {
@@ -248,7 +253,7 @@ export interface ExecutionPublicPort {
   stop(request: StopRequest): Promise<PublicStopState>;
   readSnapshot(id: SystemStartId): Promise<PublicSnapshot>;
   readEvents(id: SystemStartId, after: Sequence | null, limit: number): Promise<PublicEventPage>;
-  readProjection(id: SystemStartId): Promise<PublicProjection>;
+  readProjection(id: SystemStartId, page?: ProjectionPage): Promise<PublicProjection>;
 }
 /** Native-only transactions. Authenticate caller independently of DTOs. */
 export interface ExecutionRepositoryPort extends ExecutionRuntimePort {

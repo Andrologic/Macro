@@ -1,4 +1,5 @@
 import { expect, it } from 'bun:test';
+import { validateToolInvocation } from '../ai/toolCallRunner';
 import { requireMacroToolRegistryEntry } from '../../shared/macroToolRegistry';
 import { assessNativeToolPolicy, type NativeToolPolicyInput } from './nativeToolPolicy';
 import { documentFixture, registryFixture, json } from './conformanceFixtures';
@@ -39,4 +40,24 @@ it('rejects another binding, arguments outside the registry schema and outside-s
 it('never broadens the captured policy when the current risk policy becomes permissive', () => {
   const { input, registry } = fixture('write', '{"path":"file.txt","content":"synthetic"}');
   expect(assessNativeToolPolicy({ ...input, capturedRiskLevel: 'strict', riskLevel: 'yolo' }, registry).decision).toBe('ask');
+});
+
+it.each([
+  ['read', { path: '   ' }, true],
+  ['delete', { path: '   ' }, true],
+  ['edit', { path: 'blank.txt', old_text: '   ', new_text: 'replacement' }, true],
+  ['write', { path: 'blank.txt', content: '' }, false],
+  ['write', { path: 'blank.txt', content: '   ' }, false],
+  ['edit', { path: 'blank.txt', old_text: ' literal ', new_text: '' }, false],
+] as const)('matches ordinary Macro validation for %s %j', (toolId, args, invalid) => {
+  const authored = JSON.stringify(args);
+  const { input, registry } = fixture(toolId, authored);
+  const ordinary = validateToolInvocation({ toolName: toolId, args,
+    schema: requireMacroToolRegistryEntry(toolId).parameters, allowedTools: new Set([toolId]) });
+  expect(ordinary?.kind === 'result' ? ordinary.errorKind === 'validation' : false).toBe(invalid);
+  const native = assessNativeToolPolicy(input, registry);
+  expect(native.code === 'INPUT_CONSTRAINT').toBe(invalid);
+  if (invalid) expect(native.decision).toBe('deny');
+  expect(native.input.argumentsJson).toBe(json(authored));
+  expect(JSON.stringify(args)).toBe(authored);
 });

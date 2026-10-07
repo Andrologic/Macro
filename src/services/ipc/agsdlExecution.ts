@@ -7,7 +7,7 @@ import type {
 } from '../../types/generated/ipc';
 import type {
   AcceptedDelivery, ExternalDeliveryRequest, SourceOwner, SystemStartId, Sequence, StartRequest, StopRequest, PublicStartReceipt, PublicSnapshot,
-  PublicProjection, PublicEventPage, PublicStopState,
+  PublicProjection, ProjectionPage, PublicEventPage, PublicStopState,
 } from '../agsdlExecution/contracts';
 
 type ReadonlyWire<T> = T extends readonly (infer Item)[]
@@ -30,8 +30,8 @@ export async function stopExecution(request: StopRequest): Promise<PublicStopSta
 export async function readExecutionSnapshot(systemStartId: SystemStartId): Promise<PublicSnapshot> {
   return nativeContract<PublicSnapshotWire, PublicSnapshot>(await invoke<PublicSnapshotWire>('execution_read_snapshot', { systemStartId }));
 }
-export async function readExecutionProjection(systemStartId: SystemStartId): Promise<PublicProjection> {
-  return nativeContract<PublicProjectionWire, PublicProjection>(await invoke<PublicProjectionWire>('execution_read_projection', { systemStartId }));
+export async function readExecutionProjection(systemStartId: SystemStartId, page?: ProjectionPage): Promise<PublicProjection> {
+  return nativeContract<PublicProjectionWire, PublicProjection>(await invoke<PublicProjectionWire>('execution_read_projection', { systemStartId, page: page ?? null }));
 }
 export async function readExecutionEvents(systemStartId: SystemStartId, after: Sequence | null, limit: number): Promise<PublicEventPage> {
   return nativeContract<PublicEventPageWire, PublicEventPage>(await invoke<PublicEventPageWire>('execution_read_events', { systemStartId, after, limit }));
