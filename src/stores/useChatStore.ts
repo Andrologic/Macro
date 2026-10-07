@@ -1413,6 +1413,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   });
   const continuationIntents = new Map<string, QueuedSubmission>();
+  const queuedAdmissionStops = new Map<string, symbol>();
   let queueRuntime: QueuedSubmissionRuntime | undefined;
   let queueRuntimeLoading: Promise<QueuedSubmissionRuntime> | undefined;
   const getQueueRuntime = (): Promise<QueuedSubmissionRuntime> => queueRuntimeLoading ??= import("./chat/chatQueuedSubmissionRuntime").then(({ createQueuedSubmissionRuntime }) => {
@@ -3065,6 +3066,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const stopConversationRuntimeLocally = (conversationId: string) => {
+    // Also invalidate admissions that are still preparing before the lazy queue exists.
+    queuedAdmissionStops.set(conversationId, Symbol());
     queueRuntime?.pause(conversationId);
     clearConversationSecurityState(conversationId);
     clearLiveStreamContextEstimate(conversationId);
@@ -13710,6 +13713,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     submitDuringActiveTurn: async (payload, behavior) => {
+      const admissionStop = queuedAdmissionStops.get(payload.conversationId);
       assertImplementConversationContext(payload.conversationId);
       if (getConflictAssistantContext(payload.conversationId)) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
       if (getConflictAssistantContext(payload.conversationId)) payload = { ...payload, internalAgentProfile: 'repo_auditor' };
@@ -13747,7 +13751,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
           throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
         }
-        queue.accept(entry);
+        queue.accept(entry, queuedAdmissionStops.get(payload.conversationId) !== admissionStop);
         return "queued";
       }
 
@@ -13904,6 +13908,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         preparation: {
           assertCanSend: (id) => {
+            if (queuedSubmission) queueRuntime!.assertCanDispatch(queuedSubmission);
             if (deferredSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
               throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
             }

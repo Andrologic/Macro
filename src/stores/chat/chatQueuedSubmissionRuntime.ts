@@ -89,8 +89,15 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     }
   };
   const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
+  const assertCanDispatch = (entry: QueuedSubmission) => {
+    const id = entry.input.conversationId;
+    if (!claimed.has(entry.id) || paused.has(id) || ports.cancelled(id) ||
+      !entries.some(candidate => candidate.id === entry.id)) {
+      throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
+    }
+  };
   const beforeAssistantStart = (entry: QueuedSubmission) => {
-    if (!entries.some(candidate => candidate.id === entry.id)) throw new Error('The queued submission is no longer available.');
+    assertCanDispatch(entry);
     persist(entries.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true } : candidate));
   };
   const drain = async (id: string): Promise<void> => {
@@ -134,10 +141,12 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   };
   return {
     capture: captureQueuedSubmission,
-    accept(entry: QueuedSubmission) {
+    accept(entry: QueuedSubmission, pausedOnAccept = false) {
       persist([...entries, entry]);
+      if (pausedOnAccept) pause(entry.input.conversationId);
       queueMicrotask(() => void drain(entry.input.conversationId));
     },
+    assertCanDispatch,
     acknowledge,
     beforeAssistantStart,
     complete,
@@ -147,7 +156,8 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       if (entries.some(entry => entry.input.conversationId === id && mutating.has(entry.id))) {
         throw new Error(i18n.t('chat.queueEditInProgress', 'Wait for the queued message change to finish.'));
       }
-      if (ports.blocked(id) || ports.cancelled(id)) return;
+      // A retry cannot revive a dispatch whose asynchronous preparation was stopped.
+      if (draining.has(id) || ports.blocked(id) || ports.cancelled(id)) return;
       paused.delete(id);
       publishRecovery();
       await drain(id);
