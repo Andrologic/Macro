@@ -5,7 +5,7 @@ import { MACRO_TOOL_REGISTRY } from '../../shared/macroToolRegistry';
 import { PRODUCT_RUNTIME_AVAILABLE, compilePlan, sourceDigest } from './compiler';
 import { clone, decode, encode, equal, record } from './exact';
 import { compileFixture, documentFixture, invocationFixture, id, json, registryFixture } from './conformanceFixtures';
-import { argumentsSatisfy, requireExactRequirements, resolveBinding, validateRegisteredArguments, validateRegisteredResult, verifyArgumentSchema } from './registry';
+import { captureToolAliases, argumentsSatisfy, requireExactRequirements, resolveBinding, validateRegisteredArguments, validateRegisteredResult, verifyArgumentSchema } from './registry';
 
 const callDeclaration = () => decode('{"contract":{"identity":"synthetic/search","version":"1"},"implementation":{"identity":"macro/web-search","version":"1"},"effects":"none"}');
 const searchSchema = () => json(JSON.stringify(MACRO_TOOL_REGISTRY.find(tool => tool.id === 'web_search')!.parameters));
@@ -216,4 +216,15 @@ describe('registered arguments and literal Call results', () => {
     expect(() => validateRegisteredResult(entry, json('{"ok":1}'))).toThrow('Result');
     expect(() => validateRegisteredResult({ ...entry, resultConstraintJson: json('{"type":"integer","enum":[true]}') }, json('1'))).toThrow('constraint');
   });
+});
+
+
+it('resolves authored aliases through the captured binding and reserves publication before effects', async () => {
+  const { doc, registry } = withCall();
+  const configuration = record(record(doc.configurations).fixed);
+  configuration.tools = { lookup: 'search' };
+  expect(captureToolAliases(doc, configuration, registry)).toEqual([{ name: 'lookup', toolId: 'web_search' }]);
+  configuration.tools = { macro_agsdl_publish: 'search' };
+  expect(() => captureToolAliases(doc, configuration, registry)).toThrow('reserved');
+  expect((await compileFixture(doc, registry)).runtime.diagnostics[0].message).toContain('reserved');
 });

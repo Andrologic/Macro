@@ -6,7 +6,7 @@ import { normalizeChatMaxTurns } from '../chatTurnLimits';
 import type { GenerationAttempt, StreamMessage, StreamingChatOptions, StreamingTurnResult, ToolCall, ToolResult, StreamCompletionReason } from './contracts';
 import { createStreamAccumulator } from './streamAccumulator';
 import { cloneStreamMessage, cloneProviderInputItems } from './jsonValues';
-import { buildNativePublicationTool, collectAllowedTools, NATIVE_PUBLICATION_TOOL_ID } from './toolDefinitions';
+import { buildNativeAliasedTools, buildNativePublicationTool, collectAllowedTools, NATIVE_PUBLICATION_TOOL_ID } from './toolDefinitions';
 import { modelAllowedToolIds, MCP_DISCOVERY_DEFINITIONS } from '../mcp/toolDiscovery';
 import { runToolBatch } from './toolCallRunner';
 import { getValidToolCalls } from './toolCallProtocol';
@@ -50,8 +50,8 @@ export async function runToolCallingLoop(
   accumulator: StreamAccumulator,
 ) {
   const originalAllowedTools = new Set(options.allowedToolIds ?? []);
-  const allowedTools = new Set(modelAllowedToolIds(options.allowedToolIds ?? [], options.mcpTools ?? []));
-  const tools = collectAllowedTools({
+  let allowedTools = new Set(modelAllowedToolIds(options.allowedToolIds ?? [], options.mcpTools ?? []));
+  let tools = collectAllowedTools({
     allowedTools: originalAllowedTools,
     enableWebSearch: options.enableWebSearch ?? true,
     enableWebFetch: options.enableWebFetch ?? true,
@@ -60,6 +60,17 @@ export async function runToolCallingLoop(
     skillToolIds: options.skillToolIds,
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
+  const schemas = new Map<string, JsonSchema>();
+  const aliases = options.nativeExecution?.toolAliases;
+  if (aliases !== undefined) {
+    if (options.executionPolicy !== 'native-serial' || !options.onRawToolCall) {
+      throw new Error('Tool aliases require the native execution profile and exact argument collector.');
+    }
+    const captured = buildNativeAliasedTools(aliases, originalAllowedTools);
+    allowedTools = captured.names;
+    tools = captured.tools;
+    for (const [name, schema] of captured.schemas) schemas.set(name, schema);
+  }
   if (options.nativeExecution?.publication) {
     if (options.executionPolicy !== 'native-serial' || !options.onRawToolCall) {
       throw new Error('Publication requires the native execution profile and exact argument collector.');
@@ -70,8 +81,7 @@ export async function runToolCallingLoop(
     allowedTools.add(NATIVE_PUBLICATION_TOOL_ID);
     tools.push(buildNativePublicationTool(options.nativeExecution.publication.choices));
   }
-  const schemas = new Map<string, JsonSchema>();
-  for (const name of allowedTools) {
+  for (const name of aliases === undefined ? allowedTools : []) {
     const entry = getMacroToolRegistryEntry(name);
     if (entry) schemas.set(name, entry.parameters);
   }

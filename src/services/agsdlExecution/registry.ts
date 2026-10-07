@@ -209,12 +209,24 @@ export function resolveBinding(document: ExactObject, name: string, registry: Ca
   }
   return clone(entry);
 }
+/** Resolve model-facing names without rewriting authored declarations or schemas. */
+export function captureToolAliases(document: ExactObject, configuration: ExactObject, registry: CapturedRegistry): readonly { readonly name: string; readonly toolId: string }[] {
+  return Object.entries(record(configuration.tools ?? {})).map(([name, binding]) => {
+    if (!name.trim() || name === 'macro_agsdl_publish') return fail('UNSUPPORTED', '/configurations/tools', 'Tool alias is empty or reserved for publication.');
+    const resolved = resolveBinding(document, text(binding), registry, 'tool');
+    if (resolved.target.kind !== 'macro-tool') return fail('UNSUPPORTED', '/configurations/tools', 'Tool has no qualified native Macro adapter.');
+    return { name, toolId: resolved.target.toolId };
+  });
+}
 export function captureAgent(document: ExactObject, agentName: string, initialization: ExactObject, registry: CapturedRegistry): FrozenAgentConfiguration {
   const agent = record(record(document.agents)[agentName]);
   const configurationName = text(agent.configuration);
   const configuration = record(record(document.configurations)[configurationName]);
   resolveBinding(document, text(configuration.engine), registry, 'engine');
-  for (const name of Object.values(record(configuration.tools ?? {}))) resolveBinding(document, text(name), registry, 'tool');
+  for (const [alias, name] of Object.entries(record(configuration.tools ?? {}))) {
+    if (alias === 'macro_agsdl_publish') return fail('UNSUPPORTED', `/configurations/${configurationName}/tools`, 'Tool alias is reserved for publication.');
+    resolveBinding(document, text(name), registry, 'tool');
+  }
   if (!has(configuration, 'model')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Provider and Model must be explicit.');
   const models = registry.models.filter(model => equal(decode(model.editionJson), configuration.model));
   if (models.length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Model has no unique captured native catalogue entry.');

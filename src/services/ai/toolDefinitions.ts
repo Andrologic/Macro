@@ -271,3 +271,24 @@ export function buildNativePublicationTool(choices: readonly string[]): unknown 
     },
   };
 }
+
+/** Presentation only. The native dispatcher still checks the captured binding and scope. */
+export function buildNativeAliasedTools(
+  aliases: readonly { readonly name: string; readonly toolId: string }[],
+  allowedCanonicalIds: ReadonlySet<string>,
+): { tools: unknown[]; names: Set<string>; schemas: Map<string, JsonSchema> } {
+  const names = new Set<string>();
+  const schemas = new Map<string, JsonSchema>();
+  const tools = aliases.map(({ name, toolId }) => {
+    if (!name.trim() || name === NATIVE_PUBLICATION_TOOL_ID || names.has(name)) {
+      throw new Error('Captured tool alias is empty, reserved or ambiguous.');
+    }
+    if (!allowedCanonicalIds.has(toolId)) throw new Error('Captured tool alias exceeds the admitted catalogue.');
+    const entry = requireMacroToolRegistryEntry(toolId);
+    names.add(name);
+    schemas.set(name, cloneJsonSchema(entry.parameters));
+    // Use the same schema conversion as ordinary Macro tools. Only the model-facing name changes.
+    return toFunctionToolShape({ ...entry, id: name });
+  });
+  return { tools, names, schemas };
+}

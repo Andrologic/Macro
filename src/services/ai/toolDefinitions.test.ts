@@ -159,3 +159,57 @@ it.each(['{"results":{"large":{"value":9007199254740993}}}', '{ malformed public
     projectTool: result => result.content, afterToolResults: () => undefined,
   }, createStreamAccumulator(ordinary))).rejects.toThrow('Publication requires the native execution profile');
 });
+
+it('offers captured aliases with real schemas and retains exact alias calls', async () => {
+  const raw = '{"path":"file.txt","offset":9007199254740993}';
+  const seen: string[] = [];
+  const results: ToolResult[] = [];
+  const options: StreamingChatOptions = {
+    providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
+    messages: [], allowedToolIds: ['read', 'write'], maxTurns: 1, executionPolicy: 'native-serial',
+    onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+    nativeExecution: {
+      toolAliases: [{ name: 'inspect_source', toolId: 'read' }],
+      beforeRequest: async () => 'registered', requestEnded: async () => undefined, visibleMessage: async () => undefined,
+    },
+    onRawToolCall: async call => { seen.push(`${call.function.name}:${call.function.arguments}`); return { kind: 'result', result: 'Exact text' }; },
+  };
+  const adapter = {
+    kind: 'native' as const,
+    streamTurn: async ({ tools }: { tools: unknown[] }) => {
+      if (seen.length) return { result: { content: 'Done', toolCalls: [] }, projectAssistant: () => ({ items: [] }) };
+      const actual = toFunctionToolShape(requireMacroToolRegistryEntry('read'));
+      expect(tools).toEqual([{ ...actual, function: { ...actual.function, name: 'inspect_source' } }]);
+      return { result: { content: '', toolCalls: [
+        { id: 'alias', type: 'function' as const, function: { name: 'inspect_source', arguments: raw } },
+        { id: 'canonical', type: 'function' as const, function: { name: 'read', arguments: raw } },
+      ] }, projectAssistant: () => ({ items: [] }) };
+    },
+    projectTool: (result: ToolResult) => { results.push(result); return result.content; }, afterToolResults: () => undefined,
+  };
+  await runToolCallingLoop(options, adapter, createStreamAccumulator(options));
+  expect(seen).toEqual([`inspect_source:${raw}`]);
+  expect(results[1].error_kind).toBe('permission');
+  const ordinary = { ...options, executionPolicy: undefined };
+  await expect(runToolCallingLoop(ordinary, adapter, createStreamAccumulator(ordinary))).rejects.toThrow('Tool aliases require');
+});
+
+it.each([
+  [{ name: 'macro_agsdl_publish', toolId: 'read' }],
+  [{ name: 'alias', toolId: 'read' }, { name: 'alias', toolId: 'write' }],
+  [{ name: 'alias', toolId: 'delete' }],
+  [{ name: 'alias', toolId: 'mcp__unknown' }],
+].map(toolAliases => ({ toolAliases })))('rejects an unqualified or colliding alias before the provider request: %j', async ({ toolAliases }) => {
+  const provider = mock(async () => { throw new Error('Unexpected provider request'); });
+  const options: StreamingChatOptions = {
+    providerId: 'fixture', providerType: 'openai', modelId: 'model', baseUrl: 'https://example.invalid',
+    messages: [], allowedToolIds: ['read', 'write', 'mcp__unknown'], executionPolicy: 'native-serial',
+    onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+    onRawToolCall: async () => ({ kind: 'result', result: 'Unexpected dispatch' }),
+    nativeExecution: { toolAliases, beforeRequest: async () => 'registered', requestEnded: async () => undefined, visibleMessage: async () => undefined },
+  };
+  await expect(runToolCallingLoop(options, {
+    kind: 'native', streamTurn: provider, projectTool: result => result.content, afterToolResults: () => undefined,
+  }, createStreamAccumulator(options))).rejects.toThrow();
+  expect(provider).not.toHaveBeenCalled();
+});
