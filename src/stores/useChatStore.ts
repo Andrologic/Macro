@@ -3065,6 +3065,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const stopConversationRuntimeLocally = (conversationId: string) => {
+    queueRuntime?.pause(conversationId);
     clearConversationSecurityState(conversationId);
     clearLiveStreamContextEstimate(conversationId);
     turnRuntime.stop(conversationId);

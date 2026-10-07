@@ -5,7 +5,7 @@ import { toServiceError } from '../../services/contracts/errors';
 import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, type QueuedSubmission } from './chatQueuedSubmissions';
 
 export type QueuedSubmissionRecoveries = Record<string, { count: number; error?: string }>;
-export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string };
+export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string; state: 'waiting' | 'sending' | 'paused' };
 interface QueuePorts {
   blocked(id: string): boolean;
   cancelled(id: string): boolean;
@@ -25,20 +25,23 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
   const attempted = new Map<string, string>();
+  const claimed = new Set<string>();
   let recoveries: QueuedSubmissionRecoveries = {};
   const publishRecovery = () => {
     ports.recovery(recoveries);
     ports.pending(entries.map(entry => ({ id: entry.id, conversationId: entry.input.conversationId })));
     ports.attempted(Array.from(attempted, ([id, conversationId]) => ({ id, conversationId })));
-    ports.previews(entries.filter(entry => paused.has(entry.input.conversationId)).map(entry => ({
+    ports.previews(entries.map(entry => ({
       id: entry.id, conversationId: entry.input.conversationId, content: entry.input.content,
+      state: claimed.has(entry.id) ? 'sending' : paused.has(entry.input.conversationId) ? 'paused' : 'waiting',
     })));
   };
   publishRecovery();
   const mutating = new Set<string>();
   const pendingEntry = async (id: string, allowSaved = false): Promise<QueuedSubmission> => {
     const entry = entries.find(candidate => candidate.id === id);
-    if (!entry || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId) || mutating.has(id)) {
+    if (!entry || claimed.has(id) || mutating.has(id) ||
+      (!allowSaved && (!paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)))) {
       throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
     }
     mutating.add(id);
@@ -47,12 +50,14 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       if (!allowSaved && persisted.some(message => message.role === 'user' && message.turn_id === id)) {
         throw new Error(i18n.t('chat.queueAlreadySent', 'This message was already saved. Retry recovery instead.'));
       }
-      if (!entries.includes(entry) || !paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)) {
+      if (!entries.includes(entry) || claimed.has(id) ||
+        (!allowSaved && (!paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)))) {
         throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
       }
       return entry;
     } catch (error) {
       mutating.delete(id);
+      queueMicrotask(() => void drain(entry.input.conversationId));
       throw error;
     }
   };
@@ -91,12 +96,14 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   const drain = async (id: string): Promise<void> => {
     if (draining.has(id) || paused.has(id) || ports.blocked(id)) return;
     const next = entries.find(entry => entry.input.conversationId === id);
-    if (!next || ports.cancelled(id)) return;
+    if (!next || mutating.has(next.id) || ports.cancelled(id)) return;
     draining.add(id);
+    claimed.add(next.id);
+    publishRecovery();
     let continueQueue = false;
     try {
       const persisted = await ports.read(id);
-      if (ports.cancelled(id) || !entries.some(entry => entry.id === next.id)) return;
+      if (ports.cancelled(id) || paused.has(id) || !entries.some(entry => entry.id === next.id)) return;
       const saved = persisted.find(message => message.role === 'user' && message.turn_id === next.id);
       if (saved) {
         ports.publish(saved);
@@ -119,8 +126,9 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
       pause(id, toServiceError(error).message);
     } finally {
       attempted.delete(next.id);
-      publishRecovery();
+      claimed.delete(next.id);
       draining.delete(id);
+      publishRecovery();
       if (continueQueue) queueMicrotask(() => void drain(id));
     }
   };
@@ -159,7 +167,10 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
           paused.delete(entry.input.conversationId);
         }
       }
-      finally { mutating.delete(id); }
+      finally {
+        mutating.delete(id);
+        queueMicrotask(() => void drain(entry.input.conversationId));
+      }
     },
     remove(ids: readonly string[]) {
       const remaining = entries.filter(entry => !ids.includes(entry.input.conversationId));
