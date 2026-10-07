@@ -537,10 +537,17 @@ configurations et les droits sur la cible capturée ; un changement de cible
 bloque la reprise. Le panneau commun de récupération porte l'action de réessai,
 indépendamment des préférences de notification et sans état parallèle dans `ChatZone`.
 
-Une direction avec images sauvegarde d’abord les images sous l’identifiant prévu
-du message, puis le texte. Un refus de sauvegarde des images conserve le brouillon
-sans créer de message utilisateur. Le runtime ne publie la direction qu’après
-confirmation de ces écritures et contrôle son tour propriétaire.
+Une direction active est un sous-type de l'entrée existante, avec une identité propre et l'UUID de son message utilisateur. Le `turn_id` reste celui du tour d'origine. Son intention durable précède l'écriture DB ; les images sont sauvegardées sous ce même UUID avant le texte. Un refus d'intention ou d'images garde le brouillon. Après acceptation, un échec DB ou la perte du propriétaire retourne une récupération acceptée. Une écriture DB ambiguë se résout par lecture de l'UUID dans la conversation et le tour attendus.
+
+La préparation commune normale, replay et overflow exclut les directions non livrées, sauf le message précisément repris. Le contexte réservé au modèle utilise le même filtre AgSDL pour le texte et les `provider_input_items`. La compaction ne prend aucun batch. La boucle choisit les directions juste avant une nouvelle requête autorisée par le budget, écrit le marqueur de remise possible, puis recontrôle Stop et la génération propriétaire. Un remplacement de stream garde la récupération et abandonne son ancien batch volatile. Une fin de requête réelle et une persistance assistant confirmée autorisent le retrait, y compris après un réessai de persistance. L'assistant est associé par UUID, jamais par le seul `turn_id`. L'identité de la requête logique qui porte le batch reste constante pendant les retries du transport ; les tentatives de génération conservent leurs identifiants distincts. La fin réelle de cette requête confirme le même marqueur durable, sans confirmer une tentative arrêtée ou échouée. Une remise incertaine ne déclenche aucun replay automatique ; ce marqueur ne constitue pas un acknowledgement sémantique AgSDL.
+
+Au rechargement, le motif de fin explicite du même assistant certifie sa sauvegarde finale. Le writer final enregistre `completed` si le transport omet ce motif ; les écritures de progression ne certifient jamais une réussite. Le contrat de lecture omet les placeholders assistant vides sans motif de fin ni contenu structuré, y compris au bootstrap. Les sorties natives reconnues dans `provider_turn_state.output_items` restent présentes même sans texte, motif ou duplication dans `provider_input_items`. Un checkpoint de génération seul reste omis. Une ligne retenue pour protéger le user direction ne devient donc ni une bulle vide rechargée ni un élément d'historique provider ou de replay.
+
+La suppression d'un tour et le trim replay marquent les directions ciblées `deletionRequested` dans la file existante avant leur mutation DB. Ils attendent les écritures user déjà engagées, y compris celles dont le message n'est pas publié. La publication et toute nouvelle remise sont alors invalidées. Un refus de ce premier marqueur arrête la suppression avant DB. Après succès DB, le nettoyage local continue même si le retrait de file refuse : le marqueur durable restant interdit toute reprise, y compris après redémarrage, et demande un retrait manuel. Une suppression DB refusée ou ambiguë conserve aussi cette invalidation. Les autres tours et conversations restent intacts. Une reprise est refusée tant que la même direction possède une IO ou préparation encore suivie. Elle ne remplace donc jamais l'opération initiale que la suppression ou le replay doit attendre.
+
+Le retrait manuel et l'édition d'une récupération refusent aussi pendant cette IO, avec une exclusion mutuelle face aux reprises. Le suivi temporaire garde l'identité conversation/tour jusqu'au règlement, même si une confirmation finale ou un nettoyage de conversation retire l'entrée affichée. Une invalidation retrouve alors l'opération et réinscrit seulement son marqueur d'annulation dans la file existante avant d'attendre l'IO. La confirmation normale d'une réponse finale reste immédiate.
+
+Les références des directions acceptées contiennent les passages de conversation déjà résolus. La reprise revalide l'accès à la source et réutilise ces extraits et leur version ; elle ne sélectionne pas de nouveaux passages dans le transcript courant.
 
 `chatTurnRuntime` possède les identités de session, les promesses de stream,
 les instructions en attente et les propriétaires de persistance. Le record des
@@ -576,6 +583,23 @@ message assistant : une ancienne sauvegarde ne peut pas écraser celle de Stop.
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
 MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
+Le gestionnaire natif notifie le runtime après les mutations sous son verrou
+MCP, y compris les rechargements et les décisions d'approbation. Le runtime
+revalide les empreintes de configuration effectives de chaque scope sans
+attendre un nouvel appel d'outil. Une empreinte inchangée conserve la session,
+le catalogue et les leases conversationnels. Une définition supprimée ou
+désactivée révoque la génération, annule les opérations et connexions en cours,
+et ferme la session avec un budget de 15 secondes. Le snapshot utilisé par
+Diagnostics conserve l'état `disconnected` après fermeture et `failed` avec
+l'erreur de nettoyage en cas d'échec ou de dépassement du budget. Les adaptateurs
+stdio et HTTP transmettent leurs timeouts internes (`MCP_RUNTIME_CLOSE_TIMEOUT`)
+et échecs de tâche ou de transport (`MCP_RUNTIME_CLOSE_FAILED`) au runtime.
+Le résultat du transport et de la suppression de session HTTP est conservé
+séparément, car le SDK peut seulement journaliser ces erreurs. Un budget
+expiré reste un échec observable même si le nettoyage se termine ensuite.
+Une proposition
+en attente d'approbation ne remplace pas la configuration effective.
+
 `mcp/toolDiscovery` décide, à partir de l'allowlist et du catalogue figés du tour, si le modèle reçoit les schémas MCP directs ou les fonctions `mcp_search` et `mcp_call`. La recherche est bornée et ne parcourt que les outils autorisés. Le dispatch conserve les identifiants trouvés pour ce tour ; `mcp_call` transmet ensuite l'identifiant et les arguments à l'exécuteur MCP existant, qui revalide la politique, l'approbation éventuelle et la génération. Les transports commun, natif et Copilot exposent les mêmes fonctions de découverte. Une récupération d'overflow conserve le catalogue initial ; elle ne crée pas de nouveaux droits.
 La récupération d'overflow transmet les capacités capturées à la préparation :
 type d'agent, allowlist, catalogue et clé MCP, risque et réglages d'outils. Elle
@@ -1289,7 +1313,7 @@ Pour le travail planifié, Macro utilise une branche d'intégration dédiée au 
 
 Cette branche sert de point de convergence avant le merge final vers la branche de base.
 
-Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles non archivées de la stratégie et n'est pas persistée comme un nœud Architect.
+Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles de la stratégie encore actives ou terminées puis archivées avec le motif `merged`. Les nœuds retirés ou annulés restent exclus. Le catalogue conserve la finalisation et le résumé du plan après l'archivage automatique de toutes ses tâches, jusqu'à la fin du cycle du plan. Cette tâche synthétique n'est pas persistée comme un nœud Architect.
 
 ### 12.3 Branches de feature
 

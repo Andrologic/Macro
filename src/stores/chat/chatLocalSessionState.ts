@@ -118,6 +118,7 @@ const isSkillSource = (value: unknown): boolean =>
 
 const isPersistedContextReference = (
   value: unknown,
+  resolvedConversationSources = false,
 ): value is PersistedContextReference => {
   if (!isRecord(value)) return false;
   if (
@@ -138,7 +139,7 @@ const isPersistedContextReference = (
     !isOptionalBoundedString(value.conversationId) ||
     !isOptionalBoundedString(value.sourceUpdatedAt) ||
     (value.kind === "conversation" &&
-      (value.conversationId !== value.id || value.snippet !== undefined))
+      (value.conversationId !== value.id || (!resolvedConversationSources && value.snippet !== undefined)))
   ) {
     return false;
   }
@@ -178,7 +179,7 @@ const parseUnsavedAssistantResponse = (value: unknown): ChatMessage | null => {
     (value.provider_turn_state !== undefined && !isRecord(value.provider_turn_state)) ||
     (value.context_refs !== undefined &&
       (!Array.isArray(value.context_refs) ||
-        !value.context_refs.every(isPersistedContextReference)))
+        !value.context_refs.every(ref => isPersistedContextReference(ref))))
   ) {
     return null;
   }
@@ -274,7 +275,7 @@ export const clearUnsavedAssistantResponsesForConversations = (
   );
 };
 
-export const parseComposerDraft = (value: unknown): PersistedComposerDraft | null => {
+export const parseComposerDraft = (value: unknown, resolvedConversationSources = false): PersistedComposerDraft | null => {
   if (!isRecord(value)) return null;
   if (
     !isBoundedString(value.text, MAX_COMPOSER_DRAFT_TEXT_LENGTH) ||
@@ -283,7 +284,7 @@ export const parseComposerDraft = (value: unknown): PersistedComposerDraft | nul
     !value.images.every(isMessageImageAttachment) ||
     !Array.isArray(value.contextRefs) ||
     value.contextRefs.length > MAX_COMPOSER_DRAFT_CONTEXT_REFS ||
-    !value.contextRefs.every(isPersistedContextReference)
+    !value.contextRefs.every(ref => isPersistedContextReference(ref, resolvedConversationSources))
   ) {
     return null;
   }

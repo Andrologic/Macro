@@ -31,8 +31,9 @@ export function chatSendFixture(mode: ChatSendSnapshot['mode'] = 'Chat') {
   };
   const createMessage = mock<ChatPersistenceIpc['createMessage']>(async (id, role, content, options) => {
     events.push(`save:${role}:${id}`);
+    const generatedId = `${role}-${++serial}`;
     return {
-      id: `${role}-${++serial}`, conversation_id: id, turn_id: options?.turnId ?? null,
+      id: role === 'user' ? options?.id ?? generatedId : generatedId, conversation_id: id, turn_id: options?.turnId ?? null,
       role, content, created_at: '2026-01-01T00:00:00Z', token_count: null,
       tool_traces_json: null, hidden_context: options?.hiddenContext ?? null,
       provider_input_items_json: options?.providerInputItems ? JSON.stringify(options.providerInputItems) : null,

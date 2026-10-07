@@ -105,6 +105,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
 
     const deleteEmptyAssistantMessageFromDb = async () => {
       if (
+        ports.owner.hasDirections(params.conversationId) ||
         ports.owner.latestSession(params.conversationId) !== params.sessionId
       ) {
         return;
@@ -427,6 +428,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         clearLiveStreamContextEstimate: ports.diagnostics.clear,
         refreshConversationContextDiagnostics: ports.diagnostics.refresh,
         persistAssistantStreamResult: ports.persistence.complete,
+        onAssistantPersisted: () => ports.owner.confirmSteers(identity),
         persistAssistantPartialStreamResult: ports.persistence.partial,
         consolidatePendingToolBoundaryCompactionAfterPersistence,
         syncMacroMetadataAfterStream: (mode, conversationId) => ports.persistence.sync(mode, conversationId, params.architectPlanAtSend),
@@ -561,9 +563,13 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           ? compacted
           : compacted?.messages ?? request.messages;
         if (!shouldAcceptStreamUpdate()) return request.messages;
-        return [...compactedMessages, ...ports.owner.consumeSteers(identity)];
+        return compactedMessages;
       },
       consumePendingSteers: () => shouldAcceptStreamUpdate() ? ports.owner.consumeSteers(identity) : [],
+      hasPendingSteers: () => shouldAcceptStreamUpdate() && ports.owner.hasPendingSteers(identity),
+      preparePendingSteers: requestId => ports.owner.deliverSteers(identity, requestId, shouldAcceptStreamUpdate),
+      onSteerRequestEnded: requestId => { if (shouldAcceptStreamUpdate()) ports.owner.steerRequestEnded(identity, requestId); },
+      isRequestCurrent: shouldAcceptStreamUpdate,
       onLiveContextUpdate: (snapshot) => {
         if (!shouldAcceptStreamUpdate()) {
           return;

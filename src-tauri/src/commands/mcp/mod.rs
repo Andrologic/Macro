@@ -9,6 +9,7 @@ pub(crate) mod result_format;
 mod rmcp_adapter;
 mod runtime;
 mod runtime_connector;
+mod service_shutdown;
 mod stdio;
 mod streamable_http;
 mod types;

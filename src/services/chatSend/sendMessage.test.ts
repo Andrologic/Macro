@@ -120,6 +120,26 @@ describe('sendMessage use case without UI stores', () => {
     });
   }
 
+  it('returns cancelled before persistence when configuration outlives its send lease', async () => {
+    const f = fixture('Implement');
+    const started = deferred();
+    const configuration = deferred<null>();
+    const timeline: string[] = [];
+    f.ports.projection.timeline = phase => { timeline.push(phase); };
+    f.ports.configuration.load = async () => { started.resolve(); return configuration.promise; };
+    const sending = f.run();
+    await started.promise;
+    const original = f.runtimes.get('conversation-1')!;
+    f.runtimes.set('conversation-1', { ...original, sessionId: 'successor' });
+    configuration.resolve(null);
+    expect((await sending).status).toBe('cancelled');
+    expect(timeline).toEqual(['send_requested', 'messages_ready']);
+    expect(f.ports.tasks.assertReady).not.toHaveBeenCalled();
+    expect(f.ports.projection.launchError).not.toHaveBeenCalled();
+    expect(f.createMessage).not.toHaveBeenCalled();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+  });
+
   it('returns sent and publishes the saved user message when stopped during persistence', async () => {
     const f = fixture(); const original = f.createMessage.getMockImplementation()!;
     f.createMessage.mockImplementation(async (...args) => { const message = await original(...args); f.stop(); return message; });
@@ -445,5 +465,29 @@ it('stop after saving image and text acknowledges that message without a second 
   expect(result).toMatchObject({ status: 'sent', assistantMessageId: null });
   expect(f.createMessage).toHaveBeenCalledTimes(1);
   expect(f.ports.projection.publishUser).toHaveBeenCalledTimes(1);
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
+
+
+for (const mismatched of [false, true]) it(`reconciles a lost user DB acknowledgement with the exact durable UUID, mismatched=${mismatched}`, async () => {
+  const f = fixture();
+  f.createMessage.mockImplementationOnce(async () => { throw new Error('acknowledgement lost'); });
+  f.ports.messages.readUser = async () => ({ id: mismatched ? 'foreign-id' : 'durable-user', conversation_id: f.input.conversationId,
+    turn_id: 'turn-1', task_id: '', role: 'user', content: f.input.content, timestamp: '2026-01-01' });
+  const sending = sendMessage({ ...f.input, userMessageId: 'durable-user' }, f.snapshot, f.ports);
+  if (mismatched) {
+    await expect(sending).rejects.toThrow('Failed to save the message'); expect(f.ports.stream.start).not.toHaveBeenCalled();
+  } else {
+    expect((await sending).userMessageId).toBe('durable-user'); expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  }
+  expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+});
+
+it('does not discard the DB tail of an interrupted preparation containing durable directions', async () => {
+  const f = fixture();
+  const create = f.createMessage.getMockImplementation()!;
+  f.ports.messages.canDeleteAfter = () => false;
+  f.createMessage.mockImplementation(async (...args) => { const row = await create(...args); if (args[1] === 'assistant') f.stop(); return row; });
+  expect((await f.run()).assistantMessageId).toBeNull(); expect(f.deleteAfter).not.toHaveBeenCalled();
   expect(f.ports.stream.start).not.toHaveBeenCalled();
 });

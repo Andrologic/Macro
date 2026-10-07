@@ -197,17 +197,20 @@ const selectCatalogPlan = (params: {
   rememberedPlanId?: string | null;
   currentActivePlanId?: string | null;
   preferCurrentActivePlan?: boolean;
+  currentTargetBranch?: string | null;
 }): {
   plan: ArchitectPlanSummary | null;
   branchName: string | null;
   reason: ArchitectPlanCatalogSelectionReason;
 } => {
-  // A live active selection is authoritative while the catalog is being
-  // refreshed. The remembered context can lag behind a rename or another
-  // mutation and must only be used when there is no current selection.
-  const currentPlan = params.preferCurrentActivePlan
-    ? findVisiblePlanById(params.visiblePlans, params.currentActivePlanId)
-    : null;
+  // A refresh keeps the live selection, identified by both plan and branch.
+  // A project-context restoration still gives its remembered selection priority.
+  const selectedCurrentPlan = params.currentTargetBranch
+    ? params.branches.find((branch) => branch.branchName === params.currentTargetBranch)
+      ?.plans.find((plan) => plan.id === params.currentActivePlanId && params.visiblePlans.includes(plan)) ?? null
+    : findVisiblePlanById(params.visiblePlans, params.currentActivePlanId);
+  const currentPlan = (params.preferCurrentActivePlan ?? Boolean(params.currentTargetBranch))
+    ? selectedCurrentPlan : null;
   if (currentPlan) {
     return {
       plan: currentPlan,
@@ -216,10 +219,9 @@ const selectCatalogPlan = (params: {
     };
   }
 
-  const rememberedPlan = findVisiblePlanById(
-    params.visiblePlans,
-    params.rememberedPlanId,
-  );
+  const rememberedPlan = params.rememberedPlanId === params.currentActivePlanId && selectedCurrentPlan
+    ? selectedCurrentPlan
+    : findVisiblePlanById(params.visiblePlans, params.rememberedPlanId);
   if (rememberedPlan) {
     return {
       plan: rememberedPlan,
@@ -228,10 +230,7 @@ const selectCatalogPlan = (params: {
     };
   }
 
-  const fallbackCurrentPlan = findVisiblePlanById(
-    params.visiblePlans,
-    params.currentActivePlanId,
-  );
+  const fallbackCurrentPlan = selectedCurrentPlan;
   if (fallbackCurrentPlan) {
     return {
       plan: fallbackCurrentPlan,
@@ -359,6 +358,7 @@ export const loadMacroProjectMetadataForSelection = async (
     rememberedPlanId: params.rememberedPlanId,
     currentActivePlanId: params.currentActivePlanId,
     preferCurrentActivePlan: params.preferCurrentActivePlan,
+    currentTargetBranch: params.currentTargetBranch ? deps.resolveTargetBranch(params.currentTargetBranch) : null,
   });
 
   const branchCatalogByBranch = Object.fromEntries(

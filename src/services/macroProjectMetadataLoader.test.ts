@@ -54,6 +54,28 @@ describe('loadMacroProjectMetadataForSelection', () => {
     ).toBe('group-1::project-2::project-1\u0000project-2');
   });
 
+  it('keeps the current visible plan and its branch before a remembered plan on another branch', async () => {
+    const current = buildPlan({ id: 'current', targetBranch: 'main', projectIds: ['project-2'] });
+    const remembered = buildPlan({ id: 'remembered', projectIds: ['project-1'] });
+    const deps = createDeps({
+      develop: { activePlanId: remembered.id, plans: [remembered] },
+      main: { activePlanId: current.id, plans: [current] },
+    });
+
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1', 'project-2'],
+      rememberedPlanId: remembered.id,
+      currentActivePlanId: current.id,
+      currentTargetBranch: 'main',
+      preferCurrentActivePlan: true,
+      deps,
+    });
+
+    expect(result.selectedPlan?.id).toBe(current.id);
+    expect(result.selectedBranchName).toBe('main');
+    expect(result.selectionReason).toBe('current_plan');
+  });
+
   it('keeps the current visible plan before a stale remembered plan during refresh', async () => {
     const remembered = buildPlan({
       id: 'remembered',
@@ -117,6 +139,23 @@ describe('loadMacroProjectMetadataForSelection', () => {
 
     expect(result.selectedPlan?.id).toBe(remembered.id);
     expect(result.selectionReason).toBe('remembered_plan');
+  });
+
+  it.each([true, false])('resolves the current branch while preserving refresh priority %s', async (preferCurrentActivePlan) => {
+    const wrongBranch = buildPlan({ id: 'same-id', targetBranch: 'develop' });
+    const current = buildPlan({ id: 'same-id', targetBranch: 'main' });
+    const remembered = buildPlan({ id: 'remembered', targetBranch: 'develop' });
+    const deps = createDeps({
+      develop: { activePlanId: wrongBranch.id, plans: [wrongBranch, remembered] },
+      main: { activePlanId: current.id, plans: [current] },
+    });
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'], rememberedPlanId: remembered.id,
+      currentActivePlanId: current.id, currentTargetBranch: 'refs/heads/main', preferCurrentActivePlan, deps,
+    });
+    expect(result.selectedPlan?.id).toBe(preferCurrentActivePlan ? current.id : remembered.id);
+    expect(result.selectedBranchName).toBe(preferCurrentActivePlan ? 'main' : 'develop');
+    expect(result.selectionReason).toBe(preferCurrentActivePlan ? 'current_plan' : 'remembered_plan');
   });
 
   it('keeps standalone project plans visible when their project ids match the current scope', async () => {
@@ -194,6 +233,22 @@ describe('loadMacroProjectMetadataForSelection', () => {
       newestVisible.id,
       olderVisible.id,
     ]);
+  });
+
+  it('keeps the explicit current branch when a newer branch has the same plan id', async () => {
+    const current = buildPlan({ id: 'shared-plan', targetBranch: 'develop', updatedAt: '2026-04-17T10:00:00.000Z' });
+    const newer = buildPlan({ id: current.id, targetBranch: 'release/2.0.0', updatedAt: '2026-04-17T12:00:00.000Z' });
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'], currentActivePlanId: current.id,
+      currentTargetBranch: 'refs/heads/develop', rememberedPlanId: current.id,
+      deps: createDeps({
+        develop: { activePlanId: null, plans: [current] },
+        'release/2.0.0': { activePlanId: null, plans: [newer] },
+      }),
+    });
+    expect(result.selectedPlan).toBe(current);
+    expect(result.selectedBranchName).toBe('develop');
+    expect(result.selectionReason).toBe('current_plan');
   });
 
   it('keeps the branch of the selected plan when plan ids collide across branches', async () => {

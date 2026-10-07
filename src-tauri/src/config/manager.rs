@@ -18,7 +18,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -145,6 +145,22 @@ pub struct ConfigManager {
     document_locks: Arc<Mutex<BTreeMap<DocumentKey, Arc<Mutex<()>>>>>,
     project_registration: Arc<Mutex<()>>,
     mcp_runtime_authority: Arc<RwLock<()>>,
+    mcp_configuration_changes: watch::Sender<u64>,
+}
+
+// Notify only after the authority is released, including early returns that
+// changed effective state. Coalesced wakeups revalidate current truth, not patches.
+struct McpConfigurationMutationGuard {
+    authority: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
+    changes: watch::Sender<u64>,
+}
+
+impl Drop for McpConfigurationMutationGuard {
+    fn drop(&mut self) {
+        self.authority.take();
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -221,6 +237,7 @@ impl ConfigManager {
             document_locks: Arc::new(Mutex::new(BTreeMap::new())),
             project_registration: Arc::new(Mutex::new(())),
             mcp_runtime_authority: Arc::new(RwLock::new(())),
+            mcp_configuration_changes: watch::channel(0).0,
         };
         manager.write_schemas()?;
 
@@ -238,6 +255,17 @@ impl ConfigManager {
         self.mcp_runtime_authority.clone().write_owned().await
     }
 
+    async fn lock_mcp_configuration_mutation(&self) -> McpConfigurationMutationGuard {
+        McpConfigurationMutationGuard {
+            authority: Some(self.mcp_runtime_authority.clone().write_owned().await),
+            changes: self.mcp_configuration_changes.clone(),
+        }
+    }
+
+    pub(crate) fn subscribe_mcp_configuration_changes(&self) -> watch::Receiver<u64> {
+        self.mcp_configuration_changes.subscribe()
+    }
+
     pub(crate) async fn lock_mcp_runtime_configuration(
         &self,
     ) -> tokio::sync::OwnedRwLockReadGuard<()> {
@@ -249,7 +277,7 @@ impl ConfigManager {
         project_id: &str,
         macro_metadata_root: PathBuf,
     ) -> Result<PathBuf, ConfigApiError> {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
         self.state
@@ -336,7 +364,7 @@ impl ConfigManager {
         project_id: &str,
         repository: PathBuf,
     ) -> Result<(), ConfigApiError> {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
         let previous = self
@@ -369,7 +397,7 @@ impl ConfigManager {
         &self,
         project_id: &str,
     ) -> Result<(), ConfigApiError> {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
         self.state
@@ -696,7 +724,7 @@ impl ConfigManager {
         &self,
         project_id: &str,
     ) -> Result<(), ConfigApiError> {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
         // Observations cannot reopen an explicitly removed project. Only register
@@ -718,7 +746,7 @@ impl ConfigManager {
 
     /// Forget runtime state only. Approved baselines, proposals and project files stay on disk.
     pub async fn unregister_project_root(&self, project_id: &str) {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         {
             let mut state = self.state.write().await;
@@ -760,7 +788,7 @@ impl ConfigManager {
     }
 
     pub async fn retain_project_roots(&self, project_ids: &BTreeSet<String>) {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         let removed = {
             let state = self.state.read().await;
@@ -788,7 +816,7 @@ impl ConfigManager {
     /// backoff; the caller deduplicates notifications. Recovery reports a change
     /// even with the same directory identity.
     pub(crate) async fn refresh_project_roots(&self) -> (bool, Vec<ConfigApiError>) {
-        let _references = self.mcp_runtime_authority.write().await;
+        let _references = self.lock_mcp_configuration_mutation().await;
         let _registration = self.project_registration.lock().await;
         let project_ids = {
             let state = self.state.read().await;
@@ -1534,7 +1562,7 @@ impl ConfigManager {
             request.kind,
             ConfigDocumentKind::Providers | ConfigDocumentKind::Tools
         )
-        .then(|| self.mcp_runtime_authority.write());
+        .then(|| self.lock_mcp_configuration_mutation());
         let _reference_guard = match _reference_guard {
             Some(guard) => Some(guard.await),
             None => None,
@@ -1879,7 +1907,7 @@ impl ConfigManager {
             kind,
             ConfigDocumentKind::Providers | ConfigDocumentKind::Tools
         )
-        .then(|| self.mcp_runtime_authority.write());
+        .then(|| self.lock_mcp_configuration_mutation());
         let _reference_guard = match _reference_guard {
             Some(guard) => Some(guard.await),
             None => None,
@@ -2177,7 +2205,7 @@ impl ConfigManager {
     }
 
     pub async fn accept_pending_change(&self, id: &str) -> Result<ConfigDocument, ConfigApiError> {
-        let _reference_guard = self.mcp_runtime_authority.write().await;
+        let _reference_guard = self.lock_mcp_configuration_mutation().await;
         let durable = self
             .state
             .read()
@@ -2303,7 +2331,7 @@ impl ConfigManager {
                 "Le refus doit confirmer explicitement la restauration de la dernière version approuvée.",
             ));
         }
-        let _reference_guard = self.mcp_runtime_authority.write().await;
+        let _reference_guard = self.lock_mcp_configuration_mutation().await;
         let durable = self
             .state
             .read()

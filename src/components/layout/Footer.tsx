@@ -6,16 +6,19 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { open } from '../../services/tauriDialog';
 import { Button } from '../ui/Button';
+import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { useAppStore, type MetadataSyncRepositoryStatus } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
+import { classifyGitSyncFailure, type GitSyncFailureKind } from '../../services/gitSyncFailure';
 import { toServiceError } from '../../services/contracts/errors';
 import * as tauriIpc from '../../services/tauriIpc';
 import {
   buildMacroConflictAssistantPrompt,
+  buildCodeConflictAssistantPrompt,
   toMacroConflictResolutionEntries,
   type ConflictResolutionEntry,
 } from '../../services/conflictResolution';
@@ -32,6 +35,7 @@ import { NotificationCenterPopover } from './NotificationCenterPopover';
 import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
   presentMetadataSyncIssue,
+  presentServiceError,
   resolveDegradedErrorPresentation,
 } from '../../services/degradedErrorPresentation';
 import { cn } from '../../utils/cn';
@@ -94,6 +98,24 @@ interface RepositorySyncResult {
   success: boolean;
   message: string;
 }
+
+interface GitSyncFailureResolution {
+  project: ScopedProject;
+  action: FooterSyncAction;
+  kind: GitSyncFailureKind;
+  technicalDetails: string;
+}
+
+const GIT_SYNC_FAILURE_TEXT: Record<GitSyncFailureKind, { title: string; body: string }> = {
+  missing_origin: { title: 'No remote configured', body: 'Add the origin URL to synchronize this repository. You can also keep working locally.' },
+  missing_upstream: { title: 'No tracking branch configured', body: 'Publish the code branch to origin to set its upstream, then retry. Publishing sends your local commits to the remote.' },
+  remote_unavailable: { title: 'Remote repository unavailable', body: 'Check the origin URL and your access to the repository, then retry. Correct an existing remote URL in your Git client.' },
+  auth: { title: 'Git authentication required', body: 'Check your Git credentials and repository permissions, then retry.' },
+  network: { title: 'Cannot reach the remote', body: 'Check your connection and the origin URL, then retry.' },
+  local_changes: { title: 'Local files prevent the pull', body: 'Keep your edits. Review them or stash them before retrying the pull.' },
+  divergence: { title: 'Branches have diverged', body: 'Refresh the branch status and choose merge or rebase to integrate the remote commits.' },
+  unknown: { title: 'Git synchronization failed', body: 'Review the technical details, fix the reported issue, then retry.' },
+};
 
 interface CodeDivergenceEntry {
   project: ScopedProject;
@@ -186,9 +208,9 @@ const DEFAULT_FOOTER_METADATA_SYNC: FooterMetadataSyncState = {
 const CODE_DIVERGENCE_STRATEGIES: CodeDivergenceStrategy[] = ['merge', 'rebase', 'fastForward'];
 const CODE_DIVERGENCE_STATUS_PRIORITY: CodeDivergencePreflightStatus[] = [
   'checking',
+  'failed',
   'conflicts',
   'blocked',
-  'failed',
   'available',
 ];
 
@@ -228,7 +250,7 @@ const getDefaultUpstreamBranchName = (branch: string): string => `origin/${branc
 
 const isDirtyWorktreeError = (message: string | null | undefined): boolean => {
   const normalized = (message || '').toLowerCase();
-  return normalized.includes('commit or stash') || normalized.includes('not clean');
+  return classifyGitSyncFailure(normalized) === 'local_changes';
 };
 
 const isUnmergedIndexError = (message: string | null | undefined): boolean => {
@@ -368,6 +390,7 @@ const unavailableGitStatus = (branch: string): tauriIpc.GitStatusDto => ({
 });
 
 interface CodeDivergenceResolutionModalProps {
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   resolution: CodeDivergenceResolution;
   action: CodeDivergenceAction | null;
   t: TranslateFn;
@@ -379,6 +402,7 @@ interface CodeDivergenceResolutionModalProps {
 }
 
 const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps> = ({
+  returnFocusRef,
   resolution,
   action,
   t,
@@ -407,7 +431,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
     (strategy) => strategySummaries[strategy].status === 'conflicts'
   );
   const hasFailedPreflight = CODE_DIVERGENCE_STRATEGIES.some((strategy) =>
-    ['failed', 'blocked'].includes(strategySummaries[strategy].status)
+    strategySummaries[strategy].status === 'failed'
   );
   const availableStrategies = CODE_DIVERGENCE_STRATEGIES.filter(
     (strategy) => !hasMergeInProgress && strategySummaries[strategy].status === 'available'
@@ -421,7 +445,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
       case 'conflicts':
         return t('footer.sync.preflightConflicts', 'Conflicts');
       case 'blocked':
-        return t('footer.sync.preflightBlockedByLocalChanges', 'Blocked by local changes');
+        return t('footer.sync.preflightUnavailable', 'Unavailable');
       case 'checking':
         return t('footer.sync.preflightChecking', 'Checking');
       case 'failed':
@@ -463,57 +487,36 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
     ? t('footer.sync.codeDivergenceMergeInProgressTitle', 'Merge in progress')
     : isChecking
       ? t('footer.sync.codeDivergenceCheckingTitle', 'Checking integration strategies')
-      : hasConflicts
-        ? t('footer.sync.codeDivergenceConflictTitle', 'Conflicts detected')
-        : hasFailedPreflight
-          ? t('footer.sync.codeDivergencePreflightFailedTitle', 'Preflight could not complete')
+      : hasFailedPreflight
+        ? t('footer.sync.codeDivergencePreflightFailedTitle', 'Preflight could not complete')
+        : hasConflicts
+          ? t('footer.sync.codeDivergenceConflictTitle', 'Conflicts detected')
           : hasLocalChanges
             ? t('footer.sync.codeDivergenceDirtyTitle', 'Local changes detected')
             : t('footer.sync.codeDivergenceReadyTitle', 'Ready to integrate remote commits');
   const statusBody = hasMergeInProgress
-    ? t(
-        'footer.sync.codeDivergenceMergeInProgressBody',
-        'Abort the current merge before trying another sync action.'
-      )
+    ? t('footer.sync.codeDivergenceMergeInProgressBody', 'Abort the current merge before trying another sync action.')
     : isChecking
-      ? t(
-          'footer.sync.codeDivergenceCheckingBody',
-          'Macro is checking merge and rebase before offering an action.'
-        )
-      : hasConflicts && availableStrategies.length === 0
-        ? t(
-            'footer.sync.codeDivergenceAllConflictBody',
-            'Merge and rebase would conflict. Resolve these files manually, then retry.'
-          )
-        : hasConflicts
-          ? t(
-              'footer.sync.codeDivergenceSomeConflictBody',
-              'One strategy would conflict. Use the available strategy or resolve the files manually.'
-            )
-          : hasFailedPreflight
-            ? t(
-                'footer.sync.codeDivergencePreflightFailedBody',
-                'Macro could not prove a safe integration strategy. Close and refresh before retrying.'
-              )
+      ? t('footer.sync.codeDivergenceCheckingBody', 'Macro is checking merge and rebase before offering an action.')
+      : hasFailedPreflight
+        ? t('footer.sync.codeDivergencePreflightFailedBody', 'Macro could not prove a safe integration strategy. Close and refresh before retrying.')
+        : hasConflicts && availableStrategies.length === 0
+          ? t('footer.sync.codeDivergenceAllConflictBody', 'Merge and rebase would conflict. Resolve these files manually, then retry.')
+          : hasConflicts
+            ? t('footer.sync.codeDivergenceSomeConflictBody', 'One strategy would conflict. Use the available strategy or resolve the files manually.')
             : hasLocalChanges
-              ? t(
-                  'footer.sync.codeDivergenceDirtyWorktree',
-                  'Macro will stash local changes before running the selected action.'
-                )
-              : t(
-                  'footer.sync.codeDivergenceReadyBody',
-                  'Rebase keeps history linear; merge preserves a merge commit.'
-                );
+              ? t('footer.sync.codeDivergenceDirtyWorktree', 'Macro will stash local changes before running the selected action.')
+              : t('footer.sync.codeDivergenceReadyBody', 'Rebase keeps history linear; merge preserves a merge commit.');
 
   return (
-    <div className="fixed inset-0 z-[96] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div
-        className="relative w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-card shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="code-divergence-title"
-      >
+    <Dialog
+      returnFocusRef={returnFocusRef}
+      title={t('footer.sync.codeDivergencePromptTitle', 'Branch has diverged from remote')}
+      onClose={() => { if (!action) onClose(); }}
+      closeOnBackdropClick
+      backdropClassName="fixed inset-0 z-[96] flex items-center justify-center bg-black/50 p-4"
+      panelClassName="relative max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-lg border border-border bg-card shadow-2xl"
+    >
         <div className="border-b border-border/80 px-5 py-4">
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-500/10 text-amber-400">
@@ -549,7 +552,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                         <div
                           key={strategy}
                           className={cn(
-                            'flex items-center justify-between gap-3 rounded border px-2.5 py-2',
+                            'flex flex-wrap items-center justify-between gap-3 rounded border px-2.5 py-2',
                             isAvailable
                               ? 'border-emerald-500/20 bg-emerald-500/10'
                               : summary.status === 'checking'
@@ -574,6 +577,11 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                           >
                             {getStatusLabel(summary.status)}
                           </span>
+                          {summary.status === 'blocked' && (
+                            <p className="basis-full text-[11px] text-muted-foreground">
+                              {uniqueStrings(resolution.entries.map((entry) => entry.preflight[strategy].error ?? '')).join(' ')}
+                            </p>
+                          )}
                         </div>
                       );
                     })}
@@ -619,10 +627,24 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
             ))}
           </div>
 
+          {(resolution.error || hasFailedPreflight) && (
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted-foreground">{t('errors.showDetails', 'Show technical details')}</summary>
+              <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                {uniqueStrings([
+                  resolution.error ?? '',
+                  ...resolution.entries.flatMap((entry) => CODE_DIVERGENCE_STRATEGIES
+                    .filter((strategy) => entry.preflight[strategy].status === 'failed')
+                    .map((strategy) => entry.preflight[strategy].error ?? '')),
+                ]).join('\n')}
+              </pre>
+            </details>
+          )}
+
           {(hasMergeInProgress || hasConflicts) && conflictFiles.length > 0 && (
             <div className="rounded-md border border-red-500/25 bg-red-500/5 px-3 py-2.5 text-xs">
               <div className="mb-2 font-medium text-red-200">
-                {t('footer.sync.conflictedFiles', 'Conflicted files')}
+                {t('footer.sync.conflictedFiles', '{{count}} conflicted files', { count: conflictFiles.length })}
               </div>
               <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto pr-1">
                 {conflictFiles.map((file) => (
@@ -660,7 +682,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                 type="button"
                 variant="ghost"
                 size="sm"
-                disabled={Boolean(action)}
+                disabled={Boolean(action) || availableStrategies.length === 0}
                 onClick={() => {
                   const firstAvailable = availableStrategies[0];
                   if (firstAvailable) {
@@ -683,7 +705,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                 {t('footer.sync.discardLocalChanges', 'Discard local changes')}
               </Button>
             )}
-            {hasConflicts && (
+            {(hasConflicts || hasMergeInProgress) && resolution.entries.every((entry) => entry.project.source === 'project') && (
               <Button
                 type="button"
                 variant="secondary"
@@ -691,7 +713,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                 disabled={Boolean(action)}
                 onClick={onOpenConflictAssistant}
               >
-                {t('footer.sync.openConflictAssistant', 'Open conflict assistant')}
+                {t('footer.sync.openConflictAssistant', 'Open conflict assistant in Implement')}
               </Button>
             )}
             {!shouldCloseOnly && (
@@ -724,8 +746,7 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };
 
@@ -780,11 +801,21 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     useState<CodeDivergenceAction | null>(null);
   const [pushResolution, setPushResolution] = useState<PushResolutionState | null>(null);
   const [isConfiguringRemote, setIsConfiguringRemote] = useState(false);
+  const [gitSyncFailure, setGitSyncFailure] = useState<GitSyncFailureResolution | null>(null);
+  const [recoveryRemoteUrl, setRecoveryRemoteUrl] = useState('');
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [isSelectingFolder, setIsSelectingFolder] = useState(false);
+
+  useEffect(() => {
+    setGitSyncFailure(null);
+    setRecoveryError(null);
+    setIsConfiguringRemote(false);
+  }, [captureView]);
 
   const refreshRef = useRef<{ capture: typeof captureView; promise: Promise<void> } | null>(null);
   const focusedBranchRequestIdRef = useRef(0);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
+  const gitSyncReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
@@ -1161,18 +1192,6 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     return results;
   }, [scopeProjects, translate]);
 
-  const isDivergenceError = useCallback((message: string | null | undefined): boolean => {
-    const normalized = (message || '').toLowerCase();
-    return (
-      normalized.includes('diverged') ||
-      normalized.includes('non-fast-forward') ||
-      normalized.includes('not possible to fast-forward') ||
-      normalized.includes('rejected') ||
-      normalized.includes('fetch first') ||
-      normalized.includes('behind')
-    );
-  }, []);
-
   const buildCodeDivergenceEntryFromFailure = useCallback((
     project: ScopedProject,
     status: tauriIpc.GitStatusDto | null
@@ -1265,8 +1284,9 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
           mergeInProgress: getStatusMergeInProgress(status),
           conflictFiles: getStatusConflictFiles(status),
         };
-      } catch {
-        nextEntry = entry;
+      } catch (error) {
+        const failure = createCodeDivergencePreflight('failed', { error: toServiceError(error).message });
+        return { ...entry, preflight: { merge: failure, rebase: failure, fastForward: failure } };
       }
 
       if (nextEntry.mergeInProgress) {
@@ -1421,7 +1441,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
         for (const project of actionProjects) {
           if (!failedProjectNames.has(project.name)) continue;
           const failure = failures.find((candidate) => candidate.projectName === project.name);
-          if (!failure || !isDivergenceError(failure.message)) continue;
+          if (!failure || !['divergence', 'local_changes'].includes(classifyGitSyncFailure(failure.message))) continue;
           let status: tauriIpc.GitStatusDto | null = null;
           try {
             status = await tauriIpc.gitStatus(project.path);
@@ -1487,10 +1507,36 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       const hasErrors = failures.length > 0 || macroResult?.state === 'failed' || macroResult?.state === 'conflict';
       const hasPending = macroResult?.state === 'pending' && hasMacroBlocker;
       if (hasErrors) {
-        notify.error(t(`footer.sync.${action}Incomplete`, `${action} incomplete`), {
-          description,
-          category: 'git_sync_attention_required',
-        });
+        const firstFailure = failures[0];
+        if (firstFailure) {
+          const project = actionProjects.find((candidate) => candidate.name === firstFailure.projectName);
+          if (project) {
+            const kind = classifyGitSyncFailure(firstFailure.message);
+            const fallback = GIT_SYNC_FAILURE_TEXT[kind];
+            const resolution = { project, action, kind, technicalDetails: firstFailure.message };
+            const current = captureView();
+            notify.actionRequired(t(`footer.sync.failure.${kind}.title`, fallback.title), {
+              tone: 'error',
+              description: t(`footer.sync.failure.${kind}.body`, fallback.body),
+              category: 'git_sync_attention_required',
+              actions: [{
+                label: t('footer.sync.reviewRecovery', 'Review recovery'),
+                onClick: () => {
+                  if (!current()) return;
+                  setRecoveryRemoteUrl('');
+                  setRecoveryError(null);
+                  setGitSyncFailure(resolution);
+                },
+              }],
+            });
+          }
+        } else {
+          notify.actionRequired(t(`footer.sync.${action}Incomplete`, `${action} incomplete`), {
+            description: t('footer.sync.metadataNeedsAttention', 'Code sync completed. Metadata sync needs attention.'),
+            category: 'git_sync_attention_required',
+            actions: [{ label: t('footer.sync.reviewRecovery', 'Review recovery'), onClick: () => setShowConflictModal(true) }],
+          });
+        }
       } else if (hasPending) {
         notify.info(t(`footer.sync.${action}Pending`, `${action} requires attention`), {
           description,
@@ -1506,7 +1552,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
       setSyncAction(null);
     }
-  }, [codeAhead, codeBehind, createMacroSyncServiceForProjects, describeMacroResultForToast, findDivergentCodeEntries, isDivergenceError, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runCodeDivergencePreflight, runPushPreflight, scopeProjects, syncAction, t, buildCodeDivergenceEntryFromFailure]);
+  }, [codeAhead, codeBehind, createMacroSyncServiceForProjects, describeMacroResultForToast, findDivergentCodeEntries, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runCodeDivergencePreflight, runPushPreflight, scopeProjects, syncAction, t, buildCodeDivergenceEntryFromFailure, captureView]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
@@ -1535,7 +1581,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   );
 
   const openAiConflictAssistant = async () => {
-    const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
+    const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories.filter(repo => repo.state === 'conflict' || repo.reason === 'diverged') : scopeProjects.map((project) => ({
       repoPath: project.path,
       projectId: project.id,
       worktreePath: macroSnapshot?.worktree_path || null,
@@ -1548,14 +1594,18 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     try {
       await openConflictAssistant({
         prompt: buildMacroConflictAssistantPrompt({ repositories }),
+        context: { kind: 'metadata', repositories: repositories.map(repo => ({
+          projectId: repo.projectId ?? '', repoPath: repo.repoPath, worktreePath: repo.worktreePath,
+        })) },
       });
       notify.info(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'), {
         category: 'git_sync_attention_required',
       });
       setShowConflictModal(false);
     } catch (error) {
+      const failure = resolveDegradedErrorPresentation(presentServiceError(error), (key, options) => String(t(key, options)));
       notify.error(t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'), {
-        description: toServiceError(error).message,
+        description: [failure.body, failure.nextStep].filter(Boolean).join(' '),
         category: 'git_sync_attention_required',
       });
     }
@@ -1794,7 +1844,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
           error: description,
         });
         notify.error(t('footer.sync.codeDivergenceFailed', 'Could not resolve branch divergence'), {
-          description,
+          description: t('footer.sync.failure.unknown.body', GIT_SYNC_FAILURE_TEXT.unknown.body),
           category: 'git_sync_attention_required',
         });
         return;
@@ -1948,33 +1998,45 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
 
   const openConflictAssistantForDivergence = async () => {
     if (!codeDivergenceResolution) return;
-    const repositories: MetadataSyncRepositoryStatus[] = codeDivergenceResolution.entries.map(
-      (entry) => ({
-        repoPath: entry.project.path,
-        projectId: entry.project.id,
-        worktreePath: null,
-        state: 'conflict',
-        error: 'Code divergence conflicts detected during pull/push.',
-        reason: 'merge_conflict',
-        nextAction: 'resolve_conflict',
-        conflictFiles: uniqueStrings(entry.conflictFiles),
-      })
-    );
-    setCodeDivergenceResolution(null);
+    const repositories = codeDivergenceResolution.entries.map((entry) => ({
+      repoPath: entry.project.path,
+      branch: entry.branch,
+      upstreamBranch: entry.upstreamBranch,
+      conflictFiles: uniqueStrings([
+        ...entry.conflictFiles,
+        ...CODE_DIVERGENCE_STRATEGIES.flatMap((strategy) => entry.preflight[strategy].conflictFiles),
+      ]),
+      mergeInProgress: entry.mergeInProgress,
+    }));
+    const project = codeDivergenceResolution.entries[0]?.project;
+    // The footer resolves one explicit repository. A folder without a registered
+    // project has no verified agent workspace and must remain a manual workflow.
+    if (!project || project.source !== 'project') return;
     try {
+      const status = await tauriIpc.gitStatus(project.path);
+      if (status.branch !== repositories[0]?.branch) {
+        throw new Error(t('footer.sync.conflictContextChanged', 'The branch changed. Refresh before opening the assistant.'));
+      }
       await openConflictAssistant({
-        prompt: buildMacroConflictAssistantPrompt({ repositories }),
+        prompt: buildCodeConflictAssistantPrompt({ repositories }),
         internalAgentProfile: 'repo_auditor',
+        context: { kind: 'code', repositories: [{
+          projectId: project.id, repoPath: project.path, branch: repositories[0]!.branch,
+          upstreamBranch: repositories[0]!.upstreamBranch,
+          taskId: useAppStore.getState().selectedTaskId ?? undefined,
+        }] },
       });
+      setCodeDivergenceResolution(null);
       notify.info(
         t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'),
         { category: 'git_sync_attention_required' }
       );
     } catch (error) {
+      const failure = resolveDegradedErrorPresentation(presentServiceError(error), (key, options) => String(t(key, options)));
       notify.error(
         t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'),
         {
-          description: toServiceError(error).message,
+          description: [failure.body, failure.nextStep].filter(Boolean).join(' '),
           category: 'git_sync_attention_required',
         }
       );
@@ -2124,7 +2186,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                   aria-label={`${pullActionLabel} · ${pullCountLabel}`}
                   title={pullActionLabel}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
-                  onClick={() => void handleSyncAction('pull')}
+                  onClick={(event) => {
+                    gitSyncReturnFocusRef.current = event.currentTarget;
+                    void handleSyncAction('pull');
+                  }}
                   data-tour-id="footer-pull"
                 >
                   <span className="footer-git-action-icon-frame" aria-hidden="true">
@@ -2149,7 +2214,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                   aria-label={`${pushActionLabel} · ${pushCountLabel}`}
                   title={pushActionLabel}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
-                  onClick={() => void handleSyncAction('push')}
+                  onClick={(event) => {
+                    gitSyncReturnFocusRef.current = event.currentTarget;
+                    void handleSyncAction('push');
+                  }}
                   data-tour-id="footer-push"
                 >
                   <span className="footer-git-action-icon-frame" aria-hidden="true">
@@ -2175,7 +2243,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 size="sm"
                 variant="error"
                 className="h-6 px-2 text-[11px]"
-                onClick={openPushResolution}
+                onClick={(event) => {
+                  gitSyncReturnFocusRef.current = event.currentTarget;
+                  openPushResolution();
+                }}
               >
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
@@ -2202,10 +2273,92 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
         </div>
       </footer>
 
+      {gitSyncFailure && (
+        <Dialog
+          title={t(`footer.sync.failure.${gitSyncFailure.kind}.title`, GIT_SYNC_FAILURE_TEXT[gitSyncFailure.kind].title)}
+          onClose={() => { if (!syncAction && !isConfiguringRemote) setGitSyncFailure(null); }}
+          closeOnBackdropClick
+          backdropClassName="fixed inset-0 z-[96] flex items-center justify-center bg-black/50 p-4"
+          panelClassName="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-border bg-card p-4 shadow-2xl"
+        >
+          <h3 className="text-sm font-semibold">
+            {t(`footer.sync.failure.${gitSyncFailure.kind}.title`, GIT_SYNC_FAILURE_TEXT[gitSyncFailure.kind].title)}
+          </h3>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t(`footer.sync.failure.${gitSyncFailure.kind}.body`, GIT_SYNC_FAILURE_TEXT[gitSyncFailure.kind].body)}
+          </p>
+          <p className="mt-2 break-all text-xs">{gitSyncFailure.project.name}</p>
+          {gitSyncFailure.kind === 'missing_origin' && (
+            <label className="mt-3 block text-xs">
+              {t('footer.sync.originUrl', 'Origin URL')}
+              <input
+                className="mt-1 h-8 w-full rounded border border-border bg-background px-2"
+                value={recoveryRemoteUrl}
+                disabled={isConfiguringRemote}
+                onChange={(event) => setRecoveryRemoteUrl(event.target.value)}
+              />
+            </label>
+          )}
+          <details className="mt-3 text-xs">
+            <summary className="cursor-pointer">{t('errors.showDetails', 'Show technical details')}</summary>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all text-muted-foreground">{gitSyncFailure.technicalDetails}</pre>
+          </details>
+          {recoveryError && <p role="alert" className="mt-2 text-xs text-red-400">{recoveryError}</p>}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button size="sm" variant="ghost" disabled={Boolean(syncAction) || isConfiguringRemote} onClick={() => setGitSyncFailure(null)}>
+              {t('common.close', 'Close')}
+            </Button>
+            {gitSyncFailure.kind === 'missing_origin' && (
+              <Button size="sm" disabled={!recoveryRemoteUrl.trim() || isConfiguringRemote} isLoading={isConfiguringRemote} onClick={() => {
+                const resolution = gitSyncFailure;
+                const current = captureView();
+                setIsConfiguringRemote(true);
+                void tauriIpc.gitRemoteAddOrigin({ repoPath: resolution.project.path, url: recoveryRemoteUrl.trim() })
+                  .then(async () => {
+                    if (!current()) return;
+                    setGitSyncFailure(null);
+                    await handleSyncAction(resolution.action, { projects: [resolution.project] });
+                  })
+                  .catch((error) => {
+                    if (!current()) return;
+                    setRecoveryError(t('footer.sync.remoteConfigurationFailed', 'Remote configuration failed. Review the URL and technical details.'));
+                    setGitSyncFailure({ ...resolution, technicalDetails: toServiceError(error).message });
+                  })
+                  .finally(() => { if (current()) setIsConfiguringRemote(false); });
+              }}>
+                {t('footer.sync.configureAndRetry', 'Configure and retry')}
+              </Button>
+            )}
+            {gitSyncFailure.kind === 'missing_upstream' && (
+              <Button size="sm" disabled={Boolean(syncAction)} onClick={() => {
+                const project = gitSyncFailure.project;
+                setGitSyncFailure(null);
+                void handleSyncAction('push', { projects: [project] });
+              }}>
+                {t('footer.sync.publishCodeBranch', 'Publish code branch')}
+              </Button>
+            )}
+            {gitSyncFailure.kind !== 'missing_origin' && (
+              <Button size="sm" disabled={Boolean(syncAction)} onClick={() => {
+                const resolution = gitSyncFailure;
+                setGitSyncFailure(null);
+                void handleSyncAction(resolution.action, { projects: [resolution.project] });
+              }}>
+                {t('footer.sync.retrySync', 'Retry sync')}
+              </Button>
+            )}
+          </div>
+        </Dialog>
+      )}
+
       {showConflictModal && (
-        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setShowConflictModal(false)} />
-          <div className="relative max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-xl border border-border bg-card p-4 shadow-2xl">
+        <Dialog
+          title={metadataSyncPresentation.title}
+          onClose={() => { if (!syncAction && !isRefreshing) setShowConflictModal(false); }}
+          closeOnBackdropClick
+          backdropClassName="fixed inset-0 z-[95] flex items-center justify-center bg-black/50 p-4"
+          panelClassName="relative max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-xl border border-border bg-card p-4 shadow-2xl"
+        >
             <ConflictResolutionPanel
               title={metadataSyncPresentation.title}
               description={metadataSyncPresentation.nextStep || metadataSyncPresentation.body}
@@ -2230,21 +2383,23 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                   : t('common.close', 'Close')
               }
               onRetry={() => void handleRetryMacroSync()}
+              useAiAssistantLabel={t('footer.sync.openConflictAssistant', 'Open conflict assistant in Implement')}
               onUseAiAssistant={canUseMacroAssistant ? () => void openAiConflictAssistant() : undefined}
             />
-          </div>
-        </div>
+        </Dialog>
       )}
 
       {pushResolution && (
-        <div className="fixed inset-0 z-[96] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setPushResolution(null)} />
-          <div
-            className="relative w-full max-w-lg rounded-lg border border-border bg-card p-4 shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="push-resolution-title"
-          >
+        <Dialog
+          returnFocusRef={gitSyncReturnFocusRef}
+          title={pushResolution.kind === 'missing_origin'
+            ? t('footer.sync.missingOriginPromptTitle', 'Remote origin is missing')
+            : t('footer.sync.missingUpstreamPromptTitle', '@macro has no remote branch yet')}
+          onClose={() => { if (!syncAction && !isConfiguringRemote) setPushResolution(null); }}
+          closeOnBackdropClick
+          backdropClassName="fixed inset-0 z-[96] flex items-center justify-center bg-black/50 p-4"
+          panelClassName="relative max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-border bg-card p-4 shadow-2xl"
+        >
             <div className="flex items-start gap-3">
               <div className="mt-0.5 rounded-md bg-amber-500/10 p-2 text-amber-500">
                 <Icon name="git-branch" size={16} />
@@ -2373,12 +2528,12 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 </Button>
               </div>
             )}
-          </div>
-        </div>
+        </Dialog>
       )}
 
       {codeDivergenceResolution && (
         <CodeDivergenceResolutionModal
+          returnFocusRef={gitSyncReturnFocusRef}
           resolution={codeDivergenceResolution}
           action={codeDivergenceAction}
           t={translate}

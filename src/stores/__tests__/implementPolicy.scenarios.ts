@@ -1,3 +1,5 @@
+import { createGitCommitDto } from '../../test-utils/gitCommit';
+import { registerConflictAssistantContext, clearConflictAssistantContext } from '../../services/conflictAssistantContext';
 import { describe, expect, it } from 'bun:test';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -177,6 +179,11 @@ export const registerImplementPolicyScenarios = (
         composerContextRefs: [],
       });
 
+      registerConflictAssistantContext({
+        conversationId: 'debug-conv', projectId: 'project-1', groupId: 'group-1', kind: 'code',
+        repositories: [{ projectId: 'project-1', projectPath: '/repos/web', repoPath: '/repos/web', branch: 'feature/api',
+          head: createGitCommitDto().id, conflictFiles: ['src/api.ts'], mergeInProgress: true }],
+      });
       await useChatStore.getState().sendMessage({
         conversationId: 'debug-conv',
         content: 'Diagnose the git conflict safely.',
@@ -199,6 +206,7 @@ export const registerImplementPolicyScenarios = (
       expect(String(streamOptions.messages[0]?.content)).toContain(
         'Custom REPO_AUDITOR prompt for tests.'
       );
+      clearConflictAssistantContext('debug-conv');
     });
 
     it('rejects Implement sends when task preflight does not move the task into progress', async () => {

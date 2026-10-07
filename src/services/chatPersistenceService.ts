@@ -19,6 +19,14 @@ import {
   parseDbProviderTurnState,
 } from "./chatDbMappers";
 import { parseToolTracesJson } from "./toolTraceState";
+import { isSuccessfulCompletionReason } from "./ai/completionRecovery";
+
+/** A placeholder has no transcript content; generation checkpoints alone are not a response. */
+export const isEmptyAssistantPlaceholder = (message: ChatMessage): boolean =>
+  message.role === "assistant" && !message.completion_reason && !message.content.trim() &&
+  !message.tool_traces?.length && !message.provider_input_items?.length &&
+  !message.provider_turn_state?.output_items.length && !message.hidden_context &&
+  !message.questionnaire && !message.choices?.length;
 
 export interface ChatPersistenceIpc {
   getChatBootstrapSnapshot: () => Promise<DbChatBootstrapSnapshot>;
@@ -134,7 +142,8 @@ export const loadChatBootstrapSnapshot = async (
     const conversationById = buildConversationById(conversations);
     const messages = Object.values(snapshot.messages_by_conversation_id)
       .flatMap((items) => items ?? [])
-      .map((message) => mapDbMessageToChatMessage(message, conversationById));
+      .map((message) => mapDbMessageToChatMessage(message, conversationById))
+      .filter(message => !isEmptyAssistantPlaceholder(message));
     return {
       conversations,
       messages,
@@ -170,7 +179,7 @@ export const loadConversationMessages = async (
   const conversationById = buildConversationById(params.conversations);
   return dbMessages.map((message) =>
     mapDbMessageToChatMessage(message, conversationById),
-  );
+  ).filter(message => !isEmptyAssistantPlaceholder(message));
 };
 
 export const createUserMessage = async (
@@ -404,7 +413,8 @@ export const persistAssistantPartialResult = async (
     hiddenContext: assistantMessage.hidden_context,
     providerInputItems: assistantMessage.provider_input_items,
     providerTurnState: assistantMessage.provider_turn_state,
-    ...(assistantMessage.completion_reason
+    // Only the final write can certify successful completion after reload.
+    ...(assistantMessage.completion_reason && !isSuccessfulCompletionReason(assistantMessage.completion_reason)
       ? { completionReason: assistantMessage.completion_reason }
       : {}),
     generationAttempts: assistantMessage.generation_attempts,
@@ -431,9 +441,8 @@ export const persistAssistantCompletionResult = async (
       hiddenContext: params.result.hiddenContext,
       providerInputItems: params.result.providerInputItems,
       providerTurnState: params.result.providerTurnState,
-      ...(params.result.completionReason
-        ? { completionReason: params.result.completionReason }
-        : {}),
+      // Some transports omit their reason. This final write still records completion.
+      completionReason: params.result.completionReason ?? "completed",
       generationAttempts: params.result.generationAttempts,
     },
   ));

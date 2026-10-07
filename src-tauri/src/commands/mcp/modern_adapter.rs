@@ -31,7 +31,8 @@ use serde_json::Value;
 use super::ids::build_mcp_tool_id;
 use super::result_format::normalize_tool_call_result;
 use super::rmcp_adapter::{ContainedStdioTransport, McpToolPageDto, RmcpStdioServerConfig};
-use super::runtime::McpOperationCancellation;
+use super::runtime::{McpOperationCancellation, McpRuntimeError};
+use super::service_shutdown::{TransportCleanup, SERVICE_CLOSE_BUDGET};
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
 
@@ -39,7 +40,6 @@ pub(crate) const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
-const SERVICE_CLOSE_BUDGET: Duration = Duration::from_secs(10);
 const CANCEL_NOTIFICATION_BUDGET: Duration = Duration::from_secs(1);
 
 /// Modern peer information retained after `server/discover`.
@@ -103,6 +103,7 @@ impl ClientHandler for ModernClientHandler {
 /// through the shared transport and never sends `initialize`.
 pub(crate) struct RmcpModernStdioClient {
     service: RunningService<RoleClient, ModernClientHandler>,
+    cleanup: TransportCleanup,
     server_id: String,
     server_name: String,
     metadata: McpModernServerMetadata,
@@ -110,6 +111,32 @@ pub(crate) struct RmcpModernStdioClient {
 }
 
 impl RmcpModernStdioClient {
+    #[cfg(test)]
+    pub(super) async fn cleanup_fixture(
+        behavior: super::service_shutdown::fixture::CloseBehavior,
+    ) -> (Self, super::service_shutdown::fixture::CloseControl) {
+        let (service, cleanup, control) =
+            super::service_shutdown::fixture::service(ModernClientHandler::new(), true, behavior)
+                .await;
+        (
+            Self {
+                service,
+                cleanup,
+                server_id: "test".to_owned(),
+                server_name: "cleanup-fixture".to_owned(),
+                operation_timeout: Duration::from_secs(2),
+                metadata: McpModernServerMetadata {
+                    negotiated_protocol_version: "2026-07-28".to_owned(),
+                    capabilities: serde_json::json!({}),
+                    server_info: None,
+                    instructions: None,
+                    meta: None,
+                },
+            },
+            control,
+        )
+    }
+
     fn lifecycle() -> ClientLifecycleMode {
         ClientLifecycleMode::Discover {
             preferred_versions: vec![ProtocolVersion::V_2026_07_28],
@@ -183,6 +210,7 @@ impl RmcpModernStdioClient {
         E: StdError + Send + Sync + 'static,
     {
         let startup_timeout = config.startup_timeout.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
+        let (transport, cleanup) = TransportCleanup::observe(transport.into_transport());
         let handler = ModernClientHandler::new();
         let handshake = handler.serve_with_lifecycle(transport, Self::lifecycle());
         let service = match tokio::time::timeout(startup_timeout, handshake).await {
@@ -255,6 +283,7 @@ impl RmcpModernStdioClient {
         };
 
         Ok(Self {
+            cleanup,
             service,
             server_id: config.server_id.clone(),
             server_name: config.server_name.clone(),
@@ -459,24 +488,8 @@ impl RmcpModernStdioClient {
         }
     }
 
-    pub(crate) async fn shutdown(self) {
-        let Self {
-            service: mut owned_service,
-            server_name,
-            ..
-        } = self;
-        match owned_service.close_with_timeout(SERVICE_CLOSE_BUDGET).await {
-            Ok(Some(_)) => {}
-            Ok(None) => tracing::warn!(
-                server = %server_name,
-                "modern MCP service cleanup exceeded its close budget; containment remains active"
-            ),
-            Err(error) => tracing::warn!(
-                server = %server_name,
-                error = %error,
-                "modern MCP service task failed during shutdown"
-            ),
-        }
+    pub(crate) async fn shutdown(self) -> Result<(), McpRuntimeError> {
+        self.cleanup.shutdown(self.service, &self.server_name).await
     }
 
     async fn run_bounded<T>(
@@ -684,7 +697,7 @@ mod tests {
             client.server_metadata().instructions.as_deref(),
             Some("Use modern requests")
         );
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
         server_task.await.expect("server task");
     }
 
@@ -724,7 +737,7 @@ mod tests {
 
         let error = match RmcpModernStdioClient::connect_transport(&config(), client_io).await {
             Ok(client) => {
-                client.shutdown().await;
+                client.shutdown().await.unwrap();
                 panic!("method-not-found must fail strict modern discovery")
             }
             Err(error) => error,
@@ -845,7 +858,7 @@ mod tests {
         assert!(!call.is_error);
         assert!(call.content.contains("done"));
 
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
         server_task.await.expect("server task");
     }
 
@@ -950,7 +963,7 @@ mod tests {
             Ok(client) => client,
             Err(_) => panic!("all client references should be released"),
         };
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
         server_task.await.expect("server task");
     }
 
@@ -995,7 +1008,7 @@ mod tests {
             .is_err());
 
         server_task.await.expect("server task");
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1056,7 +1069,7 @@ mod tests {
             .is_err());
 
         server_task.await.expect("server task");
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
     }
     #[tokio::test]
     async fn continuation_echoes_opaque_request_state_and_typed_answers() {
@@ -1208,6 +1221,6 @@ mod tests {
             .unwrap();
         assert!(matches!(state_only, McpModernToolCallOutcome::Complete(_)));
         server_task.await.unwrap();
-        client.shutdown().await;
+        client.shutdown().await.unwrap();
     }
 }

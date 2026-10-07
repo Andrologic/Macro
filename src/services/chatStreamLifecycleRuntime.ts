@@ -8,6 +8,7 @@ import {
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import type { StreamCompletionResult } from "./streamingChat";
 import { StreamStopUnconfirmedError } from "./ai/streamCancellation";
+import { isSuccessfulCompletionReason } from "./ai/completionRecovery";
 import { mergeGenerationAttempts } from "./ai/generationAttemptState";
 import { mergeToolTracesPreservingDeniedStatus, settleToolTraceRecovery } from "./toolTraceState";
 
@@ -64,6 +65,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
     assistantMessage: ChatMessage,
   ) => Promise<void>;
   consolidatePendingToolBoundaryCompactionAfterPersistence: () => Promise<void>;
+  onAssistantPersisted?: () => void;
   syncMacroMetadataAfterStream: (
     mode: AppMode,
     conversationId: string,
@@ -210,6 +212,11 @@ export const createChatStreamLifecycleRuntime = (params: {
     }
 
     try {
+      if (!adapters.isAbortSignalAborted() && isSuccessfulCompletionReason(result.completionReason)) adapters.onAssistantPersisted?.();
+    } catch (error) {
+      adapters.warn('Direction recovery remains pending after assistant persistence.', error);
+    }
+    try {
       await adapters.consolidatePendingToolBoundaryCompactionAfterPersistence();
     } catch (error) {
       adapters.info(
@@ -348,10 +355,7 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext.modelId,
       );
 
-      const abnormalCompletion = Boolean(result.completionReason && ![
-        "completed", "length_recovered", "incomplete_recovered",
-        "tool_turn_limit", "post_tool_empty_fallback",
-      ].includes(result.completionReason));
+      const abnormalCompletion = !isSuccessfulCompletionReason(result.completionReason);
       if (abnormalCompletion) {
         adapters.updateConversationAfterCompletion(
           stream.conversationId,

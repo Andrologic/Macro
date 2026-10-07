@@ -33,6 +33,8 @@ export interface ChatSendInput {
   submissionTurnId?: string;
   /** Resume preparation for this durable user message, without appending it again. */
   persistedUserMessage?: ChatMessage;
+  /** Predetermined identity for a durable direction whose DB acknowledgement may be lost. */
+  userMessageId?: string;
 }
 
 export interface ArchitectPlanAtSend { planId: string; targetBranch: string }
@@ -98,7 +100,9 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;
-    beforeAssistantStart?(): void;
+    beforeAssistantStart?(assistantMessage: ChatMessage): void;
+    canDeleteAfter?(conversationId: string): boolean;
+    readUser?(conversationId: string, messageId: string): Promise<ChatMessage | undefined>;
     onAssistantStarted?(): void;
     /** Must fail before writing text or acknowledging the composer. */
     saveImages?(messageId: string, images: SendImage[]): void;
@@ -112,6 +116,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     isDeleted(conversationId: string): boolean;
     createSessionId(): string;
     createTurnId(): string;
+    onTurnCaptured?(conversationId: string, lease: SendLease): void;
     hasPendingArchitectConversation(conversationId: string): boolean;
     materializeArchitectConversation(conversationId: string): Promise<string>;
     bindArchitectConversation(params: { architectPlan: ArchitectPlanAtSend; conversationId: string }): Promise<boolean>;

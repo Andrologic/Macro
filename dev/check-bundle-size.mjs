@@ -7,20 +7,21 @@ const ASSETS_DIR = process.argv[2] ? resolve(process.argv[2]) : fileURLToPath(ne
 
 const BUDGETS = [
   // Application code follows Rollup's dependency graph; vendor libraries keep stable manual chunks.
-  // Integrating AgSDL 0.2 with the 0.1.8 Goal, sources and recovery changes
-  // measures 1,582,906 B for entry and 201,519 B for the deferred chat chunk.
-  // Keep about 1% headroom; vendor caps retain their existing limits.
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_600_000 },
+  // AgSDL 0.2 and bounded develop stabilization measure about 1,633,000 B
+  // for the application entry. Keep about 1% headroom above the combined build.
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_650_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 204_000 },
   // The 0.1.7 task recovery fix builds a 61,741 B chunk; keep a narrow margin.
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 62_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  { name: 'locale-fragment', pattern: /^(de|es)-.*\.js$/, limitBytes: 138_500 },
-  // AgSDL 0.2 plus the approved settings and recovery strings measure
-  // 138,739 B (fr), 139,319 B (ko), and 154,093 B (ja). Keep about 1% headroom.
-  { name: 'locale-fragment-fr-ko', pattern: /^(fr|ko)-.*\.js$/, limitBytes: 140_800 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 155_700 },
+  { name: 'locale-fragment-es', pattern: /^es-.*\.js$/, limitBytes: 138_500 },
+  // The combined German locale measures 141,613 B.
+  { name: 'locale-fragment-de', pattern: /^de-.*\.js$/, limitBytes: 143_200 },
+  // The combined locales measure 144,447 B (fr), 145,081 B (ko),
+  // and 160,587 B (ja). Keep about 1% headroom.
+  { name: 'locale-fragment-fr-ko', pattern: /^(fr|ko)-.*\.js$/, limitBytes: 146_600 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 162_300 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
