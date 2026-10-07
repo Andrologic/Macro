@@ -323,6 +323,23 @@ async fn retained(
     }))
 }
 
+/// Compiler and source/configuration lock waits never own the Stop admission gate.
+/// The returned guards must stay alive through reservation and physical dispatch.
+pub(crate) async fn policy_admission<G>(
+    host: &HostState,
+    compilation: impl std::future::Future<Output = Result<crate::agsdl_host_compiler::CompileReceipt>>,
+    revalidate: impl std::future::Future<Output = Result<G>>,
+) -> Result<(
+    crate::agsdl_host_compiler::CompileReceipt,
+    G,
+    tokio::sync::MutexGuard<'_, ()>,
+)> {
+    let policy = compilation.await?;
+    let guards = revalidate.await?;
+    let gate = host.admission_gate().await;
+    Ok((policy, guards, gate))
+}
+
 #[tauri::command]
 pub(crate) async fn execution_host_invoke_tool(
     app: tauri::AppHandle,
@@ -336,7 +353,6 @@ pub(crate) async fn execution_host_invoke_tool(
         .wait_until_ready()
         .await
         .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let gate = host.admission_gate().await;
     let capture = repository::capture::read(&pool, &request.context.owner).await?;
     let tool = bound_tool(&capture, &request)?;
     authorize_binding(&pool, &request).await?;
@@ -429,13 +445,54 @@ pub(crate) async fn execution_host_invoke_tool(
             "Agent tool cannot replace its actual invocation scope with a Call scope",
         ));
     }
-    let policy = host
-        .compile(
-            snapshot.source,
-            snapshot.authored_source,
-            serde_json::to_string(&registry)?,
-        )
-        .await?;
+    let expected_revision = scope_guard.revision.clone();
+    // Do not fence source edits or policy updates while JavaScript owns a ticket.
+    drop(policy_lease);
+    drop(scope_guard);
+    let registry_json = serde_json::to_string(&registry)?;
+    let (policy, (scope_guard, policy_lease), gate) = policy_admission(
+        &host,
+        host.compile(snapshot.source, snapshot.authored_source, registry_json),
+        async {
+            let scope_guard =
+                crate::agsdl_host_provider::scope_guard(&workspace, &request.context, &git).await?;
+            let policy_lease = config
+                .lock_execution_tools(&scope_guard.revision.owner.project_id)
+                .await
+                .map_err(|_| {
+                    failure(
+                        "PERMISSION",
+                        "policy",
+                        "Current project tool configuration is unavailable",
+                    )
+                })?;
+            let fresh = permissions(
+                mode,
+                scope_guard.project.user_read_only || scope_guard.project.is_read_only,
+                &policy_lease.tools,
+            )?;
+            let fresh_root = crate::fs::operations::workspace_root_identity(&root)
+                .map_err(|_| failure("CAPTURE_CHANGED", "root", "Root identity is unavailable"))?;
+            if scope_guard.revision != expected_revision
+                || fresh != current
+                || fresh_root.observation_key() != root_identity.observation_key()
+            {
+                return Err(failure(
+                    "CAPTURE_CHANGED",
+                    "policy",
+                    "Source, scope or policy changed while the Tool ticket was pending",
+                ));
+            }
+            Ok((scope_guard, policy_lease))
+        },
+    )
+    .await?;
+    host.authenticate_owner(&webview, &request.context.owner)?;
+    // A concurrent invocation may have reserved this exact effect while compiling.
+    if let Some(receipt) = retained(&pool, &host, &request, &effect).await? {
+        return Ok(receipt);
+    }
+    authorize_binding(&pool, &request).await?;
     let result: Value = serde_json::from_str(&policy.result_json)?;
     if request.context.work.agent_instance_id.is_none() {
         let prepared = result

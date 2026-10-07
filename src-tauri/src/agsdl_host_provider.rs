@@ -191,11 +191,11 @@ pub(crate) async fn execution_host_register_provider(
         .wait_until_ready()
         .await
         .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let _gate = host.admission_gate().await;
     let root = workspace.0.read().await.clone();
     let _scope = scope_guard(&root, &context, &git).await?;
     let _provider = descriptor(&pool, &manager, &context, &request).await?;
     let effect = effect(context, &request)?;
+    let _gate = host.admission_gate().await;
     host.authenticate_owner(&webview, &effect.context.owner)?;
     repository::register_effect(&pool, effect).await
 }
@@ -217,10 +217,10 @@ pub(crate) async fn execution_host_dispatch_provider(
         .wait_until_ready()
         .await
         .map_err(|_| failure("STORAGE", "", "Execution database unavailable"))?;
-    let _gate = host.admission_gate().await;
     let root = workspace.0.read().await.clone();
     let _scope = scope_guard(&root, &context, &git).await?;
     let provider = descriptor(&pool, &manager, &context, &request).await?;
+    let _gate = host.admission_gate().await;
     repository::authorize_reserved_effect(&pool, &effect(context.clone(), &request)?).await?;
     host.authenticate_owner(&webview, &context.owner)?;
     // StreamTasks owns and deduplicates the physical attempt before it can poll.

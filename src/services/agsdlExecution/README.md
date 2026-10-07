@@ -348,3 +348,16 @@ Le wrapper public transmet la continuation sans construire de snapshot local.
 La page d’événements lit état et journal dans une transaction SQLite commune,
 refuse un `after` futur et limite la sélection au curseur durable de ce snapshot.
 Relire exactement ce curseur renvoie une page vide avec ce même curseur.
+
+## Stop pendant la validation d’une politique Tool
+
+Le host attend le ticket du compilateur hors du verrou d’admission partagé avec
+Stop. Il libère aussi les gardes de source et de configuration avant cette
+attente. Après la réponse, il reprend ces gardes, vérifie que source, droits et
+identité de racine n’ont pas changé, puis acquiert le verrou d’admission. La
+réservation durable refuse un effet si Stop a gagné entre-temps. Les gardes
+validées restent possédées par l’exécuteur physique jusqu’à sa fin.
+
+Les parcours Provider acquièrent eux aussi leurs gardes de source avant le
+verrou d’admission. Une compilation Start qui retient une source ne bloque donc
+pas Stop indirectement derrière un Provider en attente de cette source.

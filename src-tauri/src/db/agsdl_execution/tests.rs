@@ -2201,3 +2201,98 @@ async fn public_projection_rejects_invalid_page_tokens() {
         );
     }
 }
+
+#[tokio::test]
+async fn stop_commits_while_tool_policy_or_source_revalidation_is_pending() {
+    use crate::agsdl_host::HostState;
+    use crate::agsdl_host_compiler::CompileBroker;
+    use std::sync::Arc;
+    use std::time::Duration;
+    for stop_at in ["compiler", "source", "none"] {
+        let (_temp, pool, receipt, owner) = setup().await;
+        let d = delivery(&pool, &owner, "second", "pending-policy").await;
+        accept_delivery(&pool, &owner, d.clone()).await.unwrap();
+        begin(&pool, &owner, "pending-policy").await.unwrap();
+        let mut invocation = effect(&owner, &d.work);
+        invocation.effect = EngineEffectIdentity::Tool {
+            tool_invocation_id: "delayed-policy".into(),
+            provider_attempt_id: None,
+        };
+        let host = Arc::new(HostState::default());
+        let broker = Arc::new(CompileBroker::default());
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let worker_host = host.clone();
+        let worker_broker = broker.clone();
+        let worker_pool = pool.clone();
+        let snapshot = receipt.snapshot.clone();
+        let pending = tokio::spawn(async move {
+            let (_policy, (), _gate) = crate::agsdl_host_tools::policy_admission(
+                &worker_host,
+                worker_broker.compile("generation", snapshot.source, snapshot.authored_source,
+                    r#"{"version":"registry","toolPolicyInput":{"invocationIdentity":"delayed-policy"}}"#.into()),
+                async {
+                    if stop_at == "source" {
+                        waiting_tx.send(()).unwrap();
+                        release_rx.await.unwrap();
+                    }
+                    Ok(())
+                },
+            ).await?;
+            register_effect(&worker_pool, invocation.clone()).await?;
+            authorize_reserved_effect(&worker_pool, &invocation).await
+        });
+        let job = broker.next().await.unwrap();
+        let response = serde_json::json!({"runtime":{"registryVersion":"registry","source":job.source,"supported":false},
+            "compiledPlanJson":null,"toolPolicy":{"input":{"invocationIdentity":"delayed-policy"},"decision":"allow"}}).to_string();
+        if stop_at == "source" {
+            broker
+                .complete("generation", &job.ticket, response.clone())
+                .unwrap();
+            waiting_rx.await.unwrap();
+        }
+        if stop_at != "none" {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let _gate = host.admission_gate().await;
+                stop(
+                    &pool,
+                    EngineStopRequest {
+                        system_start_id: receipt.system_start_id.clone(),
+                        request_id: "stop-pending-policy".into(),
+                        activation_id: None,
+                    },
+                )
+                .await
+                .unwrap();
+            })
+            .await
+            .expect("Stop must commit before the compiler or source wait is released");
+            assert!(matches!(
+                read_projection(&pool, &receipt.system_start_id)
+                    .await
+                    .unwrap()
+                    .system_stop,
+                EngineStopState::Requested { .. }
+            ));
+            assert!(read_effects(&pool, &d.work).await.unwrap().is_empty());
+        }
+        if stop_at == "source" {
+            release_tx.send(()).unwrap();
+        } else {
+            broker
+                .complete("generation", &job.ticket, response)
+                .unwrap();
+        }
+        let result = pending.await.unwrap();
+        if stop_at == "none" {
+            result.unwrap();
+            assert_eq!(read_effects(&pool, &d.work).await.unwrap().len(), 1);
+        } else {
+            assert_eq!(
+                result.unwrap_err().message,
+                "Stopped or uncertain work cannot dispatch"
+            );
+            assert!(read_effects(&pool, &d.work).await.unwrap().is_empty());
+        }
+    }
+}
