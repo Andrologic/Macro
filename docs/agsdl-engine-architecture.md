@@ -1,12 +1,11 @@
 # Contrats du moteur AgSDL
 
-Ce document fixe les interfaces et les garanties du moteur AgSDL. Le lot présent
-ajoute les contrats, les invariants, le repository SQLite et les commandes
-produit de lecture et d’arrêt. La compilation pure et les contrôles de contenu
-sont intégrés séparément dans les modules Conformance. Le host, sa capture
-native de compilation, les adaptateurs fournisseur, le scheduler et le parcours
-d’exécution dans l’interface restent à raccorder ; le démarrage renvoie
-`RUNTIME_UNAVAILABLE`.
+Ce document fixe les interfaces et les garanties du moteur AgSDL. Les contrats,
+les invariants, le repository SQLite et les ports produit sont intégrés. Les
+modules Conformance portent la compilation pure et les contrôles de contenu.
+Hosting fournit le host résident, la capture native et les adaptateurs ; Flow
+raccorde les transformations et le scheduler. La disponibilité produit reste
+`false` jusqu’à la qualification finale du point 15 et de ses parcours produit.
 Les déclarations sont dans
 [`contracts.ts`](../src/services/agsdlExecution/contracts.ts), les vérifications
 locales dans [`invariants.ts`](../src/services/agsdlExecution/invariants.ts).
@@ -20,12 +19,13 @@ Le profil Macro ci-dessous est volontairement plus restreint que le langage.
 ## Propriétaire et hébergement retenus
 
 Un propriétaire natif unique tient les admissions, transactions et epochs.
-L'adaptateur JavaScript Macro résidera dans une webview native cachée dédiée,
-avec une entrée distincte de `main.tsx` et de `App`. Il réutilisera
+L'adaptateur JavaScript Macro réside dans une webview native cachée dédiée,
+avec une entrée distincte de `main.tsx` et de `App`. Il réutilise
 `src/services/streamingChat.ts`, `src/services/ai/toolCallingLoop.ts` et les
 adaptateurs fournisseurs existants. Ce choix conserve les contrôles Macro et
 permet au travail de survivre au rechargement de la fenêtre produit pendant que
-Macro tourne. Le lot d'hébergement physique reste à réaliser.
+Macro tourne. Hosting fournit cette webview et les frontières natives ; Flow
+raccorde sa pompe et ses transformations à l’entrée résidente.
 
 La fenêtre produit et le navigateur de débogage consomment uniquement
 `ExecutionPublicPort`. Ils ne possèdent jamais le scheduler. Les commandes
@@ -137,7 +137,7 @@ Les approbations Macro des Tools internes et des Calls sont conservées. Elles
 ne sont pas les gates du langage AgSDL, exclues du profil initial. Un `scope`
 décrit une action ; il n'accorde pas à lui seul un droit d'exécution.
 
-## Ports et stockage à réaliser
+## Ports et stockage natifs
 
 | Port | Responsabilité et auteur attendu |
 | --- | --- |
@@ -158,7 +158,8 @@ réponses, événements et curseurs. La migration 11 fixe ce schéma pour le pro
 sériel initial. Ces données appartiennent au workflow de métadonnées Macro ;
 aucun fichier sidecar ad hoc n’est créé. Les contraintes SQL et transactionnelles
 protègent notamment système/Agent, delivery, activation, terminal et séquence de
-file. Le collecteur et les publications complets restent à raccorder au host.
+file. Le host utilise le collecteur et les publications typées pour fermer les
+réponses avant de préparer le témoin terminal natif.
 
 `start` est idempotent par `requestId` et requête identique. Un conflit est
 `CORRELATION`. Un flux avec entrée exige un Message fourni explicitement ;
@@ -240,7 +241,7 @@ texte ; le résultat brut du Tool ne compte pas.
 explicitement déclaré dans le registre. Le texte libre ne suffit pas à publier
 un résultat ou choisir une route. La collection valide leur déclaration,
 format, contraintes et attribution avant fermeture. Le lot de conformité
-réutilisera les règles exactes vendor, sans parser une chaîne texte en JSON.
+réutilise les règles exactes vendor, sans parser une chaîne texte en JSON.
 
 ## Arrêt, reprise et limites
 
@@ -298,12 +299,13 @@ Le repository n'est pas un scheduler. Sa capture et ses routes exigent des
 autorités Rust internes. La capture native lit `agsdl.source` dans `plan.json`
 après résolution du projet par les métadonnées existantes et vérifie révision
 et SHA. L'autorité de capture doit garder le verrou des métadonnées pendant
-la vérification finale et le commit. Le futur superviseur doit authentifier
+la vérification finale et le commit. Le superviseur natif authentifie
 sa webview avant d'exposer les méthodes privées. Aucune de ces méthodes, ni
 la rotation d'epoch, n'est une commande produit dans ce lot.
 
-Les commandes produit exposent lecture, pagination et arrêt. `execution_start`
-refuse `RUNTIME_UNAVAILABLE` jusqu'au raccordement du host de confiance.
+Les commandes produit exposent preflight, start, deliver, lecture, pagination
+et arrêt. Le démarrage natif exige le host de confiance et sa capture validée.
+La disponibilité produit reste `false` jusqu’à la qualification du point 15.
 La reprise compare toutes les versions capturées aux versions disponibles.
 Elle rend les activités engagées incertaines, conserve leurs verrous et fence
 les anciens propriétaires. Une résolution opérateur native avec preuve reste
@@ -359,5 +361,24 @@ trient les mêmes clés de contenu ; le writer direct ne prend que son verrou de
 contenu. La capture ne résout plus de racine et ne reprend plus de verrou de
 cycle de vie pendant cette période. `CaptureAuthority::CommitGuard` reste
 vivant entre la revérification et le commit SQL. Le host, le compilateur et
-l’autorité de preuve restent à raccorder ; aucun IPC produit ne peut fournir
-ces autorités et `execution_start` reste indisponible.
+l’autorité de preuve utilisent ces frontières natives. Aucun IPC produit ne
+peut fournir ces autorités.
+
+
+## Ordonnancement Flow
+
+La pompe `flowScheduler` réside exclusivement dans l’entrée du host. Chaque
+système/génération possède une seule pompe, avec réveils coalescés et rattrapage
+borné. La lecture périodique de Stop reste indépendante des attentes Agent,
+Call et compiler/politique. SQL begin garde l’autorité sur queueSequence,
+activité, incertitude et visites ; aucune projection publique ne remplace son
+inspection privée cohérente.
+
+`flowActivation` exécute Agent, Prepare, Call et Condition sur le snapshot et le
+registre capturés. Elle ferme les réponses avant le témoin natif et son commit.
+Une perte d’accusé de terminal reprend seulement la même opération sans effet.
+Les effets incertains et les continuations perdues ne sont pas rejoués ; le
+verrou reste propre à l’Agent concerné. Graphless conserve ses identités null-step.
+
+La disponibilité produit reste false. Les tests de transformations et de pompe
+ne remplacent pas la qualification finale native et les parcours du point 15.
