@@ -48,8 +48,18 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
     connection
 }
 
+/// Tables added after v11 are removed first so older migrations can replay.
+const POST_V9_ENGINE_TABLES: [&str; 6] = [
+    "DROP TABLE engine_ui_intents",
+    "DROP TABLE engine_prepared_terminals",
+    "DROP TABLE engine_approvals",
+    "DROP TABLE engine_host_captures",
+    "DROP TABLE engine_response_closures",
+    "DROP TABLE engine_responses",
+];
+
 async fn drop_v9(connection: &mut SqliteConnection) {
-    for statement in [
+    for statement in POST_V9_ENGINE_TABLES.iter().copied().chain([
         "DROP TABLE engine_events",
         "DROP TABLE engine_effects",
         "DROP TABLE engine_deliveries",
@@ -58,7 +68,7 @@ async fn drop_v9(connection: &mut SqliteConnection) {
         "DROP TRIGGER tool_result_requires_completion_update",
         "ALTER TABLE tool_invocations DROP COLUMN result_json",
         "DELETE FROM schema_migrations WHERE version >= 10",
-    ] {
+    ]) {
         sqlx::query(statement)
             .execute(&mut *connection)
             .await
@@ -596,7 +606,7 @@ async fn durable_engine_migrations_keep_missing_legacy_results_and_roll_back_fai
     let pool = create_pool(&path).await.unwrap();
     sqlx::query("INSERT INTO conversations (id,title,created_at,updated_at) VALUES ('legacy','Synthetic','date','date')").execute(&pool).await.unwrap();
     let mut c = pool.acquire().await.unwrap();
-    for statement in [
+    for statement in POST_V9_ENGINE_TABLES.iter().copied().chain([
         "DROP TABLE engine_events",
         "DROP TABLE engine_effects",
         "DROP TABLE engine_deliveries",
@@ -605,7 +615,7 @@ async fn durable_engine_migrations_keep_missing_legacy_results_and_roll_back_fai
         "DROP TRIGGER tool_result_requires_completion_update",
         "ALTER TABLE tool_invocations DROP COLUMN result_json",
         "DELETE FROM schema_migrations WHERE version >= 10",
-    ] {
+    ]) {
         sqlx::query(statement).execute(&mut *c).await.unwrap();
     }
     sqlx::query("INSERT INTO tool_invocations (conversation_id,turn_id,message_id,call_id,tool_name,effect_class,arguments_sha256,status,receipt_id,created_at,updated_at) VALUES ('legacy','turn','message','call','write','workspace_mutation',?,'completed','receipt','date','date')").bind("a".repeat(64)).execute(&mut *c).await.unwrap();
