@@ -1081,6 +1081,74 @@ pub(crate) async fn settle_effect(
     tx.commit().await?;
     Ok(())
 }
+/// Records a native provider stream join for Stop. When the effect's owner was
+/// revoked after registering it, that owner can no longer settle the effect:
+/// nothing is written, the effect keeps its uncertainty and the caller gets the
+/// contract's STOP_PENDING. Unregistered or mismatched effects stay CORRELATION.
+pub(crate) async fn settle_provider_join(
+    pool: &SqlitePool,
+    context: EngineContext,
+    provider_attempt_id: &str,
+    ended: bool,
+) -> Result<()> {
+    let effect = EngineEffectIdentity::Provider {
+        provider_attempt_id: provider_attempt_id.into(),
+    };
+    let revoked = {
+        let mut c = pool.acquire().await?;
+        let stored = load(&mut c, &context.work.system_start_id).await?;
+        let raw: Option<String> = sqlx::query_scalar(
+            "SELECT record_json FROM engine_effects WHERE system_id = ? AND effect_key = ?",
+        )
+        .bind(&context.work.system_start_id)
+        .bind(effect_key(&effect)?)
+        .fetch_optional(&mut *c)
+        .await?;
+        let registered: Option<EngineEffect> =
+            raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
+        // Registration required this owner to be current, so a different epoch now
+        // proves revocation rather than a foreign caller.
+        registered
+            .is_some_and(|registered| registered.effect == effect && registered.context == context)
+            && stored.snapshot.system_start_id == context.owner.system_start_id
+            && stored.state.epoch != context.owner.owner_epoch
+    };
+    if revoked {
+        return Err(failure(
+            "STOP_PENDING",
+            "request",
+            "Revoked ownership cannot record the native stream termination",
+        ));
+    }
+    let status = if ended { "ended" } else { "uncertain" };
+    settle_effect(
+        pool,
+        EngineSettlement {
+            context,
+            effect,
+            status: status.into(),
+            evidence_json: serde_json::to_string(&serde_json::json!({
+                "kind": "macro-native-stream-join/1",
+                "requestId": provider_attempt_id,
+                "status": status,
+            }))?,
+        },
+        None,
+    )
+    .await?;
+    require_ended(ended)
+}
+fn require_ended(ended: bool) -> Result<()> {
+    if ended {
+        Ok(())
+    } else {
+        Err(failure(
+            "STOP_PENDING",
+            "request",
+            "Native stream termination remains unconfirmed",
+        ))
+    }
+}
 
 /// Called by the native response collector after attribution, gaps and closure checks.
 pub(crate) async fn seal_responses(

@@ -3153,7 +3153,7 @@ async fn condition_after_agent_or_call_prepares_its_forwarded_value() {
         )
         .await
         .unwrap();
-        let mut request = prepared::Prepare {
+        let request = prepared::Prepare {
             owner: runtime.clone(),
             work: delivery.work.clone(),
             outcome: EngineOutcome::Completed {
@@ -3173,7 +3173,8 @@ async fn condition_after_agent_or_call_prepares_its_forwarded_value() {
                 selected_branch: Some("false".into()),
             },
         };
-        // A changed value still cannot leave a Condition.
+        // Both refusals happen before any witness exists for this work, so they
+        // cannot come from a conflicting earlier preparation.
         let mut changed = request.clone();
         changed.outcome = EngineOutcome::Completed {
             output: EngineValue {
@@ -3181,9 +3182,30 @@ async fn condition_after_agent_or_call_prepares_its_forwarded_value() {
                 value_json: r#"{"text":"done","results":{}}"#.into(),
             },
         };
-        assert!(prepared::prepare(&pool, "generation", changed)
+        assert_eq!(
+            prepared::prepare(&pool, "generation", changed)
+                .await
+                .unwrap_err()
+                .message,
+            "Condition changed its durable input"
+        );
+        let mut invented = request.clone();
+        invented.validation.selected_branch = Some("invented".into());
+        let refused = prepared::prepare(&pool, "generation", invented)
             .await
-            .is_err());
+            .unwrap_err();
+        assert_eq!(
+            (refused.code.as_str(), refused.message.as_str()),
+            ("CORRELATION", "Condition validation is incomplete")
+        );
+        let witnesses: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM engine_prepared_terminals WHERE activation_id = ?",
+        )
+        .bind(&delivery.work.activation_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(witnesses, 0);
         let witness = prepared::prepare(&pool, "generation", request.clone())
             .await
             .unwrap_or_else(|error| panic!("{origin} condition refused: {}", error.message));
@@ -3193,9 +3215,97 @@ async fn condition_after_agent_or_call_prepares_its_forwarded_value() {
         assert_eq!(commit.outgoing.len(), 1);
         assert_eq!(commit.outgoing[0].work.step, Some(vec!["b".into()]));
         assert_eq!(commit.outgoing[0].input, delivery.input);
-        request.validation.selected_branch = Some("invented".into());
-        assert!(prepared::prepare(&pool, "generation", request)
+    }
+}
+
+#[tokio::test]
+async fn stop_join_after_revoked_ownership_stays_pending_without_settlement() {
+    let (_temp, pool, receipt, runtime) = setup().await;
+    let d = delivery(&pool, &runtime, "second", "d").await;
+    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+    begin(&pool, &runtime, "d").await.unwrap();
+    let e = effect(&runtime, &d.work);
+    register_effect(&pool, e.clone()).await.unwrap();
+    stop(
+        &pool,
+        EngineStopRequest {
+            system_start_id: receipt.system_start_id.clone(),
+            request_id: "stop".into(),
+            activation_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    revoke_host_owners(&pool, &[runtime.clone()]).await.unwrap();
+    let row = |pool: SqlitePool| async move {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, settlement_json FROM engine_effects WHERE effect_key = 'provider:provider-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let before = row(pool.clone()).await;
+    assert_eq!(before.0, "uncertain");
+
+    // Revoked owner: the contract's pending Stop, no settlement and no confirmation.
+    for ended in [true, false] {
+        let error = settle_provider_join(&pool, e.context.clone(), "provider-1", ended)
             .await
-            .is_err());
+            .unwrap_err();
+        assert_eq!(error.code, "STOP_PENDING");
+    }
+    assert_eq!(row(pool.clone()).await, before);
+    let projection = read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        projection.system_stop,
+        EngineStopState::Requested { .. }
+    ));
+
+    // A context the owner never registered is still a correlation failure.
+    let mut foreign = e.context.clone();
+    foreign.permissions_json = "[\"other\"]".into();
+    assert_eq!(
+        settle_provider_join(&pool, foreign, "provider-1", true)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    assert_eq!(
+        settle_provider_join(&pool, e.context.clone(), "provider-unknown", true)
+            .await
+            .unwrap_err()
+            .code,
+        "CORRELATION"
+    );
+    assert_eq!(row(pool.clone()).await, before);
+}
+
+#[tokio::test]
+async fn stop_join_by_current_owner_records_ended_or_keeps_uncertainty() {
+    for ended in [true, false] {
+        let (_temp, pool, _receipt, runtime) = setup().await;
+        let d = delivery(&pool, &runtime, "second", "d").await;
+        accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+        begin(&pool, &runtime, "d").await.unwrap();
+        let e = effect(&runtime, &d.work);
+        register_effect(&pool, e.clone()).await.unwrap();
+        let result = settle_provider_join(&pool, e.context.clone(), "provider-1", ended).await;
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM engine_effects WHERE effect_key = 'provider:provider-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if ended {
+            result.unwrap();
+            assert_eq!(status, "ended");
+        } else {
+            assert_eq!(result.unwrap_err().code, "STOP_PENDING");
+            assert_eq!(status, "uncertain");
+        }
     }
 }

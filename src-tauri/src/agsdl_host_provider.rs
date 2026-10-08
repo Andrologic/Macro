@@ -283,14 +283,7 @@ pub(crate) async fn finish(
         .stream_tasks
         .cancel(&request_id)
         .await;
-    let status = if ended.is_ok() { "ended" } else { "uncertain" };
-    repository::settle_effect(&pool, EngineSettlement { context, effect:EngineEffectIdentity::Provider { provider_attempt_id:request_id.clone() },
-        status:status.into(), evidence_json:serde_json::to_string(&serde_json::json!({"kind":"macro-native-stream-join/1","requestId":request_id,"status":status}))? }, None).await?;
-    ended.map_err(|_| {
-        failure(
-            "STOP_PENDING",
-            "request",
-            "Native stream termination remains unconfirmed",
-        )
-    })
+    // The physical cancellation above is attempted even for a revoked owner;
+    // only the durable settlement depends on current ownership.
+    repository::settle_provider_join(&pool, context, &request_id, ended.is_ok()).await
 }
