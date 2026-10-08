@@ -98,6 +98,7 @@ mod agsdl_host_compiler;
 mod agsdl_host_provider;
 mod agsdl_host_tasks;
 mod agsdl_host_tools;
+mod agsdl_intent_coordinator;
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -527,6 +528,7 @@ pub fn run() {
         .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
         .manage(agsdl_host::HostState::default())
+        .manage(agsdl_intent_coordinator::IntentCoordinator::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
@@ -832,9 +834,15 @@ pub fn run() {
             commands::agsdl_execution::execution_decide_approval,
             crate::agsdl_host_tools::execution_host_invoke_tool,
             commands::agsdl_execution::execution_start,
+            commands::agsdl_execution::execution_stage_intent,
+            commands::agsdl_execution::execution_read_intents,
+            commands::agsdl_execution::execution_read_intent,
+            commands::agsdl_execution::execution_submit_intent,
+            commands::agsdl_execution::execution_close_intent,
             commands::agsdl_execution::execution_deliver,
             commands::agsdl_execution::execution_resolve_card_task,
             commands::agsdl_execution::execution_stop,
+            commands::agsdl_execution::execution_ensure_stop,
             commands::agsdl_execution::execution_read_snapshot,
             commands::agsdl_execution::execution_read_projection,
             commands::agsdl_execution::execution_read_events,

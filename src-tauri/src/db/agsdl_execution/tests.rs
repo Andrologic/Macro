@@ -2296,3 +2296,802 @@ async fn stop_commits_while_tool_policy_or_source_revalidation_is_pending() {
         }
     }
 }
+
+#[tokio::test]
+async fn ensure_stop_retains_targeted_keys_and_witnesses_beyond_public_page() {
+    for target in [
+        EngineStopState::Requested {
+            request_id: "target-A".into(),
+        },
+        EngineStopState::Uncertain {
+            request_id: "target-A".into(),
+            reason: "native-witness-pending".into(),
+        },
+        EngineStopState::Confirmed {
+            request_id: "target-A".into(),
+            evidence_json: "{\"nativeWitness\":1}".into(),
+        },
+    ] {
+        let (_temp, pool, receipt, runtime) = setup().await;
+        for n in 0..70 {
+            let d = delivery(&pool, &runtime, "second", &format!("d-{n:03}")).await;
+            accept_delivery(&pool, &runtime, d).await.unwrap();
+        }
+        let id = "activation-d-069";
+        let mut connection = pool.acquire().await.unwrap();
+        let mut stored = load(&mut connection, &receipt.system_start_id)
+            .await
+            .unwrap();
+        let a = stored.state.activations.get_mut(id).unwrap();
+        a.work_state = "active".into();
+        a.stop_state = target.clone();
+        save(&mut connection, &receipt.system_start_id, &stored.state)
+            .await
+            .unwrap();
+        drop(connection);
+        let before = public::projection(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        assert!(!before
+            .activations
+            .iter()
+            .any(|a| a.work.activation_id == id));
+        let system = ensure_stop(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        assert!(matches!(system, EngineStopState::Requested { .. }));
+        assert_eq!(
+            read_stop_target(&pool, &receipt.system_start_id, Some(id))
+                .await
+                .unwrap(),
+            target
+        );
+        assert_eq!(
+            ensure_stop(&pool, &receipt.system_start_id, Some(id))
+                .await
+                .unwrap(),
+            target
+        );
+        assert_eq!(
+            ensure_stop(&pool, &receipt.system_start_id, None)
+                .await
+                .unwrap(),
+            system
+        );
+        assert!(stop(
+            &pool,
+            EngineStopRequest {
+                system_start_id: receipt.system_start_id.clone(),
+                activation_id: Some(id.into()),
+                request_id: "conflict-C".into(),
+            }
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            read_stop_target(&pool, &receipt.system_start_id, Some(id))
+                .await
+                .unwrap(),
+            target
+        );
+    }
+}
+
+#[tokio::test]
+async fn ensure_stop_gate_orders_authorization_and_simulated_spawn_in_both_orders() {
+    use crate::agsdl_host::HostState;
+    use std::sync::Arc;
+    for stop_first in [false, true] {
+        let (_temp, pool, receipt, runtime) = setup().await;
+        let d = delivery(&pool, &runtime, "second", "gate-delivery").await;
+        accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+        begin(&pool, &runtime, "gate-delivery").await.unwrap();
+        let invocation = effect(&runtime, &d.work);
+        register_effect(&pool, invocation.clone()).await.unwrap();
+        let host = Arc::new(HostState::default());
+        if stop_first {
+            let gate = host.admission_gate().await;
+            ensure_stop(&pool, &receipt.system_start_id, None)
+                .await
+                .unwrap();
+            drop(gate);
+            let _gate = host.admission_gate().await;
+            assert!(authorize_reserved_effect(&pool, &invocation).await.is_err());
+        } else {
+            let gate = host.admission_gate().await;
+            authorize_reserved_effect(&pool, &invocation).await.unwrap();
+            let worker_host = host.clone();
+            let worker_pool = pool.clone();
+            let system_id = receipt.system_start_id.clone();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let stop = tokio::spawn(async move {
+                started_tx.send(()).unwrap();
+                let _gate = worker_host.admission_gate().await;
+                ensure_stop(&worker_pool, &system_id, None).await.unwrap()
+            });
+            started_rx.await.unwrap();
+            tokio::task::yield_now().await;
+            assert!(
+                !stop.is_finished(),
+                "Stop cannot cross authorization-to-spawn gate"
+            );
+            // Synthetic physical-start boundary. No provider is run by this test.
+            let spawned = tokio::spawn(async { true });
+            drop(gate);
+            assert!(spawned.await.unwrap());
+            assert!(matches!(
+                stop.await.unwrap(),
+                EngineStopState::Requested { .. }
+            ));
+        }
+    }
+}
+
+async fn intent_fixture() -> (TempDir, SqlitePool, intents::ExecutionStageIntentRequest) {
+    use intents::*;
+    let temp = TempDir::new().unwrap();
+    let pool = create_pool(&temp.path().join("intents.db")).await.unwrap();
+    sqlx::query("INSERT INTO conversations(id,title,project_id,created_at,updated_at) VALUES('conversation','Synthetic','project','0','0')").execute(&pool).await.unwrap();
+    let mut request = request();
+    request.entry = Some(EngineEntry {
+        delivery_id: "reserved-entry".into(),
+        message_json: "{\"n\":1.0}".into(),
+    });
+    let staged = ExecutionStageIntentRequest {
+        scope: ExecutionIntentScope {
+            owner: request.source.owner.clone(),
+            conversation_id: "conversation".into(),
+        },
+        intent_id: "intent".into(),
+        payload: ExecutionIntentPayload::Start { request },
+    };
+    (temp, pool, staged)
+}
+#[tokio::test]
+async fn intent_file_reopen_identity_scope_reservations_and_closed_ack_loss() {
+    use intents::*;
+    let (temp, pool, staged) = intent_fixture().await;
+    let source = match &staged.payload {
+        ExecutionIntentPayload::Start { request } => request.source.clone(),
+        _ => unreachable!(),
+    };
+    let first = stage(&pool, staged.clone(), &source).await.unwrap();
+    let mut changed = staged.clone();
+    if let ExecutionIntentPayload::Start { request } = &mut changed.payload {
+        request.entry.as_mut().unwrap().message_json = "{\"n\":1}".into();
+    }
+    assert_eq!(
+        stage(&pool, changed, &source).await.unwrap_err().code,
+        ExecutionIntentErrorCode::IdentityConflict
+    );
+    let mut other = staged.clone();
+    other.intent_id = "other".into();
+    let occupied = stage(&pool, other.clone(), &source).await.unwrap_err();
+    assert_eq!(occupied.code, ExecutionIntentErrorCode::SlotOccupied);
+    assert_eq!(occupied.current_intent_key, Some(first.key.clone()));
+    let mut hidden = first.key.clone();
+    hidden.scope.owner.plan_id = "other-plan".into();
+    assert!(read(&pool, &hidden).await.unwrap().is_none());
+    hidden = first.key.clone();
+    hidden.scope.conversation_id = "absent".into();
+    assert_eq!(
+        read(&pool, &hidden).await.unwrap_err().code,
+        ExecutionIntentErrorCode::ScopeInvalid
+    );
+    let close_request = ExecutionCloseIntentRequest {
+        key: first.key.clone(),
+        expected_revision: first.revision,
+        disposition: ExecutionIntentDisposition::Discarded,
+    };
+    let closed = close(&pool, &close_request).await.unwrap();
+    assert_eq!(closed.revision, "2");
+    assert!(read_open(&pool, &first.key.scope).await.unwrap().is_empty());
+    assert_eq!(close(&pool, &close_request).await.unwrap().revision, "2");
+    let opposite = ExecutionCloseIntentRequest {
+        disposition: ExecutionIntentDisposition::Acknowledged,
+        ..close_request.clone()
+    };
+    assert_eq!(
+        close(&pool, &opposite).await.unwrap_err().code,
+        ExecutionIntentErrorCode::CloseConflict
+    );
+    assert_eq!(
+        stage(&pool, other, &source).await.unwrap_err().code,
+        ExecutionIntentErrorCode::IdentityConflict
+    );
+    for statement in [
+        "UPDATE engine_ui_intents SET payload_json = '{}'",
+        "UPDATE engine_ui_intents SET status = 'prepared', disposition = NULL",
+        "DELETE FROM engine_ui_intents",
+    ] {
+        assert!(sqlx::query(statement).execute(&pool).await.is_err());
+    }
+    pool.close().await;
+    let pool = create_pool(&temp.path().join("intents.db")).await.unwrap();
+    assert!(matches!(
+        read(&pool, &first.key).await.unwrap().unwrap().state,
+        ExecutionIntentState::Closed {
+            disposition: ExecutionIntentDisposition::Discarded,
+            admission: None
+        }
+    ));
+    let mut edited = source.clone();
+    edited.revision = "42".into();
+    edited.source_sha256 = "b".repeat(64);
+    assert_eq!(stage(&pool, staged, &edited).await.unwrap().revision, "2");
+}
+
+#[tokio::test]
+async fn intent_atomic_link_fault_rolls_back_engine_and_retry_keeps_exact_request() {
+    use intents::*;
+    let (temp, pool, staged) = intent_fixture().await;
+    let request = match &staged.payload {
+        ExecutionIntentPayload::Start { request } => request.clone(),
+        _ => unreachable!(),
+    };
+    let row = stage(&pool, staged, &request.source).await.unwrap();
+    assert_eq!(
+        start(&pool, request.clone(), &Compiler)
+            .await
+            .unwrap_err()
+            .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    let Submission::Dispatch(link) = begin_submission(&pool, &row.key, &request.source)
+        .await
+        .unwrap()
+    else {
+        panic!("dispatch")
+    };
+    sqlx::query("CREATE TRIGGER synthetic_link_fault BEFORE UPDATE ON engine_ui_intents WHEN NEW.status = 'admitted' BEGIN SELECT RAISE(ABORT,'synthetic fault'); END").execute(&pool).await.unwrap();
+    let injected = start_linked(&pool, request.clone(), &Compiler, Some(&link))
+        .await
+        .unwrap_err();
+    assert_eq!(injected.code, "STORAGE");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_systems")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_deliveries")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        finish_failure(&pool, &row.key, &injected)
+            .await
+            .unwrap_err()
+            .code,
+        ExecutionIntentErrorCode::StorageUncertain
+    );
+    assert!(matches!(
+        read(&pool, &row.key).await.unwrap().unwrap().state,
+        ExecutionIntentState::SubmissionPending {
+            retryable_failure: None
+        }
+    ));
+    sqlx::query("DROP TRIGGER synthetic_link_fault")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let retry = finish_failure(
+        &pool,
+        &row.key,
+        &failure("RUNTIME_UNAVAILABLE", "", "synthetic unavailable"),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        retry.state,
+        ExecutionIntentState::SubmissionPending {
+            retryable_failure: Some(ExecutionIntentRetryableCode::RuntimeUnavailable)
+        }
+    ));
+    let Submission::Dispatch(link) = begin_submission(&pool, &row.key, &request.source)
+        .await
+        .unwrap()
+    else {
+        panic!("dispatch")
+    };
+    let receipt = start_linked(&pool, request.clone(), &Compiler, Some(&link))
+        .await
+        .unwrap();
+    let admitted = finish_failure(
+        &pool,
+        &row.key,
+        &failure(
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "synthetic post-commit attachment failure",
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        admitted.state,
+        ExecutionIntentState::Admitted { .. }
+    ));
+    assert_eq!(
+        start(&pool, request.clone(), &Compiler)
+            .await
+            .unwrap_err()
+            .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    assert_eq!(
+        start_linked(&pool, request.clone(), &Compiler, Some(&link))
+            .await
+            .unwrap()
+            .system_start_id,
+        receipt.system_start_id
+    );
+    assert_eq!(
+        read(&pool, &row.key).await.unwrap().unwrap().revision,
+        admitted.revision
+    );
+    let ack = ExecutionCloseIntentRequest {
+        key: row.key.clone(),
+        expected_revision: admitted.revision,
+        disposition: ExecutionIntentDisposition::Acknowledged,
+    };
+    close(&pool, &ack).await.unwrap();
+    assert!(matches!(
+        close(&pool, &ack).await.unwrap().state,
+        ExecutionIntentState::Closed {
+            admission: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(
+        start_linked(&pool, request, &Compiler, Some(&link))
+            .await
+            .unwrap()
+            .system_start_id,
+        receipt.system_start_id
+    );
+    pool.close().await;
+    let reopened = create_pool(&temp.path().join("intents.db")).await.unwrap();
+    assert!(matches!(
+        read(&reopened, &row.key).await.unwrap().unwrap().state,
+        ExecutionIntentState::Closed {
+            admission: Some(ExecutionIntentAdmission::Start { .. }),
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn intent_source_refusal_and_sql_conversation_proof_do_not_compile() {
+    use intents::*;
+    let (_temp, pool, staged) = intent_fixture().await;
+    let source = match &staged.payload {
+        ExecutionIntentPayload::Start { request } => request.source.clone(),
+        _ => unreachable!(),
+    };
+    let row = stage(&pool, staged, &source).await.unwrap();
+    let mut changed = source;
+    changed.revision = "43".into();
+    let Submission::Retained(refused) = begin_submission(&pool, &row.key, &changed).await.unwrap()
+    else {
+        panic!("stale source dispatched")
+    };
+    assert!(matches!(
+        refused.state,
+        ExecutionIntentState::Refused {
+            code: ExecutionIntentRefusalCode::SourceChanged
+        }
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_systems")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    sqlx::query("UPDATE conversations SET project_id = 'other' WHERE id = 'conversation'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        read(&pool, &row.key).await.unwrap_err().code,
+        ExecutionIntentErrorCode::ScopeInvalid
+    );
+    sqlx::query("UPDATE conversations SET project_id = 'project' WHERE id = 'conversation'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        read(&pool, &row.key).await.unwrap().unwrap().state,
+        ExecutionIntentState::Refused { .. }
+    ));
+}
+
+#[tokio::test]
+async fn intent_start_final_transaction_rechecks_reservations_created_during_capture() {
+    use intents::*;
+    struct ReserveDuringCapture {
+        pool: SqlitePool,
+        staged: ExecutionStageIntentRequest,
+    }
+    impl CaptureAuthority for ReserveDuringCapture {
+        type CommitGuard = ();
+        async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+            stage(&self.pool, self.staged.clone(), &request.source)
+                .await
+                .unwrap();
+            Compiler.capture(request, id).await
+        }
+        async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+    let (_temp, pool, staged) = intent_fixture().await;
+    let request = match &staged.payload {
+        ExecutionIntentPayload::Start { request } => request.clone(),
+        _ => unreachable!(),
+    };
+    let authority = ReserveDuringCapture {
+        pool: pool.clone(),
+        staged,
+    };
+    assert_eq!(
+        start(&pool, request, &authority).await.unwrap_err().code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_systems")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn intent_delivery_link_is_atomic_and_all_unlinked_accept_paths_are_reserved() {
+    use intents::*;
+    struct Graphless;
+    impl CaptureAuthority for Graphless {
+        type CommitGuard = ();
+        async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+            let mut capture = Compiler.capture(request, id).await?;
+            capture.policies.clear();
+            capture.entry_step = None;
+            Ok(capture)
+        }
+        async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+    let (_temp, pool, _) = intent_fixture().await;
+    let receipt = start(&pool, request(), &Graphless).await.unwrap();
+    let runtime = resume(&pool, &receipt.system_start_id, &versions())
+        .await
+        .unwrap();
+    let request = crate::agsdl_host_capture::ExecutionExternalDelivery {
+        system_start_id: receipt.system_start_id.clone(),
+        delivery_id: "external".into(),
+        agent_name: "a".into(),
+        message_json: "{\"n\":1.0}".into(),
+    };
+    let staged = ExecutionStageIntentRequest {
+        scope: ExecutionIntentScope {
+            owner: receipt.snapshot.source.owner.clone(),
+            conversation_id: "conversation".into(),
+        },
+        intent_id: "deliver-intent".into(),
+        payload: ExecutionIntentPayload::Deliver {
+            source: receipt.snapshot.source.clone(),
+            request: request.clone(),
+        },
+    };
+    let row = stage(&pool, staged, &receipt.snapshot.source)
+        .await
+        .unwrap();
+    assert_eq!(
+        accept_external_delivery(
+            &pool,
+            &runtime,
+            &request.delivery_id,
+            &request.agent_name,
+            &request.message_json
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    let Submission::Dispatch(link) = begin_submission(&pool, &row.key, &receipt.snapshot.source)
+        .await
+        .unwrap()
+    else {
+        panic!("dispatch")
+    };
+    sqlx::query("CREATE TRIGGER synthetic_delivery_fault BEFORE UPDATE ON engine_ui_intents WHEN NEW.status = 'admitted' BEGIN SELECT RAISE(ABORT,'synthetic fault'); END").execute(&pool).await.unwrap();
+    assert_eq!(
+        accept_external_delivery_linked(
+            &pool,
+            &runtime,
+            &request.delivery_id,
+            &request.agent_name,
+            &request.message_json,
+            Some(&link)
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "STORAGE"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_deliveries")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    sqlx::query("DROP TRIGGER synthetic_delivery_fault")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let accepted = accept_external_delivery_linked(
+        &pool,
+        &runtime,
+        &request.delivery_id,
+        &request.agent_name,
+        &request.message_json,
+        Some(&link),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accept_external_delivery_linked(
+            &pool,
+            &runtime,
+            &request.delivery_id,
+            &request.agent_name,
+            &request.message_json,
+            Some(&link)
+        )
+        .await
+        .unwrap(),
+        accepted
+    );
+    assert_eq!(
+        accept_external_delivery(
+            &pool,
+            &runtime,
+            &request.delivery_id,
+            &request.agent_name,
+            &request.message_json
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    assert_eq!(
+        accept_delivery(&pool, &runtime, accepted.delivery.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    assert!(matches!(
+        read(&pool, &row.key).await.unwrap().unwrap().state,
+        ExecutionIntentState::Admitted {
+            admission: ExecutionIntentAdmission::Deliver { .. }
+        }
+    ));
+}
+
+#[tokio::test]
+async fn intent_reserved_successor_rejects_entire_terminal_transaction_without_substitution() {
+    use intents::*;
+    let (_temp, pool, staged) = intent_fixture().await;
+    let ordinary = start(&pool, request(), &Compiler).await.unwrap();
+    let owner = resume(&pool, &ordinary.system_start_id, &versions())
+        .await
+        .unwrap();
+    let mut staged = staged;
+    if let ExecutionIntentPayload::Start { request } = &mut staged.payload {
+        request.request_id = "reserved-start".into();
+    }
+    stage(&pool, staged, &ordinary.snapshot.source)
+        .await
+        .unwrap();
+    let incoming = delivery(&pool, &owner, "second", "incoming").await;
+    accept_delivery(&pool, &owner, incoming.clone())
+        .await
+        .unwrap();
+    begin(&pool, &owner, "incoming").await.unwrap();
+    let successor = delivery(&pool, &owner, "second", "reserved-entry").await;
+    assert_eq!(
+        accept_delivery(&pool, &owner, successor.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    seal_responses(&pool, &owner, &incoming.work, "0")
+        .await
+        .unwrap();
+    let mut terminal = commit(&owner, &incoming.work);
+    terminal.outgoing.push(successor.clone());
+    assert_eq!(
+        commit_terminal(&pool, terminal, &SingleRoute(successor))
+            .await
+            .unwrap_err()
+            .code,
+        "INTENT_IDENTITY_CONFLICT"
+    );
+    let projection = read_projection(&pool, &ordinary.system_start_id)
+        .await
+        .unwrap();
+    let activation = projection
+        .activations
+        .iter()
+        .find(|a| a.delivery.delivery.delivery_id == "incoming")
+        .unwrap();
+    assert_eq!(activation.work_state, "active");
+    assert!(activation.terminal.is_none());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_deliveries")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn ensure_stop_target_and_system_confirm_only_after_native_terminal_witness() {
+    let (_temp, pool, receipt, owner) = setup().await;
+    let d = delivery(&pool, &owner, "second", "active-target").await;
+    accept_delivery(&pool, &owner, d.clone()).await.unwrap();
+    begin(&pool, &owner, "active-target").await.unwrap();
+    let targeted = EngineStopRequest {
+        system_start_id: receipt.system_start_id.clone(),
+        activation_id: Some(d.work.activation_id.clone()),
+        request_id: "target-A".into(),
+    };
+    stop(&pool, targeted.clone()).await.unwrap();
+    let system = ensure_stop(&pool, &receipt.system_start_id, None)
+        .await
+        .unwrap();
+    assert!(matches!(system, EngineStopState::Requested { .. }));
+    assert_eq!(
+        read_stop_target(&pool, &receipt.system_start_id, Some(&d.work.activation_id))
+            .await
+            .unwrap(),
+        EngineStopState::Requested {
+            request_id: "target-A".into()
+        }
+    );
+    seal_responses(&pool, &owner, &d.work, "0").await.unwrap();
+    let mut terminal = commit(&owner, &d.work);
+    terminal.outcome = EngineOutcome::Stopped {
+        evidence_json: "{\"ended\":true}".into(),
+    };
+    commit_terminal(&pool, terminal, &NoRoutes).await.unwrap();
+    assert!(
+        matches!(read_stop_target(&pool,&receipt.system_start_id,Some(&d.work.activation_id)).await.unwrap(),EngineStopState::Confirmed{request_id,..} if request_id=="target-A")
+    );
+    let system_key = match system {
+        EngineStopState::Requested { request_id } => request_id,
+        _ => unreachable!(),
+    };
+    assert!(
+        matches!(ensure_stop(&pool,&receipt.system_start_id,None).await.unwrap(),EngineStopState::Confirmed{request_id,..} if request_id==system_key)
+    );
+}
+
+#[tokio::test]
+async fn intent_owned_submission_keeps_close_immediate_during_real_sqlite_wait() {
+    use intents::*;
+    use std::sync::Arc;
+    let (_temp, pool, staged) = intent_fixture().await;
+    let source = match &staged.payload {
+        ExecutionIntentPayload::Start { request } => request.source.clone(),
+        _ => unreachable!(),
+    };
+    let row = stage(&pool, staged, &source).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    let tx = durable(&mut connection).await.unwrap();
+    let coordinator = Arc::new(crate::agsdl_intent_coordinator::IntentCoordinator::default());
+    let worker = coordinator.clone();
+    let key = row.key.clone();
+    let worker_key = key.clone();
+    let worker_pool = pool.clone();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    let observer = tokio::spawn(async move {
+        worker
+            .submit(worker_key.clone(), move || async move {
+                entered_tx.send(()).unwrap();
+                let submission = begin_submission(&worker_pool, &worker_key, &source).await?;
+                assert!(matches!(submission, Submission::Dispatch(_)));
+                let result = read(&worker_pool, &worker_key).await?.unwrap();
+                completed_tx.send(()).unwrap();
+                Ok(result)
+            })
+            .await
+    });
+    entered_rx.await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        coordinator.reserve_close(&key),
+        Err(ExecutionIntentError {
+            code: ExecutionIntentErrorCode::SubmissionInProgress,
+            ..
+        })
+    ));
+    assert!(!observer.is_finished());
+    observer.abort();
+    assert!(observer.await.unwrap_err().is_cancelled());
+    tx.rollback().await.unwrap();
+    drop(connection);
+    tokio::time::timeout(std::time::Duration::from_secs(3), completed_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        read(&pool, &key).await.unwrap().unwrap().state,
+        ExecutionIntentState::SubmissionPending {
+            retryable_failure: None
+        }
+    ));
+    assert!(coordinator.reserve_close(&key).is_ok());
+    let before = read(&pool, &key).await.unwrap().unwrap().revision;
+    crate::db::reconcile_runtime_after_restart(&pool)
+        .await
+        .unwrap();
+    assert_eq!(read(&pool, &key).await.unwrap().unwrap().revision, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_systems")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn intent_sqlite_constraints_reject_open_scope_and_tombstone_key_collisions() {
+    use intents::*;
+    let (_temp, pool, staged) = intent_fixture().await;
+    let source = match &staged.payload {
+        ExecutionIntentPayload::Start { request } => request.source.clone(),
+        _ => unreachable!(),
+    };
+    let row = stage(&pool, staged, &source).await.unwrap();
+    // Deliberately bypass the repository to verify SQLite's durable constraints.
+    let duplicate_scope="INSERT INTO engine_ui_intents SELECT 'other',format_version,project_id,plan_id,branch,conversation_id,kind,'other-request','other-delivery',payload_json,'prepared','1',NULL,NULL,NULL,NULL FROM engine_ui_intents WHERE intent_id = 'intent'";
+    assert!(sqlx::query(duplicate_scope).execute(&pool).await.is_err());
+    close(
+        &pool,
+        &ExecutionCloseIntentRequest {
+            key: row.key,
+            expected_revision: row.revision,
+            disposition: ExecutionIntentDisposition::Discarded,
+        },
+    )
+    .await
+    .unwrap();
+    for statement in [
+        "INSERT INTO engine_ui_intents SELECT 'other',format_version,'other-project',plan_id,branch,'other-conversation',kind,request_id,'other-delivery',payload_json,'prepared','1',NULL,NULL,NULL,NULL FROM engine_ui_intents WHERE intent_id = 'intent'",
+        "INSERT INTO engine_ui_intents SELECT 'other',format_version,'other-project',plan_id,branch,'other-conversation',kind,'other-request',delivery_id,payload_json,'prepared','1',NULL,NULL,NULL,NULL FROM engine_ui_intents WHERE intent_id = 'intent'",
+    ] {assert!(sqlx::query(statement).execute(&pool).await.is_err());}
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM engine_ui_intents")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+}

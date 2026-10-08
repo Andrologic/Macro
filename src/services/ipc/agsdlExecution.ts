@@ -122,3 +122,26 @@ export function executionQaAvailable(): Promise<boolean> { return invoke('execut
 export function executionQaRun(systemStartId: string, deliveryId: string): Promise<void> { return invoke('execution_qa_run', { systemStartId, deliveryId }); }
 export function executionHostQaTake(): Promise<[EngineOwner, string] | null> { return invoke('execution_host_qa_take'); }
 export function executionQaReplaceHost(): Promise<void> { return invoke('execution_qa_replace_host'); }
+
+import type { PublicExecutionIntent as PublicExecutionIntentWire } from '../../types/generated/ipc';
+import type { PublicExecutionIntent, ExecutionStageIntentRequest, ExecutionReadIntentsRequest, ExecutionIntentKey, ExecutionCloseIntentRequest, ExecutionEnsureStopRequest } from '../agsdlExecution/contracts';
+
+export async function stageExecutionIntent(request: ExecutionStageIntentRequest): Promise<PublicExecutionIntent> {
+  return nativeContract<PublicExecutionIntentWire, PublicExecutionIntent>(await invoke<PublicExecutionIntentWire>('execution_stage_intent', { request }));
+}
+export async function readExecutionIntents(request: ExecutionReadIntentsRequest): Promise<readonly PublicExecutionIntent[]> {
+  return nativeContract<PublicExecutionIntentWire[], readonly PublicExecutionIntent[]>(await invoke<PublicExecutionIntentWire[]>('execution_read_intents', { request }));
+}
+export async function readExecutionIntent(key: ExecutionIntentKey): Promise<PublicExecutionIntent | null> {
+  const row = await invoke<PublicExecutionIntentWire | null>('execution_read_intent', { key });
+  return row === null ? null : nativeContract<PublicExecutionIntentWire, PublicExecutionIntent>(row);
+}
+export async function submitExecutionIntent(key: ExecutionIntentKey): Promise<PublicExecutionIntent> {
+  return nativeContract<PublicExecutionIntentWire, PublicExecutionIntent>(await invoke<PublicExecutionIntentWire>('execution_submit_intent', { key }));
+}
+export async function closeExecutionIntent(request: ExecutionCloseIntentRequest): Promise<PublicExecutionIntent> {
+  return nativeContract<PublicExecutionIntentWire, PublicExecutionIntent>(await invoke<PublicExecutionIntentWire>('execution_close_intent', { request }));
+}
+export async function ensureExecutionStop(request: ExecutionEnsureStopRequest): Promise<PublicStopState> {
+  return nativeContract<PublicStopStateWire, PublicStopState>(await invoke<PublicStopStateWire>('execution_ensure_stop', { request }));
+}

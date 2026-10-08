@@ -7,6 +7,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod discovery;
 pub mod dto;
 pub(crate) mod inspection;
+pub(crate) mod intents;
 pub(crate) mod prepared;
 pub(crate) mod public;
 pub(crate) mod responses;
@@ -283,7 +284,9 @@ async fn accept(
     db: &mut SqliteConnection,
     stored: &mut Stored,
     delivery: EngineDelivery,
+    link: Option<&intents::IntentAdmissionLink>,
 ) -> Result<EngineAcceptedDelivery> {
+    intents::reserve_delivery(db, &delivery, stored, link).await?;
     opaque(&delivery.delivery_id)?;
     validate_work(stored, &delivery.work)?;
     validate_json(&delivery.input.value_json)?;
@@ -368,16 +371,26 @@ pub(crate) async fn start(
     request: EngineStartRequest,
     authority: &impl CaptureAuthority,
 ) -> Result<EngineStartReceipt> {
+    start_linked(pool, request, authority, None).await
+}
+pub(crate) async fn start_linked(
+    pool: &SqlitePool,
+    request: EngineStartRequest,
+    authority: &impl CaptureAuthority,
+    link: Option<&intents::IntentAdmissionLink>,
+) -> Result<EngineStartReceipt> {
     opaque(&request.request_id)?;
     decimal(&request.source.revision)?;
     let request_json = encode(&request)?;
     let mut connection = pool.acquire().await?;
+    let mut lookup = durable(&mut connection).await?;
+    intents::reserve_start(&mut lookup, &request, link).await?;
     // Retry a committed start without recompiling or consulting edited metadata.
     if let Some(row) = sqlx::query(
         "SELECT request_json, snapshot_json, state_json FROM engine_systems WHERE request_id = ?",
     )
     .bind(&request.request_id)
-    .fetch_optional(&mut *connection)
+    .fetch_optional(&mut *lookup)
     .await?
     {
         require(
@@ -389,12 +402,17 @@ pub(crate) async fn start(
         )?;
         let snapshot: EngineSnapshot = serde_json::from_str(row.get("snapshot_json"))?;
         let state: State = serde_json::from_str(row.get("state_json"))?;
+        if let Some(link) = link {
+            intents::attach(&mut lookup, link, &snapshot.system_start_id).await?;
+        }
+        lookup.commit().await?;
         return Ok(EngineStartReceipt {
             system_start_id: snapshot.system_start_id.clone(),
             flow_invocation_id: state.invocation_id,
             snapshot,
         });
     }
+    lookup.commit().await?;
     drop(connection);
     let id = uuid::Uuid::new_v4().to_string();
     let capture = authority.capture(&request, &id).await?;
@@ -504,6 +522,7 @@ pub(crate) async fn start(
     let _capture_guard = authority.recheck(&request).await?;
     let mut connection = pool.acquire().await?;
     let mut tx = durable(&mut connection).await?;
+    intents::reserve_start(&mut tx, &request, link).await?;
     if let Some(row) = sqlx::query(
         "SELECT request_json, snapshot_json, state_json FROM engine_systems WHERE request_id = ?",
     )
@@ -520,6 +539,9 @@ pub(crate) async fn start(
         )?;
         let snapshot: EngineSnapshot = serde_json::from_str(row.get("snapshot_json"))?;
         let state: State = serde_json::from_str(row.get("state_json"))?;
+        if let Some(link) = link {
+            intents::attach(&mut tx, link, &snapshot.system_start_id).await?;
+        }
         tx.commit().await?;
         return Ok(EngineStartReceipt {
             system_start_id: snapshot.system_start_id.clone(),
@@ -572,10 +594,14 @@ pub(crate) async fn start(
                     value_json: entry.message_json,
                 },
             },
+            link,
         )
         .await?;
     }
     save(&mut tx, &id, &stored.state).await?;
+    if let Some(link) = link {
+        intents::attach(&mut tx, link, &id).await?;
+    }
     tx.commit().await?;
     Ok(EngineStartReceipt {
         system_start_id: id,
@@ -593,7 +619,7 @@ pub(crate) async fn accept_delivery(
     let mut tx = durable(&mut c).await?;
     let mut stored = load(&mut tx, &delivery.work.system_start_id).await?;
     owner(&stored.state, runtime, &stored.snapshot.system_start_id)?;
-    let result = accept(&mut tx, &mut stored, delivery).await?;
+    let result = accept(&mut tx, &mut stored, delivery, None).await?;
     save(&mut tx, &stored.snapshot.system_start_id, &stored.state).await?;
     tx.commit().await?;
     Ok(result)
@@ -606,6 +632,17 @@ pub(crate) async fn accept_external_delivery(
     delivery_id: &str,
     agent_name: &str,
     message_json: &str,
+) -> Result<EngineAcceptedDelivery> {
+    accept_external_delivery_linked(pool, runtime, delivery_id, agent_name, message_json, None)
+        .await
+}
+pub(crate) async fn accept_external_delivery_linked(
+    pool: &SqlitePool,
+    runtime: &EngineOwner,
+    delivery_id: &str,
+    agent_name: &str,
+    message_json: &str,
+    link: Option<&intents::IntentAdmissionLink>,
 ) -> Result<EngineAcceptedDelivery> {
     opaque(delivery_id)?;
     opaque(agent_name)?;
@@ -629,6 +666,18 @@ pub(crate) async fn accept_external_delivery(
         origin: "entry".into(),
         value_json: message_json.into(),
     };
+    let delivery = EngineDelivery {
+        delivery_id: delivery_id.into(),
+        work: EngineWork {
+            system_start_id: runtime.system_start_id.clone(),
+            flow_invocation_id: stored.state.invocation_id.clone(),
+            activation_id: uuid::Uuid::new_v4().to_string(),
+            step: None,
+            agent_instance_id: Some(agent_id.clone()),
+        },
+        input,
+    };
+    intents::reserve_delivery(&mut tx, &delivery, &stored, link).await?;
     if let Some(raw) = sqlx::query_scalar::<_, String>(
         "SELECT receipt_json FROM engine_deliveries WHERE delivery_id=?",
     )
@@ -641,25 +690,20 @@ pub(crate) async fn accept_external_delivery(
             retained.delivery.work.system_start_id == runtime.system_start_id
                 && retained.delivery.work.step.is_none()
                 && retained.delivery.work.agent_instance_id.as_deref() == Some(agent_id.as_str())
-                && record_equal(&retained.delivery.input, &input)?,
+                && record_equal(&retained.delivery.input, &delivery.input)?,
             "Conflicting external delivery retransmission",
         )?;
+        if let Some(link) = link {
+            intents::attach(&mut tx, link, &runtime.system_start_id).await?;
+        }
         tx.commit().await?;
         return Ok(retained);
     }
-    let delivery = EngineDelivery {
-        delivery_id: delivery_id.into(),
-        work: EngineWork {
-            system_start_id: runtime.system_start_id.clone(),
-            flow_invocation_id: stored.state.invocation_id.clone(),
-            activation_id: uuid::Uuid::new_v4().to_string(),
-            step: None,
-            agent_instance_id: Some(agent_id),
-        },
-        input,
-    };
-    let receipt = accept(&mut tx, &mut stored, delivery).await?;
+    let receipt = accept(&mut tx, &mut stored, delivery, link).await?;
     save(&mut tx, &runtime.system_start_id, &stored.state).await?;
+    if let Some(link) = link {
+        intents::attach(&mut tx, link, &runtime.system_start_id).await?;
+    }
     tx.commit().await?;
     Ok(receipt)
 }
@@ -1229,7 +1273,7 @@ async fn commit_terminal_on(
             delivery.work.flow_invocation_id == commit.work.flow_invocation_id,
             "Successor changed flow invocation",
         )?;
-        accept(&mut *db, stored, delivery.clone()).await?;
+        accept(&mut *db, stored, delivery.clone(), None).await?;
     }
     event(
         &mut *db,
@@ -1281,7 +1325,17 @@ pub(crate) async fn stop(pool: &SqlitePool, request: EngineStopRequest) -> Resul
     opaque(&request.request_id)?;
     let mut c = pool.acquire().await?;
     let mut tx = durable(&mut c).await?;
-    let mut stored = load(&mut tx, &request.system_start_id).await?;
+    let stored = load(&mut tx, &request.system_start_id).await?;
+    let result = stop_on(&mut tx, stored, request).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+async fn stop_on(
+    tx: &mut Transaction<'_, Sqlite>,
+    mut stored: Stored,
+    request: EngineStopRequest,
+) -> Result<EngineStopState> {
     if let Some(id) = &request.activation_id {
         require(
             stored.state.activations.contains_key(id),
@@ -1307,7 +1361,7 @@ pub(crate) async fn stop(pool: &SqlitePool, request: EngineStopRequest) -> Resul
     }
     sqlx::query("UPDATE engine_approvals SET status = 'cancelled' WHERE system_id = ? AND (? IS NULL OR activation_id = ?) AND status IN ('pending', 'approved')")
         .bind(&request.system_start_id).bind(&request.activation_id).bind(&request.activation_id)
-        .execute(&mut *tx).await?;
+        .execute(&mut **tx).await?;
     let requested = EngineStopState::Requested {
         request_id: request.request_id.clone(),
     };
@@ -1320,6 +1374,10 @@ pub(crate) async fn stop(pool: &SqlitePool, request: EngineStopRequest) -> Resul
             .as_ref()
             .is_none_or(|id| id == &a.delivery.delivery.work.activation_id)
     }) {
+        // System escalation preserves every existing targeted key and witness.
+        if request.activation_id.is_none() && !matches!(a.stop_state, EngineStopState::None) {
+            continue;
+        }
         if a.work_state == "terminal" {
             a.stop_state = EngineStopState::Confirmed {
                 request_id: request.request_id.clone(),
@@ -1339,7 +1397,7 @@ pub(crate) async fn stop(pool: &SqlitePool, request: EngineStopRequest) -> Resul
         }
     }
     event(
-        &mut tx,
+        &mut *tx,
         &mut stored.state,
         &request.system_start_id,
         None,
@@ -1347,16 +1405,72 @@ pub(crate) async fn stop(pool: &SqlitePool, request: EngineStopRequest) -> Resul
         encode(&request)?,
     )
     .await?;
-    confirm_system_stop(&mut tx, &mut stored).await?;
+    confirm_system_stop(&mut *tx, &mut stored).await?;
     let result = if let Some(id) = &request.activation_id {
         stored.state.activations[id].stop_state.clone()
     } else {
         stored.state.stop.clone()
     };
-    save(&mut tx, &request.system_start_id, &stored.state).await?;
+    save(&mut *tx, &request.system_start_id, &stored.state).await?;
+    Ok(result)
+}
+/// Resolve and retain the native key atomically, including a lost acknowledgement.
+pub(crate) async fn ensure_stop(
+    pool: &SqlitePool,
+    system_start_id: &str,
+    activation_id: Option<&str>,
+) -> Result<EngineStopState> {
+    opaque(system_start_id)?;
+    if let Some(id) = activation_id {
+        opaque(id)?;
+    }
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await?;
+    let stored = load(&mut tx, system_start_id).await?;
+    let previous = stop_target(&stored, activation_id)?;
+    let request_id = match previous {
+        EngineStopState::None => uuid::Uuid::new_v4().to_string(),
+        EngineStopState::Requested { request_id }
+        | EngineStopState::Uncertain { request_id, .. }
+        | EngineStopState::Confirmed { request_id, .. } => request_id.clone(),
+    };
+    let result = stop_on(
+        &mut tx,
+        stored,
+        EngineStopRequest {
+            system_start_id: system_start_id.into(),
+            activation_id: activation_id.map(str::to_owned),
+            request_id,
+        },
+    )
+    .await?;
     tx.commit().await?;
     Ok(result)
 }
+
+fn stop_target<'a>(stored: &'a Stored, activation_id: Option<&str>) -> Result<&'a EngineStopState> {
+    match activation_id {
+        None => Ok(&stored.state.stop),
+        Some(id) => stored
+            .state
+            .activations
+            .get(id)
+            .map(|a| &a.stop_state)
+            .ok_or_else(|| failure("CORRELATION", "activationId", "Unknown stop activation")),
+    }
+}
+
+/// Uses the complete native state; public projection pagination is irrelevant.
+pub(crate) async fn read_stop_target(
+    pool: &SqlitePool,
+    system_start_id: &str,
+    activation_id: Option<&str>,
+) -> Result<EngineStopState> {
+    let mut connection = pool.acquire().await?;
+    let stored = load(&mut connection, system_start_id).await?;
+    stop_target(&stored, activation_id).cloned()
+}
+
 pub(crate) async fn mark_uncertain(
     pool: &SqlitePool,
     runtime: &EngineOwner,

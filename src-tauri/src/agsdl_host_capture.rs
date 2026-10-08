@@ -295,17 +295,19 @@ pub(crate) async fn compile_input(
     if let Some(entry) = start_entry {
         registry["startEntry"] = serde_json::to_value(entry)?;
     }
+    let source = locked.revision.clone();
+    let authored_source = locked.source.clone();
+    let display_cards_json = locked.display_cards_json.clone();
+    let registry_json = serde_json::to_string(&registry)?;
+    drop(policy);
+    drop(locked);
     let receipt = host
-        .compile(
-            locked.revision.clone(),
-            locked.source.clone(),
-            serde_json::to_string(&registry)?,
-        )
+        .compile(source.clone(), authored_source.clone(), registry_json)
         .await?;
     Ok(CompilationCapture {
-        source: locked.revision.clone(),
-        authored_source: locked.source.clone(),
-        display_cards_json: locked.display_cards_json.clone(),
+        source,
+        authored_source,
+        display_cards_json,
         native_catalogue,
         result: serde_json::from_str(&receipt.result_json)?,
         generation: receipt.generation,
@@ -396,6 +398,7 @@ struct StartAuthority<'a> {
     workspace: &'a Path,
     git: &'a crate::git::GitState,
     captured: std::sync::Mutex<Option<(String, String, String, String)>>,
+    intent_scope: Option<&'a crate::db::agsdl_execution::intents::ExecutionIntentScope>,
 }
 
 struct StartCommitGuard {
@@ -565,13 +568,23 @@ impl crate::db::agsdl_execution::CaptureAuthority for StartAuthority<'_> {
     async fn recheck(&self, request: &EngineStartRequest) -> Result<Self::CommitGuard> {
         self.lease.ensure_live()?;
         let metadata = metadata_root(self.workspace)?;
-        let locked = lock_execution_source_owner(
-            self.workspace,
-            &metadata,
-            &request.source.owner,
-            Some(&request.source),
-        )
-        .await?;
+        let locked = if let Some(scope) = self.intent_scope {
+            crate::workspace::architect::lock_execution_intent_scope(
+                self.workspace,
+                &metadata,
+                scope,
+                Some(&request.source),
+            )
+            .await?
+        } else {
+            lock_execution_source_owner(
+                self.workspace,
+                &metadata,
+                &request.source.owner,
+                Some(&request.source),
+            )
+            .await?
+        };
         let current_catalogue = agsdl_host_catalogue::capture(self.manager, self.pool).await?;
         let policy = self
             .manager
@@ -622,6 +635,17 @@ pub(crate) async fn start(
     request: EngineStartRequest,
     git: &crate::git::GitState,
 ) -> Result<EngineStartReceipt> {
+    start_linked(host, manager, pool, workspace, request, git, None).await
+}
+pub(crate) async fn start_linked(
+    host: &HostState,
+    manager: &ConfigManager,
+    pool: &sqlx::SqlitePool,
+    workspace: &Path,
+    request: EngineStartRequest,
+    git: &crate::git::GitState,
+    link: Option<&crate::db::agsdl_execution::intents::IntentAdmissionLink>,
+) -> Result<EngineStartReceipt> {
     let lease = host.start_lease().await?;
     let authority = StartAuthority {
         host,
@@ -631,8 +655,9 @@ pub(crate) async fn start(
         workspace,
         git,
         captured: Default::default(),
+        intent_scope: link.map(|link| &link.key.scope),
     };
-    let receipt = crate::db::agsdl_execution::start(pool, request, &authority).await?;
+    let receipt = crate::db::agsdl_execution::start_linked(pool, request, &authority, link).await?;
     let created_here = authority
         .captured
         .lock()
@@ -667,6 +692,17 @@ pub(crate) async fn deliver(
     pool: &sqlx::SqlitePool,
     request: ExecutionExternalDelivery,
 ) -> Result<EngineAcceptedDelivery> {
+    deliver_linked(host, pool, request, None).await
+}
+pub(crate) async fn deliver_linked(
+    host: &HostState,
+    pool: &sqlx::SqlitePool,
+    request: ExecutionExternalDelivery,
+    intent: Option<(
+        &crate::db::agsdl_execution::intents::IntentAdmissionLink,
+        &Path,
+    )>,
+) -> Result<EngineAcceptedDelivery> {
     let lease = host.start_lease().await?;
     let owner = lease.owner(&request.system_start_id)?;
     let snapshot =
@@ -683,26 +719,55 @@ pub(crate) async fn deliver(
         )
         .await?;
     let validation: Value = serde_json::from_str(&receipt.result_json)?;
-    if receipt.generation != lease.generation()
-        || validation
-            .pointer("/deliveryValidation/valid")
-            .and_then(Value::as_bool)
-            != Some(true)
-    {
+    if receipt.generation != lease.generation() {
         return Err(failure(
-            "INPUT_CONSTRAINT",
-            "message",
-            "External Message is not valid for this graphless Agent",
+            "RUNTIME_UNAVAILABLE",
+            "",
+            "Compiler incarnation changed",
         ));
+    }
+    match validation
+        .pointer("/deliveryValidation/valid")
+        .and_then(Value::as_bool)
+    {
+        Some(true) => (),
+        Some(false) => {
+            return Err(failure(
+                "INPUT_CONSTRAINT",
+                "message",
+                "External Message is invalid for this graphless Agent",
+            ))
+        }
+        None => {
+            return Err(failure(
+                "RUNTIME_UNAVAILABLE",
+                "",
+                "Compiler validation acknowledgement is unavailable",
+            ))
+        }
     }
     lease.ensure_live()?;
     // Retirement waits for this lease; a committed queue item is never adopted by a new host.
-    super::db::agsdl_execution::accept_external_delivery(
+    let _scope_guard = if let Some((link, workspace)) = intent {
+        Some(
+            crate::workspace::architect::lock_execution_intent_scope(
+                workspace,
+                &metadata_root(workspace)?,
+                &link.key.scope,
+                None,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    super::db::agsdl_execution::accept_external_delivery_linked(
         pool,
         &owner,
         &request.delivery_id,
         &request.agent_name,
         &request.message_json,
+        intent.map(|(link, _)| link),
     )
     .await
 }

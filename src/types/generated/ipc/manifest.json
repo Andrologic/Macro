@@ -917,9 +917,113 @@
       "families": [
         "execution"
       ],
+      "name": "ExecutionCloseIntentRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionCloseIntentRequest",
+      "path": "ExecutionCloseIntentRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionEnsureStopRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionEnsureStopRequest",
+      "path": "ExecutionEnsureStopRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
       "name": "ExecutionExternalDelivery",
       "origin": "macro_lib::agsdl_host_capture::ExecutionExternalDelivery",
       "path": "ExecutionExternalDelivery.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentAdmission",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentAdmission",
+      "path": "ExecutionIntentAdmission.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentDisposition",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentDisposition",
+      "path": "ExecutionIntentDisposition.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentError",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentError",
+      "path": "ExecutionIntentError.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentErrorCode",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentErrorCode",
+      "path": "ExecutionIntentErrorCode.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentFormatVersion",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentFormatVersion",
+      "path": "ExecutionIntentFormatVersion.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentKey",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentKey",
+      "path": "ExecutionIntentKey.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentPayload",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentPayload",
+      "path": "ExecutionIntentPayload.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentRefusalCode",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentRefusalCode",
+      "path": "ExecutionIntentRefusalCode.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentRetryableCode",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentRetryableCode",
+      "path": "ExecutionIntentRetryableCode.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentScope",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentScope",
+      "path": "ExecutionIntentScope.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionIntentState",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionIntentState",
+      "path": "ExecutionIntentState.ts"
     },
     {
       "families": [
@@ -936,6 +1040,22 @@
       "name": "ExecutionPreflightRequest",
       "origin": "macro_lib::agsdl_host_capture::ExecutionPreflightRequest",
       "path": "ExecutionPreflightRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionReadIntentsRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionReadIntentsRequest",
+      "path": "ExecutionReadIntentsRequest.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "ExecutionStageIntentRequest",
+      "origin": "macro_lib::db::agsdl_execution::intents::ExecutionStageIntentRequest",
+      "path": "ExecutionStageIntentRequest.ts"
     },
     {
       "families": [
@@ -1984,6 +2104,14 @@
       "name": "PublicExecutionDiagnostic",
       "origin": "macro_lib::db::agsdl_execution::diagnostics::PublicExecutionDiagnostic",
       "path": "PublicExecutionDiagnostic.ts"
+    },
+    {
+      "families": [
+        "execution"
+      ],
+      "name": "PublicExecutionIntent",
+      "origin": "macro_lib::db::agsdl_execution::intents::PublicExecutionIntent",
+      "path": "PublicExecutionIntent.ts"
     },
     {
       "families": [

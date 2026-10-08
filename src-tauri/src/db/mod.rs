@@ -5,8 +5,8 @@
 pub mod agent_runs;
 #[allow(dead_code)]
 pub(crate) mod agsdl_execution;
-pub(crate) mod exact_json;
 pub mod conversation_goals;
+pub(crate) mod exact_json;
 pub mod goal_audit_children;
 pub mod goal_audit_transitions;
 #[allow(dead_code)]
@@ -49,7 +49,8 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -293,7 +294,16 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "011_agsdl_execution",
             include_str!("migrations/011_agsdl_execution.sql"),
         ),
-        (12, "012_execution_host", include_str!("migrations/012_execution_host.sql")),
+        (
+            12,
+            "012_execution_host",
+            include_str!("migrations/012_execution_host.sql"),
+        ),
+        (
+            13,
+            "013_execution_ui_intents",
+            include_str!("migrations/013_execution_ui_intents.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -324,6 +334,8 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&9) && !applied.contains(&8))
         || (applied.contains(&10) && !applied.contains(&9))
         || (applied.contains(&11) && !applied.contains(&10))
+        || (applied.contains(&12) && !applied.contains(&11))
+        || (applied.contains(&13) && !applied.contains(&12))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -2385,6 +2397,12 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
         for statement in [
+            "DROP TABLE engine_ui_intents",
+            "DROP TABLE engine_prepared_terminals",
+            "DROP TABLE engine_approvals",
+            "DROP TABLE engine_host_captures",
+            "DROP TABLE engine_response_closures",
+            "DROP TABLE engine_responses",
             "DROP TABLE engine_events",
             "DROP TABLE engine_effects",
             "DROP TABLE engine_deliveries",

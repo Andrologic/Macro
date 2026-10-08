@@ -657,3 +657,5 @@ export { resolveExecutionCardTask, deliverExecution, preflightExecution, executi
 export { httpReleaseWebviewResource } from "./ipc/httpResources";
 
 export { executionHostOwners, executionHostInspect, executionHostBegin, executionHostPrepareTerminal, executionHostCommitTerminal, executionHostAppendResponse, executionHostReadResponses, executionHostCloseResponses, executionHostRegisterProvider, executionHostDispatchProvider, executionHostEndProvider } from './ipc/agsdlExecution';
+
+export { stageExecutionIntent, readExecutionIntents, readExecutionIntent, submitExecutionIntent, closeExecutionIntent, ensureExecutionStop } from './ipc/agsdlExecution';

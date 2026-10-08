@@ -2954,6 +2954,98 @@ mod tests {
             .await
             .is_err());
     }
+    #[tokio::test]
+    async fn intent_scope_uses_manifest_conversation_and_historical_reads_need_no_valid_source_or_cards(
+    ) {
+        use crate::db::agsdl_execution::dto::EngineSourceOwner;
+        use crate::db::agsdl_execution::intents::ExecutionIntentScope;
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let project_path = temp.path().join("project");
+        std_fs::create_dir_all(&project_path).unwrap();
+        let metadata_root = workspace.join(".macro");
+        let canonical_root = project_path.join(".macro");
+        let mut project = project("intent-project", &project_path.to_string_lossy());
+        project.git_setup_state = "not_git".into();
+        project.direct_edit = true;
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![project];
+        write_json(&metadata_root.join("workspace.json"), &state);
+        let scope = ExecutionIntentScope {
+            owner: EngineSourceOwner {
+                project_id: "intent-project".into(),
+                plan_id: "intent-plan".into(),
+                branch: "feature/synthetic".into(),
+            },
+            conversation_id: "manifest-conversation".into(),
+        };
+        let dir = architect_plan_dir(&canonical_root, &scope.owner.branch, &scope.owner.plan_id);
+        let mut plan = serde_json::json!({"id":"intent-plan","projectId":"intent-project","revision":3,"updatedAt":"synthetic-time","conversationId":"stale-plan-conversation","agsdl":{"source":"invalid AgSDL text","display":{"cards":false}}});
+        let mut manifest = serde_json::json!({"planId":"intent-plan","targetBranch":"feature/synthetic","revision":3,"updatedAt":"synthetic-time","conversation":{"conversationId":"manifest-conversation"}});
+        write_json(&dir.join("plan.json"), &plan);
+        write_json(&dir.join("manifest.json"), &manifest);
+        let guard = lock_execution_intent_scope(&workspace, &metadata_root, &scope, None)
+            .await
+            .unwrap();
+        assert_eq!(guard.source, "invalid AgSDL text");
+        let previous = guard.revision.clone();
+        let original = std_fs::read(dir.join("manifest.json")).unwrap();
+        let revision = crate::fs::operations::content_revision(&original);
+        let writer = crate::fs::operations::write_file_internal_with_revision(
+            &canonical_root,
+            "branches/feature/synthetic/plans/intent-plan/manifest.json".into(),
+            serde_json::to_string(&manifest).unwrap(),
+            Some(true),
+            Some(false),
+            Some(&revision),
+        );
+        tokio::pin!(writer);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut writer)
+                .await
+                .is_err()
+        );
+        drop(guard);
+        writer.await.unwrap();
+        plan["revision"] = 4.into();
+        plan["agsdl"]["source"] = "more edited invalid text".into();
+        manifest["revision"] = 4.into();
+        write_json(&dir.join("plan.json"), &plan);
+        write_json(&dir.join("manifest.json"), &manifest);
+        assert!(
+            lock_execution_intent_scope(&workspace, &metadata_root, &scope, None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            matches!(lock_execution_intent_scope(&workspace,&metadata_root,&scope,Some(&previous)).await,Err(error) if error.code == "INTENT_SOURCE_CHANGED")
+        );
+        let mut wrong = scope.clone();
+        wrong.conversation_id = "stale-plan-conversation".into();
+        assert!(
+            matches!(lock_execution_intent_scope(&workspace,&metadata_root,&wrong,None).await,Err(error) if error.code == "INTENT_SCOPE_INVALID")
+        );
+        plan["archivedAt"] = "synthetic-time".into();
+        write_json(&dir.join("plan.json"), &plan);
+        assert!(
+            matches!(lock_execution_intent_scope(&workspace,&metadata_root,&scope,None).await,Err(error) if error.code == "INTENT_SCOPE_INVALID")
+        );
+        plan.as_object_mut().unwrap().remove("archivedAt");
+        manifest["conversation"] = serde_json::json!({});
+        plan["conversationId"] = "manifest-conversation".into();
+        write_json(&dir.join("plan.json"), &plan);
+        write_json(&dir.join("manifest.json"), &manifest);
+        assert!(
+            lock_execution_intent_scope(&workspace, &metadata_root, &scope, None)
+                .await
+                .is_ok()
+        );
+        state.standalone_projects[0].archived_at = Some("synthetic-time".into());
+        write_json(&metadata_root.join("workspace.json"), &state);
+        assert!(
+            matches!(lock_execution_intent_scope(&workspace,&metadata_root,&scope,None).await,Err(error) if error.code == "INTENT_SCOPE_INVALID")
+        );
+    }
 }
 
 /// Native execution capture reads the authored string directly, never through PlanDto Value.
@@ -3027,6 +3119,43 @@ pub(crate) async fn lock_execution_source_owner(
     owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
     expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
 ) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    lock_execution_owner(workspace_path, metadata_root, owner, expected, None).await
+}
+
+/// Read canonical owner/conversation without requiring executable source or cards.
+pub(crate) async fn lock_execution_intent_scope(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    scope: &crate::db::agsdl_execution::intents::ExecutionIntentScope,
+    expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
+) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
+    lock_execution_owner(
+        workspace_path,
+        metadata_root,
+        &scope.owner,
+        expected,
+        Some(&scope.conversation_id),
+    )
+    .await
+    .map_err(|mut error| {
+        error.code = match error.code.as_str() {
+            "INTENT_SOURCE_CHANGED" => "INTENT_SOURCE_CHANGED",
+            "SOURCE_UNAVAILABLE" => "INTENT_SCOPE_UNAVAILABLE",
+            "STORAGE" => "STORAGE",
+            _ => "INTENT_SCOPE_INVALID",
+        }
+        .into();
+        error
+    })
+}
+
+async fn lock_execution_owner(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    owner: &crate::db::agsdl_execution::dto::EngineSourceOwner,
+    expected: Option<&crate::db::agsdl_execution::dto::EngineSourceRevision>,
+    conversation_id: Option<&str>,
+) -> crate::db::agsdl_execution::Result<LockedExecutionSource> {
     use crate::db::agsdl_execution::failure;
     use sha2::{Digest, Sha256};
     #[derive(Deserialize)]
@@ -3046,6 +3175,8 @@ pub(crate) async fn lock_execution_source_owner(
         archived_at: Option<String>,
         deleted_at: Option<String>,
         agsdl: SourceEnvelope,
+        conversation_id: Option<String>,
+        updated_at: Option<String>,
     }
     if expected.is_some_and(|value| &value.owner != owner) {
         return Err(failure(
@@ -3074,7 +3205,12 @@ pub(crate) async fn lock_execution_source_owner(
     // Project identity comes from the native workspace registry, not the
     // caller's hint that resolve_project_scopes may attach to workspace roots.
     let state = read_execution_registry(metadata_root).await?;
-    let initial_project = execution_project(&state, &owner.project_id)?;
+    let initial_project = execution_project(&state, &owner.project_id).map_err(|mut error| {
+        if conversation_id.is_some() {
+            error.code = "INTENT_SCOPE_INVALID".into();
+        }
+        error
+    })?;
     let requested_projects = HashSet::from([owner.project_id.clone()]);
     let initial_projects = collect_workspace_state_project_paths(&state, Some(&requested_projects));
     if initial_projects.is_empty() {
@@ -3148,6 +3284,12 @@ pub(crate) async fn lock_execution_source_owner(
             registered_plan_keys.insert(key.clone());
         }
         content_keys.push(key);
+        if conversation_id.is_some() {
+            let manifest = architect_plan_dir(&scope.metadata_root, &owner.branch, &owner.plan_id)
+                .join("manifest.json");
+            content_keys
+                .push(crate::fs::mutation_locks::native_content_mutation_key(&manifest).await);
+        }
     }
     content_keys.sort();
     content_keys.dedup();
@@ -3179,7 +3321,12 @@ pub(crate) async fn lock_execution_source_owner(
                 )
             })?;
     let current = read_execution_registry(metadata_root).await?;
-    let current_project = execution_project(&current, &owner.project_id)?;
+    let current_project = execution_project(&current, &owner.project_id).map_err(|mut error| {
+        if conversation_id.is_some() {
+            error.code = "INTENT_SCOPE_INVALID".into();
+        }
+        error
+    })?;
     if serde_json::to_value(current_project)? != serde_json::to_value(initial_project)? {
         return Err(failure(
             "CORRELATION",
@@ -3208,7 +3355,7 @@ pub(crate) async fn lock_execution_source_owner(
                 "Canonical plan path changed during capture",
             ));
         }
-        let contents = match fs::read_to_string(path).await {
+        let contents = match fs::read_to_string(&path).await {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) => {
@@ -3245,24 +3392,82 @@ pub(crate) async fn lock_execution_source_owner(
         }
         if plan.archived_at.is_some() || plan.deleted_at.is_some() {
             return Err(failure(
-                "SOURCE_UNAVAILABLE",
+                if conversation_id.is_some() {
+                    "INTENT_SCOPE_INVALID"
+                } else {
+                    "SOURCE_UNAVAILABLE"
+                },
                 "source",
                 "Canonical plan is archived or deleted",
             ));
+        }
+        if let Some(conversation_id) = conversation_id {
+            let manifest_path = path
+                .parent()
+                .expect("canonical plan directory")
+                .join("manifest.json");
+            let manifest_key =
+                crate::fs::mutation_locks::native_content_mutation_key(&manifest_path).await;
+            if !content_keys.contains(&manifest_key) {
+                return Err(failure(
+                    "INTENT_SCOPE_INVALID",
+                    "",
+                    "Canonical manifest path changed",
+                ));
+            }
+            let manifest_raw = fs::read_to_string(&manifest_path).await.map_err(|error| {
+                failure(
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        "INTENT_SCOPE_INVALID"
+                    } else {
+                        "SOURCE_UNAVAILABLE"
+                    },
+                    "",
+                    "Canonical manifest unavailable",
+                )
+            })?;
+            let manifest: ArchitectPlanManifestDto = serde_json::from_str(&manifest_raw)
+                .map_err(|_| failure("INTENT_SCOPE_INVALID", "", "Invalid canonical manifest"))?;
+            if manifest.plan_id != owner.plan_id
+                || manifest.target_branch != owner.branch
+                || manifest.revision <= 0
+                || plan.revision != Some(manifest.revision)
+                || plan.updated_at.as_deref() != Some(&manifest.updated_at)
+                || manifest
+                    .conversation
+                    .conversation_id
+                    .as_deref()
+                    .or(plan.conversation_id.as_deref())
+                    != Some(conversation_id)
+            {
+                return Err(failure(
+                    "INTENT_SCOPE_INVALID",
+                    "",
+                    "Canonical intent scope differs",
+                ));
+            }
         }
         let revision = crate::db::agsdl_execution::dto::EngineSourceRevision {
             owner: owner.clone(),
             revision: plan.revision.unwrap_or(1).to_string(),
             source_sha256: format!("{:x}", Sha256::digest(plan.agsdl.source.as_bytes())),
         };
-        if plan.id != owner.plan_id
-            || plan.revision.unwrap_or(1) < 0
-            || expected.is_some_and(|expected| expected != &revision)
-        {
+        if plan.id != owner.plan_id || plan.revision.unwrap_or(1) < 0 {
             return Err(failure(
                 "CORRELATION",
                 "source",
                 "Canonical plan revision or source changed",
+            ));
+        }
+        if expected.is_some_and(|expected| expected != &revision) {
+            return Err(failure(
+                if conversation_id.is_some() {
+                    "INTENT_SOURCE_CHANGED"
+                } else {
+                    "CORRELATION"
+                },
+                "source",
+                "Canonical source changed",
             ));
         }
         let cards = plan
@@ -3271,7 +3476,7 @@ pub(crate) async fn lock_execution_source_owner(
             .get("cards")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
-        if !cards.is_object() {
+        if conversation_id.is_none() && !cards.is_object() {
             return Err(failure(
                 "CORRELATION",
                 "display.cards",
@@ -3281,22 +3486,30 @@ pub(crate) async fn lock_execution_source_owner(
         sources.push((
             plan.agsdl.source,
             revision,
-            serde_json::to_string(&cards)
-                .map_err(|_| failure("CORRELATION", "display.cards", "Invalid card annotations"))?,
+            serde_json::to_string(if conversation_id.is_some() && !cards.is_object() {
+                &serde_json::Value::Null
+            } else {
+                &cards
+            })
+            .map_err(|_| failure("CORRELATION", "display.cards", "Invalid card annotations"))?,
         ));
     }
-    if sources.is_empty() || sources.iter().any(|source| source != &sources[0]) {
+    if sources.is_empty()
+        || (conversation_id.is_none() && sources.iter().any(|source| source != &sources[0]))
+    {
         return Err(failure(
             "CORRELATION",
             "source",
             "Canonical source is absent or ambiguous",
         ));
     }
+    let current_source_consistent = sources.iter().all(|source| source.1 == sources[0].1);
     let (source, revision, display_cards_json) = sources.remove(0);
     Ok(LockedExecutionSource {
         source,
         revision,
         display_cards_json,
+        current_source_consistent,
         project: current_project.clone(),
         registry: current,
         _guards: guards,
@@ -3314,6 +3527,7 @@ pub(crate) struct LockedExecutionSource {
     pub source: String,
     pub revision: crate::db::agsdl_execution::dto::EngineSourceRevision,
     pub display_cards_json: String,
+    pub current_source_consistent: bool,
     pub project: super::metadata::ProjectDto,
     pub registry: super::metadata::WorkspaceState,
     _guards: Vec<super::PlanLifecycleGuard>,

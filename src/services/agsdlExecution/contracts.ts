@@ -392,3 +392,33 @@ export interface ExecutionFailure {
 export interface ExactValuePort {
   equal(left: ExactJsonText, right: ExactJsonText): boolean;
 }
+
+export type IntentId = Identity<'intent'>;
+export type IntentRevision = Identity<'intentRevision'>;
+export interface ExecutionIntentScope { readonly owner: SourceOwner; readonly conversationId: string }
+export interface ExecutionIntentKey { readonly scope: ExecutionIntentScope; readonly intentId: IntentId }
+export type ExecutionIntentPayload =
+  | { readonly kind: 'start'; readonly request: StartRequest }
+  | { readonly kind: 'deliver'; readonly source: SourceRevision; readonly request: ExternalDeliveryRequest };
+export type ExecutionIntentAdmission =
+  | { readonly kind: 'start'; readonly receipt: PublicStartReceipt }
+  | { readonly kind: 'deliver'; readonly receipt: AcceptedDelivery };
+export type ExecutionIntentRefusalCode = 'SCOPE_INVALID' | 'SOURCE_CHANGED' | 'TARGET_INVALID' | 'TARGET_CLOSED' | 'INPUT_CONSTRAINT';
+export type ExecutionIntentRetryableCode = 'RUNTIME_UNAVAILABLE' | 'CAPTURE_CHANGED' | 'POLICY_UNAVAILABLE' | 'SCOPE_UNAVAILABLE' | 'EXECUTION_UNAVAILABLE';
+export type ExecutionIntentDisposition = 'acknowledged' | 'discarded';
+export type ExecutionIntentState =
+  | { readonly kind: 'prepared' }
+  | { readonly kind: 'submissionPending'; readonly retryableFailure: ExecutionIntentRetryableCode | null }
+  | { readonly kind: 'admitted'; readonly admission: ExecutionIntentAdmission }
+  | { readonly kind: 'refused'; readonly code: ExecutionIntentRefusalCode }
+  | { readonly kind: 'closed'; readonly disposition: ExecutionIntentDisposition; readonly admission: ExecutionIntentAdmission | null };
+export interface PublicExecutionIntent {
+  readonly formatVersion: '1'; readonly key: ExecutionIntentKey; readonly revision: IntentRevision;
+  readonly payload: ExecutionIntentPayload; readonly state: ExecutionIntentState;
+}
+export interface ExecutionStageIntentRequest { readonly scope: ExecutionIntentScope; readonly intentId: IntentId; readonly payload: ExecutionIntentPayload }
+export interface ExecutionReadIntentsRequest { readonly scope: ExecutionIntentScope }
+export interface ExecutionCloseIntentRequest { readonly key: ExecutionIntentKey; readonly expectedRevision: IntentRevision; readonly disposition: ExecutionIntentDisposition }
+export interface ExecutionEnsureStopRequest { readonly systemStartId: SystemStartId; readonly activationId: ActivationId | null }
+export type ExecutionIntentErrorCode = 'INVALID_REQUEST' | 'INPUT_LIMIT' | 'SCOPE_INVALID' | 'SCOPE_UNAVAILABLE' | 'IDENTITY_CONFLICT' | 'SLOT_OCCUPIED' | 'REVISION_CONFLICT' | 'SUBMISSION_IN_PROGRESS' | 'NOT_FOUND' | 'CLOSE_CONFLICT' | 'STORAGE_UNCERTAIN' | 'RUNTIME_UNAVAILABLE';
+export interface ExecutionIntentError { readonly code: ExecutionIntentErrorCode; readonly currentIntentKey: ExecutionIntentKey | null }

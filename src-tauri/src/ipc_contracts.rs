@@ -20,6 +20,7 @@ pub mod execution {
     pub use crate::db::agsdl_execution::discovery::{RunListRequest, RunPage};
     pub use crate::db::agsdl_execution::dto::*;
     pub use crate::db::agsdl_execution::inspection::{HostAdmission, HostInspection};
+    pub use crate::db::agsdl_execution::intents::*;
     pub use crate::db::agsdl_execution::prepared::{Prepare, Validation};
     pub use crate::db::agsdl_execution::public::*;
     pub use crate::db::agsdl_execution::responses::{Closure, Emission};

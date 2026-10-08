@@ -3,6 +3,13 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::execution::PublicExecutionIntent>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionStageIntentRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionReadIntentsRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionIntentKey>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionCloseIntentRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionEnsureStopRequest>("execution")?;
+    registry.add::<ipc_contracts::execution::ExecutionIntentError>("execution")?;
     registry.add::<ipc_contracts::execution::ApprovalScope>("execution")?;
     registry.add::<ipc_contracts::execution::ApprovalDecision>("execution")?;
     registry.add::<ipc_contracts::execution::ApprovalPage>("execution")?;
