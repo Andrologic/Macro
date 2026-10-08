@@ -425,3 +425,32 @@ it.each(['system', 'work', 'epoch'] as const)('ignores a Stop observation with a
     expect(first.terminal?.kind).toBe('completed'); expect(stops).toBe(0);
   } finally { release.resolve(); pump.retire(); }
 });
+it.each(['prepare', 'commit'] as const)('makes a definitive %s refusal visible as uncertain without executing again', async phase => {
+  const first = flowDelivery('first', '1'), next = flowDelivery('next', '2'), f = await harness([first, next]);
+  const refusal = { code: phase === 'prepare' ? 'OUTPUT_CONSTRAINT' : 'CORRELATION', path: '', message: 'Synthetic native refusal' };
+  if (phase === 'prepare') {
+    const original = f.ports.prepare;
+    f.ports.prepare = async request => { if (request.work.activationId === 'first') { f.calls.push('refused'); throw refusal; } return original(request); };
+  } else {
+    const original = f.ports.commit;
+    f.ports.commit = async (owner, witness) => { if (witness === 'witness-first') { f.calls.push('refused'); throw refusal; } return original(owner, witness); };
+  }
+  const pump = new FlowPump('generation', flowOwner, f.ports);
+  for (let tick = 0; tick < 6; tick++) await pump.wake();
+  expect(f.calls.filter(call => call === 'execute:first')).toHaveLength(1);
+  expect(f.calls.filter(call => call === 'refused')).toHaveLength(3);
+  expect(first.workState).toBe('uncertain');
+  expect(f.uncertaintyReasons).toEqual(['Native terminal boundary was refused; no continuation dispatched.']);
+  expect(next.workState).toBe('terminal');
+});
+it('keeps retrying a transient terminal failure without inventing uncertainty', async () => {
+  const first = flowDelivery('first', '1'), f = await harness([first]);
+  const original = f.ports.commit;
+  let failures = 0;
+  f.ports.commit = async (...args) => { if (failures++ < 5) throw { code: 'STORAGE', path: '', message: 'busy' }; return original(...args); };
+  const pump = new FlowPump('generation', flowOwner, f.ports);
+  for (let tick = 0; tick < 6; tick++) await pump.wake();
+  expect(f.uncertaintyReasons).toEqual([]);
+  expect(f.calls.filter(call => call === 'execute:first')).toHaveLength(1);
+  expect(first.workState).toBe('terminal');
+});

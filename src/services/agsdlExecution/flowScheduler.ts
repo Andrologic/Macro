@@ -30,7 +30,15 @@ function sameWork(left: EngineWork, right: EngineWork): boolean {
   return left.systemStartId === right.systemStartId && left.activationId === right.activationId && left.flowInvocationId === right.flowInvocationId
     && left.agentInstanceId === right.agentInstanceId && JSON.stringify(left.step) === JSON.stringify(right.step);
 }
-interface Finishing { request?: Prepare; witnessId?: string }
+interface Finishing { request?: Prepare; witnessId?: string; work?: EngineWork; refusals: number }
+/** Structured native validation refusals. Storage, transport, ownership and
+ * Stop codes stay retryable because they do not decide the boundary. */
+const DEFINITIVE_TERMINAL_REFUSALS = new Set(['CORRELATION', 'OUTPUT_CONSTRAINT', 'INPUT_CONSTRAINT', 'UNSUPPORTED']);
+const TERMINAL_REFUSAL_LIMIT = 3;
+function definitiveRefusal(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && DEFINITIVE_TERMINAL_REFUSALS.has(code);
+}
 /** One disposable pump per native system/owner in this host generation. SQL owns
  * the queue and every durable boundary; this object retains only its continuations. */
 export class FlowPump {
@@ -118,10 +126,16 @@ export class FlowPump {
       // Keep this exact no-effect operation, never execute the activation again.
       // The next native read/retransmission finds the first witness and final receipt.
       this.lastError = error;
+      // A repeated native refusal of the same boundary cannot succeed by retrying.
+      // Make it visible as uncertain instead of holding the queue silently.
+      if (definitiveRefusal(error) && ++pending.refusals >= TERMINAL_REFUSAL_LIMIT && pending.work) {
+        this.finishing = undefined;
+        this.uncertain = { work: pending.work, reason: 'Native terminal boundary was refused; no continuation dispatched.' };
+      }
       return false;
     }
   }
-  private retainedWitness(inspection: HostInspection): string | undefined {
+  private retainedWitness(inspection: HostInspection): Finishing | undefined {
     for (const raw of inspection.preparedTerminalsJson) {
       const retained = record(decode(raw));
       if (retained.generation !== this.generation || retained.final_commit !== null) continue;
@@ -130,7 +144,7 @@ export class FlowPump {
       const activation = inspection.projection.activations.find(item => item.delivery.work.activationId === work.activationId);
       // An old generation or an uncertain work is reconciled by native recovery,
       // never adopted by the JS pump merely because a witness was retained.
-      if (activation?.workState === 'active') return text(retained.id);
+      if (activation?.workState === 'active') return { witnessId: text(retained.id), work: activation.delivery.work, refusals: 0 };
     }
   }
   private async drain(): Promise<void> {
@@ -144,7 +158,10 @@ export class FlowPump {
           this.uncertain = undefined;
         } catch (error) { this.lastError = error; return; }
       }
-      if (this.finishing && !await this.finish()) return;
+      if (this.finishing && !await this.finish()) {
+        if (!this.uncertain) return;
+        continue;
+      }
       const inspection = await this.ports.inspect(this.owner);
       this.observe(inspection);
       if (inspection.snapshot.systemStartId !== this.owner.systemStartId || inspection.projection.systemStartId !== this.owner.systemStartId) {
@@ -153,9 +170,9 @@ export class FlowPump {
       if (this.snapshotDigest && this.snapshotDigest !== inspection.snapshotDigest) fail('CORRELATION', '/snapshot', 'Native snapshot changed within a system.');
       if (!this.capture) { this.capture = await this.ports.load(inspection); this.snapshotDigest = inspection.snapshotDigest; }
       if (this.retired) return;
-      const witnessId = this.retainedWitness(inspection);
-      if (witnessId) {
-        this.finishing = { witnessId };
+      const witness = this.retainedWitness(inspection);
+      if (witness) {
+        this.finishing = witness;
         continue;
       }
       // An active work without our continuation or a prepared native witness is
@@ -232,7 +249,7 @@ export class FlowPump {
           const [activation, observed] = this.stoppedInputs(selected, inspection);
           request = await this.ports.visitLimit(this.owner, activation, observed, this.capture);
         }
-        this.finishing = { request };
+        this.finishing = { request, work: request.work, refusals: 0 };
       } catch (error) {
         this.lastError = error;
         // Bounded phase-only reason; exception payloads may contain private data.
