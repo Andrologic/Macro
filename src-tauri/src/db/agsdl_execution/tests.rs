@@ -3095,3 +3095,107 @@ async fn intent_sqlite_constraints_reject_open_scope_and_tombstone_key_collision
         1
     );
 }
+
+const CONDITION_SOURCE: &str = r#"{"flow":{"steps":{"second":{"type":"agent","agent":"a","next":["check"]},"check":{"type":"condition","test":{"equals":[{"path":["text"]},{"value":"done"}]},"next":{"true":[],"false":["b"]}},"b":{"type":"agent","agent":"b","next":[]}}}}"#;
+struct ConditionCompiler;
+impl CaptureAuthority for ConditionCompiler {
+    type CommitGuard = ();
+    async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+        let mut capture = Compiler.capture(request, id).await?;
+        capture.snapshot.authored_source = CONDITION_SOURCE.into();
+        capture.policies.push(StepPolicy {
+            step: vec!["check".into()],
+            agent_name: None,
+            max_visits: None,
+        });
+        Ok(capture)
+    }
+    async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+        Ok(())
+    }
+}
+/// A Condition forwards the value it received. An Agent or Call origin on that
+/// value must not trigger the publication checks of the step that produced it.
+#[tokio::test]
+async fn condition_after_agent_or_call_prepares_its_forwarded_value() {
+    for origin in ["agent", "call"] {
+        let temp = TempDir::new().unwrap();
+        let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+        let mut req = request();
+        req.source.source_sha256 = format!("{:x}", Sha256::digest(CONDITION_SOURCE.as_bytes()));
+        let receipt = start(&pool, req, &ConditionCompiler).await.unwrap();
+        let runtime = resume(&pool, &receipt.system_start_id, &versions())
+            .await
+            .unwrap();
+        let mut delivery = delivery(&pool, &runtime, "check", &format!("check-{origin}")).await;
+        delivery.input = EngineValue {
+            origin: origin.into(),
+            value_json: r#"{"text":"first","results":{}}"#.into(),
+        };
+        accept_delivery(&pool, &runtime, delivery.clone())
+            .await
+            .unwrap();
+        begin(&pool, &runtime, &delivery.delivery_id).await.unwrap();
+        let (_, digest) = responses::read(&pool, &runtime, &delivery.work)
+            .await
+            .unwrap();
+        // The resident Flow closes a pure step with an empty publication.
+        responses::close(
+            &pool,
+            responses::Closure {
+                owner: runtime.clone(),
+                work: delivery.work.clone(),
+                cursor: "0".into(),
+                digest: digest.clone(),
+                validation_json: r#"{"kind":"success","text":"","resultsJson":"{}","choice":null}"#
+                    .into(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut request = prepared::Prepare {
+            owner: runtime.clone(),
+            work: delivery.work.clone(),
+            outcome: EngineOutcome::Completed {
+                output: delivery.input.clone(),
+            },
+            response_cursor: "0".into(),
+            termination_evidence_json: "{}".into(),
+            memory: None,
+            validation: prepared::Validation {
+                snapshot_digest: prepared::snapshot_digest(&receipt.snapshot).unwrap(),
+                input: delivery.input.clone(),
+                declaration_json: Some(
+                    r#"{"type":"condition","test":{"equals":[{"path":["text"]},{"value":"done"}]},"next":{"true":[],"false":["b"]}}"#
+                        .into(),
+                ),
+                closure_digest: digest,
+                selected_branch: Some("false".into()),
+            },
+        };
+        // A changed value still cannot leave a Condition.
+        let mut changed = request.clone();
+        changed.outcome = EngineOutcome::Completed {
+            output: EngineValue {
+                origin: origin.into(),
+                value_json: r#"{"text":"done","results":{}}"#.into(),
+            },
+        };
+        assert!(prepared::prepare(&pool, "generation", changed)
+            .await
+            .is_err());
+        let witness = prepared::prepare(&pool, "generation", request.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{origin} condition refused: {}", error.message));
+        let commit = prepared::commit(&pool, "generation", &runtime, &witness)
+            .await
+            .unwrap();
+        assert_eq!(commit.outgoing.len(), 1);
+        assert_eq!(commit.outgoing[0].work.step, Some(vec!["b".into()]));
+        assert_eq!(commit.outgoing[0].input, delivery.input);
+        request.validation.selected_branch = Some("invented".into());
+        assert!(prepared::prepare(&pool, "generation", request)
+            .await
+            .is_err());
+    }
+}

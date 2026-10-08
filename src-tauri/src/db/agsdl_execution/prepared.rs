@@ -236,8 +236,20 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
             && closure.digest == request.validation.closure_digest,
         "Validation belongs to another response closure",
     )?;
+    // A Condition forwards its durable input unchanged; target() proves that
+    // equality. The value's Agent or Call origin describes the producing step,
+    // whose publication was already validated when that step committed.
+    let forwarded_by_condition = match declaration(&stored.snapshot, &request.work)? {
+        Some(raw) => {
+            serde_json::from_str::<Value>(&raw)?
+                .get("type")
+                .and_then(Value::as_str)
+                == Some("condition")
+        }
+        None => false,
+    };
     if let EngineOutcome::Completed { output } = &request.outcome {
-        if output.origin == "call" {
+        if output.origin == "call" && !forwarded_by_condition {
             let raw = declaration(&stored.snapshot, &request.work)?
                 .ok_or_else(|| failure("CORRELATION", "call", "Call declaration is absent"))?;
             let step: Value = serde_json::from_str(&raw)?;
@@ -304,7 +316,9 @@ async fn validate(db: &mut SqliteConnection, stored: &Stored, request: &Prepare)
             )?;
         }
     }
-    if matches!(&request.outcome, EngineOutcome::Completed { output } if output.origin == "agent") {
+    if !forwarded_by_condition
+        && matches!(&request.outcome, EngineOutcome::Completed { output } if output.origin == "agent")
+    {
         let validation: Value = serde_json::from_str(&closure.validation_json)?;
         require(
             validation["kind"] == "success",
