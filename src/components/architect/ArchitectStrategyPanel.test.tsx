@@ -29,7 +29,7 @@ const mount = async () => {
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => root!.render(<ArchitectStrategyPanel />));
-  return container.querySelector<HTMLButtonElement>(".agsdl-viewer-header button")!;
+  return container.querySelector<HTMLButtonElement>('.agsdl-viewer-header button[aria-label="Expand view"]')!;
 };
 
 it("opens the graph in a portal modal and closes without changing the panels or document", async () => {
@@ -40,14 +40,17 @@ it("opens the graph in a portal modal and closes without changing the panels or 
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
     expect(dialog).not.toBeNull();
     expect(container!.contains(dialog)).toBe(false);
-    expect(dialog.querySelectorAll(".agsdl-graph-node")).toHaveLength(3);
+    // The modal shows the same steps as the panel graph, never a different subset.
+    const inline = container!.querySelectorAll(".agsdl-graph-node").length;
+    expect(inline).toBeGreaterThan(0);
+    expect(dialog.querySelectorAll(".agsdl-graph-node")).toHaveLength(inline);
     const patterns = [...document.querySelectorAll(".react-flow__background pattern")];
     expect(patterns).toHaveLength(2);
     expect(new Set(patterns.map(pattern => pattern.id)).size).toBe(2);
     expect(useAppStore.getState().rightPanelWidth).toBe(320);
     expect(useAppStore.getState().isLeftPanelOpen).toBe(true);
     act(() => {
-      if (close === "button") dialog.querySelector<HTMLButtonElement>(".agsdl-viewer-header button")!.click();
+      if (close === "button") dialog.querySelector<HTMLButtonElement>('.agsdl-viewer-header button[aria-label="Close expanded view"]')!.click();
       if (close === "escape") document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       if (close === "backdrop") dialog.parentElement!.click();
     });
