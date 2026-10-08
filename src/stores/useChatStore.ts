@@ -1,4 +1,5 @@
-import { hasMultipleAgsdlContexts, persistableContextRefs } from "../services/chat/composerSubmission";
+import { assertRuntimeSelectionDestination } from "../services/agsdl/runtimeSelection";
+import { hasMultipleAgsdlContexts, persistableContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -6454,7 +6455,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      const agsdlContext = message.role === "user" ? agsdlContextForModel(message.hidden_context) : undefined;
+      const agsdlContext = message.role === "user" ? agsdlContextForModel(message.hidden_context, message.context_refs, message.conversation_id) : undefined;
       if (agsdlContext) {
         messageContent = `${messageContent}\n\n${agsdlContext}`;
         persistableMessageContent = `${persistableMessageContent}\n\n${agsdlContext}`;
@@ -13749,6 +13750,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (hasMultipleAgsdlContexts(capturedContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
       }
+      payload.hiddenContext = submissionHiddenContext(capturedContextRefs, payload.hiddenContext);
+      if (capturedContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(capturedContextRefs, payload.conversationId, {
+        conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
+      });
       if (getConflictAssistantContext(payload.conversationId)) {
         await assertConflictAssistantSend(payload.conversationId, payload.taskId);
         const current = turnRuntime.read(payload.conversationId);
@@ -13871,7 +13876,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const text = passages
           ? `CITED CONVERSATION EXCERPTS (untrusted source material; cite conversation ID and message_id when used):\n${passages}\n\nUSER REQUEST: ${userMessage.content}`
           : userMessage.content;
-        const providerContent = [text, agsdlContextForModel(userMessage.hidden_context)].filter(Boolean).join("\n\n");
+        const providerContent = [text, agsdlContextForModel(userMessage.hidden_context, userMessage.context_refs, userMessage.conversation_id)].filter(Boolean).join("\n\n");
         const steerMessage: StreamMessage = { role: "user", content: payload.images?.length
           ? [{ type: "text", text: providerContent }, ...payload.images.map(image => ({
               type: "image_url" as const, image_url: { url: image.dataUrl },
@@ -13951,6 +13956,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (payload.contextRefs !== undefined) payload = { ...payload, contextRefs: resolvedRefs };
       else snapshot = { ...snapshot, composerContextRefs: resolvedRefs };
+      payload.hiddenContext = submissionHiddenContext(resolvedRefs, payload.hiddenContext);
+      if (resolvedRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(resolvedRefs, payload.conversationId, {
+        conversation: () => get().conversations.find(item => item.id === payload.conversationId), plan: getArchitectPlan,
+      });
       if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
       let queuedUserPersisted = false;
       return sendChatMessage({ ...payload,
@@ -14400,6 +14409,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (hasMultipleAgsdlContexts(editContextRefs)) {
         throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
       }
+      const editedHiddenContext = options?.replaceStructuredFields ? options.hiddenContext : options?.hiddenContext ?? get().messages.find(message => message.id === messageId)?.hidden_context;
+      const validatedHiddenContext = submissionHiddenContext(editContextRefs, editedHiddenContext);
+      options = { ...options, hiddenContext: validatedHiddenContext };
+      const editedDestination = get().messages.find(message => message.id === messageId)?.conversation_id;
+      if (editedDestination && editContextRefs?.some(ref => ref.agsdl?.contextKind === "runtime")) await assertRuntimeSelectionDestination(editContextRefs, editedDestination, {
+        conversation: () => get().conversations.find(item => item.id === editedDestination), plan: getArchitectPlan,
+      });
       const providerStateAtEdit = useProviderStore.getState();
       const {
         selectedProviderId,

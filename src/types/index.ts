@@ -2,6 +2,7 @@
 
 import type { SupportedLanguage } from '../i18n/languages';
 import type { IconName } from './icon';
+import type { SystemStartId, SourceRevision, ActivationId, Sequence } from './agsdlExecution';
 import type { Citation } from './citation';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
@@ -272,19 +273,35 @@ export interface WorkspaceFileReference {
 // Context references for chat composer (nodes, branches, skills, files, sources)
 export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source' | 'agsdl' | 'conversation';
 
-export interface AgsdlSelectionReference {
+interface AgsdlReferenceIdentity {
   id: string;
   conversationId: string;
   branchName: string;
   planId: string;
   document: 'agsdl';
-  version: string;
-  persistedRevision: number;
   path: string;
   title: string;
   relatedPaths?: string[];
+}
+
+export interface AgsdlDocumentReference extends AgsdlReferenceIdentity {
+  contextKind?: 'document';
+  version: string;
+  persistedRevision: number;
   diagnostic?: string;
 }
+export interface AgsdlRuntimeReference extends AgsdlReferenceIdentity {
+  contextKind: 'runtime';
+  systemStartId: SystemStartId;
+  source: SourceRevision;
+  activationId?: ActivationId;
+  cursor: Sequence;
+  diagnosticSelection?: readonly { readonly id: string; readonly sequence: Sequence }[];
+  version?: never;
+  persistedRevision?: never;
+  diagnostic?: never;
+}
+export type AgsdlSelectionReference = AgsdlDocumentReference | AgsdlRuntimeReference;
 
 export interface ConversationContextSource {
   conversationId: string;

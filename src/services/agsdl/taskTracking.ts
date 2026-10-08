@@ -6,8 +6,8 @@ import { resolveTaskStatusIndicatorState, type TaskStatusIndicatorState } from "
 import { resolveTaskMergeWorkflowPresentationState } from "../taskMergeWorkflowPresentation";
 
 export interface TrackedTask { taskId: string; title: string; state: TaskStatusIndicatorState }
-export function trackCardTasks(cards: ViewerCard[], target: AgsdlTarget, tasks: CatalogedImplementTask[], running: Set<string>, runtime: Record<string, Parameters<typeof resolveTaskMergeWorkflowPresentationState>[0]>): Record<string, TrackedTask> {
-  const scoped = tasks.filter(task => task.plan_id === target.planId && (task.plan_storage_branch || task.plan_target_branch) === target.branchName && !task.archived_at);
+export function trackCardTasks(cards: ViewerCard[], target: AgsdlTarget & { projectId?: string }, tasks: CatalogedImplementTask[], running: Set<string>, runtime: Record<string, Parameters<typeof resolveTaskMergeWorkflowPresentationState>[0]>): Record<string, TrackedTask> {
+  const scoped = tasks.filter(task => !!target.projectId && (task.project_id === target.projectId || task.project_ids?.includes(target.projectId)) && task.plan_id === target.planId && (task.plan_storage_branch || task.plan_target_branch) === target.branchName && !task.archived_at);
   const result: Record<string, TrackedTask> = {};
   for (const card of cards) {
     const annotations = object(card.details.displayAnnotations ?? card.details.annotations);

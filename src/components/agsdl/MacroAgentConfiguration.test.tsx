@@ -4,22 +4,28 @@ import { createRoot, type Root } from "react-dom/client";
 import { AgentDetails } from "./AgentDetails";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
 import { createLegacyExample as createExample, createExample as createExample020 } from "../../services/agsdl/examples";
+import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition";
 import { projectViewer } from "../../services/agsdl/viewer";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
+import { useAgsdlModelCatalogue } from "../../stores/useAgsdlModelCatalogue";
 import { useProviderStore } from "../../stores/useProviderStore";
 
 const target = { branchName: "feature/example", planId: "macro-config" };
 const key = agsdlSessionKey(target);
 const originalSave = useAgsdlStore.getState().save;
+const originalCatalogue = useAgsdlModelCatalogue.getState();
+const nativeCatalogue = { revision: "catalogue-1", models: [{ providerId: "demo-provider", modelId: "demo-model", providerName: "Demo provider", modelName: "Demo model", edition: macroNativeModelEdition("demo-provider", "demo-model") }], unavailableProviders: [] };
 const originalProviders = useProviderStore.getState();
 let root: Root | undefined;
 let host: HTMLDivElement;
 afterEach(() => {
   act(() => root?.unmount()); host?.remove();
   useAgsdlStore.setState({ sessions: {}, save: originalSave });
+  useAgsdlModelCatalogue.setState(originalCatalogue);
   useProviderStore.setState({ providers: originalProviders.providers, modelsByProvider: originalProviders.modelsByProvider });
 });
 async function mount(source = createExample("release")) {
+  useAgsdlModelCatalogue.setState({ catalogue: nativeCatalogue, loading: false, error: undefined, load: async () => useAgsdlModelCatalogue.getState().catalogue ?? nativeCatalogue });
   useProviderStore.setState({
     providers: [{ id: "demo-provider", name: "Demo provider", status: "online" }],
     modelsByProvider: { "demo-provider": [{ id: "demo-model", name: "Demo model", provider_id: "demo-provider" }] },
@@ -75,12 +81,14 @@ it("shows Macro provider and model names while keeping opaque parameters collaps
   expect(configuration.textContent).not.toContain("modelId");
   expect(configuration.querySelector("details")!.open).toBe(false);
   act(() => useProviderStore.setState({ providers: [], modelsByProvider: {} }));
+  expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("Demo model");
+  act(() => useAgsdlModelCatalogue.setState({ catalogue: { ...nativeCatalogue, models: [] } }));
   expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("Unavailable locally");
   expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("demo-model");
 });
 
 
-it("saves an explicit 0.2 model selection in settings without rewriting Engine or Tool bindings", async () => {
+it("saves an explicit 0.2 Edition and settings atomically without rewriting Engine or Tool bindings", async () => {
   const source = createExample020("release");
   const before = JSON.parse(source);
   await mount(source);
@@ -89,6 +97,7 @@ it("saves an explicit 0.2 model selection in settings without rewriting Engine o
   useAgsdlStore.setState({ save: async () => { persisted = useAgsdlStore.getState().sessions[key].source; } });
   await submit();
   const after = JSON.parse(persisted);
+  expect(after.configurations.project.model).toEqual(macroNativeModelEdition("demo-provider", "demo-model"));
   expect(after.configurations.project.settings).toEqual({ providerId: "demo-provider", modelId: "demo-model" });
   expect(after.configurations.project.engine).toBe(before.configurations.project.engine);
   expect(after.bindings).toEqual(before.bindings);
@@ -96,4 +105,59 @@ it("saves an explicit 0.2 model selection in settings without rewriting Engine o
   expect(after.flow).toEqual(before.flow);
   expect(after.runtime).toBeUndefined();
   expect(document.body.querySelector("form")).toBeNull();
+});
+
+
+it("edits a native 0.2 Edition and shows its declared identities when settings omit them", async () => {
+  const doc = JSON.parse(createExample020("release"));
+  doc.configurations.project.model = macroNativeModelEdition("demo-provider", "demo-model");
+  delete doc.configurations.project.settings;
+  await mount(JSON.stringify(doc));
+  const selects = document.body.querySelectorAll<HTMLSelectElement>(".agsdl-macro-config select");
+  expect(selects[0].value).toBe("demo-provider");
+  expect(selects[1].value).toBe("demo-model");
+  choose(1, "demo-model");
+  let persisted = "";
+  useAgsdlStore.setState({ save: async () => { persisted = useAgsdlStore.getState().sessions[key].source; } });
+  await submit();
+  expect(JSON.parse(persisted).configurations.project).toMatchObject({
+    model: doc.configurations.project.model, settings: { providerId: "demo-provider", modelId: "demo-model" },
+  });
+  const source = JSON.stringify(doc), cards = projectViewer(source).graphs[0].cards;
+  await act(async () => root!.render(<AgentDetails source={source} cards={cards} card={cards[0]} onSelect={() => {}} />));
+  expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("Demo model");
+  expect(host.querySelector(".agsdl-runtime-settings summary")!.textContent).toContain("Demo provider");
+});
+
+it("does not create a Model Edition while editing only the prompt", async () => {
+  await mount(createExample020("release"));
+  const textarea = document.body.querySelector<HTMLTextAreaElement>("form textarea")!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, textarea.value + " Explicit prompt change.");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  let persisted = "";
+  useAgsdlStore.setState({ save: async () => { persisted = useAgsdlStore.getState().sessions[key].source; } });
+  await submit();
+  expect(persisted).not.toBe("");
+  expect(JSON.parse(persisted).configurations.project.model).toBeUndefined();
+});
+
+it("revalidates qualification at save and keeps the draft when the native model is no longer available", async () => {
+  await mount(createExample020("release")); choose(0, "demo-provider"); choose(1, "demo-model");
+  const original = useAgsdlStore.getState().sessions[key].source;
+  useAgsdlModelCatalogue.setState({ load: async () => ({ ...nativeCatalogue, models: [] }) });
+  await submit();
+  expect(useAgsdlStore.getState().sessions[key].source).toBe(original);
+  expect(document.body.querySelector("form")).not.toBeNull();
+  expect(document.body.querySelector('[role="alert"]')!.textContent).toContain("Unavailable");
+});
+
+it("refuses duplicate native catalogue identities without substituting a global model", async () => {
+  await mount(createExample020("release")); choose(0, "demo-provider"); choose(1, "demo-model");
+  const original = useAgsdlStore.getState().sessions[key].source;
+  useAgsdlModelCatalogue.setState({ load: async () => ({ ...nativeCatalogue, models: [nativeCatalogue.models[0], nativeCatalogue.models[0]] }) });
+  await submit();
+  expect(useAgsdlStore.getState().sessions[key].source).toBe(original);
+  expect(document.body.querySelector("form")).not.toBeNull();
 });

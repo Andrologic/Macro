@@ -71,3 +71,7 @@ it('preserves conversation and AgSDL identities through the shared composer cont
     ['conversation', 'source'], ['agsdl', 'agent'],
   ]);
 });
+
+it('refuses an arbitrary marker as resolved AgSDL context', () => {
+  expect(() => submissionHiddenContext([], '<agsdl_selection>\nnot a public capture\n</agsdl_selection>')).toThrow('differs');
+});

@@ -5,9 +5,9 @@ import { createLegacyExample } from "./examples";
 import { projectViewer } from "./viewer";
 import { groupTaskState, trackCardTasks, type TrackedTask } from "./taskTracking";
 
-const target = { planId: "plan", branchName: "feature/example" };
+const target = { projectId: "project", planId: "plan", branchName: "feature/example" };
 const card = () => ({ ...projectViewer(createLegacyExample("feature")).graphs[0].cards[0], details: { displayAnnotations: { macroTaskId: "task" } } });
-const task = (overrides: Partial<CatalogedImplementTask> = {}) => ({ id: "task", title: "Task", plan_id: "plan", plan_storage_branch: target.branchName, status: "Completed", task_source: "architect", ...overrides }) as CatalogedImplementTask;
+const task = (overrides: Partial<CatalogedImplementTask> = {}) => ({ project_id: "project", id: "task", title: "Task", plan_id: "plan", plan_storage_branch: target.branchName, status: "Completed", task_source: "architect", ...overrides }) as CatalogedImplementTask;
 const track = (tasks: CatalogedImplementTask[], running = new Set<string>()) => trackCardTasks([card()], target, tasks, running, {});
 
 describe("AgSDL live task tracking", () => {
@@ -18,7 +18,7 @@ describe("AgSDL live task tracking", () => {
     expect(track([task({ status: "Pending", is_blocked: true })])[card().path].state).toBe("blocked");
   });
   it("rejects archived, ambiguous and other-plan or other-branch links", () => {
-    for (const tasks of [[task({ plan_id: "other" })], [task({ plan_storage_branch: "other" })], [task({ archived_at: "2026-01-01" })], [task(), task()]]) {
+    for (const tasks of [[task({ project_id: "foreign" })], [task({ plan_id: "other" })], [task({ plan_storage_branch: "other" })], [task({ archived_at: "2026-01-01" })], [task(), task()]]) {
       expect(track(tasks)).toEqual({});
     }
   });

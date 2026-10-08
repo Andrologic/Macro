@@ -1,5 +1,6 @@
 import { keyId, list, object, readDocument, text, pointerPart } from "./document";
 import { MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
+import { readMacroNativeModel } from "./nativeModelEdition";
 import type { ViewerCard, ViewerReference } from "./viewer";
 
 export function outputRecipients(card: ViewerCard, cards: ViewerCard[], port: string) {
@@ -45,12 +46,13 @@ export function agentConfigurations(source: string, card: ViewerCard): AgentConf
       const configuration = object(object(doc.configurations)[id]);
       const engine = object(bindings[text(configuration.engine)]);
       const implementation = object(engine.implementation);
+      const nativeModel = readMacroNativeModel(configuration.model, configuration.settings);
       return [{ id, selected: fixed,
-        macro: configuration.model === undefined && ["identity", "version"].every(key => object(engine.contract)[key] === MACRO_ENGINE_CONTRACT[key as keyof typeof MACRO_ENGINE_CONTRACT] && implementation[key] === MACRO_ENGINE_IMPLEMENTATION[key as keyof typeof MACRO_ENGINE_IMPLEMENTATION]) && Object.keys(object(engine.contract)).length === 2 && Object.keys(implementation).length === 2,
+        macro: (configuration.model === undefined || !!nativeModel) && ["identity", "version"].every(key => object(engine.contract)[key] === MACRO_ENGINE_CONTRACT[key as keyof typeof MACRO_ENGINE_CONTRACT] && implementation[key] === MACRO_ENGINE_IMPLEMENTATION[key as keyof typeof MACRO_ENGINE_IMPLEMENTATION]) && Object.keys(object(engine.contract)).length === 2 && Object.keys(implementation).length === 2,
         engine: edition(implementation), engineIdentity: text(implementation.identity), engineVersion: text(implementation.version),
         engineReference: { label: text(configuration.engine), source: "unknown" as const, target: Object.hasOwn(bindings, text(configuration.engine)) ? `/bindings/${pointerPart(text(configuration.engine))}` : undefined, unresolved: !Object.hasOwn(bindings, text(configuration.engine)) },
         engineParameters: object(engine.settings),
-        parameters: { ...object(configuration.settings), ...(configuration.model ? { model: configuration.model } : {}) },
+        parameters: { ...object(configuration.settings), ...nativeModel, ...(configuration.model ? { model: configuration.model } : {}) },
         tools: Object.entries(object(configuration.tools)).map(([localName, bindingName]) => {
           const binding = object(bindings[text(bindingName)]);
           const exists = Object.hasOwn(bindings, text(bindingName));

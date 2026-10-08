@@ -1,32 +1,9 @@
 /** Proposed execution boundary. These declarations do not implement a runtime. */
-export type Identity<Kind extends string> = string & { readonly __identity: Kind };
-export type SystemStartId = Identity<'systemStart'>;
-export type FlowInvocationId = Identity<'flowInvocation'>;
-export type AgentInstanceId = Identity<'agentInstance'>;
-export type ActivationId = Identity<'activation'>;
-export type DeliveryId = Identity<'delivery'>;
-export type ProviderAttemptId = Identity<'providerAttempt'>;
-export type ToolInvocationId = Identity<'toolInvocation'>;
-export type ResponseMessageId = Identity<'responseMessage'>;
-/** Canonical nonnegative decimal integers on the wire, never JS numbers. */
-export type Sequence = Identity<'sequence'>;
-export type OwnerEpoch = Identity<'ownerEpoch'>;
-/** Validated with the exact vendor reader; never JSON.parse/structuredClone. */
-export type ExactJsonText = Identity<'exactJsonText'>;
-export type Sha256 = Identity<'sha256'>;
+import type { Identity, SourceOwner, SystemStartId, FlowInvocationId, AgentInstanceId, ActivationId, DeliveryId, ProviderAttemptId, ToolInvocationId, ResponseMessageId, Sequence, OwnerEpoch, ExactJsonText, SourceRevision } from "../../types/agsdlExecution";
+export type { Identity, SystemStartId, FlowInvocationId, AgentInstanceId, ActivationId, DeliveryId, ProviderAttemptId, ToolInvocationId, ResponseMessageId, Sequence, OwnerEpoch, ExactJsonText, Sha256, SourceOwner, SourceRevision } from "../../types/agsdlExecution";
 export type StepAddress = readonly [string, ...string[]];
 export type ExecutionProfile = 'macro-serial-inline-v1';
 
-export interface SourceOwner {
-  readonly projectId: string;
-  readonly planId: string;
-  readonly branch: string;
-}
-export interface SourceRevision {
-  readonly owner: SourceOwner;
-  readonly revision: string;
-  readonly sourceSha256: Sha256;
-}
 export interface Associations {
   readonly taskId?: string;
   readonly workspaceId?: string;

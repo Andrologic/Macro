@@ -1,6 +1,7 @@
 import type { AgsdlChange } from "../../types/agsdl";
 import { keyId, list, object, readDocument, text, pointerPart } from "./document";
 import type { ViewerCard } from "./viewer";
+import { macroNativeModelEdition, readMacroNativeModel } from "./nativeModelEdition";
 
 export interface MacroConfiguration {
   editable: boolean;
@@ -94,24 +95,28 @@ function configuration02(doc: Record<string, unknown>, card: ViewerCard): MacroC
   if (typeof config.engine !== "string" || !Object.hasOwn(object(doc.bindings), config.engine)) return blocked;
   const engine = object(object(doc.bindings)[config.engine]);
   const settings = object(config.settings);
-  // An explicit Model edition is not a provider catalog id and cannot be silently replaced.
+  const nativeModel = readMacroNativeModel(config.model, config.settings);
   const editable = editionMatches(engine.contract, MACRO_ENGINE_CONTRACT) && editionMatches(engine.implementation, MACRO_ENGINE_IMPLEMENTATION) &&
-    config.model === undefined && (config.settings === undefined || isRecord(config.settings)) &&
+    (config.model === undefined || !!nativeModel) && (config.settings === undefined || isRecord(config.settings)) &&
     [settings.providerId, settings.modelId].every(value => value === undefined || typeof value === "string");
-  return { editable, providerId: text(settings.providerId), modelId: text(settings.modelId),
+  return { editable, providerId: nativeModel?.providerId ?? text(settings.providerId), modelId: nativeModel?.modelId ?? text(settings.modelId),
     bindingPath: `/configurations/${pointerPart(agent.configuration)}` };
 }
 
 function configurationChanges02(doc: Record<string, unknown>, config: MacroConfiguration, providerId: string, modelId: string): AgsdlChange[] {
-  if (config.providerId === providerId && config.modelId === modelId) return [];
   if (!providerId || !modelId) throw new Error("agsdl.macroConfig.unsupported");
   const path = config.bindingPath!;
   const name = path.slice("/configurations/".length).replaceAll("~1", "/").replaceAll("~0", "~");
   const declaration = object(object(doc.configurations)[name]);
+  const model = macroNativeModelEdition(providerId, modelId);
+  const settings = object(declaration.settings);
+  const sameModel = editionMatches(declaration.model, model);
+  if (sameModel && settings.providerId === providerId && settings.modelId === modelId) return [];
   const changes: AgsdlChange[] = [];
+  if (!sameModel) changes.push({ op: "set", path: `${path}/model`, valueJson: JSON.stringify(model) });
   if (declaration.settings === undefined) changes.push({ op: "set", path: `${path}/settings`, valueJson: "{}" });
-  if (config.providerId !== providerId) changes.push({ op: "set", path: `${path}/settings/providerId`, valueJson: JSON.stringify(providerId) });
-  if (config.modelId !== modelId) changes.push({ op: "set", path: `${path}/settings/modelId`, valueJson: JSON.stringify(modelId) });
+  if (settings.providerId !== providerId) changes.push({ op: "set", path: `${path}/settings/providerId`, valueJson: JSON.stringify(providerId) });
+  if (settings.modelId !== modelId) changes.push({ op: "set", path: `${path}/settings/modelId`, valueJson: JSON.stringify(modelId) });
   // Exact configuration claims cease to apply after any configuration change.
   if (declaration.claims !== undefined) changes.push({ op: "remove", path: `${path}/claims` });
   return changes;

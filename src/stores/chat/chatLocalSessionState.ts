@@ -1,3 +1,4 @@
+import { isAgsdlReference } from "../../services/agsdl/runtimeSelection";
 import { reportPersistenceIssue, clearPersistenceIssue } from "../../services/persistenceHealth";
 import type {
   ChatMessage,
@@ -144,12 +145,7 @@ const isPersistedContextReference = (
     return false;
   }
   if (value.kind === 'agsdl') {
-    const ref = value.agsdl;
-    if (!isRecord(ref) || ref.document !== 'agsdl' ||
-      !['id', 'conversationId', 'branchName', 'planId', 'version', 'path', 'title'].every(key => isBoundedString(ref[key])) ||
-      typeof ref.persistedRevision !== 'number' || !Number.isFinite(ref.persistedRevision) ||
-      !isOptionalBoundedString(ref.diagnostic) ||
-      (ref.relatedPaths !== undefined && (!Array.isArray(ref.relatedPaths) || !ref.relatedPaths.every(path => isBoundedString(path))))) return false;
+    if (!isAgsdlReference(value.agsdl) || value.agsdl.id !== value.id) return false;
   }
   return (
     (value.location === undefined || isSkillLocation(value.location)) &&

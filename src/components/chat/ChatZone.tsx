@@ -1,4 +1,4 @@
-import { getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
+import { captureAgsdlChatContext, getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { createComposerTransaction } from "../../services/chat/composerTransaction";
 import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
 import { captureComposerSnapshot, hasMultipleAgsdlContexts, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
@@ -1395,6 +1395,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const composerFileInputRef = useRef<HTMLInputElement>(null);
   const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
   const activeTurnSubmissionInFlightRef = useRef(false);
+  const runtimeCaptureInFlightRef = useRef(false);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
@@ -3041,7 +3042,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
     if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
-    if (activeTurnSubmissionInFlightRef.current) return;
+    if (activeTurnSubmissionInFlightRef.current || runtimeCaptureInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const transaction = createComposerTransaction({
@@ -3072,6 +3073,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
+    let runtimeCapture: Awaited<ReturnType<typeof captureAgsdlChatContext>>;
+    try {
+      runtimeCaptureInFlightRef.current = agsdlContext?.contextKind === "runtime";
+      runtimeCapture = agsdlContext?.contextKind === "runtime" ? await captureAgsdlChatContext(agsdlContext, selectedConversationId, ownsUnchangedComposer,
+        composerEditSession ? currentMessages.find(message => message.id === composerEditSession.messageId)?.hidden_context : undefined) : undefined;
+      if (agsdlContext?.contextKind === 'runtime' && !ownsUnchangedComposer()) return;
+    } catch (error) {
+      notify.error(agsdlT("agsdl.staleChatSelection"), { description: toServiceError(error).message });
+      return;
+    } finally { runtimeCaptureInFlightRef.current = false; }
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
       activeTurnSubmissionInFlightRef.current = true;
@@ -3097,6 +3108,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           await conversationGoalProductFlow.reserveUserTurn(submittedConversationId);
           goalTurnReserved = true;
         }
+        if (agsdlContext?.contextKind === "runtime" && !ownsUnchangedComposer()) return;
         const internalAgentProfile = getConflictAssistantInternalAgentProfile(
           submittedConversationId,
         );
@@ -3104,7 +3116,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           {
             conversationId: submittedConversationId,
             content: text,
-            hiddenContext: serializeAgsdlChatContext(agsdlContext),
+            hiddenContext: serializeAgsdlChatContext(agsdlContext, runtimeCapture),
             contextRefs: capturedRefs ?? [],
             taskId: implementTaskIdForSend,
             images: snapshot.images,
@@ -3161,7 +3173,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content: text,
         images: snapshot.images,
         contextRefs: capturedRefs ?? [],
-        hiddenContext: replaceAgsdlChatContext(currentMessages.find(message => message.id === composerEditSession.messageId)?.hidden_context, agsdlContext),
+        hiddenContext: replaceAgsdlChatContext(currentMessages.find(message => message.id === composerEditSession.messageId)?.hidden_context, agsdlContext, runtimeCapture),
         providerInputItems: currentMessages.find(message => message.id === composerEditSession.messageId)?.provider_input_items,
         replaceStructuredFields: true,
       });
@@ -3207,6 +3219,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
       return;
     }
+    if (agsdlContext?.contextKind === 'runtime' && (conversationId !== agsdlContext.conversationId || !ownsUnchangedComposer())) return;
     const conversationDraftKey = `conversation:${conversationId}`;
     migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = goalCommand?.kind === 'activate' ? goalCommand.objective : text;
@@ -3299,11 +3312,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         else if (pendingGoalEdit) pendingGoalEdit = current;
       }
       if (goalComposerEditSession && !pendingGoalEdit) return;
+      if (agsdlContext?.contextKind === "runtime" && !ownsUnchangedComposer()) return;
       const sendPromise = sendMessage({
         onUserMessagePublished: () => { transaction.accept(); finishPendingDraft(true); },
         conversationId,
         content,
-        hiddenContext: serializeAgsdlChatContext(agsdlContext?.conversationId === conversationId ? agsdlContext : undefined),
+        hiddenContext: serializeAgsdlChatContext(agsdlContext?.conversationId === conversationId ? agsdlContext : undefined, runtimeCapture),
         contextRefs: capturedRefs ?? [],
         taskId: implementTaskIdForSend,
         images: imagesForMessage,

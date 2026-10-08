@@ -653,7 +653,7 @@ export type {
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
 
-export { resolveExecutionCardTask, deliverExecution, preflightExecution, executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
+export { readExecutionApprovals, decideExecutionApproval, resolveExecutionCardTask, deliverExecution, preflightExecution, executionHostFailed, executionHostNextCompile, executionHostCompleteCompile, listExecutionRuns, findExecutionStart, readExecutionDiagnostic, executionModelChoices, executionHostReady, startExecution, stopExecution, readExecutionSnapshot, readExecutionProjection, readExecutionEvents } from './ipc/agsdlExecution';
 export { httpReleaseWebviewResource } from "./ipc/httpResources";
 
 export { executionHostOwners, executionHostInspect, executionHostBegin, executionHostPrepareTerminal, executionHostCommitTerminal, executionHostAppendResponse, executionHostReadResponses, executionHostCloseResponses, executionHostRegisterProvider, executionHostDispatchProvider, executionHostEndProvider } from './ipc/agsdlExecution';

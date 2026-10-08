@@ -1,3 +1,5 @@
+import { agsdlContextForModel, readRuntimeCapture } from "../agsdl/chatContextPayload";
+import { sameRuntimeReference } from "../agsdl/runtimeSelection";
 import { serializeAgsdlChatContext } from "../agsdl/selectionContext";
 import type { Citation } from "../../stores/useCitationsStore";
 import type { ContextRefKind, ContextReference, PersistedContextReference, SkillManifest, WorkspaceFileReference } from "../../types";
@@ -87,7 +89,18 @@ export function sameComposerSnapshot(left: ComposerSnapshot, right: ComposerSnap
 /** Build model context from the same persisted references used to render the message. */
 export function submissionHiddenContext(refs: readonly PersistedContextReference[] | undefined, supplied?: string): string | undefined {
   if (hasMultipleAgsdlContexts(refs)) throw new Error('Only one AgSDL selection may be sent.');
-  if (supplied?.includes('<agsdl_selection>')) return supplied;
   const selection = refs?.find(ref => ref.kind === 'agsdl')?.agsdl;
+  const capture = readRuntimeCapture(supplied);
+  if (selection?.contextKind === 'runtime') {
+    if (!capture || !sameRuntimeReference(selection, capture.reference)) throw new Error('Runtime context requires its exact public capture');
+    return supplied;
+  }
+  if (capture) throw new Error('Runtime capture has no matching reference');
+  if (supplied?.includes('<agsdl_selection>')) {
+    const block = selection ? serializeAgsdlChatContext(selection) : undefined;
+    if (block && supplied.includes(block)) return supplied;
+    if (!selection && agsdlContextForModel(supplied)) return supplied;
+    throw new Error('AgSDL context differs from its reference');
+  }
   return [supplied, serializeAgsdlChatContext(selection)].filter(Boolean).join('\n\n') || undefined;
 }

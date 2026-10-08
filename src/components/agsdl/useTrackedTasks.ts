@@ -10,9 +10,10 @@ export function useTrackedTasks(cards: ViewerCard[], target: AgsdlTarget) {
   const tasks = useTaskStore(state => state.tasks);
   const merges = useTaskStore(state => state.mergeWorkflowRuntimeByTaskId);
   const conversations = useChatStore(state => state.conversations);
+  const projectId = useChatStore(state => state.conversations.find(item => item.id === state.selectedConversationId)?.project_id ?? undefined);
   const runtime = useChatStore(state => state.conversationRuntimeById);
   const compaction = useChatStore(state => state.conversationCompactionStatusById);
-  return useMemo(() => trackCardTasks(cards, target, tasks, resolveRunningTaskIds({
+  return useMemo(() => trackCardTasks(cards, { ...target, projectId }, tasks, resolveRunningTaskIds({
     tasks, conversations, conversationRuntimeById: runtime, conversationCompactionStatusById: compaction,
-  }), merges), [cards, target, tasks, merges, conversations, runtime, compaction]);
+  }), merges), [cards, target, projectId, tasks, merges, conversations, runtime, compaction]);
 }

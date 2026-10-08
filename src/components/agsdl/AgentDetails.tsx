@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, Bot, Box, Braces, FileText, Settings2, Terminal, Wrench } from "lucide-react";
 import type { ViewerCard, ViewerReference } from "../../services/agsdl/viewer";
 import { agentConfigurations, outputRecipients } from "../../services/agsdl/agentDetails";
-import { useProviderStore } from "../../stores/useProviderStore";
+import { useAgsdlModelCatalogue, qualifiedModel } from "../../stores/useAgsdlModelCatalogue";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 function ReferencePreview({ reference, cards, onSelect }: {
@@ -74,18 +74,19 @@ function Parameters({ value }: { value: Record<string, unknown> }) {
   </div>)}</dl>;
 }
 
-export function AgentDetails({ card, cards, source, onSelect }: {
-  card: ViewerCard; cards: ViewerCard[]; source: string; onSelect: (path: string) => void;
+export function AgentDetails({ card, cards, source, onSelect, captured = false }: {
+  card: ViewerCard; cards: ViewerCard[]; source: string; captured?: boolean; onSelect: (path: string) => void;
 }) {
   const { t } = useAgsdlTranslation();
   const configurations = agentConfigurations(source, card);
-  const providers = useProviderStore(state => state.providers);
-  const modelsByProvider = useProviderStore(state => state.modelsByProvider);
+  const { catalogue, load } = useAgsdlModelCatalogue();
+  useEffect(() => { void load().catch(() => {}); }, [load]);
   const reference = (ref: ViewerReference) => <ReferencePreview reference={ref} cards={cards} onSelect={onSelect} />;
   const configTools = configurations.flatMap(config => config.tools.map(tool => tool.reference));
   const tools = [...(card.tools ?? []), ...configTools].filter((ref, index, all) =>
     all.findIndex(other => other.target === ref.target && other.label === ref.label) === index);
   return <div className="agsdl-agent-details">
+    {captured && <p className="agsdl-muted">{t("agsdl.execution.declaredConfiguration")}</p>}
     {card.participant && <p>{reference(card.participant)}</p>}
     <section className="agsdl-prompt-section">
       <h4><Terminal size={14} />{t("agsdl.viewer.detail.prompt")}</h4>
@@ -139,8 +140,9 @@ export function AgentDetails({ card, cards, source, onSelect }: {
         const macro = config.macro ?? (["macro", "macro/desktop"].includes(config.engineIdentity) && config.engineVersion === "1");
         const providerId = typeof config.parameters.providerId === "string" ? config.parameters.providerId : "";
         const modelId = typeof config.parameters.modelId === "string" ? config.parameters.modelId : "";
-        const provider = providers.find(value => value.id === providerId && value.isEnabled !== false);
-        const model = provider && (modelsByProvider[providerId] ?? []).find(value => value.id === modelId && value.isEnabled !== false);
+        const choice = qualifiedModel(catalogue, providerId, modelId);
+        const provider = choice ? { name: choice.providerName } : undefined;
+        const model = choice ? { name: choice.modelName } : undefined;
         const unavailable = (id: string) => id
           ? `${id} · ${t("agsdl.macroConfig.unavailable", { defaultValue: "Unavailable locally" })}`
           : t("agsdl.macroConfig.unset", { defaultValue: "Not configured" });

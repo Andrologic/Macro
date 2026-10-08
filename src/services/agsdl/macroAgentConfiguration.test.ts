@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { createLegacyExample as createExample } from "./examples";
 import { projectViewer } from "./viewer";
 import { applyChanges, validateDocument } from "./document";
+import { macroNativeModelEdition, readMacroNativeModel } from "./nativeModelEdition";
 import { macroAgentConfiguration, macroConfigurationChanges, MACRO_ENGINE_CONTRACT, MACRO_ENGINE_IMPLEMENTATION } from "./macroAgentConfiguration";
 
 const setup = () => {
@@ -92,11 +93,11 @@ describe("AgSDL 0.2 Macro configuration", () => {
     const card = { path: "/flow/steps/work", id: "work", kind: "agent", details: {} } as Parameters<typeof macroAgentConfiguration>[1];
     return { doc, source, card };
   };
-  it("edits only declared settings and clears stale configuration claims", async () => {
+  it("edits the native Edition and declared settings and clears stale configuration claims", async () => {
     const { doc, source, card } = setup02();
     const changes = macroConfigurationChanges(source(), card, "provider-active", "model-active");
     const edited = JSON.parse(applyChanges(source(), changes));
-    expect(edited.configurations.project).toEqual({ engine: "desktop", settings: { ...doc.configurations.project.settings, providerId: "provider-active", modelId: "model-active" }, tools: doc.configurations.project.tools, requires: doc.configurations.project.requires });
+    expect(edited.configurations.project).toEqual({ engine: "desktop", model: macroNativeModelEdition("provider-active", "model-active"), settings: { ...doc.configurations.project.settings, providerId: "provider-active", modelId: "model-active" }, tools: doc.configurations.project.tools, requires: doc.configurations.project.requires });
     expect(edited.bindings).toEqual(doc.bindings);
     expect(edited.agents).toEqual(doc.agents);
     expect(edited.flow).toEqual(doc.flow);
@@ -108,9 +109,51 @@ describe("AgSDL 0.2 Macro configuration", () => {
     expect(report.support.find((item: { path: string }) => item.path === "/agents/reviewer").status).toBe("unknown");
   });
   it("keeps exact claims on a no-op and handles graphless Agent cards", () => {
-    const { source, card } = setup02();
+    const { doc, source, card } = setup02();
+    doc.configurations.project = { ...doc.configurations.project, model: macroNativeModelEdition("old", "model") } as typeof doc.configurations.project;
     expect(macroConfigurationChanges(source(), card, "old", "model")).toEqual([]);
     expect(macroAgentConfiguration(source(), { ...card, path: "/agents/helper", kind: "Agent" })).toEqual({ editable: true, providerId: "old", modelId: "model", bindingPath: "/configurations/project" });
+  });
+  it("completes an explicit same-pair choice instead of treating a missing Edition as a no-op", () => {
+    const { doc, source, card } = setup02();
+    const changes = macroConfigurationChanges(source(), card, "old", "model");
+    const edited = JSON.parse(applyChanges(source(), changes));
+    expect(edited.configurations.project.model).toEqual(macroNativeModelEdition("old", "model"));
+    expect(edited.configurations.project.settings).toEqual(doc.configurations.project.settings);
+    expect(edited.configurations.project.claims).toBeUndefined();
+  });
+  it("edits an existing native Edition and fills only absent matching settings", () => {
+    const { doc, card } = setup02();
+    const input = { ...doc, configurations: { project: { ...doc.configurations.project, model: macroNativeModelEdition("fournisseur/été", "modèle:α/β"), settings: { opaque: { preserve: true } } } } };
+    const source = JSON.stringify(input);
+    expect(macroAgentConfiguration(source, card)).toMatchObject({ editable: true, providerId: "fournisseur/été", modelId: "modèle:α/β" });
+    const same = JSON.parse(applyChanges(source, macroConfigurationChanges(source, card, "fournisseur/été", "modèle:α/β")));
+    expect(same.configurations.project.settings).toEqual({ opaque: { preserve: true }, providerId: "fournisseur/été", modelId: "modèle:α/β" });
+    const changed = JSON.parse(applyChanges(source, macroConfigurationChanges(source, card, "new/provider", "new/model")));
+    expect(changed.configurations.project.model).toEqual(macroNativeModelEdition("new/provider", "new/model"));
+    expect(changed.configurations.project.settings).toEqual({ opaque: { preserve: true }, providerId: "new/provider", modelId: "new/model" });
+    expect(changed.bindings).toEqual(input.bindings);
+  });
+  it("retains exact UTF-8 identities, including a leading BOM, and refuses invalid strings", () => {
+    const pair = { providerId: "\uFEFFprovider/é", modelId: "モデル/🧪" };
+    expect(readMacroNativeModel(macroNativeModelEdition(pair.providerId, pair.modelId), undefined)).toEqual(pair);
+    expect(() => macroNativeModelEdition("provider", "\uD800")).toThrow();
+  });
+  it("refuses contradictory settings and malformed or foreign Editions without mutating the source", () => {
+    const { doc, card } = setup02();
+    const edition = macroNativeModelEdition("old", "model");
+    for (const model of [
+      { ...edition, version: "2" }, { ...edition, extra: true },
+      { ...edition, identity: edition.identity + "=" },
+      { identity: "macro/native-model/p/_w/m/bW9kZWw", version: "1" },
+      { identity: "macro/native-model/p/b2xk/m/bW9kZWx", version: "1" },
+      macroNativeModelEdition("other", "model"),
+    ]) {
+      const source = JSON.stringify({ ...doc, configurations: { project: { ...doc.configurations.project, model } } });
+      expect(macroAgentConfiguration(source, card).editable).toBe(false);
+      expect(() => macroConfigurationChanges(source, card, "p", "m")).toThrow();
+      expect(JSON.parse(source).configurations.project.model).toEqual(model);
+    }
   });
   it("does not round-trip opaque numbers during a model change", () => {
     const { source, card } = setup02();

@@ -26,7 +26,14 @@ Les outils du chat renvoient un guide correspondant à l’édition du document.
 Les modifications atomiques utilisent les pointeurs JSON et la révision du plan.
 Le sélecteur de fournisseur et modèle configure les déclarations du moteur Macro
 lorsqu’une configuration fixe et compatible peut être identifiée. Une configuration
-partagée concerne tous les agents qui la référencent. Une édition de configuration
+partagée concerne tous les agents qui la référencent. Un choix explicite écrit
+atomiquement l’Edition `macro/native-model/p/<provider>/m/<model>` en version `1`
+et les deux paramètres `providerId` et `modelId`. Les segments sont les identités
+UTF-8 encodées en base64url canonique sans padding. Une Edition Macro native
+existante reste modifiable si ses paramètres présents concordent exactement ;
+les Editions étrangères ou incohérentes restent préservées. Modifier seulement
+le prompt n’ajoute pas de modèle et cette convention ne prouve pas la disponibilité
+d’un transport d’exécution. Une édition de configuration
 rend ses anciennes assertions de support caduques ; elles doivent être réévaluées.
 
 ## Lecture paginée dans le chat

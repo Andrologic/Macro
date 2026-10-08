@@ -382,3 +382,24 @@ verrou reste propre à l’Agent concerné. Graphless conserve ses identités nu
 
 La disponibilité produit reste false. Les tests de transformations et de pompe
 ne remplacent pas la qualification finale native et les parcours du point 15.
+
+## Intentions produit
+
+Le produit n’appelle plus Start ou Deliver directement. Chaque demande est
+d’abord enregistrée dans `engine_ui_intents` (migration 013) avec ses clés
+stables, puis soumise par une commande native qui possède sa tâche. Une seule
+intention ouverte existe par projet, plan, branche et conversation. Le lien
+avec l’admission moteur est écrit dans la même transaction que l’admission.
+
+- Ouvrir le panneau d’exécution lit les intentions et les exécutions ; il ne
+  compile, ne soumet et ne ferme rien.
+- Après un rechargement, le store retrouve l’intention dans SQLite et la
+  reprend avec la même clé. Il ne crée jamais une seconde demande.
+- Une intention admise est acquittée seulement après installation de sa
+  projection dans la vue courante. Un refus durable reste visible jusqu’à un
+  abandon explicite.
+- Stop passe par `ensureExecutionStop`, qui alloue ou retrouve la clé native.
+  Il n’attend ni l’intention en cours ni les métadonnées du plan.
+- Les lignes fermées sont des tombstones conservées avec leur demande. Leur
+  durée de rétention après suppression d’un projet ou d’une conversation reste
+  une décision ouverte.
