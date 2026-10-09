@@ -166,4 +166,7 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-native-failed { background: #ef4444; }
 .agsdl-native-uncertain, .agsdl-native-approval, .agsdl-native-stopRequested { background: #f59e0b; }
 .agsdl-execution-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agsdl-execution-actions select { min-width: 0; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--background)); color: inherit; padding: 4px 8px; }
+.agsdl-execution-actions select:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
+.agsdl-execution-actions select:disabled { opacity: 0.65; }
 .agsdl-execution-diagnostic { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; }
