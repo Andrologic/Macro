@@ -83,6 +83,7 @@ export type MockMessage = {
 
 export type MockChatState = {
   composerDraftConversationAliases?: Record<string, string>;
+  dismissArchitectPlanNamingRecovery?: () => void;
   resolveComposerDraftConversationId?: (conversationId: string) => string;
   conversations: MockConversation[];
   messages: MockMessage[];
@@ -702,7 +703,7 @@ const loadChatZoneModule = async (
 
   await Promise.all([
     import('./AgentCodeReplayConfirmModal'),
-    import('../architect/ArchitectPlanNamingRecoveryModal'),
+    import('../architect/PlanFormModal'),
   ]);
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
 };
@@ -717,7 +718,6 @@ const preloadChatZoneLazyComponents = async () => {
     import('./ContextWindowIndicator'),
     import('./AgentCodeReplayConfirmModal'),
     import('../modals/ImagePreviewModal'),
-    import('../architect/ArchitectPlanNamingRecoveryModal'),
     import('../architect/PlanFormModal'),
   ]);
 };

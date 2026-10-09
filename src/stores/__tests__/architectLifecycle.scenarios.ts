@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it, mock, spyOn } from 'bun:test';
 import type { AppMode, ChatMessage, Conversation } from '../../types';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
 import { createExample } from '../../services/agsdl/examples';
@@ -2061,10 +2061,12 @@ export const registerArchitectLifecycleScenarios = (
       );
     });
 
-    it('opens architect plan naming recovery after three failed AI naming attempts', async () => {
+    it('keeps the default plan name and offers optional naming after three failed AI attempts', async () => {
       setSendChatNonStreamingImplementation(async () => {
         throw new Error('model unavailable');
       });
+      const { notify } = await import('../../components/ui/toastService');
+      const notice = spyOn(notify, 'actionRequired').mockReturnValue('plan-naming');
 
       const plan = createPlan({
         id: '1710000000002',
@@ -2116,6 +2118,25 @@ export const registerArchitectLifecycleScenarios = (
         isSubmitting: false,
         error: null,
       });
+      expect(notice).toHaveBeenCalledTimes(1);
+      const [, options] = notice.mock.calls[0];
+      expect(options).toMatchObject({ notificationKey: `architect-plan-naming:${plan.id}` });
+      expect(options.actions).toHaveLength(2);
+      expect(options.description).toBe('The plan keeps its default name.');
+
+      // A notice left from this plan must not act on another plan's recovery.
+      const otherRecovery = { ...useChatStore.getState().architectPlanNamingRecovery!, planId: 'other-plan' };
+      useChatStore.setState({ architectPlanNamingRecovery: otherRecovery });
+      sendChatNonStreamingMock.mockClear();
+      await options.actions[0].onClick();
+      await options.actions[1].onClick();
+      expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().architectPlanNamingRecovery).toEqual(otherRecovery);
+
+      useChatStore.setState({ architectPlanNamingRecovery: { ...otherRecovery, planId: plan.id } });
+      await options.actions[1].onClick();
+      expect(useChatStore.getState().architectPlanNamingRecovery?.stage).toBe('manual');
+      notice.mockRestore();
     });
 
     it('retries architect plan naming from recovery until it succeeds', async () => {

@@ -177,11 +177,6 @@ const ImagePreviewModal = React.lazy(() =>
     default: module.ImagePreviewModal,
   })),
 );
-const ArchitectPlanNamingRecoveryModal = React.lazy(() =>
-  import('../architect/ArchitectPlanNamingRecoveryModal').then((module) => ({
-    default: module.ArchitectPlanNamingRecoveryModal,
-  })),
-);
 const PlanFormModal = React.lazy(() =>
   import('../architect/PlanFormModal').then((module) => ({
     default: module.PlanFormModal,
@@ -1230,8 +1225,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages,
     setMessageImages,
     architectPlanNamingRecovery,
-    setArchitectPlanNamingRecoveryStage,
-    retryArchitectPlanNamingRecovery,
+    dismissArchitectPlanNamingRecovery = () => undefined,
     submitArchitectPlanManualName,
     composerContextRefs,
     skillTurnFeedbackByMessageId,
@@ -1299,9 +1293,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
     architectPlanNamingRecovery: state.architectPlanNamingRecovery,
-    setArchitectPlanNamingRecoveryStage:
-      state.setArchitectPlanNamingRecoveryStage,
-    retryArchitectPlanNamingRecovery: state.retryArchitectPlanNamingRecovery,
+    dismissArchitectPlanNamingRecovery: state.dismissArchitectPlanNamingRecovery,
     submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
     skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
@@ -4787,37 +4779,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       )}
 
       {mode === 'Architect' &&
-        architectPlanNamingRecovery?.stage === 'choice' && (
-          <Suspense fallback={null}>
-            <ArchitectPlanNamingRecoveryModal
-              title={t(
-                'architect.planNamingRecovery.title',
-                'Plan name still needed'
-              )}
-              description={t(
-                'architect.planNamingRecovery.description',
-                'Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.'
-              )}
-              retryLabel={t('architect.planNamingRecovery.retryAi', 'Retry AI')}
-              manualLabel={t(
-                'architect.planNamingRecovery.nameManually',
-                'Name manually'
-              )}
-              retryingLabel={t(
-                'architect.planNamingRecovery.retryingAi',
-                'Retrying AI...'
-              )}
-              error={architectPlanNamingRecovery.error}
-              isLoading={architectPlanNamingRecovery.isSubmitting}
-              onRetry={() => {
-                void retryArchitectPlanNamingRecovery();
-              }}
-              onManual={() => setArchitectPlanNamingRecoveryStage('manual')}
-            />
-          </Suspense>
-        )}
-
-      {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'manual' && (
           <Suspense fallback={null}>
             <PlanFormModal
@@ -4835,7 +4796,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 'architect.planNamingRecovery.saveManualName',
                 'Save plan name'
               )}
-              cancelLabel={t('architect.planNamingRecovery.back', 'Back')}
+              cancelLabel={t('common.cancel', 'Cancel')}
               requireValue
               placeholder={t(
                 'architect.planNamingRecovery.manualPlaceholder',
@@ -4846,7 +4807,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               onConfirm={(value) => {
                 void submitArchitectPlanManualName(value);
               }}
-              onClose={() => setArchitectPlanNamingRecoveryStage('choice')}
+              onClose={dismissArchitectPlanNamingRecovery}
             />
           </Suspense>
         )}

@@ -396,30 +396,47 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
     expect(composer?.disabled).toBe(true);
   });
 
-  it('renders architect plan naming recovery actions when a plan still needs a name', async () => {
+  const namingRecovery = (stage: 'choice' | 'manual') => ({
+    conversationId: 'conv-1',
+    planId: 'plan-1',
+    targetBranch: 'develop',
+    firstUserContent: 'On doit renommer le plan.',
+    providerId: 'provider-1',
+    modelId: 'model-1',
+    stage,
+    isSubmitting: false,
+    error: null,
+  });
+
+  it('does not block Architect when automatic plan naming fails', async () => {
     context.appState.mode = 'Architect';
-    context.chatState = {
-      ...context.chatState,
-      architectPlanNamingRecovery: {
-        conversationId: 'conv-1',
-        planId: 'plan-1',
-        targetBranch: 'develop',
-        firstUserContent: 'On doit renommer le plan.',
-        providerId: 'provider-1',
-        modelId: 'model-1',
-        stage: 'choice',
-        isSubmitting: false,
-        error: null,
-      },
-    };
+    context.chatState = { ...context.chatState, architectPlanNamingRecovery: namingRecovery('choice') };
 
     await act(async () => {
       requireRoot().render(renderChatZone());
     });
 
-    expect(requireContainer().textContent).toContain('Plan name still needed');
-    expect(requireContainer().textContent).toContain('Retry AI');
-    expect(requireContainer().textContent).toContain('Name manually');
+    expect(document.body.textContent).not.toContain('Retry AI');
+    expect(document.body.textContent).not.toContain('Name This Plan');
+  });
+
+  it('keeps the default plan name when manual naming is cancelled', async () => {
+    const dismiss = mock(() => undefined);
+    context.appState.mode = 'Architect';
+    context.chatState = {
+      ...context.chatState,
+      architectPlanNamingRecovery: namingRecovery('manual'),
+      dismissArchitectPlanNamingRecovery: dismiss,
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+    expect(document.body.textContent).toContain('Name This Plan');
+
+    const cancel = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Cancel');
+    await act(async () => { cancel?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+    expect(dismiss).toHaveBeenCalledTimes(1);
   });
 
   it('hides the Architect progress button before the first user explanation', async () => {

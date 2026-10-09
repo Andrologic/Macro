@@ -8343,6 +8343,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return true;
   };
 
+  // The plan keeps its default name; naming it stays an optional follow-up.
+  const notifyArchitectPlanNamingRecovery = (planId: string) => {
+    // A notice left from another plan must not act on the current recovery.
+    const ownsRecovery = () => get().architectPlanNamingRecovery?.planId === planId;
+    notify.actionRequired(
+      i18n.t("architect.planNamingRecovery.title", "Plan name not generated"),
+      {
+        description: i18n.t("architect.planNamingRecovery.description", "The plan keeps its default name."),
+        notificationKey: `architect-plan-naming:${planId}`,
+        tone: "warning",
+        actions: [
+          {
+            label: i18n.t("architect.planNamingRecovery.retryAi", "Retry AI"),
+            onClick: async () => { if (ownsRecovery()) await get().retryArchitectPlanNamingRecovery(); },
+          },
+          {
+            label: i18n.t("architect.planNamingRecovery.nameManually", "Name manually"),
+            onClick: () => { if (ownsRecovery()) get().setArchitectPlanNamingRecoveryStage("manual"); },
+          },
+        ],
+      },
+    );
+  };
+
   const maybeGenerateConversationMetadata = async (params: {
     conversationId: string;
     firstUserContent: string;
@@ -8439,6 +8463,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 error: null,
               },
             });
+            notifyArchitectPlanNamingRecovery(architectPlan.planId);
           }
           return;
         }
@@ -12319,19 +12344,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         return true;
       } catch (error) {
+        const message = error instanceof Error && error.message.trim()
+          ? error.message
+          : "Macro could not generate a plan name automatically.";
         set((state) => ({
           architectPlanNamingRecovery: state.architectPlanNamingRecovery
             ? {
                 ...state.architectPlanNamingRecovery,
                 stage: "choice",
                 isSubmitting: false,
-                error:
-                  error instanceof Error && error.message.trim()
-                    ? error.message
-                    : "Macro could not generate a plan name automatically.",
+                error: message,
               }
             : null,
         }));
+        if (get().architectPlanNamingRecovery?.planId === recovery.planId) notifyArchitectPlanNamingRecovery(recovery.planId);
         return false;
       }
     },

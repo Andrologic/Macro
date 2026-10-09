@@ -1859,15 +1859,13 @@
       "targetBranch": "Cible : {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Nom de plan encore requis",
-      "description": "Macro n'a pas pu générer un nom de plan à partir du premier message après trois tentatives. Réessayez avec l'IA ou nommez le plan manuellement.",
+      "title": "Nom du plan non généré",
+      "description": "Le plan garde son nom par défaut.",
       "retryAi": "Réessayer avec l'IA",
-      "retryingAi": "Nouvelle tentative avec l'IA...",
       "nameManually": "Nommer manuellement",
       "manualTitle": "Nommer ce plan",
       "manualDescription": "Saisissez le nom de plan à utiliser pour cette conversation.",
       "saveManualName": "Enregistrer le nom du plan",
-      "back": "Retour",
       "manualPlaceholder": "ex. Rafraîchissement du checkout"
     },
     "strategy": "Stratégie",

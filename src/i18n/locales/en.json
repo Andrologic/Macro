@@ -1859,15 +1859,13 @@
       "targetBranch": "Target: {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
+      "title": "Plan name not generated",
+      "description": "The plan keeps its default name.",
       "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
       "nameManually": "Name manually",
       "manualTitle": "Name This Plan",
       "manualDescription": "Enter the plan name you want to use for this conversation.",
       "saveManualName": "Save plan name",
-      "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
     "strategy": "Strategy",
