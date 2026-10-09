@@ -132,9 +132,9 @@ export class ConversationManager {
     if (!card) fail('not_found');
     if (card.revision !== expectedRevision) fail('stale_revision');
   }
-  private allocate(binding: string, catalog: Catalog, items: Items, ref?: ConversationRef, nativeSnapshot?: string): string {
+  private allocate(binding: string, catalog: Catalog, items: Items, ref?: ConversationRef, nativeSnapshot?: string, revision = catalog.revision): string {
     const bytes = utf8Bytes(stableJson(items)) * 2 + 2048; this.quota(bytes);
-    const key = crypto.randomUUID(); this.snapshots.set(key, { binding, fingerprint: catalog.fingerprint, revision: catalog.revision, observed: this.now(), items: structuredClone(items), cursors: new Map(), bytes, ref, nativeSnapshot }); return key;
+    const key = crypto.randomUUID(); this.snapshots.set(key, { binding, fingerprint: catalog.fingerprint, revision, observed: this.now(), items: structuredClone(items), cursors: new Map(), bytes, ref, nativeSnapshot }); return key;
   }
   private page(snapshotId: string, offset: number, policy: TextPolicy, backward = false): { page: PageMetadata; items: Items } {
     const snapshot = this.snapshots.get(snapshotId)!;
@@ -254,7 +254,7 @@ export class ConversationManager {
       }
       if (request.body.message_id) { const position = items.findIndex(m => m.message_id === request.body.message_id); if (position < 0) fail('not_found'); offset = backward ? Math.min(items.length, position + 6) : Math.max(0,position-5); }
       if (backward && !request.body.message_id) offset = items.length;
-      key = this.allocate(binding, catalog, items, request.body.ref, nativeSnapshot);
+      key = this.allocate(binding, catalog, items, request.body.ref, nativeSnapshot, page.page.revision);
     } else return fail('validation_failed');
     check();
     const snapshot = this.snapshots.get(key!)!;

@@ -202,3 +202,17 @@ test('send validates the selected conversation revision rather than the catalog 
   await expect(host.validateConversationSendTarget({...s.ref, conversation_id:'absent'}, 8)).rejects.toThrow('invalid_reference');
   await host.dispose();
 });
+
+test('window revisions follow their native transcript rather than the catalog counter', async () => {
+  const s = setup();
+  for (let i = 0; i < 4; i++) {
+    s.add(message(`revision-${i}`, s.ref.conversation_id));
+    await s.captures.conversationRead({accountId:'account',sessionId:'session',instanceId:'instance',reliability:true}, s.ref);
+  }
+  const catalog = await s.read('conversations.catalog', {instance_id:'instance',kind:'conversation'}) as CapturePage<ContentConversationCard>;
+  const card = catalog.items[0];
+  expect(card.content_revision).toBeGreaterThan(catalog.page.revision);
+  const window = await s.read('conversation.window', {ref:s.ref,direction:'backward'}) as CapturePage<MessageItem>;
+  expect(window.page.revision).toBe(card.content_revision);
+  expect(window.items).toHaveLength(4);
+});
