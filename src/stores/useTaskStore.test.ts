@@ -289,6 +289,7 @@ const createConversationMock = mock(async () => ({ id: 'conv-1' }));
 const sendMessageMock = mock(async () => undefined);
 const deleteConversationMock = mock(async () => undefined);
 let completeLinkedTaskConversationDeletionImpl: ((conversationId: string) => Promise<boolean>) | null = null;
+const discardArchitectPlanPendingDraftMock = mock((_params: { targetBranch: string; planId: string }) => undefined);
 const completeLinkedTaskConversationDeletionMock = mock(async (conversationId: string) => {
   if (completeLinkedTaskConversationDeletionImpl) {
     return completeLinkedTaskConversationDeletionImpl(conversationId);
@@ -471,6 +472,7 @@ mock.module('./useChatStore', () => ({
       sendMessage: sendMessageMock,
       deleteConversation: deleteConversationMock,
       completeLinkedTaskConversationDeletion: completeLinkedTaskConversationDeletionMock,
+      discardArchitectPlanPendingDraft: discardArchitectPlanPendingDraftMock,
       lastError: null,
       conversations: chatStoreConversations,
       conversationRuntimeById: chatStoreRuntimeById,
@@ -598,6 +600,17 @@ const createBlockedFinalizationError = () =>
     repositories: [blockedRepository],
     blockedRepositories: [blockedRepository],
   });
+
+describe('clearPlanRuntimeState', () => {
+  it('drops the pending draft of an archived or deleted plan only when its branch is known', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    discardArchitectPlanPendingDraftMock.mockClear();
+    useTaskStore.getState().clearPlanRuntimeState({ planId: 'plan-1', deletedWorktreeKeys: [] });
+    expect(discardArchitectPlanPendingDraftMock).not.toHaveBeenCalled();
+    useTaskStore.getState().clearPlanRuntimeState({ planId: 'plan-1', branchName: 'release/2.0', deletedWorktreeKeys: [] });
+    expect(discardArchitectPlanPendingDraftMock).toHaveBeenCalledWith({ targetBranch: 'release/2.0', planId: 'plan-1' });
+  });
+});
 
 describe('clearPlanRuntimeStateSnapshot', () => {
   it('removes deleted worktrees and clears active plan runtime when the active plan is cleaned up', () => {

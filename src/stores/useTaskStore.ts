@@ -4721,6 +4721,7 @@ return ({
       const { cleanup } = await archivePlanAndCleanupBranches({ branchName, planId });
       get().clearPlanRuntimeState({
         planId,
+        branchName,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
@@ -5200,7 +5201,10 @@ return ({
     }
   },
 
-  clearPlanRuntimeState: ({ planId, deletedWorktreeKeys }) => {
+  clearPlanRuntimeState: ({ planId, branchName, deletedWorktreeKeys }) => {
+    if (planId && branchName) {
+      useChatStore.getState().discardArchitectPlanPendingDraft({ targetBranch: branchName, planId });
+    }
     const appState = useAppStore.getState();
     const nextRuntimeState = clearPlanRuntimeStateSnapshot({
       currentState: get(),

@@ -976,6 +976,36 @@ export const registerArchitectLifecycleScenarios = (
       });
     });
 
+    it('keeps a blank plan draft across a reload until the plan is archived or deleted', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-released-draft', slug: 'plan-released-draft', title: 'plan-released-draft', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      let { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const draftKey = `conversation:${pendingId}`;
+      useChatStore.getState().saveComposerDraftForContext(draftKey, { text: 'Avant la première conversation', images: [], contextRefs: [] });
+
+      ({ useChatStore } = await loadChatStore());
+      await useChatStore.getState().initializeCritical();
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)?.text).toBe('Avant la première conversation');
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(pendingId);
+
+      useChatStore.getState().discardArchitectPlanPendingDraft({ targetBranch: 'develop', planId: plan.id });
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+      expect(useChatStore.getState().conversations.some((conversation: Conversation) => conversation.id === pendingId)).toBe(false);
+      // The composer may still save what it showed while leaving the released plan.
+      useChatStore.getState().saveComposerDraftForContext(draftKey, { text: 'Avant la première conversation', images: [], contextRefs: [] });
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+
+      ({ useChatStore } = await loadChatStore());
+      await useChatStore.getState().initializeCritical();
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+    });
+
     it('resumes the conversation created by a refused first send after a reload instead of creating another', async () => {
       const plan = createScenarioPlan('blank', {
         id: 'plan-refused-first', slug: 'plan-refused-first', title: 'plan-refused-first', conversationId: undefined,

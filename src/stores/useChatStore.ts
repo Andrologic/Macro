@@ -753,6 +753,8 @@ type ChatHydrationStatus = "idle" | "hydrating" | "ready" | "error";
 type ChatRestoreStatus = "idle" | "resolving" | "ready" | "error";
 type ChatContextKey = string;
 const PENDING_ARCHITECT_CONVERSATION_PREFIX = "pending-architect-";
+const pendingArchitectConversationId = (targetBranch: string, planId: string) =>
+  `${PENDING_ARCHITECT_CONVERSATION_PREFIX}${targetBranch}-${planId}`;
 
 interface ChatSendResult {
   status: "sent";
@@ -976,6 +978,8 @@ interface ChatStore {
   getPendingArchitectConversationTarget: (conversationId: string) => { planId: string; branchName: string } | null;
   /** The conversation whose composer draft this conversation shares while a first Architect send settles. */
   resolveComposerDraftConversationId: (conversationId: string) => string;
+  /** An archived or deleted plan no longer offers the draft written before its first conversation. */
+  discardArchitectPlanPendingDraft: (params: { targetBranch: string; planId: string }) => void;
   ensureConversationForCurrentMode: (lifecycle?: LifecycleContext, isOwnerCurrent?: () => boolean) => Promise<string | null>;
   reapplySelectionForCurrentContext: (lifecycle?: LifecycleContext) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -10319,7 +10323,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     fallbackProjectId: string | null;
     fallbackGroupId: string | null;
   }): Conversation => {
-    const id = `${PENDING_ARCHITECT_CONVERSATION_PREFIX}${params.targetBranch}-${params.planId}`;
+    const id = pendingArchitectConversationId(params.targetBranch, params.planId);
     const existing = get().conversations.find(
       (conversation) => conversation.id === id,
     );
@@ -12527,6 +12531,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     resolveComposerDraftConversationId: (conversationId) =>
       get().composerDraftConversationAliases[conversationId] ?? conversationId,
 
+    discardArchitectPlanPendingDraft: ({ targetBranch, planId }) => {
+      const branch = resolveTargetBranch(targetBranch);
+      clearPendingArchitectConversationForPlan({ targetBranch: branch, planId });
+      get().clearComposerDraftForContext(`conversation:${pendingArchitectConversationId(branch, planId)}`);
+    },
+
     selectConversation: async (conversationId) => {
       if (get().hydrationStatus === "hydrating") {
         await waitForHydration();
@@ -13350,6 +13360,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const conversationId = contextKey.startsWith("conversation:")
         ? contextKey.slice("conversation:".length)
         : null;
+      // A pending plan conversation that was released (plan archived or deleted)
+      // must not get its draft back from a late composer save.
+      if (
+        conversationId?.startsWith(PENDING_ARCHITECT_CONVERSATION_PREFIX) &&
+        !pendingArchitectConversationDetailsById.has(conversationId) &&
+        !Object.values(get().composerDraftConversationAliases).includes(conversationId)
+      ) {
+        return;
+      }
       if (
         conversationId &&
         (deletedConversationIds.has(conversationId) ||

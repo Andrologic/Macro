@@ -506,6 +506,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         });
         taskStore.clearPlanRuntimeState({
           planId: entry.plan.id,
+          branchName: entry.branchName,
           deletedWorktreeKeys: cleanup.flatMap((repository) =>
             repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)),
         });
@@ -540,6 +541,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       });
       taskStore.clearPlanRuntimeState({
         planId: planToDelete.plan.id,
+        branchName: planToDelete.branchName,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
       setPlanToDelete(null);
