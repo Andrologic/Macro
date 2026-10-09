@@ -48,6 +48,20 @@ describe("AgSDL chat references", () => {
     expect(serializeAgsdlChatContext(undefined)).toBeUndefined();
     expect(getAgsdlContext(refs)?.conversationId).toBe("conversation-a");
   });
+  it("keeps a reference restored after a reload while the saved revision is unchanged", async () => {
+    await prepareAgsdlChatContext(target, { path: "/definitions/0", title: "Agent" });
+    const context = getAgsdlContext(refs)!;
+    const session = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
+    // A reload creates a new session version for the same saved document.
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { ...session, version: "reloaded-version" } } });
+    expect(isAgsdlChatContextCurrent(context)).toBe(true);
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { ...session, version: "reloaded-version", persistedRevision: session.persistedRevision + 1 } } });
+    expect(isAgsdlChatContextCurrent(context)).toBe(false);
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { ...session, version: "reloaded-version", dirty: true } } });
+    expect(isAgsdlChatContextCurrent(context)).toBe(false);
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { ...session, version: "reloaded-version", source: "{}" } } });
+    expect(isAgsdlChatContextCurrent({ ...context, path: "/definitions/9" })).toBe(false);
+  });
   it("rejects stale document versions before sending a reference", async () => {
     await prepareAgsdlChatContext(target, { path: "/definitions/0", title: "First" });
     const context = getAgsdlContext(refs)!;

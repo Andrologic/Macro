@@ -66,7 +66,17 @@ export async function prepareAgsdlChatContext(
 }
 
 export function isAgsdlChatContextCurrent(context: AgsdlChatContext): boolean {
-  return context.contextKind === "runtime" || useAgsdlStore.getState().sessions[agsdlSessionKey(context)]?.version === context.version;
+  if (context.contextKind === "runtime") return true;
+  const session = useAgsdlStore.getState().sessions[agsdlSessionKey(context)];
+  if (!session) return false;
+  if (session.version === context.version) return true;
+  // Each load starts a new session version. A draft restored after a reload still
+  // targets the same document while its saved revision is unchanged and unedited.
+  if (session.dirty || session.saving || session.persistedRevision !== context.persistedRevision) return false;
+  try {
+    for (const path of [context.path, ...(context.relatedPaths ?? [])]) resolveAgsdlSelectionPath(session.source, path);
+    return true;
+  } catch { return false; }
 }
 
 /** Read only the display metadata from our persisted selection envelope. */
