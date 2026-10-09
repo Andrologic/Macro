@@ -15,3 +15,6 @@ export const desktopStorePorts: DesktopStorePorts = {
 
 export const desktopActions = createDesktopActions(desktopStorePorts);
 export const macroPilotRuntime = new PilotRuntime(undefined, undefined, desktopStorePorts);
+
+// A development refresh must release the existing producer before replacing it.
+if (import.meta.hot) import.meta.hot.dispose(() => { void macroPilotRuntime.stop(); });

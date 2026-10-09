@@ -599,7 +599,7 @@ export default defineConfig(({ command }) => {
     // SERVER CONFIGURATION - Tauri Development
     // =============================================================================
     server: {
-      port: 1422,
+      port: Number(process.env.MACRO_TAURI_BROWSER_UI_PORT || 1422),
       strictPort: true,
       host: host || false,
       hmr: host

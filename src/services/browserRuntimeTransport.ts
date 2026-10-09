@@ -10,7 +10,10 @@ import type {
   UnlistenFn,
 } from '@tauri-apps/api/event';
 
-const BRIDGE_PORT = 1430;
+const BRIDGE_PORT = Number(import.meta.env.VITE_TAURI_BROWSER_BRIDGE_PORT || 1430);
+if (!Number.isInteger(BRIDGE_PORT) || BRIDGE_PORT < 1024 || BRIDGE_PORT > 65535) {
+  throw new Error('Invalid browser runtime bridge port.');
+}
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 const INVOKE_TIMEOUT_MS = 10 * 60_000;

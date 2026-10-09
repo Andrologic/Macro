@@ -512,16 +512,33 @@ pub fn run() {
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
                     "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
                 );
+                let browser_origin = std::env::var("MACRO_TAURI_BROWSER_ORIGIN")
+                    .unwrap_or_else(|_| "http://127.0.0.1:1422".into());
+                let origin = url::Url::parse(&browser_origin).expect("Invalid QA browser origin");
+                assert!(
+                    origin.scheme() == "http"
+                        && origin.host_str() == Some("127.0.0.1")
+                        && origin.username().is_empty()
+                        && origin.password().is_none()
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none(),
+                    "QA browser origin must remain on loopback"
+                );
+                let bridge_port = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                    .unwrap_or_else(|_| "1430".into())
+                    .parse::<u16>().expect("Invalid QA bridge port");
+                assert!(bridge_port >= 1024, "QA bridge requires an unprivileged port");
                 install_browser_runtime_event_relays(app.handle());
                 let browser_bridge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let bridge_config = RemoteUiConfig::default()
-                        .set_port(Some(1430))
-                        .set_websocket_origin("http://127.0.0.1:1422")
+                        .set_port(Some(bridge_port))
+                        .set_websocket_origin(&browser_origin)
                         .set_websocket_token(bridge_token);
                     match browser_bridge_handle.start_remote_ui(bridge_config).await {
                         Ok(()) => tracing::info!(
-                            "Debug browser runtime bridge ready at http://127.0.0.1:1422"
+                            "Debug browser runtime bridge ready at {browser_origin}"
                         ),
                         Err(error) => {
                             tracing::error!("Failed to start debug browser runtime bridge: {error}")

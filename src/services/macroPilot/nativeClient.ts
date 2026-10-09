@@ -1,3 +1,4 @@
+import { createBrowserQaDependencies } from './browserQa';
 import { PilotClientError, type PilotClientErrorCode } from './clientError';
 export { PilotClientError, type PilotClientErrorCode } from './clientError';
 import { PilotAccountClient, type PilotAccountConfirmation } from './accountClient';
@@ -1207,4 +1208,8 @@ export class MacroPilotNativeClient {
   }
 }
 
-export const macroPilotNativeClient = new MacroPilotNativeClient();
+export const macroPilotNativeClient = new MacroPilotNativeClient(
+  import.meta.env.DEV && import.meta.env.VITE_MACRO_BROWSER_QA === '1'
+    ? createBrowserQaDependencies(defaultDependencies)
+    : defaultDependencies,
+);
