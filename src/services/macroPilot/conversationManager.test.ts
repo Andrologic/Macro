@@ -184,3 +184,21 @@ test('backward Unicode windows respect the byte limit and contiguous cursor boun
   const next=await s.read('conversation.window',{ref:s.ref,direction:'backward',continuation:{snapshot_id:first.page.snapshot_id,cursor:first.page.next_cursor}}) as CapturePage<MessageItem>;
   expect(next.page.offset+next.items.length).toBe(first.page.offset);
 });
+
+test('send validates the selected conversation revision rather than the catalog revision', async () => {
+  const s = setup(2);
+  s.metadata[0].revision = 7;
+  const controller = new AbortController();
+  const host = new ContentHost({accountId:'account', instanceId:'instance', signal:controller.signal,
+    conversations:s.captures, conversationManagement:s.manager, storage:memory(),
+    reviews:createReviewCaptureService(), reviewRefs:async()=>[], resolveReview:async()=>{throw new Error('not_found');},
+    commitReview:async()=>false, policy:async()=>policy, now:s.clock});
+  await host.initialize();
+  await host.validateConversationSendTarget(s.ref, 7);
+  s.metadata[1].revision = 12;
+  await host.validateConversationSendTarget(s.ref, 7);
+  s.metadata[0].revision = 8;
+  await expect(host.validateConversationSendTarget(s.ref, 7)).rejects.toThrow('stale_revision');
+  await expect(host.validateConversationSendTarget({...s.ref, conversation_id:'absent'}, 8)).rejects.toThrow('invalid_reference');
+  await host.dispose();
+});

@@ -176,14 +176,21 @@ export class PilotRuntime {
       const host = createDesktopContentHost({ configurationId, instanceId, accountId, signal, kernel, ports: this.ports,
         transportSecrets: () => this.client.contentSecretValues!() });
       this.content = host;
+      let contentStage = 'initialize';
       try {
         // Failed capability/policy/storage initialization leaves ACCOUNT and v1 alive.
         await host.initialize();
         // Establish the export policy before the first capability-announcing poll.
+        contentStage = 'prepare';
         await host.prepare();
         if (signal.aborted) return;
         await Promise.all([this.pollContent(host, instanceId, signal), this.observeContent(host, instanceId, signal)]);
-      } catch { /* No v2 poll advertises a host that failed initialization. */ }
+      } catch (error) {
+        // Record the stage and an allowlisted code, never content or credentials.
+        const candidate = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+        const code = ['content_unavailable', 'resource_limit', 'unauthorized', 'context_changed', 'invalid_response', 'validation_failed', 'stale_revision'].includes(candidate) ? candidate : 'unavailable';
+        void frontendLog({ level: 'error', scope: 'frontend', message: `[Frontend:PilotContent:${contentStage}:${code}]` }).catch(() => undefined);
+      }
       finally { await host.dispose().catch(() => undefined); if (this.content === host) this.content = null; }
     })();
     await Promise.allSettled([v1, v2]);

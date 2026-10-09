@@ -125,6 +125,13 @@ export class ConversationManager {
     }
     return fail('content_unavailable');
   }
+  /** Sending uses the same per-conversation revision as management cards. */
+  async validateSendTarget(ref: ConversationRef, expectedRevision: number, policy: TextPolicy): Promise<void> {
+    const catalog = await this.catalog(policy);
+    const card = catalog.cards.find(item => stableJson(item.ref) === stableJson(ref));
+    if (!card) fail('not_found');
+    if (card.revision !== expectedRevision) fail('stale_revision');
+  }
   private allocate(binding: string, catalog: Catalog, items: Items, ref?: ConversationRef, nativeSnapshot?: string): string {
     const bytes = utf8Bytes(stableJson(items)) * 2 + 2048; this.quota(bytes);
     const key = crypto.randomUUID(); this.snapshots.set(key, { binding, fingerprint: catalog.fingerprint, revision: catalog.revision, observed: this.now(), items: structuredClone(items), cursors: new Map(), bytes, ref, nativeSnapshot }); return key;

@@ -183,3 +183,33 @@ test.each(['deadline', 'policy'] as const)('tool reads retain the final %s check
   if (boundary === 'deadline') await expect(result).rejects.toThrow('unavailable');
   else expect((await result).response).toMatchObject({ type: 'error', code: 'snapshot_expired' });
 });
+
+test.each([false, true])('one relay permit covers repeated boundary checks, with expiry retained (%s)', async expire => {
+  let persisted: string | null = null; let clock = 0; let authorizations = 0;
+  const host = new ContentHost({ accountId: 'account:demo', instanceId: ref.instance_id,
+    signal: new AbortController().signal, conversations: { clear: () => {} } as never,
+    reviews: {} as never,
+    storage: { load: async () => persisted, compareAndSwap: async (old, next) => {
+      if (old !== persisted) return false; persisted = next; return true;
+    } },
+    commitReview: async () => false, reviewRefs: async () => [], resolveReview: async () => { throw new Error('unused'); },
+    policy: async () => policy, now: () => clock,
+    conversationManagement: { clear: () => {}, handle: async (_delivery: unknown, _policy: unknown, beforeEffect: () => Promise<string>) => {
+      await beforeEffect();
+      if (expire) clock = 5000;
+      await beforeEffect();
+      return { page: { snapshot_id: 'capture:demo', revision: 1, observed_at: new Date(0).toISOString(),
+        expires_at: new Date(300000).toISOString(), export_policy_revision: 'visible-1', offset: 0, total: 0, next_cursor: null }, items: [] };
+    } } as never,
+  });
+  await host.initialize();
+  const result = host.handle({ transport_version: '2.0', type: 'delivery', request_id: 'request:demo',
+    instance_id: ref.instance_id, account_id: 'account:demo', source_session_id: 'session:demo',
+    expires_at: new Date(10000).toISOString(), capabilities: ['conversations-1'],
+    request: { contract_version: '2.0', type: 'request', request_id: 'request:demo', account_id: 'account:demo',
+      operation: 'conversations.catalog', body: { instance_id: ref.instance_id, kind: 'conversation' } },
+  }, async () => { if (++authorizations > 1) throw new Error('conflict'); return new Date(5000).toISOString(); });
+  if (expire) await expect(result).rejects.toThrow('unavailable');
+  else expect((await result).response).toMatchObject({ type: 'response', operation: 'conversations.catalog' });
+  expect(authorizations).toBe(1);
+});

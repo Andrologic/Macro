@@ -62,7 +62,16 @@ export class ContentHost {
   }
   async validateConversationSendTarget(ref: ConversationRef, expectedRevision: number): Promise<void> {
     return this.serial(async () => {
-      await this.policy();
+      const policy = await this.policy();
+      if (this.deps.conversationManagement) {
+        try { await this.deps.conversationManagement.validateSendTarget(ref, expectedRevision, policy); }
+        catch (error) {
+          if (error instanceof Error && error.message === 'not_found') throw new PilotError('invalid_reference');
+          throw error;
+        }
+        this.check();
+        return;
+      }
       const catalog = await this.deps.conversations.refreshCatalogMetadata();
       this.check();
       if (ref.kind !== 'conversation' || !catalog.refs.some(candidate => stableJson(candidate) === stableJson(ref))) throw new PilotError('invalid_reference');
@@ -293,7 +302,7 @@ export class ContentHost {
       const requestDigest = await hash([request, delivery.capabilities ?? []]);
       let deadline = 0;
       const guard = () => { this.check(); if (this.now() >= deadline || this.now() >= Date.parse(delivery.expires_at)) failure('unavailable'); };
-      const authorizeNow = async () => { this.check(); deadline = Date.parse(await authorize(delivery)); if (!Number.isFinite(deadline) || deadline > this.now() + 10_000 || deadline > Date.parse(delivery.expires_at)) failure('unavailable'); guard(); };
+      const authorizeNow = async () => { this.check(); if (deadline) { guard(); return; } deadline = Date.parse(await authorize(delivery)); if (!Number.isFinite(deadline) || deadline > this.now() + 10_000 || deadline > Date.parse(delivery.expires_at)) failure('unavailable'); guard(); };
       let response: unknown;
       let completedTaskAction = await this.taskCompletion?.hasActionReceipt(delivery) ?? false;
       try {
