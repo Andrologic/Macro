@@ -1218,7 +1218,36 @@ const activateArchitectPlanInStore = async (input: {
       reason: "activate",
     });
   }
+  if (input.options?.persistActiveSelection !== false) {
+    // A reload restores the remembered plan before the branch default, so an
+    // explicit selection must replace the plan remembered for this context.
+    void rememberSelectedArchitectPlan(latestAppState, plan.id).catch((error) => {
+      devLogger.warn('[architect] Failed to remember the selected plan.', error);
+    });
+  }
   return { status: 'activated', plan };
+};
+
+const rememberSelectedArchitectPlan = (
+  state: Pick<AppStore, 'selectedGroupId' | 'selectedProjectId'>,
+  planId: string,
+): Promise<void> => {
+  const contextId = state.selectedGroupId || state.selectedProjectId;
+  if (!contextId) return Promise.resolve();
+  // Share the selected-task queue: each read-modify-write of this local context
+  // then runs in selection order and never restores an older plan or task.
+  const step = selectedTaskPersistenceQueue.then(async () => {
+    const localContext = await localProjectContext.getLocalProjectContextState(contextId);
+    await persistResolvedArchitectPlanContext({
+      contextId,
+      groupId: state.selectedGroupId,
+      focusProjectId: state.selectedProjectId,
+      planId,
+      localContext,
+    });
+  });
+  selectedTaskPersistenceQueue = step.catch(() => undefined);
+  return step;
 };
 
 const persistResolvedArchitectPlanContext = async (params: {

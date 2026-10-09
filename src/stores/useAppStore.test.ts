@@ -2061,6 +2061,93 @@ describe('useAppStore architect plan resolution', () => {
     expect(projectContexts.get('group-1')?.lastPlanId).toBe('plan-current');
   });
 
+  it('remembers an explicit plan selection so a reload restores it, not the previous plan', async () => {
+    const fixture = (id: string) => buildPlan({
+      id, projectId: 'project-1', projectIds: ['project-1', 'project-2'], expectedProjectIds: ['project-1', 'project-2'],
+    });
+    const oldPlan = fixture('plan-first');
+    const newPlan = fixture('plan-selected');
+    planById.set(oldPlan.id, oldPlan);
+    planById.set(newPlan.id, newPlan);
+    projectContexts.set('group-1', buildProjectContext({ projectId: 'group-1', groupId: 'group-1', lastPlanId: oldPlan.id }));
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect', projectGroups: bootstrapProjectGroups, selectedGroupId: 'group-1', selectedProjectId: null,
+      activeArchitectPlanId: oldPlan.id, activePlanContext: {
+        id: oldPlan.id, title: oldPlan.title, status: oldPlan.status, targetBranch: oldPlan.targetBranch,
+      },
+    });
+    expect(await useAppStore.getState().activateArchitectPlan(newPlan.id, {
+      targetBranch: newPlan.targetBranch, planSummaryHint: toPlanSummary(newPlan), scopedProjectIdsHint: ['project-1', 'project-2'],
+    })).toBe(true);
+    await flushAsyncWork();
+    expect(projectContexts.get('group-1')?.lastPlanId).toBe(newPlan.id);
+
+    // A fresh store models the renderer reload entering Architect mode.
+    const reloaded = (await loadIsolatedUseAppStore()).useAppStore;
+    reloaded.setState({
+      mode: 'Chat', projectGroups: bootstrapProjectGroups, selectedGroupId: 'group-1', selectedProjectId: null,
+      activeArchitectPlanId: null, activePlanContext: null, planNodes: [], predictedBranches: [],
+    });
+    reloaded.getState().setMode('Architect');
+    await flushAsyncWork();
+    expect(reloaded.getState().activeArchitectPlanId).toBe(newPlan.id);
+
+    // A selection that must not be persisted (archived plans) keeps the memory.
+    expect(await reloaded.getState().activateArchitectPlan(oldPlan.id, {
+      targetBranch: oldPlan.targetBranch, planSummaryHint: toPlanSummary(oldPlan),
+      scopedProjectIdsHint: ['project-1', 'project-2'], persistActiveSelection: false,
+    })).toBe(true);
+    await flushAsyncWork();
+    expect(projectContexts.get('group-1')?.lastPlanId).toBe(newPlan.id);
+  });
+
+  it('keeps the latest of two quick plan selections and the other remembered fields', async () => {
+    const fixture = (id: string) => buildPlan({
+      id, projectId: 'project-1', projectIds: ['project-1', 'project-2'], expectedProjectIds: ['project-1', 'project-2'],
+    });
+    const [planA, planB] = [fixture('plan-a'), fixture('plan-b')];
+    planById.set(planA.id, planA);
+    planById.set(planB.id, planB);
+    projectContexts.set('group-1', buildProjectContext({
+      projectId: 'group-1', groupId: 'group-1', lastPlanId: 'plan-old', lastTaskId: 'task-kept',
+      architectConversationId: 'architect-kept', implementConversationId: 'implement-kept',
+    }));
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({ mode: 'Architect', projectGroups: bootstrapProjectGroups, selectedGroupId: 'group-1', selectedProjectId: null });
+    // Hold only the first context read made after selecting A.
+    let releaseA!: () => void;
+    let holdNextRead = false;
+    getLocalProjectContextStateMock.mockImplementation(async (projectId: string) => {
+      if (holdNextRead) {
+        holdNextRead = false;
+        const snapshot = projectContexts.get(projectId) ?? null;
+        await new Promise<void>((resolve) => { releaseA = resolve; });
+        return snapshot;
+      }
+      return projectContexts.get(projectId) ?? null;
+    });
+    const select = (plan: typeof planA) => useAppStore.getState().activateArchitectPlan(plan.id, {
+      targetBranch: plan.targetBranch, planSummaryHint: toPlanSummary(plan), scopedProjectIdsHint: ['project-1', 'project-2'],
+    });
+    try {
+      holdNextRead = true;
+      expect(await select(planA)).toBe(true);
+      expect(await select(planB)).toBe(true);
+      await flushAsyncWork();
+      expect(projectContexts.get('group-1')?.lastPlanId).toBe('plan-old');
+      releaseA();
+      await flushAsyncWork();
+      const remembered = projectContexts.get('group-1');
+      expect(remembered?.lastPlanId).toBe(planB.id);
+      expect(remembered?.lastTaskId).toBe('task-kept');
+      expect(remembered?.architectConversationId).toBe('architect-kept');
+      expect(remembered?.implementConversationId).toBe('implement-kept');
+    } finally {
+      getLocalProjectContextStateMock.mockImplementation(async (projectId: string) => projectContexts.get(projectId) ?? null);
+    }
+  });
+
   it('preserves the explicitly selected labeled plan during the mutation catalog refresh', async () => {
     const oldPlan = buildPlan({ id: 'old-plan', conversationId: 'old-transcript', nodes: [{ id: 'old-task' }] });
     const newPlan = buildPlan({
