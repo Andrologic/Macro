@@ -1006,6 +1006,42 @@ export const registerArchitectLifecycleScenarios = (
       expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
     });
 
+    it('releases a plan draft whose created conversation could not be bound, and lets a restored plan draft again', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-unbound-release', slug: 'plan-unbound-release', title: 'plan-unbound-release', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const draftKey = `conversation:${pendingId}`;
+      const draft = { text: 'Brouillon non lié', images: [], contextRefs: [] };
+      useChatStore.getState().saveComposerDraftForContext(draftKey, draft);
+      const provider = providerState.selectedProviderId;
+      providerState.selectedProviderId = null;
+      (bindArchitectPlanConversationMock as unknown as { mockImplementationOnce: (fn: () => Promise<never>) => void })
+        .mockImplementationOnce(async () => { throw new Error('binding unavailable'); });
+      await useChatStore.getState().sendMessage({ conversationId: pendingId, content: draft.text }).catch(() => undefined);
+      await flushAsyncWork();
+      providerState.selectedProviderId = provider;
+      const createdId = useChatStore.getState().selectedConversationId!;
+      expect(architectPlans.get(plan.id)?.conversationId).toBeUndefined();
+      expect(useChatStore.getState().resolveComposerDraftConversationId(createdId)).toBe(pendingId);
+
+      useChatStore.getState().discardArchitectPlanPendingDraft({ targetBranch: 'develop', planId: plan.id });
+      useChatStore.getState().saveComposerDraftForContext(draftKey, draft);
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)).toBeNull();
+      expect(useChatStore.getState().resolveComposerDraftConversationId(createdId)).toBe(createdId);
+
+      // A restored plan opens a new pending conversation that can hold a new draft.
+      useChatStore.setState(createIdleChatStoreState());
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(pendingId);
+      useChatStore.getState().saveComposerDraftForContext(draftKey, { text: 'Nouveau brouillon', images: [], contextRefs: [] });
+      expect(useChatStore.getState().getComposerDraftForContext(draftKey)?.text).toBe('Nouveau brouillon');
+    });
+
     it('resumes the conversation created by a refused first send after a reload instead of creating another', async () => {
       const plan = createScenarioPlan('blank', {
         id: 'plan-refused-first', slug: 'plan-refused-first', title: 'plan-refused-first', conversationId: undefined,

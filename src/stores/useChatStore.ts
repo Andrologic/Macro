@@ -12533,8 +12533,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     discardArchitectPlanPendingDraft: ({ targetBranch, planId }) => {
       const branch = resolveTargetBranch(targetBranch);
+      const pendingId = pendingArchitectConversationId(branch, planId);
       clearPendingArchitectConversationForPlan({ targetBranch: branch, planId });
-      get().clearComposerDraftForContext(`conversation:${pendingArchitectConversationId(branch, planId)}`);
+      // A created conversation whose binding failed still points its draft here.
+      set((state) => {
+        const aliases = Object.entries(state.composerDraftConversationAliases);
+        const kept = aliases.filter(([from, to]) => from !== pendingId && to !== pendingId);
+        return kept.length === aliases.length ? state : { composerDraftConversationAliases: Object.fromEntries(kept) };
+      });
+      get().clearComposerDraftForContext(`conversation:${pendingId}`);
     },
 
     selectConversation: async (conversationId) => {
