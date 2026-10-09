@@ -73,3 +73,18 @@ it('new windows use the bounded native reader and preserve its safe resource err
   boundedUnavailable = true;
   await expect(source.listMessages(conversation.id)).rejects.toMatchObject({ code: 'resource_limit', message: 'resource_limit' });
 });
+
+it('completed turns with a cleared runtime are idle while active turns stay busy', () => {
+  const before = useChatStore.getState().conversationRuntimeById;
+  const source = desktopConversationCaptureSource(desktopStorePorts);
+  try {
+    useChatStore.setState({ conversationRuntimeById: {} });
+    expect(source.activity(conversation.id)).toEqual({ activity: 'idle', generatingMessageId: null });
+    useChatStore.setState({ conversationRuntimeById: {
+      [conversation.id]: { phase: 'streaming', sessionId: 'synthetic-session', turnId: 'synthetic-turn', assistantMessageId: 'assistant', lastError: null },
+    } });
+    expect(source.activity(conversation.id)).toMatchObject({ activity: 'busy', generatingMessageId: 'assistant' });
+  } finally {
+    useChatStore.setState({ conversationRuntimeById: before });
+  }
+});

@@ -32,7 +32,9 @@ export function desktopConversationCaptureSource(ports: DesktopStorePorts): Conv
       const approval = chat.pendingToolApprovalByConversationId[conversationId];
       if (approval && approval.recoveryState !== 'interrupted') return { activity: 'idle', generatingMessageId: null, attention: 'tool_approval' };
       if (chat.getActiveQuestionnaire?.(conversationId)?.mode === 'pending_reply') return { activity: 'idle', generatingMessageId: null, attention: 'user_request' };
-      if (!runtime) return { activity: 'unknown', generatingMessageId: null };
+      // The store removes idle runtimes after a completed turn. Absence is
+      // the normal idle state, not a request for user attention.
+      if (!runtime) return { activity: 'idle', generatingMessageId: null };
       const busy = runtime.phase !== 'idle' && runtime.phase !== 'error';
       return { activity: busy ? 'busy' : runtime.phase === 'error' ? 'error' : 'idle', generatingMessageId: runtime.assistantMessageId ?? null,
         ...(runtime.phase === 'error' && runtime.lastErrorOrigin === 'provider' ? { providerFailure: runtime.providerFailure ?? { category: 'unknown', message: 'provider_failed', recovery: 'review_before_retry' } } : {}) };
