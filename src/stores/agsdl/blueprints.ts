@@ -4,6 +4,7 @@ import { AGSDL_EXAMPLES, createExampleDocument } from '../../services/agsdl/exam
 import { applyChanges, LEGACY_AGSDL_CONTRACT, object, readDocument, text } from '../../services/agsdl/document';
 import { readDesign, withDocumentDesign, type AgsdlEnvelopeMetadata, type DesignMetadata } from '../../services/agsdl/design';
 import { useAppStore } from '../useAppStore';
+import { AgsdlUserError } from '../../services/agsdl/userErrors';
 
 export interface DesignSource extends AgsdlEnvelopeMetadata {
   id: string;
@@ -91,11 +92,11 @@ export async function listDesignSources(deps = dependencies()): Promise<DesignSo
   };
 }
 export async function saveBlueprint(target: AgsdlTarget, name: string, deps = dependencies(), expectedVersion?: string): Promise<ArchitectPlanRecord> {
-  if (!name.trim()) throw new Error('Give the blueprint a name.');
+  if (!name.trim()) throw new AgsdlUserError('agsdl.userError.nameRequired', 'Give the blueprint a name.');
   const session = await deps.store().load(target);
-  if (expectedVersion !== undefined && session.version !== expectedVersion) throw new Error('The document changed. Read it again before editing.');
-  if (!session.source.trim()) throw new Error('Create a system before saving a blueprint.');
-  if (session.saving) throw new Error('Wait for the current save to finish.');
+  if (expectedVersion !== undefined && session.version !== expectedVersion) throw new AgsdlUserError('agsdl.viewer.editConflict', 'The document changed. Read it again before editing.');
+  if (!session.source.trim()) throw new AgsdlUserError('agsdl.userError.systemRequired', 'Create a system before saving a blueprint.');
+  if (session.saving) throw new AgsdlUserError('agsdl.userError.saving', 'Wait for the current save to finish.');
   // Snapshot before any await: subsequent edits never leak into this saved blueprint.
   const copy = withDocumentDesign(session.source, { ...readDesign(session.source, session.design), kind: 'blueprint' }, { design: session.design, display: session.display, migration: session.migration });
   const source = readDocument(copy.source).contract === LEGACY_AGSDL_CONTRACT ? applyChanges(copy.source, [{ op: 'set', path: '/root/annotations/title', valueJson: JSON.stringify(name.trim()) }]) : copy.source;
@@ -118,8 +119,8 @@ export async function instantiateDesign(target: AgsdlTarget, source: DesignSourc
   const annexes = { ...source.annexes };
   await deps.store().load(target);
   const session = deps.store().sessions[agsdlSessionKey(target)];
-  if (!session || session.version !== expectedVersion) throw new Error('The document changed. Read it again before editing.');
-  if (session.saving) throw new Error('Wait for the current save to finish.');
+  if (!session || session.version !== expectedVersion) throw new AgsdlUserError('agsdl.viewer.editConflict', 'The document changed. Read it again before editing.');
+  if (session.saving) throw new AgsdlUserError('agsdl.userError.saving', 'Wait for the current save to finish.');
   if (session.source.trim() && !options.replace) throw new Error('Replacing a nonempty system requires explicit confirmation.');
   deps.store().replace(target, copy.source, annexes, expectedVersion, { design: copy.design, display: copy.display, migration: copy.migration });
   options.onApplied?.(deps.store().sessions[agsdlSessionKey(target)].version);

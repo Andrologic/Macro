@@ -8,6 +8,8 @@ import { builtInDesignSources, instantiateDesign, listDesignSources, saveBluepri
 import { projectViewer, type ViewerCard } from "../../services/agsdl/viewer";
 import "./design.css";
 import "./designLibrary.css";
+import { AgsdlUserError } from "../../services/agsdl/userErrors";
+import { agsdlErrorText } from "./errorText";
 
 type DesignLibraryMode = "start" | "blueprint" | "system" | "save";
 type DesignLibraryProps = { target: AgsdlTarget; mode: DesignLibraryMode; onClose: () => void; onCreated?: () => void };
@@ -56,7 +58,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
       .catch(error => {
         if (!active) return;
         setLoadFailureCount(1);
-        setLoadError(error instanceof Error ? error.message : String(error));
+        setLoadError(agsdlErrorText(error));
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -79,13 +81,13 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
     try {
       const store = useAgsdlStore.getState();
       const current = store.sessions[agsdlSessionKey(target)];
-      if (current.version !== version) throw new Error(t("agsdl.viewer.editConflict"));
+      if (current.version !== version) throw new AgsdlUserError("agsdl.viewer.editConflict", t("agsdl.viewer.editConflict"));
       if (mode === "save") {
         await saveBlueprint(target, name.trim(), undefined, version);
       } else if (applied) {
         await store.save(target);
       } else if (mode === "start") {
-        if (current.source) throw new Error(t("agsdl.design.notEmpty"));
+        if (current.source) throw new AgsdlUserError("agsdl.design.notEmpty", t("agsdl.design.notEmpty"));
         const document = createEmptySystemDocument(name.trim());
         store.replace(target, document.source, document.annexes, version, document);
         setVersion(useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version);
@@ -96,7 +98,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
         await instantiateDesign(target, selected, version, { onApplied: nextVersion => { setApplied(true); setVersion(nextVersion); } });
       }
       succeeded = true;
-    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { setError(agsdlErrorText(error, t)); }
     finally { setBusy(false); }
     if (succeeded) {
       try { if (mode !== "save") onCreated?.(); }

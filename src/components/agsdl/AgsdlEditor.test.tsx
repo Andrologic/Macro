@@ -101,7 +101,8 @@ describe("AgSDL viewer", () => {
     const button = document.body.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!;
     await act(async () => button.click());
     expect(closeExpanded).not.toHaveBeenCalled();
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("Storage unavailable");
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("The action failed. Try again.");
+    expect(document.body.textContent).not.toContain("Storage unavailable");
     attach.mockResolvedValueOnce(undefined);
     await act(async () => button.click());
     expect(closeExpanded).toHaveBeenCalledTimes(1);

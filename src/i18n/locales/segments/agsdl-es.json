@@ -421,6 +421,13 @@
       "TARGET_INVALID": "La ejecución o el agente de destino ya no es válido.",
       "TARGET_CLOSED": "La ejecución de destino se detuvo antes de aceptar la solicitud.",
       "INPUT_CONSTRAINT": "El mensaje no coincide con lo que acepta este agente."
-    }
+    },
+    "notChecked": "Aún no comprobado. Actualice para comprobar."
+  },
+  "actionFailed": "La acción falló. Inténtelo de nuevo.",
+  "userError": {
+    "saving": "Espere a que termine el guardado actual.",
+    "nameRequired": "Asigne un nombre al blueprint.",
+    "systemRequired": "Cree un sistema antes de guardar un blueprint."
   }
 }

@@ -7,19 +7,21 @@ import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
 import { readDesign, type DesignMetadata } from "../../services/agsdl/design";
 import "./design.css";
+import { AgsdlUserError } from "../../services/agsdl/userErrors";
+import { agsdlErrorText } from "./errorText";
 
 export function SystemDesignDialog({ target, onClose, canEdit = true, onAttach }: { target: AgsdlTarget; onClose: () => void; canEdit?: boolean; onAttach?: () => Promise<void> }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
   const [initial] = useState(() => {
     try { return { design: readDesign(session.source, session.design), version: session.version }; }
-    catch (error) { return { error: String(error) }; }
+    catch { return { error: "unreadable" }; }
   });
   const [draft, setDraft] = useState(initial.design);
   const [version, setVersion] = useState(initial.version);
   const [busy, setBusy] = useState(false);
   const [applied, setApplied] = useState(false);
-  const [error, setError] = useState(initial.error ?? "");
+  const [error, setError] = useState(initial.error ? t("agsdl.viewer.unreadable") : "");
   const [discard, setDiscard] = useState(false);
   const [adaptationsOpen, setAdaptationsOpen] = useState(initial.design?.requirements.some(item => !item.value.trim()) ?? false);
   const fieldId = useId();
@@ -33,7 +35,7 @@ export function SystemDesignDialog({ target, onClose, canEdit = true, onAttach }
     try {
       const store = useAgsdlStore.getState();
       const current = store.sessions[agsdlSessionKey(target)];
-      if (current.version !== version) throw new Error(t("agsdl.viewer.editConflict"));
+      if (current.version !== version) throw new AgsdlUserError("agsdl.viewer.editConflict", t("agsdl.viewer.editConflict"));
       if (!applied) {
         store.setDesign(target, draft, version);
         setVersion(useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version);
@@ -42,12 +44,12 @@ export function SystemDesignDialog({ target, onClose, canEdit = true, onAttach }
       await store.save(target);
       if (openChat) await onAttach?.();
       onClose();
-    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { setError(agsdlErrorText(error, t)); }
     finally { setBusy(false); }
   };
   return <Dialog title={t("agsdl.design.settings")} onClose={close} closeOnBackdropClick
     backdropClassName="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" panelClassName="agsdl-detail-modal agsdl-design-modal">
-    <header><strong>{t("agsdl.design.settings")}</strong>{onAttach && <button className="agsdl-icon-button" disabled={busy || dirty} aria-label={t("agsdl.attachToChat")} title={t("agsdl.attachToChat")} onClick={() => { setBusy(true); void onAttach().then(onClose).catch(error => setError(String(error))).finally(() => setBusy(false)); }}><MessageSquarePlus size={16} /></button>}<button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button></header>
+    <header><strong>{t("agsdl.design.settings")}</strong>{onAttach && <button className="agsdl-icon-button" disabled={busy || dirty} aria-label={t("agsdl.attachToChat")} title={t("agsdl.attachToChat")} onClick={() => { setBusy(true); void onAttach().then(onClose).catch(error => setError(agsdlErrorText(error, t))).finally(() => setBusy(false)); }}><MessageSquarePlus size={16} /></button>}<button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button></header>
     <div className="agsdl-inspector-body">
       {draft && <form id="agsdl-system-design" onSubmit={event => { event.preventDefault(); void save(); }}>
         <label className="agsdl-edit-field"><span>{t("agsdl.design.purpose")}</span>

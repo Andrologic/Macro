@@ -10,6 +10,7 @@ import { getArchitectPlan } from "../../services/architectPlanService";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../useAgsdlStore";
 import { list, object, readDocument, sourceAt } from "../../services/agsdl/document";
 import { useChatStore } from "../useChatStore";
+import { AgsdlUserError } from "../../services/agsdl/userErrors";
 
 export type AgsdlChatContext = AgsdlSelectionReference;
 
@@ -39,7 +40,7 @@ export async function prepareAgsdlChatContext(
   selection: Pick<AgsdlDocumentReference, "path" | "title" | "relatedPaths" | "diagnostic">,
 ): Promise<void> {
   const session = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
-  if (!session) throw new Error(i18n.t("agsdl.chatDocumentMissing", { ns: "agsdl", defaultValue: "Load the AgSDL document first." }));
+  if (!session) throw new AgsdlUserError("agsdl.chatDocumentMissing", i18n.t("agsdl.chatDocumentMissing", { ns: "agsdl", defaultValue: "Load the AgSDL document first." }));
   const path = resolveAgsdlSelectionPath(session.source, selection.path);
   const relatedPaths = selection.relatedPaths?.map(path => resolveAgsdlSelectionPath(session.source, path));
   const plan = await getArchitectPlan(target.branchName, target.planId);
@@ -49,7 +50,7 @@ export async function prepareAgsdlChatContext(
   const ownsPending = !plan?.conversationId && pending?.planId === target.planId && pending.branchName === target.branchName;
   if (!plan || plan.status === "deleted" || !conversationId ||
       (plan.conversationId !== conversationId && !ownsPending)) {
-    throw new Error(i18n.t("agsdl.chatConversationMissing", { ns: "agsdl", defaultValue: "Open this plan’s conversation before attaching AgSDL context." }));
+    throw new AgsdlUserError("agsdl.chatConversationMissing", i18n.t("agsdl.chatConversationMissing", { ns: "agsdl", defaultValue: "Open this plan’s conversation before attaching AgSDL context." }));
   }
   const context: AgsdlChatContext = {
     ...target, ...selection, path, relatedPaths, document: "agsdl", id: crypto.randomUUID(),

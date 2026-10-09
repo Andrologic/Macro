@@ -60,3 +60,36 @@ it("offers a simple prompt and real Agent selection while keeping technical iden
   act(() => useAgsdlExecutionStore.setState({ intentBusy: true }));
   expect(panel.querySelector<HTMLButtonElement>('[aria-label="Request stop"]')!.disabled).toBe(false);
 });
+it("opens read-only without calling support missing, drops diagnostics of another run and keeps attach failures generic", async () => {
+  const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
+  const source = { owner, revision: '1', sourceSha256: 'b'.repeat(64) };
+  const run = (id: string) => ({
+    snapshot: { source, authoredSource: '{}', systemStartId: id } as PublicSnapshot,
+    projection: { source, systemStartId: id, cursor: '7', agents: [], activations: [], nextPage: null, systemStop: { kind: 'none' } } as unknown as PublicProjection,
+    diagnostic: { source, systemStartId: id, activation: null, through: '7', diagnostics: [{ id: `${id}:1`, sequence: '1', code: 'CODE', pointer: '', message: 'detail', work: null }], incomplete: false, nextBefore: null },
+  });
+  spyOn(useAgsdlExecutionStore.getState(), 'open').mockResolvedValue(undefined);
+  const { notify } = await import("../ui/toastService");
+  const notified = spyOn(notify, 'error').mockReturnValue('attach-failed');
+  const chatContext = await import("../../stores/agsdl/chatContext");
+  spyOn(chatContext, 'prepareAgsdlRuntimeContext').mockRejectedValue({ code: 'UNEXPECTED_ERROR', message: 'native transport detail' });
+  useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', busy: false, error: undefined, preflight: undefined, runs: [], approvals: undefined, stale: false, ...run('run-a') });
+  host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
+  const panel = document.body.querySelector('[role="dialog"]')!;
+  const start = panel.querySelector<HTMLButtonElement>('[aria-label="Start"]')!;
+  expect(start.disabled).toBe(true);
+  expect(start.title).toBe('Not checked yet. Refresh to check.');
+  expect(panel.innerHTML).not.toContain('Unsupported by this runtime');
+
+  const checkbox = () => panel.querySelector<HTMLInputElement>('.agsdl-execution-diagnostic input')!;
+  await act(async () => { checkbox().click(); });
+  expect(checkbox().checked).toBe(true);
+  act(() => useAgsdlExecutionStore.setState(run('run-b')));
+  expect(checkbox().checked).toBe(false);
+
+  await act(async () => { checkbox().click(); });
+  await act(async () => { panel.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!.click(); });
+  expect(notified).toHaveBeenCalledWith('The document changed. Attach the selection again before sending.', { description: 'The action failed. Try again.' });
+});

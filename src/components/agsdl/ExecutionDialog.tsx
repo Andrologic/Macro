@@ -9,6 +9,7 @@ import { executionInput } from "../../services/agsdl/executionView";
 import type { AgsdlTarget } from "../../stores/useAgsdlStore";
 import type { Sequence, SystemStartId } from "../../services/agsdlExecution/contracts";
 import { notify } from "../ui/toastService";
+import { agsdlErrorText } from "./errorText";
 
 export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onClose: () => void }) {
   const { t } = useAgsdlTranslation();
@@ -27,8 +28,12 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
   const startInput = useMemo(() => { try { return state.preflight ? executionInput(state.preflight.authoredSource) : undefined; } catch { return; } }, [state.preflight]);
   const deliveryInput = useMemo(() => { try { return snapshot ? executionInput(snapshot.authoredSource) : undefined; } catch { return; } }, [snapshot]);
   const ready = !!state.preflight?.productRuntimeAvailable && state.preflight.staticValid && state.preflight.runtimeSupported && !state.preflight.incomplete;
-  const status = t(state.preflight?.runtimeSupported ? state.preflight.productRuntimeAvailable ? "agsdl.execution.available" : "agsdl.execution.unavailable" : "agsdl.execution.unsupported");
+  // Opening only reads: without a Preflight, support is unknown rather than missing.
+  const status = t(!state.preflight ? "agsdl.execution.notChecked" : state.preflight.runtimeSupported ? state.preflight.productRuntimeAvailable ? "agsdl.execution.available" : "agsdl.execution.unavailable" : "agsdl.execution.unsupported");
   const resetSelection = () => { setSelected([]); setSelectionCursor(undefined); };
+  // Diagnostics belong to one run: any change of run or scope drops the selection.
+  const runKey = snapshot?.systemStartId;
+  useEffect(() => { setSelected([]); setSelectionCursor(undefined); }, [runKey, scoped]);
   // Native intent state drives the actions; its identities and codes stay out of the text.
   const intent = scoped ? state.intent : undefined;
   const intentOpen = !!intent && intent.state.kind !== "closed";
@@ -40,7 +45,7 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
       await prepareAgsdlRuntimeContext({ planId: target.planId, branchName: target.branchName, systemStartId: snapshot.systemStartId,
         source: snapshot.source, cursor: selectionCursor ?? state.projection.cursor, path: "", title: t("agsdl.execution.capture"), diagnosticSelection: selected });
       onClose();
-    } catch (error) { notify.error(t("agsdl.staleChatSelection"), { description: String(error) }); }
+    } catch (error) { notify.error(t("agsdl.staleChatSelection"), { description: agsdlErrorText(error, t) }); }
     finally { setAttaching(false); }
   };
   return <Dialog title={t("agsdl.execution.title")} onClose={onClose} closeOnBackdropClick panelClassName="agsdl-detail-modal">

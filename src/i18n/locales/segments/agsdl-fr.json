@@ -421,6 +421,13 @@
       "TARGET_INVALID": "L’exécution ou l’agent visé n’est plus valide.",
       "TARGET_CLOSED": "L’exécution visée a été arrêtée avant l’acceptation de la demande.",
       "INPUT_CONSTRAINT": "Le message ne correspond pas à ce que cet agent accepte."
-    }
+    },
+    "notChecked": "Pas encore vérifié. Actualisez pour vérifier."
+  },
+  "actionFailed": "L’action a échoué. Réessayez.",
+  "userError": {
+    "saving": "Attendez la fin de l’enregistrement en cours.",
+    "nameRequired": "Donnez un nom au blueprint.",
+    "systemRequired": "Créez un système avant d’enregistrer un blueprint."
   }
 }

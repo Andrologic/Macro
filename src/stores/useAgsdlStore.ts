@@ -11,6 +11,7 @@ import {
   MAX_AGSDL_BYTES,
   validateDocument,
 } from "../services/agsdl/document";
+import { AgsdlUserError } from "../services/agsdl/userErrors";
 
 export interface AgsdlTarget {
   branchName: string;
@@ -88,7 +89,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const existing = get().sessions[key];
       if (existing && !reload) return existing;
       if (existing?.saving)
-        throw new Error("Wait for the current save to finish.");
+        throw new AgsdlUserError("agsdl.userError.saving", "Wait for the current save to finish.");
       if (pendingLoads.has(key)) return pendingLoads.get(key)!;
       const originalVersion = existing?.version;
       const pending = (async () => {
@@ -128,7 +129,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       if (current.status !== "draft")
         throw new Error("AgSDL editing requires a draft plan.");
       if (expectedVersion !== undefined && expectedVersion !== current.version)
-        throw new Error("The document changed. Read it again before editing.");
+        throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       const nextAnnexes = annexes ?? current.annexes;
       const metadataSource = metadata === undefined ? current : metadata;
       const nextMetadata = structuredClone({ design: metadataSource.design, display: metadataSource.display, migration: metadataSource.migration });
@@ -160,7 +161,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     setDesign(target, design, expectedVersion) {
       const current = session(target);
-      if (expectedVersion !== undefined && expectedVersion !== current.version) throw new Error("The document changed. Read it again before editing.");
+      if (expectedVersion !== undefined && expectedVersion !== current.version) throw new AgsdlUserError("agsdl.viewer.editConflict", "The document changed. Read it again before editing.");
       const previous = readDesign(current.source, current.design);
       const changes = adaptationChanges(current.source, previous, design);
       const adapted = changes.length ? applyChanges(current.source, changes) : current.source;
@@ -179,7 +180,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     undo(target, redo = false) {
       const current = session(target);
       if (current.status !== "draft") return;
-      if (current.saving) throw new Error("Wait for the current save to finish.");
+      if (current.saving) throw new AgsdlUserError("agsdl.userError.saving", "Wait for the current save to finish.");
       const from = redo ? current.future : current.history;
       const next = from.at(-1);
       if (!next) return;
@@ -200,7 +201,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     },
     async save(target) {
       const current = session(target);
-      if (current.saving) throw new Error("A save is already in progress.");
+      if (current.saving) throw new AgsdlUserError("agsdl.userError.saving", "A save is already in progress.");
       if (!current.dirty) return;
       update(target, { ...current, saving: true, error: null });
       try {

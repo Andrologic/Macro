@@ -421,6 +421,13 @@
       "TARGET_INVALID": "Die angefragte Ausführung oder der Agent ist nicht mehr gültig.",
       "TARGET_CLOSED": "Die angefragte Ausführung wurde gestoppt, bevor die Anfrage angenommen wurde.",
       "INPUT_CONSTRAINT": "Die Nachricht entspricht nicht dem, was dieser Agent annimmt."
-    }
+    },
+    "notChecked": "Noch nicht geprüft. Zum Prüfen aktualisieren."
+  },
+  "actionFailed": "Die Aktion ist fehlgeschlagen. Versuchen Sie es erneut.",
+  "userError": {
+    "saving": "Warten Sie, bis das aktuelle Speichern abgeschlossen ist.",
+    "nameRequired": "Geben Sie dem Blueprint einen Namen.",
+    "systemRequired": "Erstellen Sie ein System, bevor Sie einen Blueprint speichern."
   }
 }

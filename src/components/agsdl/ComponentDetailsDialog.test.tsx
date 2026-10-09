@@ -76,7 +76,8 @@ describe("component detail editing", () => {
     let attempts = 0;
     useAgsdlStore.setState({ save: async () => { if (++attempts === 1) throw new Error("Save unavailable"); } });
     await submit();
-    expect(document.body.querySelector('[role="alert"]')!.textContent).toContain("Save unavailable");
+    expect(document.body.querySelector('[role="alert"]')!.textContent).toContain("The action failed. Try again.");
+    expect(document.body.textContent).not.toContain("Save unavailable");
     const version = useAgsdlStore.getState().sessions[key].version;
     expect(projectViewer(useAgsdlStore.getState().sessions[key].source).graphs[0].cards[0].title).toBe("Changed");
     await submit();

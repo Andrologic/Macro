@@ -5,6 +5,7 @@ import { SystemDesignDialog } from './SystemDesignDialog';
 import { createEmptySystem, readDesign, withDesign, type DesignMetadata } from '../../services/agsdl/design';
 import { createLegacyExample } from '../../services/agsdl/examples';
 import { agsdlSessionKey, useAgsdlStore } from '../../stores/useAgsdlStore';
+import { AgsdlUserError } from '../../services/agsdl/userErrors';
 
 const target = { branchName: 'develop', planId: 'system-design' };
 const key = agsdlSessionKey(target);
@@ -96,7 +97,8 @@ describe('system design editing', () => {
     let attempts = 0;
     useAgsdlStore.setState({ save: async () => { if (++attempts === 1) throw new Error('Storage unavailable'); } });
     await submit();
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('Storage unavailable');
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('The action failed. Try again.');
+    expect(document.body.textContent).not.toContain('Storage unavailable');
     expect(document.body.querySelector('textarea')?.disabled).toBe(true);
     const applied = useAgsdlStore.getState().sessions[key];
     expect(JSON.parse(applied.source)).not.toHaveProperty("annotations");
@@ -107,6 +109,12 @@ describe('system design editing', () => {
     expect(closed).toBe(1);
     expect(useAgsdlStore.getState().sessions[key].version).toBe(applied.version);
     expect(useAgsdlStore.getState().sessions[key].history).toHaveLength(1);
+  });
+  it('keeps a save the user must wait for as its translated reason', async () => {
+    await mount(true); purpose('Prepare a release');
+    useAgsdlStore.setState({ save: async () => { throw new AgsdlUserError('agsdl.userError.saving', 'A save is already in progress.'); } });
+    await submit();
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Wait for the current save to finish.');
   });
   it('does not retry a saved draft over a newer agent edit', async () => {
     await mount(); purpose('Prepare a release');

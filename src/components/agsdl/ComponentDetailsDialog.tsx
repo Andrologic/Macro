@@ -11,6 +11,8 @@ import { macroAgentConfiguration, macroConfigurationChanges, type MacroConfigura
 import { qualifiedModel, useAgsdlModelCatalogue } from "../../stores/useAgsdlModelCatalogue";
 import { MacroAgentConfiguration } from "./MacroAgentConfiguration";
 import type { ViewerCard } from "../../services/agsdl/viewer";
+import { AgsdlUserError } from "../../services/agsdl/userErrors";
+import { agsdlErrorText } from "./errorText";
 
 export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach, onBack }: {
   title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>; onBack?: () => void;
@@ -44,12 +46,12 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     try {
       const store = useAgsdlStore.getState();
       const current = store.sessions[agsdlSessionKey(target)];
-      if (!current || current.version !== draft.version) throw new Error(t("agsdl.viewer.editConflict"));
+      if (!current || current.version !== draft.version) throw new AgsdlUserError("agsdl.viewer.editConflict", t("agsdl.viewer.editConflict"));
       if (!applied) {
         if (draft.modelSelected) {
           const catalogue = await useAgsdlModelCatalogue.getState().load(true);
-          if (!qualifiedModel(catalogue, draft.providerId, draft.modelId)) throw new Error(t("agsdl.macroConfig.unavailable"));
-          if (useAgsdlStore.getState().sessions[agsdlSessionKey(target)]?.version !== draft.version) throw new Error(t("agsdl.viewer.editConflict"));
+          if (!qualifiedModel(catalogue, draft.providerId, draft.modelId)) throw new AgsdlUserError("agsdl.macroConfig.unavailable", t("agsdl.macroConfig.unavailable"));
+          if (useAgsdlStore.getState().sessions[agsdlSessionKey(target)]?.version !== draft.version) throw new AgsdlUserError("agsdl.viewer.editConflict", t("agsdl.viewer.editConflict"));
         }
         const changes = [...componentChanges(draft.fields, draft.values), ...propertyChanges(draft.properties.fields, draft.propertyValues), ...(card && draft.configuration.editable && draft.modelSelected ? macroConfigurationChanges(draft.source, card, draft.providerId, draft.modelId) : [])];
         if (!changes.length) { setDraft(undefined); return; }
@@ -60,8 +62,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
       await store.save(target);
       setDraft(undefined); setApplied(false); setDiscard(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setError(t(message, { defaultValue: message }));
+      setError(agsdlErrorText(error, t));
     } finally { setBusy(false); }
   };
   return <Dialog title={title} onClose={close} closeOnBackdropClick
@@ -70,7 +71,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     <header>{!draft && onBack && <button className="agsdl-icon-button" disabled={busy} onClick={onBack} aria-label={t("agsdl.viewer.backToComponent")} title={t("agsdl.viewer.backToComponent")}><ArrowLeft size={16} /></button>}<strong>{title}</strong><div className="agsdl-header-actions">
       {!draft && onAttach && <button className="agsdl-icon-button" disabled={busy} title={t("agsdl.attachToChat")} aria-label={t("agsdl.attachToChat")} onClick={() => {
         setBusy(true); setError("");
-        void onAttach().then(onClose).catch((error: unknown) => setError(error instanceof Error ? error.message : String(error))).finally(() => setBusy(false));
+        void onAttach().then(onClose).catch((error: unknown) => setError(agsdlErrorText(error, t))).finally(() => setBusy(false));
       }}><MessageSquarePlus size={15} /></button>}
       {!draft && canEdit && card && (card.details.contract !== "agsdl-0.2.0" || hasEditableConfiguration || hasEditablePrompt) && ["invoke", "agent", "Agent", "System", "Instructions", "Interface", "Tool", "Resource", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button>

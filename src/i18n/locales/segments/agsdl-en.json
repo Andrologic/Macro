@@ -421,6 +421,13 @@
       "TARGET_INVALID": "The execution or agent targeted by the request is no longer valid.",
       "TARGET_CLOSED": "The targeted execution was stopped before the request was accepted.",
       "INPUT_CONSTRAINT": "The message does not match what this agent accepts."
-    }
+    },
+    "notChecked": "Not checked yet. Refresh to check."
+  },
+  "actionFailed": "The action failed. Try again.",
+  "userError": {
+    "saving": "Wait for the current save to finish.",
+    "nameRequired": "Give the blueprint a name.",
+    "systemRequired": "Create a system before saving a blueprint."
   }
 }

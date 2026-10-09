@@ -33,6 +33,7 @@ import { localizeDiagnostics, type LocalizedDiagnostic } from "../../services/ag
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
 import { prepareAgsdlChatContext } from "../../stores/agsdl/chatContext";
+import { agsdlErrorText } from "./errorText";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
@@ -76,7 +77,7 @@ export const AgsdlEditor: React.FC<{
         if (active) setError("");
       })
       .catch((error: unknown) => {
-        if (active) setError(String(error));
+        if (active) setError(agsdlErrorText(error));
       });
     return () => {
       active = false;
@@ -88,7 +89,7 @@ export const AgsdlEditor: React.FC<{
       store.undo(target, redo);
       await store.save(target);
       setError("");
-    } catch (error) { setError(String(error)); }
+    } catch (error) { setError(agsdlErrorText(error, t)); }
   };
   const source = captured ? execution.snapshot!.authoredSource : session?.source;
   const sourceDesign = captured ? undefined : session?.design;
@@ -167,8 +168,7 @@ export const AgsdlEditor: React.FC<{
     setAttaching(true); setDiagnosticError("");
     void attachContext({ path: issues.length === 1 ? issues[0].path ?? path : path, title, diagnostic: issues.map(issue => `${issue.rule}: ${issue.details}`).join("\n") })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setDiagnosticError(t(message, { defaultValue: message }));
+        setDiagnosticError(agsdlErrorText(error, t));
       })
       .finally(() => setAttaching(false));
   }}>{t("agsdl.viewer.correctIssue")}</button>;
@@ -316,7 +316,7 @@ export const AgsdlEditor: React.FC<{
               if (!hasIssues) { setOverview(!overview); setSelection(undefined); return; }
               setAttaching(true); setError("");
               void attachContext({ path: "", title: document!.title, diagnostic: [...findings.map(issue => `${issue.rule}: ${issue.details}`), ...document!.unresolved.map(item => JSON.stringify(item))].join("\n") })
-                .catch(error => setError(String(error))).finally(() => setAttaching(false));
+                .catch(error => setError(agsdlErrorText(error, t))).finally(() => setAttaching(false));
             }}>
             {hasIssues ? <CircleAlert size={14} className="agsdl-unresolved" /> : <Info size={14} />}
           </button>}
@@ -345,7 +345,7 @@ export const AgsdlEditor: React.FC<{
       {executionOpen && <ExecutionDialog key={`${key}:${conversationId}:${conversationProjectId}`} target={target} onClose={() => setExecutionOpen(false)} />}
       {(error || session?.error || parsed.error) && (
         <div role="alert" className="agsdl-error">
-          {error || session?.error || (
+          {error || (session?.error && t("agsdl.actionFailed")) || (
             <>
               <p>{t("agsdl.viewer.unreadable")}</p>
               <details className="agsdl-details">
@@ -364,7 +364,7 @@ export const AgsdlEditor: React.FC<{
                 void (session?.dirty ? store.save(target) : store.load(target, true))
                   .then(() => store.validate(target))
                   .then(() => setError(""))
-                  .catch((error: unknown) => setError(String(error)));
+                  .catch((error: unknown) => setError(agsdlErrorText(error, t)));
               }}
             >
               {t("agsdl.retry")}
@@ -405,13 +405,13 @@ export const AgsdlEditor: React.FC<{
                     setAttaching(true);
                     void prepareAgsdlRuntimeContext({ ...target, systemStartId: execution.snapshot!.systemStartId, source: execution.snapshot!.source,
                       activationId: activation.work.activationId, cursor: execution.projection!.cursor, path: selectedCard.path, title: nodeTitle(selectedCard) })
-                      .catch(error => notify.error(t("agsdl.staleChatSelection"), { description: String(error) })).finally(() => setAttaching(false));
+                      .catch(error => notify.error(t("agsdl.staleChatSelection"), { description: agsdlErrorText(error, t) })).finally(() => setAttaching(false));
                   }}>{t("agsdl.attachToChat")}</button>
                   {activation.workState !== "terminal" && <button className="agsdl-link" disabled={execution.stopping} onClick={() => void execution.stop(activation.work.activationId)}>{t("agsdl.execution.stop")}</button>}
                 </div>)}
               </section>}
               {selectedCard && (captured || exactRun) && execution.cardTask && execution.cardTask.run === inspectedRun && execution.cardTask.path === selectedCard.path && execution.cardTask.resolved && <button className="agsdl-link" onClick={() => {
-                void execution.openTask(selectedCard.path).catch(error => notify.info(t("agsdl.execution.taskUnavailable"), { description: t(String(error), { defaultValue: t("agsdl.execution.taskUnavailable") }) }));
+                void execution.openTask(selectedCard.path).catch(error => notify.info(agsdlErrorText(error, t, "agsdl.execution.taskUnavailable")));
               }}>{t("agsdl.execution.openTask")}</button>}
               {selectedCard ? inspect(selectedCard) : selectedEdge ? <>
                 <p>{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.source)!), target: selectedEdge.source })}
@@ -428,7 +428,7 @@ export const AgsdlEditor: React.FC<{
                   {hasIssues && <button className="agsdl-link agsdl-design-pending" disabled={attaching} onClick={() => {
                     setAttaching(true); setDiagnosticError("");
                     void attachContext({ path: "", title: document.title, diagnostic: [...findings.map(issue => `${issue.rule}: ${issue.details}`), ...document.unresolved.map(item => JSON.stringify(item))].join("\n") })
-                      .catch(error => setDiagnosticError(String(error))).finally(() => setAttaching(false));
+                      .catch(error => setDiagnosticError(agsdlErrorText(error, t))).finally(() => setAttaching(false));
                   }}><MessageSquarePlus size={14} />{t("agsdl.reviewWithAI")}</button>}
                   {pendingRequirements.length > 0 && <button className="agsdl-design-pending agsdl-link" onClick={() => { setOverview(false); setDesignOpen(true); }}><CircleAlert size={13} />{t("agsdl.design.pending", { count: pendingRequirements.length })}</button>}
                   <button className="agsdl-link" onClick={() => { setOverview(false); setDesignOpen(true); }}>{t("agsdl.design.settings")}</button>
@@ -441,7 +441,7 @@ export const AgsdlEditor: React.FC<{
         const created = useAgsdlStore.getState().sessions[key];
         try {
           if (created && readDesign(created.source, created.design).requirements.some(item => !item.value.trim())) setDesignOpen(true);
-        } catch (error) { setError(String(error)); }
+        } catch { setError(t("agsdl.viewer.unreadable")); }
       }} />}
       {designOpen && session && <SystemDesignDialog key={key} target={target} canEdit={!captured && (!planStatus || planStatus === "draft")} onAttach={() => attachContext({ path: "", title: document?.title || t("agsdl.design.settings") })} onClose={() => setDesignOpen(false)} />}
       {changesOpen && review && <DesignChangesDialog review={review} onClose={() => setChangesOpen(false)} onSelect={path => {
