@@ -2921,6 +2921,9 @@
     "resultInvalidRequest": "La demande en attente était invalide et a été isolée. Votre profil n’a pas été modifié.",
     "resultLegacy": "Le résultat d’une version précédente est disponible dans les détails du diagnostic.",
     "diagnostics": "Détails du diagnostic",
+    "sessionReplacedTitle": "Session ouverte dans un autre onglet",
+    "sessionReplacedHint": "Rechargez cet onglet pour continuer à utiliser Macro ici.",
+    "sessionReplacedReload": "Recharger",
     "startupTitle": "Récupération du profil nécessaire",
     "startupRecovery": "La restauration des données du navigateur n’a pas pu se terminer. L’archive native de récupération est conservée. Consultez le diagnostic, libérez du stockage local si nécessaire, puis redémarrez Macro pour réessayer."
   }

@@ -31,3 +31,15 @@ test('renders every native recovery status in French with separate technical dia
   expect(startup).toContain('redémarrez Macro');
   expect(startup).toContain('Synthetic quota failure');
 });
+
+
+test('treats a replaced browser session as a reload, not profile recovery', async () => {
+  const i18n = createInstance();
+  await i18n.init({ lng: 'fr', resources: { fr: { translation: fr } } });
+  const error = Object.assign(new Error('Synthetic session handoff'), { code: 'BROWSER_RUNTIME_SESSION_REPLACED' });
+  const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupStartupRecovery error={error} /></I18nextProvider>);
+  expect(html).toContain('Session ouverte dans un autre onglet');
+  expect(html).toContain('Recharger</button>');
+  expect(html).not.toContain('Récupération du profil');
+  expect(html).not.toContain('archive');
+});

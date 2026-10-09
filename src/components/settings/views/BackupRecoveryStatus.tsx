@@ -22,6 +22,14 @@ export function BackupRecoveryStatus({ status }: { status: LocalBackupStatus }) 
 
 export function BackupStartupRecovery({ error }: { error: unknown }) {
   const { t } = useTranslation();
+  const sessionReplaced = typeof error === 'object' && error !== null &&
+    'code' in error && error.code === 'BROWSER_RUNTIME_SESSION_REPLACED';
+  if (sessionReplaced) return <section role="alert" className="space-y-3 p-4 text-sm">
+    <h1>{t('backup.sessionReplacedTitle')}</h1>
+    <p>{t('backup.sessionReplacedHint')}</p>
+    <button type="button" className="rounded-lg border border-border px-3 py-2 hover:bg-accent"
+      onClick={() => window.location.reload()}>{t('backup.sessionReplacedReload')}</button>
+  </section>;
   return <section role="alert" className="space-y-3 p-4 text-sm">
     <h1>{t('backup.startupTitle')}</h1>
     <p>{t('backup.startupRecovery')}</p>
