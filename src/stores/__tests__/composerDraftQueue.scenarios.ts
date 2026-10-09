@@ -121,6 +121,18 @@ export const registerComposerDraftQueueScenarios = (
       });
     });
 
+    it('keeps a plan draft without a conversation across a reload and drops a missing conversation draft', async () => {
+      const pendingKey = 'conversation:pending-architect-develop-plan-1';
+      useChatStore.getState().saveComposerDraftForContext(pendingKey, { text: 'Brouillon du plan', images: [], contextRefs: [] });
+      useChatStore.getState().saveComposerDraftForContext('conversation:missing', { text: 'Disparue', images: [], contextRefs: [] });
+
+      ({ useChatStore } = await context.loadChatStore());
+      await useChatStore.getState().initializeCritical();
+
+      expect(useChatStore.getState().getComposerDraftForContext(pendingKey)?.text).toBe('Brouillon du plan');
+      expect(useChatStore.getState().getComposerDraftForContext('conversation:missing')).toBeNull();
+    });
+
     it('keeps two persisted conversation drafts isolated', () => {
       useChatStore.getState().saveComposerDraftForContext('conversation:conv-a', {
         text: 'Draft A',

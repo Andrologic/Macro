@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs, submissionHiddenContext } from './composerSubmission';
+import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from './composerSubmission';
 import { COMPOSER_REFERENCE_PATTERN, referenceId, referenceText } from './composerReferenceText';
 import type { AgsdlSelectionReference, ContextReference } from '../../types';
 
@@ -74,4 +74,12 @@ it('preserves conversation and AgSDL identities through the shared composer cont
 
 it('refuses an arbitrary marker as resolved AgSDL context', () => {
   expect(() => submissionHiddenContext([], '<agsdl_selection>\nnot a public capture\n</agsdl_selection>')).toThrow('differs');
+});
+
+it('moves only design selections when a draft changes conversation', () => {
+  const design = { id: 'design', kind: 'agsdl', title: 'Release', data: { id: 'design', conversationId: 'pending', planId: 'plan', branchName: 'develop', document: 'agsdl', version: 'v1', persistedRevision: 1, path: '' } } as ContextReference;
+  const runtime = { id: 'runtime', kind: 'agsdl', title: 'Run', data: { id: 'runtime', conversationId: 'pending', contextKind: 'runtime' } } as unknown as ContextReference;
+  const [movedDesign, keptRuntime] = rebindAgsdlContextRefs([design, runtime], 'pending', 'conversation');
+  expect(movedDesign.data).toEqual({ ...(design.data as object), conversationId: 'conversation' });
+  expect(keptRuntime).toBe(runtime);
 });

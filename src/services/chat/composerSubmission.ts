@@ -7,6 +7,16 @@ import type { ContextRefKind, ContextReference, PersistedContextReference, Skill
 export function hasMultipleAgsdlContexts(refs: readonly { kind: ContextRefKind }[] | undefined): boolean {
   return (refs?.filter(ref => ref.kind === 'agsdl').length ?? 0) > 1;
 }
+/** A draft moved to another conversation carries its design selection with it.
+ * Runtime selections stay bound to the native capture of their conversation. */
+export function rebindAgsdlContextRefs(refs: readonly ContextReference[], from: string, to: string): ContextReference[] {
+  return refs.map(ref => {
+    const data = ref.kind === 'agsdl' ? ref.data as { conversationId?: string; contextKind?: string } | undefined : undefined;
+    return data && data.contextKind !== 'runtime' && data.conversationId === from
+      ? { ...ref, data: { ...data, conversationId: to } } as ContextReference
+      : ref;
+  });
+}
 export const persistableContextRefs = (
   refs: readonly ContextReference[],
 ): PersistedContextReference[] | undefined => {

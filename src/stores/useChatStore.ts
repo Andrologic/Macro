@@ -1,5 +1,5 @@
 import { assertRuntimeSelectionDestination } from "../services/agsdl/runtimeSelection";
-import { hasMultipleAgsdlContexts, persistableContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
+import { hasMultipleAgsdlContexts, persistableContextRefs, rebindAgsdlContextRefs, submissionHiddenContext } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
@@ -752,6 +752,7 @@ const branchNameMatchesCandidate = (
 type ChatHydrationStatus = "idle" | "hydrating" | "ready" | "error";
 type ChatRestoreStatus = "idle" | "resolving" | "ready" | "error";
 type ChatContextKey = string;
+const PENDING_ARCHITECT_CONVERSATION_PREFIX = "pending-architect-";
 
 interface ChatSendResult {
   status: "sent";
@@ -913,6 +914,9 @@ interface ChatStore {
   architectPlanNamingRecovery: ArchitectPlanNamingRecoveryState | null;
   pendingComposerDraftByConversationId: Record<string, string>;
   composerDraftsByContextKey: Record<string, ComposerDraft>;
+  /** A first Architect draft keeps its pending key until the plan references the
+   * created conversation; the pending key then forwards to that conversation. */
+  composerDraftConversationAliases: Record<string, string>;
   addMessage: (message: ChatMessage) => void;
   clearLastError: () => void;
   updateMessageContent: (messageId: string, content: string) => void;
@@ -970,6 +974,8 @@ interface ChatStore {
     deferredUntilTurnCompletion?: boolean;
   }>;
   getPendingArchitectConversationTarget: (conversationId: string) => { planId: string; branchName: string } | null;
+  /** The conversation whose composer draft this conversation shares while a first Architect send settles. */
+  resolveComposerDraftConversationId: (conversationId: string) => string;
   ensureConversationForCurrentMode: (lifecycle?: LifecycleContext, isOwnerCurrent?: () => boolean) => Promise<string | null>;
   reapplySelectionForCurrentContext: (lifecycle?: LifecycleContext) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -1491,6 +1497,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const awaitingResponseReconciliationTaskIds = new Set<string>();
   let suppressedSelectionPersistenceCount = 0;
   const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
+  const setComposerDraftConversationAlias = (from: string, to: string, clear?: string) =>
+    set((state) => {
+      const next = { ...state.composerDraftConversationAliases };
+      if (clear) delete next[clear];
+      next[from] = to;
+      return { composerDraftConversationAliases: next };
+    });
   const pendingArchitectConversationDetailsById = new Map<
     string,
     {
@@ -5903,7 +5916,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           if (contextKey.startsWith("conversation:")) {
             const conversationId = contextKey.slice("conversation:".length);
             if (
-              (pruneMissingConversations && !visibleConversationIds.has(conversationId)) ||
+              (pruneMissingConversations && !visibleConversationIds.has(conversationId) &&
+                // A plan recreates its pending conversation with the same id when reopened.
+                !conversationId.startsWith(PENDING_ARCHITECT_CONVERSATION_PREFIX)) ||
               archivedConversationIds.has(conversationId)
             ) {
               return [];
@@ -8250,6 +8265,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         planId: params.architectPlan.planId,
         conversationId: params.conversationId,
       });
+      const draftConversationId = get().composerDraftConversationAliases[params.conversationId];
+      if (draftConversationId) {
+        // The plan now reopens this conversation, so its draft moves here.
+        setComposerDraftConversationAlias(draftConversationId, params.conversationId, params.conversationId);
+        get().migrateComposerDraftContext(
+          `conversation:${draftConversationId}`,
+          `conversation:${params.conversationId}`,
+        );
+      }
       clearPendingArchitectConversationForPlan({
         targetBranch: params.architectPlan.targetBranch,
         planId: params.architectPlan.planId,
@@ -10270,7 +10294,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     fallbackProjectId: string | null;
     fallbackGroupId: string | null;
   }): Conversation => {
-    const id = `pending-architect-${params.targetBranch}-${params.planId}`;
+    const id = `${PENDING_ARCHITECT_CONVERSATION_PREFIX}${params.targetBranch}-${params.planId}`;
     const existing = get().conversations.find(
       (conversation) => conversation.id === id,
     );
@@ -10373,6 +10397,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ),
       materialized.id,
     );
+    setComposerDraftConversationAlias(materialized.id, conversationId);
     replacePendingArchitectConversationId(conversationId, materialized.id);
     persistSelectionForContext("Architect", materialized.id);
 
@@ -11861,6 +11886,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     architectPlanNamingRecovery: null,
     pendingComposerDraftByConversationId: {},
     composerDraftsByContextKey: {},
+    composerDraftConversationAliases: {},
     composerContextRefs: [],
 
     addMessage: (message) => {
@@ -12465,6 +12491,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const details = pendingArchitectConversationDetailsById.get(conversationId);
       return details ? { planId: details.planId, branchName: details.targetBranch } : null;
     },
+
+    resolveComposerDraftConversationId: (conversationId) =>
+      get().composerDraftConversationAliases[conversationId] ?? conversationId,
 
     selectConversation: async (conversationId) => {
       if (get().hydrationStatus === "hydrating") {
@@ -13355,6 +13384,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const conversationId = toContextKey.startsWith("conversation:")
           ? toContextKey.slice("conversation:".length)
           : null;
+        const fromConversationId = fromContextKey.startsWith("conversation:")
+          ? fromContextKey.slice("conversation:".length)
+          : null;
         if (
           !conversationId ||
           (!deletedConversationIds.has(conversationId) &&
@@ -13362,7 +13394,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               .getState()
               .archivedConversationIds.has(conversationId))
         ) {
-          next[toContextKey] = draft;
+          next[toContextKey] = conversationId && fromConversationId
+            ? { ...draft, contextRefs: rebindAgsdlContextRefs(draft.contextRefs, fromConversationId, conversationId) }
+            : draft;
         }
         persistComposerDrafts(next);
         return { composerDraftsByContextKey: next };
@@ -14912,6 +14946,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       launchedAgentCodeReplayConversationIds.clear();
       cancelStream();
       set({
+        composerDraftConversationAliases: {},
         conversationRuntimeById: {},
         standaloneTaskLaunchByConversationId: {},
         conversationCompactionStatusById: {},

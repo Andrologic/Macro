@@ -976,6 +976,35 @@ export const registerArchitectLifecycleScenarios = (
       });
     });
 
+    it('moves the first Architect draft to the conversation the plan references after the first send', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-first-draft', slug: 'plan-first-draft', title: 'plan-first-draft', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const selection = { id: 'selection-1', conversationId: pendingId, planId: plan.id, branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+      useChatStore.getState().saveComposerDraftForContext(`conversation:${pendingId}`, {
+        text: 'Suite du brouillon', images: [], contextRefs: [{ id: selection.id, kind: 'agsdl', title: selection.title, data: selection }],
+      });
+
+      await useChatStore.getState().sendMessage({ conversationId: pendingId, content: 'Premier message.' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const boundId = architectPlans.get(plan.id)?.conversationId as string;
+      expect(boundId).toBeTruthy();
+      expect(useChatStore.getState().resolveComposerDraftConversationId(pendingId)).toBe(boundId);
+      expect(useChatStore.getState().resolveComposerDraftConversationId(boundId)).toBe(boundId);
+      expect(useChatStore.getState().getComposerDraftForContext(`conversation:${pendingId}`)).toBeNull();
+      expect(useChatStore.getState().getComposerDraftForContext(`conversation:${boundId}`)).toEqual({
+        text: 'Suite du brouillon', images: [],
+        contextRefs: [expect.objectContaining({ data: { ...selection, conversationId: boundId } })],
+      });
+    });
+
     it('keeps the materialized Architect session as the owner of empty-placeholder cleanup', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Architect';

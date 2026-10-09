@@ -1,7 +1,7 @@
 import { captureAgsdlChatContext, getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { createComposerTransaction } from "../../services/chat/composerTransaction";
 import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
-import { captureComposerSnapshot, hasMultipleAgsdlContexts, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
+import { captureComposerSnapshot, hasMultipleAgsdlContexts, rebindAgsdlContextRefs, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
 import type { ContextRefKind } from "../../types";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
@@ -1257,10 +1257,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearComposerDraftForContext = () => undefined,
     migrateComposerDraftContext = () => undefined,
     replaceComposerContextRefs = () => undefined,
+    resolveComposerDraftConversationId = (conversationId: string) => conversationId,
+    draftConversationId,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
+    draftConversationId: state.selectedConversationId
+      ? state.resolveComposerDraftConversationId?.(state.selectedConversationId) ?? state.selectedConversationId
+      : null,
     activeContextKey: state.activeContextKey,
     selectedConversationContextKey: state.selectedConversationContextKey,
     selectedConversationRuntime: state.selectedConversationId
@@ -1325,6 +1330,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getComposerDraftForContext: state.getComposerDraftForContext,
     clearComposerDraftForContext: state.clearComposerDraftForContext,
     migrateComposerDraftContext: state.migrateComposerDraftContext,
+    resolveComposerDraftConversationId: state.resolveComposerDraftConversationId,
     replaceComposerContextRefs: state.replaceComposerContextRefs,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
@@ -1406,8 +1412,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     EMPTY_COMPOSER_DRAFT_SNAPSHOT
   );
   const pendingPromptHistoryTextRef = useRef<string | null>(null);
-  const composerDraftContextKey = selectedConversationId
-    ? `conversation:${selectedConversationId}`
+  const composerDraftContextKey = draftConversationId
+    ? `conversation:${draftConversationId}`
     : activeContextKey
       ? `context:${activeContextKey}`
       : `mode:${mode}`;
@@ -1418,6 +1424,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
   const skipComposerDraftPersistenceRef = useRef(false);
   const pendingSentComposerDraftContextKeysRef = useRef(new Set<string>());
+  // A first Architect draft moves to its conversation once the plan references it.
+  const isComposerDraftHandoff = useCallback((fromKey: string | null, toKey: string) =>
+    Boolean(fromKey?.startsWith('conversation:')) &&
+    `conversation:${resolveComposerDraftConversationId(fromKey!.slice('conversation:'.length))}` === toKey,
+  [resolveComposerDraftConversationId]);
   const composerDraftRevisionRef = useRef(0);
   const latestComposerDraftRef = useRef({
     text: '',
@@ -1819,14 +1830,34 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   useLayoutEffect(() => {
     if (renderedComposerDraftContextKeyRef.current === composerDraftContextKey) return;
+    const handoff = isComposerDraftHandoff(renderedComposerDraftContextKeyRef.current, composerDraftContextKey);
     renderedComposerDraftContextKeyRef.current = composerDraftContextKey;
+    if (handoff) return;
     composerDraftRevisionRef.current += 1;
     goalComposerEditSessionRef.current = null;
-  }, [composerDraftContextKey]);
+  }, [composerDraftContextKey, isComposerDraftHandoff]);
 
   useEffect(() => {
     const previousContextKey = activeComposerDraftContextKeyRef.current;
     if (previousContextKey === composerDraftContextKey) return;
+
+    if (isComposerDraftHandoff(previousContextKey, composerDraftContextKey)) {
+      // Same composer and draft under the conversation's own key; nothing to reload.
+      const fromConversationId = previousContextKey!.slice('conversation:'.length);
+      migrateComposerDraftContext(previousContextKey!, composerDraftContextKey);
+      if (pendingSentComposerDraftContextKeysRef.current.delete(previousContextKey!)) {
+        pendingSentComposerDraftContextKeysRef.current.add(composerDraftContextKey);
+      }
+      const refs = latestComposerDraftRef.current.contextRefs;
+      const reboundRefs = selectedConversationId
+        ? rebindAgsdlContextRefs(refs, fromConversationId, selectedConversationId)
+        : refs;
+      if (reboundRefs.some((ref, index) => ref !== refs[index])) {
+        replaceComposerContextRefs(reboundRefs, selectedConversationId);
+      }
+      activeComposerDraftContextKeyRef.current = composerDraftContextKey;
+      return;
+    }
 
     if (previousContextKey) {
       const draftToSave = composerEditSession
@@ -1923,6 +1954,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerEditSession,
     goalComposerEditSession,
     getComposerDraftForContext,
+    isComposerDraftHandoff,
+    migrateComposerDraftContext,
     peekComposerDraft,
     acknowledgeComposerDraft,
     replaceComposerContextRefs,
@@ -3067,7 +3100,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       notify.warning(agsdlT("agsdl.multipleChatSelections"));
       return;
     }
-    const agsdlContext = getAgsdlContext(snapshot.contextRefs);
+    const draftAgsdlContext = getAgsdlContext(snapshot.contextRefs);
+    // A selection attached before the plan's conversation existed belongs to the created one.
+    const agsdlContext = draftAgsdlContext && selectedConversationId &&
+      draftAgsdlContext.contextKind !== 'runtime' &&
+      draftAgsdlContext.conversationId !== selectedConversationId &&
+      resolveComposerDraftConversationId(draftAgsdlContext.conversationId) === resolveComposerDraftConversationId(selectedConversationId)
+      ? { ...draftAgsdlContext, conversationId: selectedConversationId }
+      : draftAgsdlContext;
 
     if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {
       notify.warning(agsdlT("agsdl.staleChatSelection"));
@@ -3220,7 +3260,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if (agsdlContext?.contextKind === 'runtime' && (conversationId !== agsdlContext.conversationId || !ownsUnchangedComposer())) return;
-    const conversationDraftKey = `conversation:${conversationId}`;
+    const conversationDraftKey = `conversation:${resolveComposerDraftConversationId(conversationId)}`;
     migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = goalCommand?.kind === 'activate' ? goalCommand.objective : text;
     const imagesForMessage = snapshot.images;
