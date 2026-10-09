@@ -985,7 +985,9 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
 
-    let mut transaction = pool.begin().await?;
+    // Acquire the writer before any reads. A deferred WAL transaction cannot
+    // upgrade a stale read snapshot while another writer holds the database.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         r#"
         INSERT INTO messages (
@@ -1153,7 +1155,9 @@ pub async fn update_message_content(
         completion_reason,
     } = input;
 
-    let mut transaction = pool.begin().await?;
+    // Acquire the writer before any reads. A deferred WAL transaction cannot
+    // upgrade a stale read snapshot while another writer holds the database.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     let conversation_id: Option<String> =
         sqlx::query_scalar("SELECT conversation_id FROM messages WHERE id = ?")
             .bind(id)
@@ -3522,6 +3526,93 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed search message");
+    }
+
+    #[tokio::test]
+    async fn message_writes_wait_for_concurrent_writer_without_losing_content() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "writer-chat", "Writer contention").await;
+        seed_search_message(&pool, "writer-message", "writer-chat", "Initial content").await;
+
+        // Pilot receipts and transcript writes share this pool. A writer may
+        // already be active when a streaming message needs to be persisted.
+        let mut writer = pool.begin_with("BEGIN IMMEDIATE").await.expect("writer");
+        sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES ('writer-test', '{}', '2026-10-10T10:00:00Z')")
+            .execute(&mut *writer)
+            .await
+            .expect("hold writer");
+        let update_pool = pool.clone();
+        let mut update = tokio::spawn(async move {
+            update_message_content(
+                &update_pool,
+                UpdateMessageContentInput {
+                    id: "writer-message",
+                    turn_id: None,
+                    content: "Updated content",
+                    token_count: None,
+                    tool_traces_json: None,
+                    hidden_context: None,
+                    provider_input_items_json: None,
+                    provider_turn_state_json: None,
+                    context_refs_json: None,
+                    completion_reason: None,
+                },
+            )
+            .await
+        });
+        let create_pool = pool.clone();
+        let mut create = tokio::spawn(async move {
+            create_message(
+                &create_pool,
+                CreateMessageInput {
+                    id: Some("new-message".into()),
+                    conversation_id: "writer-chat".into(),
+                    turn_id: None,
+                    role: "user".into(),
+                    content: "New reply".into(),
+                    token_count: None,
+                    tool_traces_json: None,
+                    hidden_context: None,
+                    provider_input_items_json: None,
+                    provider_turn_state_json: None,
+                    context_refs_json: None,
+                    completion_reason: None,
+                },
+            )
+            .await
+        });
+        let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut update).await;
+        let early_create =
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut create).await;
+        writer.commit().await.expect("release writer");
+        assert!(
+            early_create.is_err(),
+            "message insert must wait for writer, got {early_create:?}"
+        );
+        assert!(
+            early.is_err(),
+            "message update must wait for the writer, got {early:?}"
+        );
+        update
+            .await
+            .expect("update task")
+            .expect("persist message after writer");
+        create
+            .await
+            .expect("create task")
+            .expect("persist new reply after writer");
+        let stored: String =
+            sqlx::query_scalar("SELECT content FROM messages WHERE id = 'writer-message'")
+                .fetch_one(&pool)
+                .await
+                .expect("stored content");
+        assert_eq!(stored, "Updated content");
+        let count: i64 =
+            sqlx::query_scalar("SELECT message_count FROM conversations WHERE id = 'writer-chat'")
+                .fetch_one(&pool)
+                .await
+                .expect("metadata");
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
