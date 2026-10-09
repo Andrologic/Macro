@@ -536,7 +536,7 @@ fn responses_message_content_to_text(content: Option<&Value>) -> String {
         .flatten()
         .filter_map(|part| {
             let kind = part.get("type").and_then(Value::as_str)?;
-            if kind != "output_text" && kind != "text" {
+            if kind != "output_text" && kind != "input_text" && kind != "text" {
                 return None;
             }
             part.get("text")
@@ -1148,6 +1148,24 @@ mod tests {
         assert_eq!(messages[0]["content"], "Initial policy\n\nRecovery policy");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn native_messages_preserve_structured_user_input_text() {
+        let mut user = message("user", "Display fallback");
+        user.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [
+                { "type": "input_text", "text": "Question from mobile" },
+                { "type": "input_text", "text": " — with context" }
+            ]
+        })]);
+        let mut request = request(None);
+        request.messages = vec![user];
+        let messages = serialize_messages(&request).expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "Question from mobile — with context");
     }
 
     #[test]
