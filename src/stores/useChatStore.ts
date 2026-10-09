@@ -13493,12 +13493,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskId: activeQuestionnaire.taskId,
         hiddenContext: responseArtifacts.hiddenContext,
         providerInputItems,
-        pilotTarget: options?.pilotActionToken && options.taskId
-          ? {
-            taskId: options.taskId,
-            actionToken: options.pilotActionToken,
-            beforeEffect: options.beforeEffect,
-          }
+        pilotTarget: options?.pilotActionToken
+          ? options.taskId
+            ? {
+              taskId: options.taskId,
+              actionToken: options.pilotActionToken,
+              beforeEffect: options.beforeEffect,
+            }
+            : {
+              mode: "Chat",
+              actionToken: options.pilotActionToken,
+              beforeEffect: options.beforeEffect,
+            }
           : undefined,
       });
 
