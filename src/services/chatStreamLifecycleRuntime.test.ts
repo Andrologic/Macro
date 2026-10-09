@@ -380,10 +380,31 @@ describe("createChatStreamLifecycleRuntime", () => {
 
     expect(events).toContain("task-failed");
     expect(events).toContain("persist-partial");
+    expect(events.filter(event => event === "metadata")).toHaveLength(1);
+    expect(events.indexOf("metadata")).toBeGreaterThan(events.indexOf("persist-partial"));
     expect(events).toContain("stream-error:transcript:assistant-1");
     expect(events).not.toContain("remove-placeholder");
     expect(getMessage().content).toContain("partial");
     expect(getMessage().content).toContain("Erreur du provider");
+  });
+
+  test("does not publish partial metadata after persistence fails or its turn departs", async () => {
+    for (const departed of [false, true]) {
+      const { runtime, events } = makeRuntime({
+        message: makeMessage({ content: "partial" }),
+        modeAtSend: "Architect",
+        overrides: {
+          isTurnCurrent: () => !departed,
+          persistAssistantPartialStreamResult: mock(async () => {
+            if (!departed) throw new Error("SQLite unavailable");
+          }),
+        },
+      });
+      await runtime.onError(Object.assign(new Error("provider unavailable"), {
+        providerError: true, kind: "network", retryable: true,
+      }), makeControls());
+      expect(events).not.toContain("metadata");
+    }
   });
 
   test("macro error after progress preserves the partial assistant message", async () => {

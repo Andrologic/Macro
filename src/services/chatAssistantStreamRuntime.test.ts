@@ -344,7 +344,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
         tool_traces: [{ ...trace, recovery_state: "unknown" }],
       });
       expect(h.settled.mock.calls).toEqual([["a"]]);
-      expect(h.sync).not.toHaveBeenCalled();
+      expect(h.sync.mock.calls).toEqual([[params.modeAtSend, params.conversationId, params.architectPlanAtSend]]);
       expect(h.deleteMessagesAfter).not.toHaveBeenCalled();
     });
   }

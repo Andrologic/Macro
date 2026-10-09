@@ -261,6 +261,15 @@ export const createChatStreamLifecycleRuntime = (params: {
       await adapters.persistAssistantPartialStreamResult(message);
     } catch (persistError) {
       adapters.warn(warning, persistError);
+      return;
+    }
+    // Interrupted responses are durable too: keep the captured plan transcript
+    // aligned after saving, without publishing work from a departed turn.
+    if (!(adapters.isTurnCurrent?.() ?? true)) return;
+    try {
+      await adapters.syncMacroMetadataAfterStream(stream.modeAtSend, stream.conversationId);
+    } catch (syncError) {
+      adapters.warn("Failed to sync metadata after partial assistant persistence:", syncError);
     }
   };
 

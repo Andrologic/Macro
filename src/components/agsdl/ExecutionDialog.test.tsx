@@ -85,7 +85,7 @@ it("opens read-only without calling support missing, drops diagnostics of anothe
   expect(start.disabled).toBe(true);
   expect(start.title).toBe('Not checked yet. Refresh to check.');
   expect(panel.innerHTML).not.toContain('Unsupported by this runtime');
-  act(() => useAgsdlExecutionStore.setState({ preflight: { authoredSource: JSON.stringify({ flow: { entry: 'ask' } }), productRuntimeAvailable: false, diagnostics: [] } as NonNullable<ReturnType<typeof useAgsdlExecutionStore.getState>['preflight']> }));
+  act(() => useAgsdlExecutionStore.setState({ preflight: { source: useAgsdlExecutionStore.getState().snapshot!.source, authoredSource: JSON.stringify({ flow: { entry: 'ask' } }), productRuntimeAvailable: false, diagnostics: [], staticValid: true, runtimeSupported: true, registryVersion: 'test', incomplete: false } }));
   expect(panel.querySelector('textarea')).toBeNull();
   act(() => useAgsdlExecutionStore.setState({ preflight: undefined }));
 
