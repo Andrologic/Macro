@@ -422,7 +422,12 @@
       "TARGET_CLOSED": "La ejecución de destino se detuvo antes de aceptar la solicitud.",
       "INPUT_CONSTRAINT": "El mensaje no coincide con lo que acepta este agente."
     },
-    "notChecked": "Aún no comprobado. Actualice para comprobar."
+    "notChecked": "Aún no comprobado. Actualice para comprobar.",
+    "empty": "No hay ejecuciones",
+    "emptyHint": "Los sistemas ejecutados aparecerán aquí.",
+    "firstMessageRequired": "Envía un primer mensaje en este plan para acceder al seguimiento.",
+    "loading": "Cargando ejecuciones…",
+    "readFailed": "No se pudieron cargar las ejecuciones."
   },
   "actionFailed": "La acción falló. Inténtelo de nuevo.",
   "userError": {

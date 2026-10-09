@@ -31,7 +31,7 @@ export function MacroAgentConfiguration({ configuration, providerId, modelId, di
         </select></label>
       {loading && <p role="status">{t("agsdl.loading")}</p>}
       {error && <p role="status">{t("agsdl.macroConfig.unavailable")} <button type="button" onClick={() => void load(true).catch(() => {})}>{t("agsdl.retry")}</button></p>}
-      {catalogue?.unavailableProviders.map(provider => <p className="agsdl-muted" key={provider.providerId}>{provider.message}</p>)}
+      {!loading && !error && catalogue && qualified.length === 0 && <p className="agsdl-muted">{t("agsdl.macroConfig.unavailable")}</p>}
     </div> : <p className="agsdl-muted">{t("agsdl.macroConfig.unsupported", { defaultValue: "This runtime configuration cannot be edited here. Ask the agent to prepare an unambiguous Macro binding." })}</p>}
   </section>;
 }

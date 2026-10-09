@@ -204,6 +204,12 @@ it("never shows a latest run whose snapshot has another owner", async () => {
   expect(store.getState().snapshot).toBeUndefined();
   expect(store.getState().projection).toBeUndefined();
   expect(store.getState().error).toBe("agsdl.execution.error");
+  // A failed snapshot read must not make the same owner permanently unopenable.
+  snapshotOwner = owner;
+  await store.getState().open({ planId: owner.planId, branchName: owner.branch }, selected);
+  expect(store.getState().error).toBeUndefined();
+  expect(store.getState().loaded).toBe(true);
+  expect(store.getState().snapshot?.systemStartId).toBe("started" as SystemStartId);
 });
 it("keeps an open request first at open and never submits, acknowledges or replaces it", async () => {
   await ready(); await store.getState().start("Message");

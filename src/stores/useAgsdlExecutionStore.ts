@@ -23,6 +23,8 @@ interface ExecutionView {
   diagnosticPinned: boolean;
   preflight?: ExecutionPreflight;
   captured: boolean;
+  /** The native runs and intents of this scope were read at least once. */
+  loaded: boolean;
   busy: boolean;
   stale: boolean;
   error?: string;
@@ -52,7 +54,7 @@ interface ExecutionView {
   task: (path: string) => Promise<ResolvedCardTask | null>;
 }
 const sameSourceOwner = (left: SourceOwner, right: SourceOwner) => left.projectId === right.projectId && left.planId === right.planId && left.branch === right.branch;
-const empty = { runs: [], nextRuns: null, captured: false, busy: false, stale: false, diagnosticPinned: false, intent: undefined, intentBusy: false, stopping: false };
+const empty = { runs: [], nextRuns: null, captured: false, loaded: false, busy: false, stale: false, diagnosticPinned: false, intent: undefined, intentBusy: false, stopping: false };
 let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
@@ -176,7 +178,8 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     async open(target, conversationId) {
       const conversation = useChatStore.getState().conversations.find(item => item.id === conversationId);
       if (!conversation?.project_id) { ++generation; ++scopeGeneration; set({ ...empty, owner: undefined, conversationId: undefined }); return; }
-      if (ownerMatches(get().owner, target, conversation.project_id) && get().conversationId === conversationId) return;
+      // Same scope: keep what is shown, unless the last read failed (retry).
+      if (ownerMatches(get().owner, target, conversation.project_id) && get().conversationId === conversationId && ((get().loaded && !get().error) || get().busy)) return;
       ++scopeGeneration;
       set({ ...empty, snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, error: undefined,
         owner: { projectId: conversation.project_id, planId: target.planId, branch: target.branchName }, conversationId });
@@ -185,7 +188,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         const [intents, page] = await Promise.all([ipc.readExecutionIntents({ scope: scopeOf(initial) }), ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 })]);
         if (intents.length > 1 || page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Native scope read differs");
         if (!(await current())) return;
-        set({ intent: intents[0], runs: page.runs, nextRuns: page.nextCursor });
+        set({ intent: intents[0], runs: page.runs, nextRuns: page.nextCursor, loaded: true });
         // An open intent keeps priority and is only shown; an admitted one shows its run.
         if (intents[0]) {
           const admitted = intents[0].state.kind === "admitted" ? intents[0].state.admission : undefined;
@@ -208,7 +211,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       if (page.runs.some(run => !ownerMatches(run.source.owner, { planId: initial.owner!.planId, branchName: initial.owner!.branch }, initial.owner!.projectId))) throw new Error("Run source owner differs");
       const intents = await ipc.readExecutionIntents({ scope: scopeOf(initial) });
       const result = initial.snapshot ? await readRun(initial.snapshot) : {};
-      if (await current()) set({ ...result, preflight, runs: page.runs, nextRuns: page.nextCursor, ...(get().intentBusy ? {} : { intent: intents[0] }) });
+      if (await current()) set({ ...result, preflight, runs: page.runs, nextRuns: page.nextCursor, loaded: true, ...(get().intentBusy ? {} : { intent: intents[0] }) });
     }),
     async refreshRun() {
       if (get().busy || get().stale || !get().snapshot) return;

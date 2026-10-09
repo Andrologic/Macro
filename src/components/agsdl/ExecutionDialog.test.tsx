@@ -8,14 +8,14 @@ import type { PublicSnapshot, PublicProjection, DeliveryId, ExactJsonText, Publi
 import i18n from "../../i18n";
 let root: Root | undefined;
 let host: HTMLDivElement;
-afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlExecutionStore.setState({ owner: undefined, snapshot: undefined, projection: undefined, intent: undefined, intentBusy: false, stopping: false }); useChatStore.setState({ selectedConversationId: null, conversations: [] }); });
+afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlExecutionStore.setState({ loaded: false, busy: false, error: undefined, runs: [], owner: undefined, snapshot: undefined, projection: undefined, intent: undefined, intentBusy: false, stopping: false }); useChatStore.setState({ selectedConversationId: null, conversations: [] }); });
 it("offers a simple prompt and real Agent selection while keeping technical identities and error detail out of visible text", async () => {
   const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
   const source = { owner, revision: '9007199254740993', sourceSha256: 'a'.repeat(64) };
   const authoredSource = '{"agents":{"real-agent":{}}}';
   spyOn(useAgsdlExecutionStore.getState(), 'open').mockResolvedValue(undefined);
   useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
-  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', busy: false, error: 'A public error detail',
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', loaded: true, busy: false, error: 'A public error detail',
     preflight: { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: false, registryVersion: 'registry', diagnostics: [{ code: 'CODE', pointer: '', message: 'A preflight error detail' }], incomplete: false },
     snapshot: { source, authoredSource, systemStartId: 'hidden-run-identity' } as PublicSnapshot,
     projection: { source, systemStartId: 'hidden-run-identity', cursor: '9007199254740995', agents: [], activations: [], nextPage: null, systemStop: { kind: 'none' } } as unknown as PublicProjection,
@@ -24,11 +24,14 @@ it("offers a simple prompt and real Agent selection while keeping technical iden
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
   await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
   const panel = document.body.querySelector('[role="dialog"]')!;
-  for (const detail of ['hidden-run-identity', source.sourceSha256, source.revision, '9007199254740995', 'A public error detail', 'A preflight error detail', 'A runtime error detail', 'Supported by this runtime', 'Product execution unavailable']) expect(panel.textContent).not.toContain(detail);
+  for (const detail of ['hidden-run-identity', source.sourceSha256, source.revision, '9007199254740995', 'A public error detail', 'A preflight error detail', 'A runtime error detail', 'Supported by this runtime']) expect(panel.textContent).not.toContain(detail);
+  expect(panel.querySelector('textarea')).toBeNull();
+  expect(panel.querySelector('select[aria-label="Agent"]')).toBeNull();
+  expect(panel.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.disabled).toBe(true);
+  expect([...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Send message')).toBeUndefined();
+  act(() => useAgsdlExecutionStore.setState({ preflight: { ...useAgsdlExecutionStore.getState().preflight!, productRuntimeAvailable: true } }));
   expect(panel.querySelector('textarea')).not.toBeNull();
   expect(panel.querySelector('select[aria-label="Agent"]')?.textContent).toContain('real-agent');
-  expect(panel.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.disabled).toBe(true);
-  expect([...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Send message')?.disabled).toBe(true);
   expect(panel.querySelector('[title="A runtime error detail"] input[type="checkbox"]')).not.toBeNull();
   await act(async () => { await i18n.changeLanguage('fr'); });
   for (const [key, text] of [
@@ -39,10 +42,10 @@ it("offers a simple prompt and real Agent selection while keeping technical iden
     ['retryable', 'L’exécution n’est pas encore disponible. Reprendre conserve la même demande.'],
   ]) {
     act(() => useAgsdlExecutionStore.setState({ error: `agsdl.execution.${key}` }));
-    expect(panel.querySelector('[role="img"].agsdl-unresolved')?.getAttribute('title')).toBe(text);
+    expect(panel.querySelector('[role="alert"]')?.textContent).toContain(text);
   }
   act(() => useAgsdlExecutionStore.setState({ error: 'Internal transport detail in English' }));
-  expect(panel.querySelector('[role="img"].agsdl-unresolved')?.getAttribute('title')).toBe(i18n.t('agsdl.execution.error', { ns: 'agsdl' }));
+  expect(panel.querySelector('[role="alert"]')?.textContent).toContain(i18n.t('agsdl.execution.error', { ns: 'agsdl' }));
   expect(panel.textContent).not.toContain('Internal transport detail in English');
   await act(async () => { await i18n.changeLanguage('en'); });
   act(() => useAgsdlExecutionStore.setState({
@@ -74,7 +77,7 @@ it("opens read-only without calling support missing, drops diagnostics of anothe
   const chatContext = await import("../../stores/agsdl/chatContext");
   spyOn(chatContext, 'prepareAgsdlRuntimeContext').mockRejectedValue({ code: 'UNEXPECTED_ERROR', message: 'native transport detail' });
   useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
-  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', busy: false, error: undefined, preflight: undefined, runs: [], approvals: undefined, stale: false, ...run('run-a') });
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', loaded: true, busy: false, error: undefined, preflight: undefined, runs: [], approvals: undefined, stale: false, ...run('run-a') });
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
   await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
   const panel = document.body.querySelector('[role="dialog"]')!;
@@ -82,6 +85,9 @@ it("opens read-only without calling support missing, drops diagnostics of anothe
   expect(start.disabled).toBe(true);
   expect(start.title).toBe('Not checked yet. Refresh to check.');
   expect(panel.innerHTML).not.toContain('Unsupported by this runtime');
+  act(() => useAgsdlExecutionStore.setState({ preflight: { authoredSource: JSON.stringify({ flow: { entry: 'ask' } }), productRuntimeAvailable: false, diagnostics: [] } as NonNullable<ReturnType<typeof useAgsdlExecutionStore.getState>['preflight']> }));
+  expect(panel.querySelector('textarea')).toBeNull();
+  act(() => useAgsdlExecutionStore.setState({ preflight: undefined }));
 
   const checkbox = () => panel.querySelector<HTMLInputElement>('.agsdl-execution-diagnostic input')!;
   await act(async () => { checkbox().click(); });
@@ -92,4 +98,30 @@ it("opens read-only without calling support missing, drops diagnostics of anothe
   await act(async () => { checkbox().click(); });
   await act(async () => { panel.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!.click(); });
   expect(notified).toHaveBeenCalledWith('The document changed. Attach the selection again before sending.', { description: 'The action failed. Try again.' });
+});
+
+it("distinguishes loading, read failure and an empty execution history without offering a fake run", async () => {
+  const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
+  const open = spyOn(useAgsdlExecutionStore.getState(), 'open').mockResolvedValue(undefined);
+  useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', loaded: false, busy: true, error: undefined, snapshot: undefined, runs: [], preflight: undefined });
+  host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
+  const panel = document.body.querySelector('[role="dialog"]')!;
+  expect(panel.querySelector('[role="status"]')?.textContent).toContain('Loading executions');
+  expect(panel.querySelector('select')).toBeNull();
+  act(() => useAgsdlExecutionStore.setState({ busy: false, error: 'Native failure secret' }));
+  expect(panel.querySelector('[role="alert"]')?.textContent).toContain('Could not load executions.');
+  expect(panel.textContent).not.toContain('Native failure secret');
+  const retries = open.mock.calls.length;
+  await act(async () => { [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Retry')!.click(); });
+  expect(open.mock.calls.length).toBe(retries + 1);
+  act(() => useAgsdlExecutionStore.setState({ loaded: true, error: undefined }));
+  expect(panel.textContent).toContain('No executions yet');
+  expect(panel.querySelector('select')).toBeNull();
+  expect(panel.querySelector('[aria-label="Start"]')).toBeNull();
+  expect(panel.querySelector('[aria-label="Close"]')).not.toBeNull();
+  act(() => useChatStore.setState({ selectedConversationId: null }));
+  expect(panel.textContent).toContain('Send a first message in this plan');
+  expect(panel.textContent).not.toContain('attaching AgSDL context');
 });

@@ -422,7 +422,12 @@
       "TARGET_CLOSED": "The targeted execution was stopped before the request was accepted.",
       "INPUT_CONSTRAINT": "The message does not match what this agent accepts."
     },
-    "notChecked": "Not checked yet. Refresh to check."
+    "notChecked": "Not checked yet. Refresh to check.",
+    "empty": "No executions yet",
+    "emptyHint": "Executed systems will appear here.",
+    "firstMessageRequired": "Send a first message in this plan to enable execution tracking.",
+    "loading": "Loading executions…",
+    "readFailed": "Could not load executions."
   },
   "actionFailed": "The action failed. Try again.",
   "userError": {

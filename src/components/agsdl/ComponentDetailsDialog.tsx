@@ -80,7 +80,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
       {draft ? <form id="agsdl-component-form" onSubmit={event => { event.preventDefault(); void save(); }}>
         {draft.fields.some(field => field.shared) && <p className="agsdl-muted">{t("agsdl.viewer.sharedProperties")}</p>}
         {draft.fields.map((field, index) => <label className="agsdl-edit-field" key={field.path}>
-          <span>{t(field.kind === "name" ? "agsdl.viewer.componentName" : field.kind === "description" ? "agsdl.viewer.property.description" : "agsdl.instructions")}{field.kind === "instructions" && draft.fields.length > 2 ? ` ${index}` : ""}</span>
+          <span>{t(field.kind === "name" ? "agsdl.viewer.componentName" : field.kind === "description" ? "agsdl.viewer.property.description" : "agsdl.instructions")}{field.kind === "instructions" && draft.fields.filter(item => item.kind === "instructions").length > 1 ? ` ${draft.fields.slice(0, index + 1).filter(item => item.kind === "instructions").length}` : ""}</span>
           {field.kind === "name" ? <input required value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />
             : <textarea rows={7} value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />}
         </label>)}

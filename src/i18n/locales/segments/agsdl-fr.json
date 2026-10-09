@@ -422,7 +422,12 @@
       "TARGET_CLOSED": "L’exécution visée a été arrêtée avant l’acceptation de la demande.",
       "INPUT_CONSTRAINT": "Le message ne correspond pas à ce que cet agent accepte."
     },
-    "notChecked": "Pas encore vérifié. Actualisez pour vérifier."
+    "notChecked": "Pas encore vérifié. Actualisez pour vérifier.",
+    "empty": "Aucune exécution",
+    "emptyHint": "Les systèmes exécutés apparaîtront ici.",
+    "firstMessageRequired": "Envoyez un premier message dans ce plan pour accéder au suivi.",
+    "loading": "Chargement des exécutions…",
+    "readFailed": "Impossible de charger les exécutions."
   },
   "actionFailed": "L’action a échoué. Réessayez.",
   "userError": {
