@@ -439,86 +439,18 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
     expect(dismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('hides the Architect progress button before the first user explanation', async () => {
+  it.each([false, true])('keeps Architect chat free of legacy strategy actions (has history: %s)', async hasHistory => {
     context.appState.mode = 'Architect';
     context.appState.activeArchitectPlanId = 'plan-1';
-    context.chatState.messages = [];
-
-    await act(async () => {
-      requireRoot().render(renderChatZone());
-    });
-
-    expect(requireContainer().textContent).not.toContain('Generate Strategy');
-  });
-
-  it('offers direct strategy generation after the first explanation', async () => {
-    context.appState.mode = 'Architect';
-    context.appState.activeArchitectPlanId = 'plan-1';
-    context.chatState.messages = [
-      buildMessage({
-        id: 'msg-user-1',
-        role: 'user',
-        content: 'I want to rebuild the onboarding flow.',
-      }),
-    ];
-    await act(async () => {
-      requireRoot().render(renderChatZone());
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    );
-
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(context.composerEditorSetTextCalls).toHaveLength(0);
-    expect(context.composerEditorFocusCalls).toBe(0);
-    expect(context.chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('strategy_generate'),
-    });
-    expect(context.chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('question'),
-    });
-  });
-
-  it('keeps an existing composer draft when sending an Architect action', async () => {
-    context.appState.mode = 'Architect';
-    context.appState.activeArchitectPlanId = 'plan-1';
-    context.chatState.messages = [
-      buildMessage({
-        id: 'msg-user-1',
-        role: 'user',
-        content: 'I want to rebuild the onboarding flow.',
-      }),
-    ];
+    context.chatState.messages = hasHistory
+      ? [buildMessage({ id: 'msg-user-1', role: 'user', content: 'Build the system together.' })]
+      : [];
     context.composerEditorValue = 'Existing user draft';
-
-    await act(async () => {
-      requireRoot().render(renderChatZone());
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    );
-
-    await act(async () => {
-      button?.click();
-    });
-
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    expect(requireContainer().textContent).not.toContain('Generate Strategy');
+    expect(requireContainer().textContent).not.toContain('Regenerate Strategy');
     expect(context.composerEditorValue).toBe('Existing user draft');
-    expect(context.composerEditorSetTextCalls).toHaveLength(0);
-    expect(context.composerEditorFocusCalls).toBe(0);
-    expect(context.notifyInfoMock).not.toHaveBeenCalled();
-    expect(context.chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('strategy_generate'),
-    });
+    expect(context.chatState.sendMessage).not.toHaveBeenCalled();
   });
 
   it('keeps normal user messages in the standard user bubble', async () => {
@@ -539,81 +471,6 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
     expect(row?.querySelector('[data-testid="architect-action-message"]')).toBeNull();
     expect(row?.querySelector('[data-user-message-content="true"]')).not.toBeNull();
     expect(row?.textContent).toContain('I want to rebuild the onboarding flow.');
-  });
-
-  it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {
-    context.appState.mode = 'Architect';
-    context.appState.activeArchitectPlanId = 'plan-1';
-    context.appState.planNodes = [];
-    context.appState.predictedBranches = [];
-    context.chatState.messages = [
-      buildMessage({
-        id: 'msg-user-strategy',
-        role: 'user',
-        content: 'Rebuild the onboarding flow.',
-      }),
-    ];
-
-    await act(async () => {
-      requireRoot().render(renderChatZone());
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    );
-
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(context.chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('Call `strategy_generate`'),
-    });
-    expect(context.chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('short summary of the strategy'),
-    });
-  });
-
-  it('disables strategy regeneration after plan validation', async () => {
-    context.appState.mode = 'Architect';
-    context.appState.activeArchitectPlanId = 'plan-1';
-    context.appState.activePlanContext = {
-      id: 'plan-1',
-      title: 'Plan verrouillé',
-      description: '',
-      status: 'validated',
-      targetBranch: 'develop',
-    };
-    context.appState.planNodes = [{ id: 'node-1', title: 'Existing strategy node' }];
-    context.chatState.messages = [
-      buildMessage({
-        id: 'msg-user-regenerate',
-        role: 'user',
-        content: 'Rebuild the onboarding flow.',
-      }),
-    ];
-
-    await act(async () => {
-      requireRoot().render(renderChatZone());
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Regenerate Strategy')
-    ) as HTMLButtonElement | undefined;
-
-    expect(button).toBeDefined();
-    expect(button?.disabled).toBe(true);
-    expect(button?.title).toBe('Strategy is locked after plan validation.');
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(context.chatState.sendMessage).not.toHaveBeenCalled();
   });
 
 };
