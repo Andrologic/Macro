@@ -9977,7 +9977,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       clearConversationSecurityState(state.selectedConversationId, true);
     }
 
+    const changesConversation = state.selectedConversationId !== conversationId;
+    // Context references belong to one composer. Clear the previous owner before
+    // publishing a new selection; its saved draft/toolbox restores independently.
+    // Pending Architect conversations have no persisted toolbox to clear for us.
+    if (changesConversation) composerContextRefsRevision += 1;
     set((current) => ({
+      ...(changesConversation ? { composerContextRefs: [] } : {}),
       selectedConversationId: conversationId,
       selectedConversationContextKey: current.activeContextKey,
       selectedConversationIdsByMode: {

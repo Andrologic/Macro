@@ -3537,9 +3537,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       expect(chat.getState().selectedConversationId).toBe('conflict-store');
       expect(observed).toEqual([]);
       registerConflictAssistantContext({ ...getConflictAssistantContext('conflict-store')!, conversationId });
+      chat.getState().addComposerContextRef({ kind: 'skill', id: 'previous-skill', label: 'Previous skill' });
       chat.getState().setComposerDraft(conversationId, 'Inspect the verified conflicts.');
       expect(await chat.getState().selectConversation(conversationId)).toBe(true);
       expect(observed).toEqual([{ id: conversationId, draft: 'Inspect the verified conflicts.', verified: true }]);
+      expect(chat.getState().composerContextRefs).toEqual([]);
       expect(providerState.selectedProviderId as string | null).toBe('provider-1');
       expect(providerState.selectedModelId as string | null).toBe('model-1');
       expect(streamChatMock).not.toHaveBeenCalled();
