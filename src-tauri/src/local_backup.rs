@@ -300,8 +300,17 @@ async fn check_database(path: &Path) -> Result<()> {
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
     if !versions.contains(&12) {
-        for statement in ["DROP TABLE engine_prepared_terminals", "DROP TABLE engine_approvals", "DROP TABLE engine_responses", "DROP TABLE engine_response_closures", "DROP TABLE engine_host_captures"] {
-            sqlx::query(statement).execute(&reference).await.map_err(|e| e.to_string())?;
+        for statement in [
+            "DROP TABLE engine_prepared_terminals",
+            "DROP TABLE engine_approvals",
+            "DROP TABLE engine_responses",
+            "DROP TABLE engine_response_closures",
+            "DROP TABLE engine_host_captures",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
     if !versions.contains(&11) {
@@ -1266,7 +1275,9 @@ mod tests {
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
         for statement in [
-            "DROP TABLE engine_prepared_terminals", "DROP TABLE engine_approvals", "DROP TABLE engine_responses",
+            "DROP TABLE engine_prepared_terminals",
+            "DROP TABLE engine_approvals",
+            "DROP TABLE engine_responses",
             "DROP TABLE engine_response_closures",
             "DROP TABLE engine_host_captures",
             "DROP TABLE engine_events",
