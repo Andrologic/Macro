@@ -2103,9 +2103,8 @@ describe('ChatZone', () => {
     }));
   });
 
-  it('keeps a first Architect draft through a refused send, then hands it to the plan conversation', async () => {
+  it('keeps a first Architect draft through a refused send and sends it from the created conversation', async () => {
     const pendingId = 'pending-architect-develop-plan-1';
-    const aliases = new Map<string, string>();
     const ref = { id: 'file:notes.md', kind: 'file', title: 'notes.md', data: { id: 'file:notes.md', path: '/repo/notes.md', relativePath: 'notes.md' } };
     const architectConversation = (id: string): MockConversation => ({ ...buildConversation(), id, scope_mode: 'Architect' });
     appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
@@ -2114,11 +2113,11 @@ describe('ChatZone', () => {
       selectedConversationId: pendingId,
       conversations: [architectConversation(pendingId)],
       composerContextRefs: [ref],
-      resolveComposerDraftConversationId: (id: string) => aliases.get(id) ?? id,
+      resolveComposerDraftConversationId: (id: string) => chatState.composerDraftConversationAliases?.[id] ?? id,
       sendMessage: mock(async () => {
-        // The store creates the conversation before the provider check refuses the send.
-        aliases.set('conv-plan', pendingId);
-        useChatStore.setState({ selectedConversationId: 'conv-plan', conversations: [architectConversation('conv-plan')] });
+        // The store creates the conversation and binds the plan to it before the provider check refuses.
+        useChatStore.setState({ selectedConversationId: 'conv-plan', conversations: [architectConversation('conv-plan')],
+          composerDraftConversationAliases: { [pendingId]: 'conv-plan' } });
         await new Promise((resolve) => setTimeout(resolve, 20));
         throw new Error('Select a provider and model before sending a message.');
       }),
@@ -2129,25 +2128,51 @@ describe('ChatZone', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     expect(getComposerEditor().value).toBe('Premier brouillon du plan');
     expect(chatState.composerContextRefs).toEqual([expect.objectContaining({ id: 'file:notes.md' })]);
-    // Until the plan references conv-plan, a reload reopens the pending conversation.
-    expect(composerDraftsByContextKey[`conversation:${pendingId}`]?.text).toBe('Premier brouillon du plan');
-    expect(composerDraftsByContextKey['conversation:conv-plan']).toBeUndefined();
+    // The plan reopens conv-plan after a reload, so the draft lives there.
+    expect(composerDraftsByContextKey['conversation:conv-plan']?.text).toBe('Premier brouillon du plan');
+    expect(composerDraftsByContextKey[`conversation:${pendingId}`]).toBeUndefined();
 
     const acceptedSend = mock(async (payload: { conversationId: string; onUserMessagePublished?: (id: string) => void }) => {
       payload.onUserMessagePublished?.('accepted');
-      aliases.delete('conv-plan');
-      aliases.set(pendingId, 'conv-plan');
-      useChatStore.setState({ composerDraftConversationAliases: Object.fromEntries(aliases) });
       return { status: 'sent' as const };
     });
     await act(async () => { useChatStore.setState({ sendMessage: acceptedSend }); });
     await clickSendButton();
     expect(acceptedSend).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-plan', content: 'Premier brouillon du plan' }));
-    await setComposerText('Suite');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
-    expect(getComposerEditor().value).toBe('Suite');
-    expect(composerDraftsByContextKey['conversation:conv-plan']?.text).toBe('Suite');
+    expect(getComposerEditor().value).toBe('');
+    expect(chatState.composerContextRefs).toEqual([]);
+    // This mock keeps empty drafts; the store deletes them.
+    expect(composerDraftsByContextKey['conversation:conv-plan']?.text ?? '').toBe('');
     expect(composerDraftsByContextKey[`conversation:${pendingId}`]).toBeUndefined();
+  });
+
+  it('leaves no sent draft or chip when the plan binds its created conversation during an accepted first send', async () => {
+    const pendingId = 'pending-architect-develop-plan-1';
+    const ref = { id: 'file:notes.md', kind: 'file', title: 'notes.md', data: { id: 'file:notes.md', path: '/repo/notes.md', relativePath: 'notes.md' } };
+    const architectConversation = (id: string): MockConversation => ({ ...buildConversation(), id, scope_mode: 'Architect' });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
+    chatState = {
+      ...chatState,
+      selectedConversationId: pendingId,
+      conversations: [architectConversation(pendingId)],
+      composerContextRefs: [ref],
+      resolveComposerDraftConversationId: (id: string) => chatState.composerDraftConversationAliases?.[id] ?? id,
+      sendMessage: mock(async (payload: { onUserMessagePublished?: (id: string) => void }) => {
+        useChatStore.setState({ selectedConversationId: 'conv-plan', conversations: [architectConversation('conv-plan')],
+          composerDraftConversationAliases: { [pendingId]: 'conv-plan' } });
+        payload.onUserMessagePublished?.('accepted');
+        return { status: 'sent' as const };
+      }),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('Premier message accepté');
+    await clickSendButton();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(getComposerEditor().value).toBe('');
+    expect(chatState.composerContextRefs).toEqual([]);
+    expect(composerDraftsByContextKey['conversation:conv-plan']?.text ?? '').toBe('');
+    expect(composerDraftsByContextKey[`conversation:${pendingId}`]?.text ?? '').toBe('');
   });
 
   it('keeps B refusal when A rejects late after a context switch', async () => {

@@ -976,6 +976,39 @@ export const registerArchitectLifecycleScenarios = (
       });
     });
 
+    it('resumes the conversation created by a refused first send after a reload instead of creating another', async () => {
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-refused-first', slug: 'plan-refused-first', title: 'plan-refused-first', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      let { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      useChatStore.getState().saveComposerDraftForContext(`conversation:${pendingId}`, { text: 'Brouillon refusé', images: [], contextRefs: [] });
+      const provider = providerState.selectedProviderId;
+      providerState.selectedProviderId = null;
+      await useChatStore.getState().sendMessage({ conversationId: pendingId, content: 'Brouillon refusé' }).catch(() => undefined);
+      await flushAsyncWork();
+      providerState.selectedProviderId = provider;
+      const createdId = useChatStore.getState().selectedConversationId!;
+      expect(createdId).not.toBe(pendingId);
+      expect(useChatStore.getState().getConversationMessages(createdId)).toHaveLength(0);
+      // The plan references the created conversation, so a reload reopens it with its draft.
+      expect(architectPlans.get(plan.id)?.conversationId).toBe(createdId);
+      expect(useChatStore.getState().getComposerDraftForContext(`conversation:${createdId}`)?.text).toBe('Brouillon refusé');
+
+      ({ useChatStore } = await loadChatStore());
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{ ...createConversation(createdId), scope_mode: 'Architect', project_id: 'project-1' }] }));
+      expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(createdId);
+      await useChatStore.getState().sendMessage({ conversationId: createdId, content: 'Brouillon refusé' });
+      await flushAsyncWork();
+      expect(useChatStore.getState().conversations.map((conversation: Conversation) => conversation.id)).toEqual([createdId]);
+      expect(architectPlans.get(plan.id)?.conversationId).toBe(createdId);
+      expect(useChatStore.getState().getConversationMessages(createdId).some((message: ChatMessage) => message.role === 'user')).toBe(true);
+    });
+
     it('moves the first Architect draft to the conversation the plan references after the first send', async () => {
       const plan = createScenarioPlan('blank', {
         id: 'plan-first-draft', slug: 'plan-first-draft', title: 'plan-first-draft', conversationId: undefined,

@@ -10425,6 +10425,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     setComposerDraftConversationAlias(materialized.id, conversationId);
     replacePendingArchitectConversationId(conversationId, materialized.id);
     persistSelectionForContext("Architect", materialized.id);
+    // Reference the created conversation at once: a send refused later, then a
+    // reload, reopens it with its draft instead of creating another one.
+    await bindPendingArchitectConversationIfNeeded({
+      architectPlan: { planId: pendingDetails.planId, targetBranch: pendingDetails.targetBranch },
+      conversationId: materialized.id,
+    });
 
     return materialized.id;
   };

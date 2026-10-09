@@ -3297,30 +3297,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
     const clearsComposerImmediately = !goalComposerEditSession && ownsUnchangedComposer();
     const pendingDraftContextKeys = [composerDraftContextKey, conversationDraftKey];
+    // A first Architect send can move its draft to the created conversation while it runs.
+    const sentConversationDraftKey = () => `conversation:${resolveComposerDraftConversationId(conversationId)}`;
     const finishPendingDraft = (confirmed: boolean) => {
-      pendingDraftContextKeys.forEach((contextKey) => {
+      const draftKey = sentConversationDraftKey();
+      [...pendingDraftContextKeys, draftKey].forEach((contextKey) => {
         pendingSentComposerDraftContextKeysRef.current.delete(contextKey);
       });
       const activeDraftContext = activeComposerDraftContextKeyRef.current;
       const latestDraft = latestComposerDraftRef.current;
       if (
         (activeDraftContext === composerDraftContextKey ||
-          activeDraftContext === conversationDraftKey) &&
+          activeDraftContext === conversationDraftKey ||
+          activeDraftContext === draftKey) &&
         !isComposerDraftEmpty(latestDraft)
       ) {
         saveComposerDraftForContext(activeDraftContext, latestDraft);
         return;
       }
-      const storedDraft = getComposerDraftForContext(conversationDraftKey);
+      const storedDraft = getComposerDraftForContext(draftKey);
       if (confirmed) {
         if (composerDraftMatchesSavedDraft(storedDraft, sentDraft)) {
           clearComposerDraftForContext(composerDraftContextKey);
           clearComposerDraftForContext(conversationDraftKey);
+          clearComposerDraftForContext(draftKey);
         }
         return;
       }
       if (storedDraft && !composerDraftMatchesSavedDraft(storedDraft, sentDraft)) return;
-      saveComposerDraftForContext(conversationDraftKey, {
+      saveComposerDraftForContext(draftKey, {
         text: sentDraft.savedDraftText,
         images: sentDraft.savedDraftImages,
         contextRefs: sentDraft.savedDraftContextRefs,
@@ -3329,7 +3334,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const restoreSentDraft = () => {
       if (transaction.accepted) { finishPendingDraft(true); return; }
       finishPendingDraft(false);
-      if (!transaction.canRestore(currentComposerState(), conversationDraftKey)) return;
+      if (!transaction.canRestore(currentComposerState(), sentConversationDraftKey())) return;
       applySavedComposerDraft(sentDraft);
     };
 
@@ -3426,7 +3431,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       const submissionError = toServiceError(error);
       setComposerSubmissionErrors((current) => ({
         ...current,
-        [conversationDraftKey]: submissionError,
+        [sentConversationDraftKey()]: submissionError,
       }));
     } finally {
       if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
