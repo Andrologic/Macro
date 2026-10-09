@@ -118,8 +118,8 @@ conception ne lance pas les agents du graphe et ne crée pas de tâches Implemen
 
 Implement continue d'exécuter les tâches autonomes et celles des plans
 historiques. Pour ces tâches, l'utilisateur supervise l'exécution, examine les
-changements, puis valide leur intégration. L'exécution d'un nouveau plan AgSDL
-reste un chantier distinct, décrit comme tel en section 7.1.
+changements, puis valide leur intégration. Le démarrage d'un nouveau plan AgSDL
+depuis le produit reste fermé tant qu'il n'est pas qualifié (section 7.1).
 
 ### 5.2 Unités fonctionnelles principales
 
@@ -275,7 +275,17 @@ départ et conserve les sources lisibles si une autre source échoue au chargeme
 
 Les contrôles de document et les champs à compléter accompagnent la conception
 progressive. Ils ne certifient pas l’exécution. Macro est le moteur retenu pour
-les agents ; l’adaptateur d’exécution du graphe reste un chantier distinct.
+les agents.
+
+Trois capacités restent distinctes :
+- la conception du document, décrite ci-dessous, disponible ;
+- le suivi des exécutions : l’ouverture lit seulement l’état natif, sans contrôle
+  préalable, lancement ni acquittement implicite. Une demande en attente reste
+  prioritaire ; sinon la dernière exécution du plan, du projet et de la branche
+  s’affiche et une autre peut être choisie. Tant qu’aucun contrôle n’a été
+  demandé, la prise en charge s’affiche comme non vérifiée ;
+- le démarrage depuis le produit, fermé tant que sa qualification physique n’est
+  pas faite.
 
 #### Visualisation AgSDL
 
@@ -320,11 +330,11 @@ avec conservation de leurs données et affichage explicite de leurs dépendances
 L’ancienne interface de stratégie et ses outils de rédaction ne sont plus exposés.
 
 Le moteur Implement conserve ses données historiques pour les tâches existantes.
-Cette étape ne fournit pas de moteur d’exécution AgSDL. Le parcours et les limites
-sont décrits dans [Visualisateur AgSDL](agsdl-editor.md).
-Les [contrats du moteur à construire](agsdl-engine-architecture.md) définissent
-le propriétaire natif, le profil initial et les garanties attendues. Ces contrats
-ne rendent pas encore les documents exécutables.
+Le parcours et les limites du visualisateur sont décrits dans
+[Visualisateur AgSDL](agsdl-editor.md). Les [contrats du moteur](agsdl-engine-architecture.md)
+définissent le propriétaire natif, le profil initial et les garanties. Le moteur
+est intégré, mais le produit ne démarre pas encore de document tant que sa
+qualification n’est pas faite.
 
 ### 7.2 Mode Implement
 
@@ -363,6 +373,8 @@ Lors du premier envoi d'une tâche indépendante encore au brouillon, Macro enre
 Avant ce premier envoi, l'instruction de démarrage flotte au bas de la conversation, au-dessus de toute la zone de composition et de ses contrôles, et non dans l'en-tête. La notice disparaît dès que le premier message est accepté. Macro vide alors le composer sans attendre la fin de la préparation. Si l'envoi échoue avant d'être accepté, Macro restaure le brouillon et ses pièces jointes.
 
 Macro persiste localement le brouillon non envoyé de chaque composer. Les sélections AgSDL utilisent les mêmes références que les skills, fichiers et sources : leur identité et leur révision sont sauvegardées avec le brouillon. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. La restauration respecte les modifications faites pendant l’envoi et ne rattache pas les anciennes références à une nouvelle saisie. L’édition d’un message reprend ses références enregistrées ; annuler cette édition rend le brouillon précédent. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
+
+Avant sa première conversation, un plan Architect garde son brouillon, références comprises, et le retrouve après un redémarrage. Le premier envoi crée la conversation du plan et l'y rattache aussitôt. Si cet envoi est refusé, par exemple faute de fournisseur, le brouillon revient dans cette conversation, qui est reprise après un redémarrage sans en créer une autre. L'archivage ou la suppression du plan efface ce brouillon ; un plan restauré repart d'un composer vide.
 
 La sauvegarde des brouillons applique les mêmes limites que leur restauration. Un dépassement ou une donnée illisible laisse la copie précédente intacte et affiche une erreur de persistance ; le contenu courant reste dans la session. Un chargement des conversations en échec ne suffit pas à supprimer leurs brouillons.
 

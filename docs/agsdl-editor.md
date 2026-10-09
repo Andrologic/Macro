@@ -138,8 +138,8 @@ bloque l’écriture sans supprimer le plan original.
 
 L’interface et les outils de rédaction de stratégie legacy sont retirés du
 parcours Architect. Les données d’exécution historiques restent présentes pour
-les tâches Implement déjà créées. Leur suppression complète dépend d’un
-adaptateur d’exécution AgSDL ; cette version ne l’introduit pas. Le document
+les tâches Implement déjà créées. Leur suppression complète dépend du démarrage
+AgSDL depuis le produit, encore fermé tant qu’il n’est pas qualifié. Le document
 converti reste un instantané descriptif. Le visualisateur peut toutefois afficher
 les états actuels des tâches Macro liées, indépendamment de cet instantané.
 

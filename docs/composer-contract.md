@@ -4,7 +4,7 @@ Le composeur présente deux niveaux : pièces jointes et texte contenant des ré
 
 ## Données et responsabilités
 
-- `ComposerDraft` regroupe le texte, les images et les références. Sa sauvegarde est isolée par conversation ou contexte provisoire.
+- `ComposerDraft` regroupe le texte, les images et les références. Sa sauvegarde est isolée par conversation ou contexte provisoire. Avant sa première conversation, un plan Architect garde son brouillon sous sa conversation provisoire ; `resolveComposerDraftConversationId` le transfère à la conversation créée dès que le plan la référence. La clé d'un envoi est donc résolue à sa fin, pas à sa capture.
 - `MentionNode` affiche toutes les références, y compris AgSDL. Il conserve leur identité et les données nécessaires à leur restauration par l'historique.
 - `composerReferenceText.ts` définit leur représentation textuelle avec identifiant stable. Les anciens marqueurs restent lisibles. Les titres ne servent plus à retrouver les nouvelles références.
 - `composerSubmission.ts` capture les données avant les opérations asynchrones, compare les brouillons et sérialise les références vers `context_refs`. Il produit également le contexte destiné au moteur à partir des références persistées.
