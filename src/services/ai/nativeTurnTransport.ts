@@ -448,6 +448,7 @@ export const streamNativeTurnViaTauri = async (params: {
         : requests.length ? acceptedHiddenContext.join('\n\n') || undefined : payload.hidden_context ?? undefined;
       finish(() => resolve({
         content: payload.output_text || fullContent || derivedOutputText,
+        visibleText: payload.visible_text,
         toolCalls: payload.tool_calls || [], providerInputItems, providerTurnState,
         reasoningSummary: payload.reasoning_summary ?? undefined,
         toolTraces: payload.tool_traces?.filter(trace => !localCallIds.has(trace.tool_call_id)) ?? undefined,
@@ -603,7 +604,8 @@ export const streamNativeTurnViaTauri = async (params: {
       }
     })();
   }).then(async result => {
-    if (executionRegistered) await params.nativeExecution?.visibleMessage(requestId, result.content);
+    // AgSDL retains only provider-visible text; chat presentation keeps result.content.
+    if (executionRegistered) await params.nativeExecution?.visibleMessage(requestId, result.visibleText ?? result.content);
     return result;
   });
 };

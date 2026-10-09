@@ -829,3 +829,20 @@ test('ordinary native Chat keeps assistant and tool continuation annotations on 
   expect(assistant.provider_turn_state?.response_id).toBe('response-1');
   expect(tool.provider_input_items).toEqual([{ type: 'function_call_output', call_id: 'ordinary-read', output: 'Read result' }]);
 });
+
+test('resident visible message keeps exact provider content without structured reasoning', async () => {
+  const visible: string[] = [];
+  const exact = '  OK FLOW MACRO\n\n';
+  const pending = turn({ providerType: 'openai', providerId: 'macro-ai', nativeExecution: {
+    beforeRequest: async () => 'registered', requestEnded: async () => {},
+    visibleMessage: async (_id, text) => { visible.push(text); },
+  } });
+  await started;
+  for (const delta of ['<think>', 'Plan ok.\n', '</think>', '  OK FLOW', ' MACRO\n\n']) emit('ai:stream', { request_id: requestId, delta });
+  emit('ai:done', { request_id: requestId, output_text: `<think>Plan ok.\n</think>${exact}`, visible_text: exact,
+    reasoning_summary: 'Plan ok.\n', tool_calls: [] });
+  const result = await pending;
+  // Chat presentation is unchanged; the AgSDL collector receives only visible bytes.
+  expect(result.content).toBe(`<think>Plan ok.\n</think>${exact}`);
+  expect(visible).toEqual([exact]);
+});

@@ -212,6 +212,8 @@ export interface StreamingChatOptions {
 
 export interface StreamingTurnResult {
   content: string;
+  /** Provider-visible text without reasoning, when the native transport separates it. */
+  visibleText?: string;
   toolCalls: ToolCall[];
   completionReason?: StreamCompletionReason;
   providerInputItems?: unknown[];

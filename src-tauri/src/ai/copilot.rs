@@ -2200,6 +2200,7 @@ async fn stream_chat_inner(
                 done_payload = Some(AiStreamDoneEvent {
                     request_id: request.request_id.clone(),
                     output_text: content,
+                    visible_text: None,
                     tool_calls: Vec::new(),
                     response_id: None,
                     output_items: None,

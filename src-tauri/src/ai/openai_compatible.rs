@@ -64,6 +64,8 @@ impl ChatCompletionError {
 #[derive(Debug, Default)]
 struct ChatCompletionAccumulator {
     output_text: String,
+    /// Provider content only, without reasoning or presentation tags.
+    visible_text: String,
     reasoning_summary: String,
     tool_calls: Vec<AiToolCall>,
     is_reasoning: bool,
@@ -265,6 +267,7 @@ async fn stream_chat_inner(
             AiStreamDoneEvent {
                 request_id: request.request_id.clone(),
                 output_text: accumulator.output_text,
+                visible_text: Some(accumulator.visible_text),
                 tool_calls: normalize_tool_calls(accumulator.tool_calls),
                 response_id: None,
                 output_items: None,
@@ -742,6 +745,52 @@ fn process_sse_event(
 
     let delta = choice.get("delta").unwrap_or(&Value::Null);
     let message = choice.get("message").unwrap_or(&Value::Null);
+    if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
+    }
+    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
+    }
+    for piece in chat_completion_pieces(delta, message, accumulator) {
+        if piece.visible {
+            emit_first_token_timeline(
+                app_handle,
+                request,
+                provider_type,
+                started_at,
+                emitted_first_token,
+            );
+            accumulator.visible_text.push_str(&piece.text);
+        }
+        emit_delta(app_handle, &request.request_id, &piece.text, accumulator)?;
+    }
+
+    if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
+    }
+
+    Ok(is_terminal_sse_value(&value))
+}
+
+/// One streamed fragment. Chat presentation receives every fragment, including
+/// the reasoning wrapped in <think>; only provider content is visible output.
+struct StreamPiece {
+    text: String,
+    visible: bool,
+}
+
+/// Classifies one Chat Completions choice using the provider's structured
+/// channels. Visible content keeps its exact bytes, spaces and line breaks.
+fn chat_completion_pieces(
+    delta: &Value,
+    message: &Value,
+    accumulator: &mut ChatCompletionAccumulator,
+) -> Vec<StreamPiece> {
+    let mut pieces = Vec::new();
+    let piece = |text: &str, visible: bool| StreamPiece {
+        text: text.to_string(),
+        visible,
+    };
     if let Some(reasoning) = delta
         .get("reasoning")
         .or_else(|| delta.get("reasoning_content"))
@@ -750,63 +799,31 @@ fn process_sse_event(
         if !reasoning.is_empty() {
             accumulator.reasoning_summary.push_str(reasoning);
             if !accumulator.is_reasoning {
-                emit_delta(app_handle, &request.request_id, "<think>", accumulator)?;
+                pieces.push(piece("<think>", false));
                 accumulator.is_reasoning = true;
             }
-            emit_delta(app_handle, &request.request_id, reasoning, accumulator)?;
+            pieces.push(piece(reasoning, false));
         }
     }
-
-    if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
-    }
-    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        merge_tool_call_deltas(&mut accumulator.tool_calls, tool_calls);
-    }
-
-    let mut emitted_content_delta = false;
-    if let Some(content) = delta.get("content").and_then(Value::as_str) {
-        if !content.is_empty() {
-            if accumulator.is_reasoning {
-                emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
-                accumulator.is_reasoning = false;
-            }
-            emit_first_token_timeline(
-                app_handle,
-                request,
-                provider_type,
-                started_at,
-                emitted_first_token,
-            );
-            emit_delta(app_handle, &request.request_id, content, accumulator)?;
-            emitted_content_delta = true;
+    // A streamed delta wins; a full message is only a fallback for the same choice.
+    let content = delta
+        .get("content")
+        .and_then(Value::as_str)
+        .filter(|content| !content.is_empty())
+        .or_else(|| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|content| !content.is_empty())
+        });
+    if let Some(content) = content {
+        if accumulator.is_reasoning {
+            pieces.push(piece("</think>", false));
+            accumulator.is_reasoning = false;
         }
+        pieces.push(piece(content, true));
     }
-
-    if !emitted_content_delta {
-        if let Some(content) = message.get("content").and_then(Value::as_str) {
-            if !content.is_empty() {
-                if accumulator.is_reasoning {
-                    emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
-                    accumulator.is_reasoning = false;
-                }
-                emit_first_token_timeline(
-                    app_handle,
-                    request,
-                    provider_type,
-                    started_at,
-                    emitted_first_token,
-                );
-                emit_delta(app_handle, &request.request_id, content, accumulator)?;
-            }
-        }
-    }
-
-    if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
-        accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
-    }
-
-    Ok(is_terminal_sse_value(&value))
+    pieces
 }
 
 fn process_sse_events_until_terminal<F>(events: Vec<String>, mut process: F) -> Result<bool, String>
@@ -1187,6 +1204,54 @@ mod tests {
             provider_input_items: None,
             provider_turn_state: None,
         }
+    }
+
+    #[test]
+    fn structured_reasoning_stays_out_of_exact_visible_text() {
+        let mut accumulator = ChatCompletionAccumulator::default();
+        let mut presented = String::new();
+        let mut visible = String::new();
+        let choices = [
+            serde_json::json!({ "delta": { "reasoning_content": "Plan " } }),
+            serde_json::json!({ "delta": { "reasoning": "ok.\n" } }),
+            serde_json::json!({ "delta": { "content": "  OK FLOW" } }),
+            serde_json::json!({ "delta": { "content": " MACRO\n\n" } }),
+            serde_json::json!({ "delta": {}, "message": { "content": "ignored only when a delta exists" } }),
+        ];
+        for (index, choice) in choices.iter().enumerate() {
+            let delta = choice.get("delta").unwrap_or(&Value::Null);
+            let message = if index == 4 {
+                &Value::Null
+            } else {
+                choice.get("message").unwrap_or(&Value::Null)
+            };
+            for piece in chat_completion_pieces(delta, message, &mut accumulator) {
+                presented.push_str(&piece.text);
+                if piece.visible {
+                    visible.push_str(&piece.text);
+                }
+            }
+        }
+        // The chat keeps its reasoning presentation; AgSDL receives exact visible text.
+        assert_eq!(presented, "<think>Plan ok.\n</think>  OK FLOW MACRO\n\n");
+        assert_eq!(visible, "  OK FLOW MACRO\n\n");
+        assert_eq!(accumulator.reasoning_summary, "Plan ok.\n");
+        assert!(!accumulator.is_reasoning);
+
+        // A complete message without a streamed delta is visible content too.
+        let mut accumulator = ChatCompletionAccumulator::default();
+        let pieces = chat_completion_pieces(
+            &serde_json::json!({ "reasoning_content": "R" }),
+            &serde_json::json!({ "content": "Réponse\r\n" }),
+            &mut accumulator,
+        );
+        let visible: String = pieces
+            .iter()
+            .filter(|p| p.visible)
+            .map(|p| p.text.as_str())
+            .collect();
+        assert_eq!(visible, "Réponse\r\n");
+        assert!(pieces.iter().any(|p| !p.visible && p.text == "</think>"));
     }
 
     #[test]

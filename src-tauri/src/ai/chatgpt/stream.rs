@@ -203,6 +203,7 @@ async fn stream_chat_inner(
                 AiStreamDoneEvent {
                     request_id: request.request_id,
                     output_text: completion_accumulator.output_text,
+                    visible_text: None,
                     tool_calls: completion_accumulator.tool_calls,
                     response_id: completion_accumulator.response_id,
                     output_items: optional_output_items(completion_accumulator.output_items),
@@ -510,6 +511,7 @@ fn process_sse_event(
                     AiStreamDoneEvent {
                         request_id: request.request_id.to_string(),
                         output_text,
+                        visible_text: None,
                         tool_calls,
                         response_id,
                         output_items,
@@ -564,6 +566,7 @@ fn process_sse_event(
                     AiStreamDoneEvent {
                         request_id: request.request_id.to_string(),
                         output_text,
+                        visible_text: None,
                         tool_calls,
                         response_id,
                         output_items,
