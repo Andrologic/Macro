@@ -186,8 +186,19 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         if (intents.length > 1 || page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Native scope read differs");
         if (!(await current())) return;
         set({ intent: intents[0], runs: page.runs, nextRuns: page.nextCursor });
-        const admitted = intents[0]?.state.kind === "admitted" ? intents[0].state.admission : undefined;
-        if (admitted) await install(admitted, intents[0].payload, initial, current);
+        // An open intent keeps priority and is only shown; an admitted one shows its run.
+        if (intents[0]) {
+          const admitted = intents[0].state.kind === "admitted" ? intents[0].state.admission : undefined;
+          if (admitted) await install(admitted, intents[0].payload, initial, current);
+          return;
+        }
+        // Otherwise show the latest run of this exact owner; another one can be selected later.
+        const latest = page.runs[0];
+        if (!latest) return;
+        const snapshot = await ipc.readExecutionSnapshot(latest.systemStartId as SystemStartId);
+        if (snapshot.systemStartId !== latest.systemStartId || !sameSourceOwner(snapshot.source.owner, initial.owner!)) throw new Error("Run source owner differs");
+        const result = await readRun(snapshot);
+        if (await current()) set(result);
       });
     },
     refresh: () => operation(async (initial, current) => {

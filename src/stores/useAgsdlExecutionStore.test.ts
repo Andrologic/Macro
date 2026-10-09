@@ -15,6 +15,7 @@ let seenPages: unknown[] = [];
 let seenDiagnostics: { through: string; before?: string | null }[] = [];
 let projectionChangesCursor = false;
 let taskResult: unknown = null;
+let snapshotOwner = owner;
 mock.module("../services/architectPlanService", () => ({ getArchitectPlan: async () => ({ conversationId: planConversation, status: "draft" }), migrateArchitectPlanToAgsdl: async () => null, updateArchitectPlan: async () => {} }));
 mock.module("./useChatStore", () => ({ useChatStore: { getState: () => ({ selectedConversationId: selected, conversations: [{ id: "conversation", project_id: "project" }, { id: "other", project_id: "foreign" }] }) } }));
 mock.module("./useAppStore", () => ({ useAppStore: { getState: () => ({ setMode: () => {} }) } }));
@@ -37,7 +38,7 @@ const lost = (lose: boolean, value: PublicExecutionIntent) => { if (lose) throw 
 mock.module("../services/tauriIpc", () => ({
   preflightExecution: async () => { preflightCalls++; return { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
   listExecutionRuns: async () => { listCalls++; return { runs: [...native.rows.values()].some(row => row.state.kind === "admitted" || row.state.kind === "closed" && row.state.admission) ? [{ systemStartId: 'started', source, counts: { completed: '0' } }] : [], nextCursor: null }; },
-  readExecutionSnapshot: async (id: string) => snapshot(id),
+  readExecutionSnapshot: async (id: string) => ({ ...snapshot(id), source: { ...source, owner: snapshotOwner } }),
   readExecutionProjection: async (id: string, page?: unknown) => { seenPages.push(page); return readProjection(id, page); },
   readExecutionApprovals: async () => ({ approvals: [], incomplete: false }),
   readExecutionDiagnostic: async (request: { systemStartId: string; through: string; before?: string | null }) => { seenDiagnostics.push(request); return { source, systemStartId: request.systemStartId, activation: null, through: request.through, diagnostics: [], incomplete: !request.before, nextBefore: request.before ? null : '1' }; },
@@ -86,7 +87,7 @@ const target = { planId: owner.planId, branchName: owner.branch };
 /** A renderer reload: the store forgets everything, native rows remain. */
 const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intentBusy: false, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null });
 beforeEach(async () => {
-  selected = planConversation = "conversation"; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset();
+  selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset();
   readProjection = async id => projection(id);
   reload();
   useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { source: '{}', annexes: {}, version: 'v1', persistedRevision: 1, status: 'draft', dirty: false, saving: false, history: [], future: [], reports: [], error: null } } });
@@ -178,6 +179,45 @@ it("opens with reads only and never stages, submits, closes or preflights", asyn
   expect(native.calls).toEqual(["read"]); expect(preflightCalls).toBe(0);
   await store.getState().refresh(); await store.getState().start();
   expect(native.calls).not.toContain("stage"); expect(store.getState().error).toContain("unavailable");
+});
+it("shows the latest run read-only after an acknowledged request and a reload", async () => {
+  await ready(); await store.getState().start("Message");
+  expect(native.calls.at(-1)).toBe("close:acknowledged");
+  native.calls = []; const preflightsBefore = preflightCalls;
+  await reopen();
+  expect(native.calls).toEqual(["read"]);
+  expect(preflightCalls).toBe(preflightsBefore);
+  expect(store.getState().intent).toBeUndefined();
+  expect(store.getState().snapshot?.systemStartId).toBe("started" as SystemStartId);
+  expect(store.getState().projection?.systemStartId).toBe("started" as SystemStartId);
+});
+it("opens without a run selection when the scope has no run", async () => {
+  await reopen();
+  expect(store.getState().runs).toEqual([]);
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(store.getState().error).toBeUndefined();
+});
+it("never shows a latest run whose snapshot has another owner", async () => {
+  await ready(); await store.getState().start("Message");
+  snapshotOwner = { ...owner, planId: "other-plan" };
+  await reopen();
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(store.getState().projection).toBeUndefined();
+  expect(store.getState().error).toBe("agsdl.execution.error");
+});
+it("keeps an open request first at open and never submits, acknowledges or replaces it", async () => {
+  await ready(); await store.getState().start("Message");
+  await ready(); native.loseStage = true; await store.getState().start("Retained");
+  native.loseStage = false;
+  const prepared = native.open()[0];
+  expect(prepared?.state.kind).toBe("prepared");
+  native.calls = [];
+  await reopen();
+  expect(native.calls).toEqual(["read"]);
+  expect(store.getState().intent?.key).toEqual(prepared.key);
+  expect(store.getState().runs).toHaveLength(1);
+  expect(store.getState().snapshot).toBeUndefined();
+  expect(native.rows.get(prepared.key.intentId)).toEqual(prepared);
 });
 it("stages a new request, submits it once and acknowledges only after installing its run", async () => {
   await ready(); native.calls = [];
