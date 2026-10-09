@@ -976,6 +976,35 @@ export const registerArchitectLifecycleScenarios = (
       });
     });
 
+    it('keeps the restored chips of a plan without conversation when its selection is resolved again', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('blank', {
+        id: 'plan-pending-chips', slug: 'plan-pending-chips', title: 'plan-pending-chips', conversationId: undefined,
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState());
+      const pendingId = (await useChatStore.getState().ensureConversationForCurrentMode())!;
+      const selection = { id: 'selection-1', conversationId: pendingId, planId: plan.id, branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '/definitions/0', title: 'Implementation' };
+      // No database row exists for a pending conversation, so it never has toolbox state.
+      const toolboxRead = context.getConversationToolboxStateMock as unknown as { mockImplementation: (fn: (conversationId: string) => Promise<unknown>) => void; mockClear: () => void };
+      toolboxRead.mockImplementation(async () => null);
+      toolboxRead.mockClear();
+      try {
+        // The composer restores the chip from the plan draft after a reload.
+        useChatStore.getState().replaceComposerContextRefs([{ id: selection.id, kind: 'agsdl', title: selection.title, data: selection }], pendingId);
+        await useChatStore.getState().reapplySelectionForCurrentContext();
+        await flushAsyncWork();
+        expect(useChatStore.getState().selectedConversationId).toBe(pendingId);
+        expect(useChatStore.getState().composerContextRefs).toEqual([expect.objectContaining({ id: selection.id, kind: 'agsdl' })]);
+        expect(context.getConversationToolboxStateMock).not.toHaveBeenCalledWith(pendingId);
+      } finally {
+        toolboxRead.mockImplementation(async (conversationId: string) => context.toolboxStateByConversationId.get(conversationId) ?? null);
+      }
+    });
+
     it('keeps a blank plan draft across a reload until the plan is archived or deleted', async () => {
       const plan = createScenarioPlan('blank', {
         id: 'plan-released-draft', slug: 'plan-released-draft', title: 'plan-released-draft', conversationId: undefined,

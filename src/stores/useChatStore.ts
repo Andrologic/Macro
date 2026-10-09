@@ -6016,6 +6016,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     refs: ContextReference[],
   ): void => {
     if (!conversationId || !tauriIpc.isTauriAvailable()) return;
+    // A pending plan conversation has no database row; its composer draft keeps these refs.
+    if (pendingArchitectConversationDetailsById.has(conversationId)) return;
 
     const persistedRefs = persistableContextRefs(refs) ?? [];
     const persistence = enqueueToolboxPersistence(conversationId, async () => {
@@ -6105,6 +6107,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (typeof tauriIpc.getConversationToolboxState !== "function") {
       return;
     }
+    // Nothing is stored for a pending plan conversation: reading would clear the
+    // chips the composer restored from its draft.
+    if (pendingArchitectConversationDetailsById.has(conversationId)) return;
     try {
       await waitForToolboxPersistence(conversationId);
       lifecycle?.assertActive();
