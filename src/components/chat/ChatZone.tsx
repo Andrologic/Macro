@@ -77,7 +77,6 @@ import {
   resolveProjectWorkspaceState,
 } from '../../services/projectWorkspaceState';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
-import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
 import { getArchitectPlanPrimaryName } from '../../services/architectPlanPresentation';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
@@ -1171,8 +1170,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getProjectById,
     activeArchitectPlanId,
     activePlanContext,
-    planNodes,
-    predictedBranches,
     openProjectModal,
     setLeftPanelOpen,
   } = useAppStore(useShallow((state) => ({
@@ -1187,8 +1184,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     getProjectById: state.getProjectById,
     activeArchitectPlanId: state.activeArchitectPlanId,
     activePlanContext: state.activePlanContext,
-    planNodes: state.planNodes,
-    predictedBranches: state.predictedBranches,
     openProjectModal: state.openProjectModal,
     setLeftPanelOpen: state.setLeftPanelOpen,
   })));
@@ -2459,55 +2454,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return t('chat.typeMessage');
   }, [activePlanContext, mode, t]);
 
-  const hasUserArchitectMessage = useMemo(
-    () =>
-      mode === 'Architect' &&
-      currentMessages.some(
-        (message) =>
-          message.role === 'user' && message.content.trim().length > 0
-      ),
-    [currentMessages, mode]
-  );
-
-  const hasExistingStrategy = useMemo(() => {
-    if (!activeArchitectPlanId) return false;
-    return planNodes.length > 0 || predictedBranches.length > 0;
-  }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
-  const isStrategyMutationLocked =
-    mode === 'Architect' &&
-    isArchitectPlanStrategyMutationLocked(activePlanContext?.status);
-  const architectStrategyProgressAction = useMemo<ArchitectStrategyProgressAction | null>(() => {
-    if (mode !== 'Architect') return null;
-    if (!activeArchitectPlanId) return null;
-    if (!hasUserArchitectMessage) return null;
-    return hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy';
-  }, [
-    activeArchitectPlanId,
-    hasExistingStrategy,
-    hasUserArchitectMessage,
-    mode,
-  ]);
-  const isArchitectStrategyProgressDisabled =
-    isModeProjectWorkspaceMissing ||
-    !activeArchitectPlanId ||
-    isConversationPending ||
-    isConversationMutationPending ||
-    isStrategyMutationLocked;
-  const architectButtonActions = useMemo(() => buildArchitectButtonActions(t), [t]);
-  const architectStrategyProgressButton = useMemo<ArchitectToolbarButton | null>(() => {
-    if (!architectStrategyProgressAction) return null;
-    return architectButtonActions[architectStrategyProgressAction];
-  }, [architectButtonActions, architectStrategyProgressAction]);
-  const architectStrategyUnavailableTitle = isModeProjectWorkspaceMissing
-    ? workspaceState.kind === 'noProjectAvailable'
-      ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
-      : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
-    : !activeArchitectPlanId
-      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
-      : isStrategyMutationLocked
-        ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
-        : null;
-
   // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
     isTranscriptActivityActive,
@@ -3616,32 +3562,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
-  const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
-    if (
-      mode !== 'Architect' ||
-      !activeArchitectPlanId ||
-      isConversationMutationPending ||
-      isConversationPending
-    ) return;
-    if (isStrategyMutationLocked) return;
-    const conversationId = await ensureConversation();
-    if (!conversationId) return;
-
-    try {
-      await sendMessage({
-        conversationId,
-        content: architectButtonActions[actionId].fullPrompt,
-      });
-    } catch {
-      // The store exposes the visible error state.
-    }
-  };
-
-  const handleArchitectStrategyProgressAction = () => {
-    if (!architectStrategyProgressAction) return;
-    void sendArchitectButtonAction(architectStrategyProgressAction);
-  };
-
   const handleEditStart = (message: ChatMessage) => {
     if (
       composerEditSession ||
@@ -4421,33 +4341,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ModelDropdown />
                 <ReasoningDropdown />
               </div>
-              {mode === 'Architect' && architectStrategyProgressButton && (
-                  <div className="flex items-center gap-2">
-                    {architectStrategyProgressButton ? (
-                      <button
-                        type="button"
-                        onClick={handleArchitectStrategyProgressAction}
-                        data-tour-id={
-                          architectStrategyProgressAction === 'generate-strategy' ||
-                          architectStrategyProgressAction === 'regenerate-strategy'
-                            ? 'architect-generate-strategy'
-                            : 'architect-progress-action'
-                        }
-                        disabled={isArchitectStrategyProgressDisabled}
-                        className={cn(
-                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                          isArchitectStrategyProgressDisabled
-                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
-                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
-                        )}
-                        title={architectStrategyUnavailableTitle ?? architectStrategyProgressButton.title}
-                      >
-                        <Icon name={architectStrategyProgressButton.icon} size={12} />
-                        {architectStrategyProgressButton.label}
-                      </button>
-                    ) : null}
-                  </div>
-              )}
+
             </div>
 
             {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
