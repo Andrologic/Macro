@@ -142,6 +142,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         providerTurnState: params.assistantMessage.provider_turn_state,
       },
     });
+    let latestProviderDeltaText: string | undefined;
     let replayRecoveryFinalized = false;
     const finalizeReplayRecoveryAfterProgress = () => {
       if (!params.replayRecovery || replayRecoveryFinalized) return;
@@ -398,6 +399,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           ports.messages.append(messageId, tokenChunk);
         },
         getAssistantMessage: ports.messages.get,
+        getInterruptedProviderText: () => latestProviderDeltaText,
         updateMessageFields: (messageId, fields) => {
           ports.messages.fields(messageId, fields);
         },
@@ -524,6 +526,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         if (!shouldAcceptStreamUpdate()) {
           return;
         }
+        latestProviderDeltaText = snapshot.providerDeltaText;
         ports.diagnostics.record({
           conversationId: params.conversationId,
           sessionId: params.sessionId,

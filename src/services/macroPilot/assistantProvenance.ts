@@ -6,6 +6,7 @@ export interface AssistantProvenanceStorage {
 }
 export interface AssistantProvenance {
   recordFinal(messageId: string, content: string, providerItems?: readonly unknown[]): Promise<void>;
+  recordInterrupted(messageId: string, content: string, providerDeltaText: string): Promise<void>;
   readFinal(messageId: string, content: string): Promise<string | null>;
 }
 const nativeStorage: AssistantProvenanceStorage = {
@@ -42,9 +43,7 @@ function finalProviderText(items?: readonly unknown[]): string | null {
  * No text, provider payload or secret is stored in this metadata. */
 export function assistantProvenance(storage: AssistantProvenanceStorage = nativeStorage): AssistantProvenance {
   const keyFor = (messageId: string) => `chat:assistant-visible-provenance:v1:${messageId}`;
-  return {
-    recordFinal: async (messageId, content, providerItems) => {
-      const candidate = finalProviderText(providerItems)?.trim();
+  const recordRange = async (messageId: string, content: string, candidate: string | null | undefined) => {
       if (!candidate) return;
       const start = content.lastIndexOf(candidate);
       if (start < 0) return;
@@ -55,7 +54,12 @@ export function assistantProvenance(storage: AssistantProvenanceStorage = native
         if (await storage.compareAndSwap(key, previous, next)) return;
       }
       throw new Error('Assistant provenance persistence unavailable');
-    },
+  };
+  return {
+    recordFinal: async (messageId, content, providerItems) => recordRange(messageId, content, finalProviderText(providerItems)?.trim()),
+    // Only the live accumulator's provider range may enter here at an explicit
+    // stop. The regular export policy still rejects reasoning and private text.
+    recordInterrupted: async (messageId, content, providerDeltaText) => recordRange(messageId, content, providerDeltaText.trim()),
     readFinal: async (messageId, content) => {
       const raw = await storage.load(keyFor(messageId));
       if (raw === null) return null;

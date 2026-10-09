@@ -47,12 +47,16 @@ export interface StreamCompletionResult {
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   completionReason?: StreamCompletionReason;
+  /** Last contiguous provider delta range, captured only at an explicit stop. */
+  interruptedProviderText?: string;
 }
 
 export interface LiveStreamContextSnapshot {
   version: number;
   visibleContent: string;
   visibleContentLength: number;
+  /** Excludes local system chunks and tool results. */
+  providerDeltaText?: string;
   toolTraces: ToolTrace[];
   hiddenContext?: string;
   providerInputItems?: unknown[];

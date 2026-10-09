@@ -98,3 +98,24 @@ it('uses only the matching final provider range after multiple turns, retaining 
   env.row.provider_turn_state_json = JSON.stringify({ provider: 'chatgpt', output_items: [nativeItem('Different output')] });
   expect(messageText(env.row, false, policy, attested)).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
 });
+
+
+it('exports a stopped provider range without attesting system chunks, tools or an open reasoning block', async () => {
+  for (const [delta, expectedState] of [['Visible partial answer', 'complete'], ['<think>Private reasoning', 'withheld']] as const) {
+    const env = setup();
+    const accumulator = createStreamAccumulator({ onToken: () => undefined });
+    accumulator.appendSystemChunk('Internal tool detail /private/data\n');
+    accumulator.appendProviderDelta(delta);
+    const snapshot = accumulator.snapshotLiveContext();
+    expect(snapshot.providerDeltaText).toBe(delta);
+    await persistAssistantCompletionResult(env.adapters, { assistantMessageId: env.row.id,
+      result: { ...accumulator.buildResult(), completionReason: 'incomplete', interruptedProviderText: snapshot.providerDeltaText } });
+    const attested = await env.proof.readFinal(env.row.id, env.row.content);
+    expect(attested).toBe(delta);
+    expect(messageText(env.row, false, policy, attested).content_state).toBe(expectedState);
+    accumulator.appendSystemChunk('Tool result');
+    expect(accumulator.snapshotLiveContext().providerDeltaText).toBeUndefined();
+    accumulator.replaceVisibleContent('Rewritten local diagnostic');
+    expect(accumulator.snapshotLiveContext().providerDeltaText).toBeUndefined();
+  }
+});
