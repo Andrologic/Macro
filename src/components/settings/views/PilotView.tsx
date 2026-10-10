@@ -136,6 +136,8 @@ export const PilotView: React.FC = () => {
 
   const currentIdentity = store.accountCatalog?.identity;
   const activeSessions = store.accountCatalog?.sessions.filter(session => session.state === 'active') ?? [];
+  const currentSession = activeSessions.find(session => session.session_id === store.deviceSession?.ref.session_id);
+  const otherSessions = activeSessions.filter(session => session.session_id !== store.deviceSession?.ref.session_id);
   const targetCurrent = (target: typeof deleteTarget) => Boolean(target && currentIdentity
     && target.origin === store.relayOrigin
     && target.identity.account_id === store.account?.account_id
@@ -363,33 +365,36 @@ export const PilotView: React.FC = () => {
             </Button>}
           />
           <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
-            <div className="divide-y divide-border/50">
-              {!accountCatalog && store.instance && <div className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                <Monitor aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <p className="break-words text-sm font-medium">{store.instance.label}</p>
-                  <p className="text-xs text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')} · <span role="status">{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</span></p>
-                </div>
-              </div>}
-              {activeSessions.map(session => {
-                const current = session.session_id === store.deviceSession?.ref.session_id;
-                const label = current && store.instance ? store.instance.label : session.label;
-                const DeviceIcon = session.client_kind === 'mobile' ? Smartphone : Monitor;
-                return <div key={session.session_id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                  <DeviceIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <p className="break-words text-sm font-medium">{label}</p>
-                    <p className="text-xs text-muted-foreground">{current ? t('settings.pilot.currentComputer', 'This computer') : t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}
-                      {current && <> · <span role="status">{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</span></>}
-                    </p>
-                  </div>
-                  <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: label })}>
-                    <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
-                    <button type="button" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>{t('settings.pilot.disconnectDevice', 'Disconnect this device')}</button>
-                  </PilotActions>
-                </div>;
-              })}
+            <div aria-label={t('settings.pilot.currentComputer', 'This computer')} className="flex items-center gap-3 rounded-lg border border-border bg-background/50 p-3">
+              <Monitor aria-hidden="true" className="h-5 w-5 shrink-0 text-primary" />
+              <div className="min-w-0 flex-1">
+                <p className="break-words text-sm font-medium">{store.instance?.label ?? currentSession?.label ?? t('settings.pilot.currentComputer', 'This computer')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')} · <span role="status">{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</span></p>
+              </div>
+              {currentSession && <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: store.instance?.label ?? currentSession.label })}>
+                <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(currentSession.expires_at).toLocaleString() })}</p>
+                <button type="button" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(currentSession.session_id))}>{t('settings.pilot.disconnectDevice', 'Disconnect this device')}</button>
+              </PilotActions>}
             </div>
+            {otherSessions.length > 0 && <div className="border-t border-border/50 pt-4">
+              <p className="mb-3 text-xs font-medium text-muted-foreground">{t('settings.pilot.otherDevices', 'Other devices')}</p>
+              <div className="divide-y divide-border/50">
+                {otherSessions.map(session => {
+                  const DeviceIcon = session.client_kind === 'mobile' ? Smartphone : Monitor;
+                  return <div key={session.session_id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                    <DeviceIcon aria-hidden="true" className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm font-medium">{session.label}</p>
+                      <p className="text-xs text-muted-foreground">{t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}</p>
+                    </div>
+                    <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: session.label })}>
+                      <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
+                      <button type="button" disabled={store.busy} onClick={() => accountMutation(() => store.revokeSession(session.session_id))}>{t('settings.pilot.disconnectDevice', 'Disconnect this device')}</button>
+                    </PilotActions>
+                  </div>;
+                })}
+              </div>
+            </div>}
             {!accountCatalog && <p role="status" className="text-xs text-muted-foreground">{store.busy ? t('common.loading', 'Loading…') : t('settings.pilot.accountNotLoaded', 'Account details have not been loaded. Refresh to try again.')}</p>}
             {!store.instance && <div role="status" className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
               <span>{t('settings.pilot.preparingDevice', 'Setting up this device…')}</span>

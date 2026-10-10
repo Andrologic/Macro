@@ -55,10 +55,12 @@ export function computerAvailability(state: PilotPublicState, runtime: PilotRunt
   if (verification) return verification === 'verifying' ? 'resuming' : 'offline';
   const account = accountConnectionStatus(state);
   if (account === 'expired' || account === 'revoked' || state.status !== 'connected' || state.deviceSession?.state !== 'active') return 'offline';
-  if (state.instance && (state.instanceAccess?.state !== 'granted' ||
+  if (state.instance && (state.instance.connection_state === 'revoked' || state.instanceAccess?.state !== 'granted' ||
     !COMPUTER_PERMISSIONS.every(permission => state.instanceAccess?.permissions.includes(permission)))) return 'access_required';
   if (runtime === 'unavailable') return 'unavailable';
-  if (runtime === 'running' && state.instance?.connection_state === 'reachable') return 'online';
+  // The registration snapshot can predate the producer's first successful poll.
+  // Live transport health takes precedence over that cached reachability value.
+  if (runtime === 'running' && state.instance) return 'online';
   return 'resuming';
 }
 

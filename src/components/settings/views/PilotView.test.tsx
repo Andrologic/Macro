@@ -226,6 +226,22 @@ describe('PilotView', () => {
   };
   const button = (label: string) => [...document.body.querySelectorAll('button')].find(item => item.textContent === label)!;
 
+  it('places this computer in a separate first block even when its session is last', async () => {
+    await showAccount();
+    const current = pilotState.accountCatalog!.sessions[0];
+    pilotState.accountCatalog!.sessions = [{ ...current, session_id: 'session:phone', device_id: 'device:phone', client_kind: 'mobile', label: 'Test phone' }, current];
+    pilotState.instance.connection_state = 'unreachable';
+    await act(async () => root.render(<PilotView />));
+    const devices = container.querySelector('section[aria-label="Devices"]')!;
+    const local = devices.querySelector('[aria-label="This computer"]')!;
+    expect(local.textContent).toContain('Studio Mac');
+    expect(local.textContent).toContain('Online');
+    expect(local.textContent).not.toContain('Test phone');
+    expect(devices.textContent!.indexOf('Studio Mac')).toBeLessThan(devices.textContent!.indexOf('Test phone'));
+    expect(devices.textContent).toContain('Other devices');
+    expect(devices.textContent!.match(/Studio Mac/g)).toHaveLength(1);
+  });
+
   it('uses the product relay without exposing a relay address field or an early offline error', async () => {
     pilotState.status = 'unconfigured';
     pilotState.relayOrigin = null;

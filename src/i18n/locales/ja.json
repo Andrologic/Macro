@@ -1140,6 +1140,7 @@
       "manageAccount": "アカウントを管理",
       "deviceMenu": "{{device}} のオプション",
       "accountMenu": "アカウントのオプション",
+      "otherDevices": "その他のデバイス",
       "devicesTitle": "デバイス",
       "automaticDevices": "同じ Macro Connect アカウントでログインしたデバイスは自動的に接続されます。",
       "preparingDevice": "このデバイスを設定しています…",

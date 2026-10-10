@@ -1145,6 +1145,7 @@
       "manageAccount": "Gestionar cuenta",
       "deviceMenu": "Opciones de {{device}}",
       "accountMenu": "Opciones de la cuenta",
+      "otherDevices": "Otros dispositivos",
       "devicesTitle": "Dispositivos",
       "automaticDevices": "Los dispositivos con la misma cuenta de Macro Connect se conectan automáticamente.",
       "preparingDevice": "Configurando este dispositivo…",

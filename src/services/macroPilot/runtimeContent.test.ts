@@ -403,7 +403,8 @@ it('resolves canonical commit reviews and rechecks tracked branches at the nativ
   const h = harness();
   try {
     await h.runtime.start();
-    expect(h.runtime.getStatus()).toBe('running');
+    // The first producer poll is still pending at this point.
+    expect(h.runtime.getStatus()).toBe('inactive');
     const result = await h.deliver(request('review.get', { ref: commitRef }));
     if (result.type !== 'response' || result.operation !== 'review.get') throw Error(JSON.stringify(result));
     expect(result.result.source).toEqual({ kind: 'commits', base_sha: base, head_sha: head });

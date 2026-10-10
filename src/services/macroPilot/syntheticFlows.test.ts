@@ -20,6 +20,12 @@ const message: DbMessage = { id: 'message:synthetic', conversation_id: conversat
 const core = await import('@tauri-apps/api/core');
 mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string, args: Record<string, unknown> = {}) => {
   calls.push(command);
+  // Revocation can interrupt initialization; keep its redacted diagnostic in memory.
+  if (command === 'frontend_log') {
+    expect(args.scope).toBe('frontend');
+    expect(args.message).toMatch(/^\[Frontend:Pilot[A-Za-z]+\]$/);
+    return;
+  }
   if (command === 'db_get_app_setting') return settings.has(String(args.key)) ? { value_json: settings.get(String(args.key)) } : null;
   if (command === 'db_compare_and_swap_app_setting') {
     const applied = (settings.get(String(args.key)) ?? null) === args.expectedValueJson;

@@ -11,6 +11,17 @@ const state = (): PilotPublicState => ({
 });
 
 describe('Macro Connect attention', () => {
+  it('uses successful producer communication instead of cached registration reachability', () => {
+    const current = state();
+    current.instance = { contract_version: '1.0', type: 'instance', ref: { type: 'instance', instance_id: 'instance:one' }, label: 'Test computer', connection_state: 'unreachable', supported_contract_versions: ['1.0'], revision: 1 };
+    current.instanceAccess = { contract_version: '1.0', type: 'instance_access', ref: { type: 'instance_access', instance_id: 'instance:one', account_id: 'account:one', session_id: 'session:one' }, state: 'granted', permissions: ['supervise', 'respond', 'approve_tools', 'review'], granted_at: '2026-09-01T00:00:00Z', revision: 1 };
+    expect(computerAvailability(current, 'running')).toBe('online');
+    expect(computerAvailability(current, 'inactive')).toBe('resuming');
+    expect(computerAvailability(current, 'unavailable')).toBe('unavailable');
+    current.vaultStatus = 'suspended';
+    expect(computerAvailability(current, 'running')).toBe('paused');
+  });
+
   it('stays quiet during suspension and emits once through repeated updates and cancellation', () => {
     const observe = createConnectionAttentionObserver(); const emit = mock(() => undefined); const dismiss = mock(() => undefined);
     const current = state(); current.status = 'vault_unavailable'; current.vaultStatus = 'suspended';

@@ -30,6 +30,7 @@ export function syntheticFixture() {
   const failures: string[] = [];
   const listeners = new Set<(lease: PilotVaultLease) => void>();
   let generation = 0;
+  let producerHeartbeatSent = false;
   let status: PilotVaultLease['status'] = 'ready';
   let resumes = 0;
   let reads = 0;
@@ -93,8 +94,14 @@ export function syntheticFixture() {
       }
       const instanceKey = [...secrets].find(([key]) => JSON.parse(key).kind === 'instance_key')?.[1];
       if (!instanceKey || headers.get('x-instance-key') !== instanceKey) { failures.push('missing producer proof'); throw Error('Missing producer proof'); }
-      if (path.endsWith('/disconnect') || path.endsWith('/events')) return new Response(null, { status: 204 });
+      if (path.endsWith('/disconnect')) { producerHeartbeatSent = false; return new Response(null, { status: 204 }); }
+      if (path.endsWith('/events')) return new Response(null, { status: 204 });
       if (path.endsWith('/poll')) {
+        // Model the relay's initial empty heartbeat, then hold the next poll.
+        if (!path.includes('/v2/') && !producerHeartbeatSent) {
+          producerHeartbeatSent = true;
+          return new Response(null, { status: 204 });
+        }
         const signal = init?.signal;
         while ((!path.includes('/v2/') || !queue.length) && !signal?.aborted) {
           await new Promise<void>(resolve => {

@@ -1170,6 +1170,7 @@
       "manageAccount": "Manage account",
       "deviceMenu": "Options for {{device}}",
       "accountMenu": "Account options",
+      "otherDevices": "Other devices",
       "devicesTitle": "Devices",
       "automaticDevices": "Devices signed in to the same Macro Connect account are connected automatically.",
       "preparingDevice": "Setting up this device…",

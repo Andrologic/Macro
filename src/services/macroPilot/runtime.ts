@@ -144,7 +144,7 @@ export class PilotRuntime {
     });
     try {
       await kernel.initialize(); if(generation!==this.generation) {kernel.close(); return;}
-      this.kernel=kernel; this.publish('running');
+      this.kernel=kernel; this.publish('inactive');
       this.activeLoop = this.runProducer(kernel, instanceId, state.configurationId, state.account?.account_id, controller.signal).catch(() => undefined);
     } catch (error) {
       void frontendLog({ level: 'error', scope: 'frontend', message: `[Frontend:Pilot${initializationStage.replace(/[^a-z]/gi, '')}${error instanceof ProjectionError ? error.reason : error instanceof PilotError ? error.code.replaceAll('_', '') : error instanceof TypeError ? 'TypeError' : 'UnknownError'}]` }).catch(() => undefined);
@@ -319,6 +319,7 @@ export class PilotRuntime {
         if (signal.aborted) break;
         const response=await this.client.request('POST',`/instances/${encodeURIComponent(instanceId)}/deliveries/poll`,{transport_version:'1.0'},{authenticated:true,producer:true,signal});
         if(signal.aborted) break;
+        this.publish('running');
         if(response.status===204) {failures=0;this.publish('running');continue;}
         const result=await kernel.handle(response.data);
         if (signal.aborted) break;

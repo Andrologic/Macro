@@ -59,6 +59,7 @@ describe('Pilot producer delivery loop', () => {
     try {
       await runtime.start();
       await complete;
+      expect(runtime.getStatus()).toBe('running');
       expect(authorizations).toBe(2);
       expect(effects).toBe(1);
       expect(results).toHaveLength(2);
@@ -103,7 +104,11 @@ describe('Pilot producer delivery loop', () => {
       expect(polls).toBe(0);
       stored = null;
       await runtime.retry();
-      expect(runtime.getStatus()).toBe('running');
+      expect(runtime.getStatus()).toBe('inactive');
+      // A poll starts, but no response has confirmed reachability yet.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(polls).toBe(1);
+      expect(runtime.getStatus()).toBe('inactive');
     } finally { await runtime.stop(); }
   });
 
