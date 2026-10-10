@@ -27,3 +27,9 @@ The interactions event invalidates only that conversation's interaction capture.
 Transcript and tool reads retain their separate revision and expiry rules.
 This extension does not add file/audio transport, model configuration, message
 editing, regeneration, queue management or questionnaire cancellation.
+
+## Native model selection
+
+`conversation-models-1` requires `conversation-interactions-1`. A selected client receives an optional bounded `model_catalog` containing only enabled, already cached models from usable providers, their opaque provider/model identities, supported reasoning efforts and the conversation’s valid selection. Reading this catalogue must not refresh providers or access native credentials. Older clients receive neither this field nor the `select_model` action.
+
+`select_model` uses the interaction capture, expected revision and idempotency key. It requires `respond`, an idle conversation without a pending question or approval, and a model/effort still present in the native catalogue. The desktop rechecks its reservation and selection before writing the conversation’s native AI selection. A selected desktop composer adopts the same cached choice. An uncertain result is never replayed automatically.

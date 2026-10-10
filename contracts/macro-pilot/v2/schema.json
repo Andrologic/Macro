@@ -2569,7 +2569,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 6,
+          "maxItems": 7,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2578,7 +2578,8 @@
               "network-reliability-1",
               "conversations-1",
               "conversation-history-1",
-              "conversation-interactions-1"
+              "conversation-interactions-1",
+              "conversation-models-1"
             ]
           }
         }
@@ -2632,7 +2633,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 6,
+          "maxItems": 7,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2641,7 +2642,8 @@
               "network-reliability-1",
               "conversations-1",
               "conversation-history-1",
-              "conversation-interactions-1"
+              "conversation-interactions-1",
+              "conversation-models-1"
             ]
           }
         }
@@ -3180,7 +3182,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 6,
+          "maxItems": 7,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3189,7 +3191,8 @@
               "network-reliability-1",
               "conversations-1",
               "conversation-history-1",
-              "conversation-interactions-1"
+              "conversation-interactions-1",
+              "conversation-models-1"
             ]
           }
         }
@@ -3219,7 +3222,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 6,
+          "maxItems": 7,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3228,7 +3231,8 @@
               "network-reliability-1",
               "conversations-1",
               "conversation-history-1",
-              "conversation-interactions-1"
+              "conversation-interactions-1",
+              "conversation-models-1"
             ]
           }
         }
@@ -5814,14 +5818,18 @@
         },
         "actions": {
           "type": "array",
-          "maxItems": 2,
+          "maxItems": 3,
           "uniqueItems": true,
           "items": {
             "enum": [
               "answer",
-              "stop"
+              "stop",
+              "select_model"
             ]
           }
+        },
+        "model_catalog": {
+          "$ref": "#/$defs/modelCatalog"
         }
       }
     },
@@ -5977,7 +5985,8 @@
             "action": {
               "enum": [
                 "answer",
-                "stop"
+                "stop",
+                "select_model"
               ]
             },
             "assistant_message_id": {
@@ -6017,6 +6026,9 @@
                   }
                 }
               }
+            },
+            "selection": {
+              "$ref": "#/$defs/modelSelection"
             }
           }
         }
@@ -6075,6 +6087,122 @@
               "maximum": 9007199254740991
             }
           }
+        }
+      }
+    },
+    "modelSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "model_id",
+        "reasoning_effort"
+      ],
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "modelCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "models",
+        "selection"
+      ],
+      "properties": {
+        "models": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider_id",
+              "provider_name",
+              "model_id",
+              "model_name",
+              "reasoning_efforts"
+            ],
+            "properties": {
+              "provider_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+              },
+              "provider_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "model_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "model_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "reasoning_efforts": {
+                "type": "array",
+                "maxItems": 8,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/modelSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }

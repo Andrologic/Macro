@@ -4,6 +4,7 @@ import { stableJson } from './protocol';
 import { utf8Bytes, type TextPolicy } from './conversationText';
 
 export const INTERACTION_CAPABILITY = 'conversation-interactions-1';
+export const MODEL_CAPABILITY = 'conversation-models-1';
 export const INTERACTION_OPERATIONS = new Set(['conversation.interactions', 'conversation.interact']);
 export type InteractionBody = ContentRequest<'conversation.interact'>['body'];
 export type InteractionState = Omit<ContentConversationInteractions, 'ref' | 'revision' | 'expires_at' | 'snapshot_id'>;
@@ -98,10 +99,16 @@ export class ConversationInteractions {
       if (this.captures.size >= 128) fail('resource_limit');
       this.captures.set(id, { ref: request.body.ref, binding: this.binding(delivery, request.body.ref), key: loaded.key, revision: loaded.revision, expires, policy: await hash(policy) });
       await authorize();
-      return { ...loaded.state, ref: request.body.ref, snapshot_id: id, revision: loaded.revision, expires_at: new Date(expires).toISOString() };
+      const state = structuredClone(loaded.state);
+      if (!delivery.capabilities?.includes(MODEL_CAPABILITY)) {
+        delete state.model_catalog;
+        state.actions = state.actions.filter(action => action !== 'select_model');
+      }
+      return { ...state, ref: request.body.ref, snapshot_id: id, revision: loaded.revision, expires_at: new Date(expires).toISOString() };
     }
     if (request.operation !== 'conversation.interact') fail('validation_failed');
     const body = (request as ContentRequest<'conversation.interact'>).body;
+    if (body.action === 'select_model' && !delivery.capabilities?.includes(MODEL_CAPABILITY)) fail('validation_failed');
     const key = await hash([delivery.account_id, delivery.source_session_id, body.idempotency_key]);
     const digest = await hash(body); const old = this.journal.receipts[key];
     if (old) {
@@ -114,6 +121,7 @@ export class ConversationInteractions {
     const tokens = new Set(await Promise.all([
       ...(current.state.question ? [['answer', current.state.question.assistant_message_id]] : []),
       ...(current.state.generation_id ? [['stop', current.state.generation_id]] : []),
+      ...(current.state.model_catalog ? [['select_model', current.state.model_catalog.selection]] : []),
     ].map(hash)));
     const uncertain = Object.values(this.journal.receipts).filter(receipt => receipt.target === current.key && receipt.state === 'pending');
     if (uncertain.some(receipt => !receipt.token || tokens.has(receipt.token))) fail('conflict');
@@ -133,9 +141,14 @@ export class ConversationInteractions {
         return !answer || !step.free_text_allowed && !step.choices.includes(answer);
       })) fail('validation_failed');
     }
+    if (body.action === 'select_model') {
+      const selection = body.selection;
+      const model = current.state.model_catalog?.models.find(model => model.provider_id === selection?.provider_id && model.model_id === selection?.model_id);
+      if (!selection || !model || selection.reasoning_effort !== null && !model.reasoning_efforts.includes(selection.reasoning_effort)) fail('validation_failed');
+    }
     const revision = body.expected_revision + 1;
     const next = structuredClone(this.journal);
-    next.receipts[key] = { digest, target: current.key, state: 'pending', revision, token: await hash([body.action, body.action === 'answer' ? body.assistant_message_id : body.generation_id]) };
+    next.receipts[key] = { digest, target: current.key, state: 'pending', revision, token: await hash([body.action, body.action === 'answer' ? body.assistant_message_id : body.action === 'select_model' ? current.state.model_catalog?.selection : body.generation_id]) };
     await this.save(next);
     let effected = false;
     try {

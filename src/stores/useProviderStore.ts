@@ -870,6 +870,7 @@ interface ProviderStore {
     modelId: string;
     reasoningEffort: ReasoningEffort | null;
   } | null>;
+  commitCachedSelection: (selection: { providerId: string; modelId: string; reasoningEffort: ReasoningEffort | null }) => boolean;
   selectProvider: (providerId: string) => void;
   selectModel: (modelId: string) => void;
   selectReasoningEffort: (effort: ReasoningEffort | null) => void;
@@ -2737,6 +2738,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       modelId: resolvedModelId,
       reasoningEffort: selectedReasoningEffort,
     };
+  },
+
+  commitCachedSelection: (selection) => {
+    const state = get();
+    const provider = state.providerConfigs.find(item => item.id === selection.providerId);
+    const model = state.modelsByProvider[selection.providerId]?.find(item => item.id === selection.modelId && item.isEnabled !== false);
+    if (!provider || !providerHasCredentials(provider) || !model || selection.reasoningEffort !== null && !state.getAvailableReasoningEfforts(selection.providerId, selection.modelId).includes(selection.reasoningEffort)) return false;
+    set({ selectedProviderId: selection.providerId, selectedModelId: selection.modelId, selectedReasoningEffort: selection.reasoningEffort });
+    return true;
   },
 
   selectProvider: (providerId: string) => {

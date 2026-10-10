@@ -1,3 +1,4 @@
+import { useProviderStore } from '../stores/useProviderStore';
 import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
 import { getTaskCommandTargets, getTaskLifecycleCapabilities, useTaskStore } from '../stores/useTaskStore';
@@ -6,6 +7,7 @@ import { PilotRuntime } from '../services/macroPilot/runtime';
 import type { DesktopStorePorts } from '../services/macroPilot/desktopStorePorts';
 
 export const desktopStorePorts: DesktopStorePorts = {
+  providers: () => useProviderStore.getState(),
   app: () => useAppStore.getState(),
   chat: () => useChatStore.getState(),
   tasks: () => useTaskStore.getState(),

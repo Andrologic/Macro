@@ -1,3 +1,5 @@
+import { providerHasCredentials } from '../../stores/useProviderStore';
+import type { ContentModelCatalog } from './contentProtocol';
 import type { DesktopStorePorts } from './desktopStorePorts';
 import type { ConversationCaptures } from './conversationCaptures';
 import { createDesktopActions } from './desktopActions';
@@ -45,6 +47,25 @@ export function desktopConversationInteractions(instanceId: string, captures: Co
         state.generation_id = await generation([runtime.sessionId, runtime.turnId, runtime.assistantMessageId]);
         state.actions.push('stop');
       }
+      const providers = ports.providers?.();
+      if (providers) {
+        const models: ContentModelCatalog['models'] = [];
+        for (const provider of providers.providerConfigs) {
+          if (!providerHasCredentials(provider) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(provider.id)) continue;
+          const name = controlledText(provider.name, policy);
+          if (name.content_state !== 'complete' || !('text' in name) || !name.text || Array.from(name.text).length > 160) continue;
+          for (const model of providers.modelsByProvider[provider.id] ?? []) {
+            const label = controlledText(model.name || model.id, policy);
+            const id = controlledText(model.id, policy);
+            if (model.isEnabled === false || label.content_state !== 'complete' || !('text' in label) || !label.text || Array.from(label.text).length > 160 || id.content_state !== 'complete' || !('text' in id) || !id.text || Array.from(id.text).length > 256) continue;
+            if (models.length >= 1000) break;
+            models.push({ provider_id: provider.id, provider_name: name.text, model_id: id.text, model_name: label.text, reasoning_efforts: providers.getAvailableReasoningEfforts(provider.id, model.id).filter((effort): effort is NonNullable<ContentModelCatalog['selection']>['reasoning_effort'] & string => ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) });
+          }
+        }
+        const selected = models.find(model => model.provider_id === conversation.provider_id && model.model_id === conversation.model_id && (conversation.reasoning_effort == null || model.reasoning_efforts.some(effort => effort === conversation.reasoning_effort)));
+        state.model_catalog = { models, selection: selected ? { provider_id: selected.provider_id, model_id: selected.model_id, reasoning_effort: selected.reasoning_efforts.find(effort => effort === conversation.reasoning_effort) ?? null } : null };
+        if (!busy && !active && !chat.pendingToolApprovalByConversationId[ref.conversation_id] && models.length) state.actions.push('select_model');
+      }
       check();
       return { state, fingerprint: [conversation.scope_mode, conversation.task_id, conversation.provider_id, conversation.model_id, conversation.reasoning_effort,
         runtime.phase, runtime.sessionId, runtime.turnId, runtime.assistantMessageId, active?.mode, active?.questionnaire, active?.answersByStepId] };
@@ -65,7 +86,10 @@ export function desktopConversationInteractions(instanceId: string, captures: Co
         assertExecution(); await beforeEffect(options?.revision === 'consumed'); assertExecution();
       } };
       if (body.action === 'stop') await actions.cancel(body.ref.conversation_id, guard);
-      else {
+      else if (body.action === 'select_model') {
+        if (!body.selection) return fail('validation_failed');
+        await actions.selectModel(body.ref.conversation_id, { providerId: body.selection.provider_id, modelId: body.selection.model_id, reasoningEffort: body.selection.reasoning_effort }, guard);
+      } else {
         const active = ports.chat().getActiveQuestionnaire(body.ref.conversation_id);
         if (!active || active.mode !== 'pending_reply' || active.assistantMessageId !== body.assistant_message_id) return fail('stale_revision');
         await actions.answerDecision({ conversation_id: body.ref.conversation_id, assistant_message_id: body.assistant_message_id!, ...(active.taskId ? { task_id: active.taskId } : {}) }, body.answers!, guard);

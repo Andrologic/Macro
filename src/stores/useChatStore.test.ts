@@ -1,3 +1,4 @@
+import { reservePilotAction } from '../services/macroPilot/actionReservations';
 import { createLifecycleScope } from '../services/lifecycleScope';
 import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -255,6 +256,8 @@ const providerState = {
   ensureSelectedModelContextMetadata: mock(async () => providerState.modelsByProvider[providerState.selectedProviderId ?? 'provider-1'] ?? []),
   recordProviderModelContextOverflowLimit: mock(async () => undefined),
   resolveProviderApiKey: mock(async () => undefined),
+  getAvailableReasoningEfforts: () => ['low','high'],
+  commitCachedSelection: mock((selection: {providerId:string;modelId:string;reasoningEffort:string|null}) => { providerState.selectedProviderId=selection.providerId;providerState.selectedModelId=selection.modelId;providerState.selectedReasoningEffort=selection.reasoningEffort;return true; }),
   selectedSupportsNativeToolCalling: () => false,
   markReasoningUnsupportedForModel: mock(() => undefined),
   markProviderReachable: mock(() => undefined),
@@ -3033,6 +3036,26 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await useChatStore.getState().drainSubscriptions();
     expect(appStoreSubscribers.size).toBe(0);
     expect(controller.signal.aborted).toBe(false);
+  });
+
+  it('remote model selection persists the native conversation without scanning providers', async () => {
+    const { useChatStore } = await import('./useChatStore');
+    const conversation=createConversation('remote-model');
+    useChatStore.setState({conversations:[conversation],selectedConversationId:conversation.id});
+    const beforeScan=providerState.scanModelsForProvider.mock.calls.length;
+    const beforeLoad=providerState.loadProviderModels.mock.calls.length;
+    const guard=mock(async()=>undefined);
+    const reservation=reservePilotAction({conversationId:conversation.id});
+    await useChatStore.getState().selectConversationAI(conversation.id,{providerId:'provider-1',modelId:'model-1',reasoningEffort:'high'},{beforeEffect:guard,pilotActionToken:reservation.token});
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(updateConversationAISelectionMock).toHaveBeenCalledWith({id:conversation.id,providerId:'provider-1',modelId:'model-1',reasoningEffort:'high'});
+    expect(useChatStore.getState().conversations[0].reasoning_effort).toBe('high');
+    expect(providerState.selectedReasoningEffort).toBe('high');
+    expect(providerState.scanModelsForProvider.mock.calls.length).toBe(beforeScan);
+    expect(providerState.loadProviderModels.mock.calls.length).toBe(beforeLoad);
+    await expect(useChatStore.getState().selectConversationAI(conversation.id,{providerId:'provider-1',modelId:'missing',reasoningEffort:null},{beforeEffect:guard,pilotActionToken:reservation.token})).rejects.toThrow('validation_failed');
+    expect(updateConversationAISelectionMock).toHaveBeenCalledTimes(1);
+    reservation.release();
   });
 
   it('keeps rejected native preference writes observable and retryable in the chat harness', async () => {

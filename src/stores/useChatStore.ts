@@ -927,6 +927,9 @@ interface ChatStore {
   appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
   selectConversation: (conversationId: string) => Promise<boolean>;
+  selectConversationAI: (conversationId: string, selection: {
+    providerId: string; modelId: string; reasoningEffort: ReasoningEffort | null;
+  }, options: { pilotActionToken: symbol; beforeEffect: () => Promise<void> }) => Promise<void>;
   clearSelectedConversation: () => void;
   createConversation: (
     title: string,
@@ -12211,6 +12214,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
         })),
       }));
       void get().ensureConversationForCurrentMode();
+    },
+
+    selectConversationAI: async (conversationId, selection, options) => {
+      const check = () => {
+        if (isAppShutdownGateActive()) throw new Error('unavailable');
+        assertPilotConversationActionAllowed(conversationId, options.pilotActionToken);
+        const state = get();
+        const conversation = state.conversations.find(item => item.id === conversationId);
+        if (!conversation) throw new Error('not_found');
+        if (conversation.task_id) assertPilotTaskActionAllowed(conversation.task_id, options.pilotActionToken);
+        const phase = state.getConversationRuntime(conversationId).phase;
+        if (!['idle', 'error'].includes(phase) || state.getActiveQuestionnaire(conversationId)?.mode === 'pending_reply' || state.pendingToolApprovalByConversationId[conversationId]) throw new Error('stale_revision');
+        const providers = useProviderStore.getState();
+        const provider = providers.providerConfigs.find(item => item.id === selection.providerId);
+        const model = providers.modelsByProvider[selection.providerId]?.find(item => item.id === selection.modelId && item.isEnabled !== false);
+        if (!provider || !providerHasCredentials(provider) || !model || selection.reasoningEffort !== null && !providers.getAvailableReasoningEfforts(selection.providerId, selection.modelId).includes(selection.reasoningEffort)) throw new Error('validation_failed');
+      };
+      check();
+      await options.beforeEffect();
+      check();
+      await selectionPersistence.track(tauriIpc.updateConversationAISelection({ id: conversationId, ...selection }));
+      set(state => ({ conversations: state.conversations.map(conversation => conversation.id === conversationId ? {
+        ...conversation, provider_id: selection.providerId, model_id: selection.modelId, reasoning_effort: selection.reasoningEffort,
+      } : conversation) }));
+      if (get().selectedConversationId === conversationId) {
+        // The selected model is already present in the cached catalogue. This
+        // commit updates the desktop composer without scanning providers.
+        useProviderStore.getState().commitCachedSelection(selection);
+      }
     },
 
     selectConversation: async (conversationId) => {

@@ -59,3 +59,24 @@ test('retired native target unblocks a later generation without replaying uncert
   await expect(s.run(next,restarted)).rejects.toThrow('conflict'); expect(s.counts().effects).toBe(2);
   await expect(s.run(old,restarted)).rejects.toThrow('conflict'); expect(s.counts().effects).toBe(2);
 });
+
+const modelCatalog = { models: [{ provider_id:'local',provider_name:'Local',model_id:'model/one',model_name:'One',reasoning_efforts:['low' as const,'high' as const] }], selection: {provider_id:'local',model_id:'model/one',reasoning_effort:'low' as const} };
+test('native model catalogue is hidden from legacy clients and selection requires negotiated capability',async()=>{
+ const s=setup(); await s.host.initialize(); s.state({question:null,generation_id:null,actions:['select_model'],model_catalog:modelCatalog});
+ const legacy=await s.capture(); expect(legacy.model_catalog).toBeUndefined(); expect(legacy.actions).toEqual([]);
+ const request=s.delivery('conversation.interactions',{ref}); request.capabilities!.push('conversation-models-1');
+ const fresh=await s.run(request) as ContentConversationInteractions; expect(fresh.model_catalog).toEqual(modelCatalog);
+ const pick=s.delivery('conversation.interact',{ref,snapshot_id:fresh.snapshot_id,expected_revision:fresh.revision,idempotency_key:'model',action:'select_model',selection:{provider_id:'local',model_id:'model/one',reasoning_effort:'high'}});
+ expect(validateMessage(pick).valid).toBe(false); await expect(s.host.handle(pick,policy,s.authorize)).rejects.toThrow('validation_failed');
+ pick.capabilities!.push('conversation-models-1'); expect(await s.run(pick)).toEqual({outcome:'applied',revision:2});
+ expect(await s.run(pick)).toEqual({outcome:'duplicate',revision:2}); expect(s.counts().effects).toBe(1);
+});
+test('unavailable model and unsupported effort cannot change native selection',async()=>{
+ const s=setup(); await s.host.initialize(); s.state({question:null,generation_id:null,actions:['select_model'],model_catalog:modelCatalog});
+ const q=s.delivery('conversation.interactions',{ref}); q.capabilities!.push('conversation-models-1'); const c=await s.run(q) as ContentConversationInteractions;
+ for(const selection of [{provider_id:'local',model_id:'missing',reasoning_effort:null},{provider_id:'local',model_id:'model/one',reasoning_effort:'ultra'}]) {
+  const pick=s.delivery('conversation.interact',{ref,snapshot_id:c.snapshot_id,expected_revision:c.revision,idempotency_key:selection.reasoning_effort === null ? 'missing-model' : 'invalid-effort',action:'select_model',selection}); pick.capabilities!.push('conversation-models-1');
+  await expect(s.run(pick)).rejects.toThrow('validation_failed');
+ }
+ expect(s.counts().effects).toBe(0);
+});

@@ -37,6 +37,7 @@ export type DesktopToolApprovalPayload =
   | { verdict: 'deny'; reason?: string };
 
 export interface DesktopActions {
+  selectModel(conversationId: string, selection: { providerId: string; modelId: string; reasoningEffort: import('../../types').ReasoningEffort | null }, guard: DesktopActionGuard): Promise<void>;
   sendConversation(conversationId: string, content: string, guard: DesktopActionGuard): Promise<void>;
   start(taskId: string, guard: DesktopActionGuard): Promise<{
     conversationId: string;
@@ -123,6 +124,16 @@ const projectScopeForTask = (ports: DesktopStorePorts, task: ReturnType<DesktopS
 };
 
 export const createDesktopActions = (ports: DesktopStorePorts): DesktopActions => ({
+  selectModel: async (conversationId, selection, guard) => {
+    const conversation = ports.chat().conversations.find(item => item.id === conversationId);
+    if (!conversation) invalidReference();
+    const reservation = reservePilotAction({ conversationId, ...(conversation?.task_id ? { taskId: conversation.task_id } : {}) });
+    const gate = createEffectGate(guard, reservation);
+    try {
+      await ports.chat().selectConversationAI(conversationId, selection, { pilotActionToken: reservation.token, beforeEffect: gate.beforeEffect });
+      assertPilotReservationCurrent(reservation);
+    } finally { reservation.release(); }
+  },
   sendConversation: async (conversationId, content, guard) => {
     if (!content.trim()) invalidReference();
     const reservation = reservePilotAction({ conversationId });

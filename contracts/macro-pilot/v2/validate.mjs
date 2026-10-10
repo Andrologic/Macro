@@ -38,14 +38,25 @@ export function validateMessage(message) {
   }
   if (['negotiate','negotiated','poll','delivery'].includes(message.type)) reject((message.capabilities ?? []).includes('conversation-interactions-1') && !(message.capabilities ?? []).includes('conversations-1'), 'interactions require conversations capability');
   if (message.type === 'delivery') reject(['conversation.interactions','conversation.interact'].includes(message.request.operation) && !(message.capabilities ?? []).includes('conversation-interactions-1'), 'unattested interactions capability');
+  if (['negotiate','negotiated','poll','delivery'].includes(message.type)) reject((message.capabilities ?? []).includes('conversation-models-1') && !(message.capabilities ?? []).includes('conversation-interactions-1'), 'models require interactions capability');
+  if (message.type === 'delivery') reject(message.request.operation === 'conversation.interact' && message.request.body.action === 'select_model' && !(message.capabilities ?? []).includes('conversation-models-1'), 'unattested models capability');
   if (message.type === 'request' && message.operation === 'conversation.interact') {
     const b = message.body;
-    reject(b.action === 'answer' ? !b.assistant_message_id || !b.answers || 'generation_id' in b : !b.generation_id || 'answers' in b || 'assistant_message_id' in b, 'interaction payload mismatch');
+    reject(b.action === 'answer' ? !b.assistant_message_id || !b.answers || 'generation_id' in b || 'selection' in b
+      : b.action === 'stop' ? !b.generation_id || 'answers' in b || 'assistant_message_id' in b || 'selection' in b
+      : !b.selection || 'answers' in b || 'assistant_message_id' in b || 'generation_id' in b, 'interaction payload mismatch');
     if (b.answers) reject(new Set(b.answers.map(a => a.step_id)).size !== b.answers.length || b.answers.some(a => !a.answer.trim()), 'invalid answers');
   }
   if (message.type === 'response' && message.operation === 'conversation.interactions') {
     const r = message.result;
     reject(r.actions.includes('answer') && r.question === null || r.actions.includes('stop') && r.generation_id === null, 'missing action target');
+    reject(r.actions.includes('select_model') && (!r.model_catalog || r.question !== null || r.generation_id !== null), 'model selection unavailable');
+    if (r.model_catalog) {
+      const models = r.model_catalog.models;
+      reject(new Set(models.map(m => JSON.stringify([m.provider_id,m.model_id]))).size !== models.length, 'duplicate models');
+      const selected = r.model_catalog.selection;
+      if (selected) reject(!models.some(m => m.provider_id === selected.provider_id && m.model_id === selected.model_id && (selected.reasoning_effort === null || m.reasoning_efforts.includes(selected.reasoning_effort))), 'selection outside model catalog');
+    }
     if (r.question) reject(new Set(r.question.steps.map(s => s.step_id)).size !== r.question.steps.length, 'duplicate questions');
   }
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
