@@ -1,3 +1,4 @@
+import { parseProviderErrorBlock } from '../../services/chatErrorPresentation';
 import { describe, expect, it, spyOn } from 'bun:test';
 import type { AgsdlSelectionReference, ChatMessage, Conversation } from '../../types';
 import { serializeAgsdlChatContext } from '../../services/agsdl/selectionContext';
@@ -476,9 +477,10 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().lastError).toBeNull();
       expect(runtime.lastErrorOrigin).toBe('provider');
       expect(runtime.lastErrorDisplayTarget).toBe('transcript');
-      expect(assistantMessage?.content).toContain('### Erreur du provider');
-      expect(assistantMessage?.content).toContain('Too many requests for this model.');
-      expect(assistantMessage?.content).toContain('Statut HTTP: `429`');
+      expect(assistantMessage?.content).toContain('```macro-provider-error');
+      expect(parseProviderErrorBlock(assistantMessage?.content.split('\n')[1] ?? '')).toMatchObject({
+        message: 'Too many requests for this model.', status: 429, retryable: true, retryAfterMs: 45000,
+      });
     });
 
     it('keeps launch-time Macro errors in the composer and removes the empty assistant placeholder', async () => {

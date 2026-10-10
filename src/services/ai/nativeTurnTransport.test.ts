@@ -1,3 +1,4 @@
+import { parseProviderErrorBlock } from '../chatErrorPresentation';
 import { StreamStopUnconfirmedError } from "./streamCancellation";
 import { beforeEach, expect, mock, test } from 'bun:test';
 import { resolveChatErrorPresentation, buildProviderErrorTranscriptMarkdown } from '../chatErrorPresentation';
@@ -436,7 +437,7 @@ for (const [status, kind, retryable] of [
     expect(error).toMatchObject({ status, kind, retryable });
     const presentation = resolveChatErrorPresentation(error);
     expect(presentation).toMatchObject({ origin: 'provider', displayTarget: 'transcript', status, kind, retryable });
-    expect(buildProviderErrorTranscriptMarkdown(presentation)).toContain(`Statut HTTP: \`${status}\``);
+    expect(parseProviderErrorBlock(buildProviderErrorTranscriptMarkdown(presentation).split('\n')[1])).toMatchObject({ status, kind, retryable });
     if (status === 503) expect(presentation.suggestedAction).toContain('Relance dans quelques instants');
     expect(handlers.size).toBe(0);
   });
