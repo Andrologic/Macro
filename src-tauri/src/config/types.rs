@@ -501,6 +501,10 @@ pub struct ManualModelDefinition {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
