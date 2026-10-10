@@ -74,7 +74,7 @@ describe("AgSDL viewer", () => {
     act(() => useAgsdlExecutionStore.setState({ preflight: { source: { ...source, revision: "2" }, authoredSource: currentSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: false, registryVersion: "registry", diagnostics: [], incomplete: false } as import("../../types/generated/ipc").ExecutionPreflight }));
     expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
     act(() => {
-      useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], source: authoredSource } } }));
+      useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], source: authoredSource, persistedRevision: 7 } } }));
       useAgsdlExecutionStore.setState({ preflight: { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: false, registryVersion: "registry", diagnostics: [], incomplete: false } as import("../../types/generated/ipc").ExecutionPreflight });
     });
     expect(container!.querySelector(".agsdl-native-active")).not.toBeNull();

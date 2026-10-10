@@ -218,6 +218,7 @@ pub async fn execution_read_diagnostic(
 
 #[tauri::command]
 pub async fn execution_preflight(
+    app: tauri::AppHandle,
     state: State<'_, DbPool>,
     host: State<'_, crate::agsdl_host::HostState>,
     config_manager: State<'_, crate::config::ConfigManager>,
@@ -225,7 +226,7 @@ pub async fn execution_preflight(
     request: crate::agsdl_host_capture::ExecutionPreflightRequest,
 ) -> repository::Result<crate::agsdl_host_capture::ExecutionPreflight> {
     let workspace = workspace_root.0.read().await.clone();
-    Ok(crate::agsdl_host_capture::compile(
+    let mut result = crate::agsdl_host_capture::compile(
         &host,
         &config_manager,
         &pool(&state).await?,
@@ -233,7 +234,11 @@ pub async fn execution_preflight(
         &request,
     )
     .await?
-    .public())
+    .public();
+    // Qualify the actual product controls in an isolated QA debug profile before
+    // advertising availability in ordinary profiles. Native admission is unchanged.
+    result.product_runtime_available = crate::agsdl_host::execution_qa_available(app);
+    Ok(result)
 }
 
 #[tauri::command]

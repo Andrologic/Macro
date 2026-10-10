@@ -276,7 +276,9 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     start: (prompt = "") => intentOperation(async (initial, current) => {
       if (openIntent(get().intent)) throw new Error("agsdl.execution.intentOpen");
       const session = useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })];
-      if (!session || !Number.isSafeInteger(session.persistedRevision) || session.dirty || session.saving || !initial.preflight || initial.preflight.authoredSource !== session.source || String(session.persistedRevision) !== initial.preflight.source.revision) throw new Error("agsdl.execution.saveBeforeStart");
+      if (!session || !Number.isSafeInteger(session.persistedRevision) || session.dirty || session.saving || !initial.preflight || initial.preflight.authoredSource !== session.source) throw new Error("agsdl.execution.saveBeforeStart");
+      // Editor revisions count document saves; native revisions count plan mutations.
+      // Exact source bytes and the native expected revision protect this capture.
       const preflight = await ipc.preflightExecution({ owner: initial.owner!, expected: initial.preflight.source });
       if (!preflight.productRuntimeAvailable || !preflight.staticValid || !preflight.runtimeSupported || preflight.incomplete) throw new Error("agsdl.execution.unavailable");
       if (!(await current()) || useAgsdlStore.getState().sessions[agsdlSessionKey({ planId: initial.owner!.planId, branchName: initial.owner!.branch })]?.version !== session.version) return;

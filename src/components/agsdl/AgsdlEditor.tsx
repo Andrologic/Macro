@@ -56,7 +56,7 @@ export const AgsdlEditor: React.FC<{
   const [executionOpen, setExecutionOpen] = useState(false);
   const captured = executionScoped && execution.captured && !!execution.snapshot;
   const sourceConfirmed = executionScoped && !!execution.preflight && !!session && !session.dirty && !session.saving &&
-    execution.preflight.authoredSource === session.source && String(session.persistedRevision) === execution.preflight.source.revision;
+    execution.preflight.authoredSource === session.source;
   const exactRun = sourceConfirmed && !!execution.snapshot && sameSource(execution.snapshot.source, execution.preflight!.source as import("../../services/agsdlExecution/contracts").SourceRevision);
   const [error, setError] = useState("");
   const [overview, setOverview] = useState(false);

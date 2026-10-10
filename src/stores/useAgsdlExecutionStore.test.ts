@@ -343,3 +343,16 @@ it("targets an activation Stop by identity without a renderer request key", asyn
   expect(native.stops).toEqual([{ systemStartId: "run" as SystemStartId, activationId: "activation" as ActivationId }, { systemStartId: "run" as SystemStartId, activationId: "activation" as ActivationId }]);
   expect(store.getState().error).toBeUndefined();
 });
+
+it("starts when plan and document revisions differ while retaining native capture identity", async () => {
+  await ready();
+  const key = agsdlSessionKey(target);
+  useAgsdlStore.setState({ sessions: { [key]: { ...useAgsdlStore.getState().sessions[key], persistedRevision: 7 } } });
+  await store.getState().start("Synthetic input");
+  expect(store.getState().error).toBeUndefined();
+  expect(native.calls).toContain("stage");
+  const row = [...native.rows.values()][0];
+  expect(row.payload.kind).toBe("start");
+  if (row.payload.kind === "start") expect(row.payload.request.source).toEqual(source);
+  expect(row.state.kind).toBe("closed");
+});
