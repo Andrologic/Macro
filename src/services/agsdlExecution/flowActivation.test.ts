@@ -208,3 +208,15 @@ it('keeps the reserved VISIT_LIMIT memory unchanged when Stop wins before its no
   expect(result.outcome.kind).toBe('stopped'); expect(result.memory).toEqual(inspection.agents[0].memory);
   expect(f.order).toEqual(['read-empty', 'close-empty']); expect(result.validation.selectedBranch).toBeNull();
 });
+
+it('closes a Stop-cancelled Call as stopped only after native no-effect evidence', async () => {
+  const { inspection } = await flowFixture(), capture = await loadFlowCapture(inspection), f = io();
+  const call = flowDelivery('cancelled-call', '1', 'call', null);
+  call.delivery.input = { origin: 'agent', valueJson: '{"text":"visible","results":{}}' };
+  f.ports.invoke = async () => { throw new ConformanceError('STOP_CANCELLED', '', 'Approval cancelled by Stop'); };
+  const result = await executeFlowActivation(flowOwner, call, null, inspection, capture, () => {}, f.ports);
+  expect(result.outcome.kind).toBe('stopped');
+  expect(f.order).toEqual(['read-empty', 'close-empty']);
+  f.ports.closeResponses = async () => { throw new Error('Unresolved physical effect'); };
+  await expect(executeFlowActivation(flowOwner, call, null, inspection, capture, () => {}, f.ports)).rejects.toThrow('Unresolved physical effect');
+});

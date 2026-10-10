@@ -32,3 +32,8 @@ it('preserves native acknowledgement loss as unconfirmed termination so the Macr
   const ports: NativeInvocationPorts = { invoke: async () => { throw new Error('lost IPC reply'); }, wait: async () => {}, identity: () => 'unused' };
   await expect(awaitNativeTool(request(), ports)).rejects.toBeInstanceOf(StreamStopUnconfirmedError);
 });
+
+it('distinguishes native Stop cancellation from a denied approval', async () => {
+  const ports: NativeInvocationPorts = { invoke: async () => ({ kind: 'rejected', code: 'STOP_CANCELLED' }), wait: async () => { throw new Error('unexpected retry'); }, identity: () => 'unused' };
+  await expect(awaitNativeTool(request(), ports)).rejects.toMatchObject({ code: 'STOP_CANCELLED' });
+});

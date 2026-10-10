@@ -24,7 +24,7 @@ export async function awaitNativeTool(request: HostToolInvocation, ports: Native
     catch { throw new StreamStopUnconfirmedError('Native tool acknowledgement is ambiguous.'); }
     switch (receipt.kind) {
       case 'ended': return { resultJson: receipt.resultJson, failed: receipt.failed };
-      case 'rejected': return fail('APPROVAL', '', `Native tool admission refused: ${receipt.code}`);
+      case 'rejected': return fail(receipt.code === 'STOP_CANCELLED' ? 'STOP_CANCELLED' : 'APPROVAL', '', `Native tool admission refused: ${receipt.code}`);
       case 'uncertain': throw new StreamStopUnconfirmedError('Native tool termination is unconfirmed.');
       case 'pending':
       case 'awaitingApproval': await ports.wait();

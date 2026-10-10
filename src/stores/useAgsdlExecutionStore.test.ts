@@ -9,6 +9,7 @@ const projection = (id: string, cursor = "9007199254740993", nextPage: PublicPro
 let readProjection: (id: string, page?: unknown) => Promise<PublicProjection>;
 let available = false;
 let authoredSource = '{}';
+let completedCount = "0";
 let listCalls = 0;
 let preflightCalls = 0;
 let seenPages: unknown[] = [];
@@ -37,7 +38,7 @@ const native = {
 const lost = (lose: boolean, value: PublicExecutionIntent) => { if (lose) throw new Error("Acknowledgement lost"); return structuredClone(value); };
 mock.module("../services/tauriIpc", () => ({
   preflightExecution: async () => { preflightCalls++; return { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: available, incomplete: false }; },
-  listExecutionRuns: async () => { listCalls++; return { runs: [...native.rows.values()].some(row => row.state.kind === "admitted" || row.state.kind === "closed" && row.state.admission) ? [{ systemStartId: 'started', source, counts: { completed: '0' } }] : [], nextCursor: null }; },
+  listExecutionRuns: async () => { listCalls++; return { runs: [...native.rows.values()].some(row => row.state.kind === "admitted" || row.state.kind === "closed" && row.state.admission) ? [{ systemStartId: 'started', source, counts: { completed: completedCount } }] : [], nextCursor: null }; },
   readExecutionSnapshot: async (id: string) => ({ ...snapshot(id), source: { ...source, owner: snapshotOwner } }),
   readExecutionProjection: async (id: string, page?: unknown) => { seenPages.push(page); return readProjection(id, page); },
   readExecutionApprovals: async () => ({ approvals: [], incomplete: false }),
@@ -87,7 +88,7 @@ const target = { planId: owner.planId, branchName: owner.branch };
 /** A renderer reload: the store forgets everything, native rows remain. */
 const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intentBusy: false, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null });
 beforeEach(async () => {
-  selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset();
+  selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset(); completedCount = "0";
   readProjection = async id => projection(id);
   reload();
   useAgsdlStore.setState({ sessions: { [agsdlSessionKey(target)]: { source: '{}', annexes: {}, version: 'v1', persistedRevision: 1, status: 'draft', dirty: false, saving: false, history: [], future: [], reports: [], error: null } } });
@@ -127,6 +128,7 @@ it("coalesces public run refresh without Preflight or compilation and retains a 
   let release!: (value: PublicProjection) => void;
   readProjection = () => new Promise(resolve => { release = resolve; });
   const first = store.getState().refreshRun(); while (!release) await Promise.resolve();
+  expect(store.getState().busy).toBe(false);
   await store.getState().refreshRun(); release(projection('run', '9007199254740994')); await first;
   expect(preflightCalls).toBe(preflights); expect(store.getState().projection?.cursor).toBe('9007199254740994' as Sequence);
   store.setState({ projection: projection('run', '9007199254740994', { cursor: '9007199254740994' as Sequence, offset: 64 }) });
@@ -355,4 +357,17 @@ it("starts when plan and document revisions differ while retaining native captur
   expect(row.payload.kind).toBe("start");
   if (row.payload.kind === "start") expect(row.payload.request.source).toEqual(source);
   expect(row.state.kind).toBe("closed");
+});
+
+it("refreshes progress summaries only when the native projection advances", async () => {
+  await ready(); await store.getState().start("Synthetic input");
+  const before = listCalls;
+  await store.getState().refreshRun();
+  expect(listCalls).toBe(before);
+  completedCount = "3";
+  readProjection = async id => projection(id, "9007199254740994");
+  await store.getState().refreshRun();
+  expect(listCalls).toBe(before + 1);
+  expect(store.getState().runs[0].counts.completed).toBe("3");
+  expect(store.getState().snapshot?.systemStartId).toBe("started" as SystemStartId);
 });

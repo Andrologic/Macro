@@ -77,6 +77,7 @@ const executionError = (error: unknown) => {
 };
 const source = (value: ExecutionPreflight["source"]): SourceRevision => value as SourceRevision;
 export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
+  let refreshingRun = false;
   const ownerMatches = (owner: SourceOwner | undefined, target: AgsdlTarget, projectId: string) => owner?.planId === target.planId && owner.branch === target.branchName && owner.projectId === projectId;
   const owns = async (expected = get()) => {
     if (!expected.owner || !expected.conversationId || get().owner !== expected.owner || get().conversationId !== expected.conversationId) throw new Error("agsdl.execution.ownerChanged");
@@ -214,16 +215,34 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
       if (await current()) set({ ...result, preflight, runs: page.runs, nextRuns: page.nextCursor, loaded: true, ...(get().intentBusy ? {} : { intent: intents[0] }) });
     }),
     async refreshRun() {
-      if (get().busy || get().stale || !get().snapshot) return;
-      await operation(async (initial, current) => {
-        if (!initial.snapshot) return;
+      const initial = get();
+      if (refreshingRun || initial.busy || initial.intentBusy || initial.stopping || initial.stale || !initial.snapshot) return;
+      const token = generation;
+      const current = async () => {
+        if (token !== generation || get().snapshot !== initial.snapshot || get().intentBusy || get().stopping) return false;
+        await owns(initial);
+        return token === generation && get().snapshot === initial.snapshot && !get().intentBusy && !get().stopping;
+      };
+      // Background observation must not disable controls or cancel foreground intent.
+      refreshingRun = true;
+      try {
         const result = await readRun(initial.snapshot);
+        // Refresh retained run summaries when progress changes, without replacing
+        // the user's paginated history or selected run.
+        let runs = initial.runs;
+        if (result.projection.cursor !== initial.projection?.cursor) {
+          const page = await ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 });
+          if (page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Run source owner differs");
+          runs = initial.runs.map(run => page.runs.find(latest => latest.systemStartId === run.systemStartId) ?? run);
+        }
         if (!(await current())) return;
         const pinned = !!initial.projection?.nextPage || (initial.projection?.agents.length ?? 0) > 64 || (initial.projection?.activations.length ?? 0) > 64;
         if (pinned && result.projection.cursor !== initial.projection?.cursor) set({ stale: true });
-        else set({ ...result, projection: pinned ? initial.projection : result.projection,
+        else set({ ...result, runs, projection: pinned ? initial.projection : result.projection,
           diagnostic: initial.diagnosticPinned ? initial.diagnostic : result.diagnostic, diagnosticPinned: initial.diagnosticPinned });
-      });
+      } catch (error) {
+        if (token === generation && get().snapshot === initial.snapshot && !get().intentBusy && !get().stopping) set(executionError(error));
+      } finally { refreshingRun = false; }
     },
     watch(owner, conversationId, run) {
       const key = JSON.stringify([owner.projectId, owner.planId, owner.branch, conversationId, run]);

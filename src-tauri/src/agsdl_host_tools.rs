@@ -568,7 +568,12 @@ pub(crate) async fn execution_host_invoke_tool(
         };
         match approval.status.as_str() {
             "pending" => return Ok(HostToolReceipt::AwaitingApproval { approval }),
-            "denied" | "cancelled" => {
+            "cancelled" => {
+                return Ok(HostToolReceipt::Rejected {
+                    code: "STOP_CANCELLED".into(),
+                })
+            }
+            "denied" => {
                 return Ok(HostToolReceipt::Rejected {
                     code: "PERMISSION".into(),
                 })

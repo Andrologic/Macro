@@ -204,7 +204,11 @@ export async function executeFlowActivation(owner: EngineOwner, activation: Engi
       // NativeInvocation converts an ambiguous IPC acknowledgement into a physical
       // uncertainty error. Only a correlated language/refusal error reaches here.
       if (!(error instanceof ConformanceError)) throw error;
-      outcome = flowFailure(error);
+      // A cancelled approval has no registered effect. The native closure below
+      // still must prove that no physical work remains before Stop is terminal.
+      outcome = error.code === 'STOP_CANCELLED'
+        ? { kind: 'stopped', evidenceJson: '{"kind":"native-no-effect-closure"}' }
+        : flowFailure(error);
     }
     closure = await closeEmpty(owner, work, ports);
   }
