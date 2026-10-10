@@ -77,6 +77,7 @@ export type MockMessage = {
     }>;
   };
   completion_reason?: import('../../types').ChatCompletionReason;
+  generation_attempts?: import('../../types').ChatMessage['generation_attempts'];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 };
@@ -4060,14 +4061,27 @@ describe('ChatZone', () => {
     });
   });
 
+  it('renders a completed response without generation attempt diagnostics', async () => {
+    chatState = { ...chatState, messages: [buildMessage({
+      id: 'assistant-completed', role: 'assistant', content: 'Answer', completion_reason: 'completed',
+      generation_attempts: [{ id: 'attempt-completed', status: 'completed', rawText: 'Answer', acceptedText: 'Answer', costUsd: null }],
+    })] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('Answer');
+    expect(requireContainer().textContent).not.toContain('generation attempt');
+    expect(requireContainer().querySelector('[data-chat-completion-notice]')).toBeNull();
+  });
+
   it.each(['content_filter', 'safety', 'unknown_terminal'])('renders a persisted provider termination notice for %s', async (reason) => {
     chatState = { ...chatState, messages: [buildMessage({
       id: 'assistant-filtered', role: 'assistant', content: 'Partial response', completion_reason: reason,
+      generation_attempts: [{ id: 'attempt-partial', status: 'partial', rawText: 'Partial response', acceptedText: 'Partial response', costUsd: null }],
     })] };
     await act(async () => { requireRoot().render(<ChatZone />); });
     const notice = requireContainer().querySelector(`[data-chat-completion-notice="${reason}"]`);
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain('Response interrupted');
+    expect(requireContainer().textContent).not.toContain('generation attempt');
   });
 
   it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {
