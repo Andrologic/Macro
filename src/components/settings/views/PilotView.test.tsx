@@ -36,7 +36,7 @@ const pilotState = {
     revision: 1,
   },
   instanceAccess: null as PilotPublicState['instanceAccess'],
-  attempt: null,
+  attempt: null as PilotPublicState['attempt'],
   lastError: null as PilotPublicState['lastError'],
   logoutRevocationConfirmed: null,
   busy: false,
@@ -83,7 +83,8 @@ mock.module('react-i18next', () => ({
 }));
 
 mock.module('../../../stores/usePilotStore', () => ({ usePilotStore: usePilotStoreMock }));
-mock.module('../../../services/externalUrlOpener', () => ({ openExternalUrl: async () => undefined }));
+const openExternalUrlMock = mock(async (_url: string) => undefined);
+mock.module('../../../services/externalUrlOpener', () => ({ openExternalUrl: openExternalUrlMock }));
 mock.module('../../../composition/macroPilotDesktop', () => ({
   macroPilotRuntime: {
     getStatus: () => runtimeStatus,
@@ -128,7 +129,7 @@ describe('PilotView', () => {
     resumeVaultAccessMock.mockReset(); resumeVaultAccessMock.mockImplementation(async () => undefined);
     notifySuccessMock.mockClear(); notifyWarningMock.mockClear();
     pilotState.revokeSession.mockClear(); pilotState.revokeAllSessions.mockClear();
-    pilotState.connect.mockClear();
+    pilotState.connect.mockClear(); pilotState.attempt = null; openExternalUrlMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -141,6 +142,28 @@ describe('PilotView', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('shows the code without opening GitHub and copies it before opening the browser', async () => {
+    const attempt = { attemptKey: 'key', attemptId: 'attempt', userCode: 'TEST-CODE', verificationUri: 'https://github.com/login/device', expiresAt: '2099-01-01T00:00:00Z', interval: 5 };
+    pilotState.connect.mockImplementationOnce(async () => { pilotState.attempt = attempt; });
+    const signIn = [...container.querySelectorAll('button')].find(button => button.textContent === 'Connect with GitHub')!;
+    await act(async () => { signIn.click(); await Promise.resolve(); root.render(<PilotView />); });
+    expect(openExternalUrlMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('TEST-CODE');
+    const previous = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = mock(async (_code: string) => { expect(openExternalUrlMock).not.toHaveBeenCalled(); });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      const copy = [...container.querySelectorAll('button')].find(button => button.textContent === 'Copy code and open GitHub')!;
+      await act(async () => { copy.click(); await Promise.resolve(); });
+      expect(writeText).toHaveBeenCalledWith('TEST-CODE');
+      expect(openExternalUrlMock).toHaveBeenCalledWith(attempt.verificationUri);
+      expect(container.textContent).not.toContain('Confirm this account');
+    } finally {
+      if (previous) Object.defineProperty(navigator, 'clipboard', previous);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
   });
 
   it('exige la confirmation explicite avant le rapprochement local', async () => {

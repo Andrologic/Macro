@@ -106,7 +106,12 @@ export const usePilotStore = create<PilotStore>((set, get) => {
       await action(async () => { await client.initialize(); sync(); }, 'read').catch(() => undefined);
     },
     connect: (origin, label) => action(async () => { await client.connect(origin, label); sync(); }),
-    pollAuth: () => action(async () => { const identified = await client.pollAuth(); sync(); return Boolean(identified); }),
+    pollAuth: () => action(async () => {
+      const identified = client.getState().attempt?.identifiedAccount ?? await client.pollAuth();
+      if (identified) await client.confirmAccount(identified.account_id);
+      sync();
+      return Boolean(identified);
+    }),
     confirmAccount: () => action(async () => {
       const accountId = get().attempt?.identifiedAccount?.account_id;
       if (!accountId) throw new PilotClientError('context_changed');

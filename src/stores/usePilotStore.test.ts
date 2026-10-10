@@ -22,13 +22,15 @@ const revokeSession = mock(async (_id: string) => ({ revocationConfirmed: true }
 const deleteAccount = mock(async () => ({ revocationConfirmed: true }));
 const resolveAccess = mock(async () => undefined);
 const connect = mock(async () => undefined);
+const pollAuth = mock(async () => state.attempt?.identifiedAccount ?? null);
+const confirmAccount = mock(async (_id: string) => { state = { ...initial(), attempt: null }; subscriber(); return state.deviceSession!; });
 const resumeVaultAccess = mock(async (): Promise<void> => undefined);
 const signOut = async () => { state = { ...state, account: null, deviceSession: null, status: 'signed_out' as const }; subscriber(); return { revocationConfirmed: false }; };
 const logout = mock(signOut);
 mock.module('../services/macroPilot/nativeClient', () => ({ ...native, macroPilotNativeClient: {
   getState: () => state, subscribe: (listener: () => void) => { subscriber = listener; return () => undefined; },
   initialize: async () => undefined, getAccountCatalog, listAccessRequests, revokeSession, deleteAccount,
-  resolveAccess, connect, resumeVaultAccess,
+  resolveAccess, connect, resumeVaultAccess, pollAuth, confirmAccount,
   logout,
 } }));
 const { usePilotStore } = await import('./usePilotStore');
@@ -46,10 +48,35 @@ beforeEach(() => {
   revokeSession.mockReset(); revokeSession.mockImplementation(async () => ({ revocationConfirmed: true }));
   logout.mockReset(); logout.mockImplementation(signOut);
   resumeVaultAccess.mockReset(); resumeVaultAccess.mockImplementation(async () => undefined);
-  deleteAccount.mockClear(); resolveAccess.mockClear(); connect.mockClear();
+  deleteAccount.mockClear(); resolveAccess.mockClear(); connect.mockClear(); pollAuth.mockClear(); confirmAccount.mockClear();
 });
 
 describe('Pilot account store', () => {
+  it('claims the authenticated account automatically and resumes an identified attempt without polling again', async () => {
+    state = { ...initial(), deviceSession: null, account: null, status: 'confirming_account', attempt: {
+      attemptKey: 'attempt:key', attemptId: 'attempt:one', userCode: 'TEST-CODE',
+      verificationUri: 'https://github.com/login/device', expiresAt: '2099-01-01T00:00:00Z', interval: 5,
+      identifiedAccount: initial().account!,
+    } }; subscriber();
+    expect(await usePilotStore.getState().pollAuth()).toBe(true);
+    expect(confirmAccount).toHaveBeenCalledWith('account:one');
+    expect(pollAuth).not.toHaveBeenCalled();
+    expect(usePilotStore.getState()).toMatchObject({ status: 'connected', attempt: null, busy: false });
+  });
+
+  it('finishes a successful authorization poll without asking for account confirmation', async () => {
+    pollAuth.mockImplementationOnce(async () => initial().account);
+    expect(await usePilotStore.getState().pollAuth()).toBe(true);
+    expect(pollAuth).toHaveBeenCalledTimes(1);
+    expect(confirmAccount).toHaveBeenCalledWith('account:one');
+    expect(usePilotStore.getState().status).toBe('connected');
+  });
+
+  it('does not claim an account while GitHub authorization is pending' , async () => {
+    await usePilotStore.getState().pollAuth();
+    expect(pollAuth).toHaveBeenCalledTimes(1);
+    expect(confirmAccount).not.toHaveBeenCalled();
+  });
   it('allows logout to preempt explicit vault recovery and discards its late result', async () => {
     const pending = deferred<void>();
     resumeVaultAccess.mockImplementation(() => pending.promise);

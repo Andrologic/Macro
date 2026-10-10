@@ -118,12 +118,12 @@ export const PilotView: React.FC = () => {
   }, [refreshIndeterminate, store.instance?.ref.instance_id]);
 
   useEffect(() => {
-    if (authStatus !== 'authorizing' || !authAttempt || busy) return;
+    if (!['authorizing', 'confirming_account'].includes(authStatus) || !authAttempt || busy || store.lastError) return;
     const timer = window.setTimeout(() => {
       void pollAuth().catch(() => undefined);
     }, authAttempt.interval * 1_000);
     return () => window.clearTimeout(timer);
-  }, [authStatus, authAttempt, busy, pollAuth]);
+  }, [authStatus, authAttempt, busy, pollAuth, store.lastError]);
 
   useEffect(() => {
     const scope = deviceSession ? `${store.relayOrigin}:${deviceSession.ref.session_id}` : null;
@@ -160,16 +160,23 @@ export const PilotView: React.FC = () => {
     }
   };
 
-  const startConnection = () => run(async () => {
-    await store.connect(PILOT_RELAY_ORIGIN);
-    const verificationUri = usePilotStore.getState().attempt?.verificationUri;
-    if (verificationUri) await openExternalUrl(verificationUri);
-  });
+  const startConnection = () => run(() => store.connect(PILOT_RELAY_ORIGIN));
 
-  const confirmAccount = () => run(
-    () => store.confirmAccount(),
-    t('settings.pilot.connected', 'Macro Connect account connected.'),
-  );
+  const copyAndOpenGitHub = async () => {
+    const attempt = usePilotStore.getState().attempt;
+    if (!attempt) return;
+    try {
+      await navigator.clipboard.writeText(attempt.userCode);
+    } catch {
+      notify.error(t('settings.pilot.copyCodeFailed', 'Could not copy the code. Copy it manually before opening GitHub.'));
+      return;
+    }
+    try {
+      await openExternalUrl(attempt.verificationUri);
+    } catch {
+      notify.error(t('settings.pilot.openGitHubFailed', 'The code was copied. Open github.com/login/device in your browser.'));
+    }
+  };
 
   const connectInstance = () => run(
     () => store.createOrAttachInstance(),
@@ -319,14 +326,14 @@ export const PilotView: React.FC = () => {
           {store.attempt && !store.attempt.identifiedAccount && (
             <div className="space-y-3">
               <p className="text-xs text-muted-foreground">
-                {t('settings.pilot.deviceCodeHelp', 'Enter this code only in the GitHub page opened by this Macro window.')}
+                {t('settings.pilot.deviceCodeHelp', 'Copy this code, then enter it on GitHub to connect.')}
               </p>
               <div className="flex flex-wrap items-center gap-3">
-                <code className="rounded-md border border-border bg-background px-3 py-2 text-lg tracking-[0.18em]">
+                <code className="select-all rounded-md border border-border bg-background px-3 py-2 text-lg tracking-[0.18em]">
                   {store.attempt.userCode}
                 </code>
-                <Button variant="secondary" onClick={() => openExternalUrl(store.attempt!.verificationUri)}>
-                  {t('settings.pilot.openGitHub', 'Open GitHub')}
+                <Button variant="secondary" onClick={() => void copyAndOpenGitHub()}>
+                  {t('settings.pilot.copyAndOpenGitHub', 'Copy code and open GitHub')}
                 </Button>
                 <Button variant="ghost" disabled={store.busy} onClick={() => run(async () => { await store.pollAuth(); })}>
                   {t('settings.pilot.check', 'Check now')}
@@ -336,19 +343,11 @@ export const PilotView: React.FC = () => {
           )}
 
           {store.attempt?.identifiedAccount && (
-            <div className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-3">
-              <div>
-                <p className="text-sm font-medium">
-                  {store.attempt.identifiedAccount.identity.display_name || store.attempt.identifiedAccount.identity.login}
-                </p>
-                <p className="text-xs text-muted-foreground">@{store.attempt.identifiedAccount.identity.login}</p>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t('settings.pilot.confirmIdentity', 'Confirm that this is the GitHub account you intended to connect.')}
-              </p>
-              <Button disabled={store.busy} onClick={confirmAccount}>
-                {t('settings.pilot.confirmAccount', 'Confirm this account')}
-              </Button>
+            <div role="status" className="space-y-3 text-xs text-muted-foreground">
+              <p>{t('settings.pilot.finishingConnection', 'Finishing connection…')}</p>
+              {store.lastError && <Button variant="secondary" disabled={store.busy} onClick={() => run(async () => { await store.pollAuth(); })}>
+                {t('common.retry', 'Retry')}
+              </Button>}
             </div>
           )}
         </div>
