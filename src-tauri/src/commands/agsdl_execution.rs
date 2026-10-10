@@ -72,6 +72,7 @@ async fn stop_effects(
     activation_id: Option<&str>,
     gate: tokio::sync::MutexGuard<'_, ()>,
 ) -> repository::Result<PublicStopState> {
+    repository::confirm_stopped_undispatched_calls(pool, system_start_id, activation_id).await?;
     let projection = repository::read_projection(&pool, system_start_id).await?;
     let mut joins = Vec::new();
     for activation in projection.activations {

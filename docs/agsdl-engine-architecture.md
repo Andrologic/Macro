@@ -329,6 +329,16 @@ intacts. Une répétition équivalente conserve le premier texte et ne route rie
 une seconde fois. Aucun effet incertain n’est réenregistré ni redispatché.
 La confirmation d’un arrêt exige cette même preuve de terminaison.
 
+Un Call interrompu avant son approbation dispose d’une fermeture plus étroite.
+Stop annule d’abord la demande. Le natif peut ensuite confirmer l’arrêt si
+l’activation appartient à une epoch révoquée, n’est pas un Agent, conserve une
+approbation annulée attribuée à cette incarnation et ne possède aucun effet ni
+aucune réponse enregistrés. Cette vérification et la fermeture sont atomiques.
+Aucun fournisseur, outil ou successeur n’est relancé. Une activité encore
+possédée par l’epoch courante, un checkpoint Agent ou un effet enregistré reste
+hors de cette fermeture ; sa preuve de terminaison reste nécessaire.
+
+
 Un refus `VISIT_LIMIT` réserve une résolution sans effet au propriétaire.
 Le commit terminal commun vérifie le refus, garde la mémoire inchangée et
 résout la route d’erreur éventuelle une seule fois. La réservation ne consomme

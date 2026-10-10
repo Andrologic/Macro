@@ -1482,6 +1482,104 @@ async fn stop_on(
     save(&mut *tx, &request.system_start_id, &stored.state).await?;
     Ok(result)
 }
+/// Native Stop recovery only: an old non-Agent Call waiting for approval never
+/// dispatched when its approval is cancelled and both effect/response journals
+/// are empty. A revoked epoch cannot later consume that approval or register an
+/// effect. Unknown dispatched effects and Agent memory are deliberately excluded.
+pub(crate) async fn confirm_stopped_undispatched_calls(
+    pool: &SqlitePool,
+    system_id: &str,
+    activation_id: Option<&str>,
+) -> Result<()> {
+    let mut connection = pool.acquire().await?;
+    let mut tx = durable(&mut connection).await?;
+    let mut stored = load(&mut tx, system_id).await?;
+    let mut closed = Vec::new();
+    for a in stored.state.activations.values_mut() {
+        let work = &a.delivery.delivery.work;
+        if activation_id.is_some_and(|id| id != work.activation_id)
+            || a.work_state != "uncertain"
+            || work.agent_instance_id.is_some()
+            || a.admitted_epoch
+                .as_deref()
+                .is_none_or(|epoch| epoch == stored.state.epoch)
+        {
+            continue;
+        }
+        let request_id = match &a.stop_state {
+            EngineStopState::Requested { request_id }
+            | EngineStopState::Uncertain { request_id, .. } => request_id.clone(),
+            _ => continue,
+        };
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT request_json FROM engine_approvals WHERE system_id=? AND activation_id=? AND status='cancelled'",
+        ).bind(system_id).bind(&work.activation_id).fetch_all(&mut *tx).await?;
+        if rows.is_empty() {
+            continue;
+        }
+        let mut attributed = true;
+        for raw in rows {
+            let approval: approvals::Request = serde_json::from_str(&raw)?;
+            attributed &= record_equal(&approval.effect.context.work, work)?
+                && Some(approval.effect.context.owner.owner_epoch.as_str())
+                    == a.admitted_epoch.as_deref()
+                && approval.effect.context.owner.system_start_id == system_id
+                && matches!(
+                    approval.effect.effect,
+                    EngineEffectIdentity::Tool {
+                        provider_attempt_id: None,
+                        ..
+                    }
+                );
+        }
+        let effects: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_effects WHERE system_id=? AND activation_id=?",
+        )
+        .bind(system_id)
+        .bind(&work.activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let responses: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM engine_responses WHERE system_id=? AND activation_id=?",
+        )
+        .bind(system_id)
+        .bind(&work.activation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !attributed || effects != 0 || responses != 0 {
+            continue;
+        }
+        let evidence = "{\"kind\":\"native-cancelled-approval-no-dispatch\"}".to_string();
+        a.work_state = "terminal".into();
+        a.terminal = Some(EngineOutcome::Stopped {
+            evidence_json: evidence.clone(),
+        });
+        a.stop_state = EngineStopState::Confirmed {
+            request_id,
+            evidence_json: evidence,
+        };
+        closed.push(work.clone());
+    }
+    for work in &closed {
+        event(
+            &mut tx,
+            &mut stored.state,
+            system_id,
+            Some(work.clone()),
+            "terminal",
+            "{\"outcome\":{\"kind\":\"stopped\"},\"nativeCancelledApprovalNoDispatch\":true}"
+                .into(),
+        )
+        .await?;
+    }
+    if !closed.is_empty() {
+        confirm_system_stop(&mut tx, &mut stored).await?;
+        save(&mut tx, system_id, &stored.state).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Resolve and retain the native key atomically, including a lost acknowledgement.
 pub(crate) async fn ensure_stop(
     pool: &SqlitePool,

@@ -3309,3 +3309,111 @@ async fn stop_join_by_current_owner_records_ended_or_keeps_uncertainty() {
         }
     }
 }
+
+#[tokio::test]
+async fn stop_recovers_only_revoked_calls_with_cancelled_undispatched_approval() {
+    struct Calls;
+    impl CaptureAuthority for Calls {
+        type CommitGuard = ();
+        async fn capture(&self, request: &EngineStartRequest, id: &str) -> Result<TrustedCapture> {
+            let mut capture = Compiler.capture(request, id).await?;
+            capture.policies.push(StepPolicy {
+                step: vec!["call".into()],
+                agent_name: None,
+                max_visits: None,
+            });
+            capture.private.call_scopes.push(capture::CallScope {
+                step: vec!["call".into()],
+                permissions_json: "[]".into(),
+                scope_json: "{}".into(),
+            });
+            Ok(capture)
+        }
+        async fn recheck(&self, _: &EngineStartRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+    for dispatched in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let pool = create_pool(&temp.path().join("test.db")).await.unwrap();
+        let receipt = start(&pool, request(), &Calls).await.unwrap();
+        let runtime = resume(&pool, &receipt.system_start_id, &versions())
+            .await
+            .unwrap();
+        let work = delivery(&pool, &runtime, "call", "crash-call").await;
+        accept_delivery(&pool, &runtime, work.clone())
+            .await
+            .unwrap();
+        begin(&pool, &runtime, "crash-call").await.unwrap();
+        let mut invocation = effect(&runtime, &work.work);
+        invocation.effect = EngineEffectIdentity::Tool {
+            tool_invocation_id: "approval-call".into(),
+            provider_attempt_id: None,
+        };
+        let approval = approvals::request(
+            &pool,
+            approvals::Request {
+                effect: invocation.clone(),
+                tool_name: "write".into(),
+                summary: "Write synthetic file".into(),
+            },
+        )
+        .await
+        .unwrap();
+        if dispatched {
+            approvals::decide(&pool, &approval.approval_id, true)
+                .await
+                .unwrap();
+            approvals::consume_and_register(&pool, &approval.approval_id, invocation.clone())
+                .await
+                .unwrap();
+        }
+        ensure_stop(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        confirm_stopped_undispatched_calls(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_projection(&pool, &receipt.system_start_id)
+                .await
+                .unwrap()
+                .activations[0]
+                .work_state,
+            "active"
+        );
+        resume(&pool, &receipt.system_start_id, &versions())
+            .await
+            .unwrap();
+        confirm_stopped_undispatched_calls(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        let projection = read_projection(&pool, &receipt.system_start_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            projection.activations[0].work_state,
+            if dispatched { "uncertain" } else { "terminal" }
+        );
+        assert_eq!(
+            matches!(projection.system_stop, EngineStopState::Confirmed { .. }),
+            !dispatched
+        );
+        assert!(
+            approvals::consume_and_register(&pool, &approval.approval_id, invocation)
+                .await
+                .is_err()
+        );
+        let cursor = projection.cursor;
+        confirm_stopped_undispatched_calls(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_projection(&pool, &receipt.system_start_id)
+                .await
+                .unwrap()
+                .cursor,
+            cursor
+        );
+    }
+}
