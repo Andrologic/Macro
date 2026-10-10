@@ -1025,7 +1025,10 @@
     },
     "queueWriteInProgress": "この指示はまだ保存中です。保存が完了してから再試行してください。",
     "queueDirectionDeleted": "この指示は削除または再実行により無効になりました。手動で続行する前に、この復旧項目を削除してください。",
-    "directionContextUnavailable": "実行中のターンのコンテキストを利用できません。ターンが終了してからメッセージを送信してください。"
+    "directionContextUnavailable": "実行中のターンのコンテキストを利用できません。ターンが終了してからメッセージを送信してください。",
+    "providerErrorTitle": "モデルはこのリクエストを完了できませんでした。",
+    "providerErrorRetry": "しばらくしてから再試行してください。",
+    "providerErrorSettings": "再試行する前にモデルの設定を確認してください。"
   },
   "skills": {
     "collectionTitle": "スキル",

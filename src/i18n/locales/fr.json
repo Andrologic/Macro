@@ -1025,7 +1025,10 @@
     },
     "queueWriteInProgress": "Cette instruction est encore en cours d'enregistrement. Attendez la fin de sa sauvegarde avant de réessayer.",
     "queueDirectionDeleted": "Cette instruction a été invalidée par une suppression ou une réexécution. Retirez cette entrée de récupération avant de continuer manuellement.",
-    "directionContextUnavailable": "Le contexte du tour actif est indisponible. Attendez sa fin avant d'envoyer un message."
+    "directionContextUnavailable": "Le contexte du tour actif est indisponible. Attendez sa fin avant d'envoyer un message.",
+    "providerErrorTitle": "Le modèle n’a pas pu terminer cette demande.",
+    "providerErrorRetry": "Réessaie dans quelques instants.",
+    "providerErrorSettings": "Vérifie les paramètres du modèle avant de réessayer."
   },
   "skills": {
     "importDialogTitle": "Sélectionner un dossier de skill",

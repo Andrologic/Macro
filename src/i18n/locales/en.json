@@ -1025,7 +1025,10 @@
     },
     "queueWriteInProgress": "This direction is still being saved. Wait for its save to finish before retrying.",
     "queueDirectionDeleted": "This direction was invalidated by deletion or replay. Remove this recovery entry before continuing manually.",
-    "directionContextUnavailable": "The active turn context is unavailable. Wait for it to finish before sending."
+    "directionContextUnavailable": "The active turn context is unavailable. Wait for it to finish before sending.",
+    "providerErrorTitle": "The model could not complete this request.",
+    "providerErrorRetry": "Try again in a moment.",
+    "providerErrorSettings": "Check the model settings before trying again."
   },
   "skills": {
     "importDialogTitle": "Select a skill folder",

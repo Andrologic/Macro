@@ -1,3 +1,4 @@
+import { buildProviderErrorTranscriptMarkdown, resolveChatErrorPresentation } from '../../services/chatErrorPresentation';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -241,5 +242,49 @@ describe('MarkdownRichContent clipboard', () => {
       copy.mockRestore();
       error.mockRestore();
     }
+  });
+});
+
+describe('provider error notices', () => {
+  it('keeps diagnostics out of the initial rendered message', () => {
+    const presentation = resolveChatErrorPresentation(Object.assign(new Error('Request failed: 503'), {
+      providerError: true, kind: 'provider_overloaded', status: 503, retryable: true,
+      providerRawBodyExcerpt: 'private diagnostic body',
+    }));
+    const markup = renderToStaticMarkup(<MarkdownRichContent content={buildProviderErrorTranscriptMarkdown(presentation)} />);
+    expect(markup).toContain('The model could not complete this request.');
+    expect(markup).toContain('Try again in a moment.');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain('private diagnostic body');
+  });
+
+  it('opens and closes the retained diagnostics on request', async () => {
+    const presentation = resolveChatErrorPresentation(Object.assign(new Error('Request failed: 503'), {
+      providerError: true, kind: 'provider_overloaded', status: 503, retryable: true,
+      providerRawBodyExcerpt: 'synthetic diagnostic body',
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => { root.render(<MarkdownRichContent content={buildProviderErrorTranscriptMarkdown(presentation)} />); });
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+      expect(container.textContent).not.toContain('synthetic diagnostic body');
+      await act(async () => { trigger.click(); });
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(container.textContent).toContain('synthetic diagnostic body');
+      await act(async () => { trigger.click(); });
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      expect(container.textContent).not.toContain('synthetic diagnostic body');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
+
+  it('renders malformed structured blocks as code instead of hiding them', () => {
+    const markup = renderToStaticMarkup(<MarkdownRichContent content={'```macro-provider-error\ninvalid payload\n```'} />);
+    expect(markup).toContain('invalid payload');
+    expect(markup).not.toContain('The model could not complete this request.');
   });
 });

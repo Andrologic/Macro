@@ -1,3 +1,5 @@
+import { PROVIDER_ERROR_BLOCK_LANGUAGE, parseProviderErrorBlock } from '../../services/chatErrorPresentation';
+import { ProviderErrorNotice } from './ProviderErrorNotice';
 import { COMPOSER_REFERENCE_PATTERN } from "../../services/chat/composerReferenceText";
 import React, { Suspense, lazy, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -426,6 +428,11 @@ const MarkdownCode: NonNullable<Components['code']> = ({ className, children, ..
         <MermaidRenderer code={codeText} blockKey={blockKey} />
       </Suspense>
     );
+  }
+
+  if (language.toLowerCase() === PROVIDER_ERROR_BLOCK_LANGUAGE) {
+    const presentation = parseProviderErrorBlock(codeText);
+    if (presentation) return <ProviderErrorNotice presentation={presentation} />;
   }
 
   if (language.toLowerCase() === 'thinking') {

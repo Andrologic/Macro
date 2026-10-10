@@ -1025,7 +1025,10 @@
     },
     "queueWriteInProgress": "Esta instrucción aún se está guardando. Espere a que termine antes de volver a intentarlo.",
     "queueDirectionDeleted": "Esta instrucción se invalidó por una eliminación o una nueva ejecución. Elimine esta entrada de recuperación antes de continuar manualmente.",
-    "directionContextUnavailable": "El contexto del turno activo no está disponible. Espere a que termine antes de enviar un mensaje."
+    "directionContextUnavailable": "El contexto del turno activo no está disponible. Espere a que termine antes de enviar un mensaje.",
+    "providerErrorTitle": "El modelo no pudo completar esta solicitud.",
+    "providerErrorRetry": "Vuelve a intentarlo en unos instantes.",
+    "providerErrorSettings": "Revisa la configuración del modelo antes de volver a intentarlo."
   },
   "skills": {
     "collectionTitle": "Skills",

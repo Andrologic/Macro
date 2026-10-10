@@ -1025,7 +1025,10 @@
     },
     "queueWriteInProgress": "Diese Anweisung wird noch gespeichert. Warten Sie, bis die Speicherung abgeschlossen ist, bevor Sie es erneut versuchen.",
     "queueDirectionDeleted": "Diese Anweisung wurde durch Löschen oder erneute Ausführung ungültig. Entfernen Sie diesen Wiederherstellungseintrag, bevor Sie manuell fortfahren.",
-    "directionContextUnavailable": "Der Kontext des aktiven Durchlaufs ist nicht verfügbar. Warten Sie auf dessen Ende, bevor Sie eine Nachricht senden."
+    "directionContextUnavailable": "Der Kontext des aktiven Durchlaufs ist nicht verfügbar. Warten Sie auf dessen Ende, bevor Sie eine Nachricht senden.",
+    "providerErrorTitle": "Das Modell konnte diese Anfrage nicht abschließen.",
+    "providerErrorRetry": "Versuche es in Kürze erneut.",
+    "providerErrorSettings": "Prüfe die Modelleinstellungen, bevor du es erneut versuchst."
   },
   "skills": {
     "collectionTitle": "Skills",
