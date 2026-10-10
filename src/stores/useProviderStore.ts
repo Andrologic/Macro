@@ -1407,9 +1407,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
-        await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
-        lifecycle?.assertActive();
-        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
+        // Local model restoration uses the persisted limits immediately. Refreshing
+        // the external catalogue must not hold the conversation's read lifecycle.
+        void get().refreshLoadedModelContextCatalog(providerId, lifecycle).catch((error: unknown) => {
+          if (!isCurrent()) return;
+          devLogger.warn('Failed to refresh model context catalogue', error);
+        });
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -2728,8 +2731,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedModelId: resolvedModelId,
       selectedReasoningEffort,
     });
-    if (lifecycle) { await get().refreshModelsForProviderIfNeeded(providerId, 'boot', lifecycle); lifecycle?.assertActive(); }
-    else void get().refreshModelsForProviderIfNeeded(providerId, 'boot');
+    // Restoring a known selection must not wait for a network rescan.
+    // Missing models were loaded above; catalogue maintenance has its own refresh paths.
 
     return {
       providerId,
