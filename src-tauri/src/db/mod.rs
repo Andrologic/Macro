@@ -3,11 +3,15 @@
 // integration makes the entry points reachable from the application.
 #[allow(dead_code)]
 pub mod agent_runs;
+pub mod conversation_goals;
+pub mod goal_audit_children;
+pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;
 pub mod pilot_tools;
 pub mod conversation_management;
 pub mod repository;
+pub mod tool_invocations;
 
 use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
@@ -44,14 +48,14 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
-const MIGRATION_006_VERSION: i64 = 6;
-const MIGRATION_006_NAME: &str = "006_pilot_tool_trace_revisions";
-// This DDL is idempotent for local Pilot databases that previously stamped version 5.
-const MIGRATION_006_SQL: &str = include_str!("migrations/006_pilot_tool_trace_revisions.sql");
+const MIGRATION_006_SQL: &str = include_str!("migrations/006_generation_attempts.sql");
+const MIGRATION_007_SQL: &str = include_str!("migrations/007_tool_invocations.sql");
+const MIGRATION_008_SQL: &str = include_str!("migrations/008_agent_run_transitions.sql");
+const MIGRATION_009_SQL: &str = include_str!("migrations/009_conversation_goals.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -71,6 +75,8 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 
     let pool = create_pool(&db_path).await?;
     agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
+    conversation_goals::reconcile_audits_after_restart(&pool).await?;
+    tool_invocations::reconcile_pending_after_restart(&pool).await?;
 
     Ok(pool)
 }
@@ -136,6 +142,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     }
 
     let user_tables = list_user_tables(connection).await?;
+    normalize_local_pilot_migration_history(connection).await?;
     let applied_migrations = list_applied_migrations(connection).await?;
     validate_migration_history(&applied_migrations)?;
     let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
@@ -248,14 +255,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         }
     }
 
-    if !list_applied_migrations(connection)
-        .await?
-        .contains(&MIGRATION_006_VERSION)
-    {
+    if !list_applied_migrations(connection).await?.contains(&6) {
         apply_migration(
             connection,
-            MIGRATION_006_VERSION,
-            MIGRATION_006_NAME.to_string(),
+            6,
+            "006_generation_attempts".to_string(),
             MIGRATION_006_SQL.to_string(),
         )
         .await?;
@@ -265,16 +269,60 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
         apply_migration(
             connection,
             7,
-            "007_conversation_management".to_string(),
-            include_str!("migrations/007_conversation_management.sql").to_string(),
+            "007_tool_invocations".to_string(),
+            MIGRATION_007_SQL.to_string(),
         )
         .await?;
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&8) {
+        apply_migration(
+            connection,
+            8,
+            "008_agent_run_transitions".to_string(),
+            MIGRATION_008_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection).await?.contains(&9) {
+        apply_migration(
+            connection,
+            9,
+            "009_conversation_goals".to_string(),
+            MIGRATION_009_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    for (version, name, sql) in [
+        (10, "010_pilot_tool_trace_revisions", include_str!("migrations/006_pilot_tool_trace_revisions.sql")),
+        (11, "011_conversation_management", include_str!("migrations/007_conversation_management.sql")),
+    ] {
+        if !list_applied_migrations(connection).await?.contains(&version) {
+            apply_migration(connection, version, name.to_string(), sql.to_string()).await?;
+        }
     }
 
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
     insert_default_speech_provider(connection).await?;
 
+    Ok(())
+}
+
+// Local Pilot builds used 6/7 before develop published its canonical migrations.
+// Move only those exact historical stamps; schema and application rows stay intact.
+// The surrounding transaction rolls back normalization if a later migration fails.
+async fn normalize_local_pilot_migration_history(connection: &mut SqliteConnection) -> DbResult<()> {
+    for (old, old_name, new, new_name) in [
+        (6, "006_pilot_tool_trace_revisions", 10, "010_pilot_tool_trace_revisions"),
+        (7, "007_conversation_management", 11, "011_conversation_management"),
+    ] {
+        sqlx::query("UPDATE schema_migrations SET version = ?, name = ? WHERE version = ? AND name = ?")
+            .bind(new).bind(new_name).bind(old).bind(old_name)
+            .execute(&mut *connection).await?;
+    }
     Ok(())
 }
 
@@ -288,6 +336,10 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&5) && !applied.contains(&4))
         || (applied.contains(&6) && !applied.contains(&5))
         || (applied.contains(&7) && !applied.contains(&6))
+        || (applied.contains(&8) && !applied.contains(&7))
+        || (applied.contains(&9) && !applied.contains(&8))
+        || (applied.contains(&10) && !applied.contains(&5))
+        || (applied.contains(&11) && !applied.contains(&10))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -1911,6 +1963,7 @@ mod tests {
               AND name IN (
                 'architect_plan_conversation_sync',
                 'agent_runs',
+                'agent_run_transitions',
                 'conversation_citations',
                 'conversation_action_receipts',
                 'conversation_management',
@@ -1945,6 +1998,7 @@ mod tests {
         assert_eq!(
             table_names,
             vec![
+                "agent_run_transitions".to_string(),
                 "agent_runs".to_string(),
                 "ai_models".to_string(),
                 "app_settings".to_string(),
@@ -1986,7 +2040,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("emulate local Pilot version five");
-        sqlx::query("DELETE FROM schema_migrations WHERE version >= 6")
+        sqlx::query("DELETE FROM schema_migrations WHERE version >= 10")
             .execute(&pool)
             .await
             .expect("emulate a version-five migration history");
@@ -2004,11 +2058,11 @@ mod tests {
                 .expect("normalized runtime migration stamp");
         assert_eq!(runtime_name, "005_runtime_schema");
         let pilot_name: String =
-            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 6")
+            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE version = 10")
                 .fetch_one(&upgraded)
                 .await
                 .expect("Pilot migration stamp");
-        assert_eq!(pilot_name, "006_pilot_tool_trace_revisions");
+        assert_eq!(pilot_name, "010_pilot_tool_trace_revisions");
         let index_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_created_at_id'",
         )
@@ -2404,6 +2458,28 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
+        // Reproduce the historical agent-run schema before the later, non-idempotent
+        // additive migrations. The missing metadata belongs to that schema.
+        for statement in [
+            "DROP TRIGGER conversation_goal_audit_run_status",
+            "DROP TABLE conversation_goal_audit_runs",
+            "DROP TABLE conversation_goal_audits",
+            "DROP TABLE conversation_goals",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query("DROP TABLE agent_run_transitions")
+            .execute(&pool)
+            .await
+            .expect("drop transition journal");
+        sqlx::query("DROP TABLE tool_invocations")
+            .execute(&pool)
+            .await
+            .expect("drop tool journal");
+        sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
+            .execute(&pool)
+            .await
+            .expect("drop generation attempt column");
         sqlx::query("DROP TABLE schema_migrations")
             .execute(&pool)
             .await

@@ -54,6 +54,27 @@ describe('loadMacroProjectMetadataForSelection', () => {
     ).toBe('group-1::project-2::project-1\u0000project-2');
   });
 
+  it('keeps the current visible plan and its branch before a remembered plan on another branch', async () => {
+    const current = buildPlan({ id: 'current', targetBranch: 'main', projectIds: ['project-2'] });
+    const remembered = buildPlan({ id: 'remembered', projectIds: ['project-1'] });
+    const deps = createDeps({
+      develop: { activePlanId: remembered.id, plans: [remembered] },
+      main: { activePlanId: current.id, plans: [current] },
+    });
+
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1', 'project-2'],
+      rememberedPlanId: remembered.id,
+      currentActivePlanId: current.id,
+      currentTargetBranch: 'main',
+      deps,
+    });
+
+    expect(result.selectedPlan?.id).toBe(current.id);
+    expect(result.selectedBranchName).toBe('main');
+    expect(result.selectionReason).toBe('current_plan');
+  });
+
   it('selects the remembered visible plan before branch active and recent plans', async () => {
     const remembered = buildPlan({
       id: 'remembered',
@@ -173,6 +194,22 @@ describe('loadMacroProjectMetadataForSelection', () => {
       newestVisible.id,
       olderVisible.id,
     ]);
+  });
+
+  it('keeps the explicit current branch when a newer branch has the same plan id', async () => {
+    const current = buildPlan({ id: 'shared-plan', targetBranch: 'develop', updatedAt: '2026-04-17T10:00:00.000Z' });
+    const newer = buildPlan({ id: current.id, targetBranch: 'release/2.0.0', updatedAt: '2026-04-17T12:00:00.000Z' });
+    const result = await loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'], currentActivePlanId: current.id,
+      currentTargetBranch: 'refs/heads/develop', rememberedPlanId: current.id,
+      deps: createDeps({
+        develop: { activePlanId: null, plans: [current] },
+        'release/2.0.0': { activePlanId: null, plans: [newer] },
+      }),
+    });
+    expect(result.selectedPlan).toBe(current);
+    expect(result.selectedBranchName).toBe('develop');
+    expect(result.selectionReason).toBe('current_plan');
   });
 
   it('keeps the branch of the selected plan when plan ids collide across branches', async () => {

@@ -364,9 +364,7 @@ impl ContainedBackgroundProcess {
         };
         match tokio::time::timeout(reap_timeout, self.child.wait()).await {
             Ok(status) => match inspection_error {
-                Some(error) => Err(io::Error::other(format!(
-                    "Process tree inspection was incomplete: {error}"
-                ))),
+                Some(error) => Err(io::Error::other(IncompleteProcessTreeInspection(error))),
                 None => {
                     let status = status?;
                     // A complete inspection and reap retires this identity.
@@ -632,6 +630,145 @@ const PROCESS_TREE_INSPECTION_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(unix)]
 const MAX_PROCESS_INSPECTION_BYTES: usize = 16 * 1024 * 1024;
 
+// Only controlled categories and numeric OS details cross the diagnostic boundary.
+// Inspector output, command paths, arguments and environment never do.
+pub(crate) fn process_error_diagnostic(error: &io::Error) -> String {
+    #[cfg(unix)]
+    if let Some(detail) = error.get_ref() {
+        if let Some(detail) = detail.downcast_ref::<ProcessTreeInspectionDiagnostic>() {
+            return detail.to_string();
+        }
+        if let Some(detail) = detail.downcast_ref::<IncompleteProcessTreeInspection>() {
+            return detail.to_string();
+        }
+        if let Some(detail) = detail.downcast_ref::<InspectionTimeout>() {
+            return detail.to_string();
+        }
+    }
+    let message = error.to_string();
+    let cause = match message.as_str() {
+        "process inspection deadline expired" => "inspection deadline expired",
+        "process tree inspection deadline expired" => "tree inspection deadline expired",
+        "process inspection timed out" => "inspection timed out",
+        "process inspection output exceeded its limit" => "inspection output exceeded its limit",
+        "missing inspection stdout" => "missing inspection stdout",
+        "ps failed while reading process descendants" => "process table command failed",
+        "process containment inspection failed" => "containment command failed",
+        "process marker inspection panicked" => "marker inspection panicked",
+        "contained process tree did not exit after SIGKILL" => "process tree reap timed out",
+        "contained process tree did not exit after job termination" => {
+            "process tree reap timed out"
+        }
+        "contained process did not exit after kill" => "process reap timed out",
+        _ => "process operation failed",
+    };
+    format!(
+        "{cause} (kind={:?}, errno={:?})",
+        error.kind(),
+        error.raw_os_error()
+    )
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct InspectionTimeout {
+    elapsed_ms: u128,
+    bytes: usize,
+    eof: bool,
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for InspectionTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "inspection timed out after {}ms ({} bytes, EOF={})",
+            self.elapsed_ms, self.bytes, self.eof
+        )
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for InspectionTimeout {}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessInspector {
+    Environment,
+    Marker,
+    ProcessTable,
+    Descendants,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct ProcessInspectionFailures(Vec<(ProcessInspector, String)>);
+
+#[cfg(unix)]
+impl ProcessInspectionFailures {
+    fn record(&mut self, inspector: ProcessInspector, error: &io::Error) {
+        if !self.0.iter().any(|(source, _)| *source == inspector) {
+            let mut cause = process_error_diagnostic(error);
+            // All diagnostic fields are controlled ASCII; four sources at most.
+            cause.truncate(256);
+            self.0.push((inspector, cause));
+        }
+    }
+
+    fn extend(&mut self, failures: Self) {
+        for (inspector, cause) in failures.0 {
+            if !self.0.iter().any(|(source, _)| *source == inspector) {
+                self.0.push((inspector, cause));
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct ProcessTreeInspectionDiagnostic {
+    failures: ProcessInspectionFailures,
+    end_reason: &'static str,
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for ProcessTreeInspectionDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.end_reason)?;
+        if let Some((source, cause)) = self.failures.0.first() {
+            write!(
+                formatter,
+                "; first failure: {source:?}: {cause}; failed inspectors:"
+            )?;
+            for (source, cause) in &self.failures.0 {
+                write!(formatter, " {source:?}: {cause};")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for ProcessTreeInspectionDiagnostic {}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct IncompleteProcessTreeInspection(io::Error);
+
+#[cfg(unix)]
+impl std::fmt::Display for IncompleteProcessTreeInspection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Process tree inspection was incomplete: {}",
+            process_error_diagnostic(&self.0)
+        )
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for IncompleteProcessTreeInspection {}
+
 // This helper must not use ContainedBackgroundProcess: its teardown calls these
 // inspections itself. Drain a nonblocking pipe and reap only with try_wait.
 #[cfg(unix)]
@@ -644,7 +781,6 @@ fn bounded_process_inspection(
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let started = std::time::Instant::now();
-    let program = command.get_program().to_string_lossy().into_owned();
     let deadline = deadline.min(started + PROCESS_INSPECTION_TIMEOUT);
     if std::time::Instant::now() >= deadline {
         return Err(io::Error::new(
@@ -678,11 +814,11 @@ fn bounded_process_inspection(
             if std::time::Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    format!(
-                        "{program} process inspection timed out after {:?} ({} bytes, EOF={eof})",
-                        started.elapsed(),
-                        output.len()
-                    ),
+                    InspectionTimeout {
+                        elapsed_ms: started.elapsed().as_millis(),
+                        bytes: output.len(),
+                        eof,
+                    },
                 ));
             }
             match stdout.read(&mut buffer) {
@@ -1034,7 +1170,7 @@ fn suspend_unix_process_tree(
     containment_marker_path: Option<&Path>,
 ) -> (Vec<u32>, Option<io::Error>) {
     suspend_unix_process_tree_using(root_id, |process_ids, deadline| {
-        let mut inspection_error = None;
+        let mut failures = ProcessInspectionFailures::default();
         // On macOS both searches inventory the machine. They are independent,
         // so share the same budget instead of spending it serially.
         #[cfg(target_os = "macos")]
@@ -1058,10 +1194,13 @@ fn suspend_unix_process_tree(
             processes_with_containment_id(containment_id, deadline),
             processes_with_containment_marker(containment_marker_path, deadline),
         ];
-        for discovered in discoveries {
+        for (inspector, discovered) in [ProcessInspector::Environment, ProcessInspector::Marker]
+            .into_iter()
+            .zip(discoveries)
+        {
             match discovered {
                 Ok(ids) => process_ids.extend(ids),
-                Err(error) => inspection_error = Some(error),
+                Err(error) => failures.record(inspector, &error),
             }
         }
         match read_unix_process_table(deadline) {
@@ -1076,53 +1215,73 @@ fn suspend_unix_process_tree(
                 }
                 match descendant_process_ids(process_ids.iter().copied(), &table, deadline) {
                     Ok(descendants) => process_ids.extend(descendants),
-                    Err(error) => inspection_error = Some(error),
+                    Err(error) => failures.record(ProcessInspector::Descendants, &error),
                 }
             }
-            Err(error) => inspection_error = Some(error),
+            Err(error) => failures.record(ProcessInspector::ProcessTable, &error),
         }
-        inspection_error
+        (!failures.0.is_empty()).then_some(failures)
     })
 }
 
 #[cfg(unix)]
 fn suspend_unix_process_tree_using(
     root_id: Option<u32>,
-    mut inspect: impl FnMut(&mut HashSet<u32>, std::time::Instant) -> Option<io::Error>,
+    mut inspect: impl FnMut(&mut HashSet<u32>, std::time::Instant) -> Option<ProcessInspectionFailures>,
 ) -> (Vec<u32>, Option<io::Error>) {
     let deadline = std::time::Instant::now() + PROCESS_TREE_INSPECTION_TIMEOUT;
-    let mut inspection_error = None;
+    let mut failures = ProcessInspectionFailures::default();
+    let mut deadline_expired = false;
     if let Some(root_id) = root_id {
         signal_process_group(root_id, libc::SIGSTOP);
     }
     let mut process_ids = root_id.into_iter().collect::<HashSet<_>>();
     for _ in 0..8 {
-        if let Err(error) = check_process_inspection_deadline(deadline) {
-            inspection_error = Some(error);
+        if check_process_inspection_deadline(deadline).is_err() {
+            deadline_expired = true;
             break;
         }
         let previous_len = process_ids.len();
         // Only a fully successful round can establish convergence. A partial
         // inventory may look unchanged; retry it within the original deadline.
-        inspection_error = inspect(&mut process_ids, deadline);
+        let inspection_error = inspect(&mut process_ids, deadline);
+        let round_complete = inspection_error.is_none();
+        if let Some(inspection_error) = inspection_error {
+            failures.extend(inspection_error);
+        }
         for &process_id in &process_ids {
-            if let Err(error) = check_process_inspection_deadline(deadline) {
-                inspection_error = Some(error);
+            if check_process_inspection_deadline(deadline).is_err() {
                 break;
             }
             signal_process(process_id, libc::SIGSTOP);
         }
-        if let Err(error) = check_process_inspection_deadline(deadline) {
-            inspection_error = Some(error);
+        if check_process_inspection_deadline(deadline).is_err() {
+            deadline_expired = true;
             break;
         }
-        if process_ids.len() == previous_len && inspection_error.is_none() {
-            return (process_ids.into_iter().collect(), inspection_error);
+        if process_ids.len() == previous_len && round_complete {
+            return (process_ids.into_iter().collect(), None);
         }
         std::thread::yield_now();
     }
-    let error = inspection_error
-        .unwrap_or_else(|| io::Error::other("process tree inspection did not converge"));
+    let (kind, end_reason) = if deadline_expired {
+        (
+            io::ErrorKind::TimedOut,
+            "process tree inspection deadline expired",
+        )
+    } else {
+        (
+            io::ErrorKind::Other,
+            "process tree inspection did not converge (pass limit reached)",
+        )
+    };
+    let error = io::Error::new(
+        kind,
+        ProcessTreeInspectionDiagnostic {
+            failures,
+            end_reason,
+        },
+    );
     (process_ids.into_iter().collect(), Some(error))
 }
 
@@ -1211,7 +1370,15 @@ mod tests {
             calls += 1;
             assert_eq!(*first_deadline.get_or_insert(deadline), deadline);
             (calls == 1).then(|| {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "fixture inspector timeout")
+                let mut failures = super::ProcessInspectionFailures::default();
+                failures.record(
+                    super::ProcessInspector::Environment,
+                    &std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "process inspection timed out",
+                    ),
+                );
+                failures
             })
         });
         assert!(ids.is_empty());
@@ -1232,14 +1399,119 @@ mod tests {
             assert_eq!(*first_deadline.get_or_insert(deadline), deadline);
             // Success from different sources on different rounds must not be
             // combined into a supposedly complete inventory.
-            Some(std::io::Error::other(if calls % 2 == 0 {
-                "environment inspection failed"
+            let mut failures = super::ProcessInspectionFailures::default();
+            let source = if calls % 2 == 0 {
+                super::ProcessInspector::Environment
             } else {
-                "marker inspection failed"
-            }))
+                super::ProcessInspector::Marker
+            };
+            failures.record(
+                source,
+                &std::io::Error::other("process containment inspection failed"),
+            );
+            Some(failures)
         });
         assert!(error.is_some());
         assert!(calls > 1 && calls <= 8, "retries must be bounded: {calls}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_inspection_preserves_first_cause_and_all_failed_inspectors_across_rounds() {
+        let mut calls = 0;
+        let (_, error) = super::suspend_unix_process_tree_using(None, |_, _| {
+            calls += 1;
+            let mut failures = super::ProcessInspectionFailures::default();
+            if calls == 1 {
+                failures.record(
+                    super::ProcessInspector::Environment,
+                    &std::io::Error::from_raw_os_error(libc::EACCES),
+                );
+                failures.record(
+                    super::ProcessInspector::Marker,
+                    &std::io::Error::other("process containment inspection failed"),
+                );
+            } else {
+                failures.record(
+                    super::ProcessInspector::Environment,
+                    &std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "process inspection timed out",
+                    ),
+                );
+                failures.record(
+                    super::ProcessInspector::ProcessTable,
+                    &std::io::Error::other("ps failed while reading process descendants"),
+                );
+            }
+            Some(failures)
+        });
+        let message = error.expect("partial rounds must stay failed").to_string();
+        assert_eq!(calls, 8);
+        assert!(
+            message.contains(
+                "first failure: Environment: process operation failed (kind=PermissionDenied"
+            ),
+            "{message}"
+        );
+        assert!(message.contains(&format!("errno=Some({})", libc::EACCES)));
+        assert!(message.contains("Marker: containment command failed"));
+        assert!(message.contains("ProcessTable: process table command failed"));
+        assert!(message.contains("pass limit reached"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_inspection_deadline_diagnostic_is_bounded_and_excludes_private_text() {
+        let mut failures = super::ProcessInspectionFailures::default();
+        for _ in 0..8 {
+            failures.record(
+                super::ProcessInspector::Environment,
+                &std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "--token=fixture-secret PRIVATE_ENV=fixture-secret /private/fixture-helper"
+                        .repeat(1000),
+                ),
+            );
+            failures.record(
+                super::ProcessInspector::Marker,
+                &std::io::Error::other("process containment inspection failed"),
+            );
+            failures.record(
+                super::ProcessInspector::ProcessTable,
+                &std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    super::InspectionTimeout {
+                        elapsed_ms: 1000,
+                        bytes: 8192,
+                        eof: false,
+                    },
+                ),
+            );
+            failures.record(
+                super::ProcessInspector::Descendants,
+                &std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "process tree inspection deadline expired",
+                ),
+            );
+        }
+        assert_eq!(failures.0.len(), 4);
+        let error = std::io::Error::other(super::IncompleteProcessTreeInspection(
+            std::io::Error::other(super::ProcessTreeInspectionDiagnostic {
+                failures,
+                end_reason: "process tree inspection deadline expired",
+            }),
+        ));
+        let message = super::process_error_diagnostic(&error);
+        assert!(message.contains("first failure: Environment"));
+        assert!(message.contains("PermissionDenied"));
+        assert!(message.contains("inspection deadline expired"));
+        assert!(message.contains("1000ms (8192 bytes, EOF=false)"));
+        assert!(!message.contains("fixture-secret"));
+        assert!(!message.contains("PRIVATE_ENV"));
+        assert!(!message.contains("fixture-helper"));
+        assert!(message.len() < 1536, "diagnostic size: {}", message.len());
     }
 
     #[cfg(target_os = "macos")]

@@ -27,6 +27,39 @@ export type {
 } from "./ipc/database.types";
 
 export type {
+  ToolInvocation,
+  ToolInvocationIdentity,
+  ToolInvocationStatus,
+  ToolEffectClass,
+  RecordToolInvocationInput,
+  RecordToolInvocationResult,
+  CompleteToolInvocationInput,
+} from "../types/generated/ipc";
+
+export type { GoalAuditTransition, RecordGoalAuditTransitionInput } from "../types/generated/ipc";
+export type { GoalAuditorReadInput } from "./ipc/goalAudit";
+export {
+  recordGoalAuditTransition,
+  linkGoalAuditChildConversation,
+  reserveGoalAuditChildConversation,
+  executeGoalAuditorRead,
+} from "./ipc/goalAudit";
+export type {
+  ActivateConversationGoalInput, ApplyConversationGoalVerdictInput,
+  ClaimConversationGoalAuditInput, ConversationGoal, ConversationGoalAudit,
+  DeactivateConversationGoalInput,
+  GoalCasOutcome, GoalAuditStatus, GoalStatus, GoalVerdict,
+  ResumeConversationGoalAuditInput, UpdateConversationGoalInput,
+} from "../types/generated/ipc";
+export {
+  getCurrentConversationGoal, activateConversationGoal, updateConversationGoal, deactivateConversationGoal,
+  getConversationGoalAudit,
+  listConversationGoalAudits,
+  listRecoverableConversationGoalAudits,
+  applyConversationGoalVerdict, createNativeGoalAuditVerdictPort,
+} from "./ipc/conversationGoals";
+
+export type {
   DbProviderConfig,
   DbAiModel,
   DbProviderSettings,
@@ -284,6 +317,13 @@ export {
 } from "./ipc/database";
 
 export {
+  recordToolInvocation,
+  completeToolInvocation,
+  markToolInvocationUnknown,
+  listUnresolvedToolInvocations,
+} from "./ipc/toolInvocations";
+
+export {
   listConversations,
   getChatSnapshot,
   getChatBootstrapSnapshot,
@@ -297,6 +337,7 @@ export {
   deleteConversations,
   togglePinConversation,
   listMessages,
+  getConversationSourceSnapshot,
   searchMessages,
   dbGetArchitectPlanConversationSync,
   dbGetArchitectPlanConversationSyncForPlan,
@@ -480,6 +521,10 @@ export {
   mcpRuntimeRefreshCatalog,
   mcpRuntimeCallTool,
   mcpRuntimeCancelOperation,
+  mcpRuntimeOpenInteractionPort,
+  mcpRuntimeCloseInteractionPort,
+  mcpRuntimeListPendingInteractions,
+  mcpRuntimeRespondToInteraction,
 } from "./ipc/mcp";
 
 export {
@@ -599,6 +644,8 @@ export type {
   MCPProtocolEra,
   MCPProtocolMode,
   MCPRuntimeEvent,
+  McpInteractionRequest,
+  McpInteractionResponse,
   MCPRuntimeKey,
   MCPRuntimeSelector,
   MCPRuntimeServerSnapshot,

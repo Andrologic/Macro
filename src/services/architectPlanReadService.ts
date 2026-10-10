@@ -678,6 +678,26 @@ export const loadArchitectPlanActivationPayloadFromRuntime = async (
   };
 };
 
+/** Keep transcript hints tied to the activation head that selected their replica. */
+export const buildArchitectPlanConversationTranscriptParams = (
+  payload: ArchitectPlanActivationPayload,
+) => {
+  if (payload.chatMessagesLoaded === false && !payload.replicaScopeKey?.trim()) {
+    throw new Error(
+      `Architect transcript replica identity is incomplete for branch ${payload.targetBranch} and plan ${payload.plan.id}.`,
+    );
+  }
+  return {
+    conversationIdHint: payload.conversationId,
+    chatMessagesHint: payload.chatMessages,
+    chatMessagesLoaded: payload.chatMessagesLoaded ?? true,
+    chatTranscriptRevision: payload.chatTranscriptRevision ?? null,
+    chatMessageCount: payload.chatMessageCount ?? payload.chatMessages.length,
+    replicaScopeKey: payload.replicaScopeKey ?? null,
+    replicaProjectId: payload.replicaProjectId ?? null,
+  };
+};
+
 export interface ArchitectPlanChatTranscriptOptions {
   replicaScopeKey?: string | null;
   replicaProjectId?: string | null;

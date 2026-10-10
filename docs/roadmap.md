@@ -31,11 +31,13 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
-La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.5`.
-La configuration Tauri reprend la version de `package.json`. Le tag local
-`v0.1.5` désigne le commit `73e794d2`. Le code intégré depuis ce tag conserve
-la même version déclarée ; sa présence dans la branche de développement ne
-signifie pas qu'une nouvelle release a été publiée.
+La dernière version stable publiée est [Macro 0.1.8](https://github.com/Andrologic/Macro/releases/tag/v0.1.8),
+du 30 septembre 2026. Le tag `v0.1.8` désigne le commit `9ee0b9b5`.
+`package.json` et `src-tauri/Cargo.toml` déclarent encore `0.1.8` ;
+la configuration Tauri reprend la version de `package.json`.
+Les changements postérieurs dans `develop` ne constituent pas une nouvelle
+version publiée. Le [changelog](../CHANGELOG.md) distingue ces changements des
+versions livrées.
 
 L'état ci-dessous décrit le code intégré. Il ne vaut pas validation des paquets
 ou du canal de mises à jour.
@@ -80,7 +82,7 @@ Les notifications et la file « À traiter » ramènent aux demandes en attente.
 Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
 locale `release/0.1.4` conserve le jalon de stabilisation. Le tag immuable
 `v0.1.4` pointe sur le commit `156c067a`. Ce périmètre constitue un repère
-historique ; la version déclarée courante est désormais `0.1.5`. Les évolutions
+historique ; la version déclarée courante est désormais `0.1.8`. Les évolutions
 intégrées depuis ce repère sont décrites dans l'état courant ci-dessus.
 
 Écarts résolus dans le code :
@@ -98,6 +100,57 @@ Le kernel distant public, la supervision mobile, les comptes, la synchronisation
 connectée, un système de plugins, l'édition complète des fichiers en review et
 une nouvelle politique de merge automatique restent hors périmètre de la
 `0.1.4`.
+
+### 3.2 Stabilisation desktop intégrée sur develop
+
+Le chantier de stabilisation desktop est intégré localement à `develop`
+par le commit `0dad2a36`. Les corrections couvrent le transport et la reprise
+des conversations, la finalisation des plans, la création et la restauration
+des tâches, l'historique, la navigation entre projets, les dialogues, le MCP,
+la revue, les actions Git et les textes français.
+
+Les audits indépendants et les parcours ciblés sur un profil QA synthétique
+ont été validés avant intégration. Le contrôle frontend a réussi sur le
+candidat `e43477a4`, dont les sources frontend sont identiques au candidat
+final `6b518c8d`. Ce dernier a aussi passé les contrôles natifs avec Rust 1.95,
+les vérifications des contrats générés et la recette du binaire QA reconstruit.
+L'arbre intégré est identique au candidat final qualifié.
+
+Cette validation porte sur les critères convenus du chantier. Elle ne prouve
+pas la disparition de tout dépassement de délai Git : le diagnostic conserve
+maintenant les causes d'inspection et le statut déjà obtenu. Elle ne garantit
+pas non plus un précontrôle de divergence avant chaque Pull lorsque les
+compteurs affichés sont périmés.
+
+Le diagnostic des incidents Windows de création de tâche n'a pas établi
+de cause racine ni reproduit les incidents historiques. La prise en charge des
+chemins longs reste à vérifier sur Windows. Une compilation ou une recette
+macOS ne remplace pas cette validation.
+
+Ces changements restent dans le développement courant. Ils ne constituent
+pas une nouvelle version publiée et aucune préparation de version n'est
+engagée dans cette étape.
+
+### 3.3 Incréments de développement suivants
+
+La suite avance par changements vérifiés sur des branches `feature/*`, puis
+par intégrations locales successives sur `develop`. Elle comprend :
+
+- la visibilité des messages en attente, leur retrait sûr et l'explication de
+  la portée de l'action Arrêter ;
+- la lisibilité des tâches et dépendances dans le graphe agrandi ;
+- le contraste des descriptions dans Dracula et Tokyo Storm ;
+- la qualification Windows sur un environnement Windows identifié.
+
+L'éditeur et le moteur AgSDL, Macro Pilot et la récupération Connect restent
+sur des branches distinctes, non intégrées à `develop` lors de ce point
+local du 7 octobre 2026. AgSDL fait l'objet d'un chantier actif ; les candidats
+de ces travaux doivent être vérifiés avec leurs propriétaires avant leur
+intégration. Leur présence dans Git ne vaut pas livraison.
+
+La ligne publique 0.1 reste desktop local-first. Le kernel distant et la
+supervision mobile sont des objectifs futurs, selon la section 20 de la
+spécification fonctionnelle ; ils ne sont pas annoncés comme disponibles.
 
 ---
 
@@ -280,6 +333,11 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 ---
 
 ## 5. Chantiers prioritaires
+
+La stabilisation desktop décrite en section 3.2 est intégrée au développement
+local. La priorité immédiate est de vérifier et intégrer les incréments de
+la section 3.3, sans préparer de prochaine version. Les chantiers ci-dessous
+décrivent les acquis et les étapes suivantes.
 
 ### 5.1 Boucle d'attention desktop intégrée en 0.1.4
 

@@ -92,7 +92,7 @@ creates a new 256-bit token for every run and gives it to the Tauri host and Vit
 which injects it into the local browser page. The token is therefore visible in
 that page's DevTools; it protects against unrelated browser origins, not against
 a hostile process already running on the machine. The WebSocket server also
-requires the exact `http://127.0.0.1:1422` browser origin and binds only to
+requires the exact configured loopback browser origin and binds only to
 `127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
 local port through a proxy.
 
@@ -102,6 +102,9 @@ absolute merged browser-runtime config whose identifier matches
 `com.macro.desktop.qa.*`. The launcher rejects the ordinary production identifier.
 It also derives a dedicated log directory under the operating system's temporary
 directory; the QA host therefore neither reads nor writes Macro's production logs.
+If port 1422 is occupied, set `build.devUrl` in the merged QA config to another
+`http://127.0.0.1:<port>` origin. The launcher uses that port for Vite and the
+bridge origin check; the authenticated WebSocket remains on port 1430.
 Before creating fixtures, inspect the native process's open SQLite files and call
 `workspace_get_bootstrap`; continue only when both point to the intended isolated
 profile and synthetic workspace.

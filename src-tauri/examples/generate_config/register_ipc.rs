@@ -3,8 +3,26 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<ipc_contracts::db::ConversationGoal>("db")?;
+    registry.add::<ipc_contracts::db::ConversationGoalAudit>("db")?;
+    registry.add::<ipc_contracts::db::ActivateConversationGoalInput>("db")?;
+    registry.add::<ipc_contracts::db::UpdateConversationGoalInput>("db")?;
+    registry.add::<ipc_contracts::db::DeactivateConversationGoalInput>("db")?;
+    registry.add::<ipc_contracts::db::ClaimConversationGoalAuditInput>("db")?;
+    registry.add::<ipc_contracts::db::ResumeConversationGoalAuditInput>("db")?;
+    registry.add::<ipc_contracts::db::ApplyConversationGoalVerdictInput>("db")?;
+    registry.add::<ipc_contracts::db::GoalCasOutcome>("db")?;
+    registry.add::<ipc_contracts::db::ToolInvocation>("db")?;
+    registry.add::<ipc_contracts::db::ToolInvocationIdentity>("db")?;
+    registry.add::<ipc_contracts::db::RecordToolInvocationInput>("db")?;
+    registry.add::<ipc_contracts::db::RecordToolInvocationResult>("db")?;
+    registry.add::<ipc_contracts::db::CompleteToolInvocationInput>("db")?;
     registry.add::<ipc_contracts::db::AgentRunStatus>("db")?;
     registry.add::<ipc_contracts::db::AgentRun>("db")?;
+    registry.add::<ipc_contracts::db::GoalAuditTransition>("db")?;
+    registry.add::<ipc_contracts::db::ReserveGoalAuditChildSelection>("db")?;
+    registry.add::<ipc_contracts::db::RecordGoalAuditTransitionInput>("db")?;
+    registry.add::<ipc_contracts::db::GoalAuditorReadInput>("db")?;
     registry.add::<ipc_contracts::db::CreateAgentRunInput>("db")?;
     registry.add::<ipc_contracts::db::AgentRunUsageInput>("db")?;
     registry.add::<ipc_contracts::db::CompleteAgentRunInput>("db")?;
@@ -20,6 +38,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::MessageSearchPage>("db")?;
     registry.add::<ipc_contracts::db::ConversationCompactionStateRecord>("db")?;
     registry.add::<ipc_contracts::db::ChatSnapshot>("db")?;
+    registry.add::<ipc_contracts::db::ConversationSourceSnapshot>("db")?;
     registry.add::<ipc_contracts::db::ChatBootstrapSnapshot>("db")?;
     registry.add::<ipc_contracts::db::ConversationCitation>("db")?;
     registry.add::<ipc_contracts::db::ConversationToolboxStateRecord>("db")?;
@@ -175,6 +194,8 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::mcp::McpCallToolResponse>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeSelector>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeKey>("mcp")?;
+    registry.add::<ipc_contracts::mcp::McpInteractionRequest>("mcp")?;
+    registry.add::<ipc_contracts::mcp::McpInteractionResponse>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpProtocolMode>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpProtocolEra>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeStatus>("mcp")?;

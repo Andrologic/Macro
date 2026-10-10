@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
+import { isConversationRuntimeActive } from '../../domains/chat/runtimeState';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
+import { toServiceError } from '../../services/contracts/errors';
 import { getWebSearchSettings } from '../../services/webSearchSettings';
 import { compareLocalized, formatRelativeTimeShort } from '../../i18n/format';
 import { cn } from '../../utils/cn';
@@ -34,6 +36,15 @@ type ToolboxTab = 'context' | 'tools' | 'sources';
 type SourceFilter = 'all' | 'interesting' | 'used';
 type SourceSort = 'recent' | 'title' | 'source';
 
+const TOOL_DESCRIPTION_KEYS: Record<string, string> = {
+  web_search: 'chat.contextToolbox.toolDescriptions.web_search',
+  web_fetch: 'chat.contextToolbox.toolDescriptions.web_fetch',
+  question: 'chat.contextToolbox.toolDescriptions.question',
+  read_file: 'chat.contextToolbox.toolDescriptions.read_file',
+  terminal_create_session: 'chat.contextToolbox.toolDescriptions.terminal_create_session',
+  mark_source_passage: 'chat.contextToolbox.toolDescriptions.mark_source_passage',
+};
+
 const createManualMessageId = (): string =>
   `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -54,6 +65,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const { t, i18n } = useTranslation();
   const {
     selectedConversationId,
+    conversations = [],
+    conversationRuntimeById = {},
     createConversation,
     composerContextRefs,
     addComposerContextRef,
@@ -73,6 +86,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [urlError, setUrlError] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [sourceSearch, setSourceSearch] = useState('');
+  const [conversationSearch, setConversationSearch] = useState('');
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(() => new Set());
   const [failedFaviconUrls, setFailedFaviconUrls] = useState<Set<string>>(() => new Set());
@@ -89,6 +103,19 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       ? webSearchSettings.hasTavilySecret
       : webSearchSettings.hasBraveSecret;
   const effectiveConversationId = selectedConversationId ?? contextConversationId;
+  const targetConversation = conversations.find((conversation) => conversation.id === effectiveConversationId);
+  const selectedConversationSources = composerContextRefs.filter((ref) => ref.kind === 'conversation');
+  const availableConversationSources = useMemo(() => {
+    if (!targetConversation) return [];
+    const query = conversationSearch.trim().toLocaleLowerCase();
+    return conversations
+      .filter((conversation) => conversation.id !== targetConversation.id &&
+        conversation.project_id === targetConversation.project_id &&
+        !isConversationRuntimeActive(conversationRuntimeById[conversation.id]) &&
+        (!query || conversation.title.toLocaleLowerCase().includes(query)))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+      .slice(0, 6);
+  }, [conversations, conversationRuntimeById, conversationSearch, targetConversation]);
   const contextCitations = useMemo(
     () =>
       effectiveConversationId
@@ -305,7 +332,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       notify.error(
         t('chat.contextToolbox.urlPreviewFailedTitle', 'Could not fetch URL preview'),
         {
-          description: normalizedUrl,
+          description: toServiceError(error).code === 'WEB_FETCH_DESTINATION_BLOCKED'
+            ? t('chat.contextToolbox.urlPreviewBlockedDescription', 'For security, previews cannot access local, private, reserved or link-local network addresses. Use a public URL.')
+            : normalizedUrl,
         }
       );
       await addContextCitationAndReveal({
@@ -479,6 +508,57 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
 
         {activeTab === 'context' && (
           <div className="space-y-4">
+            <section className="space-y-2">
+              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {t('chat.contextToolbox.conversationSources', 'Conversation sources')}
+              </h3>
+              <p className="text-[11px] text-muted-foreground">
+                {t('chat.contextToolbox.conversationSourcesHint', 'Choose up to three conversations in this project. Relevant passages are selected and cited when you send.')}
+              </p>
+              {targetConversation ? (
+                <>
+                  <Input
+                    value={conversationSearch}
+                    onChange={(event) => setConversationSearch(event.target.value)}
+                    placeholder={t('chat.contextToolbox.searchConversations', 'Find a conversation')}
+                    className="h-8"
+                  />
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {availableConversationSources.map((conversation) => {
+                      const selected = selectedConversationSources.some((ref) => ref.id === conversation.id);
+                      return (
+                        <button
+                          key={conversation.id}
+                          type="button"
+                          disabled={selected || selectedConversationSources.length >= 3}
+                          onClick={() => addComposerContextRef({
+                            id: conversation.id,
+                            kind: 'conversation',
+                            title: conversation.title,
+                            data: { conversationId: conversation.id },
+                          })}
+                          className="flex w-full items-center gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+                        >
+                          <Icon name={selected ? 'check' : 'message-square'} size={12} />
+                          <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {formatRelativeTimeShort(conversation.updated_at, Date.now(), locale)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedConversationSources.map((ref) => (
+                    <div key={ref.id} className="flex items-center gap-2 rounded-md bg-primary/5 px-2 py-1 text-xs">
+                      <span className="min-w-0 flex-1 truncate">{ref.title}</span>
+                      <button type="button" onClick={() => removeComposerContextRef(ref.id, 'conversation')}
+                        aria-label={t('chat.contextToolbox.removeConversationSource', 'Remove conversation source')}
+                        className="text-muted-foreground hover:text-foreground"><Icon name="x" size={12} /></button>
+                    </div>
+                  ))}
+                </>
+              ) : <p className="text-xs text-muted-foreground">{t('chat.contextToolbox.selectConversationFirst', 'Open a conversation to add a source.')}</p>}
+            </section>
             <section className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
@@ -689,9 +769,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0"><Icon name={tool.icon as any} size={12} className="text-primary" /></div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-foreground">{tool.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{tool.description}</p>
+                        <p className="text-xs text-muted-foreground truncate">{TOOL_DESCRIPTION_KEYS[tool.id] ? t(TOOL_DESCRIPTION_KEYS[tool.id], tool.description) : tool.description}</p>
                       </div>
-                      <Switch checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
+                      <Switch aria-label={tool.name} checked={isChatToolEnabled(tool.id)} disabled={disabled} onCheckedChange={() => { if (!disabled) toggleChatTool(tool.id); }} />
                       {tooltip && <div className="pointer-events-none absolute -top-2 right-2 hidden group-hover:block z-10"><div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">{tooltip}</div></div>}
                     </div>
                   );
@@ -705,7 +785,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2"><Icon name="book-open" size={12} />{t('chat.contextToolbox.tabs.sources', 'Sources')}</h3>
-              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount })}</span>
+              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount, count: sourcePassageCount })}</span>
             </div>
             {!isChatToolEnabled('mark_source_passage') && <div className="rounded-md border border-muted bg-muted/50 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground"><span className="font-medium">{t('chat.contextToolbox.collectionDisabledTitle', 'Collection disabled')}</span> {t('chat.contextToolbox.collectionDisabledDescription', 'Enable the Sources tool to save new passages.')}</p></div>}
             <div className="space-y-2">

@@ -86,7 +86,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
 
   let emittedFirstProviderEvent = false;
   let emittedFirstToken = false;
-  const streamTurn: ToolCallingAdapter['streamTurn'] = async ({ messages: currentMessages, tools, turnCount, onDelta }) => {
+  const streamTurn: ToolCallingAdapter['streamTurn'] = async ({ messages: currentMessages, tools, turnCount, onDelta, onRetry }) => {
     let consecutiveStreamRetryCount = 0;
     while (true) {
       let response: Response | null = null;
@@ -171,6 +171,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             providerReasoningEnabled = false;
             currentReasoningEffort = null;
             reasoning.disableReasoning();
+            await onRetry?.();
             continue;
           }
 
@@ -183,6 +184,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             rejectedReasoningEfforts.add(rejectedEffort);
             reasoning.disableEffort(rejectedEffort);
             currentReasoningEffort = null;
+            await onRetry?.();
             continue;
           }
 
@@ -192,12 +194,14 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             hasReplayableReasoningContent(currentMessages)
           ) {
             forceReasoningContentReplay = true;
+            await onRetry?.();
             continue;
           }
 
           if (runtimeError.retryable && requestAttempt < GENERIC_RETRY_MAX_ATTEMPTS) {
             requestAttempt += 1;
             await sleep(getRetryDelayMs(requestAttempt, runtimeError.retryAfterMs), options.signal);
+            await onRetry?.();
             continue;
           }
 
@@ -446,6 +450,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
             getRetryDelayMs(consecutiveStreamRetryCount, runtimeError.retryAfterMs),
             options.signal
           );
+          await onRetry?.();
           continue;
         }
 

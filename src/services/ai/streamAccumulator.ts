@@ -15,14 +15,14 @@ import type { ProviderTurnState, ToolTrace } from '../../types';
 export { emptyStreamCompletionResult } from './streamCompletionResult';
 
 export const createStreamAccumulator = (
-  options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate'>
+  options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate' | 'signal'>
 ) => {
   let visibleContent = '';
   let providerDeltaText = '';
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
   const hiddenContextBlocks: string[] = [];
-  const liveOnlyHiddenContextBlocks: string[] = [];
+  const liveOnlyHiddenContextBlocks = new Map<string, string>();
   let providerInputItems: unknown[] | undefined;
   let providerTurnState: ProviderTurnState | undefined;
   let liveContextVersion = 0;
@@ -37,7 +37,7 @@ export const createStreamAccumulator = (
 
   const buildHiddenContext = (includeLiveOnly: boolean): string | undefined => {
     const blocks = includeLiveOnly
-      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks]
+      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks.values()]
       : hiddenContextBlocks;
     const hiddenContext = blocks.join('\n\n').trim();
     return hiddenContext || undefined;
@@ -55,12 +55,13 @@ export const createStreamAccumulator = (
   });
 
   const publishLiveContext = () => {
-    if (!options.onLiveContextUpdate) return;
+    if (options.signal?.aborted || !options.onLiveContextUpdate) return;
     liveContextVersion += 1;
     options.onLiveContextUpdate(snapshotLiveContext());
   };
 
   const publishToolTraces = () => {
+    if (options.signal?.aborted) return;
     options.onToolTracesUpdate?.(snapshotToolTraces());
     publishLiveContext();
   };
@@ -77,6 +78,11 @@ export const createStreamAccumulator = (
       tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
       detail: trace.detail ?? existingTrace?.detail,
       status,
+      recovery_state: trace.recovery_state === 'unknown' || (existingTrace?.status === 'done' && existingTrace.recovery_state === 'unknown')
+        ? 'unknown'
+        : status === 'done' || status === 'denied'
+        ? 'completed'
+        : trace.recovery_state ?? existingTrace?.recovery_state,
       visible_offset:
         existingTrace?.visible_offset ?? trace.visible_offset ?? visibleContent.length,
       execution_mode: trace.execution_mode ?? existingTrace?.execution_mode,
@@ -92,15 +98,14 @@ export const createStreamAccumulator = (
     publishToolTraces();
   };
 
-  const markRunningToolTracesDone = () => {
+  const settleRunningToolTracesUnknown = () => {
     let changed = false;
     for (const toolCallId of toolTraceOrder) {
       const trace = toolTraces.get(toolCallId);
-      if (!trace || trace.status !== 'running') continue;
+      if (!trace || trace.status !== 'running' || trace.recovery_state === 'unknown') continue;
       toolTraces.set(toolCallId, {
         ...trace,
-        status: 'done',
-        completed_at_ms: trace.completed_at_ms ?? Date.now(),
+        recovery_state: 'unknown',
       });
       changed = true;
     }
@@ -109,10 +114,10 @@ export const createStreamAccumulator = (
     }
   };
 
-  const appendVisibleChunk = (chunk: string, markToolsDone = true) => {
+  const appendVisibleChunk = (chunk: string, settleTools = true) => {
     if (!chunk) return;
-    if (markToolsDone) {
-      markRunningToolTracesDone();
+    if (settleTools) {
+      settleRunningToolTracesUnknown();
     }
     visibleContent += chunk;
     options.onToken(chunk);
@@ -131,7 +136,7 @@ export const createStreamAccumulator = (
       if (chunk) providerDeltaText = "";
       appendVisibleChunk(chunk, markToolsDone);
     },
-    markRunningToolTracesDone,
+    settleRunningToolTracesUnknown,
     upsertToolTrace,
     upsertToolTraceFromProvider(trace: ToolTrace) {
       upsertToolTrace(trace);
@@ -155,12 +160,13 @@ export const createStreamAccumulator = (
         started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
       });
     },
-    completeToolTrace(toolCallId: string) {
+    completeToolTrace(toolCallId: string, recoveryState?: 'unknown') {
       const existingTrace = toolTraces.get(toolCallId);
       if (!existingTrace || isProtectedToolTraceStatus(existingTrace.status)) return;
       upsertToolTrace({
         ...existingTrace,
         status: 'done',
+        recovery_state: recoveryState,
         completed_at_ms: Date.now(),
       });
     },
@@ -188,9 +194,28 @@ export const createStreamAccumulator = (
     addLiveOnlyHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
       const block = buildToolContextBlock(toolCallId, toolName, detail, result);
       if (block) {
-        liveOnlyHiddenContextBlocks.push(block);
-        publishLiveContext();
+        liveOnlyHiddenContextBlocks.set(toolCallId, block);
+      } else {
+        liveOnlyHiddenContextBlocks.delete(toolCallId);
       }
+      publishLiveContext();
+    },
+    addConfirmedNativeToolResult(
+      toolCallId: string,
+      toolName: string,
+      detail: string | undefined,
+      result: string,
+      hiddenContext: string | undefined,
+      context: { providerInputItems?: unknown[] | null; providerTurnState?: ProviderTurnState },
+    ) {
+      const block = buildToolContextBlock(toolCallId, toolName, detail, result);
+      if (block) liveOnlyHiddenContextBlocks.set(toolCallId, block);
+      else liveOnlyHiddenContextBlocks.delete(toolCallId);
+      const normalized = hiddenContext?.trim();
+      if (normalized) hiddenContextBlocks.push(normalized);
+      providerInputItems = cloneProviderInputItems(context.providerInputItems);
+      providerTurnState = context.providerTurnState;
+      publishLiveContext();
     },
     addHiddenContextBlock(block: string | undefined) {
       const normalized = block?.trim();
@@ -218,7 +243,7 @@ export const createStreamAccumulator = (
       return buildHiddenContext(false);
     },
     buildResult(): StreamCompletionResult {
-      markRunningToolTracesDone();
+      settleRunningToolTracesUnknown();
       return {
         visibleContent,
         toolTraces: snapshotToolTraces(),

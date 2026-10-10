@@ -1,6 +1,11 @@
+import { createInstance } from 'i18next';
+import fr from '../i18n/locales/fr.json';
 import { describe, expect, it } from 'bun:test';
 import {
   buildPlanFinalizationFailureState,
+  buildPlanFinalizationTaskTitle,
+  buildPlanFinalizationTaskId,
+  getPlanFinalizationTaskDisplayTitle,
   derivePlanFinalizationDependencyState,
   resolvePlanFinalizationTaskStatus,
   resolvePlanFinalizationViewState,
@@ -27,6 +32,19 @@ const blockedRepository = {
 };
 
 describe('planFinalization', () => {
+  it('localizes finalization display titles while preserving technical titles and identities', async () => {
+    const translator = createInstance();
+    await translator.init({ showSupportNotice: false, lng: 'fr', resources: { fr: { translation: fr } } });
+    const title = buildPlanFinalizationTaskTitle({ title: '123', label: 'Mon plan été' });
+    const task = { title, task_source: 'plan_finalization', id: buildPlanFinalizationTaskId('123') };
+    expect(title).toBe('Finalize plan: Mon plan été');
+    expect(getPlanFinalizationTaskDisplayTitle(task, translator.t)).toBe('Finaliser le plan : Mon plan été');
+    expect(task.title).toBe(title);
+    expect(task.id).toBe('plan-finalization:123');
+    expect(getPlanFinalizationTaskDisplayTitle({ ...task, task_source: 'architect' }, translator.t)).toBe(title);
+    expect(getPlanFinalizationTaskDisplayTitle({ ...task, title: 'Titre choisi' }, translator.t)).toBe('Titre choisi');
+  });
+
   it('creates the synthetic finalization task for executable plans with actionable work', () => {
     expect(
       shouldCreatePlanFinalizationTask({

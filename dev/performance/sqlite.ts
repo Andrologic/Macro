@@ -16,7 +16,11 @@ export function productSql(functionName: string) {
   return match[1];
 }
 export function sqliteBaseline(count: number) {
-  const schema = readFileSync(new URL('../../src-tauri/src/db/migrations/001_initial.sql', import.meta.url), 'utf8');
+  // The statement benchmark needs the message schema used by the current queries,
+  // without pretending to exercise the full native migration workflow.
+  const schema = ['001_initial.sql', '006_generation_attempts.sql']
+    .map((name) => readFileSync(new URL(`../../src-tauri/src/db/migrations/${name}`, import.meta.url), 'utf8'))
+    .join('\n');
   const readSql = productSql('list_messages');
   const writeSql = productSql('create_message');
   const db = new Database(':memory:');
@@ -27,7 +31,7 @@ export function sqliteBaseline(count: number) {
       ['fixture-conversation', 'Synthetic', timestamp, timestamp]);
     const insert = db.prepare(writeSql);
     const params = (id: string) => [id, 'fixture-conversation', null, 'user', content,
-      timestamp, null, null, null, null, null, null, null];
+      timestamp, null, null, null, null, null, null, null, null];
     db.transaction(() => {
       for (let i = 0; i < count; i++) insert.run(...params(`message-${String(i).padStart(6, '0')}`));
     })();

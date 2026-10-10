@@ -454,6 +454,13 @@ mod tests {
         acknowledge(&pool, &id, &[1], None).await.unwrap();
         let command = input(&id, "archive", Some(1));
         action(&pool, command.clone()).await.unwrap();
+        // This recovery fixture represents the historical Pilot-only schema,
+        // before develop's generation/tool/goal migrations were introduced.
+        sqlx::raw_sql("DROP TRIGGER conversation_goal_audit_run_status;
+            DROP TABLE conversation_goal_audit_runs; DROP TABLE conversation_goal_audits;
+            DROP TABLE conversation_goals; DROP TABLE agent_run_transitions;
+            DROP TABLE tool_invocations; ALTER TABLE messages DROP COLUMN generation_attempts_json;")
+            .execute(&pool).await.unwrap();
         sqlx::query("DROP TABLE schema_migrations")
             .execute(&pool)
             .await

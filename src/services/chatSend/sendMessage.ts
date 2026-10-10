@@ -59,10 +59,20 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   });
   const saveUser = async (current: SendLease) => {
     let message: ChatMessage;
+    if (input.persistedUserMessage && (input.persistedUserMessage.conversation_id !== conversationId ||
+        input.persistedUserMessage.turn_id !== current.turnId || input.persistedUserMessage.role !== 'user')) {
+      throw new Error('The saved message does not belong to this submission.');
+    }
+    const messageId = input.persistedUserMessage?.id ?? (images?.length ? crypto.randomUUID() : undefined);
+    if (messageId && images?.length) {
+      if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
+      messages.saveImages(messageId, images);
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
+    }
     try {
       await authorizePilotEffect();
-      message = await createUserMessage(messages.persistence, {
-        conversationId, turnId: current.turnId, taskId: resolvedTaskId,
+      message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
+        id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
       });
     } catch (error) {
@@ -228,14 +238,18 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }
       assistantMessageId = assistant.id;
       projection.publishAssistant(assistant, mode, agentType);
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       setPreparing(conversationId, current, assistant.id);
       timeline('provider_stream_start_requested', { conversationId, providerId, providerType: providerForUse.providerType });
+      messages.beforeAssistantStart?.();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       stream.start({
         ...request, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
         pilotActionToken: input.pilotTarget?.actionToken,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
+      messages.onAssistantStarted?.();
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
       if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);

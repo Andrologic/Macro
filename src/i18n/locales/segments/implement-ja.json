@@ -24,6 +24,7 @@
   "selectTaskForValidation": "変更を検証するタスクを選択してください",
   "activeCount": "{{count}}アクティブ",
   "noTasks": "まだタスクはありません",
+  "otherTasks": "その他のタスク",
   "readyTasks": "準備ができたタスク",
   "noReadyTasks": "現在実行可能なタスクはありません。",
   "blockedTasks": "ブロックされたタスク",
@@ -408,6 +409,10 @@
     "full": "完全なファイルコンテキスト"
   },
   "errors": {
+    "databaseLocked": "データベースがロックされています。再試行してください。",
+    "directProjectTaskAlreadyActiveWithTitle": "この直接編集プロジェクトには既にアクティブなタスクがあります: {{title}}",
+    "taskTodosOpenForComplete": "未完了の todo があるためタスクを完了できません: {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "未完了の todo があるためタスクを完了できません。",
     "finalizationStrategyLocked": "最終処理はすでに開始されています。保留中のマージを完了するか、戦略を変更せずに再開してください。",
     "directTaskCompletionFailed": "直接編集タスクを完了できませんでした。",
     "directTaskBranchChanged": "現在のブランチが {{expected}} から {{actual}} に変わりました。この Direct タスクをコミットする前に元のブランチへ戻してください。",

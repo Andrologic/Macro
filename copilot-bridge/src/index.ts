@@ -1,4 +1,4 @@
-import { isMCPToolId } from '../../src/services/mcp/identifiers';
+import { isMCPToolId, isMcpDiscoveryToolId } from '../../src/services/mcp/identifiers';
 import {
   CopilotClient,
   defineTool,
@@ -201,9 +201,11 @@ const handleCopilotSessionEvent = (params: {
   state: CopilotSessionEventState;
   toolTraces: Map<string, ToolTraceSnapshot>;
   hiddenContextBlocks: string[];
+  acceptedRelayToolCallIds?: ReadonlySet<string>;
+  hasFrontendRelay?: boolean;
   emit: (payload: JsonRecord) => void;
 }): void => {
-  const { event, state, toolTraces, hiddenContextBlocks, emit } = params;
+  const { event, state, toolTraces, hiddenContextBlocks, acceptedRelayToolCallIds, hasFrontendRelay = false, emit } = params;
   const data = (event.data || {}) as Record<string, unknown>;
 
   if (event.type === 'assistant.reasoning_delta') {
@@ -290,7 +292,7 @@ const handleCopilotSessionEvent = (params: {
       trace.detail,
       resultText
     );
-    if (block) {
+    if (block && existing && (!isFrontendRelayToolId(existing.tool_name, hasFrontendRelay) || acceptedRelayToolCallIds?.has(toolCallId))) {
       hiddenContextBlocks.push(block);
     }
     return;
@@ -1327,14 +1329,15 @@ const TOOL_HOST_GIT_READ_IDS = new Set([
   'git_diff',
 ]);
 
-const isFrontendRelayToolId = (toolId: string): boolean =>
-  isMCPToolId(toolId) ||
+const isFrontendRelayToolId = (toolId: string, hasFrontendRelay = false): boolean =>
+  isMCPToolId(toolId) || isMcpDiscoveryToolId(toolId) ||
   toolId === 'question' ||
   toolId === 'read_file' ||
   toolId === 'web_fetch' ||
   FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
   FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
   FRONTEND_RELAY_PAGED_GIT_READ_IDS.has(toolId) ||
+  (hasFrontendRelay && TOOL_HOST_GIT_READ_IDS.has(toolId)) ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||
@@ -1391,11 +1394,11 @@ const executeCopilotMacroTool = async (
   args: JsonRecord,
   invocation?: ToolInvocation,
   controlChannel?: BridgeControlChannel,
-  recordRelayResult?: (result: RelayToolResult) => void
+  recordRelayResult?: (toolCallId: string, result: RelayToolResult) => void
 ): Promise<string | ToolResultObject> => {
   const mode = inferMacroMode(request.allowed_tool_ids || []);
 
-  if (isFrontendRelayToolId(toolId)) {
+  if (isFrontendRelayToolId(toolId, Boolean(controlChannel))) {
     if (!controlChannel) {
       throw new BridgeError(
         'frontend_tool_relay_unavailable',
@@ -1403,14 +1406,15 @@ const executeCopilotMacroTool = async (
       );
     }
 
+    const toolCallId = invocation?.toolCallId ?? `${toolId}_${randomUUID()}`;
     const result = await controlChannel.requestTool({
       requestId: request.request_id ?? invocation?.sessionId ?? 'copilot',
-      toolCallId: invocation?.toolCallId ?? `${toolId}_${randomUUID()}`,
+      toolCallId,
       toolName: toolId,
       args,
       sessionTimeoutMs: normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms),
     });
-    recordRelayResult?.(result);
+    recordRelayResult?.(toolCallId, result);
     return toSdkToolResult(result);
   }
 
@@ -1474,7 +1478,7 @@ const buildMacroTools = (
   request: BridgeSendRequest,
   options?: {
     controlChannel?: BridgeControlChannel;
-    recordRelayResult?: (result: RelayToolResult) => void;
+    recordRelayResult?: (toolCallId: string, result: RelayToolResult) => void;
   }
 ): Tool[] => {
   const context = buildWorkspaceContext(request);
@@ -1497,7 +1501,7 @@ const buildMacroTools = (
   }
 
   const mcpTools: Tool[] = [];
-  const allowedMcpIds = new Set((request.allowed_tool_ids ?? []).filter(isMCPToolId));
+  const allowedMcpIds = new Set((request.allowed_tool_ids ?? []).filter(id => isMCPToolId(id) || isMcpDiscoveryToolId(id)));
   const seen = new Set<string>();
   for (const tool of request.tools ?? []) {
     if (!isToolArgumentObject(tool) || tool.type !== 'function' || !isToolArgumentObject(tool.function)) continue;
@@ -1669,9 +1673,14 @@ const handleSend = async (): Promise<void> => {
     const { system, prompt } = serializeConversationPrompt(request.messages);
     const toolTraces = new Map<string, ToolTraceSnapshot>();
     const hiddenContextBlocks: string[] = [];
+    const acceptedSubmissionIds = new Set<string>();
+    const acceptedRelayToolCallIds = new Set<string>();
     const eventState = createCopilotSessionEventState();
     const relayState: { interruptResult: RelayToolResult | null } = { interruptResult: null };
-    const recordRelayResult = (result: RelayToolResult) => {
+    const recordRelayResult = (toolCallId: string, result: RelayToolResult) => {
+      if (!result.submissionId) return;
+      acceptedRelayToolCallIds.add(toolCallId);
+      acceptedSubmissionIds.add(result.submissionId);
       if (result.hiddenContext?.trim()) {
         hiddenContextBlocks.push(result.hiddenContext.trim());
       }
@@ -1709,6 +1718,8 @@ const handleSend = async (): Promise<void> => {
             state: eventState,
             toolTraces,
             hiddenContextBlocks,
+            acceptedRelayToolCallIds,
+            hasFrontendRelay: Boolean(controlChannel),
             emit: emitJson,
           });
         });
@@ -1737,6 +1748,7 @@ const handleSend = async (): Promise<void> => {
           : eventState.finalContent,
       reasoning_summary: getCopilotReasoningSummary(eventState),
       hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
+      accepted_submission_ids: [...acceptedSubmissionIds],
       tool_traces: Array.from(toolTraces.values()),
       completion_reason: eventState.completionReason ?? 'incomplete',
     });

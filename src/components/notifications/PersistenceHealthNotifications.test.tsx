@@ -3,16 +3,25 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { create } from 'zustand';
 import type { Conversation } from '../../types';
+import fr from '../../i18n/locales/fr.json';
+import en from '../../i18n/locales/en.json';
 import { usePersistenceHealth } from '../../services/persistenceHealth';
 import { createTranslationMock, installReactI18nextMock } from '../../test-utils/reactI18nextMock';
 
-installReactI18nextMock(createTranslationMock({
+const translation = createTranslationMock({
   'backup.recovery': 'Recovery required. Original data preserved.',
   'backup.diagnostics': 'Diagnostics',
   'chat.queueRecoveryTitle': 'Queued messages need attention',
   'chat.queueRecoveryDescription': '{{count}} queued message(s) are retained. Retry resumes them in their original context.',
+  'chat.queueEditMessage': 'Edit queued message',
+  'chat.queueRemoveMessage': 'Remove from queue',
   'common.retry': 'Retry',
-}));
+  'common.edit': 'Edit',
+  'common.save': 'Save',
+  'common.cancel': 'Cancel',
+});
+const defaultTranslate = translation.t;
+installReactI18nextMock(translation);
 
 const openSettingsMock = mock(() => undefined);
 const appState = { inAppNotificationsEnabled: false, openSettings: openSettingsMock };
@@ -23,12 +32,18 @@ type ChatTestState = {
   conversations: Conversation[];
   queuedSubmissionRecoveryByConversationId: Record<string, { count: number; error?: string }>;
   retryQueuedSubmissions: (conversationId: string) => Promise<void>;
+  queuedSubmissionPreviews: { id: string; conversationId: string; content: string }[];
+  editQueuedSubmission: (id: string, content: string) => Promise<void>;
+  removeQueuedSubmission: (id: string) => Promise<void>;
 };
 
 const useChatStore = create<ChatTestState>(() => ({
   conversations: [],
   queuedSubmissionRecoveryByConversationId: {},
   retryQueuedSubmissions: async () => undefined,
+  queuedSubmissionPreviews: [],
+  editQueuedSubmission: async () => undefined,
+  removeQueuedSubmission: async () => undefined,
 }));
 
 mock.module('../../stores/useChatStore', () => ({ useChatStore }));
@@ -64,6 +79,7 @@ describe('PersistenceHealthNotifications', () => {
   let root: Root | null;
 
   beforeEach(() => {
+    translation.t = defaultTranslate;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -72,6 +88,9 @@ describe('PersistenceHealthNotifications', () => {
       conversations: [conversation],
       queuedSubmissionRecoveryByConversationId: {},
       retryQueuedSubmissions: async () => undefined,
+      queuedSubmissionPreviews: [],
+      editQueuedSubmission: async () => undefined,
+      removeQueuedSubmission: async () => undefined,
     });
     notifyActionRequiredMock.mockClear();
     openSettingsMock.mockClear();
@@ -128,6 +147,64 @@ describe('PersistenceHealthNotifications', () => {
     expect(container.querySelector('[data-persistence-recovery-panel="true"]')).toBeNull();
   });
 
+  it('translates the retained Git context refusal in the active language and keeps exact details', async () => {
+    const error = 'Conflict repository changed. Open a new assistant from the Git dialog.';
+    const recovery = { count: 1, error };
+    const preview = { id: 'queued-image-turn', conversationId: conversation.id, content: 'Été : conserve mon image.' };
+    const retryAction = mock(async () => undefined);
+    useChatStore.setState({
+      queuedSubmissionRecoveryByConversationId: { [conversation.id]: recovery },
+      queuedSubmissionPreviews: [preview],
+      retryQueuedSubmissions: retryAction,
+    });
+
+    for (const locale of [fr, en]) {
+      const copy = locale.errors.degraded.service.conflictAssistantContextChanged;
+      translation.t = createTranslationMock({
+        'errors.degraded.service.conflictAssistantContextChanged.title': copy.title,
+        'errors.degraded.service.conflictAssistantContextChanged.body': copy.body,
+        'errors.degraded.service.conflictAssistantContextChanged.nextStep': copy.nextStep,
+        'errors.showDetails': locale.errors.showDetails,
+        'errors.hideDetails': locale.errors.hideDetails,
+      }).t;
+      await act(async () => { root?.render(<PersistenceHealthNotifications />); await flush(); });
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain(copy.title);
+      expect(alert?.textContent).toContain(copy.body);
+      expect(alert?.textContent).toContain(copy.nextStep);
+      expect(container.textContent).not.toContain(error);
+      const details = Array.from(container.querySelectorAll('button')).find(button => button.textContent === locale.errors.showDetails);
+      expect(details).toBeDefined();
+      await act(async () => { details?.click(); });
+      expect(container.querySelector('pre')?.textContent).toBe(error);
+      expect(details?.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => { details?.click(); });
+      expect(container.querySelector('pre')).toBeNull();
+    }
+    const retry = container.querySelector<HTMLButtonElement>('button[aria-label="Retry Recovery conversation"]');
+    await act(async () => { retry?.click(); retry?.click(); await flush(); });
+    expect(retryAction).toHaveBeenCalledTimes(1);
+    expect(retryAction).toHaveBeenCalledWith(conversation.id);
+    expect(useChatStore.getState().queuedSubmissionRecoveryByConversationId[conversation.id]).toBe(recovery);
+    expect(useChatStore.getState().queuedSubmissionPreviews).toEqual([preview]);
+    expect(container.textContent).toContain(preview.content);
+  });
+
+  it('preserves unknown and similar errors verbatim without guessing a context refusal', async () => {
+    for (const error of [
+      'Échec fournisseur : détail original',
+      'Conflict repository changed. Open a new assistant from the Git dialog. Additional diagnostic.',
+    ]) {
+      await act(async () => {
+        useChatStore.setState({ queuedSubmissionRecoveryByConversationId: { [conversation.id]: { count: 1, error } } });
+        root?.render(<PersistenceHealthNotifications />);
+        await flush();
+      });
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(error);
+      expect(container.querySelector('pre')).toBeNull();
+    }
+  });
+
   it('keeps persistence errors visible without a dismiss action', async () => {
     usePersistenceHealth.setState({ issues: { 'chat-queue': 'The queued message could not be saved.' } });
 
@@ -140,6 +217,33 @@ describe('PersistenceHealthNotifications', () => {
     expect(panel?.getAttribute('aria-label')).toBe('Recovery required. Original data preserved.');
     expect(panel?.querySelector('[role="alert"]')?.textContent).toContain('The queued message could not be saved.');
     expect(panel?.querySelector('button')).toBeNull();
+  });
+
+  it('offers edit and removal actions for a recovered instruction', async () => {
+    const editQueuedSubmission = mock(async () => undefined);
+    const removeQueuedSubmission = mock(async () => undefined);
+    useChatStore.setState({
+      queuedSubmissionRecoveryByConversationId: { [conversation.id]: { count: 1 } },
+      queuedSubmissionPreviews: [{ id: 'queued-turn', conversationId: conversation.id, content: 'Original' }],
+      editQueuedSubmission,
+      removeQueuedSubmission,
+    });
+    await act(async () => { root?.render(<PersistenceHealthNotifications />); await flush(); });
+
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(button => button.textContent === label);
+    expect(container.textContent).toContain('Original');
+    await act(async () => { findButton('Edit')?.click(); await flush(); });
+    const editor = container.querySelector('textarea')!;
+    expect(editor.value).toBe('Original');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, 'Revised');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      await flush();
+    });
+    await act(async () => { findButton('Save')?.click(); await flush(); });
+    expect(editQueuedSubmission).toHaveBeenCalledWith('queued-turn', 'Revised');
+    await act(async () => { findButton('Remove from queue')?.click(); await flush(); });
+    expect(removeQueuedSubmission).toHaveBeenCalledWith('queued-turn');
   });
 
   it('releases the retry lock without an unhandled rejection when the action rejects', async () => {

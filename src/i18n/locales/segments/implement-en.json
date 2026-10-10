@@ -20,6 +20,7 @@
   "selectTaskForValidation": "Select a task to validate changes",
   "activeCount": "{{count}} active",
   "noTasks": "No tasks yet",
+  "otherTasks": "Other tasks",
   "readyTasks": "Ready tasks",
   "noReadyTasks": "No task is currently runnable.",
   "blockedTasks": "Blocked tasks",
@@ -408,6 +409,10 @@
     "full": "Full file context"
   },
   "errors": {
+    "databaseLocked": "The database is locked. Try again.",
+    "directProjectTaskAlreadyActiveWithTitle": "This direct-edit project already has an active task: {{title}}",
+    "taskTodosOpenForComplete": "Cannot complete task while todos remain open: {{todos}}",
+    "taskTodosOpenForCompleteWithoutLabels": "Cannot complete task while todos remain open",
     "finalizationStrategyLocked": "Finalization has already started. Complete the pending merge or resume without changing its strategy.",
     "directTaskCompletionFailed": "The direct-edit task could not be completed.",
     "directTaskBranchChanged": "The current branch changed from {{expected}} to {{actual}}. Switch back before committing this Direct task.",

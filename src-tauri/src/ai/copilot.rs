@@ -2018,6 +2018,7 @@ pub async fn stream_chat(
                 AiStreamErrorEvent {
                     request_id: task_request_id.clone(),
                     message,
+                    status: None,
                 },
             );
         }
@@ -2214,6 +2215,7 @@ async fn stream_chat_inner(
                 content,
                 reasoning_summary,
                 hidden_context,
+                accepted_submission_ids,
                 tool_traces,
                 completion_reason,
             } => {
@@ -2237,6 +2239,7 @@ async fn stream_chat_inner(
                             reasoning_summary,
                             tool_traces,
                             hidden_context,
+                            accepted_submission_ids: Some(accepted_submission_ids),
                             completion_reason: completion_reason
                                 .or_else(|| Some("incomplete".to_string())),
                         },

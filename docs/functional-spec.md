@@ -318,9 +318,15 @@ Macro persiste localement le brouillon non envoyé de chaque composer. Le texte,
 
 La sauvegarde des brouillons applique les mêmes limites que leur restauration. Un dépassement ou une donnée illisible laisse la copie précédente intacte et affiche une erreur de persistance ; le contenu courant reste dans la session. Un chargement des conversations en échec ne suffit pas à supprimer leurs brouillons.
 
-Un message accepté en file pendant un tour actif est sauvegardé localement avec son mode, sa tâche ou son plan, ses références et son choix de modèle. La navigation suivante ne change pas cette intention. Macro conserve la soumission jusqu'à la sauvegarde du message et de ses images. Après une interruption ou un redémarrage, un panneau de récupération persistant permet de réessayer, même lorsque les notifications sont désactivées ; un message déjà enregistré n'est pas renvoyé. Les droits et les secrets sont relus avant l'exécution. Une conversation archivée garde sa file suspendue ; sa suppression définitive supprime aussi sa file.
+Un message accepté en file pendant un tour actif est sauvegardé localement avec son mode, sa tâche ou son plan, ses références et son choix de modèle. La navigation suivante ne change pas cette intention. Macro conserve la soumission jusqu'à la sauvegarde du message et de ses images. Après une interruption ou un redémarrage, un panneau de récupération persistant permet de modifier le texte d'un message encore en attente, de le retirer ou de réessayer l'envoi, même lorsque les notifications sont désactivées. Un message déjà enregistré ne peut plus être modifié ni renvoyé. Les droits et les secrets sont relus avant l'exécution. Une conversation archivée garde sa file suspendue ; sa suppression définitive supprime aussi sa file.
+
+La sauvegarde locale du profil inclut les instructions en file et les réponses assistant de secours. Leur restauration conserve le texte et les identités, sans déclencher d'envoi. Une archive ancienne qui omet ces données remplace aussi ce périmètre : les valeurs plus récentes sont retirées du profil actif après conservation dans la copie de récupération. La restauration ne fusionne pas les profils et ne réassocie pas les chemins des projets.
+
+L'utilisateur peut joindre explicitement jusqu'à trois autres conversations du même projet comme sources de contexte. À l'envoi, Macro sélectionne au plus trois passages textuels pertinents par source dans la branche de transcript actuellement conservée, avec l'identifiant et la date de chaque message. En l'absence de correspondance lexicale, elle ne retient que le dernier passage et indique qu'il s'agit d'un repli récent. Les réponses incomplètes ne servent pas de source. La sélection est bornée et figée dans le message envoyé, où les citations restent consultables, y compris après une reprise ; un message en file conserve le choix des conversations et sélectionne les passages lorsqu'il part effectivement. Une conversation supprimée, devenue inaccessible ou encore active bloque la sélection. L'utilisateur peut retirer chaque source du composeur. Aucune mémoire automatique n'est créée.
 
 Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
+
+Le chat n'affiche pas le nombre ni les détails des tentatives de génération. Les interruptions de réponse et les erreurs gardent leurs notices dédiées. L'historique conserve l'identité de chaque requête fournisseur, y compris les renvois internes des transports HTTP et natif, son texte brut et la portion retenue dans la réponse. Les tentatives partielles ou abandonnées et les chevauchements retirés restent enregistrés séparément. Un coût non attribuable à une tentative reste inconnu, jamais nul. La continuation d'une réponse incomplète se fait dans la session courante ; un redémarrage ne relance pas automatiquement la génération. Les tokens d'une tentative encore en cours au moment d'un crash peuvent manquer dans l'historique.
 
 La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
 
@@ -342,6 +348,14 @@ Son objectif est de permettre à l'utilisateur de :
 - conserver une continuité de travail dans l'application sans entrer dans tout le workflow Macro
 
 Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
+
+Dans une conversation rattachée à un projet, l'utilisateur peut activer Goal avec un objectif libre, puis l'éditer, le mettre en pause, le reprendre ou l'arrêter. Macro conserve ce but dans les données natives et le recharge à l'ouverture de la conversation. L'objectif sert de critère de référence sans formulaire de critères distincts. Stop désactive le but courant ; les résultats déjà produits restent consultables.
+
+Après chaque tour exécutant confirmé par une réponse assistant enregistrée, un agent distinct en lecture seule vérifie l'objectif avec des preuves structurées. Son résultat devient un artefact de la conversation dans les métadonnées du projet. `continue` relance automatiquement l'exécutant avec un retour borné ; `achieved` termine le but ; `needs_user` attend une réponse ; `cannot_progress` le met en pause en expliquant le blocage. Reprendre lance un nouveau tour sans saisie supplémentaire. Un message utilisateur, y compris un message mis en file, a priorité sur une continuation automatique. Une erreur technique ou un verdict invalide arrête la boucle et laisse une reprise contrôlée ; quatre tours utiles ne constituent pas une limite.
+
+Une continuation automatique conserve le mode, le modèle et les références autorisées du tour exécutant de sa conversation. La navigation et le brouillon d’une autre conversation ne modifient pas cette intention. Après redémarrage, la reprise utilise la sélection enregistrée de la conversation Chat ; si elle manque, un nouveau message utilisateur doit établir le contexte.
+
+Une instruction mise en file reste récupérable après sa sauvegarde tant que l’assistant n’a pas démarré. Réessayer reprend le message existant. Si le démarrage a pu avoir lieu, Macro demande de vérifier la réponse et les effets des outils avant de retirer l’entrée de récupération et de continuer manuellement. Une direction ne devient consommable qu’après sa sauvegarde, par le tour auquel elle était destinée. Si ce tour s’est terminé pendant la sauvegarde, Macro conserve le message et signale sa non-transmission.
 
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
@@ -644,6 +658,8 @@ L'IA doit :
 - organiser cette stratégie pour maximiser le parallélisme lorsque cela reste sans risque
 - maintenir chaque unité d'exécution à une taille limitée pour réduire la confusion de l'IA et les changements trop larges
 
+Si la stratégie est enregistrée mais que l'activation du plan ou la synchronisation de sa conversation échoue, le résultat signale la sauvegarde effective et l'échec du suivi. L'utilisateur sélectionne à nouveau le plan pour reprendre cette synchronisation, sans générer une nouvelle stratégie. Les nœuds, les todos et les contrats sauvegardés sont conservés. Un transcript local divergent reste intact et bloque la réconciliation.
+
 ### 11.3 Validation du plan
 
 Lorsqu'un plan est valide :
@@ -781,6 +797,19 @@ La demande initiale reste consultable dans l'historique. Si le nouveau tour éch
 avant tout envoi, la demande reste disponible. Le refus, l'arrêt, la suppression,
 l'archivage et la fin de tâche invalident l'attente.
 
+Les traces d'outils distinguent un résultat terminé ou refusé, une exécution
+encore vivante dans le tour courant, une approbation restaurée qui permet une
+nouvelle demande, et une issue inconnue après interruption ou fin du tour sans
+résultat d'outil confirmé. Une trace inconnue n'autorise aucun rejeu automatique.
+Pour un outil relayé par Copilot, la seule écriture de sa réponse dans le canal
+natif ne confirme pas son acceptation par le bridge : une réponse ignorée après
+expiration reste inconnue et son contexte caché n'est pas repris.
+Un ancien marqueur `[TOOL]` sans `[TOOL_DONE]` reste d'issue inconnue après
+rechargement et ne figure pas parmi les outils terminés. La consultation du
+résultat d'une mutation distante par son identifiant durable reste propre à ce
+transport ; elle ne rend
+pas interrogeables les autres outils ni les effets externes sans journal de résultat.
+
 ### 14.4 Review humaine
 
 Une review humaine est obligatoire à la fin de chaque tâche.
@@ -856,6 +885,8 @@ Les outils `list`, `read`, `glob`, `grep`, `git_status`, `git_log` et `git_diff`
 
 Les outils de lecture `list`, `read` et `glob` doivent expirer après 5 secondes, et `grep` comme `ast_grep` après 30 secondes. Une annulation de la génération en cours doit interrompre réellement leur exécution desktop ou distante et produire une erreur stable, distincte d'un dépassement de délai. Après une expiration, l'agent doit réduire le chemin, le motif ou la requête. Cette interruption ne s'applique pas aux mutations, qui ne doivent jamais être abandonnées à mi-écriture.
 
+Lorsque plusieurs appels indépendants à des outils intégrés de lecture du workspace ou d'inspection Git arrivent dans un même tour, Macro peut en exécuter jusqu'à trois simultanément. Il présente et transmet leurs résultats dans l'ordre des appels. Un outil de mutation, une question, un outil MCP ou un outil sans contrat de lecture connu forme une frontière séquentielle. L'annulation cesse de publier les résultats encore en attente, même si une lecture déjà démarrée se termine plus tard.
+
 Une lecture paginée doit rester liée à la révision du fichier qu'elle a commencé à lire. De même, la pagination de `git_status` doit être liée à l'ensemble exact des changements observés. Si la source change, Macro doit refuser le curseur devenu obsolète plutôt que de composer silencieusement une vue incohérente. Les recherches doivent signaler les fichiers binaires ou trop gros qu'elles n'ont pas inspectés, et les lignes exceptionnellement longues doivent être tronquées de façon visible.
 
 La pagination de `git_log` doit lier son curseur au commit de tête résolu et à la présence des pseudo-commits staged/unstaged. Un changement de cet instantané invalide le curseur afin d'éviter de répéter ou de sauter des commits réels lorsque les pseudo-commits apparaissent ou disparaissent.
@@ -891,11 +922,20 @@ Chaque tâche complétée doit se conclure par :
 - une validation utilisateur
 - la génération d'un commit
 
+La review reste liée à la tâche sélectionnée et à tous ses dépôts concernés.
+Changer le filtre global de projet ne retire pas de dépôt de cette review et
+ne réinitialise pas les validations déjà acquises pour la même tâche.
+
 ### 15.2 Validation à l'échelle du plan
 
 Lorsque toutes les tâches d'un plan sont terminées, Macro doit imposer une validation globale du plan avant merge du plan vers la branche de base configurée.
 
 Cette validation est distincte de la review tâche par tâche.
+
+L'archivage automatique des tâches terminées après leur intégration conserve
+leur contribution à la finalisation du plan. Les tâches retirées ou annulées
+restent exclues. La finalisation reste accessible tant que le plan attend son
+intégration et disparaît lorsque le plan est archivé.
 
 ### 15.3 Génération des commits
 
@@ -922,6 +962,17 @@ Macro doit supporter une résolution automatique assistée par IA des merge conf
 Cette résolution automatique ne concerne que les conflits issus des merges pilotés par le logiciel et non les situations externes arbitraires.
 
 Chaque résolution est liée à sa tâche et à une session de fusion vérifiée. Une fusion externe ou appartenant à une autre tâche reste intacte. Une actualisation du statut conserve le brouillon du fichier ; le rechargement du contenu et le changement de fichier demandent confirmation si des modifications ne sont pas enregistrées. Choisir un côté supprimé conserve une intention de suppression jusqu'à l'enregistrement, distincte d'un fichier vide.
+
+Le diagnostic Git peut aussi ouvrir une conversation d'inspection sans tâche
+active. Elle se limite aux dépôts et conflits vérifiés et conserve des outils
+en lecture seule pendant ses échanges. Avant chaque envoi, y compris un envoi
+différé, Macro vérifie à nouveau la sélection, la tâche éventuelle, le chemin,
+la branche et le commit courant. Un changement incompatible conserve la
+demande et refuse son départ. Après redémarrage, l'utilisateur rouvre
+l'inspection depuis le diagnostic Git. Une nouvelle conversation reçoit alors
+un contexte vérifié. L'ancienne demande en attente reste conservée dans sa
+conversation d'origine et ne retrouve pas automatiquement l'autorisation
+d'envoi ; l'utilisateur doit reprendre sa demande dans la nouvelle inspection.
 
 Si le nettoyage échoue après l'intégration, une nouvelle tentative reprend les ressources restantes sans recréer les worktrees déjà supprimés. Un nouveau commit sur la branche source ou une cible ayant divergé du résultat enregistré bloque cette reprise.
 
@@ -988,6 +1039,19 @@ Une future synchronisation de cet historique peut exister plus tard, mais ne fai
 Les résultats MCP conservent des blocs typés dans l’historique. Le
 [contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
 modèle, les replis explicites et le retour à une ancienne version.
+
+Pour les serveurs MCP modernes stdio et HTTP, une demande de formulaire pendant un appel
+d'outil apparaît dans un hôte global, y compris si l'utilisateur change de
+conversation. L'hôte indique le serveur, l'opération, le message et les champs,
+avec leurs valeurs par défaut et contraintes. L'utilisateur peut modifier les
+valeurs, les revoir puis les accepter, refuser le formulaire ou annuler la
+demande. Les demandes suivantes attendent dans une file et expirent après leur
+délai ; une annulation de l'appel les retire. Macro ne demande pas de secrets
+dans ces formulaires et ne conserve ni réponse ni état opaque dans l'historique.
+Les demandes URL et les formulaires des serveurs legacy restent explicitement
+refusés.
+
+Lorsque le catalogue MCP autorisé dépasse douze outils ou 16 000 caractères de schémas, Macro présente au modèle une recherche et un appel ciblé plutôt que tous les schémas. La recherche retourne au plus cinq outils autorisés dans une réponse de 24 Ko. Un outil doit avoir été trouvé pendant le tour avant son appel ; il garde ses propres contrôles de permissions, de validation, d'approbation et de génération du serveur. Les petits catalogues restent présentés directement. La découverte ne demande aucune interaction supplémentaire à l'utilisateur.
 
 Le mode Chat peut accéder :
 

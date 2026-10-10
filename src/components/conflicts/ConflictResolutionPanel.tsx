@@ -16,6 +16,7 @@ interface ConflictResolutionPanelProps {
   showWorktreeDetails?: boolean;
   showConflictFiles?: boolean;
   onRetry?: () => void;
+  useAiAssistantLabel?: string;
   onUseAiAssistant?: () => void;
   onDismiss?: () => void;
   dismissLabel?: string;
@@ -39,6 +40,7 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
   showConflictFiles,
   onRetry,
   onUseAiAssistant,
+  useAiAssistantLabel,
   onDismiss,
   dismissLabel,
 }) => {
@@ -144,7 +146,7 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
           )}
           {onUseAiAssistant && (
             <Button variant="primary" size="sm" onClick={onUseAiAssistant}>
-              {t('conflicts.panel.useAiAssistant', 'Use AI Assistant')}
+              {useAiAssistantLabel ?? t('conflicts.panel.useAiAssistant', 'Use AI Assistant')}
             </Button>
           )}
         </div>

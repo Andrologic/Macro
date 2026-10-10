@@ -179,18 +179,20 @@ export async function aiCancelStream(requestId: string): Promise<void> {
 export async function aiSubmitToolResult(params: {
   requestId: string;
   toolCallId: string;
+  submissionId?: string;
   result: string;
   blocks?: import('../../shared/toolResultContent').ToolResultBlock[];
   hiddenContext?: string | null;
   visibleContent?: string | null;
   interrupt?: boolean;
   isError?: boolean;
-  errorKind?: "validation" | "permission" | "execution" | "aborted";
+  errorKind?: "validation" | "permission" | "execution" | "aborted" | "uncertain";
 }): Promise<void> {
   return invoke("ai_submit_tool_result", {
     request: {
       request_id: params.requestId,
       tool_call_id: params.toolCallId,
+      ...(params.submissionId ? { submission_id: params.submissionId } : {}),
       result: params.result,
       ...(params.blocks ? { blocks: params.blocks } : {}),
       hidden_context: params.hiddenContext ?? null,

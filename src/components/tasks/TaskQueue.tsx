@@ -1,3 +1,4 @@
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { WorktreeDiagnosticsDialog } from './WorktreeDiagnosticsDialog';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -91,6 +92,7 @@ import {
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
+import { localizeTaskErrorMessage } from '../../services/taskErrorPresentation';
 import { toServiceError } from '../../services/contracts/errors';
 import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
@@ -126,6 +128,11 @@ const CreateImplementTaskDialog = React.lazy(() =>
 interface TaskQueueProps {
   className?: string;
 }
+
+const isReadyQueueTask = (
+  task: Pick<ImplementTask, 'draft' | 'archived_at'>,
+  statusGroup: string | undefined,
+): boolean => !task.draft && !task.archived_at && statusGroup === 'ready';
 
 type TaskListRow =
   | {
@@ -526,7 +533,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
           <div className="min-w-0 flex-1">
             <h3 className="pr-3 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
-              {task.title}
+              {getPlanFinalizationTaskDisplayTitle(task, t)}
             </h3>
           </div>
         </div>
@@ -815,6 +822,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showCreateTaskDialog, setShowCreateTaskDialog] = useState(false);
+  const [createTaskError, setCreateTaskError] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
   const [taskCommandModal, setTaskCommandModal] = useState<{
@@ -947,13 +955,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       | { kind: 'worktree'; worktree: import('../../services/tauriIpc').GitAvailableWorktreeDto }
       | { kind: 'branch'; branch: import('../../services/tauriIpc').GitAvailableTaskBranchDto };
   }) => {
+    setCreateTaskError(null);
+    const reportCreationError = (message: string, description?: string) => {
+      const localizedMessage = localizeTaskErrorMessage(message, (key, options) => String(t(key, options)));
+      setCreateTaskError([localizedMessage, description].filter(Boolean).join(' '));
+      lastErrorToastRef.current = `no-task:${message}`;
+      notify.error(localizedMessage, description ? { description } : undefined);
+    };
     if (taskMutationDisabled || taskExecutionDisabled) {
-      notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
+      reportCreationError(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
       return;
     }
 
     if (isWorkspaceMissing) {
-      notify.error(
+      reportCreationError(
         workspaceState.kind === 'noProjectAvailable'
           ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
@@ -964,7 +979,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (pendingTaskId) return;
     const targetProject = getProjectById(projectId) ?? null;
     if (!targetProject || targetProject.isReadOnly) {
-      notify.error(
+      reportCreationError(
         t(
           'implement.manualFeatureMissingProjects',
           'The selected project is not available for implementation.'
@@ -973,7 +988,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return;
     }
     if (!isStandaloneTaskKindCreatable(taskKind, targetProject.gitFlowSettings)) {
-      notify.error(
+      reportCreationError(
         t(
           'implement.taskKindUnavailableForProject',
           'This task type is not available for the selected project workflow.',
@@ -1085,6 +1100,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               );
               if (persisted?.creationCommitted) creationCommitted = true;
             } catch (journalError) {
+              setCreateTaskError(`${toServiceError(error).message} ${toServiceError(journalError).message}`);
               notify.warning(
                 t('implement.manualFeatureCleanupPending', 'La tâche a été créée, mais la clôture de son journal reste en attente.'),
                 { description: `${toServiceError(error).message} ${toServiceError(journalError).message}` },
@@ -1173,13 +1189,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           setSelectedTask(null);
           const message = toServiceError(error).message
             || t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
-          notify.error(message, {
-            description: cleanupErrors.length > 0 ? cleanupErrors.join(' ') : undefined,
-          });
+          reportCreationError(message, cleanupErrors.length > 0 ? cleanupErrors.join(' ') : undefined);
         }
       });
     } catch (error) {
-      notify.error(toServiceError(error).message);
+      reportCreationError(toServiceError(error).message);
     } finally {
       releaseManualFeatureCreation(taskId);
       setPendingTaskId((current) => (current === taskId ? null : current));
@@ -1540,7 +1554,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return {
       attention: activeTasks.filter((task) => attentionByTaskId.has(task.id)).length,
       ready: activeTasks.filter((task) =>
-        taskQueueStatusGroupById.get(task.id) === 'ready'
+        isReadyQueueTask(task, taskQueueStatusGroupById.get(task.id))
       ).length,
       in_progress: activeTasks.filter((task) =>
         taskQueueStatusGroupById.get(task.id) === 'in_progress'
@@ -1560,6 +1574,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const filteredTasks = useMemo(() => {
     if (showArchived || statusFilter === 'all') return projectFilteredTasks;
     return projectFilteredTasks.filter((task) => {
+      if (statusFilter === 'ready') return isReadyQueueTask(task, taskQueueStatusGroupById.get(task.id));
       return statusFilter === 'attention' ? attentionByTaskId.has(task.id)
         : taskQueueStatusGroupById.get(task.id) === statusFilter;
     });
@@ -1944,6 +1959,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       } else if (action === 'reopen') {
         await reopenTask(task.id);
       }
+    } catch (error) {
+      const message = toServiceError(error).message;
+      lastErrorToastRef.current = `${task.id}:${message}`;
+      notify.error(localizeTaskErrorMessage(message, (key, options) => String(t(key, options))));
     } finally {
       setPendingTaskId((current) => (current === task.id ? null : current));
     }
@@ -2059,26 +2078,24 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [searchedTasks]
   );
 
-  const readyTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) => {
-        const statusGroup = taskQueueStatusGroupById.get(task.id) ?? 'other';
-        return (
-          !task.draft &&
-          !task.archived_at &&
-          statusGroup !== 'blocked' &&
-          statusGroup !== 'failed' &&
-          task.status !== 'Completed'
-        );
-      })
-      .sort((a, b) => {
-        const byStatus =
-          (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER) -
-          (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
-        if (byStatus !== 0) return byStatus;
-        return a.sequence_index - b.sequence_index;
-      });
+  const tasksByStatusGroup = useMemo(() => {
+    const groups = { ready: [], in_progress: [], waiting: [], other: [] } as Record<
+      'ready' | 'in_progress' | 'waiting' | 'other', ImplementTask[]
+    >;
+    searchedTasks.forEach((task) => {
+      if (task.draft || task.archived_at || task.status === 'Completed') return;
+      const group = taskQueueStatusGroupById.get(task.id) ?? 'other';
+      if (isReadyQueueTask(task, group)) groups.ready.push(task);
+      else if (group === 'in_progress' || group === 'waiting' || group === 'other') groups[group].push(task);
+    });
+    Object.values(groups).forEach((group) => group.sort((a, b) => {
+      const byStatus = (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER)
+        - (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
+      return byStatus || a.sequence_index - b.sequence_index;
+    }));
+    return groups;
   }, [searchedTasks, taskQueueStatusGroupById]);
+  const readyTasks = tasksByStatusGroup.ready;
 
   const blockedTasks = useMemo(() => {
     return [...searchedTasks]
@@ -2197,6 +2214,21 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       });
     });
 
+    const activeSections = [
+      { group: 'in_progress', title: t('implement.statusInProgress', 'In progress') },
+      { group: 'waiting', title: t('implement.statusWaiting', 'Needs reply') },
+      { group: 'other', title: t('implement.otherTasks', 'Other tasks') },
+    ] as const;
+    activeSections.forEach(({ group, title }) => {
+      const groupTasks = tasksByStatusGroup[group];
+      if (groupTasks.length === 0) return;
+      rows.push({ kind: 'section', id: `section:${group}`, title, count: groupTasks.length });
+      groupTasks.forEach((task) => rows.push({
+        kind: 'task', id: `task:${task.id}`, task,
+        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
+      }));
+    });
+
     if (blockedTasks.length > 0) {
       rows.push({
         kind: 'section',
@@ -2260,6 +2292,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     failedTasks,
     multiRepoPresentationByTaskId,
     readyTasks,
+    tasksByStatusGroup,
     searchedTasks,
     statusFilter,
     showArchived,
@@ -2555,7 +2588,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           />
           <PanelHeaderIconButton
             icon="plus"
-            onClick={() => setShowCreateTaskDialog(true)}
+            onClick={() => { setCreateTaskError(null); setShowCreateTaskDialog(true); }}
             data-tour-id="implement-create-task"
             disabled={
               Boolean(pendingTaskId) ||
@@ -2639,6 +2672,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             projects={projectFilterOptions}
             initialProjectId={null}
             isCreating={Boolean(pendingTaskId)}
+            creationError={createTaskError}
             onClose={() => {
               if (!pendingTaskId) setShowCreateTaskDialog(false);
             }}

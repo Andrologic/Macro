@@ -1,3 +1,4 @@
+use super::interaction::McpElicitationPrompt;
 use super::modern_adapter::{
     McpModernProbeOutcome, McpModernToolCallOutcome, RmcpModernStdioClient,
 };
@@ -36,6 +37,7 @@ use super::ids::{
 
 const MAX_TOOLS_LIST_PAGES: usize = 100;
 const MAX_TOOLS_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REQUEST_STATE_BYTES: usize = 128 * 1024;
 const MIN_STARTUP_TIMEOUT_MS: u32 = 1_000;
 const MAX_STARTUP_TIMEOUT_MS: u32 = 300_000;
 const MIN_OPERATION_TIMEOUT_MS: u32 = 1_000;
@@ -44,17 +46,41 @@ const MIN_PROBE_TIMEOUT_MS: u32 = 500;
 const MAX_PROBE_TIMEOUT_MS: u32 = 15_000;
 
 #[derive(Default)]
-pub(crate) struct ConfiguredMcpConnector;
+pub(crate) struct ConfiguredMcpConnector {
+    manager: Option<config::ConfigManager>,
+}
 
-impl McpConnector for ConfiguredMcpConnector {
-    fn acquire_authority<'a>(&'a self) -> McpFuture<'a, Option<McpAuthorityGuard>> {
-        Box::pin(async move {
-            let manager = config::runtime_config_manager().ok_or_else(|| {
+impl ConfiguredMcpConnector {
+    fn manager(&self) -> Result<&config::ConfigManager, McpRuntimeError> {
+        self.manager
+            .as_ref()
+            .or_else(|| config::runtime_config_manager())
+            .ok_or_else(|| {
                 runtime_error(
                     "MCP_RUNTIME_CONFIG_UNAVAILABLE",
                     "The Macro configuration manager is unavailable.",
                 )
-            })?;
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_config_manager(manager: config::ConfigManager) -> Self {
+        Self {
+            manager: Some(manager),
+        }
+    }
+}
+
+impl McpConnector for ConfiguredMcpConnector {
+    fn configuration_changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.manager()
+            .ok()
+            .map(|manager| manager.subscribe_mcp_configuration_changes())
+    }
+
+    fn acquire_authority<'a>(&'a self) -> McpFuture<'a, Option<McpAuthorityGuard>> {
+        Box::pin(async move {
+            let manager = self.manager()?;
             let guard = manager.lock_mcp_runtime_configuration().await;
             Ok(Some(Box::new(guard) as McpAuthorityGuard))
         })
@@ -68,7 +94,13 @@ impl McpConnector for ConfiguredMcpConnector {
                 project_ids: selector.project_ids.clone(),
                 config_generation: 0,
             };
-            let definition = resolve_server_definition(&key).await?;
+            let definition = resolve_server_definition_with_manager(self.manager()?, &key).await?;
+            if definition.enabled != Some(true) {
+                return Err(runtime_error(
+                    "MCP_RUNTIME_SERVER_DISABLED",
+                    format!("MCP server '{}' is disabled.", key.server_id),
+                ));
+            }
             match &definition.transport {
                 McpTransport::StreamableHttp { .. } => {
                     // Fingerprints stay DNS-free: they cover the normalized
@@ -93,7 +125,8 @@ impl McpConnector for ConfiguredMcpConnector {
         request: &'a McpConnectionRequest,
     ) -> McpFuture<'a, McpConnectedSession> {
         Box::pin(async move {
-            let definition = resolve_server_definition(&request.key).await?;
+            let definition =
+                resolve_server_definition_with_manager(self.manager()?, &request.key).await?;
             if definition.enabled != Some(true) {
                 return Err(runtime_error(
                     "MCP_RUNTIME_SERVER_DISABLED",
@@ -686,10 +719,17 @@ impl McpSession for ModernHttpSession {
                     format!("MCP tool '{tool_name}' is disabled."),
                 ));
             }
-            self.client()?
-                .call_tool_complete(tool_name, arguments, cancellation)
-                .await
-                .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))
+            let client = self.client()?;
+            run_modern_tool_call(cancellation.clone(), |state, answers| {
+                client.call_tool_round(
+                    tool_name,
+                    arguments.clone(),
+                    state,
+                    answers,
+                    cancellation.clone(),
+                )
+            })
+            .await
         })
     }
 
@@ -706,8 +746,7 @@ impl McpSession for ModernHttpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -800,8 +839,7 @@ impl McpSession for LegacyHttpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -896,7 +934,7 @@ async fn connect_stdio_transport(
             .or(Some(Duration::from_secs(5)));
             match RmcpModernStdioClient::probe(&probe_config).await {
                 Ok(McpModernProbeOutcome::Modern(probe)) => {
-                    probe.shutdown().await;
+                    probe.shutdown().await?;
                     let reason =
                         "The disposable sibling probe completed server/discover.".to_string();
                     let (session, era, version) =
@@ -1033,30 +1071,17 @@ impl McpSession for ModernRmcpSession {
                     format!("MCP tool '{tool_name}' is disabled."),
                 ));
             }
-            match self
-                .client()?
-                .call_tool(tool_name, arguments, cancellation)
-                .await
-                .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))?
-            {
-                McpModernToolCallOutcome::Complete(result) => Ok(result),
-                McpModernToolCallOutcome::InputRequired { raw_result } => {
-                    // requestState may contain sensitive opaque data; keep it
-                    // out of diagnostics until the Lot G broker can retain it.
-                    drop(raw_result);
-                    Err(runtime_error(
-                        "MCP_RUNTIME_INTERACTION_REQUIRED",
-                        "The MCP tool requires an interaction round that is not connected yet.",
-                    ))
-                }
-                McpModernToolCallOutcome::Task { raw_result } => {
-                    drop(raw_result);
-                    Err(runtime_error(
-                        "MCP_RUNTIME_TASK_RESULT_UNSUPPORTED",
-                        "The MCP tool returned a task result that is not connected yet.",
-                    ))
-                }
-            }
+            let client = self.client()?;
+            run_modern_tool_call(cancellation.clone(), |state, answers| {
+                client.continue_tool(
+                    tool_name,
+                    arguments.clone(),
+                    state,
+                    answers,
+                    cancellation.clone(),
+                )
+            })
+            .await
         })
     }
 
@@ -1075,14 +1100,90 @@ impl McpSession for ModernRmcpSession {
     }
 }
 
+// Both modern transports use the same bounded broker and opaque continuation state.
+pub(super) async fn run_modern_tool_call<F, Fut>(
+    cancellation: Arc<McpOperationCancellation>,
+    mut send_round: F,
+) -> Result<McpCallToolResponse, McpRuntimeError>
+where
+    F: FnMut(Option<String>, Option<BTreeMap<String, Value>>) -> Fut,
+    Fut: Future<Output = crate::commands::CommandResult<McpModernToolCallOutcome>>,
+{
+    let mut outcome = send_round(None, None)
+        .await
+        .map_err(|error| runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message))?;
+    for round in 0..=4 {
+        // A transport may deliver its response as cancellation becomes ready.
+        // Do not publish that result or start another interaction round.
+        if cancellation.is_cancelled() {
+            return Err(runtime_error(
+                "MCP_RUNTIME_OPERATION_CANCELLED",
+                "MCP tool call was cancelled.",
+            ));
+        }
+        match outcome {
+            McpModernToolCallOutcome::Complete(result) => return Ok(result),
+            McpModernToolCallOutcome::Task { raw_result } => {
+                drop(raw_result);
+                return Err(runtime_error(
+                    "MCP_RUNTIME_TASK_RESULT_UNSUPPORTED",
+                    "The MCP tool returned an unsupported task result.",
+                ));
+            }
+            McpModernToolCallOutcome::InputRequired { raw_result } => {
+                if round == 4 {
+                    return Err(runtime_error(
+                        "MCP_INTERACTION_ROUND_LIMIT",
+                        "The MCP tool exceeded four interaction continuations.",
+                    ));
+                }
+                let context = cancellation.interaction().ok_or_else(|| {
+                    runtime_error(
+                        "MCP_INTERACTION_NO_HOST",
+                        "No MCP interaction context is attached to this operation.",
+                    )
+                })?;
+                let (request_state, prompts) = parse_form_input_required(&raw_result)?;
+                let answers = if prompts.is_empty() {
+                    None
+                } else {
+                    Some(
+                        context
+                            .broker
+                            .request(
+                                context.key,
+                                context.operation_id,
+                                prompts,
+                                cancellation.clone(),
+                            )
+                            .await?,
+                    )
+                };
+                if cancellation.is_cancelled() {
+                    return Err(runtime_error(
+                        "MCP_RUNTIME_OPERATION_CANCELLED",
+                        "MCP tool call was cancelled.",
+                    ));
+                }
+                outcome = send_round(request_state, answers).await.map_err(|error| {
+                    runtime_error("MCP_RUNTIME_CALL_TOOL_FAILED", error.message)
+                })?;
+            }
+        }
+    }
+    Err(runtime_error(
+        "MCP_INTERACTION_ROUND_LIMIT",
+        "The MCP tool exceeded four interaction rounds.",
+    ))
+}
+
 async fn close_modern_client(
     mut client: Arc<RmcpModernStdioClient>,
 ) -> Result<(), McpRuntimeError> {
     for _ in 0..100 {
         match Arc::try_unwrap(client) {
             Ok(client) => {
-                client.shutdown().await;
-                return Ok(());
+                return client.shutdown().await;
             }
             Err(shared) => {
                 client = shared;
@@ -1189,8 +1290,7 @@ impl McpSession for LegacyRmcpSession {
             for _ in 0..100 {
                 match Arc::try_unwrap(client) {
                     Ok(client) => {
-                        client.shutdown().await;
-                        return Ok(());
+                        return client.shutdown().await;
                     }
                     Err(shared) => {
                         client = shared;
@@ -1216,6 +1316,13 @@ pub(crate) async fn resolve_server_definition(
             "The Macro configuration manager is unavailable.",
         )
     })?;
+    resolve_server_definition_with_manager(manager, key).await
+}
+
+async fn resolve_server_definition_with_manager(
+    manager: &config::ConfigManager,
+    key: &McpRuntimeKey,
+) -> Result<McpServerDefinition, McpRuntimeError> {
     let project_ids = if key.project_ids.is_empty() {
         key.project_id.iter().cloned().collect::<Vec<_>>()
     } else {
@@ -1315,6 +1422,73 @@ fn map_protocol_mode(mode: ConfigProtocolMode) -> McpProtocolMode {
     }
 }
 
+fn parse_form_input_required(
+    raw_result: &Value,
+) -> Result<(Option<String>, Vec<McpElicitationPrompt>), McpRuntimeError> {
+    let object = raw_result.as_object().ok_or_else(|| {
+        runtime_error(
+            "MCP_INTERACTION_INVALID_REQUEST",
+            "The MCP server returned an invalid interaction request.",
+        )
+    })?;
+    let request_state = read_opaque_request_state(object.get("requestState"))?;
+    let requests = match object.get("inputRequests") {
+        None => None,
+        Some(Value::Object(requests)) => Some(requests),
+        Some(_) => {
+            return Err(runtime_error(
+                "MCP_INTERACTION_INVALID_REQUEST",
+                "The MCP server returned malformed interaction prompts.",
+            ));
+        }
+    };
+    let prompts = requests
+        .into_iter()
+        .flat_map(|requests| requests.iter())
+        .map(|(id, request)| {
+            if request.get("method").and_then(Value::as_str) != Some("elicitation/create")
+                || request
+                    .pointer("/params/mode")
+                    .is_some_and(|mode| mode.as_str() != Some("form"))
+                || request.pointer("/params/requestedSchema").is_none()
+            {
+                return Err(runtime_error(
+                    "MCP_INTERACTION_UNSUPPORTED",
+                    "Only form elicitation is supported for this MCP call.",
+                ));
+            }
+            Ok(McpElicitationPrompt {
+                id: id.clone(),
+                request: request.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if prompts.is_empty() && request_state.is_none() {
+        return Err(runtime_error(
+            "MCP_INTERACTION_INVALID_REQUEST",
+            "The MCP server returned neither requestState nor interaction prompts.",
+        ));
+    }
+    Ok((request_state, prompts))
+}
+
+fn read_opaque_request_state(value: Option<&Value>) -> Result<Option<String>, McpRuntimeError> {
+    match value {
+        None => Ok(None),
+        Some(Value::String(state)) if state.len() <= MAX_REQUEST_STATE_BYTES => {
+            Ok(Some(state.clone()))
+        }
+        Some(Value::String(_)) => Err(runtime_error(
+            "MCP_INTERACTION_LIMIT",
+            "The MCP server returned an oversized requestState.",
+        )),
+        Some(_) => Err(runtime_error(
+            "MCP_INTERACTION_INVALID_REQUEST",
+            "The MCP server returned a non-string requestState.",
+        )),
+    }
+}
+
 fn runtime_error(code: &'static str, message: impl Into<String>) -> McpRuntimeError {
     McpRuntimeError::new(code, message)
 }
@@ -1361,6 +1535,47 @@ fn add_page_budget(current: usize, tools: &[McpToolDto]) -> Result<usize, McpRun
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn state_only_round_needs_no_host_but_requires_opaque_state() {
+        let result =
+            serde_json::json!({ "resultType": "input_required", "requestState": " état " });
+        let (state, prompts) = super::parse_form_input_required(&result).unwrap();
+        assert_eq!(state.as_deref(), Some(" état "));
+        assert!(prompts.is_empty());
+        for result in [
+            serde_json::json!({ "resultType": "input_required" }),
+            serde_json::json!({ "resultType": "input_required", "inputRequests": {} }),
+        ] {
+            assert_eq!(
+                super::parse_form_input_required(&result).unwrap_err().code,
+                "MCP_INTERACTION_INVALID_REQUEST"
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_request_state_is_exact_or_rejected() {
+        let value = serde_json::json!(" opaque\nétat:α ");
+        assert_eq!(
+            super::read_opaque_request_state(Some(&value)).unwrap(),
+            Some(" opaque\nétat:α ".into())
+        );
+        assert_eq!(super::read_opaque_request_state(None).unwrap(), None);
+        let oversized = serde_json::json!("x".repeat(super::MAX_REQUEST_STATE_BYTES + 1));
+        assert_eq!(
+            super::read_opaque_request_state(Some(&oversized))
+                .unwrap_err()
+                .code,
+            "MCP_INTERACTION_LIMIT"
+        );
+        let invalid = serde_json::json!({ "token": "hidden" });
+        assert_eq!(
+            super::read_opaque_request_state(Some(&invalid))
+                .unwrap_err()
+                .code,
+            "MCP_INTERACTION_INVALID_REQUEST"
+        );
+    }
     use super::*;
 
     #[test]
@@ -1417,5 +1632,34 @@ mod tests {
         assert_ne!(first, rotated);
         assert!(first.starts_with("sha256:"));
         assert!(!first.contains("secret-one"));
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn cleanup_fixture_session(
+    adapter: &str,
+    behavior: super::service_shutdown::fixture::CloseBehavior,
+) -> (
+    Arc<dyn McpSession>,
+    super::service_shutdown::fixture::CloseControl,
+) {
+    macro_rules! session {
+        ($client:ty, $session:ident) => {{
+            let (client, control) = <$client>::cleanup_fixture(behavior).await;
+            (
+                Arc::new($session {
+                    client: Mutex::new(Some(Arc::new(client))),
+                    disabled_tools: vec![],
+                }) as Arc<dyn McpSession>,
+                control,
+            )
+        }};
+    }
+    match adapter {
+        "legacy-stdio" => session!(RmcpLegacyStdioClient, LegacyRmcpSession),
+        "modern-stdio" => session!(RmcpModernStdioClient, ModernRmcpSession),
+        "legacy-http" => session!(RmcpLegacyHttpClient, LegacyHttpSession),
+        "modern-http" => session!(RmcpModernHttpClient, ModernHttpSession),
+        _ => panic!("unknown adapter"),
     }
 }

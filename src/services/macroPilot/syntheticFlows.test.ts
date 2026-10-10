@@ -28,6 +28,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   }
   if (command === 'pilot_content_policy') return [];
   if (command === 'pilot_review_capture') throw 'content_unavailable'; // Git review is outside this in-memory fixture.
+  if (command === 'db_conversation_metadata') return [{ conversation_id: conversation.id, revision: 1, archived: false, response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null }];
   if (command === 'db_list_conversations') return [structuredClone(conversation)];
   if (command === 'db_get_conversation') return args.id === conversation.id ? structuredClone(conversation) : null;
   if (command === 'db_list_messages') return args.conversationId === conversation.id ? [structuredClone(message)] : [];

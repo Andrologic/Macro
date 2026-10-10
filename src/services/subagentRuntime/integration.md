@@ -39,11 +39,13 @@ If a claimed run times out before reaching the executor, the runtime records a
 state-machine invariant that a timed-out run has a start timestamp and attempt,
 without invoking the child executor.
 
-The runtime deliberately does not import a persistence adapter. After a claim
-succeeds, recorder failures call `onTransitionError` and do not replace the
-child's terminal result. Recorder promises are still awaited in sequence before
-the public result settles, so rejected writes cannot become unobserved
-promises.
+The runtime deliberately does not import a persistence adapter. It waits for
+`running` to be confirmed before calling the executor and for the terminal
+transition before returning a successful result. A rejected, aborted, or
+unconfirmed post-claim write returns a local `SUBAGENT_JOURNAL_FAILED` result;
+`onTransitionError` is diagnostic only. These waits are cancellable and bounded
+to ten seconds by default. An IPC write may still finish after its local wait
+ends, so callers must inspect the durable state by `runId` before retrying.
 
 Completed output contains either `text` or `structured`, never both. The runtime
 also checks this at runtime and converts an invalid adapter response to

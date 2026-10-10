@@ -3,11 +3,16 @@ import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
 import { createDeferred } from '../../test-utils/deferred';
+import { resolveConversationContextSources } from '../../services/conversationContextSource';
+import type { DbConversation } from '../../services/ipc/conversations.types';
+import type { PersistedContextReference } from '../../types';
+import fr from '../../i18n/locales/fr.json';
 import {
   installTauriRuntimeMock,
   removeTauriRuntimeMock,
@@ -18,6 +23,9 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import type { QueuedSubmissionPreview } from '../../stores/chat/chatQueuedSubmissionRuntime';
+import { useChatStore as draftLifecycleStore } from '../../stores/useChatStore';
+import { clearConflictAssistantContext, registerConflictAssistantContext } from '../../services/conflictAssistantContext';
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
   loadComposerDraftsFromStorage,
@@ -69,14 +77,19 @@ export type MockMessage = {
     }>;
   };
   completion_reason?: import('../../types').ChatCompletionReason;
+  generation_attempts?: import('../../types').ChatMessage['generation_attempts'];
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 };
 
 export type MockChatState = {
+  queuedSubmissionPreviews?: QueuedSubmissionPreview[];
+  removeQueuedSubmission?: (id: string) => Promise<void>;
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
+  activeContextKey: string | null;
+  selectedConversationContextKey: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
   conversationCompactionStatusById: Record<
     string,
@@ -198,6 +211,7 @@ export type MockChatState = {
   submitArchitectPlanManualName: ReturnType<typeof mock>;
   composerContextRefs: unknown[];
   addComposerContextRef: ReturnType<typeof mock>;
+  removeComposerContextRef: ReturnType<typeof mock>;
   clearComposerContextRefs: ReturnType<typeof mock>;
 };
 
@@ -268,7 +282,14 @@ let chatState: MockChatState;
 let providerState: ProviderState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
-let skillsState: { getSkillById: ReturnType<typeof mock>; refreshSkills: ReturnType<typeof mock> };
+let skillsState: {
+  getSkillById: ReturnType<typeof mock>;
+  refreshSkills: ReturnType<typeof mock>;
+  skills: [];
+  settingsBySkillId: Record<string, never>;
+  isLoading: boolean;
+  loadSettings: ReturnType<typeof mock>;
+};
 let composerDraftsByContextKey: Record<string, ComposerDraft>;
 
 const getMockConversationRuntime = (
@@ -307,6 +328,8 @@ const useAppStore = createStoreHookMock(() => appState, (nextState) => {
 const useChatStore = createStoreHookMock(() => chatState, (nextState) => {
   chatState = nextState;
 });
+// Capture the real store before installing the component's presentation mocks.
+const realDraftStore = draftLifecycleStore;
 const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
@@ -322,6 +345,10 @@ const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
 const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'chat.typeMessage': 'Type your message',
+  'chat.conversationSourceEmpty': fr.chat.conversationSourceEmpty,
+  'errors.degraded.service.resourcePressure.title': fr.errors.degraded.service.resourcePressure.title,
+  'errors.degraded.service.resourcePressure.body': fr.errors.degraded.service.resourcePressure.body,
+  'errors.degraded.service.resourcePressure.nextStep': fr.errors.degraded.service.resourcePressure.nextStep,
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
@@ -407,7 +434,10 @@ const resetNotifyMocks = () => {
   notifyActionRequiredMock.mockClear();
 };
 
-const loadChatZoneModule = async () => {
+const loadChatZoneModule = async (
+  useRichComposer = false,
+  chatStore: typeof useChatStore | UseBoundStore<StoreApi<MockChatState>> = useChatStore,
+) => {
   importCounter += 1;
   mock.restore();
 
@@ -418,7 +448,7 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../../stores/useChatStore', () => ({
-    useChatStore,
+    useChatStore: chatStore,
   }));
 
   mock.module('../../stores/useSkillsStore', () => ({
@@ -440,6 +470,35 @@ const loadChatZoneModule = async () => {
         !!provider.hasStoredApiKey ||
         provider.authStatus === 'connected' ||
         provider.authStatus === 'authenticated'),
+  }));
+
+  mock.module('../../composition/goalProductComposition', () => ({
+    conversationGoalProductFlow: {
+      hydrate: async () => undefined,
+      loadCurrent: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      reserveUserTurn: async (id: string) => useConversationGoalStore.getState().goalsByConversationId[id] ?? null,
+      releaseUserTurn: () => undefined,
+      reconcileQueuedTurns: () => undefined,
+      activate: async (id: string, objective: string, providerId: string | null, modelId: string | null,
+        reasoningEffort: import('../../types').ReasoningEffort | null) =>
+        useConversationGoalStore.getState().activateGoal({ conversationId: id, objective, providerId, modelId, reasoningEffort }),
+      status: async (id: string, status: import('../../types').ConversationGoalOperationalStatus, reason: string | null = null,
+        expected?: { goalId: string; revision: number }) => {
+        const current = useConversationGoalStore.getState().goalsByConversationId[id];
+        if (!current || (expected && (current.goalId !== expected.goalId || current.revision !== expected.revision))) return null;
+        useConversationGoalStore.getState().setOperationalStatus(id, status, reason);
+        return useConversationGoalStore.getState().goalsByConversationId[id];
+      },
+      pause: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'paused'),
+      resume: async (id: string) => useConversationGoalStore.getState().setOperationalStatus(id, 'active_ready'),
+      stop: async (id: string) => useConversationGoalStore.getState().clearGoal(id),
+      track: () => undefined,
+    },
+  }));
+  mock.module('../../composition/goalArtifactComposition', () => ({
+    listConversationGoalAuditArtifacts: async () => [],
+    readGoalAuditArtifact: async () => '',
+    saveGoalAuditArtifact: async () => null,
   }));
 
   mock.module('../../stores/useShortcutsStore', () => ({
@@ -529,9 +588,12 @@ const loadChatZoneModule = async () => {
     PlanSelector: () => null,
   }));
 
+  const RichComposer = useRichComposer
+    ? (await import(`./composer/LazyComposerEditor.tsx?rich-chat-zone-test=${importCounter}`)).default
+    : null;
   mock.module('./composer/LazyComposerEditor', () => ({
     __esModule: true,
-    default: React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
+    default: RichComposer ?? React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
       getTextContent: () => string;
       clear: () => void;
       setText: (_value: string) => void;
@@ -647,6 +709,7 @@ const loadChatZoneModule = async () => {
 
 const preloadChatZoneLazyComponents = async () => {
   await Promise.all([
+    import('./QueuedMessagesPanel'),
     import('./ConversationGoalBanner'),
     import('./QuestionnaireFooter'),
     import('./ToolApprovalFooter'),
@@ -665,7 +728,7 @@ const buildConversation = (): MockConversation => ({
   title: 'New Conversation',
   scope_mode: 'Chat',
   task_id: null,
-  project_id: null,
+  project_id: 'project-1',
   group_id: null,
 });
 
@@ -679,6 +742,15 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   tool_traces: [],
   ...overrides,
 });
+
+const installUnresolvedJournalMock = () => installTauriRuntimeMock(async (command) =>
+  command === 'db_list_unresolved_tool_invocations'
+    ? [{
+        conversation_id: 'conv-1', turn_id: 'old-turn', message_id: 'message-1', call_id: 'call-1',
+        tool_name: 'old_tool', status: 'unknown',
+      }]
+    : undefined
+);
 
 export const buildCompactionEvent = (
   overrides: Partial<
@@ -809,6 +881,8 @@ const resetState = () => {
     submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
     hydrationStatus: 'ready',
     restoreStatus: 'ready',
+    activeContextKey: 'Chat::scope-a',
+    selectedConversationContextKey: 'Chat::scope-a',
     isLoading: false,
     isStreaming: false,
     sendState: 'idle',
@@ -816,7 +890,7 @@ const resetState = () => {
     toolApprovalRecoveryError: null,
     dismissToolApprovalRecoveryError: mock(() => undefined),
     stopStreaming: mock(() => undefined),
-    sendMessage: mock(async () => ({ status: 'sent' })),
+    sendMessage: mock(async () => ({ status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' })),
     submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
@@ -874,6 +948,12 @@ const resetState = () => {
       };
       useChatStore.emit();
     }),
+    removeComposerContextRef: mock((id: string, kind: string) => {
+      useChatStore.setState({ composerContextRefs: chatState.composerContextRefs.filter((value) => {
+        const ref = value as { id: string; kind: string };
+        return ref.id !== id || ref.kind !== kind;
+      }) });
+    }),
     clearComposerContextRefs: mock(() => {
       chatState = {
         ...chatState,
@@ -893,6 +973,7 @@ const resetState = () => {
 
 
   skillsState = {
+    skills: [], settingsBySkillId: {}, isLoading: false, loadSettings: mock(async () => undefined),
     getSkillById: mock(() => null),
     refreshSkills: mock(async () => undefined),
   };
@@ -1125,7 +1206,9 @@ describe('ChatZone', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
-    installTauriRuntimeMock();
+    installTauriRuntimeMock(async (command) =>
+      command === 'db_list_unresolved_tool_invocations' ? [] : undefined
+    );
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback: FrameRequestCallback) =>
         setTimeout(() => callback(performance.now()), 0) as unknown as number;
@@ -1170,6 +1253,109 @@ describe('ChatZone', () => {
     mock.restore();
   });
 
+  it('reveals the selected queue on queue-only publication and removes it reactively', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      queuedSubmissionPreviews: [],
+      messagesByConversationId: {},
+      getConversationRuntime: () => runtime,
+      removeQueuedSubmission: async id => {
+        realChatStore.setState(state => ({ queuedSubmissionPreviews: state.queuedSubmissionPreviews?.filter(entry => entry.id !== id) }));
+      },
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('section[aria-label="Queued messages"]')).toBeNull();
+    await act(async () => {
+      realChatStore.setState({ queuedSubmissionPreviews: [
+        { id: 'selected', conversationId: 'conv-1', content: 'Selected queued instruction', state: 'waiting' },
+        { id: 'foreign', conversationId: 'conv-2', content: 'Foreign queued instruction', state: 'waiting' },
+      ] });
+      await Promise.resolve();
+    });
+    const panel = requireContainer().querySelector('section[aria-label="Queued messages"]');
+    expect(panel?.textContent).toContain('Selected queued instruction');
+    expect(panel?.textContent).not.toContain('Foreign queued instruction');
+    await act(async () => {
+      panel?.querySelector('button')?.click();
+      await Promise.resolve();
+    });
+    expect(requireContainer().querySelector('section[aria-label="Queued messages"]')).toBeNull();
+    expect(realChatStore.getState().queuedSubmissionPreviews?.map(entry => entry.id)).toEqual(['foreign']);
+  });
+
+  it('reacts to approval-only publication and removal with a real Zustand subscription', async () => {
+    const runtime = getMockConversationRuntime(chatState, 'conv-1');
+    const realChatStore = create<MockChatState>(() => ({
+      ...chatState,
+      messagesByConversationId: {},
+      // Real runtime snapshots keep their identity until the runtime changes.
+      getConversationRuntime: () => runtime,
+      getPendingToolApproval: mock((id: string): PendingToolApproval | null =>
+        realChatStore.getState().pendingToolApprovalByConversationId[id] ?? null
+      ),
+    }));
+    await loadChatZoneModule(false, realChatStore);
+    await preloadChatZoneLazyComponents();
+    await act(async () => { requireRoot().render(<ChatZone />); });
+
+    const traceMessage = buildMessage({
+      id: 'approval-assistant',
+      role: 'assistant',
+      content: '',
+      tool_traces: [{ tool_call_id: 'selected-call', tool_name: 'terminal_run', status: 'pending_approval' }],
+    });
+    await act(async () => {
+      realChatStore.setState({ messages: [traceMessage], messagesByConversationId: { 'conv-1': [traceMessage] } });
+    });
+    const footer = () => requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer()).toBeNull();
+
+    const approval: PendingToolApproval = {
+      conversationId: 'conv-1', assistantMessageId: traceMessage.id, toolCallId: 'selected-call',
+      toolId: 'terminal_run', actionGroup: 'escape', riskLevel: 'balanced',
+      summary: 'Run selected command', detail: 'echo selected-request', rememberKey: '',
+      canApproveForConversation: false,
+    };
+    const otherApproval: PendingToolApproval = {
+      ...approval, conversationId: 'conv-2', toolCallId: 'other-call', detail: 'echo other-request',
+    };
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+
+    // Persistence has finished. Only the approval map changes, with no forced render.
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-1': approval, 'conv-2': otherApproval } });
+    });
+    expect(footer()).not.toBeNull();
+    expect(footer()?.textContent).toContain('echo selected-request');
+    expect(footer()?.textContent).not.toContain('echo other-request');
+    expect(footer()?.textContent).toContain('Refuse');
+    const allowOnce = Array.from(footer()?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Allow once')
+    );
+    expect(allowOnce).toBeDefined();
+    await act(async () => { allowOnce?.click(); });
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledTimes(1);
+    expect(realChatStore.getState().approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+
+    await act(async () => {
+      realChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-2': otherApproval } });
+    });
+    expect(footer()).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+
+    await act(async () => {
+      realChatStore.setState({ selectedConversationId: 'conv-2' });
+    });
+    expect(footer()?.textContent).toContain('echo other-request');
+    expect(footer()?.textContent).not.toContain('echo selected-request');
+  });
+
   it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
     chatState = {
       ...chatState,
@@ -1205,6 +1391,42 @@ describe('ChatZone', () => {
     expect(first?.style.transform).toBe('translateY(2700px)');
     expect(last?.style.transform).toBe('translateY(7312px)');
     expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
+  it('hides the previous conversation journal while a new context resolves', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'resolving' };
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the previous journal hidden when context resolution fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error', activeContextKey: 'Chat::scope-b' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
+  });
+
+  it('keeps the selected conversation journal visible if provider restoration fails', async () => {
+    installUnresolvedJournalMock();
+    chatState = { ...chatState, restoreStatus: 'error' };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('old_tool');
+  });
+
+  it('hides a selected conversation outside the active mode', async () => {
+    installUnresolvedJournalMock();
+    chatState = {
+      ...chatState,
+      conversations: [{ ...buildConversation(), scope_mode: 'Implement' }],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="unresolved-tool-invocations-error"]')).toBeNull();
   });
 
   it('renders the first user message when the selected conversation has messages', async () => {
@@ -1782,6 +2004,195 @@ describe('ChatZone', () => {
     }));
   });
 
+  it('keeps B refusal when A rejects late after a context switch', async () => {
+    const releaseA = createDeferred<void>();
+    const failure = 'The selected conversation has no completed text to cite.';
+    chatState.sendMessage = mock(async (payload: { conversationId: string }) => {
+      if (payload.conversationId === 'conv-1') {
+        await releaseA.promise;
+        throw new Error('A late failure');
+      }
+      throw new Error(failure);
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    await setComposerText('B draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { releaseA.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(getComposerEditor().value).toBe('B draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('A late failure');
+  });
+
+  it.each(['remove_image', 'send', 'type'])('preserves A refusal after a user action in B: %s', async (action) => {
+    const failure = 'The selected conversation has no completed text to cite.';
+    const image = { id: 'b-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    chatState.sendMessage = mock(async () => { throw new Error(failure); });
+    composerDraftsByContextKey['conversation:conv-2'] = { text: 'B draft', images: [image], contextRefs: [] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).not.toBeNull();
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2', conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] });
+    });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    if (action === 'remove_image') {
+      const remove = requireContainer().querySelector('button[title="Remove image"]');
+      expect(remove).not.toBeNull();
+      await act(async () => { remove?.dispatchEvent(new window.Event('click', { bubbles: true })); });
+      expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    } else if (action === 'send') {
+      await clickSendButton();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    } else {
+      await setComposerText('B edited draft');
+    }
+    await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+    expect(getComposerEditor().value).toBe('A draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    // Editing A dismisses A's refusal; it must not remove B's refusal either.
+    await setComposerText('A edited draft');
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    if (action === 'send') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-2' }); });
+      expect(getComposerEditor().value).toBe('B draft');
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+  });
+
+  it('preserves structured pre-provider code and details', async () => {
+    chatState.sendMessage = mock(async () => {
+      throw { code: 'RESOURCE_PRESSURE', message: 'Failed to read workspace state', details: { errno: 24, reason: 'Too many open files' } };
+    });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('A draft');
+    await clickSendButton();
+    const notice = requireContainer().querySelector('[data-chat-floating-notices]');
+    expect(notice?.textContent).toContain(fr.errors.degraded.service.resourcePressure.title);
+    await clickButtonWithText('Show details');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('Too many open files');
+    expect(requireContainer().querySelector('pre')?.textContent).toContain('"errno": 24');
+  });
+
+  it.each([
+    { publishedByStore: false, retry: 'edit' },
+    { publishedByStore: true, retry: 'send' },
+    { publishedByStore: false, retry: 'navigate' },
+  ])('keeps a pre-send refusal visible after real Lexical restoration: %j', async ({ publishedByStore, retry }) => {
+    await loadChatZoneModule(true);
+    const draft = 'QA_SOURCE_VIDE Brouillon été avec image.';
+    const image = { id: 'synthetic-image', dataUrl: 'data:image/png;base64,AAAA', mimeType: 'image/png', createdAt: '2026-10-06T10:00:00Z' };
+    const source = { id: 'source-empty', kind: 'conversation' as const, title: 'Source vide', data: { conversationId: 'source-empty' } };
+    const persistedSource: PersistedContextReference = {
+      id: source.id, kind: 'conversation', conversationId: source.id, title: source.title,
+    };
+    composerDraftsByContextKey['conversation:conv-1'] = { text: draft, images: [image], contextRefs: [source] };
+    const release = createDeferred<void>();
+    const providerRequest = mock(() => undefined);
+    const failureMessage = 'The selected conversation has no completed text to cite.';
+    const clear = mock(() => useChatStore.setState({ lastError: null, sendState: 'idle' }));
+    chatState = {
+      ...chatState,
+      clearLastError: clear,
+      composerContextRefs: [source],
+      conversations: [buildConversation(), { ...buildConversation(), id: source.id, title: source.title }],
+      sendMessage: mock(async (_payload: { conversationId: string; content: string; images?: unknown[] }) => {
+        useChatStore.setState({ lastError: null, sendState: 'idle' });
+        const selected = [...chatState.composerContextRefs];
+        await release.promise;
+        try {
+          await resolveConversationContextSources({
+            targetConversationId: 'conv-1', request: draft,
+            refs: selected.length ? [persistedSource] : [],
+            ports: {
+              getConversation: async () => buildConversation() as DbConversation,
+              getConversationSourceSnapshot: async () => ({
+                target_project_id: 'project-1',
+                conversation: { ...buildConversation(), id: source.id } as DbConversation,
+                messages: [],
+              }),
+              isSourceActive: () => false,
+            },
+          });
+        } catch (error) {
+          if (publishedByStore) flushSync(() => useChatStore.setState({ lastError: failureMessage, sendState: 'error' }));
+          throw error;
+        }
+        providerRequest();
+        return { status: 'sent', turnId: 'turn-1', assistantMessageId: 'assistant-1' };
+      }),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === draft) break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    }
+    let editable = requireContainer().querySelector('[contenteditable="true"]') as HTMLElement & { __lexicalEditor: import('lexical').LexicalEditor };
+    expect(editable?.textContent).toBe(draft);
+    expect(chatState.composerContextRefs).toEqual([source]);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    await clickSendButton();
+    expect(editable.textContent).toBe('');
+    expect(chatState.sendMessage.mock.calls[0]?.[0]).toMatchObject({ conversationId: 'conv-1', content: draft, images: [image] });
+    await act(async () => { release.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(editable.textContent).toStartWith(draft);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([source]);
+    expect(providerRequest).not.toHaveBeenCalled();
+    expect(chatState.messages).toEqual([]);
+    expect(clear).not.toHaveBeenCalled();
+    const details = Array.from(requireContainer().querySelectorAll('button')).find((button) => button.textContent === 'Show details');
+    expect(details).toBeDefined();
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    await act(async () => { details?.click(); });
+    expect(requireContainer().querySelector('pre')?.textContent).toContain(failureMessage);
+    // Passive rerenders and programmatic restoration keep the notice durable.
+    await act(async () => { requireRoot().render(<ChatZone />); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    if (retry === 'navigate') {
+      await act(async () => { useChatStore.setState({ selectedConversationId: source.id }); });
+      expect(requireContainer().textContent).not.toContain(fr.chat.conversationSourceEmpty);
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+      editable = requireContainer().querySelector('[contenteditable="true"]') as typeof editable;
+    }
+    const { $getRoot, KEY_ENTER_COMMAND } = await import('lexical');
+    if (retry !== 'send') {
+      await act(async () => {
+        editable.__lexicalEditor.update(() => { $getRoot().selectEnd().insertText(' Suite.'); });
+        await Promise.resolve();
+      });
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    }
+    await act(async () => { useChatStore.setState({ composerContextRefs: [] }); });
+    if (retry === 'send') {
+      expect(clear).not.toHaveBeenCalled();
+      expect(requireContainer().querySelector('[data-chat-floating-notices]')?.textContent).toContain(fr.chat.conversationSourceEmpty);
+    }
+    // Enter follows the real Lexical submit command, with no reload or stop.
+    await act(async () => {
+      editable.__lexicalEditor.dispatchCommand(KEY_ENTER_COMMAND, new KeyboardEvent('keydown', { key: 'Enter' }));
+      await Promise.resolve();
+    });
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(2);
+    expect(chatState.sendMessage.mock.calls[1]?.[0]).toMatchObject({ conversationId: 'conv-1', images: [image] });
+    expect(providerRequest).toHaveBeenCalledTimes(1);
+    expect(requireContainer().querySelector('[data-chat-floating-notices]')).toBeNull();
+    expect(editable.textContent).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+  });
+
   it('restores the composer when a send fails before Macro accepts it', async () => {
     const draftRef = {
       id: 'file:failure.md',
@@ -1793,11 +2204,14 @@ describe('ChatZone', () => {
         relativePath: 'failure.md',
       },
     };
+    let attempts = 0;
     chatState = {
       ...chatState,
       composerContextRefs: [draftRef],
       sendMessage: mock(async () => {
-        throw new Error('Envoi refusé');
+        attempts += 1;
+        if (attempts === 1) throw new Error('Enregistrement des images refusé');
+        return { status: 'sent', conversationId: 'conv-1', turnId: 'turn', userMessageId: 'user', assistantMessageId: 'assistant' };
       }),
     };
 
@@ -1816,6 +2230,11 @@ describe('ChatZone', () => {
       images: [expect.objectContaining({ mimeType: 'image/png' })],
       contextRefs: [draftRef],
     });
+    await clickSendButton();
+    expect(attempts).toBe(2);
+    expect(getComposerEditor().value).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
 
   it('saves and restores text, images, and context refs when the conversation changes', async () => {
@@ -2039,11 +2458,44 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Finish the authentication migration',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
     expect(
       requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
     ).toContain('Finish the authentication migration');
+  });
+
+  it('shows an explicit Goal error when send returns no assistant response', async () => {
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'sent' as const, turnId: 'turn-without-response', assistantMessageId: null })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']).toMatchObject({
+      status: 'error',
+      lastError: 'The executor turn did not return a saved assistant response.',
+    });
+  });
+
+  it('keeps a Goal paused when its original send finishes after Pause', async () => {
+    const sending = createDeferred<{ status: 'sent'; turnId: string; assistantMessageId: string }>();
+    chatState = { ...chatState, sendMessage: mock(() => sending.promise) };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('/goal Complete the migration');
+    await clickSendButton();
+    await act(async () => {
+      requireContainer().querySelector<HTMLButtonElement>('button[aria-label="Pause"]')?.click();
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
+    await act(async () => {
+      sending.resolve({ status: 'sent', turnId: 'turn-late', assistantMessageId: 'assistant-late' });
+      await sending.promise;
+      await Promise.resolve();
+    });
+    expect(useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status).toBe('paused');
   });
 
   it('keeps the Goal control outside the composer and removes the command', async () => {
@@ -2415,7 +2867,7 @@ describe('ChatZone', () => {
       providerId: 'provider-1',
       modelId: 'model-1',
       reasoningEffort: 'high',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2467,7 +2919,7 @@ describe('ChatZone', () => {
       useConversationGoalStore.getState().goalsByConversationId['conv-1'],
     ).toMatchObject({
       objective: 'Ship the CSV export end to end',
-      status: 'audit_pending',
+      status: 'executor_running',
     });
   });
 
@@ -2771,6 +3223,25 @@ describe('ChatZone', () => {
     expect(fileChip?.textContent).toContain('File');
     expect(fileChip?.textContent).toContain('src/App.tsx');
     expect(requireContainer().textContent).not.toContain('[file: src/App.tsx]');
+  });
+
+  it('shows the frozen cited conversation excerpts on a sent user message', async () => {
+    chatState = {
+      ...chatState,
+      messages: [buildMessage({
+        id: 'msg-cited', role: 'user', content: 'What did we decide?',
+        context_refs: [{
+          id: 'source-conv', conversationId: 'source-conv', kind: 'conversation',
+          title: 'Earlier discussion', sourceUpdatedAt: '2026-09-28T12:00:00Z',
+          snippet: '[message_id=source-msg; role=user; at=2026-09-28T11:00:00Z]\nReview every release.',
+        }],
+      })],
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const details = requireContainer().querySelector('details');
+    expect(details?.textContent).toContain('Earlier discussion');
+    expect(details?.textContent).toContain('message_id=source-msg');
+    expect(details?.textContent).toContain('Review every release.');
   });
 
   it('moves message editing into the composer and saves bracket text', async () => {
@@ -3590,14 +4061,27 @@ describe('ChatZone', () => {
     });
   });
 
+  it('renders a completed response without generation attempt diagnostics', async () => {
+    chatState = { ...chatState, messages: [buildMessage({
+      id: 'assistant-completed', role: 'assistant', content: 'Answer', completion_reason: 'completed',
+      generation_attempts: [{ id: 'attempt-completed', status: 'completed', rawText: 'Answer', acceptedText: 'Answer', costUsd: null }],
+    })] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(requireContainer().textContent).toContain('Answer');
+    expect(requireContainer().textContent).not.toContain('generation attempt');
+    expect(requireContainer().querySelector('[data-chat-completion-notice]')).toBeNull();
+  });
+
   it.each(['content_filter', 'safety', 'unknown_terminal'])('renders a persisted provider termination notice for %s', async (reason) => {
     chatState = { ...chatState, messages: [buildMessage({
       id: 'assistant-filtered', role: 'assistant', content: 'Partial response', completion_reason: reason,
+      generation_attempts: [{ id: 'attempt-partial', status: 'partial', rawText: 'Partial response', acceptedText: 'Partial response', costUsd: null }],
     })] };
     await act(async () => { requireRoot().render(<ChatZone />); });
     const notice = requireContainer().querySelector(`[data-chat-completion-notice="${reason}"]`);
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain('Response interrupted');
+    expect(requireContainer().textContent).not.toContain('generation attempt');
   });
 
   it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {
@@ -3732,6 +4216,102 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
+  });
+
+  it.each([false, true])('keeps the audit opening draft and the previous unsent draft, durable=%s', async durable => {
+    const previous = 'Previous unsent draft.';
+    const prompt = 'Inspect the verified conflict without editing files.';
+    composerDraftsByContextKey['conversation:conv-1'] = { text: previous, images: [], contextRefs: [] };
+    chatState.peekComposerDraft = mock((id: string) => chatState.pendingComposerDraftByConversationId[id] ?? null);
+    chatState.acknowledgeComposerDraft = mock((id: string) => { delete chatState.pendingComposerDraftByConversationId[id]; });
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    expect(composerEditorValue).toBe(previous);
+    composerEditorSetTextCalls = [];
+    if (durable) composerDraftsByContextKey['conversation:inspection-audit'] = { text: prompt, images: [], contextRefs: [] };
+    await act(async () => {
+      useChatStore.setState({
+        conversations: [...chatState.conversations, { ...buildConversation(), id: 'inspection-audit' }],
+        pendingComposerDraftByConversationId: { 'inspection-audit': prompt },
+        selectedConversationId: 'inspection-audit',
+      });
+    });
+    expect(composerEditorSetTextCalls).toEqual([prompt]);
+    expect(composerEditorValue).toBe(prompt);
+    expect(chatState.peekComposerDraft('inspection-audit')).toBeNull();
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(previous);
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { opening: 'mount', saved: false }, { opening: 'switch', saved: false },
+    { opening: 'mount', saved: true }, { opening: 'switch', saved: true },
+  ])('keeps the prepared inspection draft through real editor restoration: %j', async ({ opening, saved }) => {
+    await loadChatZoneModule(true);
+    await preloadChatZoneLazyComponents();
+    const id = 'prepared-inspection';
+    const prompt = 'Inspect README.md and qa-conflict.txt without changing any files.';
+    const savedImage = { id: 'inspection-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-06T00:00:00Z' };
+    const state = realDraftStore.getState();
+    realDraftStore.setState(realDraftStore.getInitialState(), true);
+    installTauriRuntimeMock(async command => {
+      if (command === 'db_create_conversation') return { ...buildConversation(), id, title: 'Resolve merge conflicts',
+        scope_mode: 'Implement', group_id: 'group-1', provider_id: 'provider-1', model_id: 'model-1',
+        description: '', last_message: '', message_count: 0, created_at: '2026-10-06T00:00:00Z', updated_at: '2026-10-06T00:00:00Z' };
+      if (command === 'db_list_conversation_citations' || command === 'db_list_unresolved_tool_invocations') return [];
+      return null;
+    });
+    Object.assign(providerState, {
+      providerConfigs: [{ id: 'provider-1', isEnabled: true, isLocal: true, providerType: 'openai' }],
+      modelsByProvider: { 'provider-1': [{ id: 'model-1', isEnabled: true }] },
+      commitRestoredSelection: async () => ({ providerId: 'provider-1', modelId: 'model-1', reasoningEffort: null }),
+    });
+    const save = mock((key: string, draft: ComposerDraft) => state.saveComposerDraftForContext(key, draft));
+    const acknowledge = mock((conversationId: string) => state.acknowledgeComposerDraft(conversationId));
+    chatState = { ...chatState,
+      peekComposerDraft: mock((conversationId: string) => state.peekComposerDraft(conversationId)),
+      acknowledgeComposerDraft: acknowledge,
+      getComposerDraftForContext: mock((key: string) => state.getComposerDraftForContext(key)),
+      saveComposerDraftForContext: save,
+    };
+    const stop = realDraftStore.subscribe(snapshot => useChatStore.setState({
+      conversations: snapshot.conversations.map(conversation => ({ ...conversation, group_id: conversation.group_id ?? null })),
+      selectedConversationId: snapshot.selectedConversationId,
+      activeContextKey: snapshot.activeContextKey, selectedConversationContextKey: snapshot.selectedConversationContextKey,
+      restoreStatus: snapshot.restoreStatus,
+    }));
+    appState = { ...appState, mode: 'Implement', selectedProjectId: 'project-1', selectedGroupId: 'group-1', selectedTaskId: null };
+    registerConflictAssistantContext({ conversationId: id, projectId: 'project-1', groupId: 'group-1', kind: 'code',
+      repositories: [{ projectId: 'project-1', projectPath: '/tmp/api', repoPath: '/tmp/api', branch: 'develop',
+        head: 'ee2603d50000000000000000000000000000000000', conflictFiles: ['README.md', 'qa-conflict.txt'], mergeInProgress: true }],
+    });
+    try {
+      if (opening === 'switch') await act(async () => { requireRoot().render(<ChatZone />); });
+      await act(async () => {
+        const conversation = await state.createConversation('Resolve merge conflicts', null, 'project-1', 'group-1', { selectConversation: false });
+        expect(conversation.id).toBe(id);
+        // Use the actual creation, selection, pending and durable draft lifecycle.
+        if (saved) state.saveComposerDraftForContext(`conversation:${id}`, { text: 'Older saved text', images: [savedImage], contextRefs: [] });
+        state.setComposerDraft(id, prompt);
+        expect(await state.selectConversation(id)).toBe(true);
+        requireRoot().render(<ChatZone />);
+      });
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (requireContainer().querySelector('[contenteditable="true"]')?.textContent === prompt) break;
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+      }
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+      expect((requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement).disabled).toBe(false);
+      expect(state.peekComposerDraft(id)).toBeNull();
+      expect(state.getComposerDraftForContext(`conversation:${id}`)).toMatchObject({ text: prompt, images: saved ? [savedImage] : [] });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(chatState.sendMessage).not.toHaveBeenCalled();
+      expect(chatState.clearLastError).not.toHaveBeenCalled();
+      await act(async () => { useChatStore.setState({ selectedConversationId: 'conv-1' }); });
+      await act(async () => { useChatStore.setState({ selectedConversationId: id }); });
+      expect(requireContainer().querySelector('[contenteditable="true"]')?.textContent).toBe(prompt);
+    } finally { stop(); clearConflictAssistantContext(id); }
   });
 
   it('consults peekComposerDraft when the selected conversation changes', async () => {

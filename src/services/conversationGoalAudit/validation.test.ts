@@ -70,4 +70,38 @@ describe("validateConversationGoalVerdict", () => {
       validateConversationGoalVerdict(candidate, ["Confirm the release artifact"]),
     ).toMatchObject({ ok: false });
   });
+
+  it("rejects achieved without criteria but permits continuation without criteria", () => {
+    const achieved = validVerdict();
+    achieved.verdict = "achieved";
+    achieved.questionForUser = null;
+    achieved.criteria = [];
+    expect(validateConversationGoalVerdict(achieved, []).ok).toBe(false);
+
+    const continuation = validVerdict();
+    continuation.verdict = "continue";
+    continuation.questionForUser = null;
+    continuation.criteria = [];
+    expect(validateConversationGoalVerdict(continuation, []).ok).toBe(true);
+  });
+
+  it("rejects normalized duplicate evidence but keeps distinct pairs containing NUL", () => {
+    const duplicate = validVerdict();
+    duplicate.criteria[0].evidence.push({
+      source: " dist/ ",
+      finding: " No signed artifact is available for inspection. ",
+    });
+    expect(
+      validateConversationGoalVerdict(duplicate, ["Confirm the release artifact"]).ok,
+    ).toBe(false);
+
+    const distinct = validVerdict();
+    distinct.criteria[0].evidence = [
+      { source: "a\u0000b", finding: "c" },
+      { source: "a", finding: "b\u0000c" },
+    ];
+    expect(
+      validateConversationGoalVerdict(distinct, ["Confirm the release artifact"]).ok,
+    ).toBe(true);
+  });
 });

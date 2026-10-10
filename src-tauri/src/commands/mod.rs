@@ -2,6 +2,8 @@ pub mod ai;
 mod external_apps;
 pub mod fs;
 pub mod git;
+pub mod goal_audit;
+pub mod goal_auditor_read;
 pub mod mcp;
 pub mod pilot_secrets;
 pub mod pilot_tools;
@@ -11,6 +13,7 @@ pub mod repository_instructions;
 pub mod skills;
 pub mod speech;
 pub mod terminal;
+pub mod tool_invocations;
 pub mod web_search;
 pub mod workspace;
 pub mod workspace_tools;
@@ -195,7 +198,7 @@ pub fn tool_cancel_workspace(execution_id: String) -> bool {
 pub async fn db_list_conversations(pool: State<'_, DbPool>) -> CommandResult<Vec<Conversation>> {
     let pool = get_pool(&pool).await?;
 
-    repository::list_conversations(&pool)
+    repository::list_user_conversations(&pool)
         .await
         .map_err(Into::into)
 }
@@ -407,6 +410,18 @@ pub async fn db_list_messages(
 }
 
 #[tauri::command]
+pub async fn db_get_conversation_source_snapshot(
+    pool: State<'_, DbPool>,
+    target_id: String,
+    source_id: String,
+) -> CommandResult<Option<ConversationSourceSnapshot>> {
+    let pool = get_pool(&pool).await?;
+    repository::get_conversation_source_snapshot(&pool, &target_id, &source_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_search_messages(
     pool: State<'_, DbPool>,
     query: String,
@@ -448,6 +463,7 @@ pub async fn db_create_message(
             provider_turn_state_json: params.provider_turn_state_json,
             context_refs_json: params.context_refs_json,
             completion_reason: params.completion_reason,
+            generation_attempts_json: None,
         },
     )
     .await
@@ -481,6 +497,7 @@ pub struct DbUpdateMessageParams {
     provider_turn_state_json: Option<String>,
     context_refs_json: Option<String>,
     completion_reason: Option<String>,
+    generation_attempts_json: Option<String>,
 }
 
 #[tauri::command]
@@ -503,6 +520,7 @@ pub async fn db_update_message(
             provider_turn_state_json: params.provider_turn_state_json,
             context_refs_json: params.context_refs_json,
             completion_reason: params.completion_reason,
+            generation_attempts_json: params.generation_attempts_json,
         },
     )
     .await

@@ -1,5 +1,6 @@
 import { observeConversationMessage } from '../../services/conversationReadObservation';
 import { acknowledgeDisplayedConversation } from '../../services/conversationManagementService';
+import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
@@ -79,6 +80,7 @@ import {
   clearConflictAssistantInternalAgentProfile,
   getConflictAssistantInternalAgentProfile,
 } from '../../services/conflictAssistantService';
+import { getConflictAssistantContext, isConflictAssistantContextAllowed } from '../../services/conflictAssistantContext';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -110,11 +112,15 @@ import {
 } from './CompactionTranscriptUi';
 import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
 import { notify } from '../ui/toastService';
-import { toServiceError } from '../../services/contracts/errors';
+import { toServiceError, type ServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
+import { conversationGoalProductFlow } from '../../composition/goalProductComposition';
+import { isTauriAvailable } from '../../services/ipc/runtime';
+import { GoalAuditArtifactsButton } from './GoalAuditArtifactsButton';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
+import { UnresolvedToolInvocationsNotice } from './UnresolvedToolInvocationsNotice';
 import {
   CONVERSATION_ATTACHMENT_ACCEPT,
   CONVERSATION_ATTACHMENT_EXTENSIONS,
@@ -129,6 +135,10 @@ import {
   validateImageAttachments,
   acquireAttachmentImport,
 } from '../../services/conversationFileAttachments';
+
+const QueuedMessagesPanel = React.lazy(() =>
+  import('./QueuedMessagesPanel').then((module) => ({ default: module.QueuedMessagesPanel })),
+);
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -507,6 +517,9 @@ const EMPTY_COMPOSER_DRAFT_SNAPSHOT: ComposerDraftSnapshot = {
 const buildSnapshotContextRefData = (
   ref: PersistedContextReference,
 ): ContextReference['data'] => {
+  if (ref.kind === 'conversation') {
+    return { conversationId: ref.conversationId ?? ref.id };
+  }
   if (ref.kind === 'skill') {
     return {
       id: ref.id,
@@ -794,6 +807,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         .then(() => useChatStore.getState().refreshConversationMetadata()).catch(() => undefined);
     });
   }, [message, assistantActivity]);
+  const citedConversations = message.context_refs?.filter(
+    (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
+  ) ?? [];
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const architectActionMessage =
@@ -961,7 +977,25 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
                 </Suspense>
               ) : (
-                <UserMessageContent content={message.content} />
+                <>
+                  <UserMessageContent content={message.content} />
+                  {message.role === 'user' && citedConversations.length > 0 && (
+                    <details className="mt-2 rounded-md border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        {t('chat.conversationSourcesUsed', '{{count}} cited conversation sources', { count: citedConversations.length })}
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {citedConversations.map((ref) => (
+                          <div key={ref.id} className="border-t border-border/50 pt-2">
+                            <div className="font-medium">{ref.title}</div>
+                            <div className="text-[10px] text-muted-foreground">{ref.conversationId} · {ref.sourceUpdatedAt}</div>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-sans text-xs text-foreground/80">{ref.snippet}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </>
               )}
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
@@ -1131,6 +1165,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages,
     selectedConversationId,
     activeContextKey,
+    selectedConversationContextKey,
     selectedConversationRuntime,
     standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
@@ -1145,6 +1180,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     toolApprovalRecoveryError,
     dismissToolApprovalRecoveryError,
     stopStreaming,
+    hasQueuedMessages,
     sendMessage,
     submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
@@ -1166,7 +1202,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addComposerContextRef,
     clearComposerContextRefs,
     questionnaireDraftsByConversationId,
-    getPendingToolApproval,
+    activePendingToolApproval,
     approvePendingToolApprovalOnce,
     approvePendingToolApprovalForConversation,
     denyPendingToolApproval,
@@ -1190,6 +1226,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
     activeContextKey: state.activeContextKey,
+    selectedConversationContextKey: state.selectedConversationContextKey,
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
@@ -1208,6 +1245,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     toolApprovalRecoveryError: state.toolApprovalRecoveryError,
     dismissToolApprovalRecoveryError: state.dismissToolApprovalRecoveryError,
     stopStreaming: state.stopStreaming,
+    hasQueuedMessages: (state.queuedSubmissionPreviews ?? []).some(entry => entry.conversationId === state.selectedConversationId),
     sendMessage: state.sendMessage,
     submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
@@ -1230,7 +1268,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addComposerContextRef: state.addComposerContextRef,
     clearComposerContextRefs: state.clearComposerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
-    getPendingToolApproval: state.getPendingToolApproval,
+    activePendingToolApproval: state.selectedConversationId
+      ? state.pendingToolApprovalByConversationId[state.selectedConversationId] ?? null
+      : null,
     approvePendingToolApprovalOnce: state.approvePendingToolApprovalOnce,
     approvePendingToolApprovalForConversation:
       state.approvePendingToolApprovalForConversation,
@@ -1262,20 +1302,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const {
     activeConversationGoal,
-    activateConversationGoal,
-    beginConversationGoalEdit,
-    settleConversationGoalEdit,
-    setConversationGoalStatus,
-    clearConversationGoal,
+    hydrateConversationGoal,
   } = useConversationGoalStore(useShallow((state) => ({
     activeConversationGoal: selectedConversationId
       ? state.goalsByConversationId[selectedConversationId] ?? null
       : null,
-    activateConversationGoal: state.activateGoal,
-    beginConversationGoalEdit: state.beginGoalEdit,
-    settleConversationGoalEdit: state.settleGoalEdit,
-    setConversationGoalStatus: state.setOperationalStatus,
-    clearConversationGoal: state.clearGoal,
+    hydrateConversationGoal: state.hydrateGoal,
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
@@ -1298,6 +1330,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
 
   const [inputValue, setInputValue] = useState('');
+  const [composerSubmissionErrors, setComposerSubmissionErrors] =
+    useState<Partial<Record<string, ServiceError>>>({});
+  const clearComposerSubmissionError = useCallback((contextKey: string) => {
+    setComposerSubmissionErrors((current) => {
+      if (!current[contextKey]) return current;
+      const next = { ...current };
+      delete next[contextKey];
+      return next;
+    });
+  }, []);
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
@@ -1585,42 +1627,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setManualCompactionPhase('idle');
   }, [selectedConversationId]);
 
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    let cancelled = false;
-
-    // The LazyComposerEditor loads its underlying editor module
-    // asynchronously. composerEditorRef.current may be null on the first
-    // render. We peek (read) the draft without consuming it, then retry
-    // until the editor is ready, and only then acknowledge (consume) it.
-    const tryApplyDraft = (attemptsLeft: number) => {
-      if (cancelled) return;
-      const handle = composerEditorRef.current;
-      const draft = peekComposerDraft(selectedConversationId);
-      if (draft === null) {
-        return;
-      }
-      if (handle) {
-        handle.setText(draft);
-        handle.focus();
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      if (attemptsLeft <= 0) {
-        // Editor never came up. Drop the draft so we don't leak it.
-        acknowledgeComposerDraft(selectedConversationId);
-        return;
-      }
-      window.setTimeout(() => tryApplyDraft(attemptsLeft - 1), 50);
-    };
-
-    tryApplyDraft(10);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedConversationId, peekComposerDraft, acknowledgeComposerDraft]);
-
   const isStreaming = isContextStreaming;
   const isTranscriptActivityActive =
     isContextStreaming ||
@@ -1678,9 +1684,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeQuestionnaireDraft = selectedConversationId
     ? questionnaireDraftsByConversationId[selectedConversationId]
     : undefined;
-  const activePendingToolApproval = selectedConversationId
-    ? getPendingToolApproval(selectedConversationId)
-    : null;
   const activeQuestionnaire = useMemo(
     () =>
       selectedConversationId
@@ -1724,7 +1727,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       !selectedConversationRuntime.lastErrorDisplayTarget)
       ? selectedConversationRuntime.lastError
       : null;
-  const composerError = composerRuntimeError ?? lastError;
+  const composerError = composerRuntimeError ?? lastError ??
+    composerSubmissionErrors[composerDraftContextKey];
+  const composerErrorMessage = composerError ? toServiceError(composerError).message : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1819,16 +1824,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     )
       ? null
       : getComposerDraftForContext(composerDraftContextKey);
+    const pendingDraft = selectedConversationId
+      ? peekComposerDraft(selectedConversationId)
+      : null;
     skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
-    if (!previousContextKey && !savedNextDraft) {
+    if (!previousContextKey && !savedNextDraft && pendingDraft === null) {
       return;
     }
-    const nextDraft = savedNextDraft ?? {
-      text: '',
-      images: [],
-      contextRefs: [],
+    // One restoration owns the text. A newly prepared prompt takes precedence
+    // over local text while retaining the saved images and context references.
+    const nextDraft = {
+      ...savedNextDraft,
+      text: pendingDraft ?? savedNextDraft?.text ?? '',
+      images: savedNextDraft?.images ?? [],
+      contextRefs: savedNextDraft?.contextRefs ?? [],
     };
+    if (pendingDraft !== null) {
+      pendingSentComposerDraftContextKeysRef.current.delete(composerDraftContextKey);
+      saveComposerDraftForContext(composerDraftContextKey, nextDraft);
+    }
     setComposerEditSession(null);
     goalComposerEditSessionRef.current = null;
     setGoalComposerEditSession(null);
@@ -1846,10 +1861,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     let cancelled = false;
     const applyText = (attemptsLeft: number) => {
-      if (cancelled) return;
+      if (cancelled || renderedComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
       const editor = composerEditorRef.current;
       if (editor) {
         editor.setText(nextDraft.text, nextDraft.contextRefs);
+        if (pendingDraft !== null && selectedConversationId &&
+            peekComposerDraft(selectedConversationId) === pendingDraft) {
+          editor.focus();
+          acknowledgeComposerDraft(selectedConversationId);
+        }
         return;
       }
       if (attemptsLeft > 0) {
@@ -1865,6 +1885,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerEditSession,
     goalComposerEditSession,
     getComposerDraftForContext,
+    peekComposerDraft,
+    acknowledgeComposerDraft,
     replaceComposerContextRefs,
     resetPromptHistoryNavigation,
     saveComposerDraftForContext,
@@ -1946,6 +1968,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const currentConversation = !isArchitectPlanSelectionMissing && selectedConversationId
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
+
+  useEffect(() => {
+    if (!selectedConversationId || !isTauriAvailable()) return;
+    let active = true;
+    conversationGoalProductFlow.reconcileQueuedTurns(selectedConversationId);
+    void conversationGoalProductFlow.hydrate(selectedConversationId).catch((error) => {
+      if (active) notify.error(t('goal.loadFailed', 'Could not load Goal'), { description: toServiceError(error).message });
+    });
+    return () => { active = false; };
+  }, [selectedConversationId, hydrateConversationGoal, t]);
 
   const selectedTaskTodoState = useMemo(
     () => (selectedTask ? getPlanNodeTodoState(selectedTask) : null),
@@ -2095,7 +2127,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isImplementComposerInKickoffMode =
     selectedTaskRequiresKickoff && currentMessages.length === 0;
-  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
+  const conflictAssistantContext = useMemo(
+    () => selectedConversationId ? getConflictAssistantContext(selectedConversationId) : undefined,
+    [selectedConversationId]
+  );
+  const hasVerifiedConflictContext = useMemo(() => isConflictAssistantContextAllowed(conflictAssistantContext, {
+    mode, selectedTaskId, selectedProjectId, selectedGroupId, selectedConversationId,
+    conversation: currentConversation ? {
+      id: currentConversation.id, scope_mode: currentConversation.scope_mode, task_id: currentConversation.task_id,
+      project_id: currentConversation.project_id, group_id: currentConversation.group_id,
+    } : null,
+    projects: [...standaloneProjects, ...projectGroups.flatMap(group => group.projects)],
+    groups: projectGroups,
+  }), [conflictAssistantContext, mode, selectedTaskId, selectedProjectId, selectedGroupId,
+    selectedConversationId, currentConversation, standaloneProjects, projectGroups]);
+  const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask && !hasVerifiedConflictContext;
+  const isConflictContextInvalid = Boolean(conflictAssistantContext) && !hasVerifiedConflictContext;
   const isSelectedConversationArchived = useConversationArchiveStore((state) =>
     mode === 'Chat' && selectedConversationId
       ? state.archivedConversationIds.has(selectedConversationId)
@@ -2111,6 +2158,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
+    isConflictContextInvalid ||
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
@@ -2188,7 +2236,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Implement') {
       return {
         icon: 'check-square' as const,
-        title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || t('implement.selectTaskShort', 'Select a task')}`,
+        title: `${t('header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }
@@ -2200,13 +2248,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    hasVerifiedConflictContext,
     activePlanContext,
     focusedProjectName,
     isModeProjectWorkspaceMissing,
     mode,
     projectScopeLabel,
     selectedGlobalProjectName,
-    selectedTask?.title,
+    selectedTask,
     t,
   ]);
 
@@ -2551,7 +2600,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
-    let goalActivated = false;
+    let activatedGoal: Awaited<ReturnType<typeof conversationGoalProductFlow.activate>> | null = null;
 
     try {
       conversationId = await ensureConversation();
@@ -2570,14 +2619,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
 
       if (params?.goalObjective) {
-        activateConversationGoal({
-          conversationId,
-          objective: params.goalObjective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-        });
-        goalActivated = true;
+        if (!useChatStore.getState().conversations.find((item) => item.id === conversationId)?.project_id) {
+          throw new Error('Goal requires a conversation attached to a project.');
+        }
+        activatedGoal = await conversationGoalProductFlow.activate(conversationId, params.goalObjective,
+          selectedProviderId, selectedModelId, selectedReasoningEffort);
       }
 
       const content = buildImplementKickoffPrompt({
@@ -2609,11 +2655,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: selectedTask.id,
       });
-      if (goalActivated) {
-        setConversationGoalStatus(
-          conversationId,
-          result.status === 'sent' ? 'executor_running' : 'paused',
-        );
+      if (activatedGoal) {
+        if (result.status === 'sent' && result.assistantMessageId) {
+          const goal = await conversationGoalProductFlow.status(conversationId, 'executor_running', null, activatedGoal);
+          if (goal) conversationGoalProductFlow.track(conversationId, result.turnId, result.assistantMessageId, goal.goalId);
+        } else await conversationGoalProductFlow.status(conversationId, 'paused', null, activatedGoal);
       }
       if (result.status !== 'sent') {
         delete executionKickoffByConversationRef.current[conversationId];
@@ -2654,12 +2700,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch (error) {
       if (conversationId) {
         delete executionKickoffByConversationRef.current[conversationId];
-        if (goalActivated) {
-          setConversationGoalStatus(
-            conversationId,
-            'error',
-            toServiceError(error).message,
-          );
+        if (activatedGoal) {
+          await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, activatedGoal);
         }
       }
       throw error;
@@ -2668,7 +2710,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     ensureConversation,
-    activateConversationGoal,
     clearComposerDraftForContext,
     clearComposerContextRefs,
     composerDraftContextKey,
@@ -2686,7 +2727,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     sendMessage,
     saveComposerDraftForContext,
     setComposerImages,
-    setConversationGoalStatus,
     startTask,
     resetPromptHistoryNavigation,
     runtimeCapabilities.implementExecution,
@@ -2901,6 +2941,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
+    clearComposerSubmissionError(composerDraftContextKey);
     if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
@@ -2972,20 +3013,32 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           `conversation:${submittedConversationId}`,
         ]),
       ];
+      const queueGoal = useConversationGoalStore.getState().goalsByConversationId[submittedConversationId];
+      const queueForGoal = (activeBehaviorOverride ?? activeTurnSendBehavior) === 'queue' &&
+        queueGoal && !['paused', 'error', 'achieved'].includes(queueGoal.status);
+      let goalTurnReserved = false;
       try {
+        if (queueForGoal) {
+          await conversationGoalProductFlow.reserveUserTurn(submittedConversationId);
+          goalTurnReserved = true;
+        }
         const internalAgentProfile = getConflictAssistantInternalAgentProfile(
           submittedConversationId,
         );
-        await submitDuringActiveTurn(
+        const submission = await submitDuringActiveTurn(
           {
             conversationId: submittedConversationId,
             content: text,
             taskId: implementTaskIdForSend,
             images: [...composerImages],
+            composerContextRefs: submittedDraft.savedDraftContextRefs,
             ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
+        if (submission === 'queued' && queueForGoal) {
+          conversationGoalProductFlow.reconcileQueuedTurns(submittedConversationId);
+        }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
@@ -3018,6 +3071,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           description: toServiceError(error).message,
         });
       } finally {
+        if (goalTurnReserved) conversationGoalProductFlow.releaseUserTurn(submittedConversationId);
         activeTurnSubmissionInFlightRef.current = false;
       }
       return;
@@ -3058,6 +3112,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
+    clearComposerSubmissionError(composerDraftContextKey);
     if (!goalComposerEditSession) {
       saveComposerDraftForContext(composerDraftContextKey, {
         text,
@@ -3073,31 +3128,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const imagesForMessage = [...composerImages];
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
-    let tracksGoalTurn = false;
-    let goalEditTransactionId: string | null = null;
+    let trackedGoal: import('../../types').ConversationGoalRecord | null = null;
+    let pendingGoalEdit: import('../../types').ConversationGoalRecord | null = null;
+    let userTurnReserved = false;
 
     if (goalCommand?.kind === 'activate') {
-      if (goalComposerEditSession) {
-        const transaction = beginConversationGoalEdit({
-          conversationId,
-          objective: goalCommand.objective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-          expectedGoalId: goalComposerEditSession.goalId,
-        });
-        if (!transaction) return;
-        goalEditTransactionId = transaction.transactionId;
-      } else {
-        activateConversationGoal({
-          conversationId,
-          objective: goalCommand.objective,
-          providerId: selectedProviderId,
-          modelId: selectedModelId,
-          reasoningEffort: selectedReasoningEffort,
-        });
+      if (!useChatStore.getState().conversations.find((item) => item.id === conversationId)?.project_id) {
+        notify.warning(t('goal.projectRequired', 'Goal requires a project conversation'));
+        return;
       }
-      tracksGoalTurn = true;
+      try {
+        const previous = await conversationGoalProductFlow.loadCurrent(conversationId);
+        if (goalComposerEditSession && previous?.goalId !== goalComposerEditSession.goalId) return;
+        if (goalComposerEditSession && previous) pendingGoalEdit = previous;
+        else trackedGoal = await conversationGoalProductFlow.activate(conversationId, goalCommand.objective,
+          selectedProviderId, selectedModelId, selectedReasoningEffort, previous ?? undefined);
+      } catch (error) {
+        notify.error(t('goal.saveFailed', 'Could not save Goal'), { description: toServiceError(error).message });
+        return;
+      }
     } else {
       const currentGoal = useConversationGoalStore.getState()
         .goalsByConversationId[conversationId];
@@ -3107,7 +3156,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         currentGoal.status !== 'achieved' &&
         currentGoal.status !== 'error'
       ) {
-        tracksGoalTurn = true;
+        trackedGoal = currentGoal;
       }
     }
 
@@ -3168,6 +3217,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
 
     try {
+      if (trackedGoal || pendingGoalEdit) {
+        const current = await conversationGoalProductFlow.reserveUserTurn(conversationId);
+        userTurnReserved = true;
+        if (trackedGoal && (current?.goalId !== trackedGoal.goalId ||
+            ['paused', 'error', 'achieved'].includes(current.status))) trackedGoal = null;
+        else if (trackedGoal) trackedGoal = current;
+        if (pendingGoalEdit && current?.goalId !== pendingGoalEdit.goalId) pendingGoalEdit = null;
+        else if (pendingGoalEdit) pendingGoalEdit = current;
+      }
+      if (goalComposerEditSession && !pendingGoalEdit) return;
       const sendPromise = sendMessage({
         conversationId,
         content,
@@ -3192,12 +3251,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
       const result = await sendPromise;
       if (result.status === 'sent') {
-        if (goalEditTransactionId) {
-          if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
-            setConversationGoalStatus(conversationId, 'executor_running');
+        if (pendingGoalEdit && goalCommand?.kind === 'activate') {
+          try {
+            trackedGoal = await conversationGoalProductFlow.activate(conversationId, goalCommand.objective,
+              selectedProviderId, selectedModelId, selectedReasoningEffort, pendingGoalEdit);
+          } catch (error) {
+            notify.error(t('goal.saveFailed', 'Could not save Goal'), { description: toServiceError(error).message });
           }
-        } else if (tracksGoalTurn) {
-          setConversationGoalStatus(conversationId, 'executor_running');
+        }
+        if (trackedGoal) {
+          if (result.assistantMessageId) {
+            const goal = await conversationGoalProductFlow.status(conversationId, 'executor_running', null, trackedGoal);
+            if (goal) conversationGoalProductFlow.track(conversationId, result.turnId, result.assistantMessageId, goal.goalId);
+          } else {
+            await conversationGoalProductFlow.status(conversationId, 'error',
+              'The executor turn did not return a saved assistant response.', trackedGoal);
+          }
         }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(conversationId);
@@ -3219,39 +3288,40 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           finishPendingDraft(true);
         }
         resetPromptHistoryNavigation();
-      } else if (goalEditTransactionId) {
-        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
-      } else if (tracksGoalTurn) {
-        setConversationGoalStatus(conversationId, 'paused');
+      } else if (trackedGoal) {
+        await conversationGoalProductFlow.status(conversationId, 'paused', null, trackedGoal);
         if (clearsComposerImmediately) restoreSentDraft();
       } else if (clearsComposerImmediately) {
         restoreSentDraft();
       }
     } catch (error) {
-      if (goalEditTransactionId) {
-        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
-      } else if (tracksGoalTurn) {
-        setConversationGoalStatus(
-          conversationId,
-          'error',
-          toServiceError(error).message,
-        );
+      if (trackedGoal) {
+        await conversationGoalProductFlow.status(conversationId, 'error', toServiceError(error).message, trackedGoal);
       }
       if (clearsComposerImmediately) restoreSentDraft();
-      // Keep the draft intact. The visible error feedback comes from the chat store.
+      // Source prevalidation can reject before the chat store publishes a runtime error.
+      const submissionError = toServiceError(error);
+      setComposerSubmissionErrors((current) => ({
+        ...current,
+        [conversationDraftKey]: submissionError,
+      }));
+    } finally {
+      if (userTurnReserved) conversationGoalProductFlow.releaseUserTurn(conversationId);
     }
   };
 
   const handlePauseGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
-    setConversationGoalStatus(selectedConversationId, 'paused');
-  }, [isBusySending, selectedConversationId, setConversationGoalStatus, stopStreaming]);
+    void conversationGoalProductFlow.pause(selectedConversationId).catch((error) =>
+      notify.error(t('goal.pauseFailed', 'Could not pause Goal'), { description: toServiceError(error).message }));
+  }, [isBusySending, selectedConversationId, stopStreaming, t]);
 
   const handleResumeGoal = useCallback(() => {
     if (!selectedConversationId) return;
-    setConversationGoalStatus(selectedConversationId, 'active_ready');
-  }, [selectedConversationId, setConversationGoalStatus]);
+    void conversationGoalProductFlow.resume(selectedConversationId).catch((error) =>
+      notify.error(t('goal.resumeFailed', 'Could not resume Goal'), { description: toServiceError(error).message }));
+  }, [selectedConversationId, t]);
 
   const handleEditGoal = useCallback(() => {
     if (
@@ -3306,54 +3376,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const handleStopGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
-    clearConversationGoal(selectedConversationId);
-  }, [clearConversationGoal, isBusySending, selectedConversationId, stopStreaming]);
+    void conversationGoalProductFlow.stop(selectedConversationId).catch((error) =>
+      notify.error(t('goal.stopFailed', 'Could not stop Goal'), { description: toServiceError(error).message }));
+  }, [isBusySending, selectedConversationId, stopStreaming, t]);
 
   const handleStopStreaming = useCallback(() => {
     if (
       selectedConversationId &&
       activeConversationGoal?.status === 'executor_running'
     ) {
-      setConversationGoalStatus(selectedConversationId, 'paused');
+      void conversationGoalProductFlow.pause(selectedConversationId);
     }
     stopStreaming();
   }, [
     activeConversationGoal?.status,
     selectedConversationId,
-    setConversationGoalStatus,
     stopStreaming,
-  ]);
-
-  useEffect(() => {
-    if (
-      !selectedConversationId ||
-      activeConversationGoal?.status !== 'executor_running' ||
-      isTranscriptActivityActive
-    ) {
-      return;
-    }
-
-    if (selectedConversationRuntime.phase === 'error') {
-      setConversationGoalStatus(
-        selectedConversationId,
-        'error',
-        selectedConversationRuntime.lastError ?? t(
-          'goal.executionFailed',
-          'The executor turn failed.',
-        ),
-      );
-      return;
-    }
-
-    setConversationGoalStatus(selectedConversationId, 'audit_pending');
-  }, [
-    activeConversationGoal?.status,
-    isTranscriptActivityActive,
-    selectedConversationId,
-    selectedConversationRuntime.lastError,
-    selectedConversationRuntime.phase,
-    setConversationGoalStatus,
-    t,
   ]);
 
   const speechDictation = useSpeechDictation({
@@ -3783,7 +3821,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
-              {mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
+              {hasVerifiedConflictContext && conflictAssistantContext ? (
+                <div className="mt-0.5 truncate text-xs text-muted-foreground" data-testid="conflict-assistant-context">
+                  {t('footer.sync.conflictReadOnly', 'Read-only conflict inspection')} · {conflictAssistantContext.kind === 'metadata' ? '@macro' : t('footer.sync.remoteNeededCode', 'code')} · {conflictAssistantContext.repositories.map(repo => `${projectNameById.get(repo.projectId) ?? repo.projectId}: ${repo.branch}`).join(', ')}
+                </div>
+              ) : mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
                 <div
                   className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground"
                   data-testid="implement-active-task-context"
@@ -3811,6 +3853,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
           <div className="flex items-center gap-2">
             {mode === 'Implement' && <TaskArtifactsButton />}
+            {currentConversation?.project_id && (
+              <GoalAuditArtifactsButton key={`${currentConversation.project_id}:${currentConversation.id}:${activeConversationGoal?.goalId ?? ''}`}
+                projectId={currentConversation.project_id}
+                conversationId={currentConversation.id} goalId={activeConversationGoal?.goalId}
+                refreshKey={activeConversationGoal?.revision ?? 0} />
+            )}
             {shouldShowContextIndicator && selectedConversationId && (
               <Suspense fallback={null}>
                 <ContextWindowIndicator
@@ -3831,6 +3879,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {headerActions}
           </div>
         </header>
+
+        <UnresolvedToolInvocationsNotice
+          conversationId={
+            hydrationStatus === 'ready' &&
+            (restoreStatus === 'ready' ||
+              (restoreStatus === 'error' &&
+                activeContextKey !== null &&
+                selectedConversationContextKey === activeContextKey)) &&
+            currentConversation?.scope_mode === mode
+              ? selectedConversationId : null
+          }
+          phase={selectedConversationRuntime.phase}
+          activeTurnId={selectedConversationRuntime.turnId ?? null}
+        />
 
         {activeConversationGoal && (
           <Suspense fallback={null}>
@@ -4042,11 +4104,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 className="shadow-lg shadow-black/15 backdrop-blur"
                 compact
                 presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                  fallbackBody: composerErrorMessage === 'No available provider or model could be restored for this conversation.'
                     ? t(
                         'chat.providerRestoreUnavailable',
                         'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
                       )
+                    : composerErrorMessage === 'The selected conversation has no completed text to cite.'
+                      ? t('chat.conversationSourceEmpty', 'The selected conversation has no completed text to cite. Remove this source or choose another conversation, then send again.')
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
               />
@@ -4112,6 +4176,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {selectedConversationId && hasQueuedMessages && (
+              <Suspense fallback={null}>
+                <QueuedMessagesPanel conversationId={selectedConversationId} />
+              </Suspense>
+            )}
             {!activeQuestionnaire && !activePendingToolApproval && <input
               ref={composerFileInputRef}
               type="file"
@@ -4445,8 +4514,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                               ? t('chat.selectProvider')
                               : t('chat.typeMessage')
                         }
-                        onTextChange={(text) => {
-                          if (composerError) {
+                        onTextChange={(text, origin) => {
+                          if (origin !== 'programmatic' && composerError) {
+                            clearComposerSubmissionError(composerDraftContextKey);
                             clearConversationRuntimeError(selectedConversationId ?? '');
                             clearLastError();
                           }
@@ -4507,6 +4577,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       onClick={handleStopStreaming}
                       data-tour-id="chat-stop-button"
                       aria-label={t('chat.stop', 'Stop')}
+                      title={t('chat.stopQueueDescription', 'Stops the current response and pauses queued messages. Queued messages are retained.')}
                       className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
                     >
                       <Icon name="square" size={14} />

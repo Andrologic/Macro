@@ -1,9 +1,9 @@
-import type { AppMode, ChatCompletionReason, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
+import type { AppMode, ChatCompletionReason, GenerationAttempt, MCPTool, ProjectMount, ProviderTurnState, ReasoningEffort, ReasoningTransportMode, ToolTrace } from '../../types';
 import type { InternalAgentProfile } from '../internalAgentProfile';
 import type { ImageContextMetadata } from '../contextTokenEstimation';
 import type { WebSearchOptions } from '../webSearch';
 
-export type ToolErrorKind = 'validation' | 'execution' | 'permission' | 'aborted';
+export type ToolErrorKind = 'validation' | 'execution' | 'permission' | 'aborted' | 'uncertain';
 
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -49,7 +49,10 @@ export interface StreamCompletionResult {
   completionReason?: StreamCompletionReason;
   /** Last contiguous provider delta range, captured only at an explicit stop. */
   interruptedProviderText?: string;
+  generationAttempts?: GenerationAttempt[];
 }
+
+export type { GenerationAttempt } from '../../types';
 
 export interface LiveStreamContextSnapshot {
   version: number;
@@ -138,6 +141,8 @@ export interface StreamingChatOptions {
   onTimeline?: (event: StreamTimelineEvent) => void;
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
   onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
+  onGenerationAttemptsUpdate?: (attempts: GenerationAttempt[]) => Promise<void> | void;
+  onGenerationAttemptProgress?: (attempt: GenerationAttempt) => void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;

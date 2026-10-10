@@ -6,6 +6,46 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+### Added
+
+- Added local profile backup and restore controls, preserving queued instructions and responses needed for recovery.
+- Added read-only conversation assistance for verified Git conflicts, with explicit recovery actions for missing remotes, upstream branches, and failed synchronization.
+
+### Fixed
+
+- Replaced expandable generation-attempt details with a plain, spaced message, including while a tool awaits approval.
+- Kept tool approvals reactive to subscription updates, and translated native database-lock refusals without losing task-creation choices.
+- Preserved bounded process-inspection causes and an already-obtained Git exit status when native cleanup cannot be verified.
+- Preserved user text across conversation transports, images before accepting a send, deferred submissions, Goal continuations, and uncertain tool outcomes after failures.
+- Kept plan finalization available after completed tasks are archived, and preserved task-creation choices and errors after a rejected operation.
+- Kept task reviews tied to the selected task across project filters, and made saved Architect strategy changes distinguishable from failed follow-up operations.
+- Kept the task checklist available during review so work can resume after a merge is blocked by an open todo.
+- Stabilized Chat archive navigation and preserved manually chosen conversation titles during automatic naming.
+- Closed obsolete MCP connections after configuration changes and retained cleanup failure diagnostics.
+- Improved keyboard focus and accessible labels in dialogs, project navigation, Git actions, and settings, and preserved prompt drafts during settings navigation.
+- Corrected French guide text, theme categories, tool descriptions, provisional plan labels, and file counts.
+- Preserved the upstream fixes for archive keyboard actions, approval drafts, transcript loading, notification dates, group controls, and diff colors.
+
+## 0.1.8 - 2026-09-30
+
+### Added
+
+- Added automatic Goal execution in project conversations, with a separate read-only evaluator, durable review artifacts, and pause, resume, edit, and stop controls.
+- Added explicitly selected conversation sources from the same project, with bounded automatic passage selection and preserved citations.
+- Added recovery controls for queued messages and retained their context and model selection across interruptions and restarts.
+- Added visible unresolved tool outcomes and preserved partial responses and generation attempts for inspection.
+- Added bounded parallel workspace and Git reads, on-demand discovery for large MCP tool catalogs, and reviewable forms from modern stdio and HTTP MCP servers.
+- Preserved typed MCP results in conversation history and added optional language diagnostics to local desktop file edits.
+
+### Changed
+
+- Deferred loading of several frontend components and execution modules to reduce startup work.
+
+### Fixed
+
+- Preserved drafts, attachments, artifact mutations, tool results, and current workspace context during recovery and navigation.
+- Strengthened task-creation recovery, provider and model selection, scoped skill execution, and command-process cleanup.
+
 ## 0.1.7 - 2026-09-25
 
 ### Fixed

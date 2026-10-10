@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   resolveQaBrowserLogDirectory,
   resolveQaBrowserPorts,
+  resolveQaBrowserOrigin,
   validateQaBrowserRuntimeConfig,
 } from './browser-runtime-config.mjs';
 
@@ -42,4 +43,12 @@ test('allocates separate loopback UI and bridge ports without weakening origin c
     expect(() => resolveQaBrowserPorts({ MACRO_TAURI_BROWSER_BRIDGE_PORT: raw })).toThrow();
   }
   expect(() => resolveQaBrowserPorts({ MACRO_TAURI_BROWSER_UI_PORT: '1430' })).toThrow('distinct');
+});
+
+test('allows a different loopback UI port without accepting remote origins', () => {
+  expect(resolveQaBrowserOrigin({})).toBe('http://127.0.0.1:1422');
+  expect(resolveQaBrowserOrigin({ build: { devUrl: 'http://127.0.0.1:1428/' } })).toBe('http://127.0.0.1:1428');
+  for (const devUrl of ['http://example.com:1428', 'http://0.0.0.0:1428', 'https://127.0.0.1', 'http://user@127.0.0.1', 'http://127.0.0.1/path']) {
+    expect(() => resolveQaBrowserOrigin({ build: { devUrl } })).toThrow('loopback');
+  }
 });

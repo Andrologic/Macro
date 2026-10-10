@@ -33,6 +33,20 @@ describe('queued submissions local recovery', () => {
     expect(window.localStorage.getItem(QUEUED_SUBMISSIONS_STORAGE_KEY)).not.toContain('synthetic-secret');
   });
 
+  it('keeps the chosen conversation but no extracted text until the queued turn departs', () => {
+    const f = chatSendFixture('Chat');
+    f.snapshot.composerContextRefs = [{
+      id: 'source', kind: 'conversation', title: 'Prior work', conversationId: 'source',
+    }];
+    const entry = captureQueuedSubmission('queued-source', f.input, f.snapshot);
+    expect(saveQueuedSubmissions([entry])).toBe(true);
+    const [restored] = loadQueuedSubmissions();
+    expect(restored.input.contextRefs).toEqual([{
+      id: 'source', kind: 'conversation', title: 'Prior work', conversationId: 'source',
+    }]);
+    expect(restored.input.contextRefs?.[0]?.snippet).toBeUndefined();
+  });
+
   it('rejects an oversized writer without evicting accepted messages', () => {
     const f = chatSendFixture();
     const entry = captureQueuedSubmission('queued-turn', f.input, f.snapshot);

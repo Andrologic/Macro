@@ -24,6 +24,43 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_RETRY_ATTEMPTS: usize = 2;
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
+#[derive(Debug)]
+struct ChatCompletionError {
+    message: String,
+    status: Option<u16>,
+}
+
+impl From<String> for ChatCompletionError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            status: None,
+        }
+    }
+}
+
+impl ChatCompletionError {
+    fn http(status: u16, message: String, api_key: &str) -> Self {
+        let api_key = api_key.trim();
+        Self {
+            message: if api_key.is_empty() {
+                message
+            } else {
+                message.replace(api_key, "[redacted]")
+            },
+            status: Some(status),
+        }
+    }
+
+    fn into_event(self, request_id: String) -> AiStreamErrorEvent {
+        AiStreamErrorEvent {
+            request_id,
+            message: self.message,
+            status: self.status,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct ChatCompletionAccumulator {
     output_text: String,
@@ -50,7 +87,7 @@ pub async fn stream_chat(
 
     let handle = tokio::spawn(async move {
         let result = stream_chat_inner(app_for_task.clone(), pool, request).await;
-        if let Err(message) = result {
+        if let Err(error) = result {
             emit_timeline(
                 &app_for_task,
                 &task_request_id,
@@ -59,13 +96,7 @@ pub async fn stream_chat(
                 task_started_at,
                 "error",
             );
-            let _ = app_for_task.emit(
-                "ai:error",
-                AiStreamErrorEvent {
-                    request_id: task_request_id.clone(),
-                    message,
-                },
-            );
+            let _ = app_for_task.emit("ai:error", error.into_event(task_request_id.clone()));
         }
 
         let task_id = tokio::task::try_id();
@@ -92,7 +123,7 @@ async fn stream_chat_inner(
     app_handle: AppHandle,
     pool: SqlitePool,
     request: AiChatRequest,
-) -> Result<(), String> {
+) -> Result<(), ChatCompletionError> {
     let started_at = Instant::now();
     let provider = repository::get_provider_config(&pool, &request.provider_id)
         .await
@@ -148,8 +179,18 @@ async fn stream_chat_inner(
             "Provider error response body",
         )
         .await
-        .map_err(|error| format!("Provider error {}: {}", status.as_u16(), error))?;
-        return Err(extract_provider_error(status.as_u16(), &error_body));
+        .map_err(|error| {
+            ChatCompletionError::http(
+                status.as_u16(),
+                format!("Provider error {}: {}", status.as_u16(), error),
+                &api_key,
+            )
+        })?;
+        return Err(ChatCompletionError::http(
+            status.as_u16(),
+            extract_provider_error(status.as_u16(), &error_body),
+            &api_key,
+        ));
     }
 
     let mut stream = response.bytes_stream();
@@ -167,7 +208,8 @@ async fn stream_chat_inner(
                 return Err(format!(
                     "Provider stream was idle for more than {} seconds.",
                     STREAM_IDLE_TIMEOUT.as_secs()
-                ))
+                )
+                .into())
             }
         };
         let chunk = chunk.map_err(|error| format!("Failed to read provider stream: {}", error))?;
@@ -242,6 +284,7 @@ async fn stream_chat_inner(
                 reasoning_summary: optional_text(accumulator.reasoning_summary),
                 tool_traces: None,
                 hidden_context: None,
+                accepted_submission_ids: None,
                 completion_reason: accumulator.completion_reason,
             },
         )
@@ -406,7 +449,7 @@ fn serialize_provider_input_items(
                 }
                 serialized.push(serde_json::json!({
                     "role": role,
-                    "content": responses_message_content_to_text(item.get("content")),
+                    "content": responses_message_content_to_chat(item.get("content"))?,
                 }));
             }
             "function_call" => append_responses_function_call(&mut serialized, item)?,
@@ -523,28 +566,56 @@ fn append_responses_function_call(messages: &mut Vec<Value>, item: &Value) -> Re
     Ok(())
 }
 
-fn responses_message_content_to_text(content: Option<&Value>) -> String {
+fn responses_message_content_to_chat(content: Option<&Value>) -> Result<Value, String> {
     let Some(content) = content else {
-        return String::new();
+        return Ok(Value::String(String::new()));
     };
-    if let Some(text) = content.as_str() {
-        return text.to_string();
+    if content.is_string() {
+        return Ok(content.clone());
     }
-    content
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| {
-            let kind = part.get("type").and_then(Value::as_str)?;
-            if kind != "output_text" && kind != "input_text" && kind != "text" {
-                return None;
+    let mut parts = Vec::new();
+    let mut has_images = false;
+    for part in content.as_array().into_iter().flatten() {
+        match part.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "input_text" | "output_text" | "text" => {
+                if let Some(text) = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("value").and_then(Value::as_str))
+                {
+                    parts.push(serde_json::json!({ "type": "text", "text": text }));
+                }
             }
-            part.get("text")
-                .and_then(Value::as_str)
-                .or_else(|| part.get("value").and_then(Value::as_str))
-        })
-        .collect::<Vec<_>>()
-        .join("")
+            "input_image" => {
+                let url = part
+                    .get("image_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Persisted input_image is missing image_url.".to_string())?;
+                let mut image_url = serde_json::json!({ "url": url });
+                if let Some(detail) = part.get("detail") {
+                    image_url["detail"] = detail.clone();
+                }
+                parts.push(serde_json::json!({ "type": "image_url", "image_url": image_url }));
+                has_images = true;
+            }
+            "image_url" => {
+                parts.push(part.clone());
+                has_images = true;
+            }
+            _ => {}
+        }
+    }
+    if has_images {
+        Ok(Value::Array(parts))
+    } else {
+        Ok(Value::String(
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(""),
+        ))
+    }
 }
 
 fn serialize_message_content(content: &AiChatMessageContent) -> Result<Value, String> {
@@ -807,8 +878,7 @@ fn ensure_terminal_completion_reason(
     if completion_reason.is_none() {
         let has_complete_tool_batch = !tool_calls.is_empty()
             && tool_calls.iter().all(|tool_call| {
-                !tool_call.id.trim().is_empty()
-                    && !tool_call.function.name.trim().is_empty()
+                !tool_call.function.name.trim().is_empty()
                     && serde_json::from_str::<Value>(&tool_call.function.arguments).is_ok()
             });
         *completion_reason = Some(
@@ -1003,13 +1073,12 @@ fn merge_tool_call_deltas(tool_calls: &mut Vec<AiToolCall>, deltas: &[Value]) {
 fn normalize_tool_calls(tool_calls: Vec<AiToolCall>) -> Vec<AiToolCall> {
     tool_calls
         .into_iter()
-        .enumerate()
-        .filter_map(|(index, mut tool_call)| {
+        .filter_map(|mut tool_call| {
             if tool_call.function.name.trim().is_empty() {
                 return None;
             }
             if tool_call.id.trim().is_empty() {
-                tool_call.id = format!("call_{}", index + 1);
+                tool_call.id = format!("call_{}", uuid::Uuid::new_v4().simple());
             }
             if tool_call.kind.trim().is_empty() {
                 tool_call.kind = "function".to_string();
@@ -1132,6 +1201,86 @@ mod tests {
     }
 
     #[test]
+    fn chat_completions_preserve_user_input_text_across_turns() {
+        let mut first = message("user", "Premier été.");
+        first.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": "Premier été." }]
+        })]);
+        let mut second = message("user", "Suivant déjà.");
+        second.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": "Suivant déjà." }]
+        })]);
+        let mut request = request(None);
+        request.messages = vec![first.clone()];
+        let first_body = build_chat_completions_request(&request, &provider("openai")).unwrap();
+        assert_eq!(first_body["messages"][0]["content"], "Premier été.");
+        request.messages = vec![first, message("assistant", "Réponse conservée."), second];
+        let second_body = build_chat_completions_request(&request, &provider("openai")).unwrap();
+        assert_eq!(
+            second_body["messages"],
+            serde_json::json!([
+                { "role": "user", "content": "Premier été." },
+                { "role": "assistant", "content": "Réponse conservée." },
+                { "role": "user", "content": "Suivant déjà." }
+            ])
+        );
+    }
+
+    #[test]
+    fn chat_completions_preserve_mixed_text_images_and_replay_contracts() {
+        let mut user = message("user", "Inspecte cette image.");
+        user.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [
+                { "type": "input_text", "text": "Avant été." },
+                { "type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=", "detail": "high" },
+                { "type": "text", "text": "Après déjà." },
+                { "type": "image_url", "image_url": { "url": "https://example.com/image.png", "detail": "low" } }
+            ]
+        })]);
+        let mut assistant = message("assistant", "Analyse.");
+        let replay = serde_json::json!({
+            "type": "chat_completion_message", "role": "assistant", "content": "Analyse.",
+            "reasoning_content": "Reasoning", "reasoning_details": [{ "type": "reasoning.text", "text": "Details" }],
+            "tool_calls": [{ "id": "call-1", "type": "function", "function": { "name": "read", "arguments": "{}" } }]
+        });
+        assistant.provider_input_items = Some(vec![
+            replay.clone(),
+            serde_json::json!({
+                "type": "function_call_output", "call_id": "call-1", "output": "Result"
+            }),
+        ]);
+        let mut request = request(None);
+        request.messages = vec![user, assistant];
+        let body = build_chat_completions_request(&request, &provider("openrouter")).unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            serde_json::json!([
+                { "type": "text", "text": "Avant été." },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,aW1hZ2U=", "detail": "high" } },
+                { "type": "text", "text": "Après déjà." },
+                { "type": "image_url", "image_url": { "url": "https://example.com/image.png", "detail": "low" } }
+            ])
+        );
+        for key in [
+            "content",
+            "reasoning_content",
+            "reasoning_details",
+            "tool_calls",
+        ] {
+            assert_eq!(body["messages"][1][key], replay[key]);
+        }
+        assert_eq!(
+            body["messages"][2],
+            serde_json::json!({
+                "role": "tool", "tool_call_id": "call-1", "content": "Result"
+            })
+        );
+    }
+
+    #[test]
     fn native_messages_merge_all_system_instructions_at_the_front() {
         let mut request = request(None);
         request.messages = vec![
@@ -1200,6 +1349,39 @@ mod tests {
         assert_eq!(messages[1]["tool_call_id"], "call_read_1");
         assert_eq!(messages[1]["content"], "314159");
         assert_eq!(messages[2]["role"], "user");
+    }
+
+    #[test]
+    fn http_error_events_keep_status_and_redact_the_known_api_key() {
+        for status in [400, 401, 403, 408, 429, 502, 503, 504] {
+            let message = extract_provider_error(
+                status,
+                r#"{"error":{"message":"Unavailable for Bearer synthetic-provider-key"}}"#,
+            );
+            let event = ChatCompletionError::http(status, message, "synthetic-provider-key")
+                .into_event("req-1".to_string());
+            let payload = serde_json::to_value(event).unwrap();
+            assert_eq!(payload["request_id"], "req-1");
+            assert_eq!(payload["status"], status);
+            assert!(payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("Unavailable for Bearer [redacted]"));
+            assert!(!payload.to_string().contains("synthetic-provider-key"));
+        }
+        let body_timeout = ChatCompletionError::http(
+            503,
+            "Provider error response body timed out".to_string(),
+            "",
+        )
+        .into_event("req-1".to_string());
+        assert_eq!(serde_json::to_value(body_timeout).unwrap()["status"], 503);
+        let legacy: ChatCompletionError = "Legacy failure".to_string().into();
+        let payload = serde_json::to_value(legacy.into_event("req-1".to_string())).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({ "request_id": "req-1", "message": "Legacy failure" })
+        );
     }
 
     #[test]
@@ -1471,5 +1653,40 @@ mod tests {
             normalized[0].function.arguments,
             "{\"path\":\"src/lib.rs\"}"
         );
+    }
+
+    #[test]
+    fn missing_provider_call_ids_are_unique_and_survive_tool_history() {
+        let call = |id: &str| AiToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: AiToolCallFunction {
+                name: "read".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let calls = normalize_tool_calls(vec![call(""), call("provider-id"), call("")]);
+        let next_batch = normalize_tool_calls(vec![call("")]);
+        assert!(calls[0].id.starts_with("call_"));
+        assert_eq!(calls[1].id, "provider-id");
+        assert_ne!(calls[0].id, calls[2].id);
+        assert_ne!(calls[0].id, next_batch[0].id);
+        assert_ne!(calls[2].id, next_batch[0].id);
+
+        let mut assistant = message("assistant", "");
+        assistant.tool_calls = calls;
+        let mut result = message("tool", "read result");
+        result.tool_call_id = Some(assistant.tool_calls[0].id.clone());
+        let mut history = request(None);
+        history.messages = vec![assistant, result];
+        let serialized = serialize_messages(&history).expect("tool history");
+        assert_eq!(
+            serialized[0]["tool_calls"][0]["id"],
+            serialized[1]["tool_call_id"]
+        );
+
+        let mut reason = None;
+        ensure_terminal_completion_reason(&mut reason, &[call("")]);
+        assert_eq!(reason.as_deref(), Some("completed"));
     }
 }

@@ -18,6 +18,7 @@ let lastHttp: { url: string; init: RequestInit } | null = null;
 let messageSequence = 0;
 const messages: Record<string, unknown>[] = [];
 const settings = new Map<string, string>();
+const recordedToolCalls = new Set<string>();
 const config = () => ({
   effective: { agents: {}, tools: { riskLevel: 'balanced', builtIn: Object.fromEntries(allowedTools.map((id) => [id, true])), modes: {}, mcpServers: {} }, providers: {} },
   projectEffective: { 'project-target': { agents: { models: scopedModels }, tools: { riskLevel: 'balanced', builtIn: Object.fromEntries(allowedTools.map((id) => [id, true])), modes: {}, mcpServers: {} } } },
@@ -25,6 +26,15 @@ const config = () => ({
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   commands.push(command);
   switch (command) {
+    case 'db_record_tool_invocation': {
+      const input = args!.input as Record<string, unknown>;
+      const key = JSON.stringify([input.conversationId, input.turnId, input.messageId, input.callId]);
+      const is_new = !recordedToolCalls.has(key);
+      recordedToolCalls.add(key);
+      return { is_new, invocation: { status: 'pending' } };
+    }
+    case 'db_complete_tool_invocation': return { status: 'completed' };
+    case 'db_mark_tool_invocation_unknown': return { status: 'unknown' };
     case 'mcp_runtime_get_snapshot': return { generatedAt: '2026-01-01T00:00:00Z', servers: [] };
     case 'fs_list_dir': return [];
     case 'fs_read_file': return { content: '', language: 'text', is_binary: false, size: 0, encoding: 'utf8' };
@@ -173,7 +183,7 @@ beforeEach(() => {
   invoke.mockClear(); httpFetch.mockClear();
   unexpectedCommands.length = 0; toolResults.length = 0; allowedTools = [];
   persistedTask = { ...task }; scopedModels = {}; lastHttp = null; httpController = null; httpBodyCancelled = false;
-  settings.clear();
+  settings.clear(); recordedToolCalls.clear();
   commands.length = 0; requests.length = 0; messages.length = 0; listeners.clear();
   messages.push({ id: 'prior-user', conversation_id: conversation.id, role: 'user', content: 'Prior context', created_at: '2026-01-01T00:00:00Z' });
   useAppStore.setState({ ...initialApp, mode: 'Chat', selectedGroupId: 'group-target', selectedProjectId: 'project-other', selectedTaskId: 'task-other',
@@ -303,7 +313,7 @@ describe('Pilot provider chain', () => {
       args: { questions: [{ id: 'scope', prompt: 'Which scope?', choices: ['Small', 'Medium', 'Large'] }] } });
     await eventually(() => toolResults.length === 1);
     expect(toolResults[0]).toMatchObject({ tool_call_id: 'question-call', interrupt: true, is_error: false });
-    emit('ai:done', { request_id: requests[0]!.request_id, output_text: toolResults[0]!.visible_content, hidden_context: toolResults[0]!.hidden_context, tool_calls: [], completion_reason: 'completed' });
+    emit('ai:done', { request_id: requests[0]!.request_id, accepted_submission_ids: [toolResults[0]!.submission_id], output_text: toolResults[0]!.visible_content, hidden_context: toolResults[0]!.hidden_context, tool_calls: [], completion_reason: 'completed' });
     await eventually(() => !useChatStore.getState().conversationRuntimeById[conversation.id]);
     const questionnaire = useChatStore.getState().getActiveQuestionnaire(conversation.id);
     expect(questionnaire?.taskId).toBe(task.id);

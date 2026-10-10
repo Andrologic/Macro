@@ -70,6 +70,7 @@ pub async fn stream_chat(
                 AiStreamErrorEvent {
                     request_id: task_request_id.clone(),
                     message,
+                    status: None,
                 },
             );
         }
@@ -238,6 +239,7 @@ async fn stream_chat_inner(
                     reasoning_summary: optional_text(completion_accumulator.reasoning_summary),
                     tool_traces: None,
                     hidden_context: None,
+                    accepted_submission_ids: None,
                     completion_reason: Some("incomplete".to_string()),
                 },
             )
@@ -544,6 +546,7 @@ fn process_sse_event(
                         reasoning_summary,
                         tool_traces: None,
                         hidden_context: None,
+                        accepted_submission_ids: None,
                         completion_reason: Some("completed".to_string()),
                     },
                 )
@@ -597,6 +600,7 @@ fn process_sse_event(
                         reasoning_summary,
                         tool_traces: None,
                         hidden_context: None,
+                        accepted_submission_ids: None,
                         completion_reason: Some(extract_incomplete_reason(&value).to_string()),
                     },
                 )

@@ -5,14 +5,18 @@ import { toServiceError } from '../../services/contracts/errors';
 import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, type QueuedSubmission } from './chatQueuedSubmissions';
 
 export type QueuedSubmissionRecoveries = Record<string, { count: number; error?: string }>;
+export type QueuedSubmissionPreview = { id: string; conversationId: string; content: string; state: 'waiting' | 'sending' | 'paused' };
 interface QueuePorts {
   blocked(id: string): boolean;
   cancelled(id: string): boolean;
   read(id: string): Promise<ChatMessage[]>;
-  send(entry: QueuedSubmission): Promise<ChatSendResult>;
+  send(entry: QueuedSubmission, saved?: ChatMessage): Promise<ChatSendResult>;
   publish(message: ChatMessage): void;
   saveImages(messageId: string, images: SendImage[]): boolean;
   recovery(value: QueuedSubmissionRecoveries): void;
+  previews(value: QueuedSubmissionPreview[]): void;
+  pending(value: Array<{ id: string; conversationId: string }>): void;
+  attempted(value: Array<{ id: string; conversationId: string }>): void;
 }
 
 /** Owns deferred submissions only; the chat runtime still owns active turns. */
@@ -20,8 +24,43 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
   let entries = loadQueuedSubmissions();
   const paused = new Set(entries.map(entry => entry.input.conversationId));
   const draining = new Set<string>();
+  const attempted = new Map<string, string>();
+  const claimed = new Set<string>();
   let recoveries: QueuedSubmissionRecoveries = {};
-  const publishRecovery = () => ports.recovery(recoveries);
+  const publishRecovery = () => {
+    ports.recovery(recoveries);
+    ports.pending(entries.map(entry => ({ id: entry.id, conversationId: entry.input.conversationId })));
+    ports.attempted(Array.from(attempted, ([id, conversationId]) => ({ id, conversationId })));
+    ports.previews(entries.map(entry => ({
+      id: entry.id, conversationId: entry.input.conversationId, content: entry.input.content,
+      state: claimed.has(entry.id) ? 'sending' : paused.has(entry.input.conversationId) ? 'paused' : 'waiting',
+    })));
+  };
+  publishRecovery();
+  const mutating = new Set<string>();
+  const pendingEntry = async (id: string, allowSaved = false): Promise<QueuedSubmission> => {
+    const entry = entries.find(candidate => candidate.id === id);
+    if (!entry || claimed.has(id) || mutating.has(id) ||
+      (!allowSaved && (!paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)))) {
+      throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
+    }
+    mutating.add(id);
+    try {
+      const persisted = await ports.read(entry.input.conversationId);
+      if (!allowSaved && persisted.some(message => message.role === 'user' && message.turn_id === id)) {
+        throw new Error(i18n.t('chat.queueAlreadySent', 'This message was already saved. Retry recovery instead.'));
+      }
+      if (!entries.includes(entry) || claimed.has(id) ||
+        (!allowSaved && (!paused.has(entry.input.conversationId) || draining.has(entry.input.conversationId)))) {
+        throw new Error(i18n.t('chat.queueNoLongerEditable', 'This queued message is no longer available to edit.'));
+      }
+      return entry;
+    } catch (error) {
+      mutating.delete(id);
+      queueMicrotask(() => void drain(entry.input.conversationId));
+      throw error;
+    }
+  };
   const refreshRecovery = () => {
     recoveries = Object.fromEntries(Object.entries(recoveries).flatMap(([id, recovery]) => {
       const count = entries.filter(entry => entry.input.conversationId === id).length;
@@ -48,43 +87,101 @@ export function createQueuedSubmissionRuntime(ports: QueuePorts) {
     if (entry.input.images?.length && !ports.saveImages(message.id, entry.input.images)) {
       throw new Error(i18n.t('chat.queueImagesSaveFailed', 'The message is saved, but its images still need saving. Retry the queued submission.'));
     }
-    persist(entries.filter(candidate => candidate.id !== entry.id));
+  };
+  const complete = (entry: QueuedSubmission) => persist(entries.filter(candidate => candidate.id !== entry.id));
+  const assertCanDispatch = (entry: QueuedSubmission) => {
+    const id = entry.input.conversationId;
+    if (!claimed.has(entry.id) || paused.has(id) || ports.cancelled(id) ||
+      !entries.some(candidate => candidate.id === entry.id)) {
+      throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
+    }
+  };
+  const beforeAssistantStart = (entry: QueuedSubmission) => {
+    assertCanDispatch(entry);
+    persist(entries.map(candidate => candidate.id === entry.id ? { ...candidate, assistantStartAttempted: true } : candidate));
   };
   const drain = async (id: string): Promise<void> => {
     if (draining.has(id) || paused.has(id) || ports.blocked(id)) return;
     const next = entries.find(entry => entry.input.conversationId === id);
-    if (!next || ports.cancelled(id)) return;
+    if (!next || mutating.has(next.id) || ports.cancelled(id)) return;
     draining.add(id);
+    claimed.add(next.id);
+    publishRecovery();
     let continueQueue = false;
     try {
       const persisted = await ports.read(id);
-      if (ports.cancelled(id) || !entries.some(entry => entry.id === next.id)) return;
+      if (ports.cancelled(id) || paused.has(id) || !entries.some(entry => entry.id === next.id)) return;
       const saved = persisted.find(message => message.role === 'user' && message.turn_id === next.id);
       if (saved) {
         ports.publish(saved);
         acknowledge(next, saved);
+      }
+      const assistant = persisted.find(message => message.role === 'assistant' && message.turn_id === next.id);
+      if (assistant?.completion_reason === 'completed') {
+        complete(next);
+      } else if (next.assistantStartAttempted || assistant) {
+        throw new Error(i18n.t('chat.queueAssistantInterrupted',
+          'This saved instruction may have started executing. Review the response and tool effects, then remove this recovery entry before continuing manually.'));
       } else {
-        const result = await ports.send(next);
-        if (result.status === 'cancelled') throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
+        attempted.set(next.id, id);
+        publishRecovery();
+        const result = await ports.send(next, saved);
+        if (result.status === 'cancelled' || !result.assistantMessageId) throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
       }
       continueQueue = true;
     } catch (error) {
       pause(id, toServiceError(error).message);
     } finally {
+      attempted.delete(next.id);
+      claimed.delete(next.id);
       draining.delete(id);
+      publishRecovery();
       if (continueQueue) queueMicrotask(() => void drain(id));
     }
   };
   return {
     capture: captureQueuedSubmission,
-    accept(entry: QueuedSubmission) {
+    accept(entry: QueuedSubmission, pausedOnAccept = false) {
       persist([...entries, entry]);
+      if (pausedOnAccept) pause(entry.input.conversationId);
       queueMicrotask(() => void drain(entry.input.conversationId));
     },
+    assertCanDispatch,
     acknowledge,
+    beforeAssistantStart,
+    complete,
     pause,
     drain,
-    async retry(id: string) { paused.delete(id); await drain(id); },
+    async retry(id: string) {
+      if (entries.some(entry => entry.input.conversationId === id && mutating.has(entry.id))) {
+        throw new Error(i18n.t('chat.queueEditInProgress', 'Wait for the queued message change to finish.'));
+      }
+      // A retry cannot revive a dispatch whose asynchronous preparation was stopped.
+      if (draining.has(id) || ports.blocked(id) || ports.cancelled(id)) return;
+      paused.delete(id);
+      publishRecovery();
+      await drain(id);
+    },
+    async edit(id: string, content: string) {
+      await pendingEntry(id);
+      try {
+        if (!content.trim()) throw new Error(i18n.t('chat.queueEmptyMessage', 'The queued message cannot be empty.'));
+        persist(entries.map(candidate => candidate.id === id ? { ...candidate, input: { ...candidate.input, content } } : candidate));
+      } finally { mutating.delete(id); }
+    },
+    async removeEntry(id: string) {
+      const entry = await pendingEntry(id, true);
+      try {
+        persist(entries.filter(candidate => candidate.id !== id));
+        if (!entries.some(candidate => candidate.input.conversationId === entry.input.conversationId)) {
+          paused.delete(entry.input.conversationId);
+        }
+      }
+      finally {
+        mutating.delete(id);
+        queueMicrotask(() => void drain(entry.input.conversationId));
+      }
+    },
     remove(ids: readonly string[]) {
       const remaining = entries.filter(entry => !ids.includes(entry.input.conversationId));
       if (remaining.length !== entries.length) saveQueuedSubmissions(remaining);

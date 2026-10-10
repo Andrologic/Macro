@@ -30,6 +30,25 @@ export const isToolTrace = (value: unknown): value is ToolTrace =>
   typeof (value as ToolTrace).tool_name === "string" &&
   isToolTraceStatus((value as ToolTrace).status);
 
+export const classifyToolTraceRecovery = (
+  trace: ToolTrace,
+  evidence: { live?: boolean; approvalRecovered?: boolean } = {},
+): NonNullable<ToolTrace['recovery_state']> => {
+  if (trace.recovery_state === 'unknown') return 'unknown';
+  if (trace.status === 'done' || trace.status === 'denied') return 'completed';
+  if (evidence.live) return 'live';
+  if (trace.status === 'pending_approval' && evidence.approvalRecovered) return 'replayable';
+  return 'unknown';
+};
+
+export const settleToolTraceRecovery = (traces: ToolTrace[]): ToolTrace[] =>
+  traces.map((trace) => ({
+    ...trace,
+    recovery_state: trace.recovery_state === 'replayable' && trace.status === 'pending_approval'
+      ? 'replayable'
+      : classifyToolTraceRecovery(trace),
+  }));
+
 export const parseToolTracesJson = (
   raw: string | null,
 ): ToolTrace[] | undefined => {
@@ -39,7 +58,9 @@ export const parseToolTracesJson = (
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return undefined;
     const traces = parsed.filter(isToolTrace);
-    return traces.length > 0 ? traces : undefined;
+    return traces.length > 0
+      ? traces.map((trace) => ({ ...trace, recovery_state: classifyToolTraceRecovery(trace) }))
+      : undefined;
   } catch {
     return undefined;
   }
@@ -58,6 +79,9 @@ export const mergeToolTracesPreservingDeniedStatus = (
     if (!existingTrace) return trace;
 
     const status = mergeToolTraceStatus(existingTrace.status, trace.status);
+    if (existingTrace.status === 'done' && existingTrace.recovery_state === 'unknown') {
+      return { ...trace, status, recovery_state: 'unknown', completed_at_ms: existingTrace.completed_at_ms ?? trace.completed_at_ms };
+    }
     if (isProtectedToolTraceStatus(existingTrace.status) || status !== trace.status) {
       return {
         ...trace,

@@ -7,7 +7,8 @@ import {
 } from "./chatErrorPresentation";
 import type { ChatStreamTokenControls } from "./chatStreamOrchestrator";
 import type { StreamCompletionResult } from "./streamingChat";
-import { mergeToolTracesPreservingDeniedStatus } from "./toolTraceState";
+import { mergeGenerationAttempts } from "./ai/generationAttemptState";
+import { mergeToolTracesPreservingDeniedStatus, settleToolTraceRecovery } from "./toolTraceState";
 
 export interface ChatStreamLifecycleProviderContext {
   providerId: string;
@@ -104,7 +105,8 @@ const hasAssistantProgress = (message: ChatMessage | undefined): boolean =>
   Boolean(
     message &&
       (message.content.trim().length > 0 ||
-        (message.tool_traces?.length ?? 0) > 0),
+        (message.tool_traces?.length ?? 0) > 0 ||
+        (message.generation_attempts?.length ?? 0) > 0),
   );
 
 const resolveErrorAssistantMessageId = (params: {
@@ -138,13 +140,16 @@ export const applyAssistantStreamCompletion = (params: {
   const existingToolTraces =
     params.adapters.getAssistantMessage(params.assistantMessageId)?.tool_traces ??
     [];
-  const mergedToolTraces = mergeToolTracesPreservingDeniedStatus(
-    params.result.toolTraces,
-    existingToolTraces,
+  const mergedToolTraces = settleToolTraceRecovery(
+    mergeToolTracesPreservingDeniedStatus(
+      params.result.toolTraces,
+      existingToolTraces,
+    ),
   );
 
   params.adapters.updateMessageFields(params.assistantMessageId, {
     tool_traces: mergedToolTraces,
+    generation_attempts: params.result.generationAttempts,
     hidden_context: params.result.hiddenContext,
     provider_input_items: params.result.providerInputItems,
     provider_turn_state: params.result.providerTurnState,
@@ -163,6 +168,15 @@ export const createChatStreamLifecycleRuntime = (params: {
   adapters: ChatStreamLifecycleRuntimeAdapters;
 }) => {
   const { stream, adapters } = params;
+
+  const settleInterruptedToolTraces = () => {
+    const traces = adapters.getAssistantMessage(stream.assistantMessageId)?.tool_traces;
+    if (traces?.length) {
+      adapters.updateMessageFields(stream.assistantMessageId, {
+        tool_traces: settleToolTraceRecovery(traces),
+      });
+    }
+  };
 
   const handleCompletionPersistenceFailure = (error: unknown): void => {
     const normalized = toServiceError(error);
@@ -284,6 +298,7 @@ export const createChatStreamLifecycleRuntime = (params: {
 
   const persistAbortedTurn = async (tokenControls: ChatStreamTokenControls) => {
       tokenControls.flushNow();
+      settleInterruptedToolTraces();
       const assistantMessage = adapters.getAssistantMessage(
         stream.assistantMessageId,
       );
@@ -338,9 +353,16 @@ export const createChatStreamLifecycleRuntime = (params: {
       }
 
       tokenControls.flushNow();
+      const completedResult = {
+        ...result,
+        generationAttempts: mergeGenerationAttempts(
+          adapters.getAssistantMessage(stream.assistantMessageId)?.generation_attempts,
+          result.generationAttempts,
+        ),
+      };
       applyAssistantStreamCompletion({
         assistantMessageId: stream.assistantMessageId,
-        result,
+        result: completedResult,
         adapters,
       });
       adapters.markProviderReachable(
@@ -358,7 +380,7 @@ export const createChatStreamLifecycleRuntime = (params: {
           result.visibleContent,
         );
         adapters.clearLiveStreamContextEstimate(stream.conversationId);
-        const persisted = await persistAssistantStreamResultAndConsolidate(result);
+        const persisted = await persistAssistantStreamResultAndConsolidate(completedResult);
         if (!persisted) {
           tokenControls.dispose();
           return;
@@ -393,7 +415,7 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext,
       );
 
-      const persisted = await persistAssistantStreamResultAndConsolidate(result);
+      const persisted = await persistAssistantStreamResultAndConsolidate(completedResult);
       if (persisted && (adapters.isTurnCurrent?.() ?? true)) {
         void adapters.syncMacroMetadataAfterStream(
           stream.modeAtSend,
@@ -424,6 +446,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       if (adapters.isAbortSignalAborted() || !adapters.shouldAcceptStreamUpdate()) return;
       tokenControls.flushNow();
       tokenControls.dispose();
+      settleInterruptedToolTraces();
       adapters.clearLiveStreamContextEstimate(stream.conversationId);
       await adapters.maybeMarkImplementTaskFailedAfterStreamError();
 

@@ -1,3 +1,4 @@
+import { getToolSecuritySummaryPresentation } from '../../services/toolSecurityPolicy';
 import { isMCPToolId } from '../../services/mcpToolNames';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -60,7 +61,18 @@ const readStringArrayArg = (
     : [];
 };
 
-export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
+export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = (props) => (
+  <ToolApprovalRequestFooter
+    key={JSON.stringify([
+      props.pendingApproval.conversationId,
+      props.pendingApproval.assistantMessageId,
+      props.pendingApproval.toolCallId,
+    ])}
+    {...props}
+  />
+);
+
+const ToolApprovalRequestFooter: React.FC<ToolApprovalFooterProps> = ({
   pendingApproval,
   onAllowOnce,
   onAllowForConversation,
@@ -149,7 +161,7 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
                   {t('chat.toolApprovalLabel', 'Tool approval')}
                 </span>
                 <p className="pr-1 text-sm font-medium leading-5 text-foreground text-balance">
-                  {interrupted ? t('chat.toolApprovalInterrupted', 'This tool request was interrupted.') : pendingApproval.summary}
+                  {interrupted ? t('chat.toolApprovalInterrupted', 'This tool request was interrupted.') : getToolSecuritySummaryPresentation(pendingApproval, t)}
                 </p>
               </div>
               <span

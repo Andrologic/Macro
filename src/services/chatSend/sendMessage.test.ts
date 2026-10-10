@@ -36,6 +36,60 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
   });
 
+  it('retains a saved message when preparation fails and resumes it without another user write', async () => {
+    const f = fixture();
+    const prepare = f.ports.stream.prepare;
+    f.ports.stream.prepare = async () => { throw new Error('preparation failure'); };
+    await expect(f.run()).rejects.toMatchObject({ message: 'preparation failure' });
+    const saved = f.published.find(message => message.role === 'user')!;
+    f.ports.stream.prepare = prepare;
+    f.runtimes.clear();
+    const result = await sendMessage({ ...f.input, submissionTurnId: saved.turn_id!, persistedUserMessage: saved }, f.snapshot, f.ports);
+    expect(result.assistantMessageId).not.toBeNull();
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the durable message identity for images when resuming after preparation failure', async () => {
+    const f = fixture();
+    const image = { id: 'qa-image', createdAt: '2026-10-04T00:00:00Z', dataUrl: 'data:image/png;base64,cWE=', mimeType: 'image/png' };
+    const savedImageIds: string[] = [];
+    f.ports.messages.saveImages = id => { savedImageIds.push(id); };
+    const original = f.createMessage.getMockImplementation()!;
+    f.createMessage.mockImplementation(async (...args) => {
+      const message = await original(...args);
+      return { ...message, id: args[3]?.id ?? message.id };
+    });
+    const prepare = f.ports.stream.prepare;
+    f.ports.stream.prepare = async () => { throw new Error('preparation failure'); };
+    await expect(sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'preparation failure' });
+    const saved = f.published.find(message => message.role === 'user')!;
+    f.ports.stream.prepare = prepare;
+    f.runtimes.clear();
+    await sendMessage({ ...f.input, images: [image], submissionTurnId: saved.turn_id!, persistedUserMessage: saved }, f.snapshot, f.ports);
+    expect(savedImageIds).toEqual([saved.id, saved.id]);
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+    expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains recovery when a handoff observer stops the turn before the assistant starts', async () => {
+    const f = fixture();
+    let acknowledged = false;
+    f.ports.messages.beforeAssistantStart = () => f.stop();
+    f.ports.messages.onAssistantStarted = () => { acknowledged = true; };
+    expect((await f.run()).assistantMessageId).toBeNull();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+    expect(acknowledged).toBe(false);
+  });
+
+  it('does not start an assistant when the durable handoff marker cannot be saved', async () => {
+    const f = fixture();
+    f.ports.messages.beforeAssistantStart = () => { throw new Error('handoff storage unavailable'); };
+    await expect(f.run()).rejects.toMatchObject({ message: 'handoff storage unavailable' });
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+  });
+
   it('persists the captured turn and starts with its scoped configuration and context', async () => {
     const f = fixture();
     const scoped = { providerId: 'scoped', modelId: 'scoped-model', reasoningEffort: null } as const;
@@ -65,6 +119,26 @@ describe('sendMessage use case without UI stores', () => {
       expect(f.ports.stream.start).not.toHaveBeenCalled();
     });
   }
+
+  it('returns cancelled before persistence when configuration outlives its send lease', async () => {
+    const f = fixture('Implement');
+    const started = deferred();
+    const configuration = deferred<null>();
+    const timeline: string[] = [];
+    f.ports.projection.timeline = phase => { timeline.push(phase); };
+    f.ports.configuration.load = async () => { started.resolve(); return configuration.promise; };
+    const sending = f.run();
+    await started.promise;
+    const original = f.runtimes.get('conversation-1')!;
+    f.runtimes.set('conversation-1', { ...original, sessionId: 'successor' });
+    configuration.resolve(null);
+    expect((await sending).status).toBe('cancelled');
+    expect(timeline).toEqual(['send_requested', 'messages_ready']);
+    expect(f.ports.tasks.assertReady).not.toHaveBeenCalled();
+    expect(f.ports.projection.launchError).not.toHaveBeenCalled();
+    expect(f.createMessage).not.toHaveBeenCalled();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+  });
 
   it('returns sent and publishes the saved user message when stopped during persistence', async () => {
     const f = fixture(); const original = f.createMessage.getMockImplementation()!;
@@ -195,6 +269,20 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.createMessage).toHaveBeenCalledWith('conversation-1', 'user', expect.any(String), expect.objectContaining({ hiddenContext: 'hidden', providerInputItems: [{ item: 1 }], turnId: 'turn-1' }));
   });
 
+  it('persists resolved conversation passages from the captured composer snapshot', async () => {
+    const f = fixture();
+    f.snapshot.composerContextRefs = [{
+      id: 'source-conv', conversationId: 'source-conv', kind: 'conversation',
+      title: 'Earlier discussion', snippet: '[message_id=source-msg] Review every release.',
+      sourceUpdatedAt: '2026-09-28T12:00:00Z',
+    }];
+    await sendMessage(f.input, f.snapshot, f.ports);
+    expect(f.createMessage.mock.calls[0]?.[3]?.contextRefs).toEqual(f.snapshot.composerContextRefs);
+    expect(f.ports.projection.publishUser).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      contextRefs: f.snapshot.composerContextRefs, clearComposerRevision: 3,
+    }));
+  });
+
   it('normalizes persistence failures without launching an assistant', async () => {
     const f = fixture(); f.createMessage.mockRejectedValue(new Error('Disk full'));
     await expect(f.run()).rejects.toMatchObject({ message: 'Failed to save the message before sending: Disk full' });
@@ -317,4 +405,63 @@ it('a stale assistant write failure must not revert the successor task', async (
   await oldSend;
   expect(f.ports.tasks.rollbackDraft).not.toHaveBeenCalled();
   expect(f.task.draft).toBe(false);
+});
+
+const image = { id: 'image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-02T00:00:00Z' };
+for (const mode of ['Chat', 'Implement'] as const) {
+  it(`${mode} image failure occurs before durable text, acknowledgement and launch`, async () => {
+    const f = fixture(mode);
+    f.ports.messages.saveImages = () => { throw new Error('quota'); };
+    await expect(sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'quota' });
+    expect(f.createMessage).not.toHaveBeenCalled();
+    expect(f.ports.projection.publishUser).not.toHaveBeenCalled();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+    expect(f.ports.tasks.finalizeDraft).not.toHaveBeenCalled();
+  });
+}
+it('checks image persistence before text and does not write images again after text is durable', async () => {
+  const f = fixture();
+  let imageId = '';
+  const original = f.createMessage.getMockImplementation()!;
+  f.ports.messages.saveImages = id => {
+    expect(f.createMessage).not.toHaveBeenCalled();
+    imageId = id;
+  };
+  f.createMessage.mockImplementation(async (...args) => {
+    if (args[1] === 'user') expect(args[3]?.id).toBe(imageId);
+    const saved = await original(...args);
+    // Storage becomes unavailable after the text commit. There must be no
+    // fallible image write in publication or before starting the provider.
+    f.ports.messages.saveImages = () => { throw new Error('late quota'); };
+    return saved;
+  });
+  expect((await sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).status).toBe('sent');
+  expect(imageId).not.toBe('');
+  expect(f.ports.stream.start).toHaveBeenCalledTimes(1);
+});
+it('stop during image saving keeps the draft unaccepted and starts no text write', async () => {
+  const f = fixture();
+  f.ports.messages.saveImages = () => f.stop();
+  expect((await sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports)).status).toBe('cancelled');
+  expect(f.createMessage).not.toHaveBeenCalled();
+  expect(f.ports.projection.publishUser).not.toHaveBeenCalled();
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
+});
+
+it('stop after saving image and text acknowledges that message without a second write or provider start', async () => {
+  const f = fixture();
+  const original = f.createMessage.getMockImplementation()!;
+  let imageId = '';
+  f.ports.messages.saveImages = id => { imageId = id; };
+  f.createMessage.mockImplementation(async (...args) => {
+    const message = await original(...args);
+    f.stop();
+    return message;
+  });
+  const result = await sendMessage({ ...f.input, images: [image] }, f.snapshot, f.ports);
+  expect(imageId).not.toBe('');
+  expect(result).toMatchObject({ status: 'sent', assistantMessageId: null });
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+  expect(f.ports.projection.publishUser).toHaveBeenCalledTimes(1);
+  expect(f.ports.stream.start).not.toHaveBeenCalled();
 });

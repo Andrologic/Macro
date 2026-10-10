@@ -1,3 +1,4 @@
+import { getActiveProjectRegistry } from '../../services/globalProjects';
 import type { Project, ProjectGroup } from '../../types';
 import {
   getArchitectPlanVisibleProjectIds,
@@ -44,26 +45,29 @@ const compareUpdatedAtDesc = (
 export const buildArchitectNavigatorScopes = (params: {
   standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
-}): ArchitectNavigatorScope[] => [
-  ...params.projectGroups.map<ArchitectNavigatorScope>((group) => ({
-    id: `group:${group.id}`,
-    kind: 'group',
-    label: group.name,
-    groupId: group.id,
-    projectId: null,
-    projectIds: group.projects.map((project) => project.id),
-    projects: group.projects,
-  })),
-  ...params.standaloneProjects.map<ArchitectNavigatorScope>((project) => ({
-    id: `project:${project.id}`,
-    kind: 'project',
-    label: project.name,
-    groupId: null,
-    projectId: project.id,
-    projectIds: [project.id],
-    projects: [project],
-  })),
-];
+}): ArchitectNavigatorScope[] => {
+  const active = getActiveProjectRegistry(params);
+  return [
+    ...active.projectGroups.map<ArchitectNavigatorScope>((group) => ({
+      id: `group:${group.id}`,
+      kind: 'group',
+      label: group.name,
+      groupId: group.id,
+      projectId: null,
+      projectIds: group.projects.map((project) => project.id),
+      projects: group.projects,
+    })),
+    ...active.standaloneProjects.map<ArchitectNavigatorScope>((project) => ({
+      id: `project:${project.id}`,
+      kind: 'project',
+      label: project.name,
+      groupId: null,
+      projectId: project.id,
+      projectIds: [project.id],
+      projects: [project],
+    })),
+  ];
+};
 
 const chooseCanonicalScope = (
   plan: ArchitectPlanSummary,

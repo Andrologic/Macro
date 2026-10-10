@@ -1,6 +1,7 @@
 import type { WebSearchOptions } from '../webSearch';
 import { isMacroToolCopilotBuiltInOverride, type JsonSchema, type MacroToolRegistryEntry, requireMacroToolRegistryEntry, toFunctionToolShape } from '../../shared/macroToolRegistry';
 import { toMCPFunctionToolShape } from '../mcp';
+import { allowedMcpTools, mcpDiscoveryToolShapes, shouldDiscoverMcpTools } from '../mcp/toolDiscovery';
 import type { MCPTool } from '../../types';
 
 // Tool definitions for the LLM
@@ -197,11 +198,11 @@ export const collectAllowedTools = (params: {
   if (allowedTools.has('task_artifact_put')) tools.push(PUT_TASK_ARTIFACT_TOOL);
   if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
   if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
-  (mcpTools ?? []).forEach((tool) => {
-    if (allowedTools.has(tool.id)) {
-      tools.push(toMCPFunctionToolShape(tool));
-    }
-  });
+  if (shouldDiscoverMcpTools(allowedTools, mcpTools ?? [])) {
+    tools.push(...mcpDiscoveryToolShapes);
+  } else {
+    allowedMcpTools(allowedTools, mcpTools ?? []).forEach(tool => tools.push(toMCPFunctionToolShape(tool)));
+  }
 
   return tools;
 };

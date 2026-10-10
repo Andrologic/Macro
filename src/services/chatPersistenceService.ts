@@ -52,6 +52,7 @@ export interface ChatPersistenceIpc {
       providerTurnState?: ProviderTurnState;
       contextRefs?: ChatMessage["context_refs"];
       completionReason?: ChatMessage["completion_reason"];
+      generationAttempts?: ChatMessage["generation_attempts"];
     },
   ) => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -90,6 +91,7 @@ export interface AssistantCompletionPersistenceResult {
   toolTraces?: ToolTrace[];
   completionReason?: ChatMessage["completion_reason"];
   interruptedProviderText?: string;
+  generationAttempts?: ChatMessage["generation_attempts"];
 }
 
 const cloneProviderInputItems = (
@@ -168,14 +170,16 @@ export const loadConversationMessages = async (
   }
 
   const dbMessages = await adapters.ipc.listMessages(params.conversationId);
+  const conversationById = buildConversationById(params.conversations);
   return dbMessages.map((message) =>
-    mapDbMessageToChatMessage(message, buildConversationById(params.conversations)),
+    mapDbMessageToChatMessage(message, conversationById),
   );
 };
 
 export const createUserMessage = async (
   adapters: ChatPersistenceAdapters,
   params: {
+    id?: string;
     conversationId: string;
     turnId: string;
     taskId: string;
@@ -193,7 +197,7 @@ export const createUserMessage = async (
 
   if (!adapters.isTauriAvailable()) {
     return {
-      id: `msg-${now().getTime()}`,
+      id: params.id ?? `msg-${now().getTime()}`,
       turn_id: params.turnId,
       task_id: params.taskId,
       conversation_id: params.conversationId,
@@ -213,6 +217,7 @@ export const createUserMessage = async (
     "user",
     params.content,
     {
+      ...(params.id ? { id: params.id } : {}),
       turnId: params.turnId,
       hiddenContext: params.hiddenContext,
       providerInputItems: params.providerInputItems,
@@ -361,6 +366,28 @@ export const updateEditedUserMessage = async (
   });
 };
 
+const messageWriteTails = new WeakMap<ChatPersistenceIpc, Map<string, Promise<void>>>();
+
+const enqueueAssistantMessageWrite = (
+  adapters: ChatPersistenceAdapters,
+  messageId: string,
+  write: () => Promise<void>,
+): Promise<void> => {
+  let tails = messageWriteTails.get(adapters.ipc);
+  if (!tails) {
+    tails = new Map();
+    messageWriteTails.set(adapters.ipc, tails);
+  }
+  const previous = tails.get(messageId);
+  const pending = previous ? previous.catch(() => undefined).then(write) : Promise.resolve().then(write);
+  tails.set(messageId, pending);
+  void pending.then(
+    () => { if (tails?.get(messageId) === pending) tails.delete(messageId); },
+    () => { if (tails?.get(messageId) === pending) tails.delete(messageId); },
+  );
+  return pending;
+};
+
 export const persistAssistantPartialResult = async (
   adapters: ChatPersistenceAdapters,
   assistantMessage: ChatMessage,
@@ -368,12 +395,13 @@ export const persistAssistantPartialResult = async (
   if (!adapters.isTauriAvailable()) return;
   if (
     assistantMessage.content.trim().length === 0 &&
-    (assistantMessage.tool_traces?.length ?? 0) === 0
+    (assistantMessage.tool_traces?.length ?? 0) === 0 &&
+    (assistantMessage.generation_attempts?.length ?? 0) === 0
   ) {
     return;
   }
 
-  await adapters.ipc.updateMessage(assistantMessage.id, assistantMessage.content, {
+  await enqueueAssistantMessageWrite(adapters, assistantMessage.id, () => adapters.ipc.updateMessage(assistantMessage.id, assistantMessage.content, {
     turnId: assistantMessage.turn_id ?? null,
     toolTraces: assistantMessage.tool_traces,
     hiddenContext: assistantMessage.hidden_context,
@@ -382,7 +410,8 @@ export const persistAssistantPartialResult = async (
     ...(assistantMessage.completion_reason
       ? { completionReason: assistantMessage.completion_reason }
       : {}),
-  });
+    generationAttempts: assistantMessage.generation_attempts,
+  }));
 };
 
 export const persistAssistantCompletionResult = async (
@@ -395,7 +424,7 @@ export const persistAssistantCompletionResult = async (
 ): Promise<void> => {
   if (!adapters.isTauriAvailable()) return;
 
-  await adapters.ipc.updateMessage(
+  await enqueueAssistantMessageWrite(adapters, params.assistantMessageId, () => adapters.ipc.updateMessage(
     params.assistantMessageId,
     params.result.visibleContent,
     {
@@ -408,8 +437,9 @@ export const persistAssistantCompletionResult = async (
       ...(params.result.completionReason
         ? { completionReason: params.result.completionReason }
         : {}),
+      generationAttempts: params.result.generationAttempts,
     },
-  );
+  ));
   // Every provider converges here with display and structured replay output from onComplete.
   // A receipt is independent of completion_reason and bound to these exact bytes.
   try {

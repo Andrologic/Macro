@@ -23,6 +23,7 @@ export const IGNORED_PREFIXES = Object.freeze([
 ]);
 
 const productionConditionTestFiles = new Set([
+  'src/components/chat/ChatZone.test.tsx',
   'src/components/chat/composer/ComposerEditor.test.tsx',
 ]);
 const testTimeoutMs = 30_000;
@@ -80,7 +81,7 @@ export function spawnArgsForFile(file, options = {}) {
   if (usesProductionConditions(file)) {
     // Bun 1.3.14 creates an initialization cycle in Lexical's development ESM
     // exports. Keep React in test mode while selecting Lexical's equivalent
-    // production exports for the affected integration test.
+    // production exports for the affected integration tests.
     args.push('--conditions=production');
   }
   args.push('test');

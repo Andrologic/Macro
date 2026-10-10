@@ -94,17 +94,15 @@ export const isWriteTool = (toolName: string): boolean =>
   toolName === "delete" ||
   toolName === "apply_patch";
 
-const isUnknownCommandError = (error: unknown): boolean => {
-  if (!error || typeof error !== "object") return false;
-  const maybe = error as Record<string, unknown>;
-  const message =
-    typeof maybe.message === "string" ? maybe.message.toLowerCase() : "";
-  return (
-    message.includes("unknown command") ||
-    message.includes("tool_validate_execution") ||
-    message.includes("tool_execute_workspace")
-  );
+// Tauri's invoke router rejects missing handlers with this exact message.
+// A downstream diagnostic mentioning a command is not proof of non-dispatch.
+const isUnknownCommandError = (error: unknown, command: string): boolean => {
+  const message = typeof error === "string" ? error
+    : error && typeof error === "object" && "message" in error ? error.message : undefined;
+  return message === `Command ${command} not found`;
 };
+
+type MutationFilesystem = Pick<typeof tauriIpc, "fsWriteFile" | "fsDelete">;
 
 const extractCandidatePath = (
   toolName: string,
@@ -515,6 +513,7 @@ const buildCheckpointFile = (
 const restoreCheckpointSnapshot = async (
   options: CheckpointCaptureOptions,
   snapshot: AgentCodeCheckpointFileSnapshot,
+  mutations: MutationFilesystem,
   expectedCurrent?: AgentCodeCheckpointFileSnapshot,
 ): Promise<void> => {
   const commonOptions = {
@@ -524,7 +523,7 @@ const restoreCheckpointSnapshot = async (
 
   if (!snapshot.exists) {
     if (await tauriIpc.fsExists(options.realPath, commonOptions)) {
-      await tauriIpc.fsDelete({
+      await mutations.fsDelete({
         path: options.realPath,
         expectedRevision: expectedCurrent?.revision ?? undefined,
         ...commonOptions,
@@ -545,7 +544,7 @@ const restoreCheckpointSnapshot = async (
     );
   }
 
-  await tauriIpc.fsWriteFile({
+  await mutations.fsWriteFile({
     path: options.realPath,
     content: snapshot.content,
     createDirs: true,
@@ -573,6 +572,7 @@ const publishCodeCheckpoint = async (
 
 const executeCheckpointedFileMutation = async <T>(options: {
   executeOptions: ExecuteWorkspaceToolOptions;
+  mutations: MutationFilesystem;
   toolName: string;
   checkpointOptions: CheckpointCaptureOptions;
   before?: AgentCodeCheckpointFileSnapshot;
@@ -610,6 +610,7 @@ const executeCheckpointedFileMutation = async <T>(options: {
       await restoreCheckpointSnapshot(
         options.checkpointOptions,
         before,
+        options.mutations,
         currentAfterMutation,
       );
     } catch (rollbackError) {
@@ -634,7 +635,7 @@ const executeCheckpointedFileMutation = async <T>(options: {
     ]);
   } catch (error) {
     try {
-      await restoreCheckpointSnapshot(options.checkpointOptions, before, after);
+      await restoreCheckpointSnapshot(options.checkpointOptions, before, options.mutations, after);
     } catch (rollbackError) {
       throw new Error(
         `Failed to record code checkpoint for ${options.checkpointOptions.displayPath}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -649,6 +650,7 @@ const executeCheckpointedFileMutation = async <T>(options: {
 
 const rollbackPatchWriteChanges = async (
   snapshots: PatchWriteRollbackSnapshot[],
+  mutations: MutationFilesystem,
 ): Promise<void> => {
   const errors: string[] = [];
   for (const snapshot of [...snapshots].reverse()) {
@@ -660,7 +662,7 @@ const rollbackPatchWriteChanges = async (
             snapshot.change.existsOptions,
           )
         ) {
-          await tauriIpc.fsDelete({
+          await mutations.fsDelete({
             path: snapshot.change.realPath,
             expectedRevision: snapshot.postMutationExpectedRevision,
             ...snapshot.change.deleteOptions,
@@ -679,7 +681,7 @@ const rollbackPatchWriteChanges = async (
     }
 
     try {
-      await tauriIpc.fsWriteFile({
+      await mutations.fsWriteFile({
         path: snapshot.change.realPath,
         content: snapshot.content,
         createDirs: true,
@@ -700,6 +702,7 @@ const rollbackPatchWriteChanges = async (
 
 const commitPatchWriteChangesWithRollback = async (
   changes: PatchWriteCommitChange[],
+  mutations: MutationFilesystem,
 ): Promise<PatchWriteRollbackSnapshot[]> => {
   const snapshots: PatchWriteRollbackSnapshot[] = [];
   for (const change of changes) {
@@ -732,14 +735,14 @@ const commitPatchWriteChangesWithRollback = async (
     for (const [index, change] of changes.entries()) {
       const snapshot = snapshots[index];
       if (change.newContent === null) {
-        await tauriIpc.fsDelete({
+        await mutations.fsDelete({
           path: change.realPath,
           expectedRevision: change.expectedRevision,
           ...change.deleteOptions,
         });
         snapshot.postMutationExpectedRevision = EXPECTED_REVISION_ABSENT;
       } else {
-        const result = await tauriIpc.fsWriteFile({
+        const result = await mutations.fsWriteFile({
           path: change.realPath,
           content: change.newContent,
           createDirs: true,
@@ -752,7 +755,7 @@ const commitPatchWriteChangesWithRollback = async (
     }
   } catch (error) {
     try {
-      await rollbackPatchWriteChanges(applied);
+      await rollbackPatchWriteChanges(applied, mutations);
     } catch (rollbackError) {
       throw new Error(
         `${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -2133,6 +2136,35 @@ export const executeWorkspaceTool = async (
       toolName === "apply_patch");
   const virtualRootEnabled = virtualRootCandidate && !useMetadataWorkspace;
 
+  // Shared by forward mutations and compensation. A later catch may format an
+  // error, but it cannot turn a lost mutation acknowledgement into completion.
+  let mutationResultLost = false;
+  const observeMutation = async <T>(call: () => Promise<T>, missingCommand?: string): Promise<T> => {
+    try { return await call(); }
+    catch (error) {
+      if (!missingCommand || !isUnknownCommandError(error, missingCommand)) mutationResultLost = true;
+      throw error;
+    }
+  };
+  // File compensation cannot prove that a rejected durable checkpoint save
+  // had no effect. Track its callback in every publication path as well.
+  const onCodeCheckpoint = options.onCodeCheckpoint;
+  if (onCodeCheckpoint) {
+    options = { ...options, onCodeCheckpoint: checkpoint =>
+      observeMutation(async () => { await onCodeCheckpoint(checkpoint); }) };
+  }
+  const mutations: MutationFilesystem = {
+    fsWriteFile: request => observeMutation(() => tauriIpc.fsWriteFile(request)),
+    fsDelete: request => observeMutation(() => tauriIpc.fsDelete(request)),
+  };
+  const invokeNativeTool = (request: Parameters<typeof tauriIpc.executeWorkspaceTool>[0]) =>
+    isMutatingWorkspaceTool(request.toolId)
+      ? observeMutation(async () => {
+          const result = await tauriIpc.executeWorkspaceTool(request);
+          if (typeof result !== "string" || !result) throw new Error("The native mutation returned no acknowledgement.");
+          return result;
+        }, "tool_execute_workspace")
+      : tauriIpc.executeWorkspaceTool(request);
   let nativeDiagnostics: unknown[] = [];
   const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
     const isReady = (item: unknown): item is Record<string, unknown> =>
@@ -2216,7 +2248,7 @@ export const executeWorkspaceTool = async (
               void tauriIpc.cancelWorkspaceTool(executionId).catch(() => false);
             }
           : undefined;
-      const executionPromise = tauriIpc.executeWorkspaceTool({
+      const executionPromise = invokeNativeTool({
         mode,
         toolId: backendToolName,
         args: backendArgs,
@@ -2282,13 +2314,15 @@ export const executeWorkspaceTool = async (
       const checkpointRequired =
         isWriteTool(backendToolName) && Boolean(options.onCodeCheckpoint);
       if (!checkpointRequired) {
-        return await executeRemoteWorkspaceTool(remoteParams);
+        return await (isMutatingWorkspaceTool(backendToolName)
+          ? observeMutation(() => executeRemoteWorkspaceTool(remoteParams))
+          : executeRemoteWorkspaceTool(remoteParams));
       }
 
-      const execution = await executeRemoteWorkspaceToolDetailed({
+      const execution = await observeMutation(() => executeRemoteWorkspaceToolDetailed({
         ...remoteParams,
         checkpointRequired: true,
-      });
+      }));
       const checkpointFiles = execution.checkpoint?.files ?? [];
       if (checkpointFiles.length === 0) {
         throw new Error(
@@ -2349,7 +2383,7 @@ export const executeWorkspaceTool = async (
                 `Cannot restore ${file.path}: checkpoint content is missing.`,
               );
             }
-            await executeRemoteWorkspaceTool({
+            await observeMutation(() => executeRemoteWorkspaceTool({
               mode,
               toolId: rollbackTool,
               args: file.before.exists
@@ -2376,7 +2410,7 @@ export const executeWorkspaceTool = async (
               invocationId: options.invocationId
                 ? `${options.invocationId}:checkpoint-rollback:${file.path}`
                 : undefined,
-            });
+            }));
           } catch (rollbackError) {
             rollbackErrors.push(
               `${file.path}: ${formatToolError(rollbackError)}`,
@@ -2421,7 +2455,7 @@ export const executeWorkspaceTool = async (
     }, { workspacePath: request.workspacePath, workspaceScope: request.workspaceScope });
     if (response === "UNSUPPORTED_WORKSPACE_TOOL") {
       // Compatibility with older desktop runtimes, explicitly without LSP proof.
-      return tauriIpc.fsWriteFile(request);
+      return mutations.fsWriteFile(request);
     }
     let result;
     try {
@@ -2494,7 +2528,7 @@ export const executeWorkspaceTool = async (
           return backendResult;
         }
       } catch (error) {
-        if (!isUnknownCommandError(error)) {
+        if (mutationResultLost || !isUnknownCommandError(error, "tool_execute_workspace")) {
           throw error;
         }
       }
@@ -2521,7 +2555,7 @@ export const executeWorkspaceTool = async (
             return backendResult;
           }
         } catch (error) {
-          if (!isUnknownCommandError(error)) {
+          if (mutationResultLost || !isUnknownCommandError(error, "tool_execute_workspace")) {
             throw error;
           }
         }
@@ -2550,7 +2584,7 @@ export const executeWorkspaceTool = async (
         );
       }
     } catch (validationError) {
-      if (!isUnknownCommandError(validationError)) {
+      if (!isUnknownCommandError(validationError, "tool_validate_execution")) {
         throw validationError;
       }
 
@@ -2812,6 +2846,7 @@ export const executeWorkspaceTool = async (
         const { writeResult, readback } = await executeCheckpointedFileMutation(
           {
             executeOptions: options,
+            mutations,
             toolName,
             checkpointOptions,
             before,
@@ -2959,6 +2994,7 @@ export const executeWorkspaceTool = async (
         let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
         const readback = await executeCheckpointedFileMutation({
           executeOptions: options,
+          mutations,
           toolName,
           checkpointOptions,
           before: snapshotFromReadResult(current),
@@ -3090,6 +3126,7 @@ export const executeWorkspaceTool = async (
 
         await executeCheckpointedFileMutation({
           executeOptions: options,
+          mutations,
           toolName,
           checkpointOptions: {
             displayPath: resolved.virtualPath,
@@ -3112,7 +3149,7 @@ export const executeWorkspaceTool = async (
               : null;
           },
           mutation: async () => {
-            await tauriIpc.fsDelete({
+            await mutations.fsDelete({
               path: realPath,
               workspacePath,
               expectedRevision: mutationRevision,
@@ -3240,6 +3277,8 @@ export const executeWorkspaceTool = async (
             allowOutsideWorkspace: false,
             workspacePath: patchTarget.candidate.workspacePath,
           });
+          const revisionConflict = expectedRevisionConflict(patchTarget.displayPath, expectedRevision, current.revision ?? null);
+          if (revisionConflict) return revisionConflict;
           expectedRevision = expectedRevision ?? current.revision ?? null;
           if (!expectedRevision) {
             return `Cannot safely patch ${patchTarget.displayPath}: the current revision is unavailable. Re-read the file and retry.`;
@@ -3339,7 +3378,7 @@ export const executeWorkspaceTool = async (
                 ),
               }),
             )
-          : await commitPatchWriteChangesWithRollback(backendChanges);
+          : await commitPatchWriteChangesWithRollback(backendChanges, mutations);
 
         const files: PatchChangeRecord[] = [];
         const validationFiles: PatchValidationRecord[] = [];
@@ -3462,7 +3501,7 @@ export const executeWorkspaceTool = async (
 
         if (errors.length > 0) {
           try {
-            await rollbackPatchWriteChanges(rollbackSnapshots);
+            await rollbackPatchWriteChanges(rollbackSnapshots, mutations);
           } catch (rollbackError) {
             throw new Error(
               `Validation failed after ${toolName}, and rollback failed: ${errors.join("; ")}; ${formatToolError(rollbackError)}`,
@@ -3477,7 +3516,7 @@ export const executeWorkspaceTool = async (
           await publishCodeCheckpoint(options, toolName, checkpointFiles);
         } catch (error) {
           try {
-            await rollbackPatchWriteChanges(rollbackSnapshots);
+            await rollbackPatchWriteChanges(rollbackSnapshots, mutations);
           } catch (rollbackError) {
             throw new Error(
               `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -3763,7 +3802,7 @@ export const executeWorkspaceTool = async (
           target.relativePath,
           mode,
         );
-        const backendResult = await tauriIpc.executeWorkspaceTool({
+        const backendResult = await invokeNativeTool({
           mode,
           toolId: toolName,
           args: {
@@ -3994,6 +4033,7 @@ export const executeWorkspaceTool = async (
       let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
       const { writeResult, readback } = await executeCheckpointedFileMutation({
         executeOptions: options,
+        mutations,
         toolName,
         checkpointOptions,
         before,
@@ -4113,6 +4153,7 @@ export const executeWorkspaceTool = async (
       let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
       const { writeResult, readback } = await executeCheckpointedFileMutation({
         executeOptions: options,
+        mutations,
         toolName,
         checkpointOptions: {
           displayPath: resolvedPath,
@@ -4229,6 +4270,7 @@ export const executeWorkspaceTool = async (
 
       await executeCheckpointedFileMutation({
         executeOptions: options,
+        mutations,
         toolName,
         checkpointOptions: {
           displayPath: resolvedPath,
@@ -4251,7 +4293,7 @@ export const executeWorkspaceTool = async (
             : null;
         },
         mutation: async () => {
-          await tauriIpc.fsDelete({
+          await mutations.fsDelete({
             path,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
@@ -4353,6 +4395,8 @@ export const executeWorkspaceTool = async (
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
           workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
         });
+        const revisionConflict = expectedRevisionConflict(resolvedPath, expectedRevision, current.revision ?? null);
+        if (revisionConflict) return revisionConflict;
         expectedRevision = expectedRevision ?? current.revision ?? null;
         if (!expectedRevision) {
           return `Cannot safely patch ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
@@ -4457,7 +4501,7 @@ export const executeWorkspaceTool = async (
               ),
             }),
           )
-        : await commitPatchWriteChangesWithRollback(backendChanges);
+        : await commitPatchWriteChangesWithRollback(backendChanges, mutations);
 
       const files: PatchChangeRecord[] = [];
       const validationFiles: PatchValidationRecord[] = [];
@@ -4575,7 +4619,7 @@ export const executeWorkspaceTool = async (
 
       if (errors.length > 0) {
         try {
-          await rollbackPatchWriteChanges(rollbackSnapshots);
+          await rollbackPatchWriteChanges(rollbackSnapshots, mutations);
         } catch (rollbackError) {
           throw new Error(
             `Validation failed after ${toolName}, and rollback failed: ${errors.join("; ")}; ${formatToolError(rollbackError)}`,
@@ -4590,7 +4634,7 @@ export const executeWorkspaceTool = async (
         await publishCodeCheckpoint(options, toolName, checkpointFiles);
       } catch (error) {
         try {
-          await rollbackPatchWriteChanges(rollbackSnapshots);
+          await rollbackPatchWriteChanges(rollbackSnapshots, mutations);
         } catch (rollbackError) {
           throw new Error(
             `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -4814,6 +4858,7 @@ export const executeWorkspaceTool = async (
 
     return undefined;
   } catch (error) {
+    if (mutationResultLost) throw error;
     return `Error executing ${toolName}: ${formatToolError(error)}`;
   }
 };
