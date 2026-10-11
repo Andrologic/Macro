@@ -1,5 +1,5 @@
 import type { PublicProjection, PublicSnapshot, PublicActivation, SourceRevision } from "../agsdlExecution/contracts";
-import type { PublicApproval, PublicExecutionDiagnostic } from "../../types/generated/ipc";
+import type { PublicApproval, PublicExecutionDiagnostic, PublicRunSummary } from "../../types/generated/ipc";
 import type { ViewerCard } from "./viewer";
 import { pointerPart, readDocument, object } from "./document";
 import type { ExactJsonText } from "../agsdlExecution/contracts";
@@ -60,4 +60,17 @@ export function executionInput(source: string): { hasEntry: boolean; graphless: 
 export function executionPrompt(prompt: string): ExactJsonText {
   if (!prompt.trim() || new TextEncoder().encode(prompt).length > 65536) throw new Error("agsdl.execution.promptRequired");
   return JSON.stringify({ prompt: [{ value: prompt, mediaType: "text/plain" }] }) as ExactJsonText;
+}
+
+
+/** Use native totals, never a partial projection or the number of successful steps. */
+export function nativeRunState(run: PublicRunSummary): NativeCardState | undefined {
+  if (run.systemStop.kind === 'uncertain' || run.counts.uncertain !== '0') return 'uncertain';
+  if (run.systemStop.kind === 'requested') return 'stopRequested';
+  if (run.counts.active !== '0') return 'active';
+  if (run.counts.queued !== '0') return 'queued';
+  if (run.systemStop.kind === 'confirmed') return 'stopped';
+  if (run.counts.failed !== '0') return 'failed';
+  if (run.counts.stopped !== '0') return 'stopped';
+  if (run.counts.completed !== '0') return 'completed';
 }

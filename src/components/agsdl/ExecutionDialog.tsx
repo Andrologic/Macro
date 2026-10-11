@@ -5,7 +5,7 @@ import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { useAgsdlExecutionStore } from "../../stores/useAgsdlExecutionStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { prepareAgsdlChatContext, prepareAgsdlRuntimeContext } from "../../stores/agsdl/chatContext";
-import { executionInput } from "../../services/agsdl/executionView";
+import { executionInput, nativeRunState } from "../../services/agsdl/executionView";
 import type { AgsdlTarget } from "../../stores/useAgsdlStore";
 import type { Sequence, SystemStartId } from "../../services/agsdlExecution/contracts";
 import { notify } from "../ui/toastService";
@@ -37,6 +37,8 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
   const resetSelection = () => { setSelected([]); setSelectionCursor(undefined); };
   // Diagnostics belong to one run: any change of run or scope drops the selection.
   const runKey = snapshot?.systemStartId;
+  const selectedRun = state.runs.find(run => run.systemStartId === runKey);
+  const runState = selectedRun ? nativeRunState({ ...selectedRun, systemStop: state.projection?.systemStop ?? selectedRun.systemStop }) : undefined;
   useEffect(() => { setSelected([]); setSelectionCursor(undefined); }, [runKey, scoped]);
   // Native intent state drives the actions; its identities and codes stay out of the text.
   const intent = scoped ? state.intent : undefined;
@@ -111,6 +113,10 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
         {(ready || (state.preflight?.productRuntimeAvailable && deliveryInput?.graphless)) && startControls}
         {state.runs.length > 0 && <label className="agsdl-edit-field"><span>{t("agsdl.execution.run")}</span><select disabled={state.busy || state.intentBusy} value={snapshot?.systemStartId ?? ""} onChange={event => { resetSelection(); setAgentName(""); void state.select((event.target.value || undefined) as SystemStartId | undefined); }}>
           <option value="">{t("agsdl.execution.noRun")}</option>{snapshot && !state.runs.some(run => run.systemStartId === snapshot.systemStartId) && <option value={snapshot.systemStartId}>{t("agsdl.execution.run")}</option>}{state.runs.map((run, index) => <option value={run.systemStartId} key={run.systemStartId}>{t("agsdl.execution.runNumber", { number: index + 1 })} · {t("agsdl.execution.completedCount", { completed: run.counts.completed })}</option>)}</select></label>}
+        {runState && <div role="status" className={`agsdl-execution-state ${runState === 'failed' || runState === 'uncertain' ? 'agsdl-unresolved' : 'agsdl-muted'}`}>
+          {runState === 'active' || runState === 'queued' ? <Loader2 size={14} className="animate-spin" /> : runState === 'completed' ? <Check size={14} /> : runState === 'stopped' ? <Square size={14} /> : <AlertCircle size={14} />}
+          <span>{t(`agsdl.execution.state.${runState}`)}</span>
+        </div>}
         {state.nextRuns && <button disabled={state.busy} onClick={() => void state.moreRuns()}>{t("agsdl.execution.moreRuns")}</button>}
         {snapshot && <>
           {deliveryInput?.graphless && state.preflight?.productRuntimeAvailable && <div className="agsdl-execution-actions"><select aria-label={t("agsdl.execution.agent")} value={agentName} disabled={locked} onChange={event => setAgentName(event.target.value)}><option value="">{t("agsdl.execution.agentRequired")}</option>{deliveryInput.agents.map(name => <option key={name} value={name}>{name}</option>)}</select><button disabled={locked || !state.preflight?.productRuntimeAvailable || !deliveryInput.agents.includes(agentName) || !prompt.trim()} onClick={() => void state.deliver(agentName, prompt)}>{t("agsdl.execution.deliver")}</button></div>}

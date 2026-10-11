@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { appendProjection, groupNativeState, nativeCardActivations } from "./executionView";
+import { appendProjection, groupNativeState, nativeCardActivations, nativeRunState } from "./executionView";
 import type { PublicProjection, PublicSnapshot, PublicActivation, SourceRevision, SystemStartId, Sequence } from "../agsdlExecution/contracts";
 import { projectViewer } from "./viewer";
 import { createExample } from "./examples";
@@ -23,4 +23,14 @@ it("uses exact step identity, native approval requests and stop evidence, never 
   expect(nativeCardActivations(cards, page({ activations: [{ ...activation, stopState: { kind: "requested", requestId: "stop" } }] }), [])[card.path].state).toBe("stopRequested");
   expect(nativeCardActivations([{ ...card, path: '/foreign', title: card.title }], page({ activations: [activation] }), [])).toEqual({});
   expect(groupNativeState([{ state: "completed", activations: [activation] }], 2)).toBeUndefined();
+});
+
+
+it('keeps failed or uncertain runs distinct from their completed steps using native totals', () => {
+  const run = { systemStop: { kind: 'none' }, counts: { active: '0', queued: '0', uncertain: '0', completed: '4', failed: '1', stopped: '0' } } as import('../../types/generated/ipc').PublicRunSummary;
+  expect(nativeRunState(run)).toBe('failed');
+  expect(nativeRunState({ ...run, counts: { ...run.counts, active: '1' } })).toBe('active');
+  expect(nativeRunState({ ...run, counts: { ...run.counts, uncertain: '9007199254740993' } })).toBe('uncertain');
+  expect(nativeRunState({ ...run, systemStop: { kind: 'confirmed', requestId: 'stop' } })).toBe('stopped');
+  expect(nativeRunState({ ...run, counts: { ...run.counts, failed: '0' } })).toBe('completed');
 });
