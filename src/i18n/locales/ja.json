@@ -2916,6 +2916,8 @@
     "sessionReplacedTitle": "別のタブでセッションが開かれています",
     "sessionReplacedHint": "このタブを再読み込みして、ここでMacroを使い続けてください。",
     "sessionReplacedReload": "再読み込み",
+    "runtimeUnavailableTitle": "デスクトップランタイムを利用できません",
+    "runtimeUnavailableHint": "Macro は再起動中か、起動していません。デスクトップランタイムの準備ができたら再試行してください。",
     "startupTitle": "プロファイルの復旧が必要です",
     "startupRecovery": "ブラウザーデータの復元を完了できませんでした。ネイティブの復旧アーカイブは保持されています。診断を確認し、必要に応じてローカルストレージの空き容量を増やしてから、Macroを再起動してください。",
     "title": "バックアップと復元",

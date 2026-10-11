@@ -2916,6 +2916,8 @@
     "sessionReplacedTitle": "Sitzung in einem anderen Tab geöffnet",
     "sessionReplacedHint": "Lade diesen Tab neu, um Macro hier weiter zu nutzen.",
     "sessionReplacedReload": "Neu laden",
+    "runtimeUnavailableTitle": "Desktop-Laufzeit nicht verfügbar",
+    "runtimeUnavailableHint": "Macro wird neu gestartet oder läuft nicht. Versuche es erneut, sobald die Desktop-Laufzeit bereit ist.",
     "startupTitle": "Profilwiederherstellung erforderlich",
     "startupRecovery": "Die Wiederherstellung der Browserdaten konnte nicht abgeschlossen werden. Das native Wiederherstellungsarchiv bleibt erhalten. Prüfen Sie die Diagnose, geben Sie bei Bedarf lokalen Speicher frei und starten Sie Macro erneut.",
     "title": "Sicherung und Wiederherstellung",

@@ -2916,6 +2916,8 @@
     "sessionReplacedTitle": "Session open in another tab",
     "sessionReplacedHint": "Reload this tab to continue using Macro here.",
     "sessionReplacedReload": "Reload",
+    "runtimeUnavailableTitle": "Desktop runtime unavailable",
+    "runtimeUnavailableHint": "Macro is restarting or is not running. Retry once the desktop runtime is ready.",
     "startupTitle": "Profile recovery required",
     "startupRecovery": "Browser data restoration could not finish. The native recovery archive is retained. Check the diagnostic details, free local storage if necessary, then restart Macro to retry.",
     "title": "Backup and restore",

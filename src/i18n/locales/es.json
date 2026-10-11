@@ -2916,6 +2916,8 @@
     "sessionReplacedTitle": "Sesión abierta en otra pestaña",
     "sessionReplacedHint": "Recarga esta pestaña para seguir usando Macro aquí.",
     "sessionReplacedReload": "Recargar",
+    "runtimeUnavailableTitle": "Motor de escritorio no disponible",
+    "runtimeUnavailableHint": "Macro se está reiniciando o no está en ejecución. Reinténtalo cuando el motor de escritorio esté listo.",
     "startupTitle": "Es necesario recuperar el perfil",
     "startupRecovery": "No se pudo completar la restauración de los datos del navegador. Se conserva el archivo nativo de recuperación. Consulte el diagnóstico, libere almacenamiento local si es necesario y reinicie Macro para reintentar.",
     "title": "Copia de seguridad y restauración",

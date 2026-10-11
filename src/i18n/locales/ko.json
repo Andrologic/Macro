@@ -2916,6 +2916,8 @@
     "sessionReplacedTitle": "다른 탭에서 세션이 열려 있습니다",
     "sessionReplacedHint": "이 탭을 새로고침하여 여기에서 Macro를 계속 사용하세요.",
     "sessionReplacedReload": "새로고침",
+    "runtimeUnavailableTitle": "데스크톱 런타임을 사용할 수 없습니다",
+    "runtimeUnavailableHint": "Macro가 재시작 중이거나 실행되지 않았습니다. 데스크톱 런타임이 준비되면 다시 시도하세요.",
     "startupTitle": "프로필 복구 필요",
     "startupRecovery": "브라우저 데이터 복원을 완료하지 못했습니다. 기본 복구 아카이브는 보관됩니다. 진단을 확인하고 필요한 경우 로컬 저장 공간을 확보한 후 Macro를 다시 시작하세요.",
     "title": "백업 및 복원",

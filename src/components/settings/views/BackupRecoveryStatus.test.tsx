@@ -43,3 +43,18 @@ test('treats a replaced browser session as a reload, not profile recovery', asyn
   expect(html).not.toContain('Récupération du profil');
   expect(html).not.toContain('archive');
 });
+
+
+test('offers retry for a disconnected runtime without claiming the profile is damaged', async () => {
+  const i18n = createInstance();
+  await i18n.init({ lng: 'fr', resources: { fr: { translation: fr } } });
+  for (const code of ['BROWSER_RUNTIME_UNAVAILABLE', 'BROWSER_RUNTIME_CONNECTION_ERROR', 'BROWSER_RUNTIME_CONNECTION_CLOSED']) {
+    const error = Object.assign(new Error('Synthetic transport loss'), { code });
+    const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><BackupStartupRecovery error={error} /></I18nextProvider>);
+    expect(html).toContain('Moteur de bureau indisponible');
+    expect(html).toContain('Réessayer</button>');
+    expect(html).not.toContain('Récupération du profil');
+    expect(html).not.toContain('archive');
+    expect(html).not.toContain('Synthetic transport loss');
+  }
+});
