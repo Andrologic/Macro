@@ -140,7 +140,7 @@ describe("shared AgSDL authoring session", () => {
     const read = JSON.parse(await call("agsdl_get"));
     expect(read.source).toBe(current().source);
     expect(read.macro_models).toEqual([
-      { providerId: 'provider-active', name: 'Active', models: [{ modelId: 'model-active', name: 'Available' }] },
+      { providerId: 'provider-active', name: 'Active', models: [{ modelId: 'model-active', name: 'Available', edition: { identity: 'macro/native-model/p/cHJvdmlkZXItYWN0aXZl/m/bW9kZWwtYWN0aXZl', version: '1' } }] },
     ]);
     const result = JSON.parse(
       await call("agsdl_update", {
@@ -618,5 +618,7 @@ it('provides the current contract guide through bounded revision-safe text pages
   expect(guide.contract).toBe('agsdl-0.2.0');
   expect(guide.flow_shapes).toContain('maxVisits');
   expect(guide.runtime).toContain('macro/agent-engine');
+  expect(guide.runtime).toContain('configuration.model');
+  expect(guide.runtime).toContain('native Preflight');
   await expect(call('agsdl_get', { section: 'guide', offset: 1, expected_revision: 'stale' })).rejects.toThrow('changed');
 });
