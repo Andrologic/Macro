@@ -69,6 +69,25 @@ export function validateMessage(message) {
     reject(message.request.body.direction === 'backward' && !(message.capabilities ?? []).includes('conversation-history-1'), 'unattested history capability');
     reject(!validateMessage(message.request).valid, 'invalid delivered request');
   }
+  if (message.type === 'delivery') {
+    const capability = {'instance.telemetry': 'host-telemetry-1', 'project.icon': 'project-icons-1'}[message.request.operation];
+    reject(capability && !(message.capabilities ?? []).includes(capability), 'unattested machine capability');
+  }
+  if (message.type === 'response' && ['instance.telemetry', 'project.icon'].includes(message.operation)) {
+    const r = message.result;
+    const lifetime = Date.parse(r.expires_at) - Date.parse(r.observed_at);
+    reject(lifetime <= 0 || lifetime > (message.operation === 'instance.telemetry' ? 5000 : 300000), 'machine resource lifetime');
+    if (message.operation === 'instance.telemetry') {
+      reject(r.availability === 'available' ? r.reason !== null || r.cpu_percent === null || r.memory_used_bytes === null || r.memory_total_bytes === null || r.memory_total_bytes <= 0 || r.memory_used_bytes > r.memory_total_bytes : r.reason === null || r.cpu_percent !== null || r.memory_used_bytes !== null || r.memory_total_bytes !== null, 'telemetry availability mismatch');
+    } else {
+      reject((r.availability === 'available') !== (r.icon !== null), 'icon availability mismatch');
+      if (r.icon) {
+        const base64 = r.icon.data_base64;
+        const size = base64.length / 4 * 3 - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+        reject(size !== r.icon.size_bytes, 'icon byte size mismatch');
+      }
+    }
+  }
   if (message.type === 'delivery.result') {
     reject(message.request_id !== message.response.request_id, 'result correlation mismatch');
     reject(!validateMessage(message.response).valid, 'invalid delivered response');
@@ -205,6 +224,9 @@ export function validateExchange(request, response) {
       if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');
       if (['task.artifact.read', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
       if ('expected_revision' in body) reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
+      if (request.operation === 'sessions.list') reject(body.include_last_seen !== true && result.items.some(item => 'last_seen_at' in item), 'unrequested activity projection');
+      if (request.operation === 'instance.telemetry') reject(result.instance_id !== body.instance_id, 'telemetry instance mismatch');
+      if (request.operation === 'project.icon') reject(Object.keys(body.ref).some(key => body.ref[key] !== result.ref[key]), 'icon project mismatch');
       if (request.operation === 'account.get') reject(result.account_id !== request.account_id, 'account result mismatch');
     }
   } else if (request.type === 'events.request') {
