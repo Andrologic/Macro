@@ -10,6 +10,7 @@ import type { AgsdlTarget } from "../../stores/useAgsdlStore";
 import type { Sequence, SystemStartId } from "../../services/agsdlExecution/contracts";
 import { notify } from "../ui/toastService";
 import { agsdlErrorText } from "./errorText";
+import { DisclosureSummary } from "./DisclosureSummary";
 
 export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onClose: () => void }) {
   const { t } = useAgsdlTranslation();
@@ -104,10 +105,10 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
           {state.approvals?.approvals.filter(item => item.status === "pending").map(approval => <section key={approval.approvalId} className="agsdl-ports"><h4 title={approval.summary}>{approval.toolName}</h4>
             <button disabled={state.busy} onClick={() => void state.decide(approval, true)}>{t("agsdl.execution.approve")}</button> <button disabled={state.busy} onClick={() => void state.decide(approval, false)}>{t("agsdl.execution.reject")}</button></section>)}
           {state.approvals?.incomplete && <span role="img" aria-label={t("agsdl.execution.partial")} title={t("agsdl.execution.partial")}><AlertCircle size={14} /></span>}
-          {!!state.diagnostic?.diagnostics.length && <section className="agsdl-ports"><h4>{t("agsdl.execution.diagnostics")}</h4>{state.diagnostic.diagnostics.map((item, index) => <label key={item.id} className="agsdl-execution-diagnostic" title={item.message}><input type="checkbox" checked={selected.some(selected => selected.id === item.id)} disabled={attaching || (selected.length > 0 && selectionCursor !== state.diagnostic?.through) || (!selected.some(selected => selected.id === item.id) && selected.length >= 64)} onChange={event => {
+          {!!state.diagnostic?.diagnostics.length && <details className="agsdl-ports" key={runKey}><DisclosureSummary>{t("agsdl.execution.diagnostics")}</DisclosureSummary>{state.diagnostic.diagnostics.map((item, index) => <label key={item.id} className="agsdl-execution-diagnostic" title={item.message}><input type="checkbox" checked={selected.some(selected => selected.id === item.id)} disabled={attaching || (selected.length > 0 && selectionCursor !== state.diagnostic?.through) || (!selected.some(selected => selected.id === item.id) && selected.length >= 64)} onChange={event => {
             if (!selected.length) setSelectionCursor(state.diagnostic!.through as Sequence);
             setSelected(values => event.target.checked ? [...values, { id: item.id, sequence: item.sequence as Sequence }] : values.filter(selected => selected.id !== item.id));
-          }} />{t("agsdl.execution.diagnosticNumber", { number: index + 1 })}</label>)}</section>}
+          }} />{t("agsdl.execution.diagnosticNumber", { number: index + 1 })}</label>)}</details>}
           {selected.length > 0 && <button onClick={resetSelection}>{t("agsdl.execution.clearDiagnostics")}</button>}
           {state.diagnostic?.nextBefore && <button disabled={state.busy} onClick={() => void state.moreDiagnostics()}>{t("agsdl.execution.moreDiagnostics")}</button>}
           <button className="agsdl-icon-button" aria-label={t("agsdl.attachToChat")} title={t("agsdl.attachToChat")} disabled={state.busy || attaching || !state.projection || state.stale} onClick={() => void attach()}><MessageSquarePlus size={15} /></button>

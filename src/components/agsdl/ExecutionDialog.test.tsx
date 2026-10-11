@@ -33,6 +33,7 @@ it("offers a simple prompt and real Agent selection while keeping technical iden
   expect(panel.querySelector('textarea')).not.toBeNull();
   expect(panel.querySelector('select[aria-label="Agent"]')?.textContent).toContain('real-agent');
   expect(panel.querySelector('[title="A runtime error detail"] input[type="checkbox"]')).not.toBeNull();
+  expect(panel.querySelector('[title="A runtime error detail"]')?.closest('details')?.open).toBe(false);
   await act(async () => { await i18n.changeLanguage('fr'); });
   for (const [key, text] of [
     ['intentOpen', 'Reprenez ou abandonnez la demande en attente avant d’en lancer une autre.'],
