@@ -6,6 +6,7 @@ let stored: string | null = null;
 let polls = 0;
 let subscriptions = 0;
 let blockedPoll: Promise<void> | null = null;
+const confirmedProducerSignals = new WeakSet<AbortSignal>();
 let disconnect: () => Promise<void> = async () => undefined;
 const flush = mock(async () => undefined);
 const state = { status: 'connected', configurationId: 'config:test', instance: { ref: { instance_id: 'instance:test' }, label: 'Macro' }, deviceSession: { state: 'active', ref: { session_id: 'session:test' } } } as PilotPublicState;
@@ -17,6 +18,11 @@ mock.module('./macroPilot/nativeClient', () => ({
     request: (async (_method: string, path: string, _body: unknown, options: { signal?: AbortSignal }) => {
       if (path.endsWith('/disconnect')) { await disconnect(); return { status: 204, data: null }; }
       polls++;
+      // Confirm live reachability once per producer before holding its next poll.
+      if (options.signal && !confirmedProducerSignals.has(options.signal)) {
+        confirmedProducerSignals.add(options.signal);
+        return { status: 204, data: null };
+      }
       if (blockedPoll) await blockedPoll;
       await new Promise<void>(resolve => {
         if (options.signal?.aborted) resolve();
@@ -68,7 +74,7 @@ describe('recoverable shutdown with the real Pilot runtime and kernel', () => {
     await tick();
     expect(runtime.getStatus()).toBe('running');
     expect(subscriptions).toBe(1);
-    expect(polls).toBe(2);
+    expect(polls).toBe(4);
     expect(operation).not.toHaveBeenCalled();
     disconnect = async () => undefined;
   });
@@ -86,7 +92,7 @@ describe('recoverable shutdown with the real Pilot runtime and kernel', () => {
     expect(isAppShutdownGateActive()).toBe(true);
     expect(runtime.isStarted()).toBe(false);
     expect(subscriptions).toBe(0);
-    expect(polls).toBe(1);
+    expect(polls).toBe(2);
   });
 
   it('rejects an overlapping attempt without creating a second producer', async () => {
@@ -101,7 +107,7 @@ describe('recoverable shutdown with the real Pilot runtime and kernel', () => {
     await Promise.all([runtime.start(), runtime.start()]);
     await tick();
     expect(subscriptions).toBe(1);
-    expect(polls).toBe(2);
+    expect(polls).toBe(4);
   });
 
   it('exposes retry when another shutdown gate still prevents resumption', async () => {
@@ -122,14 +128,14 @@ describe('recoverable shutdown with the real Pilot runtime and kernel', () => {
     expect(await runWithPotentialShutdown(async () => false, beginAppShutdownGate(), runtime)).toBe(false);
     expect(runtime.getStatus()).toBe('unavailable');
     expect(subscriptions).toBe(0);
-    expect(polls).toBe(1);
+    expect(polls).toBe(2);
     finishPoll(); blockedPoll = null;
     await tick();
     expect(runtime.getStatus()).toBe('unavailable');
     await runtime.retry(); await tick();
     expect(runtime.getStatus()).toBe('running');
     expect(subscriptions).toBe(1);
-    expect(polls).toBe(2);
+    expect(polls).toBe(4);
   });
 
 });

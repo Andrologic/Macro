@@ -1878,7 +1878,7 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
   });
 
-  it('archives a task but preserves a dirty worktree for explicit cleanup', async () => {
+  it.each(['desktop', 'pilot'] as const)('preserves a dirty worktree during %s archiving', async (origin) => {
     const task = buildStandaloneTask({
       id: 'manual-task-dirty-archive',
       task_source: 'standalone',
@@ -1908,6 +1908,8 @@ describe('useTaskStore merge workflow review loading', () => {
       remote: [],
       current: 'develop',
     }));
+    const cleanStatus = await gitStatusMock();
+    gitStatusMock.mockImplementation(async () => ({ ...cleanStatus, is_clean: false }));
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
       tasks: [task],
@@ -1918,9 +1920,25 @@ describe('useTaskStore merge workflow review loading', () => {
       lastError: null,
     });
 
+    const reservation = origin === 'pilot' ? reservePilotAction({ taskId: task.id }) : null;
     try {
+      if (reservation) {
+        workspaceArchiveManualFeatureMock.mockClear();
+        dbSetAppSettingMock.mockClear();
+        await expect(useTaskStore.getState().archiveTask(task.id, {
+          pilotActionToken: reservation.token,
+          beforeEffect: async () => undefined,
+        })).rejects.toThrow('requires desktop inspection');
+        expect(workspaceArchiveManualFeatureMock).not.toHaveBeenCalled();
+        expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+        expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+        expect(dbSetAppSettingMock).not.toHaveBeenCalled();
+        return;
+      }
       await useTaskStore.getState().archiveTask(task.id);
     } finally {
+      reservation?.release();
+      gitStatusMock.mockImplementation(async () => cleanStatus);
       gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
         taskId: params.taskId,
         worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,

@@ -4077,7 +4077,9 @@ return ({
           isGitExecutionTarget(target) &&
           !isRepositoryRootTarget(target),
       );
-      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees, Boolean(options?.pilotActionToken));
+      if (options?.pilotActionToken) {
+        await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees, true);
+      }
       const cleanupIdentities = await captureDurableTaskGitCleanupIdentities(gitTargets, Boolean(options?.pilotActionToken));
       const now = new Date().toISOString();
       const preparedCleanup: ArchivedTaskCleanupSaga | null = gitTargets.length > 0
