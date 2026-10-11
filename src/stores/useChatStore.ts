@@ -5501,13 +5501,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (params.toolName === "agsdl_get" || params.toolName === "agsdl_update") {
           const conversationId = assistantTurnContextByMessageId.get(params.assistantMessageId)?.conversationId;
           if (!conversationId) throw new Error("The calling plan conversation is unavailable.");
-          const { handleAgsdlToolCall } = await import("./agsdl/tools");
-          return handleAgsdlToolCall({
-            toolName: params.toolName,
-            args: params.args,
-            conversationId,
-            isCurrent: () => params.turnContext?.isCurrent() ?? false,
-          });
+          const { handleAgsdlToolCall, AgsdlAuthoringRefusal } = await import("./agsdl/tools");
+          try {
+            return await handleAgsdlToolCall({
+              toolName: params.toolName,
+              args: params.args,
+              conversationId,
+              isCurrent: () => params.turnContext?.isCurrent() ?? false,
+            });
+          } catch (error) {
+            if (error instanceof AgsdlAuthoringRefusal) return {
+              kind: "result" as const, result: error.message, isError: true, errorKind: "validation" as const,
+            };
+            throw error;
+          }
         }
         return handleDeferredArchitectToolCall({
           ...params,

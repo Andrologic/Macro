@@ -77,6 +77,13 @@ export const registerArchitectStrategyScenarios = (
         agsdl: expect.objectContaining({ source: nextSource }),
       }));
       expect(updateArchitectPlanMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('label');
+      const writes = updateArchitectPlanMock.mock.calls.length;
+      const refused = await onToolCall('agsdl_update', { ...target, expected_revision: read.revision, source: originalSource }, 'stale-agsdl-update');
+      expect(refused).toMatchObject({ kind: 'result', isError: true, errorKind: 'validation' });
+      expect(JSON.stringify(refused)).not.toContain('outcome');
+      expect(updateArchitectPlanMock.mock.calls.length).toBe(writes);
+      expect(architectPlans.get(plan.id)?.agsdl?.source).toBe(nextSource);
+
     });
 
     it('rejects an AgSDL read for a plan owned by another conversation', async () => {

@@ -8,6 +8,11 @@ import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition
 import { useProviderStore } from "../useProviderStore";
 import { paginateTextBytes, TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 
+/** A local revision guard rejected the request before editing or saving. */
+export class AgsdlAuthoringRefusal extends Error {
+  constructor(message: string) { super(message); this.name = "AgsdlAuthoringRefusal"; }
+}
+
 export const AGSDL_AUTHORING_INSTRUCTION =
   "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Read section: guide for the contract before structural changes; it is available even when a scoped source read omits the overview. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
 
@@ -189,7 +194,7 @@ export async function handleAgsdlToolCall(params: {
       typeof args.expected_revision !== "string" ||
       args.expected_revision !== current().version
     )
-      throw new Error("The document changed. Read agsdl_get before editing.");
+      throw new AgsdlAuthoringRefusal("The document changed. Read agsdl_get before editing.");
     const alternatives = ["changes", "source", "example", "design_json", "display_json"].filter((key) =>
       Object.hasOwn(args, key),
     );
