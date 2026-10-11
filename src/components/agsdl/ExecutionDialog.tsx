@@ -4,7 +4,7 @@ import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { useAgsdlExecutionStore } from "../../stores/useAgsdlExecutionStore";
 import { useChatStore } from "../../stores/useChatStore";
-import { prepareAgsdlRuntimeContext } from "../../stores/agsdl/chatContext";
+import { prepareAgsdlChatContext, prepareAgsdlRuntimeContext } from "../../stores/agsdl/chatContext";
 import { executionInput } from "../../services/agsdl/executionView";
 import type { AgsdlTarget } from "../../stores/useAgsdlStore";
 import type { Sequence, SystemStartId } from "../../services/agsdlExecution/contracts";
@@ -54,6 +54,19 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
   const startControls = <>
     {(startInput?.hasEntry || deliveryInput?.graphless) && <label className="agsdl-edit-field"><span>{t("agsdl.execution.prompt")}</span><textarea rows={3} value={prompt} maxLength={65536} disabled={state.intentBusy || intentOpen} placeholder={t("agsdl.execution.promptPlaceholder")} onChange={event => setPrompt(event.target.value)} /></label>}
   </>;
+  const explainPreflight = async () => {
+    if (!state.preflight) return;
+    setAttaching(true);
+    try {
+      await prepareAgsdlChatContext(target, {
+        path: "", title: t("agsdl.execution.diagnostics"),
+        diagnostic: JSON.stringify({ staticValid: state.preflight.staticValid, runtimeSupported: state.preflight.runtimeSupported,
+          productRuntimeAvailable: state.preflight.productRuntimeAvailable, incomplete: state.preflight.incomplete, diagnostics: state.preflight.diagnostics }),
+      });
+      onClose();
+    } catch (error) { notify.error(t("agsdl.staleChatSelection"), { description: agsdlErrorText(error, t) }); }
+    finally { setAttaching(false); }
+  };
   const attach = async () => {
     if (!snapshot || !state.diagnostic || !state.projection || selected.length > 64) return;
     setAttaching(true);
@@ -76,6 +89,11 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
           <span><strong>{t("agsdl.execution.empty")}</strong><br /><span className="agsdl-muted">{t("agsdl.execution.emptyHint")}</span></span>
           <button className="agsdl-link" disabled={state.busy} onClick={() => void state.refresh()}><RefreshCw size={13} /> {t("agsdl.execution.refresh")}</button>
         </div>
+        {state.preflight && <div className="agsdl-execution-state agsdl-muted" role="status">
+          {ready ? <Check size={14} /> : <AlertCircle size={14} />}
+          <span>{status}</span>
+          {!!state.preflight.diagnostics.length && <button className="agsdl-icon-button" aria-label={t("agsdl.execution.diagnostics")} title={state.preflight.diagnostics.map(item => item.message).join("\n")} disabled={attaching} onClick={() => void explainPreflight()}><MessageSquarePlus size={15} /></button>}
+        </div>}
         {ready && <>
           {startControls}
           <button aria-label={t("agsdl.execution.start")} disabled={locked || (startInput?.hasEntry && !prompt.trim())} onClick={() => void state.start(prompt)}><Play size={15} /> {t("agsdl.execution.start")}</button>

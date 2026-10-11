@@ -126,3 +126,22 @@ it("distinguishes loading, read failure and an empty execution history without o
   expect(panel.textContent).toContain('Send a first message in this plan');
   expect(panel.textContent).not.toContain('attaching AgSDL context');
 });
+
+
+it("shows a failed readiness check for a system with no execution and sends details to chat only", async () => {
+  const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
+  const source = { owner, revision: '1', sourceSha256: 'c'.repeat(64) };
+  spyOn(useAgsdlExecutionStore.getState(), 'open').mockResolvedValue(undefined);
+  useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', loaded: true, busy: false, error: undefined,
+    snapshot: undefined, projection: undefined, diagnostic: undefined, intent: undefined, runs: [],
+    preflight: { source, authoredSource: '{}', staticValid: true, runtimeSupported: false, productRuntimeAvailable: true,
+      registryVersion: 'registry', incomplete: false, diagnostics: [{ code: 'UNSUPPORTED', pointer: '/configuration', message: 'Technical readiness detail' }] } });
+  host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
+  const panel = document.querySelector('[role="dialog"]')!;
+  expect(panel.textContent).toContain(i18n.t('agsdl.execution.unsupported', { ns: 'agsdl' }));
+  expect(panel.textContent).not.toContain('Technical readiness detail');
+  expect(panel.querySelector('[aria-label="Execution diagnostics"]')).not.toBeNull();
+  expect(panel.querySelector('[aria-label="Start"]')).toBeNull();
+});
