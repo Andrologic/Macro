@@ -20,7 +20,7 @@ export function desktopMachineResources(instanceId: string, workspaceId: string,
       const catalog = projects();
       const project = catalog.find(project => project.id === ref.project_id);
       if (!project?.path) return null;
-      return JSON.stringify([workspaceId, catalog.map(project => [project.id, project.path]).sort(([a], [b]) => a.localeCompare(b))]);
+      return JSON.stringify([instanceId, workspaceId, project.id, project.path]);
     },
     icon: async projectId => (await ipc.workspaceResolveProjectIcons([projectId])).find(result => result.projectId === projectId)?.icon ?? null,
   };

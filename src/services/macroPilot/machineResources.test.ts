@@ -101,3 +101,22 @@ it('refuses stale resources before transport retries after context changes or sa
   await expect(h.host.validateMachineEmission(cpuDelivery, sample, h.authorize)).rejects.toThrow('snapshot_expired');
   await h.host.dispose();
 });
+it('retains alternating project resources and invalidates only the changed project context', async () => {
+  const keys = new Map([['project', 'context:first'], ['second', 'context:second']]);
+  const deps = source(); deps.projectKey = target => keys.get(target.project_id) ?? null;
+  const resources = new MachineResources(deps, () => now);
+  const secondRef = { ...ref, project_id: 'second' };
+  const first = await resources.icon(ref, resources.context(ref));
+  const second = await resources.icon(secondRef, resources.context(secondRef));
+  expect((await resources.icon(ref, resources.context(ref))).icon).toBe(first.icon);
+  expect((await resources.icon(secondRef, resources.context(secondRef))).icon).toBe(second.icon);
+  keys.set(ref.project_id, 'context:first-moved');
+  expect(() => resources.validate(ref, 'context:first')).toThrow('snapshot_expired');
+  expect((await resources.icon(secondRef, resources.context(secondRef))).icon).toBe(second.icon);
+  expect((await resources.icon(ref, resources.context(ref))).icon).not.toBe(first.icon);
+  keys.delete(ref.project_id);
+  expect(() => resources.context(ref)).toThrow('not_found');
+  expect((await resources.icon(secondRef, resources.context(secondRef))).icon).toBe(second.icon);
+  resources.clear();
+  expect((await resources.icon(secondRef, resources.context(secondRef))).icon).not.toBe(second.icon);
+});

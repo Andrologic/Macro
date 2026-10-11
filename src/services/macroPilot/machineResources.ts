@@ -27,12 +27,13 @@ export class MachineResources {
   }
   context(ref: ContentProjectRef): string {
     const key = this.source.projectKey(ref);
-    if (key === null) { this.clear(); throw new Error('not_found'); }
-    if ([...this.icons.values()].some(entry => entry.context !== key)) this.clear();
+    const cacheKey = JSON.stringify(ref);
+    if (key === null) { this.icons.delete(cacheKey); throw new Error('not_found'); }
+    if (this.icons.get(cacheKey)?.context !== key) this.icons.delete(cacheKey);
     return key;
   }
   validate(ref: ContentProjectRef, context: string): void {
-    if (this.context(ref) !== context) { this.clear(); throw new Error('snapshot_expired'); }
+    if (this.context(ref) !== context) { this.icons.delete(JSON.stringify(ref)); throw new Error('snapshot_expired'); }
   }
   async icon(ref: ContentProjectRef, context: string): Promise<ContentProjectIcon> {
     this.validate(ref, context);
