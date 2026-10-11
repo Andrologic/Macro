@@ -8,7 +8,15 @@ Les formes de `projects.list`, les anciens appels ACCOUNT et le contrat v1 reste
 
 Un échantillon contient `instance_id`, un `sample_id` opaque, `observed_at`, `expires_at`, `availability`, `reason`, `cpu_percent`, `memory_used_bytes` et `memory_total_bytes`. Sa durée de validité maximale est de cinq secondes. En état `available`, la raison est nulle et les nombres sont finis. La mémoire utilisée ne dépasse pas la mémoire totale. En état `unavailable`, les trois nombres sont nuls et la raison vaut `unsupported_platform` ou `measurement_failed`. Une mesure absente ou expirée ne représente jamais zéro.
 
-Le CPU est global, normalisé entre 0 et 100 sur l'ensemble des processeurs logiques, à partir de deux compteurs espacés d'au moins 250 ms. Le premier appel attend cet intervalle. La commande et son cache sont sollicités par les consultations. Aucun timer de collecte permanent n'est créé. Les définitions des compteurs et de la mémoire par système figurent dans le module natif `host_telemetry`.
+Le CPU est global, normalisé entre 0 et 100 sur l'ensemble des processeurs logiques, à partir de deux compteurs espacés d'au moins 250 ms. Le premier appel attend cet intervalle. La commande et son cache sont sollicités par les consultations. Aucun timer de collecte permanent n'est créé. Les compteurs système sont définis dans le module natif `host_telemetry`.
+
+| Système | CPU occupé | Mémoire physique utilisée |
+| --- | --- | --- |
+| Linux | Delta user + nice + system + irq + softirq + steal, divisé par ce delta plus idle + iowait. Guest et guest_nice sont déjà inclus dans user/nice. | `MemTotal - MemAvailable`, converti de Kio en octets. |
+| macOS | Delta user + system + nice, divisé par ce delta plus idle, depuis `HOST_CPU_LOAD_INFO`. | `(internal_page_count - purgeable_count + wire_count + compressor_page_count) × taille de page`. Total depuis `hw.memsize`. Le cache de fichiers et les pages purgeables sont exclus. Le stockage physique comprimé est compté, pas son équivalent décomprimé. |
+| Windows | Somme des deltas kernel - idle + user sur les processeurs, divisée par kernel + user. Une réponse partielle est refusée. | `ullTotalPhys - ullAvailPhys`, depuis `GlobalMemoryStatusEx`. |
+
+Ces définitions de mémoire dépendent du système. Elles ne représentent pas un classement comparable de pression mémoire. Les topologies Windows à plusieurs groupes de processeurs restent à vérifier lors de la recette matérielle.
 
 ## Logos
 
