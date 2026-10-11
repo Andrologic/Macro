@@ -174,3 +174,18 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-execution-actions select:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
 .agsdl-execution-actions select:disabled { opacity: 0.65; }
 .agsdl-execution-diagnostic { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; }
+
+.agsdl-action-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 10px; border: 1px solid rgb(var(--border)); border-radius: 6px; font-size: 12px; color: rgb(var(--foreground)); background: rgb(var(--background)); }
+.agsdl-action-button:hover:not(:disabled) { background: rgb(var(--muted)); }
+.agsdl-action-button.is-primary { background: rgb(var(--primary)); color: rgb(var(--primary-foreground)); border-color: transparent; }
+.agsdl-execution-modal { width: min(480px, 100%); }
+.agsdl-execution-modal .agsdl-inspector-body { display: flex; flex-direction: column; gap: 16px; }
+.agsdl-execution-modal .agsdl-edit-field { margin-top: 0; }
+.agsdl-execution-modal .agsdl-new-execution { order: 10; padding-top: 10px; border-top: 1px solid rgb(var(--border)); }
+.agsdl-new-execution > .agsdl-action-button, .agsdl-new-execution > .agsdl-edit-field { margin-top: 12px; }
+.agsdl-run-selector > span { font-size: 11px; color: rgb(var(--muted-foreground)); }
+.agsdl-detail-modal > header > strong { flex: 1; }
+.agsdl-design-summary { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }
+.agsdl-design-summary > p { margin: 0; line-height: 1.6; }
+
+.agsdl-system-summary { display: flex; align-items: center; gap: 8px; color: rgb(var(--muted-foreground)); font-size: 12px; }

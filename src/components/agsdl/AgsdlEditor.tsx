@@ -8,7 +8,7 @@ import { prepareAgsdlRuntimeContext } from "../../stores/agsdl/chatContext";
 import { DisclosureSummary } from "./DisclosureSummary";
 import { useTrackedTasks } from "./useTrackedTasks";
 import React, { useEffect, useMemo, useState } from "react";
-import { Activity, BookOpen, CircleAlert, Info, MessageSquarePlus, Maximize2, X } from "lucide-react";
+import { Activity, BookOpen, CircleAlert, Layers, Info, MessageSquarePlus, Maximize2, X } from "lucide-react";
 import { DesignLibraryDialog, DesignStart } from "./DesignLibraryDialog";
 import { SystemDesignDialog } from "./SystemDesignDialog";
 import { DesignChangesDialog } from "./DesignChangesDialog";
@@ -310,16 +310,9 @@ export const AgsdlEditor: React.FC<{
             title={t(expanded ? "agsdl.shrink" : "agsdl.expand")}>
             {expanded ? <X size={14} /> : <Maximize2 size={14} />}
           </button>}
-          {showOverview && <button className="agsdl-icon-button" aria-label={t(hasIssues ? "agsdl.diagnostics" : "agsdl.viewer.overview")}
-            title={t(hasIssues ? "agsdl.reviewHint" : "agsdl.viewer.overview")} aria-pressed={hasIssues ? undefined : overview} disabled={attaching}
-            onClick={() => {
-              if (!hasIssues) { setOverview(!overview); setSelection(undefined); return; }
-              setAttaching(true); setError("");
-              void attachContext({ path: "", title: document!.title, diagnostic: [...findings.map(issue => `${issue.rule}: ${issue.details}`), ...document!.unresolved.map(item => JSON.stringify(item))].join("\n") })
-                .catch(error => setError(agsdlErrorText(error, t))).finally(() => setAttaching(false));
-            }}>
-            {hasIssues ? <CircleAlert size={14} className="agsdl-unresolved" /> : <Info size={14} />}
-          </button>}
+          {showOverview && <button className="agsdl-icon-button" aria-label={t("agsdl.viewer.overview")}
+            title={t("agsdl.viewer.overview")} aria-pressed={overview}
+            onClick={() => { setOverview(!overview); setSelection(undefined); }}><Info size={14} /></button>}
           {source && <button className="agsdl-icon-button" title={t("agsdl.design.saveBlueprint")} aria-label={t("agsdl.design.saveBlueprint")} disabled={session?.saving} onClick={() => setLibrary("save")}><BookOpen size={14} /></button>}
 
         </div>
@@ -425,13 +418,14 @@ export const AgsdlEditor: React.FC<{
               </> : <>
                 <section className="agsdl-design-summary">
                   {design?.purpose && <p>{design.purpose}</p>}
+                  <div className="agsdl-system-summary"><Layers size={16} /><span>{t("agsdl.designGraph.members", { count: cards.length })}</span></div>
                   {hasIssues && <button className="agsdl-link agsdl-design-pending" disabled={attaching} onClick={() => {
                     setAttaching(true); setDiagnosticError("");
                     void attachContext({ path: "", title: document.title, diagnostic: [...findings.map(issue => `${issue.rule}: ${issue.details}`), ...document.unresolved.map(item => JSON.stringify(item))].join("\n") })
                       .catch(error => setDiagnosticError(agsdlErrorText(error, t))).finally(() => setAttaching(false));
                   }}><MessageSquarePlus size={14} />{t("agsdl.reviewWithAI")}</button>}
                   {pendingRequirements.length > 0 && <button className="agsdl-design-pending agsdl-link" onClick={() => { setOverview(false); setDesignOpen(true); }}><CircleAlert size={13} />{t("agsdl.design.pending", { count: pendingRequirements.length })}</button>}
-                  <button className="agsdl-link" onClick={() => { setOverview(false); setDesignOpen(true); }}>{t("agsdl.design.settings")}</button>
+                  <button className="agsdl-action-button" onClick={() => { setOverview(false); setDesignOpen(true); }}>{t("agsdl.design.settings")}</button>
                 </section>
               </>}
             </section>

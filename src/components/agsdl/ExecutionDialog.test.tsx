@@ -32,8 +32,8 @@ it("offers a simple prompt and real Agent selection while keeping technical iden
   act(() => useAgsdlExecutionStore.setState({ preflight: { ...useAgsdlExecutionStore.getState().preflight!, productRuntimeAvailable: true } }));
   expect(panel.querySelector('textarea')).not.toBeNull();
   expect(panel.querySelector('select[aria-label="Agent"]')?.textContent).toContain('real-agent');
-  expect(panel.querySelector('[title="A runtime error detail"] input[type="checkbox"]')).not.toBeNull();
-  expect(panel.querySelector('[title="A runtime error detail"]')?.closest('details')?.open).toBe(false);
+  expect(panel.querySelector('input[type="checkbox"]')).toBeNull();
+  expect(panel.textContent).not.toContain("Execution diagnostics");
   await act(async () => { await i18n.changeLanguage('fr'); });
   for (const [key, text] of [
     ['intentOpen', 'Reprenez ou abandonnez la demande en attente avant d’en lancer une autre.'],
@@ -90,13 +90,8 @@ it("opens read-only without calling support missing, drops diagnostics of anothe
   expect(panel.querySelector('textarea')).toBeNull();
   act(() => useAgsdlExecutionStore.setState({ preflight: undefined }));
 
-  const checkbox = () => panel.querySelector<HTMLInputElement>('.agsdl-execution-diagnostic input')!;
-  await act(async () => { checkbox().click(); });
-  expect(checkbox().checked).toBe(true);
   act(() => useAgsdlExecutionStore.setState(run('run-b')));
-  expect(checkbox().checked).toBe(false);
-
-  await act(async () => { checkbox().click(); });
+  expect(panel.querySelector('input[type="checkbox"]')).toBeNull();
   await act(async () => { panel.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!.click(); });
   expect(notified).toHaveBeenCalledWith('The document changed. Attach the selection again before sending.', { description: 'The action failed. Try again.' });
 });

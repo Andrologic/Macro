@@ -81,7 +81,7 @@ describe("AgSDL viewer", () => {
     act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], source: currentSource, dirty: true } } })));
     expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
     act(() => useAgsdlExecutionStore.getState().showCaptured(true));
-    expect(container!.textContent).toContain("Captured source");
+    expect(container!.textContent).toContain("View execution graph");
     expect(container!.querySelector(".agsdl-native-active")).not.toBeNull();
     act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
     expect(document.body.querySelector(".agsdl-prompt")?.textContent).toBe("Clarify the request and produce acceptance criteria.");
@@ -89,7 +89,7 @@ describe("AgSDL viewer", () => {
     expect(useAgsdlStore.getState().sessions[key].source).toBe(currentSource);
     act(() => useChatStore.setState({ selectedConversationId: "another-conversation" }));
     expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
-    expect(container!.textContent).not.toContain("Captured source");
+    expect(container!.textContent).not.toContain("View execution graph");
   });
 
   it("returns from the expanded graph only after attaching context successfully", async () => {
@@ -196,8 +196,10 @@ describe("AgSDL viewer", () => {
     expect(container!.querySelector('[role="status"]')).not.toBeNull();
     expect(container!.querySelector('[aria-label="Undo"], [aria-label="Redo"]')).toBeNull();
     const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValue(undefined);
-    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Diagnostics"]')!.click());
-    expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="System details"]')!.click());
+    expect(globalThis.document.body.querySelector(".agsdl-inspector")).not.toBeNull();
+    const review = [...globalThis.document.body.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Review with AI")!;
+    await act(async () => review.click());
     expect(attach.mock.calls[0][1].diagnostic).toContain("Unknown agent reference");
   });
 

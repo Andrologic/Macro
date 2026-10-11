@@ -69,10 +69,6 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
     panelClassName="agsdl-detail-modal">
     <header>{!draft && onBack && <button className="agsdl-icon-button" disabled={busy} onClick={onBack} aria-label={t("agsdl.viewer.backToComponent")} title={t("agsdl.viewer.backToComponent")}><ArrowLeft size={16} /></button>}<strong>{title}</strong><div className="agsdl-header-actions">
-      {!draft && onAttach && <button className="agsdl-icon-button" disabled={busy} title={t("agsdl.attachToChat")} aria-label={t("agsdl.attachToChat")} onClick={() => {
-        setBusy(true); setError("");
-        void onAttach().then(onClose).catch((error: unknown) => setError(agsdlErrorText(error, t))).finally(() => setBusy(false));
-      }}><MessageSquarePlus size={15} /></button>}
       {!draft && canEdit && card && (card.details.contract !== "agsdl-0.2.0" || hasEditableConfiguration || hasEditablePrompt) && ["invoke", "agent", "Agent", "System", "Instructions", "Interface", "Tool", "Resource", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button>
     </div></header>
@@ -107,6 +103,12 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
       {applied && error && <p>{t("agsdl.viewer.editSaveFailed")}</p>}
 
     </div>
+    {!draft && onAttach && <footer>
+      {!draft && onAttach && <button className="agsdl-action-button" disabled={busy} title={t("agsdl.attachToChat")} aria-label={t("agsdl.attachToChat")} onClick={() => {
+        setBusy(true); setError("");
+        void onAttach().then(onClose).catch((error: unknown) => setError(agsdlErrorText(error, t))).finally(() => setBusy(false));
+      }}><MessageSquarePlus size={14} />{t("agsdl.attachToChat")}</button>}
+    </footer>}
     {draft && <footer>
       <button disabled={busy} onClick={() => { if (applied) close(); else if (dirty) setDiscard("edit"); else { setDraft(undefined); setError(""); } }}>{t(applied ? "agsdl.close" : "agsdl.cancel")}</button>
       <button form="agsdl-component-form" type="submit" disabled={busy || session?.saving || !canEdit || session?.status !== "draft" || !dirty || (draft.modelSelected && (!draft.providerId || !draft.modelId))}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : "agsdl.save")}</button>
