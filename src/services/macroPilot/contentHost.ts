@@ -397,6 +397,8 @@ export class ContentHost {
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
         if (MACHINE_OPERATIONS.has(request.operation)) {
           deadline = 0; await authorizeNow();
+          await this.policy(); guard();
+          if (readingPolicy !== this.policyKey) failure('snapshot_expired');
           if (request.operation === 'project.icon') this.machines!.validate(request.body.ref, machineContext!);
           if (Date.parse((result as { expires_at: string }).expires_at) <= this.now() || Date.parse((result as { observed_at: string }).observed_at) > this.now()) failure('snapshot_expired');
         }
@@ -446,6 +448,8 @@ export class ContentHost {
       await this.policy();
       if (metadata && metadata.policy !== this.policyKey) failure('snapshot_expired');
       const deadline = Date.parse(await authorize(delivery)); this.check();
+      await this.policy();
+      if (metadata && metadata.policy !== this.policyKey) failure('snapshot_expired');
       if (!Number.isFinite(deadline) || deadline <= this.now() || deadline > this.now() + 10000 || deadline > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
       if (result.response.type !== 'response') return;
       const payload = result.response as { result: { expires_at: string; observed_at: string } };

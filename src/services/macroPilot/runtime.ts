@@ -248,8 +248,9 @@ export class PilotRuntime {
             // The host guards execution with execute_before. Delivery retries
             // use the longer exchange lifetime, including a lost acknowledgement.
             if (signal.aborted || !Number.isFinite(deliveryExpiresAt) || Date.now() >= deliveryExpiresAt) throw new PilotError('unavailable');
-            await host.validateMachineEmission(response.data as ContentDelivery, result, authorizeContent);
-            await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal); break;
+            await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal,
+              ['instance.telemetry', 'project.icon'].includes((response.data as ContentDelivery).request.operation)
+                ? () => host.validateMachineEmission(response.data as ContentDelivery, result, authorizeContent) : undefined); break;
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
         failures = 0;

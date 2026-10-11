@@ -151,6 +151,8 @@ export interface PilotRequestOptions {
   producer?: boolean;
   signal?: AbortSignal;
   authorizationToken?: string;
+  /** Last guard after credential awaits, immediately before fetch. */
+  beforeSend?: () => Promise<void>;
 }
 
 export interface PilotResponse<T = unknown> {
@@ -722,12 +724,14 @@ export class MacroPilotNativeClient {
   }
 
   /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
-  async requestContent(path: string, body: unknown, signal: AbortSignal): Promise<PilotResponse> {
+  async requestContent(path: string, body: unknown, signal: AbortSignal, beforeSend?: () => Promise<void>): Promise<PilotResponse> {
     const instance = this.publicState.instance?.ref.instance_id;
     const prefix = `/pilot/v2/instances/${encodeURIComponent(instance ?? '')}/deliveries/`;
     if (!instance || !path.startsWith(prefix) || !validateContentMessage(body)) throw new PilotClientError('invalid_configuration');
+    const machineResult = body.type === 'delivery.result' && body.response.type === 'response' && ['instance.telemetry', 'project.icon'].includes(body.response.operation);
+    if (machineResult && !beforeSend) throw new PilotClientError('invalid_configuration');
     const requestId = 'request_id' in body ? String(body.request_id) : createOpaqueId('request', this.dependencies);
-    return this.sendRequest('POST', path, body, { authenticated: true, producer: true, signal }, 'producer', requestId);
+    return this.sendRequest('POST', path, body, { authenticated: true, producer: true, signal, beforeSend }, 'producer', requestId);
   }
 
   /** Detection-only values. The caller must keep these out of journals and logs. */
@@ -790,6 +794,13 @@ export class MacroPilotNativeClient {
       headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId, signal));
     }
     check();
+    await options.beforeSend?.();
+    check();
+    if (extension === 'producer' && isRecord(body) && body.type === 'delivery.result' && isRecord(body.response) && body.response.type === 'response' && ['instance.telemetry', 'project.icon'].includes(String(body.response.operation))) {
+      const resource = isRecord(body.response.result) ? body.response.result : {};
+      const now = this.dependencies.now().getTime();
+      if (Date.parse(String(resource.observed_at)) > now || Date.parse(String(resource.expires_at)) <= now) throw new PilotClientError('snapshot_expired');
+    }
     // Start the transport deadline only after the native credential read settles.
     if (extension) signal = AbortSignal.any([...signals, AbortSignal.timeout(30_000)]);
     check();
