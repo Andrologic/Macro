@@ -323,6 +323,21 @@ async fn retained(
     }))
 }
 
+/// Only admission errors before reservation can prove a refusal. A concurrent
+/// reservation takes precedence, including when its physical outcome is unknown.
+fn refused_admission(
+    error: EngineFailure,
+    retained: Option<HostToolReceipt>,
+) -> Result<HostToolReceipt> {
+    if let Some(receipt) = retained {
+        return Ok(receipt);
+    }
+    if matches!(error.code.as_str(), "PERMISSION" | "CAPTURE_CHANGED") {
+        return Ok(HostToolReceipt::Rejected { code: error.code });
+    }
+    Err(error)
+}
+
 /// Compiler and source/configuration lock waits never own the Stop admission gate.
 /// The returned guards must stay alive through reservation and physical dispatch.
 pub(crate) async fn policy_admission<G>(
@@ -450,7 +465,7 @@ pub(crate) async fn execution_host_invoke_tool(
     drop(policy_lease);
     drop(scope_guard);
     let registry_json = serde_json::to_string(&registry)?;
-    let (policy, (scope_guard, policy_lease), gate) = policy_admission(
+    let admission = policy_admission(
         &host,
         host.compile(snapshot.source, snapshot.authored_source, registry_json),
         async {
@@ -486,8 +501,14 @@ pub(crate) async fn execution_host_invoke_tool(
             Ok((scope_guard, policy_lease))
         },
     )
-    .await?;
+    .await;
     host.authenticate_owner(&webview, &request.context.owner)?;
+    let (policy, (scope_guard, policy_lease), gate) = match admission {
+        Ok(admission) => admission,
+        Err(error) => {
+            return refused_admission(error, retained(&pool, &host, &request, &effect).await?);
+        }
+    };
     // A concurrent invocation may have reserved this exact effect while compiling.
     if let Some(receipt) = retained(&pool, &host, &request, &effect).await? {
         return Ok(receipt);
@@ -676,5 +697,45 @@ pub(crate) fn cancel(effect: &EngineEffect) {
         };
         // This is a cancellation request only. Settlement belongs to the owned future.
         crate::core::workspace_execution::tool_cancel_workspace(key(&request));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn policy_revocation_before_dispatch_is_refused_but_retained_effects_take_precedence() {
+        for code in ["PERMISSION", "CAPTURE_CHANGED"] {
+            let refusal = || failure(code, "policy", "Synthetic admission change");
+            assert!(
+                matches!(refused_admission(refusal(), None).unwrap(), HostToolReceipt::Rejected { code: returned } if returned == code)
+            );
+            assert!(matches!(
+                refused_admission(refusal(), Some(HostToolReceipt::Pending)).unwrap(),
+                HostToolReceipt::Pending
+            ));
+            assert!(matches!(
+                refused_admission(refusal(), Some(HostToolReceipt::Uncertain)).unwrap(),
+                HostToolReceipt::Uncertain
+            ));
+            assert!(matches!(
+                refused_admission(
+                    refusal(),
+                    Some(HostToolReceipt::Ended {
+                        result_json: "null".into(),
+                        failed: false
+                    })
+                )
+                .unwrap(),
+                HostToolReceipt::Ended { failed: false, .. }
+            ));
+        }
+        assert!(refused_admission(failure("STORAGE", "", "Synthetic storage loss"), None).is_err());
+        assert!(refused_admission(
+            failure("CORRELATION", "", "Synthetic malformed ticket"),
+            None
+        )
+        .is_err());
     }
 }
