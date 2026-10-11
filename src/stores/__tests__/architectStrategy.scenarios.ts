@@ -57,7 +57,7 @@ export const registerArchitectStrategyScenarios = (
       const read = JSON.parse(String(await onToolCall('agsdl_get', target)));
       expect(read.source).toBe(originalSource);
       expect(read.macro_models).toEqual([
-        { providerId: 'provider-1', name: 'Test provider', models: [{ modelId: 'model-1', name: 'Model 1' }] },
+        { providerId: 'provider-1', name: 'Test provider', models: [{ modelId: 'model-1', name: 'Model 1', edition: { identity: 'macro/native-model/p/cHJvdmlkZXItMQ/m/bW9kZWwtMQ', version: '1' } }] },
       ]);
       const result = JSON.parse(String(await onToolCall('agsdl_update', {
         ...target,
