@@ -1077,6 +1077,30 @@
     },
     {
       "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryAvailability",
+      "origin": "macro_lib::host_telemetry::HostTelemetryAvailability",
+      "path": "HostTelemetryAvailability.ts"
+    },
+    {
+      "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryDto",
+      "origin": "macro_lib::host_telemetry::HostTelemetryDto",
+      "path": "HostTelemetryDto.ts"
+    },
+    {
+      "families": [
+        "host_telemetry"
+      ],
+      "name": "HostTelemetryReason",
+      "origin": "macro_lib::host_telemetry::HostTelemetryReason",
+      "path": "HostTelemetryReason.ts"
+    },
+    {
+      "families": [
         "workspace"
       ],
       "name": "ImportGitRepoRequest",

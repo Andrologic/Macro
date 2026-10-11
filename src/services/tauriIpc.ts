@@ -657,3 +657,7 @@ export * from "./ipc/pilot";
 
 export { listMessagesBounded, conversationSetArchives, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, conversationImportArchives, getMessage } from './ipc/conversationManagement';
 export type { ConversationMetadata, ConversationActionInput, ConversationActionResult } from './ipc/conversationManagement';
+
+export type { HostTelemetryDto, HostTelemetryAvailability, HostTelemetryReason } from "../types/generated/ipc";
+
+export { hostTelemetryRead } from "./ipc/hostTelemetry";
