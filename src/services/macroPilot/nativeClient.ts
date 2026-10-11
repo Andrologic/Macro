@@ -247,6 +247,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const errorCodeForStatus = (status: number, data: unknown): PilotClientErrorCode => {
+  if ((status === 400 || status === 422) && isRecord(data) && data.type === 'error' && data.code === 'validation_failed') return 'validation_failed';
   const remoteCode = isRecord(data) && typeof data.code === 'string'
     ? data.code
     : isRecord(data) && isRecord(data.error) && typeof data.error.code === 'string'

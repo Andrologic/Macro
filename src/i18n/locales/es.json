@@ -1148,6 +1148,9 @@
       "otherDevices": "Otros dispositivos",
       "devicesTitle": "Dispositivos",
       "automaticDevices": "Los dispositivos con la misma cuenta de Macro Connect se conectan automáticamente.",
+      "lastActivity": "Última actividad {{date}}",
+      "lastActivityUnknown": "Última actividad desconocida",
+      "activityHelp": "La última actividad corresponde a una solicitud completada correctamente. No indica si un dispositivo está en línea.",
       "preparingDevice": "Configurando este dispositivo…",
       "accessRecovery": "Restablecer el acceso del dispositivo",
       "label": "Macro Connect",
@@ -1217,6 +1220,7 @@
       "errors": {
         "invalid_configuration": "Comprueba el nombre del dispositivo e inténtalo de nuevo.",
         "invalid_response": "El relay devolvió una respuesta no válida.",
+        "validation_failed": "El servidor de retransmisión rechazó esta solicitud. Actualiza y vuelve a intentarlo.",
         "response_too_large": "La respuesta del relay superó el límite de 1 MB.",
         "redirect_refused": "El relay intentó redirigir la solicitud.",
         "unauthorized": "Tu sesión de Macro Connect ha caducado. Vuelve a conectarte con GitHub. Tus proyectos y conversaciones locales siguen disponibles.",

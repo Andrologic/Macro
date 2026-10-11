@@ -1172,6 +1172,9 @@
       "otherDevices": "Autres appareils",
       "devicesTitle": "Appareils",
       "automaticDevices": "Les appareils connectés au même compte Macro Connect sont associés automatiquement.",
+      "lastActivity": "Dernière activité {{date}}",
+      "lastActivityUnknown": "Dernière activité inconnue",
+      "activityHelp": "La dernière activité correspond à une requête réussie. Elle ne renseigne pas sur la présence en ligne de l’appareil.",
       "preparingDevice": "Préparation de cet appareil…",
       "accessRecovery": "Rétablir l’accès d’un appareil",
       "label": "Macro Connect",
@@ -1241,6 +1244,7 @@
       "errors": {
         "invalid_configuration": "Vérifiez le nom de l’appareil et réessayez.",
         "invalid_response": "Le relais a renvoyé une réponse invalide.",
+        "validation_failed": "Le relais a refusé cette requête. Actualisez et réessayez.",
         "response_too_large": "La réponse du relais dépasse la limite de 1 Mo.",
         "redirect_refused": "Le relais a tenté de rediriger la requête.",
         "unauthorized": "Votre session Macro Connect a expiré. Connectez-vous à nouveau avec GitHub. Vos projets et conversations locaux restent disponibles.",

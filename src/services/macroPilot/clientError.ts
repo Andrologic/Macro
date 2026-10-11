@@ -5,6 +5,7 @@ export type PilotClientErrorCode =
   | 'context_changed'
   | 'invalid_configuration'
   | 'invalid_response'
+  | 'validation_failed'
   | 'response_too_large'
   | 'redirect_refused'
   | 'unauthorized'

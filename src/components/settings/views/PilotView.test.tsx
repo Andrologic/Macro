@@ -9,6 +9,7 @@ const resumeVaultAccessMock = mock(async () => undefined);
 const reconcileNotExecutedMock = mock(async (_key: string) => undefined);
 const notifySuccessMock = mock(() => undefined);
 const notifyWarningMock = mock((_message: string) => undefined);
+const testLanguage = 'en';
 let runtimeStatus = 'running';
 let runtimeListener: (() => void) | undefined;
 let indeterminate = [{
@@ -32,6 +33,7 @@ const pilotState = {
     ref: { type: 'instance', instance_id: 'instance:studio' },
     label: 'Studio Mac',
     connection_state: 'reachable',
+    last_seen_at: undefined as string | undefined,
     supported_contract_versions: ['1.0'],
     revision: 1,
   },
@@ -65,6 +67,7 @@ const usePilotStoreMock = Object.assign(() => pilotState, { getState: () => pilo
 
 mock.module('react-i18next', () => ({
   useTranslation: () => ({
+    i18n: { language: testLanguage },
     t: (
       key: string,
       fallbackOrOptions?: string | Record<string, unknown>,
@@ -111,6 +114,7 @@ describe('PilotView', () => {
     pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
     pilotState.sessionVerification = null; pilotState.sessionEndReason = null;
     pilotState.instance.connection_state = 'reachable';
+    pilotState.instance.last_seen_at = undefined;
     pilotState.accessRequestsLoaded = true;
     pilotState.refreshAccessRequests.mockReset();
     pilotState.refreshAccessRequests.mockImplementation(async () => undefined);
@@ -240,6 +244,88 @@ describe('PilotView', () => {
     expect(devices.textContent!.indexOf('Studio Mac')).toBeLessThan(devices.textContent!.indexOf('Test phone'));
     expect(devices.textContent).toContain('Other devices');
     expect(devices.textContent!.match(/Studio Mac/g)).toHaveLength(1);
+  });
+
+  it('shows last activity separately from presence and keeps it when this computer goes offline', async () => {
+    await showAccount();
+    const current = pilotState.accountCatalog!.sessions[0];
+    const activity = '2026-09-08T10:00:30.000Z';
+    current.last_seen_at = activity;
+    pilotState.accountCatalog!.sessions.push({ ...current, session_id: 'session:phone',
+      device_id: 'device:phone', client_kind: 'mobile', label: 'Test phone' });
+    await act(async () => root.render(<PilotView />));
+    const devices = container.querySelector('section[aria-label="Devices"]')!;
+    const local = devices.querySelector('[aria-label="This computer"]')!;
+    const expected = `Last activity ${new Date(activity).toLocaleString(testLanguage)}`;
+    expect(local.textContent).toContain('Online');
+    expect(local.textContent).toContain(expected);
+    expect(devices.textContent!.split(expected)).toHaveLength(3);
+    expect(devices.textContent).toContain('It does not indicate whether a device is online.');
+    expect(devices.querySelectorAll('[role="status"]')).toHaveLength(1);
+    pilotState.status = 'offline';
+    runtimeStatus = 'inactive';
+    await act(async () => root.render(<PilotView />));
+    expect(local.textContent).toContain('Offline');
+    expect(local.textContent).toContain(expected);
+  });
+
+  it('uses instance activity only for this computer and keeps its date independent of reachability', async () => {
+    await showAccount();
+    const current = pilotState.accountCatalog!.sessions[0];
+    const activity = '2026-09-08T10:00:30.000Z';
+    pilotState.instance.last_seen_at = activity;
+    pilotState.accountCatalog!.sessions.push({ ...current, session_id: 'session:phone',
+      device_id: 'device:phone', client_kind: 'mobile', label: 'Test phone' });
+    await act(async () => root.render(<PilotView />));
+    const devices = container.querySelector('section[aria-label="Devices"]')!;
+    const local = devices.querySelector('[aria-label="This computer"]')!;
+    const expected = `Last activity ${new Date(activity).toLocaleString(testLanguage)}`;
+    expect(local.textContent).toContain(expected);
+    expect(local.textContent).toContain('Online');
+    expect(devices.textContent!.split(expected)).toHaveLength(2);
+    expect(devices.textContent!.match(/Last activity unknown/g)).toHaveLength(1);
+    pilotState.instance.connection_state = 'unreachable';
+    pilotState.status = 'offline';
+    runtimeStatus = 'inactive';
+    await act(async () => root.render(<PilotView />));
+    expect(local.textContent).toContain('Offline');
+    expect(local.textContent).toContain(expected);
+    // The persisted date also remains available while the account catalog is absent.
+    pilotState.accountCatalog = null;
+    await act(async () => root.render(<PilotView />));
+    expect(local.textContent).toContain('Offline');
+    expect(local.textContent).toContain(expected);
+    pilotState.instance.connection_state = 'reachable';
+    await act(async () => root.render(<PilotView />));
+    expect(local.textContent).toContain('Offline');
+    expect(local.textContent).toContain(expected);
+  });
+
+  it('prefers observed session activity to instance activity even when the instance date is newer', async () => {
+    await showAccount();
+    const sessionActivity = '2026-09-08T10:00:30.000Z';
+    const instanceActivity = '2026-09-09T10:00:30.000Z';
+    pilotState.accountCatalog!.sessions[0].last_seen_at = sessionActivity;
+    pilotState.instance.last_seen_at = instanceActivity;
+    await act(async () => root.render(<PilotView />));
+    const local = container.querySelector('[aria-label="This computer"]')!;
+    expect(local.textContent).toContain(`Last activity ${new Date(sessionActivity).toLocaleString(testLanguage)}`);
+    expect(local.textContent).not.toContain(new Date(instanceActivity).toLocaleString(testLanguage));
+  });
+
+  it('shows unknown activity for unobserved devices without substituting created_at', async () => {
+    await showAccount();
+    const current = pilotState.accountCatalog!.sessions[0];
+    pilotState.accountCatalog!.sessions.push({ ...current, session_id: 'session:phone',
+      device_id: 'device:phone', client_kind: 'mobile', label: 'Test phone' });
+    await act(async () => root.render(<PilotView />));
+    const devices = container.querySelector('section[aria-label="Devices"]')!;
+    expect(devices.textContent!.match(/Last activity unknown/g)).toHaveLength(2);
+    expect(devices.textContent).not.toContain(new Date(current.created_at).toLocaleString(testLanguage));
+    // A catalog still loading must also keep activity unknown for this computer.
+    pilotState.accountCatalog = null;
+    await act(async () => root.render(<PilotView />));
+    expect(devices.querySelector('[aria-label="This computer"]')?.textContent).toContain('Last activity unknown');
   });
 
   it('uses the product relay without exposing a relay address field or an early offline error', async () => {
@@ -676,12 +762,13 @@ describe('PilotView', () => {
     await showAccount();
     const active = pilotState.accountCatalog!.sessions[0];
     pilotState.accountCatalog!.sessions.push(
-      { ...active, session_id: 'session:revoked', label: 'Revoked phone', state: 'revoked' },
-      { ...active, session_id: 'session:expired', label: 'Expired phone', state: 'expired' },
+      { ...active, session_id: 'session:revoked', label: 'Revoked phone', state: 'revoked', last_seen_at: '2026-09-09T10:00:00.000Z' },
+      { ...active, session_id: 'session:expired', label: 'Expired phone', state: 'expired', last_seen_at: '2026-09-09T10:00:00.000Z' },
     );
     await act(async () => root.render(<PilotView />));
     expect(container.textContent).not.toContain('Revoked phone');
     expect(container.textContent).not.toContain('Expired phone');
+    expect(container.textContent).not.toContain(new Date('2026-09-09T10:00:00.000Z').toLocaleString(testLanguage));
     expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Disconnect this device')).toHaveLength(1);
     expect(container.querySelector('section[aria-label="Devices"] h4')?.textContent).toEndWith('1');
   });

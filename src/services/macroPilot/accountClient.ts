@@ -122,8 +122,26 @@ export class PilotAccountClient {
       let first: Page | null = null;
       let continuation: { snapshot_id: string; cursor: string } | undefined;
       let bytes = 0;
-      do {
-        const result = await this.request<{ page: Page; items: PilotAccountSession[] }>(context, 'sessions.list', continuation ? { continuation } : {}, signal);
+      let includeLastSeen = true;
+      while (true) {
+        let result: { page: Page; items: PilotAccountSession[] };
+        try {
+          result = await this.request(context, 'sessions.list', {
+            ...(includeLastSeen ? { include_last_seen: true } : {}),
+            ...(continuation ? { continuation } : {}),
+          }, signal);
+        } catch (error) {
+          if (!includeLastSeen || !(error instanceof PilotClientError) || error.code !== 'validation_failed') throw error;
+          this.check(context, signal);
+          // Older relays reject the opt-in. Restart with the exact legacy projection.
+          includeLastSeen = false;
+          sessions.length = 0;
+          ids.clear();
+          cursors.clear();
+          first = null;
+          continuation = undefined;
+          continue;
+        }
         const page = result.page;
         bytes += new TextEncoder().encode(JSON.stringify(result)).byteLength;
         if (bytes > 64 * 1024 * 1024) throw new PilotClientError('resource_limit');
@@ -142,8 +160,8 @@ export class PilotAccountClient {
           if (result.items.length === 0 || cursors.has(page.next_cursor)) throw new PilotClientError('invalid_response');
           cursors.add(page.next_cursor);
           continuation = { snapshot_id: page.snapshot_id, cursor: page.next_cursor };
-        } else continuation = undefined;
-      } while (continuation);
+        } else break;
+      }
       this.check(context, signal);
       if (!sessions.some((session) => session.session_id === context.sessionId && session.state === 'active')) throw new PilotClientError('invalid_response');
       const catalog = { identity, sessions, revision: identity.revision };

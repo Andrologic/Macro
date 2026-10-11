@@ -1143,6 +1143,9 @@
       "otherDevices": "その他のデバイス",
       "devicesTitle": "デバイス",
       "automaticDevices": "同じ Macro Connect アカウントでログインしたデバイスは自動的に接続されます。",
+      "lastActivity": "最終アクティビティ {{date}}",
+      "lastActivityUnknown": "最終アクティビティ不明",
+      "activityHelp": "最終アクティビティは成功したリクエストの記録です。デバイスがオンラインかどうかは示しません。",
       "preparingDevice": "このデバイスを設定しています…",
       "accessRecovery": "デバイスのアクセスを復元",
       "label": "Macro Connect",
@@ -1212,6 +1215,7 @@
       "errors": {
         "invalid_configuration": "デバイス名を確認して、もう一度お試しください。",
         "invalid_response": "リレーから無効な応答が返されました。",
+        "validation_failed": "リレーがこのリクエストを拒否しました。更新してもう一度お試しください。",
         "response_too_large": "リレーの応答が 1 MB の上限を超えました。",
         "redirect_refused": "リレーがリクエストをリダイレクトしようとしました。",
         "unauthorized": "Macro Connect のセッションが期限切れです。GitHub で再接続してください。ローカルのプロジェクトと会話は引き続き利用できます。",

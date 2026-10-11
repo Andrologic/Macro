@@ -49,6 +49,118 @@ const harness = () => {
 const response = (request: Request, result: unknown) => json({ contract_version: '2.0', type: 'response', request_id: request.request_id,
   account_id: request.account_id, operation: request.operation, result });
 
+describe('account session activity', () => {
+  const activity = '2026-09-08T10:00:30.000Z';
+  const lists = (h: ReturnType<typeof harness>) => h.requests.filter(item => item.body.operation === 'sessions.list');
+  const compatibilityError = (request: Request) => json({ contract_version: '2.0', type: 'error',
+    request_id: request.request_id, account_id: request.account_id, operation: request.operation,
+    code: 'validation_failed', retryable: false }, 400);
+
+  it('requests activity on every page and retains observed, absent and revoked dates exactly', async () => {
+    const h = harness(); await h.client.initialize();
+    const items = [devices[0], { ...devices[1], last_seen_at: activity },
+      { ...devices[1], session_id: 'session-revoked', state: 'revoked' as const, last_seen_at: activity }];
+    h.intercept(request => {
+      if (request.operation !== 'sessions.list') return;
+      expect(request.body?.include_last_seen).toBe(true);
+      const offset = request.body?.continuation ? 1 : 0;
+      return response(request, { page: { ...page, offset, total: 3, next_cursor: offset === 0 ? 'cursor-activity' : null },
+        items: offset === 0 ? items.slice(0, 1) : items.slice(1) });
+    });
+    const catalog = await h.client.getAccountCatalog();
+    expect(catalog.sessions).toEqual(items);
+    expect(catalog.sessions[0]).not.toHaveProperty('last_seen_at');
+    expect(lists(h).map(item => item.body.body)).toEqual([
+      { include_last_seen: true },
+      { include_last_seen: true, continuation: { snapshot_id: page.snapshot_id, cursor: 'cursor-activity' } },
+    ]);
+    await expect(h.client.revokeSession('session-revoked')).rejects.toMatchObject({ code: 'forbidden' });
+    expect(h.requests.some(item => item.body.operation === 'session.revoke')).toBe(false);
+    expect(h.requests.find(item => item.body.type === 'negotiate')?.body).not.toHaveProperty('capabilities');
+  });
+
+  it.each([false, true])('restarts the legacy projection after validation_failed, on continuation=%s', async onContinuation => {
+    const h = harness(); await h.client.initialize();
+    h.intercept(request => {
+      if (request.operation !== 'sessions.list') return;
+      const body = request.body!;
+      if (body.include_last_seen) {
+        if (!onContinuation || body.continuation) return compatibilityError(request);
+        return response(request, { page: { ...page, snapshot_id: 'snapshot-activity', next_cursor: 'cursor-activity' },
+          items: [{ ...devices[0], last_seen_at: activity }] });
+      }
+      const offset = body.continuation ? 1 : 0;
+      expect(body).toEqual(offset === 0 ? {} : { continuation: { snapshot_id: 'snapshot-legacy', cursor: 'cursor-legacy' } });
+      return response(request, { page: { ...page, snapshot_id: 'snapshot-legacy', offset, next_cursor: offset === 0 ? 'cursor-legacy' : null },
+        items: [devices[offset]] });
+    });
+    expect(await h.client.getAccountCatalog()).toEqual({ identity, sessions: devices, revision: identity.revision });
+    expect(lists(h).map(item => item.body.body)).toEqual([
+      { include_last_seen: true },
+      ...(onContinuation ? [{ include_last_seen: true, continuation: { snapshot_id: 'snapshot-activity', cursor: 'cursor-activity' } }] : []),
+      {}, { continuation: { snapshot_id: 'snapshot-legacy', cursor: 'cursor-legacy' } },
+    ]);
+    // Compatibility is scoped to this capture, so a later refresh tries the opt-in again.
+    await h.client.getAccountCatalog();
+    expect(lists(h)[onContinuation ? 4 : 3].body.body).toEqual({ include_last_seen: true });
+  });
+
+  it('does not replay validation_failed after the legacy retry or permit a mutation from a failed refresh', async () => {
+    const h = harness(); await h.client.initialize(); await h.client.getAccountCatalog();
+    const before = lists(h).length;
+    h.intercept(request => request.operation === 'sessions.list' ? compatibilityError(request) : undefined);
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'validation_failed' });
+    expect(lists(h).slice(before).map(item => item.body.body)).toEqual([{ include_last_seen: true }, {}]);
+    await expect(h.client.revokeSession('session-other')).rejects.toMatchObject({ code: 'stale_revision' });
+  });
+
+  it.each([
+    ['unauthorized', 401], ['session_revoked', 401], ['forbidden', 403], ['not_found', 404],
+    ['conflict', 409], ['stale_revision', 409], ['snapshot_expired', 400], ['resource_limit', 400],
+    ['unavailable', 503], ['invalid_response', 400], ['offline', 0],
+  ] as const)('never falls back for %s', async (code, status) => {
+    const h = harness(); await h.client.initialize();
+    h.intercept(request => {
+      if (request.operation !== 'sessions.list') return;
+      if (code === 'offline') throw new TypeError('synthetic network failure');
+      return json({ code }, status);
+    });
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code });
+    expect(lists(h).map(item => item.body.body)).toEqual([{ include_last_seen: true }]);
+    if (code === 'unauthorized' || code === 'session_revoked') expect(h.client.getState().deviceSession).toBeNull();
+  });
+
+  it('rejects malformed activity instead of downgrading or inventing a creation date', async () => {
+    const h = harness(); await h.client.initialize();
+    h.intercept(request => request.operation === 'sessions.list' ? response(request, {
+      page, items: devices.map(item => ({ ...item, last_seen_at: 'invalid-date' })),
+    }) : undefined);
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(lists(h)).toHaveLength(1);
+  });
+
+  it('rejects an activity field in the legacy response', async () => {
+    const h = harness(); await h.client.initialize();
+    h.intercept(request => request.operation !== 'sessions.list' ? undefined : request.body?.include_last_seen
+      ? compatibilityError(request)
+      : response(request, { page, items: devices.map(item => ({ ...item, last_seen_at: activity })) }));
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(lists(h)).toHaveLength(2);
+  });
+
+  it('cancels a refused opt-in without starting a legacy capture', async () => {
+    const h = harness(); await h.client.initialize();
+    const controller = new AbortController();
+    h.intercept(request => {
+      if (request.operation !== 'sessions.list') return;
+      controller.abort();
+      return compatibilityError(request);
+    });
+    await expect(h.client.getAccountCatalog(controller.signal)).rejects.toMatchObject({ code: 'context_changed' });
+    expect(lists(h)).toHaveLength(1);
+  });
+});
+
 describe('native account v2 over the HTTP boundary', () => {
   it('requires explicit vault recovery and never turns refresh into an interactive retry', async () => {
     const h = harness();

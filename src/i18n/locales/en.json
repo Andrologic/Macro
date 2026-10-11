@@ -1173,6 +1173,9 @@
       "otherDevices": "Other devices",
       "devicesTitle": "Devices",
       "automaticDevices": "Devices signed in to the same Macro Connect account are connected automatically.",
+      "lastActivity": "Last activity {{date}}",
+      "lastActivityUnknown": "Last activity unknown",
+      "activityHelp": "Last activity records a successful request. It does not indicate whether a device is online.",
       "preparingDevice": "Setting up this device…",
       "accessRecovery": "Device access recovery",
       "label": "Macro Connect",
@@ -1242,6 +1245,7 @@
       "errors": {
         "invalid_configuration": "Check the device name and try again.",
         "invalid_response": "The relay returned an invalid response.",
+        "validation_failed": "The relay rejected this request. Refresh and try again.",
         "response_too_large": "The relay response exceeded the 1 MB limit.",
         "redirect_refused": "The relay tried to redirect the request.",
         "unauthorized": "Your Macro Connect session has expired. Connect with GitHub again. Your local projects and conversations remain available.",

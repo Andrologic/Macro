@@ -27,6 +27,7 @@ interface IndeterminateCommand {
 const errorFallbacks: Record<string, string> = {
   invalid_configuration: 'Check the device name and try again.',
   invalid_response: 'The relay returned an invalid response.',
+  validation_failed: 'The relay rejected this request. Refresh and try again.',
   response_too_large: 'The relay response exceeded the 1 MB limit.',
   redirect_refused: 'The relay tried to redirect the request.',
   unauthorized: 'Your Macro Connect session has expired. Connect with GitHub again. Your local projects and conversations remain available.',
@@ -45,7 +46,7 @@ const errorFallbacks: Record<string, string> = {
 };
 
 export const PilotView: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const store = usePilotStore();
   const initialize = store.initialize;
   const pollAuth = store.pollAuth;
@@ -138,6 +139,9 @@ export const PilotView: React.FC = () => {
   const activeSessions = store.accountCatalog?.sessions.filter(session => session.state === 'active') ?? [];
   const currentSession = activeSessions.find(session => session.session_id === store.deviceSession?.ref.session_id);
   const otherSessions = activeSessions.filter(session => session.session_id !== store.deviceSession?.ref.session_id);
+  const activityLabel = (lastSeenAt?: string) => lastSeenAt
+    ? t('settings.pilot.lastActivity', 'Last activity {{date}}', { date: new Date(lastSeenAt).toLocaleString(i18n.language) })
+    : t('settings.pilot.lastActivityUnknown', 'Last activity unknown');
   const targetCurrent = (target: typeof deleteTarget) => Boolean(target && currentIdentity
     && target.origin === store.relayOrigin
     && target.identity.account_id === store.account?.account_id
@@ -370,6 +374,7 @@ export const PilotView: React.FC = () => {
               <div className="min-w-0 flex-1">
                 <p className="break-words text-sm font-medium">{store.instance?.label ?? currentSession?.label ?? t('settings.pilot.currentComputer', 'This computer')}</p>
                 <p className="text-xs text-muted-foreground">{t('settings.pilot.currentComputer', 'This computer')} · <span role="status">{t(`settings.pilot.availability.${availability}`, computerAvailabilityMessages[availability])}</span></p>
+                <p className="text-xs text-muted-foreground">{activityLabel(currentSession?.last_seen_at ?? store.instance?.last_seen_at)}</p>
               </div>
               {currentSession && <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: store.instance?.label ?? currentSession.label })}>
                 <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(currentSession.expires_at).toLocaleString() })}</p>
@@ -386,6 +391,7 @@ export const PilotView: React.FC = () => {
                     <div className="min-w-0 flex-1">
                       <p className="break-words text-sm font-medium">{session.label}</p>
                       <p className="text-xs text-muted-foreground">{t(`settings.pilot.clientKind.${session.client_kind}`, session.client_kind)}</p>
+                      <p className="text-xs text-muted-foreground">{activityLabel(session.last_seen_at)}</p>
                     </div>
                     <PilotActions label={t('settings.pilot.deviceMenu', 'Options for {{device}}', { device: session.label })}>
                       <p className="px-3 py-2 text-xs text-muted-foreground">{t('settings.pilot.expiresAt', 'Expires {{date}}', { date: new Date(session.expires_at).toLocaleString() })}</p>
@@ -395,6 +401,7 @@ export const PilotView: React.FC = () => {
                 })}
               </div>
             </div>}
+            <p className="text-xs text-muted-foreground">{t('settings.pilot.activityHelp', 'Last activity records a successful request. It does not indicate whether a device is online.')}</p>
             {!accountCatalog && <p role="status" className="text-xs text-muted-foreground">{store.busy ? t('common.loading', 'Loading…') : t('settings.pilot.accountNotLoaded', 'Account details have not been loaded. Refresh to try again.')}</p>}
             {!store.instance && <div role="status" className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
               <span>{t('settings.pilot.preparingDevice', 'Setting up this device…')}</span>
