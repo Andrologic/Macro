@@ -598,3 +598,25 @@ it('reconstructs exact AgSDL source when U+FEFF starts a UTF-8 page', async () =
   expect(current().version).toBe(root.revision);
   expect(plan.agsdl.source).toBe(source);
 });
+
+
+it('provides the current contract guide through bounded revision-safe text pages after a source-only read', async () => {
+  const { createExampleDocument } = await import('../../services/agsdl/examples');
+  plan.agsdl = { ...createExampleDocument('feature'), revision: 1 };
+  const sourceRead = JSON.parse(await call('agsdl_get', { section: 'source' }));
+  expect(sourceRead.authoring_guide).toBeUndefined();
+  let content = '', offset = 0;
+  do {
+    const raw = await call('agsdl_get', { section: 'guide', limit: 1024, offset, expected_revision: sourceRead.revision });
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThanOrEqual(AGSDL_TOOL_RESPONSE_BYTES);
+    const page = JSON.parse(raw);
+    expect(page.revision).toBe(sourceRead.revision);
+    content += page.text_page.content;
+    offset = page.text_page.next_offset;
+  } while (offset !== null);
+  const guide = JSON.parse(content);
+  expect(guide.contract).toBe('agsdl-0.2.0');
+  expect(guide.flow_shapes).toContain('maxVisits');
+  expect(guide.runtime).toContain('macro/agent-engine');
+  await expect(call('agsdl_get', { section: 'guide', offset: 1, expected_revision: 'stale' })).rejects.toThrow('changed');
+});

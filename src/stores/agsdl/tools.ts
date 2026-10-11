@@ -8,7 +8,7 @@ import { useProviderStore } from "../useProviderStore";
 import { paginateTextBytes, TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
-  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
+  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Read section: guide for the contract before structural changes; it is available even when a scoped source read omits the overview. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
 
 const legacyGuide = {
   contract: "agsdl-0.1.0",
@@ -54,7 +54,7 @@ export function agsdlAuthoringGuide(contract: unknown, empty = false) {
 export const AGSDL_TOOL_RESPONSE_BYTES = Math.min(40 * 1024, TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes - 1024);
 const PAGE_BYTES = 16 * 1024;
 const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).byteLength;
-const sections = ["outline", "outline_entry", "source", "report", "design", "display", "models", "annex_ids", "error"] as const;
+const sections = ["outline", "outline_entry", "source", "guide", "report", "design", "display", "models", "annex_ids", "error"] as const;
 type ReadSection = typeof sections[number];
 interface InventoryEntry { catalog: string; path: string; name?: string; type?: unknown; key?: unknown; kind?: unknown }
 function inventory(doc: Record<string, unknown>, path: string): InventoryEntry[] {
@@ -286,6 +286,7 @@ export async function handleAgsdlToolCall(params: {
   if (section) {
     let content: string;
     if (section === "source") content = source;
+    else if (section === "guide") content = JSON.stringify(agsdlAuthoringGuide(doc.contract, !session.source));
     else if (section === "report") {
       const index = integerArg(args, "report_index", 0), report = session.reports[index];
       if (!report) throw new Error("report_index does not identify an available report.");
@@ -302,7 +303,7 @@ export async function handleAgsdlToolCall(params: {
   const response: Record<string, unknown> = { ...base };
   // A scoped source read carries only its own source and revision, never the global inventory.
   if (!pointer) {
-    addBounded(response, "authoring_guide", agsdlAuthoringGuide(doc.contract, !session.source), "source");
+    addBounded(response, "authoring_guide", agsdlAuthoringGuide(doc.contract, !session.source), "guide");
     response.outline = inventoryPage(doc, entries, args);
     response.report_count = session.reports.length;
     const diagnostics = session.reports.map((report, report_index) => ({ report_index, operation: report.operation,
