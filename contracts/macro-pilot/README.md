@@ -71,3 +71,6 @@ The mapping to Macro's current task, project, and questionnaire types is in
 [`docs/macro-pilot/macro-type-mapping.md`](../../docs/macro-pilot/macro-type-mapping.md).
 Before updating C, D or E, apply the unpublished A1 migration checklist in
 [`consumer-update.md`](../../docs/macro-pilot/consumer-update.md).
+
+For the opt-in CPU/RAM and project logo operations, and the relay session activity
+projection, read [machine resource contracts](v2/machine-resources.md).

@@ -1,0 +1,24 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "project.icon",
+  "result": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "workspace_id": "workspace-demo",
+      "project_id": "project-demo"
+    },
+    "observed_at": "2026-10-10T12:00:00.000Z",
+    "expires_at": "2026-10-10T12:05:00.000Z",
+    "availability": "available",
+    "icon": {
+      "resource_id": "icon:2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c",
+      "sha256": "2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c",
+      "mime_type": "image/jpeg",
+      "size_bytes": 70,
+      "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="
+    }
+  }
+}

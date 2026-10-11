@@ -38,6 +38,13 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
     return { applied };
   }
   if (command === 'pilot_content_policy') { if (!supported) throw 'content_unavailable'; return secretValues; }
+  if (command === 'host_telemetry_read') return { sampleId: 'sample:synthetic', observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 5000).toISOString(), availability: 'available', reason: null, cpuPercent: 25, memoryUsedBytes: 1024, memoryTotalBytes: 4096 };
+  if (command === 'workspace_resolve_project_icons') {
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+    const bytes = Uint8Array.from(atob(data), char => char.charCodeAt(0));
+    const revision = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+    return (args.projectIds as string[]).map(projectId => ({ projectId, icon: { dataUrl: `data:image/png;base64,${data}`, revision, sourcePath: 'public/favicon.png' } }));
+  }
   if (command === 'workspace_get_bootstrap') throw new Error('Pilot reads must not bootstrap workspaces');
   if (command === 'workspace_list_tasks') return { tasks: taskRecords };
   if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
@@ -165,7 +172,7 @@ function harness() {
       if (path.endsWith('/authorize')) {
         onAuthorize?.();
         if (revoked) return json({ code: 'session_revoked' }, 401);
-        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + 5000).toISOString() });
+        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + 5000).toISOString(), ...(body.required_permissions ? { granted_permissions: body.required_permissions } : {}) });
       }
       if (path.endsWith('/result')) {
         results.push(structuredClone(body) as unknown as ContentDeliveryResult);
@@ -183,7 +190,7 @@ function harness() {
   });
   const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   async function deliver(input: ContentRequest, source = 'session:mobile') {
-    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input, ...('consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
     const start = results.length; queue.push(delivery); wake?.();
     await until(() => results.slice(start).some(result => result.request_id === input.request_id));
@@ -595,17 +602,21 @@ it('falls back from the reliability offer while retaining negotiated task capabi
   const h = harness(); h.legacyRelay();
   try {
     await h.runtime.start();
-    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 6);
+    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length >= 7);
     const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll'));
     expect(polls[0].body.capabilities).toContain('network-reliability-1');
     expect(polls[0].body.capabilities).toContain('conversations-1');
     expect(polls[0].body.capabilities).toContain('conversation-history-1');
     expect(polls[0].body.capabilities).toContain('conversation-interactions-1');
-    expect(polls[1].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1', 'conversation-interactions-1']);
-    expect(polls[2].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1']);
-    expect(polls[3].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1']);
-    expect(polls[4].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1']);
-    expect(polls[5].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
+    expect(polls[0].body.capabilities).toContain('host-telemetry-1');
+    expect(polls[0].body.capabilities).toContain('project-icons-1');
+    expect(polls[1].body.capabilities).not.toContain('host-telemetry-1');
+    expect(polls[1].body.capabilities).not.toContain('project-icons-1');
+    expect(polls[2].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1', 'conversation-interactions-1']);
+    expect(polls[3].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1', 'conversation-history-1']);
+    expect(polls[4].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1', 'conversations-1']);
+    expect(polls[5].body.capabilities).toEqual(['task-details-1', 'task-actions-1', 'network-reliability-1']);
+    expect(polls[6].body.capabilities).toEqual(['task-details-1', 'task-actions-1']);
     const catalog = await h.deliver(request('conversations.list', { instance_id: instanceId, kind: 'conversation' }));
     expect(JSON.stringify(catalog)).not.toContain('content_revision');
     conversations[0].title = 'Legacy edit';
@@ -682,5 +693,25 @@ it('legacy continuation rechecks mode during final authorization', async () => {
     h.authorize(() => { conversations[0].scope_mode = 'Architect'; });
     const result = await h.deliver(request('conversation.tools.list', { ref: target, continuation: { snapshot_id: first.result.page.snapshot_id, cursor: first.result.page.next_cursor } }));
     expect(result).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+
+it('routes negotiated telemetry and bounded project logos through native IPC with supervise before each emission', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const cpu = request('instance.telemetry', { instance_id: instanceId });
+    expect(await h.deliver(cpu)).toMatchObject({ type: 'response', result: { instance_id: instanceId, availability: 'available', cpu_percent: 25, memory_used_bytes: 1024, memory_total_bytes: 4096 } });
+    expect(nativeCalls.filter(command => command === 'host_telemetry_read')).toHaveLength(1);
+    const logo = request('project.icon', { ref: { instance_id: instanceId, workspace_id: 'workspace:config:test', project_id: 'project:one' } });
+    const response = await h.deliver(logo);
+    expect(response).toMatchObject({ type: 'response', result: { availability: 'available', icon: { mime_type: 'image/png' } } });
+    expect(JSON.stringify(response)).not.toContain('sourcePath');
+    expect(JSON.stringify(response)).not.toContain('public/favicon.png');
+    for (const input of [cpu, logo]) {
+      const authorizations = h.requests.filter(item => item.path.endsWith(`/${input.request_id}/authorize`));
+      expect(authorizations.length).toBeGreaterThanOrEqual(3);
+      expect(authorizations.every(item => JSON.stringify(item.body.required_permissions) === JSON.stringify(['supervise']))).toBe(true);
+    }
   } finally { await h.runtime.stop(); }
 });

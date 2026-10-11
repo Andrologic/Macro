@@ -85,6 +85,14 @@ export function validateMessage(message) {
         const base64 = r.icon.data_base64;
         const size = base64.length / 4 * 3 - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
         reject(size !== r.icon.size_bytes, 'icon byte size mismatch');
+        const decoded = atob(base64);
+        reject(btoa(decoded) !== base64, 'noncanonical icon base64');
+        const b = Uint8Array.from(decoded, char => char.charCodeAt(0));
+        const signature = r.icon.mime_type === 'image/png' ? b.length >= 8 && [137,80,78,71,13,10,26,10].every((value,index) => b[index] === value)
+          : r.icon.mime_type === 'image/jpeg' ? b.length >= 4 && b[0] === 255 && b[1] === 216 && b[2] === 255 && b.at(-2) === 255 && b.at(-1) === 217
+          : b.length >= 12 && decoded.slice(0,4) === 'RIFF' && decoded.slice(8,12) === 'WEBP' && new DataView(b.buffer).getUint32(4,true) + 8 === b.length;
+        reject(!signature, 'icon signature mismatch');
+
       }
     }
   }

@@ -1,3 +1,4 @@
+import { desktopMachineResources } from './desktopMachineResources';
 import { desktopConversationInteractions } from './desktopConversationInteractions';
 import type { DesktopStorePorts } from './desktopStorePorts';
 import { desktopTaskCompletionSource } from './desktopTaskCompletionSource';
@@ -87,6 +88,7 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
     storage: { load: async () => (await dbGetAppSetting(managerKey))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: managerKey, expectedValueJson: previous, valueJson: next })).applied } });
   return new ContentHost({ accountId, instanceId, signal, conversations, conversationManagement,
+    machines: desktopMachineResources(instanceId, workspaceId, options.ports),
     interactions: { source: desktopConversationInteractions(instanceId, managementCaptures, options.ports, signal), storage: {
       load: async () => (await dbGetAppSetting(`${key}:interactions:1`))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: `${key}:interactions:1`, expectedValueJson: previous, valueJson: next })).applied,

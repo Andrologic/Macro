@@ -1,3 +1,4 @@
+import { MACHINE_CAPABILITIES } from './machineResources';
 import { taskActionPermissions, assertTaskActionPermissions } from './taskActionAuthorization';
 import { TASK_COMPLETION_CAPABILITIES } from './taskCompletionHost';
 import { findPilotTask, pilotTaskId, resolvePilotTask, resolvePilotStartTask } from './taskIdentity';
@@ -218,16 +219,18 @@ export class PilotRuntime {
     let history = true;
     let interactions = true;
     let models = Boolean(this.ports.providers);
+    let machines = true;
     let advertised = false;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
         if (signal.aborted) break;
         advertised = true;
+        host.enableMachines(extended && machines);
         if (reliability) host.enableReliability();
         if (response.status === 204) { failures = 0; await pause(25, signal); continue; }
         const deliveryExpiresAt = Date.parse((response.data as ContentDelivery).expires_at);
-        const result = await host.handle(response.data, async (delivery: ContentDelivery) => {
+        const authorizeContent = async (delivery: ContentDelivery) => {
           if (signal.aborted) throw new PilotError('unavailable');
           const requiredPermissions = taskActionPermissions(delivery.request);
           const authorization = await this.client.requestContent!(`${base}/${encodeURIComponent(delivery.request_id)}/authorize`,
@@ -236,7 +239,8 @@ export class PilotRuntime {
           if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
           assertTaskActionPermissions(requiredPermissions, data);
           return data.execute_before;
-        });
+        };
+        const result = await host.handle(response.data, authorizeContent);
         for (let attempt = 0; attempt < 3 && !signal.aborted; attempt++) {
           try {
             // The native transport checks account/session/instance again at emission;
@@ -244,6 +248,7 @@ export class PilotRuntime {
             // The host guards execution with execute_before. Delivery retries
             // use the longer exchange lifetime, including a lost acknowledgement.
             if (signal.aborted || !Number.isFinite(deliveryExpiresAt) || Date.now() >= deliveryExpiresAt) throw new PilotError('unavailable');
+            await host.validateMachineEmission(response.data as ContentDelivery, result, authorizeContent);
             await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal); break;
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
@@ -251,7 +256,7 @@ export class PilotRuntime {
       } catch (error) {
         if (signal.aborted) break;
         const status = object(error).status;
-        if (!advertised && extended && (status === 400 || status === 422)) { if (models) models = false; else if (interactions) interactions = false; else if (history) history = false; else if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
+        if (!advertised && extended && (status === 400 || status === 422)) { if (machines) machines = false; else if (models) models = false; else if (interactions) interactions = false; else if (history) history = false; else if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
         this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal);
       }
     }
