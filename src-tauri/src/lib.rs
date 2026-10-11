@@ -503,6 +503,7 @@ pub fn run() {
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
+            commands::pilot_secrets::setup(app.handle());
             if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
                 tracing::error!(%error, "Failed to activate staged application update");
             }
@@ -524,11 +525,19 @@ pub fn run() {
                         && origin.fragment().is_none(),
                     "QA browser origin must remain on loopback"
                 );
+                let bridge_port = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_PORT")
+                    .unwrap_or_else(|_| "1430".into())
+                    .parse::<u16>()
+                    .expect("Invalid QA bridge port");
+                assert!(
+                    bridge_port >= 1024,
+                    "QA bridge requires an unprivileged port"
+                );
                 install_browser_runtime_event_relays(app.handle());
                 let browser_bridge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let bridge_config = RemoteUiConfig::default()
-                        .set_port(Some(1430))
+                        .set_port(Some(bridge_port))
                         .set_websocket_origin(&browser_origin)
                         .set_websocket_token(bridge_token);
                     match browser_bridge_handle.start_remote_ui(bridge_config).await {
@@ -703,6 +712,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::pilot_device::pilot_device_name,
+            commands::pilot_secrets::pilot_vault_activate,
+            commands::pilot_secrets::pilot_vault_invalidate,
+            commands::pilot_secrets::pilot_vault_resume,
+            commands::pilot_secrets::pilot_secret_read,
+            commands::pilot_secrets::pilot_secret_write,
+            commands::pilot_secrets::pilot_secret_delete,
             // Database commands
             commands::db_get_initialization_status,
             commands::db_retry_initialize,
@@ -757,6 +773,14 @@ pub fn run() {
             window_set_zoom,
             window_set_traffic_light_position,
             commands::db_list_conversations,
+            commands::conversation_management::db_conversation_metadata,
+            commands::conversation_management::db_conversation_set_archives,
+            commands::conversation_management::db_conversation_response_version,
+            commands::conversation_management::db_conversation_acknowledge,
+            commands::conversation_management::db_conversation_action,
+            commands::conversation_management::db_conversation_import_archives,
+            commands::conversation_management::db_get_message,
+            commands::conversation_management::db_list_messages_bounded,
             commands::db_get_chat_snapshot,
             commands::db_get_chat_bootstrap_snapshot,
             commands::db_get_conversation,
@@ -785,6 +809,8 @@ pub fn run() {
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::pilot_tools::pilot_tool_traces_list,
+            commands::pilot_tools::pilot_tool_trace_read,
             commands::db_get_conversation_source_snapshot,
             commands::db_search_messages,
             commands::db_create_message,
@@ -886,6 +912,7 @@ pub fn run() {
             commands::workspace::workspace_quarantine_legacy_state_lock,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
+            commands::workspace::workspace_pilot_mutate_manual_task,
             commands::workspace::workspace_bind_manual_feature_direct_checkpoint,
             commands::workspace::workspace_revert_manual_feature_to_draft,
             commands::workspace::workspace_delete_manual_feature_draft,
@@ -986,6 +1013,13 @@ pub fn run() {
             commands::git::git_diff,
             commands::git::git_read_file_pair,
             commands::git::git_review_snapshot,
+            commands::git::pilot_review_commit,
+            commands::git::pilot_content_policy,
+            commands::git::pilot_review_capture,
+            commands::git::pilot_review_files,
+            commands::git::pilot_review_read,
+            commands::git::pilot_review_fresh,
+            commands::git::pilot_review_release,
             commands::git::git_review_file,
             commands::git::git_cancel_review,
             commands::git::direct_checkpoint_ensure,
@@ -1051,6 +1085,12 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } => {
+            commands::pilot_secrets::suspend("window_destroyed");
+        }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
             api.prevent_exit();
             if let Some(window) = app_handle.get_webview_window("main") {
@@ -1060,6 +1100,7 @@ pub fn run() {
             }
         }
         tauri::RunEvent::ExitRequested { .. } => {
+            commands::pilot_secrets::suspend("exit_requested");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
@@ -1067,6 +1108,7 @@ pub fn run() {
             fs::watcher::shutdown_watcher(app_handle);
         }
         tauri::RunEvent::Exit => {
+            commands::pilot_secrets::suspend("process_exit");
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();

@@ -16,8 +16,9 @@ import type { OrphanSecretDto } from "./config.types";
 
 export async function configGetSnapshot(
   projectIds: string[] = [],
+  observeOnly = false,
 ): Promise<ConfigSnapshot> {
-  return invoke<ConfigSnapshot>("config_get_snapshot", { projectIds });
+  return invoke<ConfigSnapshot>("config_get_snapshot", { projectIds, ...(observeOnly ? { observeOnly: true } : {}) });
 }
 
 export async function configGetDocument(

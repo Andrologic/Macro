@@ -7,19 +7,19 @@ const ASSETS_DIR = process.argv[2] ? resolve(process.argv[2]) : fileURLToPath(ne
 
 const BUDGETS = [
   // Application code follows Rollup's dependency graph; vendor libraries keep stable manual chunks.
-  // The stabilization build measures 1,487,044 B for entry and 62,167 B for
-  // TaskQueue. Its Git, archive and dialog copy takes locale chunks up to
-  // 143,769 B, or 159,064 B for Japanese. Keep about 1% headroom for this
-  // measured scope; vendor, deferred chat and rich-markdown caps stay fixed.
-  // See docs/performance-baselines.md for the same-toolchain comparison.
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_505_000 },
-  { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
+  // Measured after integrating develop with the local Pilot transport:
+  // entry 1,525,486 B, native client 821,607 B and desktop composition 643,898 B.
+  // Dedicated transport caps preserve the existing limit for other lazy chunks.
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_542_000 },
+  { name: 'native-client', pattern: /^nativeClient-.*\.js$/, limitBytes: 830_000 },
+  { name: 'pilot-desktop', pattern: /^macroPilotDesktop-.*\.js$/, limitBytes: 651_000 },
+  { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^(index|nativeClient|macroPilotDesktop)-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 201_000 },
   // Native SQLite refusal copy brings TaskQueue to 63,040 B; retain a 160 B margin.
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 63_200 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 145_500 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 161_000 },
+  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 155_000 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 172_000 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;

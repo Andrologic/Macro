@@ -1,0 +1,18 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "request",
+  "operation": "conversation.action",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "chat-demo"
+    },
+    "expected_revision": 1,
+    "idempotency_key": "action-demo",
+    "action": "rename",
+    "title": "Renommé"
+  }
+}

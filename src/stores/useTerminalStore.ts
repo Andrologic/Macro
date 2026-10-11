@@ -93,7 +93,7 @@ interface TerminalStore extends TerminalVisibilityState {
     sessionId: string,
     executionId?: string | null
   ) => Promise<tauriIpc.TerminalSessionDto>;
-  initialize: (context?: LifecycleContext) => Promise<void>;
+  initialize: (context?: LifecycleContext, options?: { syncDisplayMetadata?: boolean }) => Promise<void>;
   startRuntime: (context?: LifecycleContext) => Promise<void>;
   stopRuntime: () => Promise<void>;
   setLifecyclePort: (port: TerminalLifecyclePort) => void;
@@ -137,6 +137,8 @@ interface TerminalStore extends TerminalVisibilityState {
     command: string;
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
+    expectedBranch?: string | null;
   }) => Promise<TerminalTab>;
   startWorktreeSetupCommandTab: (params: {
     taskId: string;
@@ -145,6 +147,8 @@ interface TerminalStore extends TerminalVisibilityState {
     title: string;
     command: string;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
+    expectedBranch?: string | null;
   }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
@@ -1179,7 +1183,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return stopPromise;
     },
 
-    initialize: async (context) => {
+    initialize: async (context, options) => {
       context?.assertActive();
       if (context && runtimeContext !== context) {
         if (runtimeContext) await get().stopRuntime();
@@ -1255,7 +1259,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
           await registerListeners(current);
           assertCurrent(current);
           set({ initialized: true, initializing: false });
-          await get().syncTerminalDisplayMetadata();
+          if (options?.syncDisplayMetadata !== false) await get().syncTerminalDisplayMetadata();
           assertCurrent(current);
         } catch (error) {
           if (current()) set({ initializing: false });
@@ -1527,13 +1531,16 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return tab;
     },
 
-    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
+    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext, beforeEffect, expectedBranch }) => {
+      await beforeEffect?.();
       const current = captureRuntime();
-      await get().initialize();
+      await get().initialize(undefined, beforeEffect ? { syncDisplayMetadata: false } : undefined);
       assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await acquisitionScope.track(tauriIpc.terminalStartCommandTab({
+        ...(beforeEffect ? { pilotOnly: true, expectedBranch } : {}),
         kind: 'task',
         projectId: resolvedProjectId,
         cwd,
@@ -1548,13 +1555,16 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
       return tab;
     },
 
-    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
+    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext, beforeEffect, expectedBranch }) => {
+      await beforeEffect?.();
       const current = captureRuntime();
-      await get().initialize();
+      await get().initialize(undefined, beforeEffect ? { syncDisplayMetadata: false } : undefined);
       assertCurrent(current);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await acquisitionScope.track(tauriIpc.terminalStartCommandTab({
+        ...(beforeEffect ? { pilotOnly: true, expectedBranch } : {}),
         kind: 'worktree_setup',
         projectId: resolvedProjectId,
         cwd,

@@ -22,6 +22,20 @@ export function resolveQaBrowserLogDirectory(config, temporaryDirectory) {
   return join(temporaryDirectory, 'macro-browser-runtime', validated.identifier, 'logs');
 }
 
+export function resolveQaBrowserPorts(environment = {}) {
+  const port = (name, fallback) => {
+    const raw = environment[name] ?? String(fallback);
+    if (!/^[0-9]{4,5}$/.test(raw) || Number(raw) < 1024 || Number(raw) > 65535) {
+      throw new Error(`${name} must be an unprivileged TCP port.`);
+    }
+    return Number(raw);
+  };
+  const ui = port('MACRO_TAURI_BROWSER_UI_PORT', 1422);
+  const bridge = port('MACRO_TAURI_BROWSER_BRIDGE_PORT', 1430);
+  if (ui === bridge) throw new Error('The browser UI and RPC bridge require distinct ports.');
+  return { ui, bridge, origin: `http://127.0.0.1:${ui}` };
+}
+
 // Keep the authenticated bridge on loopback while allowing an occupied UI port.
 export function resolveQaBrowserOrigin(config) {
   const url = new URL(config.build?.devUrl || 'http://127.0.0.1:1422');

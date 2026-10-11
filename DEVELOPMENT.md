@@ -36,6 +36,8 @@ The repo uses:
 | `bun run tauri:build` | Build the Tauri desktop app. |
 | `bun run tauri:build:dmg` | Build a native macOS DMG. |
 | `bun run tauri:build:dmg:mac-universal:test` | Build a universal macOS DMG for Apple Silicon and Intel Macs. |
+| `bun run tauri:build:macos:qa` | Build an isolated Pilot QA app with an explicit stable macOS signing identity. |
+| `bun run tauri:verify:macos:qa-signing` | Compare the designated signing requirements of two Pilot QA app bundles. |
 | `bun run typecheck` | Run TypeScript type checking. |
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |

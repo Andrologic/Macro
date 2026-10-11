@@ -820,6 +820,20 @@ pub async fn update_git_worktree_project_access(
 
 // ============ MESSAGES ============
 
+pub async fn get_message(pool: &SqlitePool, id: &str) -> DbResult<Option<Message>> {
+    let mut transaction = pool.begin().await?;
+    let size: Option<i64> = sqlx::query_scalar("SELECT length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) FROM messages WHERE id = ?").bind(id).fetch_optional(&mut *transaction).await?;
+    if size.is_some_and(|n| n > 4 * 1024 * 1024) {
+        return Err(DbError::Validation("resource_limit".into()));
+    }
+    let row = sqlx::query("SELECT * FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(row.as_ref().map(map_message_row))
+}
+
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let mut connection = pool.acquire().await?;
     list_messages_with_connection(&mut connection, conversation_id).await
@@ -862,6 +876,28 @@ async fn list_messages_with_connection(
         .collect();
 
     Ok(messages)
+}
+
+/// The remote window has a conservative budget before any transcript strings
+/// cross IPC. The read transaction keeps the size check and fetch consistent.
+pub async fn list_messages_bounded(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Vec<Message>> {
+    let mut tx = pool.begin().await?;
+    let size: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(2048 + 6 * (length(CAST(id AS BLOB)) + length(CAST(conversation_id AS BLOB)) + length(CAST(content AS BLOB)) + COALESCE(length(CAST(hidden_context AS BLOB)),0) + COALESCE(length(CAST(provider_turn_state_json AS BLOB)),0) + COALESCE(length(CAST(tool_traces_json AS BLOB)),0) + COALESCE(length(CAST(provider_input_items_json AS BLOB)),0) + COALESCE(length(CAST(context_refs_json AS BLOB)),0) + COALESCE(length(CAST(turn_id AS BLOB)),0) + length(CAST(role AS BLOB)) + length(CAST(created_at AS BLOB)) + COALESCE(length(CAST(completion_reason AS BLOB)),0))),0) FROM messages WHERE conversation_id = ?")
+        .bind(conversation_id).fetch_one(&mut *tx).await?;
+    if size > 4 * 1024 * 1024 {
+        return Err(DbError::Validation("resource_limit".into()));
+    }
+    let rows = sqlx::query(
+        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+    )
+    .bind(conversation_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(rows.iter().map(map_message_row).collect())
 }
 
 pub async fn get_conversation_source_snapshot(
@@ -1043,7 +1079,9 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
 
-    let mut transaction = pool.begin().await?;
+    // Acquire the writer before any reads. A deferred WAL transaction cannot
+    // upgrade a stale read snapshot while another writer holds the database.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         r#"
         INSERT INTO messages (
@@ -1217,7 +1255,9 @@ pub async fn update_message_content(
         generation_attempts_json,
     } = input;
 
-    let mut transaction = pool.begin().await?;
+    // Acquire the writer before any reads. A deferred WAL transaction cannot
+    // upgrade a stale read snapshot while another writer holds the database.
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     let conversation_id: Option<String> =
         sqlx::query_scalar("SELECT conversation_id FROM messages WHERE id = ?")
             .bind(id)
@@ -3777,6 +3817,95 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed search message");
+    }
+
+    #[tokio::test]
+    async fn message_writes_wait_for_concurrent_writer_without_losing_content() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "writer-chat", "Writer contention").await;
+        seed_search_message(&pool, "writer-message", "writer-chat", "Initial content").await;
+
+        // Pilot receipts and transcript writes share this pool. A writer may
+        // already be active when a streaming message needs to be persisted.
+        let mut writer = pool.begin_with("BEGIN IMMEDIATE").await.expect("writer");
+        sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES ('writer-test', '{}', '2026-10-10T10:00:00Z')")
+            .execute(&mut *writer)
+            .await
+            .expect("hold writer");
+        let update_pool = pool.clone();
+        let mut update = tokio::spawn(async move {
+            update_message_content(
+                &update_pool,
+                UpdateMessageContentInput {
+                    id: "writer-message",
+                    turn_id: None,
+                    content: "Updated content",
+                    token_count: None,
+                    tool_traces_json: None,
+                    hidden_context: None,
+                    provider_input_items_json: None,
+                    provider_turn_state_json: None,
+                    context_refs_json: None,
+                    completion_reason: None,
+                    generation_attempts_json: None,
+                },
+            )
+            .await
+        });
+        let create_pool = pool.clone();
+        let mut create = tokio::spawn(async move {
+            create_message(
+                &create_pool,
+                CreateMessageInput {
+                    id: Some("new-message".into()),
+                    conversation_id: "writer-chat".into(),
+                    turn_id: None,
+                    role: "user".into(),
+                    content: "New reply".into(),
+                    token_count: None,
+                    tool_traces_json: None,
+                    hidden_context: None,
+                    provider_input_items_json: None,
+                    provider_turn_state_json: None,
+                    context_refs_json: None,
+                    completion_reason: None,
+                    generation_attempts_json: None,
+                },
+            )
+            .await
+        });
+        let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut update).await;
+        let early_create =
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut create).await;
+        writer.commit().await.expect("release writer");
+        assert!(
+            early_create.is_err(),
+            "message insert must wait for writer, got {early_create:?}"
+        );
+        assert!(
+            early.is_err(),
+            "message update must wait for the writer, got {early:?}"
+        );
+        update
+            .await
+            .expect("update task")
+            .expect("persist message after writer");
+        create
+            .await
+            .expect("create task")
+            .expect("persist new reply after writer");
+        let stored: String =
+            sqlx::query_scalar("SELECT content FROM messages WHERE id = 'writer-message'")
+                .fetch_one(&pool)
+                .await
+                .expect("stored content");
+        assert_eq!(stored, "Updated content");
+        let count: i64 =
+            sqlx::query_scalar("SELECT message_count FROM conversations WHERE id = 'writer-chat'")
+                .fetch_one(&pool)
+                .await
+                .expect("metadata");
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]

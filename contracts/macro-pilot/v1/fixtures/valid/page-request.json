@@ -1,0 +1,12 @@
+{
+  "contract_version": "1.0",
+  "type": "page_request",
+  "item_type": "task",
+  "scope": {
+    "type": "project",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "project_id": "project:macro-desktop"
+  },
+  "limit": 50
+}

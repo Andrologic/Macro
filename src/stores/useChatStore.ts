@@ -1,3 +1,4 @@
+import { acknowledgeDisplayedConversation } from '../services/conversationManagementService';
 import { getConflictAssistantContext, clearConflictAssistantContext, isConflictAssistantContextAllowed, revalidateConflictAssistantContext, scopeConflictAssistantExecutionContext } from '../services/conflictAssistantContext';
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
@@ -56,6 +57,10 @@ import {
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
+import {
+  assertPilotConversationActionAllowed,
+  assertPilotTaskActionAllowed,
+} from '../services/macroPilot/actionReservations';
 import i18n from "../i18n";
 import { SUPPORTED_LANGUAGE_CODES } from "../i18n/languages";
 import { loadTranslation } from "../i18n/resources";
@@ -934,6 +939,9 @@ interface ChatStore {
   appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
   selectConversation: (conversationId: string) => Promise<boolean>;
+  selectConversationAI: (conversationId: string, selection: {
+    providerId: string; modelId: string; reasoningEffort: ReasoningEffort | null;
+  }, options: { pilotActionToken: symbol; beforeEffect: () => Promise<void> }) => Promise<void>;
   clearSelectedConversation: () => void;
   createConversation: (
     title: string,
@@ -942,6 +950,7 @@ interface ChatStore {
     groupId?: string | null,
     options?: { selectConversation?: boolean },
   ) => Promise<Conversation>;
+  ensurePilotTaskConversation: (taskId: string, pilotActionToken: symbol) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   invalidateConversationResolution: () => void;
   captureArchitectPlanRecovery: (planId: string, targetBranch: string) => (isCurrentActivation: () => boolean) => Promise<void>;
@@ -976,8 +985,11 @@ interface ChatStore {
     },
   ) => Promise<void>;
   deleteChatConversations: (conversationIds: string[]) => Promise<void>;
-  completeLinkedTaskConversationDeletion: (conversationId: string) => Promise<boolean>;
+  assertPilotConversationDeletionReady: (conversationId: string, token: symbol) => void;
+  completeLinkedTaskConversationDeletion: (conversationId: string, options?: { pilotActionToken?: symbol; beforeEffect?: () => Promise<void> }) => Promise<boolean>;
   markAsRead: (conversationId: string) => void;
+  refreshConversationMetadata: () => Promise<void>;
+  hydrateConversationManagementArchives: () => Promise<void>;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
   ensureMessagesLoaded: (conversationId: string) => Promise<void>;
@@ -1000,9 +1012,17 @@ interface ChatStore {
   discardComposerDraftForConversation: (conversationId: string) => void;
   migrateComposerDraftContext: (fromContextKey: string, toContextKey: string) => void;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
-  approvePendingToolApprovalOnce: (conversationId: string) => void;
-  approvePendingToolApprovalForConversation: (conversationId: string) => void;
-  denyPendingToolApproval: (conversationId: string, reason?: string) => void;
+  approvePendingToolApprovalOnce: (conversationId: string, pilotActionToken?: symbol) => void;
+  approvePendingToolApprovalForConversation: (conversationId: string, pilotActionToken?: symbol) => void;
+  denyPendingToolApproval: (conversationId: string, reason?: string, pilotActionToken?: symbol) => void;
+  resolvePendingToolApprovalForPilot: (params: {
+    conversationId: string;
+    assistantMessageId: string;
+    toolCallId: string;
+    resolution: PendingToolApprovalResolution;
+    pilotActionToken: symbol;
+    beforeEffect?: () => Promise<void>;
+  }) => Promise<PendingToolApprovalResolution>;
   getActiveQuestionnaire: (
     conversationId: string,
   ) => ConversationQuestionnaireState | null;
@@ -1022,6 +1042,11 @@ interface ChatStore {
   ) => { completed: boolean; state: ConversationQuestionnaireState | null } | null;
   submitActiveQuestionnaire: (
     conversationId: string,
+    options?: {
+      taskId?: string | null;
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
   ) => Promise<ChatSendResult | ChatSendCancelledResult | null>;
   sendMessage: (payload: {
     conversationId: string;
@@ -1032,6 +1057,10 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
+    pilotTarget?: ({ mode: "Chat"; taskId?: never } | { mode?: never; taskId: string }) & {
+      actionToken: symbol;
+      beforeEffect?: () => Promise<void>;
+    };
     persistedUserMessage?: ChatMessage;
   }, queuedSubmission?: QueuedSubmission, continuation?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
   sendGoalContinuation: (conversationId: string, content: string) => Promise<ChatSendResult | ChatSendCancelledResult>;
@@ -1039,7 +1068,7 @@ interface ChatStore {
     payload: ComposerSubmissionPayload,
     behavior: ActiveTurnSubmissionBehavior,
   ) => Promise<"steered" | "queued">;
-  stopConversationStream: (conversationId: string) => void;
+  stopConversationStream: (conversationId: string, pilotActionToken?: symbol) => void;
   retryQueuedSubmissions: (conversationId: string) => Promise<void>;
   editQueuedSubmission: (id: string, content: string) => Promise<void>;
   removeQueuedSubmission: (id: string) => Promise<void>;
@@ -1464,6 +1493,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     string,
     (resolution: PendingToolApprovalResolution) => void
   >();
+  const pendingToolApprovalSettlements = new Map<
+    string,
+    Promise<PendingToolApprovalResolution>
+  >();
+  const pendingToolApprovalBeforeEffects = new Map<
+    string,
+    () => Promise<void>
+  >();
   const pendingToolApprovalQueues = new Map<string, Promise<void>>();
   let toolApprovalRuntimeEpoch = 0;
   const pendingAgentCodeReplayRollbacksByConversationId = new Map<
@@ -1685,11 +1722,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return value || DEFAULT_TOOL_RISK_LEVEL;
   };
 
-  const resolveConversationExecutionContext = (conversationId: string) => {
+  const resolveConversationExecutionContext = (conversationId: string, modeOverride?: "Chat") => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
     const base = resolveProjectExecutionContext({
-      mode: appState.mode,
+      mode: modeOverride ?? appState.mode,
       projects: [
         ...(appState.standaloneProjects ?? []),
         ...appState.projectGroups.flatMap((group) => group.projects),
@@ -1701,8 +1738,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedGroupId: appState.selectedGroupId,
       selectedProjectId: appState.selectedProjectId,
       selectedTaskId: appState.selectedTaskId,
-      activeRepositoryPath: taskState.activeRepositoryPath,
-      workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
+      activeRepositoryPath: modeOverride ? null : taskState.activeRepositoryPath,
+      workspacePathOverridesByProjectId: modeOverride ? undefined : taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
       architectExecutionModesByProjectId: appState.activeArchitectPlanId
         ? getPlanExecutionModesByProjectId(
@@ -3217,6 +3254,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const assertImplementTaskReadyForSend = async (
     taskId: string,
+    pilotActionToken?: symbol,
+    beforeEffect?: () => Promise<void>,
   ): Promise<ImplementTask> => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(taskId);
@@ -3235,12 +3274,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (task.status === "Pending" && !activeMergeWorkflow) {
-      await taskStore.startTask(taskId);
+      if (pilotActionToken) {
+        await taskStore.startTask(taskId, {
+          pilotActionToken,
+          beforeEffect,
+        });
+      } else {
+        await taskStore.startTask(taskId);
+      }
     } else if (
       (task.status === "AwaitingResponse" || task.status === "Failed") &&
       !activeMergeWorkflow
     ) {
-      await taskStore.retryTask(taskId);
+      if (pilotActionToken) {
+        await taskStore.retryTask(taskId, {
+          pilotActionToken,
+          beforeEffect,
+        });
+      } else {
+        await taskStore.retryTask(taskId);
+      }
     }
 
     const refreshedTask = useTaskStore.getState().getTaskById(taskId);
@@ -5392,6 +5445,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     approvals: {
       get epoch() { return toolApprovalRuntimeEpoch; },
       resolvers: pendingToolApprovalResolvers,
+      settlements: pendingToolApprovalSettlements,
+      beforeEffects: pendingToolApprovalBeforeEffects,
       mutationVersions: approvalMutationVersions,
       challenges: gitStageCommitChallengesByAssistantTurn,
       serialize: serializeToolApproval,
@@ -9908,12 +9963,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ...current.selectedConversationIdsByMode,
         [mode]: conversationId,
       },
-      conversations: current.conversations.map((candidate) =>
-        candidate.id === conversationId
-          ? { ...candidate, is_unread: false }
-          : candidate,
-      ),
+
     }));
+    if (!tauriIpc.isTauriAvailable()) get().markAsRead(conversationId);
     return true;
   };
 
@@ -10100,6 +10152,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     projectId: string | null;
     groupId?: string | null;
     selectConversation?: boolean;
+    modeOverride?: AppMode;
+    pilotActionToken?: symbol;
   }): Promise<Conversation> => {
     const lifecycle = params.lifecycle;
     lifecycle?.assertActive();
@@ -10111,9 +10165,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectConversation = true,
     } = params;
     const appState = useAppStore.getState();
-    const mode = appState.mode;
+    const mode = params.modeOverride ?? appState.mode;
     const effectiveTaskId =
-      mode === "Implement" ? (appState.selectedTaskId ?? taskId) : taskId;
+      mode === "Implement"
+        ? (params.modeOverride ? taskId : appState.selectedTaskId ?? taskId)
+        : taskId;
+    if (effectiveTaskId) {
+      assertPilotTaskActionAllowed(effectiveTaskId, params.pilotActionToken);
+    }
     const linkedTask = effectiveTaskId
       ? useTaskStore.getState().getTaskById(effectiveTaskId)
       : undefined;
@@ -11226,12 +11285,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       removeUnsavedAssistantResponseFromStorage(messageId);
     });
     const visibleMessages = recoveredMerge.messages;
+    if (tauriIpc.isTauriAvailable()) {
+      const sharedMetadata = await tauriIpc.conversationMetadata();
+      lifecycle?.assertActive();
+      conversations = conversations.map(c => ({ ...c, is_unread: sharedMetadata.some(m => m.conversation_id === c.id && m.response_revision > m.read_revision) }));
+    }
+    const sharedConversationById = new Map(conversations.map(c => [c.id,c]));
     const hydratedVisibleConversations = visibleConversations.map(
       (conversation) => {
         const conversationMessages = visibleMessages.filter(
           (message) => message.conversation_id === conversation.id,
         );
         const latestMessage = conversationMessages.at(-1);
+        conversation = sharedConversationById.get(conversation.id) ?? conversation;
         if (!latestMessage?.persistence_state) return conversation;
         return {
           ...conversation,
@@ -11248,9 +11314,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pruneConversationSelections(hydratedVisibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
-    const archivedConversationPreference = await loadPreference<unknown>(
-      PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
-    );
+    await useConversationArchiveStore.getState().hydrateArchivedConversationIds(lifecycle);
+    const archivedConversationPreference = Array.from(useConversationArchiveStore.getState().archivedConversationIds);
     lifecycle?.assertActive();
     const archivedConversationIds = Array.isArray(archivedConversationPreference)
       ? new Set(
@@ -12443,6 +12508,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       void get().ensureConversationForCurrentMode();
     },
 
+    selectConversationAI: async (conversationId, selection, options) => {
+      const check = () => {
+        if (isAppShutdownGateActive()) throw new Error('unavailable');
+        assertPilotConversationActionAllowed(conversationId, options.pilotActionToken);
+        const state = get();
+        const conversation = state.conversations.find(item => item.id === conversationId);
+        if (!conversation) throw new Error('not_found');
+        if (conversation.task_id) assertPilotTaskActionAllowed(conversation.task_id, options.pilotActionToken);
+        const phase = state.getConversationRuntime(conversationId).phase;
+        if (!['idle', 'error'].includes(phase) || state.getActiveQuestionnaire(conversationId)?.mode === 'pending_reply' || state.pendingToolApprovalByConversationId[conversationId]) throw new Error('stale_revision');
+        const providers = useProviderStore.getState();
+        const provider = providers.providerConfigs.find(item => item.id === selection.providerId);
+        const model = providers.modelsByProvider[selection.providerId]?.find(item => item.id === selection.modelId && item.isEnabled !== false);
+        if (!provider || !providerHasCredentials(provider) || !model || selection.reasoningEffort !== null && !providers.getAvailableReasoningEfforts(selection.providerId, selection.modelId).includes(selection.reasoningEffort)) throw new Error('validation_failed');
+      };
+      check();
+      await options.beforeEffect();
+      check();
+      await selectionPersistence.track(tauriIpc.updateConversationAISelection({ id: conversationId, ...selection }));
+      set(state => ({ conversations: state.conversations.map(conversation => conversation.id === conversationId ? {
+        ...conversation, provider_id: selection.providerId, model_id: selection.modelId, reasoning_effort: selection.reasoningEffort,
+      } : conversation) }));
+      if (get().selectedConversationId === conversationId) {
+        // The selected model is already present in the cached catalogue. This
+        // commit updates the desktop composer without scanning providers.
+        useProviderStore.getState().commitCachedSelection(selection);
+      }
+    },
+
     selectConversation: async (conversationId) => {
       if (get().hydrationStatus === "hydrating") {
         await waitForHydration();
@@ -12499,6 +12593,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
         projectId: executionTask?.project_id ?? projectId,
         groupId,
         selectConversation: options?.selectConversation,
+      });
+    },
+
+    ensurePilotTaskConversation: async (taskId, pilotActionToken) => {
+      assertPilotTaskActionAllowed(taskId, pilotActionToken);
+      const existing = getLatestConversationForTask(taskId);
+      if (existing) return existing;
+      const task = useTaskStore.getState().getTaskById(taskId);
+      if (!task) throw new Error(`Unknown task: ${taskId}`);
+      const appState = useAppStore.getState();
+      const groupId = appState.projectGroups.find((group) =>
+        group.projects.some((project) => project.id === task.project_id),
+      )?.id ?? null;
+      return createConversationRecord({
+        title: `Task - ${task.title}`,
+        taskId,
+        projectId: task.project_id,
+        groupId,
+        selectConversation: false,
+        modeOverride: 'Implement',
+        pilotActionToken,
       });
     },
 
@@ -13159,14 +13274,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    completeLinkedTaskConversationDeletion: async (conversationId) => {
+    assertPilotConversationDeletionReady: (conversationId, token) => {
+      assertPilotConversationActionAllowed(conversationId, token);
+      if (isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, conversationId)) ||
+          pendingAgentCodeReplayRollbacksByConversationId.has(conversationId) ||
+          pendingAgentCodeReplayMarkersByConversationId.has(conversationId) ||
+          replayRecoveryBlockedConversationIds.has(conversationId)) throw new Error('content_unavailable');
+    },
+
+    completeLinkedTaskConversationDeletion: async (conversationId, options) => {
+      const authorize = async () => {
+        assertPilotConversationActionAllowed(conversationId, options?.pilotActionToken);
+        await options?.beforeEffect?.();
+        assertPilotConversationActionAllowed(conversationId, options?.pilotActionToken);
+      };
+      await authorize();
+      if (options?.pilotActionToken) get().assertPilotConversationDeletionReady(conversationId, options.pilotActionToken);
       deletedConversationIds.add(conversationId);
       architectTurns.delete(conversationId);
       turnRuntime.forget(conversationId);
       continuationIntents.delete(conversationId);
       stopConversationRuntimeLocally(conversationId);
       try {
-        await prepareConversationReplayForDeletion(conversationId);
+        if (!options?.pilotActionToken) await prepareConversationReplayForDeletion(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
         const message = `La tâche a été supprimée, mais la restauration du code de sa conversation a échoué : ${toServiceError(error).message}`;
@@ -13180,9 +13310,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       applyLocalConversationRemoval([conversationId]);
 
       try {
+        await authorize();
         await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await authorize();
         await deleteConversationToolboxStateIfAvailable(conversationId);
-        await hydrateSelectedConversationAfterRemoval([conversationId]);
+        if (!options?.pilotActionToken) await hydrateSelectedConversationAfterRemoval([conversationId]);
         return true;
       } catch (error) {
         const message = `La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente : ${toServiceError(error).message}`;
@@ -13191,12 +13323,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    markAsRead: (conversationId) =>
-      set((state) => ({
-        conversations: state.conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, is_unread: false } : conv,
-        ),
-      })),
+    hydrateConversationManagementArchives: async () => {
+      const store = useConversationArchiveStore.getState();
+      if (!store.isArchiveHydrated) await store.hydrateArchivedConversationIds();
+      if (useConversationArchiveStore.getState().archiveHydrationError) throw new Error('content_unavailable');
+    },
+    refreshConversationMetadata: async () => {
+      if (!tauriIpc.isTauriAvailable()) return;
+      const persisted = await tauriIpc.listConversations();
+      const metadata = await tauriIpc.conversationMetadata();
+      const byId = new Map(persisted.map(c => [c.id, mapDbConversationToConversation(c)]));
+      set((state) => ({ conversations: [
+        ...state.conversations.filter(c => byId.has(c.id)).map(c => ({ ...c, ...byId.get(c.id),
+          is_unread: metadata.some(m => m.conversation_id === c.id && m.response_revision > m.read_revision) })),
+        ...[...byId.values()].filter(c => !state.conversations.some(current => current.id === c.id)).map(c => ({ ...c,
+          is_unread: metadata.some(m => m.conversation_id === c.id && m.response_revision > m.read_revision) })),
+      ] }));
+      useConversationArchiveStore.getState().replaceArchivedConversationIds(metadata.filter(m => m.archived).map(m => m.conversation_id));
+    },
+    markAsRead: (conversationId) => {
+      const displayed = getOrderedConversationMessages(conversationId);
+      if (!tauriIpc.isTauriAvailable()) {
+        set((state) => ({ conversations: state.conversations.map(conv => conv.id === conversationId ? { ...conv, is_unread: false } : conv) }));
+        return;
+      }
+      void acknowledgeDisplayedConversation(conversationId, displayed).then(() => get().refreshConversationMetadata()).catch(() => undefined);
+    },
 
     getConversationByTask: (taskId) => {
       return getLatestConversationForTask(taskId) ?? undefined;
@@ -13349,7 +13501,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     getPendingToolApproval: (conversationId) =>
       get().pendingToolApprovalByConversationId[conversationId] ?? null,
 
-    approvePendingToolApprovalOnce: (conversationId) => {
+    approvePendingToolApprovalOnce: (conversationId, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       const pendingApproval =
         get().pendingToolApprovalByConversationId[conversationId];
       if (!pendingApproval) {
@@ -13370,7 +13523,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ?.({ kind: "allow_once" });
     },
 
-    approvePendingToolApprovalForConversation: (conversationId) => {
+    approvePendingToolApprovalForConversation: (conversationId, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       const pendingApproval =
         get().pendingToolApprovalByConversationId[conversationId];
       if (!pendingApproval) {
@@ -13396,7 +13550,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
     },
 
-    denyPendingToolApproval: (conversationId, reason) => {
+    denyPendingToolApproval: (conversationId, reason, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       const pendingApproval =
         get().pendingToolApprovalByConversationId[conversationId];
       if (!pendingApproval) {
@@ -13415,6 +13570,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ),
         )
         ?.({ kind: "deny", reason });
+    },
+
+    resolvePendingToolApprovalForPilot: async (params) => {
+      assertPilotConversationActionAllowed(
+        params.conversationId,
+        params.pilotActionToken,
+      );
+      const approval = get().pendingToolApprovalByConversationId[params.conversationId];
+      if (
+        !approval ||
+        approval.recoveryState === 'interrupted' ||
+        approval.assistantMessageId !== params.assistantMessageId ||
+        approval.toolCallId !== params.toolCallId
+      ) {
+        throw new Error('The tool approval request is no longer active.');
+      }
+      const resolverKey = getPendingToolApprovalResolverKey(
+        params.conversationId,
+        params.toolCallId,
+      );
+      const resolve = pendingToolApprovalResolvers.get(resolverKey);
+      const settlement = pendingToolApprovalSettlements.get(resolverKey);
+      if (!resolve || !settlement) {
+        throw new Error('The tool approval request has no live resolver.');
+      }
+      approvalMutationVersions.set(
+        params.conversationId,
+        (approvalMutationVersions.get(params.conversationId) ?? 0) + 1,
+      );
+      if (params.beforeEffect) {
+        pendingToolApprovalBeforeEffects.set(resolverKey, params.beforeEffect);
+      }
+      resolve(params.resolution);
+      return settlement;
     },
 
     getActiveQuestionnaire: (conversationId) => {
@@ -13618,7 +13807,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return result;
     },
 
-    submitActiveQuestionnaire: async (conversationId) => {
+    submitActiveQuestionnaire: async (conversationId, options) => {
+      assertPilotConversationActionAllowed(conversationId, options?.pilotActionToken);
       const activeQuestionnaire = resolveConversationQuestionnaireFromState(
         get(),
         conversationId,
@@ -13692,6 +13882,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskId: activeQuestionnaire.taskId,
         hiddenContext: responseArtifacts.hiddenContext,
         providerInputItems,
+        pilotTarget: options?.pilotActionToken
+          ? options.taskId
+            ? {
+              taskId: options.taskId,
+              actionToken: options.pilotActionToken,
+              beforeEffect: options.beforeEffect,
+            }
+            : {
+              mode: "Chat",
+              actionToken: options.pilotActionToken,
+              beforeEffect: options.beforeEffect,
+            }
+          : undefined,
       });
 
       if (result.status === "cancelled") {
@@ -13861,6 +14064,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
+      const pilotTarget = payload.pilotTarget;
+      if (pilotTarget && (queuedSubmission || continuation)) throw buildSendError('Pilot cannot send a queued submission.');
+      assertPilotConversationActionAllowed(payload.conversationId, pilotTarget?.actionToken);
+      const pilotConversation = pilotTarget
+        ? get().conversations.find(conversation => conversation.id === payload.conversationId)
+        : undefined;
+      const pilotTaskId = pilotTarget?.taskId ?? pilotConversation?.task_id ?? null;
+      if (pilotTaskId) assertPilotTaskActionAllowed(pilotTaskId, pilotTarget?.actionToken);
       const deferredSubmission = queuedSubmission ?? continuation;
       const conflict = getConflictAssistantContext(payload.conversationId);
       if (conflict) await assertConflictAssistantSend(payload.conversationId, payload.taskId);
@@ -13880,6 +14091,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
               isLoading: provider.isLoading,
               providerConfigs: provider.providerConfigs.map(config => ({ ...config })) } }
         : captureSendSnapshot(payload.conversationId);
+      if (pilotTarget) {
+        const mode = pilotTarget.mode ?? 'Implement';
+        snapshot.mode = mode;
+        snapshot.agentType = mode === 'Implement' ? 'build' : null;
+        snapshot.selectedTaskId = mode === 'Implement' ? (pilotTarget.taskId ?? '') : '';
+        snapshot.executionContext = resolveConversationExecutionContext(payload.conversationId, pilotTarget.mode);
+        snapshot.composerRevision = -1;
+        snapshot.modelSelectionCaptured = true;
+        snapshot.provider.selectedProviderId = pilotConversation?.provider_id ?? null;
+        snapshot.provider.selectedModelId = pilotConversation?.model_id ?? null;
+        snapshot.provider.selectedReasoningEffort = pilotConversation?.reasoning_effort ?? null;
+      }
       const resolvedRefs = await resolveSelectedConversationSources(
         payload.conversationId, payload.content,
         payload.contextRefs ?? snapshot.composerContextRefs,
@@ -13907,6 +14130,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
           clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
         },
         preparation: {
+          authorizePilotEffect: async (conversationId, taskId) => {
+            assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
+            if (taskId) assertPilotTaskActionAllowed(taskId, pilotTarget?.actionToken);
+            await pilotTarget?.beforeEffect?.();
+            assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
+            if (taskId) assertPilotTaskActionAllowed(taskId, pilotTarget?.actionToken);
+          },
           assertCanSend: (id) => {
             if (queuedSubmission) queueRuntime!.assertCanDispatch(queuedSubmission);
             if (deferredSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
@@ -13943,7 +14173,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         tasks: {
           read: (id) => useTaskStore.getState().getTaskById(id),
           finalizeDraft: maybeFinalizeManualFeatureDraftForAssistantRequest,
-          assertReady: assertImplementTaskReadyForSend,
+          assertReady: id => assertImplementTaskReadyForSend(
+            id, pilotTarget?.actionToken, pilotTarget?.beforeEffect,
+          ),
           completeExecutionContext: (taskId, captured) => {
             const app = useAppStore.getState();
             const tasks = useTaskStore.getState();
@@ -13972,7 +14204,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         projection: {
           persistSelection: (mode, id) => {
-            if (!deferredSubmission) persistSelectionForContext(mode, id);
+            if (!deferredSubmission && !pilotTarget) persistSelectionForContext(mode, id);
           },
           publishUser: (message, context) => {
             if (!getOrderedConversationMessages(message.conversation_id).some(item => item.id === message.id)) get().addMessage(message);
@@ -14018,6 +14250,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             selectedProviderId: request.providerId,
             selectedModelId: request.modelId,
             selectedReasoningEffort: request.reasoningEffort,
+            pilotActionToken: request.pilotActionToken,
           }),
         },
       });
@@ -14041,7 +14274,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await queue.removeEntry(id);
     },
 
-    stopConversationStream: (conversationId) => {
+    stopConversationStream: (conversationId, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       stopConversationRuntimeLocally(conversationId);
     },
 
@@ -14198,6 +14432,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!selectedConversationId) {
         return;
       }
+      assertPilotConversationActionAllowed(selectedConversationId);
       stopConversationRuntimeLocally(selectedConversationId);
     },
 
@@ -14323,6 +14558,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         set({ lastError: message, sendState: "error" });
         throw buildSendError(message);
       }
+      assertPilotConversationActionAllowed(target.conversation_id);
       if (!options?.skipAgentCodeReplayCheck) {
         const replayPreview = await get().getAgentCodeReplayPreview(messageId);
         if (replayPreview && replayPreview.affectedFiles.length > 0) {
@@ -14760,6 +14996,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       toolApprovalRuntimeEpoch += 1;
       for (const resolve of pendingToolApprovalResolvers.values()) resolve({ kind: "expired" });
       pendingToolApprovalResolvers.clear();
+      pendingToolApprovalSettlements.clear();
+      pendingToolApprovalBeforeEffects.clear();
       pendingToolApprovalQueues.clear();
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();

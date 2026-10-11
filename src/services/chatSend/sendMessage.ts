@@ -23,6 +23,11 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   const { mode, agentType, architectPlan, provider } = snapshot;
   let executionContext = snapshot.executionContext;
   const resolvedTaskId = mode === 'Chat' ? '' : (input.taskId ?? snapshot.conversationTaskId ?? snapshot.selectedTaskId);
+  const authorizePilotEffect = async () => {
+    if (!input.pilotTarget) return;
+    if (!preparation.authorizePilotEffect) throw new Error('Pilot authorization is unavailable.');
+    await preparation.authorizePilotEffect(conversationId, resolvedTaskId);
+  };
   const abortController = new AbortController();
   let lease: SendLease | null = null;
   let assistantMessageId: string | null = null;
@@ -65,6 +70,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
     }
     try {
+      await authorizePilotEffect();
       message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
         id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
@@ -114,7 +120,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       projectIds: executionContext.projectIds, focusProjectId: executionContext.focusedProjectId, mode,
     });
     if (!isCurrent()) return cancelled();
-    const scopedModel = snapshot.modelSelectionCaptured
+    const scopedModel = snapshot.modelSelectionCaptured && !input.pilotTarget?.taskId
       ? null : configuration.selectScoped(scopedConfiguration, snapshot, internalAgentProfile);
     const providerId = scopedModel?.providerId ?? provider.selectedProviderId;
     const modelId = scopedModel?.modelId ?? provider.selectedModelId;
@@ -151,6 +157,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     }
     if (mode === 'Implement' && resolvedTaskId) {
       if (task?.task_source === 'standalone' && task.standalone_kind === 'manual_feature' && task.draft === true) {
+        await authorizePilotEffect();
         recovery = await tasks.finalizeDraft({
           ...model, conversationId, taskId: resolvedTaskId, userContent: content,
           onStep: (step) => tasks.setLaunchStep(conversationId, current.sessionId, step),
@@ -158,6 +165,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         if (!isCurrent()) return cancelled();
         finalizedDraft = recovery !== null;
       }
+      await authorizePilotEffect();
       task = (await tasks.assertReady(resolvedTaskId)) ?? task;
       if (!isCurrent()) return cancelled();
       tasks.assertExecutionContextReady(task);
@@ -175,6 +183,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     };
     if (!isCurrent()) return returnSavedUser();
     if (messages.hasInterruptedApproval(conversationId)) {
+      await authorizePilotEffect();
       await messages.clearApprovalRecovery(conversationId)
         .catch((error) => projection.approvalRecoveryError(toServiceError(error).message));
       if (!isCurrent()) return returnSavedUser();
@@ -197,7 +206,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
           if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         }
       }
-      if (!skipMetadata) void preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan });
+      if (!skipMetadata && !input.pilotTarget) void preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan });
     }
     try {
       const request: PrepareAssistantStreamParams = {
@@ -208,11 +217,13 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         scopedTurnConfigurationOverride: scopedConfiguration,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       };
+      await authorizePilotEffect();
       const launch = await stream.prepare(request);
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       timeline('compaction_done', { conversationId, providerId, providerType: providerForUse.providerType });
       let assistant: ChatMessage;
       try {
+        await authorizePilotEffect();
         assistant = await createAssistantPlaceholderMessage(messages.persistence, {
           conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         });
@@ -235,6 +246,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       stream.start({
         ...request, sessionId: current.sessionId, assistantMessage: assistant,
         architectPlanAtSend: architectPlan, abortController,
+        pilotActionToken: input.pilotTarget?.actionToken,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
       messages.onAssistantStarted?.();

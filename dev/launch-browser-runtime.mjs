@@ -4,17 +4,19 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import {
   resolveQaBrowserLogDirectory,
+  resolveQaBrowserPorts,
   resolveQaBrowserOrigin,
   validateQaBrowserRuntimeConfig,
 } from './browser-runtime-config.mjs';
 
+const ports = resolveQaBrowserPorts(process.env);
 const token = randomBytes(32).toString('hex');
 const customConfig = process.env.MACRO_TAURI_BROWSER_CONFIG;
 const configPath = customConfig
   ? resolve(customConfig)
   : resolve('src-tauri/tauri.browser-debug.conf.json');
 const runtimeConfig = validateQaBrowserRuntimeConfig(JSON.parse(readFileSync(configPath, 'utf8')));
-const browserOrigin = resolveQaBrowserOrigin(runtimeConfig);
+const browserOrigin = process.env.MACRO_TAURI_BROWSER_UI_PORT ? ports.origin : resolveQaBrowserOrigin(runtimeConfig);
 const logDirectory = resolveQaBrowserLogDirectory(runtimeConfig, tmpdir());
 const child = Bun.spawn(
   [
@@ -33,6 +35,8 @@ const child = Bun.spawn(
       MACRO_TAURI_BROWSER_BRIDGE: '1',
       MACRO_TAURI_BROWSER_ORIGIN: browserOrigin,
       MACRO_TAURI_BROWSER_UI_PORT: new URL(browserOrigin).port || '80',
+      MACRO_TAURI_BROWSER_BRIDGE_PORT: String(ports.bridge),
+      VITE_TAURI_BROWSER_BRIDGE_PORT: String(ports.bridge),
       MACRO_TAURI_BROWSER_BRIDGE_TOKEN: token,
       MACRO_TAURI_BROWSER_LOG_DIR: logDirectory,
       VITE_TAURI_BROWSER_BRIDGE: '1',

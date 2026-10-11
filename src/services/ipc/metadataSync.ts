@@ -21,10 +21,13 @@ export async function macroBranchStatus(params?: {
 
 export async function macroBranchCommitIfDirty(params?: {
   message?: string;
+  pilotOnly?: boolean;
+  metadataPaths?: string[];
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
   return invoke<MacroBranchSyncDto>("macro_branch_commit_if_dirty", {
     message: params?.message ?? null,
+    ...(params?.pilotOnly ? { pilotOnly: true, metadataPaths: params.metadataPaths ?? [] } : {}),
     workspacePath: params?.workspacePath ?? null,
   });
 }

@@ -2,6 +2,124 @@ use super::*;
 use sqlx::Connection;
 use tempfile::TempDir;
 
+#[tokio::test]
+async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("develop.db");
+    let mut old = fixture(&path, true).await;
+    old.close().await.unwrap();
+    let pool = create_pool(&path).await.unwrap();
+    sqlx::raw_sql("DELETE FROM schema_migrations WHERE version >= 10; UPDATE schema_migrations SET name = '005_pilot_tool_trace_revisions' WHERE version = 5;")
+        .execute(&pool).await.unwrap();
+    pool.close().await;
+    let reopened = create_pool(&path).await.unwrap();
+    let mut connection = reopened.acquire().await.unwrap();
+    assert_preserved(&mut connection).await;
+    let names: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT version, name FROM schema_migrations WHERE version >= 6 ORDER BY version",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        names,
+        vec![
+            (6, "006_generation_attempts".into()),
+            (7, "007_tool_invocations".into()),
+            (8, "008_agent_run_transitions".into()),
+            (9, "009_conversation_goals".into()),
+            (10, "010_pilot_tool_trace_revisions".into()),
+            (11, "011_conversation_management".into()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn upgrades_local_pilot_v7_without_reusing_develop_migration_numbers() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("pilot.db");
+    let mut old = fixture(&path, true).await;
+    old.close().await.unwrap();
+    let pool = create_pool(&path).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    drop_v9(&mut connection).await;
+    sqlx::raw_sql("DROP TABLE agent_run_transitions; DROP TABLE tool_invocations; ALTER TABLE messages DROP COLUMN generation_attempts_json; DELETE FROM schema_migrations WHERE version >= 6; INSERT INTO schema_migrations VALUES (6, '006_pilot_tool_trace_revisions', 'original-pilot-time'), (7, '007_conversation_management', 'original-pilot-time');")
+        .execute(&mut *connection).await.unwrap();
+    drop(connection);
+    pool.close().await;
+    let pool = create_pool(&path).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert_preserved(&mut connection).await;
+    let timestamps: Vec<String> = sqlx::query_scalar(
+        "SELECT applied_at FROM schema_migrations WHERE version IN (10,11) ORDER BY version",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        timestamps,
+        vec!["original-pilot-time", "original-pilot-time"]
+    );
+    assert!(table_exists(&mut connection, "tool_invocations".into())
+        .await
+        .unwrap());
+    assert!(table_exists(&mut connection, "conversation_goals".into())
+        .await
+        .unwrap());
+}
+
+/// Optional upgrade rehearsal: only a temporary copy of the supplied fixture is opened.
+#[tokio::test]
+#[ignore = "requires MACRO_DB_UPGRADE_FIXTURE; never migrates the supplied file"]
+async fn rehearses_upgrade_on_external_database_copy() {
+    use sha2::{Digest, Sha256};
+    let source = PathBuf::from(std::env::var_os("MACRO_DB_UPGRADE_FIXTURE").expect("fixture path"));
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("rehearsal.db");
+    std::fs::copy(&source, &path).unwrap();
+    let wal = PathBuf::from(format!("{}-wal", source.display()));
+    if wal.exists() {
+        std::fs::copy(wal, temp.path().join("rehearsal.db-wal")).unwrap();
+    }
+    async fn transcript_fingerprint(connection: &mut SqliteConnection) -> Vec<u8> {
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT id, content, created_at FROM messages ORDER BY id")
+                .fetch_all(connection)
+                .await
+                .unwrap();
+        let mut digest = Sha256::new();
+        for (id, content, date) in rows {
+            for field in [id, content, date] {
+                digest.update((field.len() as u64).to_le_bytes());
+                digest.update(field.as_bytes());
+            }
+        }
+        digest.finalize().to_vec()
+    }
+    let mut before = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    let fingerprint = transcript_fingerprint(&mut before).await;
+    before.close().await.unwrap();
+    let pool = create_pool(&path)
+        .await
+        .expect("fixture upgrade must succeed");
+    let mut after = pool.acquire().await.unwrap();
+    assert_eq!(
+        transcript_fingerprint(&mut after).await,
+        fingerprint,
+        "transcript changed during upgrade"
+    );
+    assert_eq!(
+        list_applied_migrations(&mut after)
+            .await
+            .unwrap()
+            .iter()
+            .max(),
+        Some(&11)
+    );
+}
+
 async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()

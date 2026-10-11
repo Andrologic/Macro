@@ -1,0 +1,16 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "request",
+  "operation": "review.get",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "workspace_id": "workspace-demo",
+      "task_id": "task-demo",
+      "project_id": "project-demo",
+      "review_id": "review-demo"
+    }
+  }
+}

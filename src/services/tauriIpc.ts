@@ -652,3 +652,8 @@ export type {
   MCPRuntimeSnapshotDto,
   MCPRuntimeStatus,
 } from "./contracts/serviceProvider";
+
+export * from "./ipc/pilot";
+
+export { listMessagesBounded, conversationSetArchives, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, conversationImportArchives, getMessage } from './ipc/conversationManagement';
+export type { ConversationMetadata, ConversationActionInput, ConversationActionResult } from './ipc/conversationManagement';

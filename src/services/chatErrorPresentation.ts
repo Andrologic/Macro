@@ -1,3 +1,5 @@
+import type { ProviderFailure } from '../types';
+
 export type ChatErrorOrigin = "macro" | "provider";
 export type ChatErrorDisplayTarget = "composer" | "transcript";
 
@@ -204,3 +206,21 @@ export const buildProviderErrorTranscriptMarkdown = (
 
   return lines.join("\n").trim();
 };
+
+/** Map structured provider fields only. Never parse or forward its message/body. */
+export function safeProviderFailure(presentation: ChatErrorPresentation): ProviderFailure | null {
+  if (presentation.origin !== 'provider') return null;
+  if (presentation.kind === 'auth' || presentation.status === 401 || presentation.status === 403)
+    return { category: 'authentication', message: 'provider_authentication_required', recovery: 'desktop_action' };
+  if (presentation.code === 'insufficient_quota' || presentation.code === 'quota_exceeded')
+    return { category: 'quota', message: 'provider_quota_exceeded', recovery: 'desktop_action' };
+  if (presentation.kind === 'rate_limited' || presentation.status === 429)
+    return { category: 'rate_limit', message: 'provider_rate_limited', recovery: 'retry_later' };
+  if (['provider_overloaded', 'network', 'stream_idle_timeout'].includes(presentation.kind ?? '') || (presentation.status ?? 0) >= 500)
+    return { category: 'unavailable', message: 'provider_unavailable', recovery: 'review_before_retry' };
+  if (presentation.kind === 'context_overflow')
+    return { category: 'context_limit', message: 'provider_context_limit', recovery: 'desktop_action' };
+  if (['unsupported_reasoning', 'invalid_tool_protocol'].includes(presentation.kind ?? ''))
+    return { category: 'invalid_request', message: 'provider_invalid_request', recovery: 'desktop_action' };
+  return { category: 'unknown', message: 'provider_failed', recovery: 'review_before_retry' };
+}

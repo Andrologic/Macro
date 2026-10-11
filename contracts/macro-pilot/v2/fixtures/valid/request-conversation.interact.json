@@ -1,0 +1,25 @@
+{
+  "contract_version": "2.0",
+  "type": "request",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "conversation.interact",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "snapshot_id": "snapshot-demo",
+    "expected_revision": 1,
+    "idempotency_key": "intent-demo",
+    "action": "answer",
+    "assistant_message_id": "assistant-demo",
+    "answers": [
+      {
+        "step_id": "format",
+        "answer": "PDF"
+      }
+    ]
+  }
+}

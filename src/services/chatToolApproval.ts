@@ -47,19 +47,22 @@ export async function requestChatToolApproval({
       }
       ports.approvals.mutationVersions.set(conversationId, (ports.approvals.mutationVersions.get(conversationId) ?? 0) + 1);
       let revoked: PendingToolApprovalResolution | null = null;
-      return new Promise<PendingToolApprovalResolution>((resolve) => {
+      const resolverKey = `${conversationId}::${pendingApproval.toolCallId}`;
+      const decision = new Promise<PendingToolApprovalResolution>((resolve) => {
         ports.approvals.resolvers.set(
-          `${conversationId}::${pendingApproval.toolCallId}`,
+          resolverKey,
           (decision) => {
             // A refusal offered while persistence is pending remains effective.
             if (decision.kind === "deny" || decision.kind === "expired") revoked = decision;
             resolve(decision);
           },
         );
-        ports.approvals.publish(conversationId, pendingApproval);
-      }).then(async (result) => {
+      });
+      const settlement = decision.then(async (result) => {
         try {
           if (result.kind === "expired" || approvalEpoch !== ports.approvals.epoch) return { kind: "expired" } as PendingToolApprovalResolution;
+          await ports.approvals.beforeEffects?.get(resolverKey)?.();
+          if (approvalEpoch !== ports.approvals.epoch) return { kind: "expired" } as PendingToolApprovalResolution;
           if (result.kind !== "deny" && isCurrentOperation()) {
             result = await revalidate(result);
           }
@@ -77,9 +80,16 @@ export async function requestChatToolApproval({
           ports.approvals.publish(conversationId, { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false }, pendingApproval);
           throw error;
         } finally {
-          if (approvalEpoch === ports.approvals.epoch) ports.approvals.resolvers.delete(`${conversationId}::${pendingApproval.toolCallId}`);
+          if (approvalEpoch === ports.approvals.epoch) ports.approvals.resolvers.delete(resolverKey);
+          if (ports.approvals.settlements?.get(resolverKey) === settlement) {
+            ports.approvals.beforeEffects?.delete(resolverKey);
+            ports.approvals.settlements?.delete(resolverKey);
+          }
         }
       });
+      ports.approvals.settlements?.set(resolverKey, settlement);
+      ports.approvals.publish(conversationId, pendingApproval);
+      return settlement;
     },
   );
 }

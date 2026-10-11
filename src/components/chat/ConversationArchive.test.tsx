@@ -58,6 +58,8 @@ describe('ConversationArchive', () => {
       command?: string,
       payload?: Record<string, unknown>,
     ): Promise<unknown> => {
+      if (command === 'db_conversation_import_archives') return;
+      if (command === 'db_conversation_metadata') return (stateValues.chatArchivedConversationIds as string[] ?? []).map(id => ({ conversation_id: id, archived: true }));
       if (command === 'state_get_snapshot') {
         return { schemaVersion: 1, values: structuredClone(stateValues) };
       }
@@ -70,7 +72,25 @@ describe('ConversationArchive', () => {
       }
       return undefined;
     });
-    installTauriRuntimeMock(invokeMock as never);
+    let nativeArchiveQueue: Promise<unknown> = Promise.resolve();
+    // Keep the existing delayed/failing persistence controls, while exercising
+    // the native archive command and metadata refresh used by the component.
+    installTauriRuntimeMock((async (command: string, payload?: Record<string, unknown>) => {
+      if (command === 'db_list_conversations') return structuredClone(useChatStore.getState().conversations);
+      if (command === 'db_conversation_metadata') return (stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS] as string[] ?? []).map(id => ({ conversation_id: id, archived: true, response_revision: 0, read_revision: 0 }));
+      if (command === 'db_conversation_set_archives') {
+        const operation = nativeArchiveQueue.then(async () => {
+          const current = new Set(stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS] as string[] ?? []);
+          for (const id of payload?.ids as string[]) {
+            if (payload?.archived) current.add(id); else current.delete(id);
+          }
+          return invokeMock('state_set_value', { key: PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, value: [...current] });
+        });
+        nativeArchiveQueue = operation.catch(() => undefined);
+        return operation;
+      }
+      return invokeMock(command, payload);
+    }) as never);
     useViewFilterStore.setState({
       chat: { ...DEFAULT_CHAT_VIEW_FILTERS },
       isHydrated: true,
@@ -703,6 +723,8 @@ describe('ConversationArchive', () => {
       command?: string,
       payload?: Record<string, unknown>,
     ): Promise<unknown> => {
+      if (command === 'db_conversation_import_archives') return;
+      if (command === 'db_conversation_metadata') return (stateValues.chatArchivedConversationIds as string[] ?? []).map(id => ({ conversation_id: id, archived: true }));
       if (command === 'state_get_snapshot') {
         return { schemaVersion: 1, values: structuredClone(stateValues) };
       }

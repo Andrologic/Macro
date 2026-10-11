@@ -1,3 +1,5 @@
+import { observeConversationMessage } from '../../services/conversationReadObservation';
+import { acknowledgeDisplayedConversation } from '../../services/conversationManagementService';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
@@ -72,6 +74,7 @@ import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services
 import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
 import { getArchitectPlanPrimaryName } from '../../services/architectPlanPresentation';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
+import { buildImplementKickoffPrompt } from '../../services/implementKickoff';
 import { getServiceRuntimeCapabilities } from '../../services';
 import {
   clearConflictAssistantInternalAgentProfile,
@@ -794,6 +797,16 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
+  const observedRow = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!observedRow.current || message.role !== 'assistant' || !message.content || assistantActivity || message.persistence_state === 'failed' || message.persistence_state === 'retrying') return;
+    // Capture this rendered message, before asynchronous reads can see a new turn.
+    const displayed = { ...message };
+    return observeConversationMessage(observedRow.current, () => {
+      void acknowledgeDisplayedConversation(displayed.conversation_id, [displayed])
+        .then(() => useChatStore.getState().refreshConversationMetadata()).catch(() => undefined);
+    });
+  }, [message, assistantActivity]);
   const citedConversations = message.context_refs?.filter(
     (ref) => ref.kind === 'conversation' && ref.conversationId && ref.snippet,
   ) ?? [];
@@ -821,7 +834,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 
   return (
     <div
-      ref={measureElement}
+      ref={(element) => { observedRow.current = element; measureElement(element); }}
       data-index={virtualMessage.index}
       data-scroll-magnet-anchor={message.id}
       id={`chat-message-${message.id}`}
@@ -1111,52 +1124,6 @@ const MemoizedChatMessageRow = React.memo(
  * PERFORMANCE: Lazy loaded via ModeRouter, though shared across all modes
  * Critical component that should load quickly once needed
  */
-const buildImplementKickoffPrompt = (params: {
-  title: string;
-  description?: string;
-  projectScope: string;
-  branchName: string;
-  dependencies: string[];
-  estimatedChanges: Array<{ operation: string; path: string }>;
-  notes?: string;
-}): string => {
-  const dependencyContext = params.dependencies.length > 0
-    ? params.dependencies.join(', ')
-    : 'none';
-  const estimatedChanges = params.estimatedChanges.length > 0
-    ? params.estimatedChanges
-      .map((change) => `${change.operation} ${change.path}`)
-      .join('\n')
-    : 'No estimated file changes provided.';
-  const executionNotes = params.notes?.trim();
-
-  return [
-    'You are starting implementation for this task.',
-    'Start with a concise context summary so the developer immediately understands what needs to be done.',
-    'Then propose an ordered execution plan.',
-    'If critical information is missing, stop and ask blocking questions before coding.',
-    'Use the question tool for blocking structured clarifications.',
-    'When you use it, make a single question tool call in the turn, include 1 to 5 sequential questions, and provide exactly 3 suggested choices per question.',
-    'Use the optional intro for short context, keep each prompt concrete, and wait for the user questionnaire response before continuing.',
-    '',
-    'TASK CONTEXT',
-    `- Title: ${params.title}`,
-    `- Description: ${params.description || 'No description provided.'}`,
-    `- Project Scope: ${params.projectScope}`,
-    `- Branch: ${params.branchName}`,
-    `- Dependencies: ${dependencyContext}`,
-    '- Estimated file changes:',
-    estimatedChanges,
-    ...(executionNotes
-      ? [
-        '',
-        'DEVELOPER NOTES',
-        executionNotes,
-      ]
-      : []),
-  ].join('\n');
-};
-
 const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();

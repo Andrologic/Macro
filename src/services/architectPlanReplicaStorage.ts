@@ -49,15 +49,26 @@ import { getScopeWorkspaceScope } from './architectPlanReadContext';
 export const syncPlanTaskMetadataAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
-  plan: ArchitectPlanRecord
+  plan: ArchitectPlanRecord,
+  beforeEffect?: () => Promise<void>,
+  targetedTaskId?: string,
+  onWrite?: (path: string) => void,
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return;
+  if (beforeEffect && !targetedTaskId) throw new Error('content_unavailable');
   const normalizedBranch = normalizeBranchName(branchName);
   const normalizedPlan = {
     ...plan,
     nodes: normalizePlanNodes(plan.nodes),
     predictedBranches: normalizePlanPredictedBranches(plan.predictedBranches),
   };
+  if (beforeEffect && targetedTaskId) {
+    const node = normalizedPlan.nodes.find(candidate => candidate.id === targetedTaskId);
+    if (!node) throw new Error('content_unavailable');
+    await writeTextFileAtScope(scope, getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
+      buildTaskPlannedMarkdown(normalizedPlan, node), beforeEffect, onWrite);
+    return;
+  }
   const activeTaskIds = new Set(normalizedPlan.nodes.map((node) => node.id));
 
   try {
@@ -91,7 +102,8 @@ export const syncPlanTaskMetadataAtScope = async (
       writeTextFileAtScope(
         scope,
         getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
-        buildTaskPlannedMarkdown(normalizedPlan, node)
+        buildTaskPlannedMarkdown(normalizedPlan, node),
+        beforeEffect, onWrite
       )
     )
   );
@@ -118,7 +130,9 @@ export const readJsonFileAtScope = async <T>(
 export const writeJsonFileAtScope = async (
   scope: ArchitectMetadataScope,
   path: string,
-  value: unknown
+  value: unknown,
+  beforeEffect?: () => Promise<void>,
+  onWrite?: (path: string) => void,
 ): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
   const content = JSON.stringify(value, null, 2);
@@ -126,6 +140,7 @@ export const writeJsonFileAtScope = async (
   if (typeof existing === 'string' && areSerializedContentsEqual(existing, content)) {
     return false;
   }
+  await beforeEffect?.();
   await tauriIpc.fsWriteFile({
     path,
     content,
@@ -134,6 +149,7 @@ export const writeJsonFileAtScope = async (
     workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
+  onWrite?.(path);
   return true;
 };
 
@@ -158,13 +174,16 @@ export const readTextFileAtScope = async (
 export const writeTextFileAtScope = async (
   scope: ArchitectMetadataScope,
   path: string,
-  content: string
+  content: string,
+  beforeEffect?: () => Promise<void>,
+  onWrite?: (path: string) => void,
 ): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
   const existing = await readTextFileAtScope(scope, path);
   if (typeof existing === 'string' && areSerializedContentsEqual(existing, content)) {
     return false;
   }
+  await beforeEffect?.();
   await tauriIpc.fsWriteFile({
     path,
     content,
@@ -173,6 +192,7 @@ export const writeTextFileAtScope = async (
     workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
+  onWrite?.(path);
   return true;
 };
 
@@ -323,14 +343,35 @@ export const readIndexAtScope = async (
 export const writeIndexAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
-  index: ArchitectPlanIndex
+  index: ArchitectPlanIndex,
+  beforeEffect?: () => Promise<void>,
+  onWrite?: (path: string) => void,
+  options?: { pilotOnly?: boolean; targetedPlanId?: string },
 ): Promise<boolean> => {
   const normalized = normalizeBranchName(branchName);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     return writeLocalIndex(normalized, index);
   }
 
-  return writeJsonFileAtScope(scope, getIndexPath(normalized), index);
+  if (options?.pilotOnly) {
+    const rawIndex = await readJsonFileAtScope<Partial<ArchitectPlanIndex>>(scope, getIndexPath(normalized));
+    if (!rawIndex || !Array.isArray(rawIndex.plans)) throw new Error('content_unavailable');
+    const computed = new Map(index.plans.map(summary => [summary.id, summary]));
+    const existingIds = new Set(rawIndex.plans.map(summary => summary.id));
+    const plans = rawIndex.plans
+      .filter(summary => summary.id !== options.targetedPlanId || computed.has(summary.id))
+      .map(summary => summary.id === options.targetedPlanId
+        ? { ...summary, ...computed.get(summary.id) } : summary);
+    index.plans.forEach(summary => { if (!existingIds.has(summary.id)) plans.push(summary); });
+    return writeJsonFileAtScope(scope, getIndexPath(normalized), {
+      ...rawIndex, ...index, plans,
+      reservedPlanSlugs: Array.from(new Set([
+        ...(Array.isArray(rawIndex.reservedPlanSlugs) ? rawIndex.reservedPlanSlugs : []),
+        ...index.reservedPlanSlugs,
+      ])),
+    }, beforeEffect, onWrite);
+  }
+  return writeJsonFileAtScope(scope, getIndexPath(normalized), index, beforeEffect, onWrite);
 };
 
 export const normalizePlanRecordForBranch = (
@@ -450,7 +491,8 @@ export const preservePlanArtifactManifestAtScope = async (
   }
   const existing = await readStoredPlanManifestAtScope(scope, branchName, planId);
   const artifacts = normalizeArtifactManifestSummary(existing?.artifacts);
-  return artifacts ? { ...manifest, artifacts } : manifest;
+  if (!existing) return manifest;
+  return { ...existing, ...manifest, ...(artifacts ? { artifacts } : {}) } as ArchitectPlanManifest;
 };
 
 export const readPlanManifestAtScope = async (params: {
@@ -550,8 +592,12 @@ export const writePlanAtScope = async (
   options?: {
     chatMessages?: ArchitectPlanChatMessage[];
     skipManifest?: boolean;
+    beforeEffect?: () => Promise<void>;
+    targetedTaskId?: string;
+    onWrite?: (path: string) => void;
   }
 ): Promise<void> => {
+  if (options?.beforeEffect && !options.targetedTaskId) throw new Error('content_unavailable');
   const normalized = normalizeBranchName(branchName);
   const sanitizedPlanResult = sanitizeArchitectPlanRecord(
     normalized,
@@ -574,23 +620,39 @@ export const writePlanAtScope = async (
     label: normalizePlanLabel(sanitizedPlanResult.plan.label),
   };
 
+  let planToWrite = normalizedPlan;
+  if (options?.beforeEffect && options.targetedTaskId) {
+    const rawPlan = await readJsonFileAtScope<ArchitectPlanRecord>(
+      scope, getPlanJsonPath(normalized, sanitizeId(normalizedPlan.id)));
+    const rawNodes = rawPlan && Array.isArray(rawPlan.nodes) ? rawPlan.nodes : null;
+    const targetedNode = normalizedPlan.nodes.find(node => node.id === options.targetedTaskId);
+    if (!rawPlan || !rawNodes || !targetedNode || !rawNodes.some(node => node.id === options.targetedTaskId)) {
+      throw new Error('content_unavailable');
+    }
+    planToWrite = {
+      ...rawPlan, updatedAt: normalizedPlan.updatedAt, revision: normalizedPlan.revision,
+      nodes: rawNodes.map(node => node.id === options.targetedTaskId
+        ? { ...node, title: targetedNode.title } : node),
+    };
+  }
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    await options?.beforeEffect?.();
     writeLocalPlan(normalized, normalizedPlan);
     return;
   }
 
   const safeId = sanitizeId(normalizedPlan.id);
-  await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan);
-  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan, registrySnapshot));
-  await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
+  await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), planToWrite, options?.beforeEffect, options?.onWrite);
+  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(planToWrite, registrySnapshot), options?.beforeEffect, options?.onWrite);
+  await syncPlanTaskMetadataAtScope(scope, normalized, planToWrite, options?.beforeEffect, options?.targetedTaskId, options?.onWrite);
   if (!options?.skipManifest) {
     const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
     const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
-      plan: normalizedPlan,
+      plan: planToWrite,
       chatMessages,
       registrySnapshot,
     }));
-    await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+    await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest, options?.beforeEffect, options?.onWrite);
   }
 };
 

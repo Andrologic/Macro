@@ -576,3 +576,13 @@ and failed old-budget result are retained with the local QA proofs.
 This adjustment accounts for the retained refusal translation. It does not
 establish a performance improvement or change the previously recorded startup
 and first-open measurements. Subsequent builds still use the budget guard.
+
+### Local Pilot integration compatibility build
+
+The production build combining the current desktop with the Pilot transport
+measures 1,525,486 bytes for the entry, 821,607 bytes for the native client and
+643,898 bytes for the desktop composition. The latter two deferred transport
+chunks now have dedicated budgets with approximately 1% headroom. Other lazy
+chunks retain their 600,000-byte cap. The largest ordinary locale fragment is
+153,341 bytes and Japanese is 169,841 bytes; their caps are 155,000 and 172,000
+bytes. These measurements describe the combined scope, not a performance gain.

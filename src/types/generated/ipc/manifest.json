@@ -349,6 +349,22 @@
       "families": [
         "db"
       ],
+      "name": "ConversationActionInput",
+      "origin": "macro_lib::db::conversation_management::ConversationActionInput",
+      "path": "ConversationActionInput.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationActionResult",
+      "origin": "macro_lib::db::conversation_management::ConversationActionResult",
+      "path": "ConversationActionResult.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
       "name": "ConversationCitation",
       "origin": "macro_lib::db::models::ConversationCitation",
       "path": "ConversationCitation.ts"
@@ -376,6 +392,14 @@
       "name": "ConversationGoalAudit",
       "origin": "macro_lib::db::conversation_goals::ConversationGoalAudit",
       "path": "ConversationGoalAudit.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "ConversationMetadata",
+      "origin": "macro_lib::db::conversation_management::ConversationMetadata",
+      "path": "ConversationMetadata.ts"
     },
     {
       "families": [

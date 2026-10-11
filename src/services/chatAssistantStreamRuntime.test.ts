@@ -817,3 +817,21 @@ for (const changeGeneration of [false, true]) {
     expect(prep.ports.tools.allowedForMode).not.toHaveBeenCalled();
   });
 }
+
+for (const mode of ['Chat', 'Architect', 'Implement'] as const) {
+  test(`retains a structured safe provider failure in the actual ${mode} lifecycle`, async () => {
+    const h = setup(); const params = launch('diagnostic'); params.modeAtSend = mode;
+    const stream = h.start(params);
+    stream.options.onError(Object.assign(new Error('private prompt /private/profile token=synthetic-secret'), {
+      name: 'ProviderRuntimeError', providerError: true, kind: 'rate_limited', status: 429,
+      providerCode: 'insufficient_quota', providerRawBodyExcerpt: 'private response',
+    }));
+    stream.done.resolve(); await h.owner.drain(params.conversationId);
+    const runtime = h.owner.read(params.conversationId);
+    expect(runtime.phase).toBe('error');
+    expect(h.messages.get(params.assistantMessage.id)?.completion_reason).toBe('provider_error');
+    expect(runtime.providerFailure).toEqual({ category: 'quota', message: 'provider_quota_exceeded', recovery: 'desktop_action' });
+    expect(JSON.stringify(runtime.providerFailure)).not.toMatch(/private|synthetic-secret/);
+    if (mode === 'Implement') expect(h.taskFailed).toHaveBeenCalledTimes(1);
+  });
+}

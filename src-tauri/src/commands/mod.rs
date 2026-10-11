@@ -1,10 +1,14 @@
 pub mod ai;
+pub mod conversation_management;
 mod external_apps;
 pub mod fs;
 pub mod git;
 pub mod goal_audit;
 pub mod goal_auditor_read;
 pub mod mcp;
+pub mod pilot_device;
+pub mod pilot_secrets;
+pub mod pilot_tools;
 pub mod repository_instructions;
 pub mod skills;
 pub mod speech;

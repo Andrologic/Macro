@@ -25,6 +25,12 @@ export interface TaskStartupSelection {
   isCurrent(): boolean;
 }
 
+export interface TaskStartupOptions {
+  onWorkspacesPrepared?: () => void;
+  pilotActionToken?: symbol;
+  beforeEffect?: () => Promise<void>;
+}
+
 export interface TaskStartupPorts {
   executionAvailable(): boolean;
   tasks(): CatalogedImplementTask[];
@@ -39,11 +45,11 @@ export interface TaskStartupPorts {
   readDurableTasks(): Promise<CatalogedImplementTask[]>;
   reserveStandaloneStatus(taskId: string, expectedStatus: TaskStatus): Promise<number | null>;
   restoreStandaloneStatus(taskId: string, status: TaskStatus, revision: number): Promise<void>;
-  persistArchitectAdmission(task: CatalogedImplementTask): Promise<void>;
-  setStatus(taskId: string, status: TaskStatus): Promise<void>;
-  refreshCatalog(): Promise<void>;
-  syncStandaloneMetadata(taskId: string, onError: (message: string) => void): Promise<void>;
-  prepare(task: CatalogedImplementTask, options?: { onWorkspacesPrepared?: () => void }): Promise<TaskWorkspacePreparation>;
+  persistArchitectAdmission(task: CatalogedImplementTask, options?: TaskStartupOptions): Promise<void>;
+  setStatus(taskId: string, status: TaskStatus, options?: TaskStartupOptions): Promise<void>;
+  refreshCatalog(pilot?: boolean): Promise<void>;
+  syncStandaloneMetadata(taskId: string, onError: (message: string) => void, options?: TaskStartupOptions): Promise<void>;
+  prepare(task: CatalogedImplementTask, options?: TaskStartupOptions): Promise<TaskWorkspacePreparation>;
   hasMergeReview(taskId: string): boolean;
   openMergeReview(task: CatalogedImplementTask, selection: TaskStartupSelection, isCurrent: () => boolean): Promise<void>;
   projection: {
@@ -78,7 +84,7 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
   ));
 
   return {
-    async start(taskId: string, options?: { onWorkspacesPrepared?: () => void }): Promise<TaskStartupResult> {
+    async start(taskId: string, options?: TaskStartupOptions): Promise<TaskStartupResult> {
       if (!ports.executionAvailable()) return fail(taskId, new Error(ports.unavailableMessage()));
       const task = resolveTaskReference(ports.tasks(), taskId);
       if (!task) return fail(taskId, new Error(ports.message('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId })));
@@ -90,7 +96,8 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
         throw error;
       }
       if (task.status === 'AwaitingResponse') {
-        await ports.setStatus(task.id, 'InProgress');
+        await options?.beforeEffect?.();
+        await ports.setStatus(task.id, 'InProgress', options);
         return { status: 'resumed', taskId: task.id };
       }
       const blockers = isPlanFinalizationTask(task) ? ports.tasks().filter((candidate) =>
@@ -109,6 +116,7 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
       }
       projectIds.forEach((id) => startingDirectProjects.add(id));
       try {
+        await options?.beforeEffect?.();
         const paths = [...new Set(directTargets.map((target) => ports.resolveRepository(target.projectId, target.repoPath))
           .filter((path): path is string => Boolean(path)))];
         return await ports.withLifecycleLock(task.id, async (): Promise<TaskStartupResult> => {
@@ -124,7 +132,9 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
               }
             }
           }
-          const selection = ports.projection.select(task.id);
+          const selection = options?.pilotActionToken
+            ? { projectId: task.project_id ?? null, isCurrent: () => false }
+            : ports.projection.select(task.id);
           const exists = () => {
             const current = resolveTaskReference(ports.tasks(), task.id);
             return Boolean(current && !current.archived_at && !current.draft && ports.taskIdentity(current) === ports.taskIdentity(task));
@@ -142,6 +152,7 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
           let revision: number | null = null;
           try {
             if (task.task_source === 'standalone' && task.standalone_kind === 'manual_feature') {
+              await options?.beforeEffect?.();
               revision = await ports.reserveStandaloneStatus(task.id, task.status);
               if (revision === null) throw new Error('Task changed before startup admission.');
             }
@@ -149,7 +160,8 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
             if (!exists()) return { status: 'ignored', taskId: task.id };
             const architectAdmission = projectIds.size > 0 && task.task_source === 'architect';
             if (architectAdmission) {
-              await ports.persistArchitectAdmission(task);
+              await options?.beforeEffect?.();
+              await ports.persistArchitectAdmission(task, options);
               ports.projection.admitted(task);
             }
             const primary = preparation.preparedTargets.find((target) => target.projectId === selection.projectId) || preparation.preparedTargets[0];
@@ -158,16 +170,22 @@ export const createTaskStartupWorkflow = (ports: TaskStartupPorts) => {
             ports.projection.prepared(task, preparation, primaryPath, current());
             if (current()) await ports.projection.activateWorkspace(primaryPath);
             if (revision !== null) {
-              await ports.refreshCatalog();
-              await ports.syncStandaloneMetadata(task.id, (message) => { if (current()) ports.projection.failure(new Error(message)); });
-            } else if (!architectAdmission) await ports.setStatus(task.id, 'InProgress');
+              if (options?.pilotActionToken) ports.projection.admitted(task);
+              else await ports.refreshCatalog();
+              await options?.beforeEffect?.();
+              await ports.syncStandaloneMetadata(task.id, (message) => { if (current()) ports.projection.failure(new Error(message)); }, options);
+            } else if (!architectAdmission) {
+              await options?.beforeEffect?.();
+              await ports.setStatus(task.id, 'InProgress', options);
+            }
             return { status: 'started', taskId: task.id, presentationCurrent: current() };
           } catch (error) {
             let failure = error;
             if (revision !== null && exists()) {
               try {
+                await options?.beforeEffect?.();
                 await ports.restoreStandaloneStatus(task.id, task.status, revision);
-                await ports.refreshCatalog();
+                await ports.refreshCatalog(Boolean(options?.pilotActionToken));
               } catch (rollbackError) {
                 failure = new Error(`${toServiceError(error).message}\n${toServiceError(rollbackError).message}`);
               }

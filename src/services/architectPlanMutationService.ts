@@ -13,6 +13,7 @@ import {
 import {
   assertPlanReplicaSetWritable,
   getArchitectPlan,
+  readArchitectPlanSnapshot,
   loadPlanReplicaSet,
   readAggregatedIndex,
   type CreateArchitectPlanInput,
@@ -21,6 +22,7 @@ import {
   createGitFlowMetadataNormalizationContext,
   dedupeScopes,
   ensurePlanScopes,
+  existingMetadataScope,
   invalidateArchitectPlanRuntimeCaches,
   loadArchitectPlanRegistrySnapshot,
   resolveArchitectPlanServiceDependencies,
@@ -249,6 +251,8 @@ export interface UpdateArchitectPlanInput {
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
+  beforeEffect?: () => Promise<void>;
+  pilotTaskId?: string;
 }
 
 export type ArchitectPlanDerivedUpdate = Pick<UpdateArchitectPlanInput, 'nodes' | 'predictedBranches' | 'status'>;
@@ -279,14 +283,22 @@ export const updateArchitectPlanWithDerivedUpdate = async (
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
   return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+  await input.beforeEffect?.();
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot,
+    registrySnapshot, disableAutoHeal: Boolean(input.beforeEffect), existingMetadataOnly: Boolean(input.beforeEffect),
   }, deps);
   if (!replicaSet) {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
+  if (input.beforeEffect) {
+    const allowed = new Set(['branchName', 'planId', 'nodes', 'setActive', 'beforeEffect', 'expectedRevision', 'pilotTaskId']);
+    if (deriveUpdate || Object.keys(input).some(key => !allowed.has(key)) || input.setActive === true ||
+      !input.pilotTaskId || !input.nodes?.some(node => node.id === input.pilotTaskId)) {
+      throw new Error('content_unavailable');
+    }
+  }
   if (
     input.expectedRevision !== undefined &&
     (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
@@ -306,7 +318,8 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     input = { ...input, ...deriveUpdate(existing) };
   }
   const inputKeys = Object.keys(input).filter(
-    (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision',
+    (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision' &&
+      key !== 'beforeEffect' && key !== 'pilotTaskId',
   );
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
@@ -517,15 +530,18 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const candidate = candidateResult.plan;
+  const targetedTaskId = input.beforeEffect ? input.pilotTaskId?.trim() || undefined : undefined;
+  if (input.beforeEffect && !targetedTaskId) throw new Error('content_unavailable');
 
-  const targetScopes = await ensurePlanScopes(
+  const resolvedTargetScopes = await ensurePlanScopes(
     candidate.expectedProjectIds || candidate.projectIds || [],
     registrySnapshot,
     deps,
     getPlanExecutionModes(candidate, registrySnapshot),
   );
+  const targetScopes = resolvedTargetScopes.map(scope => input.beforeEffect ? existingMetadataScope(scope) : scope);
   const existingScopes = dedupeScopes([
-    ...replicaSet.expectedScopes,
+    ...replicaSet.expectedScopes.map(scope => input.beforeEffect ? existingMetadataScope(scope) : scope),
     ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
   ]);
   const targetScopeKeys = new Set(targetScopes.map((scope) => scope.scopeKey));
@@ -538,6 +554,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
   const hasScopeChanges =
     targetScopes.length !== existingScopes.length ||
     targetScopes.some((scope) => !existingScopeKeys.has(scope.scopeKey));
+  if (input.beforeEffect && hasScopeChanges) throw new Error('content_unavailable');
   const hasSemanticChange = !areArchitectPlansSemanticallyEqual(existing, candidate);
   let shouldActivate = input.setActive === true;
   if (shouldActivate) {
@@ -569,6 +586,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
       branchName: normalizedBranch,
       planId: safeId,
       operation: 'update',
+      beforeEffect: input.beforeEffect,
       targets,
       registrySnapshot,
       deps,
@@ -598,6 +616,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
       registrySnapshot,
       setActive: shouldActivate,
       chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+      targetedTaskId,
     }))),
     ...await Promise.all(removedScopes.map((scope) => buildRemoveReplicaMutationTarget({
       scope,
@@ -611,6 +630,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     branchName: normalizedBranch,
     planId: next.id,
     operation: existing.status === 'archived' && next.status !== 'archived' ? 'restore' : 'update',
+    beforeEffect: input.beforeEffect,
     targets,
     registrySnapshot,
     deps,
@@ -622,7 +642,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
   });
 
   try {
-    return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
+    return (await (input.beforeEffect ? readArchitectPlanSnapshot : getArchitectPlan)(normalizedBranch, next.id, deps)) || next;
   } catch (error) {
     if (isArchitectPlanReplicaDivergenceError(error)) {
       devLogger.warn(

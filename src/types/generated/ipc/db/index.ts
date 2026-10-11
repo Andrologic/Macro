@@ -14,10 +14,13 @@ export type { CompareAndSwapAppSettingResult } from '../CompareAndSwapAppSetting
 export type { CompleteAgentRunInput } from '../CompleteAgentRunInput';
 export type { CompleteToolInvocationInput } from '../CompleteToolInvocationInput';
 export type { Conversation } from '../Conversation';
+export type { ConversationActionInput } from '../ConversationActionInput';
+export type { ConversationActionResult } from '../ConversationActionResult';
 export type { ConversationCitation } from '../ConversationCitation';
 export type { ConversationCompactionStateRecord } from '../ConversationCompactionStateRecord';
 export type { ConversationGoal } from '../ConversationGoal';
 export type { ConversationGoalAudit } from '../ConversationGoalAudit';
+export type { ConversationMetadata } from '../ConversationMetadata';
 export type { ConversationSourceSnapshot } from '../ConversationSourceSnapshot';
 export type { ConversationToolboxStateRecord } from '../ConversationToolboxStateRecord';
 export type { CreateAgentRunInput } from '../CreateAgentRunInput';

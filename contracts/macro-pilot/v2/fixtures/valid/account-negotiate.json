@@ -1,0 +1,8 @@
+{
+  "negotiation_version": "1.0",
+  "type": "negotiate",
+  "request_id": "request-demo",
+  "supported_versions": [
+    "2.0"
+  ]
+}

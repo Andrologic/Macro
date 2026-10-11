@@ -1,0 +1,12 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "request",
+  "operation": "conversation.create",
+  "body": {
+    "instance_id": "instance-demo",
+    "idempotency_key": "create-demo",
+    "title": "Nouvelle discussion"
+  }
+}

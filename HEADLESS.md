@@ -18,7 +18,7 @@ Three separate surfaces coexist in the repository:
   supported mode selector or a promise that the desktop UI works end to end
   without Tauri IPC.
 
-## Run The Kernel
+## Run the kernel
 
 From the repository root:
 
@@ -29,16 +29,23 @@ bun run tauri:headless
 By default, the kernel listens on:
 
 ```text
-127.0.0.1:8787
+127.0.0.1:43117
 ```
 
-## Environment Variables
+## Environment variables
 
 - `MACRO_HEADLESS_HOST` - bind host, default `127.0.0.1`.
-- `MACRO_HEADLESS_PORT` - bind port, default `8787`.
+- `MACRO_HEADLESS_PORT` - bind port, default `43117`.
+- `MACRO_HEADLESS_WORKSPACE_ID` - optional stable identifier for the configured
+  workspace. It accepts 1 to 128 ASCII letters, digits, `-`, or `_`. Without
+  this variable, the kernel derives a stable `ws_...` identifier from the
+  canonical workspace path and returns it as `workspace_id` from `/health`.
 - `MACRO_HEADLESS_BEARER_TOKEN` - bearer token. It is optional for the default
   loopback listener, but required for any non-loopback listener. Requests must
   include `Authorization: Bearer <token>` when authentication is enabled.
+- `MACRO_HEADLESS_APPROVAL_TOKEN` - distinct user-held bearer required to
+  accept or reject sensitive configuration changes and to close an ambiguous
+  pre-crash mutation as indeterminate. It must differ from the agent bearer.
 - `MACRO_HEADLESS_ALLOWED_ROOTS` - optional path-list of additional directory
   roots that headless project mounts may use. The configured Macro workspace
   directory is always allowed; mount paths must resolve to existing directories
@@ -50,17 +57,25 @@ By default, the kernel listens on:
   intended for headless, portable, and test installations. `MACRO_CONFIG`
   remains a deprecated bootstrap alias for the legacy headless settings file.
 
-## Available Endpoints
+## Available endpoints
 
 Current endpoints include:
 
 - `GET /health`
-- `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement`
+- `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement&projectId={project_id}`
 - `POST /v1/tools/validate`
 - `POST /v1/tools/execute`
-- `GET /api/v1/tools/mode-policy?mode=Architect|Chat|Implement`
+- `GET /v1/tools/executions/{execution_id}`
+- `POST /v1/tools/executions/{execution_id}/resolve-indeterminate`
+- `POST /v1/tools/checkpoint-snapshot`
+- `POST /v1/tools/cancel`
+- `GET /api/v1/tools/mode-policy?mode=Architect|Chat|Implement&projectId={project_id}`
 - `POST /api/v1/tools/validate`
 - `POST /api/v1/tools/execute`
+- `GET /api/v1/tools/executions/{execution_id}`
+- `POST /api/v1/tools/executions/{execution_id}/resolve-indeterminate`
+- `POST /api/v1/tools/checkpoint-snapshot`
+- `POST /api/v1/tools/cancel`
 - `GET /api/v1/workspace/bootstrap`
 - `GET /api/v1/workspaces/{workspace_id}/bootstrap`
 - `GET /api/v1/workspace/tasks`
@@ -95,14 +110,57 @@ unauthenticated. This is intentional and acceptable only because that server is
 hard-coded to an ephemeral `127.0.0.1` listener; all tool endpoints still
 require its generated bearer token.
 
-## Internal Frontend Remote Transport
+Routes containing `{workspace_id}` accept only the effective identifier
+returned by `/health`. An unknown identifier returns
+`REMOTE_WORKSPACE_NOT_FOUND`; it is never treated as an alias for the current
+workspace. The unscoped `/workspace/...` routes remain available for clients
+that do not configure `VITE_REMOTE_WORKSPACE_ID`.
+
+Tool and checkpoint requests require a registered project. If `workspace_path`
+is omitted, the kernel uses that project's current canonical path. The kernel
+reloads the project registry before policy and path checks, so additions,
+removals, path changes, and read-only changes take effect without a restart.
+An inaccessible project, one outside the allowed roots, or one whose explicit
+scoped tools policy is missing or invalid is excluded from the new snapshot and
+rejected without preventing valid projects from being served. Removing a
+scoped policy removes its cached overlay on the next refresh.
+Client-declared paths still have to match the current server registry.
+
+This explicit project-policy requirement belongs to the headless registry; it
+does not change the desktop `ConfigManager` inheritance rules. Each project to
+be served headlessly needs `projects/{project_id}/config/tools.json` below its
+resolved Macro metadata root. The minimal valid document is:
+
+```json
+{
+  "$schema": "./schemas/v1/tools.schema.json",
+  "schemaVersion": 1
+}
+```
+
+Tool and checkpoint response bodies are capped at 64 MiB by both the kernel and
+the frontend remote transport. A larger response fails with
+`REMOTE_RESPONSE_TOO_LARGE` instead of crossing that bounded allocation.
+
+The `resolve-indeterminate` route is an internal recovery operation. It accepts
+only `{"resolution":"record_indeterminate"}`, requires the approval bearer,
+and refuses an execution still running in the current process. It converts the
+durable pending record into a durable `REMOTE_MUTATION_OUTCOME_INDETERMINATE`
+result without running the mutation again or deleting its evidence.
+At startup, a fully durable completed record supersedes and retires a matching
+pending record left behind by a crash between the two journal operations. Both
+the execution identifier and request fingerprint must match before the pending
+record is removed. Indeterminate completion records are never evicted by the
+journal quota, so the same execution identifier remains permanently fail-closed.
+
+## Internal frontend remote transport
 
 For repository development and contract testing, the frontend adapter can be
 selected explicitly with:
 
 ```env
 VITE_BACKEND_TRANSPORT=remote
-VITE_REMOTE_API_BASE_URL=http://localhost:8787
+VITE_REMOTE_API_BASE_URL=http://localhost:43117
 VITE_REMOTE_API_PREFIX=/api/v1
 VITE_REMOTE_WORKSPACE_ID=
 VITE_REMOTE_AUTH_TOKEN=
@@ -115,7 +173,7 @@ tool validation, remote tool execution, and the shared JSON configuration API.
 This inventory describes implemented prototype paths; it does not make
 `VITE_BACKEND_TRANSPORT=remote` a supported Macro 0.1 capability.
 
-## Current Limits
+## Current limits
 
 The adapter does not replace the full desktop IPC surface. In the 0.1 line,
 these remain desktop-only:

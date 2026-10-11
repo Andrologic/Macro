@@ -12,4 +12,4 @@ export type ToolValidationResultDto = OptionalFields<NativeToolValidationResultD
 /** Frontend compatibility: preserves adapted fields and omission rules. */
 export type ToolModePolicyDto = OptionalFields<NativeToolModePolicyDto, "capabilities">;
 
-export type WorkspaceScope = "default" | "metadata" | "direct";
+export type WorkspaceScope = "default" | "metadata" | "metadata_existing" | "direct";

@@ -111,6 +111,8 @@ commands, read [INSTALL.md](INSTALL.md).
 - [INSTALL.md](INSTALL.md) - install Macro or build it from source.
 - [DEVELOPMENT.md](DEVELOPMENT.md) - local development, scripts, environment
   variables, and validation commands.
+- [docs/macos-pilot-qa-signing.md](docs/macos-pilot-qa-signing.md) - isolated
+  Pilot QA app builds and stable local macOS signing.
 - [RELEASES.md](RELEASES.md) - versioning and the multiplatform release
   process.
 - [HEADLESS.md](HEADLESS.md) - internal experimental notes for a possible future remote runtime.

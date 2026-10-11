@@ -1462,6 +1462,49 @@ impl ConfigManager {
             .lock_and_discover_project_documents(project_ids)
             .await?;
         let state = self.state.read().await;
+        Ok(Self::build_snapshot(&state, project_ids))
+    }
+
+    pub async fn get_loaded_snapshot(
+        &self,
+        project_ids: &[String],
+    ) -> Result<ConfigSnapshot, ConfigApiError> {
+        let state = self.state.read().await;
+        for project_id in project_ids {
+            validate_project_id(project_id)?;
+            let root = state.project_roots.get(project_id).ok_or_else(|| {
+                ConfigApiError::new(
+                    "config.project.not_registered",
+                    format!(
+                        "La configuration du projet {project_id} n’a pas été enregistrée ou chargée."
+                    ),
+                )
+            })?;
+            for kind in ConfigDocumentKind::ALL
+                .into_iter()
+                .filter(|kind| kind.supports_project_scope())
+            {
+                let key = DocumentKey {
+                    kind,
+                    scope: ConfigScope::Project {
+                        project_id: project_id.clone(),
+                    },
+                };
+                if !state.documents.contains_key(&key) && root.join(kind.file_name()).exists() {
+                    return Err(ConfigApiError::new(
+                        "config.project.not_loaded",
+                        format!(
+                            "Le document {} du projet {project_id} existe sur disque mais n’est pas chargé.",
+                            kind.file_name()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(Self::build_snapshot(&state, project_ids))
+    }
+
+    fn build_snapshot(state: &ConfigState, project_ids: &[String]) -> ConfigSnapshot {
         let user_documents = state
             .documents
             .iter()
@@ -1521,7 +1564,7 @@ impl ConfigManager {
             .flat_map(|document| document.diagnostics.clone())
             .collect();
 
-        Ok(ConfigSnapshot {
+        ConfigSnapshot {
             schema_version: CURRENT_SCHEMA_VERSION,
             effective,
             project_effective,
@@ -1529,7 +1572,7 @@ impl ConfigManager {
             provenance,
             diagnostics,
             pending_restart_paths: state.pending_restart_paths.iter().cloned().collect(),
-        })
+        }
     }
 
     pub fn get_schema(&self, kind: ConfigDocumentKind) -> Result<Value, ConfigApiError> {
@@ -6892,6 +6935,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loaded_snapshot_refuses_external_project_documents_without_writing_runtime_state() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().expect("metadata");
+        let config_root = manager
+            .register_project_root("project-123", metadata.path().to_path_buf())
+            .await
+            .expect("register project");
+        let mut tools = sparse_document(ConfigDocumentKind::Tools);
+        tools["builtIn"] = json!({ "terminal_execute": false });
+        atomic_write_json(&config_root.join("tools.json"), &tools).expect("external tools file");
+
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::Project {
+                project_id: "project-123".to_string(),
+            },
+        };
+        let approved_path = approved_document_path(manager.root(), &key);
+        let pending_path = pending_document_path(manager.root(), &key);
+        let error = manager
+            .get_loaded_snapshot(&["project-123".to_string()])
+            .await
+            .expect_err("unloaded external document must fail closed");
+        assert_eq!(error.code, "config.project.not_loaded");
+        assert!(!approved_path.exists());
+        assert!(!pending_path.exists());
+
+        manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("ordinary snapshot discovers the document");
+        assert!(approved_path.exists());
+        assert!(!pending_path.exists());
+        manager
+            .get_loaded_snapshot(&["project-123".to_string()])
+            .await
+            .expect("loaded snapshot uses the discovered document");
+    }
+
+    #[tokio::test]
+    async fn re_registering_a_project_replaces_documents_from_the_previous_root() {
+        let (_temp, manager) = manager().await;
+        let first_metadata = tempfile::tempdir().expect("first metadata");
+        let second_metadata = tempfile::tempdir().expect("second metadata");
+        let first_config = first_metadata.path().join("projects/project-123/config");
+        let second_config = second_metadata.path().join("projects/project-123/config");
+        fs::create_dir_all(&first_config).expect("first config root");
+        fs::create_dir_all(&second_config).expect("second config root");
+        let mut first_tools = sparse_document(ConfigDocumentKind::Tools);
+        first_tools["builtIn"] = json!({ "read": false });
+        atomic_write_json(&first_config.join("tools.json"), &first_tools).expect("first tools");
+        let mut second_tools = sparse_document(ConfigDocumentKind::Tools);
+        second_tools["builtIn"] = json!({ "write": false });
+        atomic_write_json(&second_config.join("tools.json"), &second_tools).expect("second tools");
+
+        manager
+            .register_project_root("project-123", first_metadata.path().to_path_buf())
+            .await
+            .expect("register first root");
+        let first = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("first snapshot");
+        assert_eq!(
+            first.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+
+        manager
+            .register_project_root("project-123", second_metadata.path().to_path_buf())
+            .await
+            .expect("register second root");
+        let second = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("second snapshot");
+        assert!(second.project_effective["project-123"]["tools"]["builtIn"]
+            .get("read")
+            .is_none());
+        assert_eq!(
+            second.project_effective["project-123"]["tools"]["builtIn"]["write"],
+            json!(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn re_registering_a_project_drops_a_deleted_document_overlay() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().expect("metadata");
+        let config_root = metadata.path().join("projects/project-123/config");
+        fs::create_dir_all(&config_root).expect("config root");
+        let mut tools = sparse_document(ConfigDocumentKind::Tools);
+        tools["builtIn"] = json!({ "read": false });
+        let tools_path = config_root.join("tools.json");
+        atomic_write_json(&tools_path, &tools).expect("project tools");
+        atomic_write_json(
+            &config_root.join("agents.json"),
+            &sparse_document(ConfigDocumentKind::Agents),
+        )
+        .expect("project agents");
+
+        manager
+            .register_project_root("project-123", metadata.path().to_path_buf())
+            .await
+            .expect("register project");
+        let first = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("first snapshot");
+        assert_eq!(
+            first.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+
+        fs::remove_file(&tools_path).expect("delete project tools");
+        manager
+            .register_project_root("project-123", metadata.path().to_path_buf())
+            .await
+            .expect("re-register project");
+        let second = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("second snapshot");
+        assert!(second.project_effective["project-123"]["tools"]["builtIn"]
+            .get("read")
+            .is_none());
+        assert!(!second.documents.iter().any(|document| {
+            document.kind == ConfigDocumentKind::Tools
+                && document.scope
+                    == ConfigScope::Project {
+                        project_id: "project-123".to_string(),
+                    }
+        }));
+        assert!(second.documents.iter().any(|document| {
+            document.kind == ConfigDocumentKind::Agents
+                && document.scope
+                    == ConfigScope::Project {
+                        project_id: "project-123".to_string(),
+                    }
+        }));
+    }
+
+    #[tokio::test]
     async fn snapshot_preserves_focused_project_models_and_uses_global_models_when_ambiguous() {
         let (_temp, manager) = manager().await;
         let user_agents = manager
@@ -7077,6 +7263,11 @@ mod tests {
             .await
             .expect_err("unknown project must fail closed");
         assert_eq!(error.code, "config.project.not_registered");
+        let loaded_error = manager
+            .get_loaded_snapshot(&["missing-project".to_string()])
+            .await
+            .expect_err("unknown project must fail closed in loaded mode");
+        assert_eq!(loaded_error.code, "config.project.not_registered");
     }
 
     #[tokio::test]

@@ -77,6 +77,8 @@ export async function terminalStartCommandTab(params: {
   taskId?: string | null;
   promptContext?: TerminalPromptContextInput | null;
   command: string;
+  pilotOnly?: boolean;
+  expectedBranch?: string | null;
 }): Promise<TerminalTabDto> {
   return invoke<TerminalTabDto>("terminal_start_command_tab", {
     kind: params.kind,
@@ -86,6 +88,7 @@ export async function terminalStartCommandTab(params: {
     taskId: params.taskId ?? null,
     promptContext: params.promptContext ?? null,
     command: params.command,
+    ...(params.pilotOnly ? { pilotOnly: true, expectedBranch: params.expectedBranch ?? null } : {}),
   });
 }
 

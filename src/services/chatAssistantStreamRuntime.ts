@@ -1,3 +1,4 @@
+import { safeProviderFailure } from './chatErrorPresentation';
 import { snapshotScopedMcpServers } from "./mcp/runtimeSnapshot";
 import { createChatToolDispatch, type ChatToolDispatchPorts } from "./chatToolDispatch";
 import type { ConversationCompactionStatus } from "./contextCompactionSession";
@@ -37,7 +38,7 @@ export interface ChatAssistantStreamPorts {
   failed(params: {assistantMessage: ChatMessage; message: string; sessionId: string; turnId: string | null}): void;
   sync(mode: AppMode, conversationId: string, plan?: {planId: string; targetBranch: string}): Promise<void>;
  };
- tasks: { status: Lifecycle["getTaskStatus"]; failed(id: string): Promise<void>; awaitingResponse: Lifecycle["markTaskAwaitingResponse"] };
+ tasks: { status: Lifecycle["getTaskStatus"]; failed(id: string, pilotActionToken?: symbol): Promise<void>; awaitingResponse(id: string, pilotActionToken?: symbol): Promise<void> | void };
  provider: { reachable: Lifecycle["markProviderReachable"]; recordOverflowLimit(providerId: string, modelId: string, limit: number): Promise<void>; copilotTimeout(id: string): number | null };
  diagnostics: {
   record(params: {conversationId: string; sessionId: string; assistantMessageId: string; snapshot: LiveStreamContextSnapshot; baseline?: StreamContextDiagnosticsBaseline; leading?: boolean}): void;
@@ -143,6 +144,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         providerTurnState: params.assistantMessage.provider_turn_state,
       },
     });
+    let latestProviderDeltaText: string | undefined;
     let replayRecoveryFinalized = false;
     const finalizeReplayRecoveryAfterProgress = () => {
       if (!params.replayRecovery || replayRecoveryFinalized) return;
@@ -173,7 +175,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       }
 
       try {
-        await ports.tasks.failed(params.resolvedTaskId);
+        await ports.tasks.failed(params.resolvedTaskId, params.pilotActionToken);
       } catch (error) {
         console.warn("Failed to mark task as failed after stream error:", error);
       }
@@ -411,6 +413,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           ports.messages.append(messageId, tokenChunk);
         },
         getAssistantMessage: ports.messages.get,
+        getInterruptedProviderText: () => latestProviderDeltaText,
         updateMessageFields: (messageId, fields) => {
           ports.messages.fields(messageId, fields);
         },
@@ -419,7 +422,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         },
         markProviderReachable: ports.provider.reachable,
         getTaskStatus: ports.tasks.status,
-        markTaskAwaitingResponse: ports.tasks.awaitingResponse,
+        markTaskAwaitingResponse: id => ports.tasks.awaitingResponse(id, params.pilotActionToken),
         assistantTurnRequiresUserReply,
         updateConversationAfterCompletion: (conversationId, visibleContent) => {
           if (ports.owner.beginCompletion(identity)) ports.messages.completed(conversationId, visibleContent);
@@ -464,6 +467,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
             abortController: null,
             lastError: presentation.message,
             lastErrorOrigin: presentation.origin,
+            providerFailure: safeProviderFailure(presentation),
             lastErrorDisplayTarget: presentation.displayTarget,
           }, presentation.displayTarget === "composer" ? { globalLastError: presentation.message } : undefined);
 
@@ -568,6 +572,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
         if (!shouldAcceptStreamUpdate()) {
           return;
         }
+        latestProviderDeltaText = snapshot.providerDeltaText;
         ports.diagnostics.record({
           conversationId: params.conversationId,
           sessionId: params.sessionId,

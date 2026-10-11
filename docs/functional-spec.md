@@ -1175,6 +1175,20 @@ La création complète de plans depuis mobile n'est pas un besoin central initia
 La supervision distante du mode Implement est la priorité.
 Dans la ligne 0.1, cette continuité reste une cible produit : le support stable concerne d'abord l'expérience desktop local-first.
 
+Le raccordement optionnel Macro Pilot utilise une identité GitHub commune au desktop et au compagnon mobile. Le compte n'est pas requis pour le travail local. Le serveur assure l'identité et le relais des échanges ; Macro doit rester ouvert pour exécuter les tâches et fournir leur contenu. Cette supervision n'active pas le kernel headless expérimental décrit en section 20.
+
+Après connexion à Macro Connect, le desktop crée automatiquement son instance avec le nom du périphérique. Les appareils du même compte y accèdent sans appairage. Une révocation explicite reste effective ; elle n’est jamais annulée par une actualisation.
+
+Un téléphone associé dispose de l'accès standard à tous les projets de l'instance, sans configuration de droits par projet. Les conversations Implement restent rattachées à leur tâche réelle ; les conversations du mode Chat sont consultables dans un espace séparé. Les contenus en cours, incomplets ou non transmis doivent être signalés explicitement.
+
+La review distante donne accès au catalogue du diff et à ses fragments pour les changements indexés, non indexés, locaux cumulés et les comparaisons de commits canoniques. L'utilisateur peut approuver ou demander des modifications sans devoir parcourir tous les fichiers. Un verdict porte sur une révision précise et ne réalise aucun stage, commit Git, merge ou push. Une source devenue différente exige une nouvelle review.
+
+Les réglages desktop permettent de consulter le compte et ses sessions, de révoquer une session ou toutes les sessions, de se déconnecter et de confirmer la suppression du compte du relais. Ces opérations conservent les projets et conversations locaux. Recréer un compte ne restaure pas ses anciennes associations.
+
+La section Macro Connect présente le compte et la liste des appareils actifs, dont cet ordinateur. Les détails et la déconnexion de chaque appareil sont accessibles dans son menu. La déconnexion globale et la suppression du compte sont regroupées dans « Gérer le compte » et nécessitent une confirmation. Le dépannage reste replié ; les actions à vérifier ne sont affichées que lorsqu’une intervention est nécessaire.
+
+La disponibilité du contenu est négociée séparément de la gestion du compte et de la supervision existante. Le raccordement de contenu actuel n'est pas annoncé sous Windows ou WSL ; une fonction absente doit rester présentée comme indisponible. Le [contrat public de contenu et de compte](macro-pilot/content-contract-v2.md) précise les échanges. La présence de cette implémentation ne constitue pas une validation d'une installation de relais ou d'un appareil mobile particulier.
+
 ### 19.3 Périmètre des notifications
 
 Le système de notification desktop fait partie du produit actuel. L'activation globale des notifications in-app est une préférence locale, sans compte applicatif. Chaque catégorie importante peut aussi être configurée par canal.

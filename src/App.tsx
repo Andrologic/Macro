@@ -1,3 +1,4 @@
+import { isTauri as isNativeWebView } from '@tauri-apps/api/core';
 import { createLifecycleScope, type LifecycleScope } from './services/lifecycleScope';
 import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -61,6 +62,12 @@ const OnboardingGuide = lazy(() =>
 const WorkflowAttentionNotifications = lazy(() =>
   import("./components/notifications/WorkflowAttentionNotifications").then(
     (module) => ({ default: module.WorkflowAttentionNotifications }),
+  ),
+);
+
+const ConnectAttentionNotifications = lazy(() =>
+  import("./components/notifications/ConnectAttentionNotifications").then(
+    (module) => ({ default: module.ConnectAttentionNotifications }),
   ),
 );
 
@@ -323,6 +330,21 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
   };
 
   useEffect(() => {
+    if (!initStatus.ready) return;
+    // The browser QA runtime has one producer: its browser tab. The hidden
+    // native window serves IPC only; a second producer would compete on CAS.
+    if (import.meta.env.DEV && import.meta.env.VITE_MACRO_BROWSER_QA === '1' && isNativeWebView()) {
+      void import('./composition/macroPilotDesktop').then(({ macroPilotRuntime }) => macroPilotRuntime.stop());
+      return;
+    }
+    let cancelled = false;
+    void import('./composition/macroPilotDesktop').then(({ macroPilotRuntime }) => {
+      if (!cancelled) void macroPilotRuntime.start().catch(() => undefined);
+    });
+    return () => { cancelled = true; };
+  }, [initStatus.ready]);
+
+  useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
 
@@ -583,6 +605,7 @@ const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
       {isTauriAvailable() && <McpFormHostView />}
       <Suspense fallback={null}>
         <WorkflowAttentionNotifications />
+        <ConnectAttentionNotifications />
       </Suspense>
 
       <Suspense fallback={null}>

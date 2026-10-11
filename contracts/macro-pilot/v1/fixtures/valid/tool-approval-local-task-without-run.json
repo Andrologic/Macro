@@ -1,0 +1,32 @@
+{
+  "contract_version": "1.0",
+  "type": "tool_approval",
+  "ref": {
+    "type": "tool_approval",
+    "instance_id": "instance:studio-mac",
+    "conversation_id": "conv-4",
+    "assistant_message_id": "msg-4",
+    "tool_call_id": "call-4",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract"
+  },
+  "state": "resolved",
+  "tool_id": "delete",
+  "action_group": "change",
+  "risk_level": "strict",
+  "is_destructive": true,
+  "summary": "Delete the selected workspace file",
+  "allowed_scopes": [
+    "once"
+  ],
+  "resolution": {
+    "verdict": "deny",
+    "reason": "Keep this file.",
+    "resolved_by": {
+      "origin": "local"
+    },
+    "resolved_at": "2026-09-06T12:01:00Z"
+  },
+  "revision": 2,
+  "observed_at": "2026-09-06T12:00:00Z"
+}

@@ -31,6 +31,10 @@ export interface ChatSendInput {
   contextRefs?: ChatMessage['context_refs'];
   /** Stable identity used to reconcile a deferred send after a restart. */
   submissionTurnId?: string;
+  pilotTarget?: ({ mode: 'Chat'; taskId?: never } | { mode?: never; taskId: string }) & {
+    actionToken: symbol;
+    beforeEffect?: () => Promise<void>;
+  };
   /** Resume preparation for this durable user message, without appending it again. */
   persistedUserMessage?: ChatMessage;
 }
@@ -90,7 +94,7 @@ export interface SendModel {
 }
 
 export type StartSendStream = PrepareAssistantStreamParams & Pick<AssistantStreamLaunch,
-  'sessionId' | 'assistantMessage' | 'architectPlanAtSend' | 'abortController'>;
+  'sessionId' | 'assistantMessage' | 'architectPlanAtSend' | 'abortController' | 'pilotActionToken'>;
 
 /** Ports expose domain operations, never a store or a generic state getter. */
 export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
@@ -108,6 +112,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     clearApprovalRecovery(conversationId: string): Promise<void>;
   };
   preparation: {
+    authorizePilotEffect?(conversationId: string, taskId: string): Promise<void>;
     assertCanSend(conversationId: string): void;
     isDeleted(conversationId: string): boolean;
     createSessionId(): string;

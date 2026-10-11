@@ -1300,6 +1300,27 @@ mod tests {
     }
 
     #[test]
+    fn native_messages_preserve_structured_user_input_text() {
+        let mut user = message("user", "Display fallback");
+        user.provider_input_items = Some(vec![serde_json::json!({
+            "type": "message", "role": "user",
+            "content": [
+                { "type": "input_text", "text": "Question from mobile" },
+                { "type": "input_text", "text": " — with context" }
+            ]
+        })]);
+        let mut request = request(None);
+        request.messages = vec![user];
+        let messages = serialize_messages(&request).expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(
+            messages[0]["content"],
+            "Question from mobile — with context"
+        );
+    }
+
+    #[test]
     fn native_messages_restore_persisted_tool_calls_and_results_in_order() {
         let mut historical = message("assistant", "Read complete.");
         historical.provider_input_items = Some(vec![

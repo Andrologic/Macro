@@ -31,6 +31,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
   shouldAcceptStreamUpdate: () => boolean;
   isAbortSignalAborted: () => boolean;
   isTurnCurrent?: () => boolean;
+  getInterruptedProviderText?: () => string | undefined;
   appendTokenChunk: (messageId: string, chunk: string) => void;
   getAssistantMessage: (messageId: string) => ChatMessage | undefined;
   updateMessageFields: (
@@ -261,6 +262,8 @@ export const createChatStreamLifecycleRuntime = (params: {
     assistantMessage: ChatMessage | undefined,
   ): Promise<boolean> => {
     if (errorPresentation.displayTarget === "transcript") {
+      // This local diagnostic contains provider-authored text, not final output.
+      adapters.updateMessageFields(stream.assistantMessageId, { completion_reason: "provider_error" });
       adapters.updateMessageContent(
         stream.assistantMessageId,
         buildAssistantContentWithProviderError(
@@ -300,10 +303,30 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.assistantMessageId,
       );
       if (assistantMessage && hasAssistantProgress(assistantMessage)) {
-        await persistPartialAssistantSafely(
-          assistantMessage,
-          "Failed to persist partial assistant response after abort:",
-        );
+        const providerDeltaText = adapters.getInterruptedProviderText?.();
+        if (providerDeltaText) {
+          // An explicit stop is a terminal boundary for the provider delta range.
+          // Preserve its provenance without presenting the answer as complete.
+          adapters.updateMessageFields(stream.assistantMessageId, {
+            completion_reason: "incomplete",
+          });
+          adapters.clearLiveStreamContextEstimate(stream.conversationId);
+          await persistAssistantStreamResultAndConsolidate({
+            visibleContent: assistantMessage.content,
+            toolTraces: assistantMessage.tool_traces ?? [],
+            hiddenContext: assistantMessage.hidden_context,
+            providerInputItems: assistantMessage.provider_input_items,
+            providerTurnState: assistantMessage.provider_turn_state,
+            completionReason: "incomplete",
+            interruptedProviderText: providerDeltaText,
+          });
+        } else {
+          // Tool/system progress alone cannot establish assistant provenance.
+          await persistPartialAssistantSafely(
+            assistantMessage,
+            "Failed to persist partial assistant response after abort:",
+          );
+        }
       } else {
         adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
         await adapters.deleteEmptyAssistantMessageFromDb();

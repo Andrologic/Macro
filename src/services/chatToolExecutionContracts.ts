@@ -35,6 +35,8 @@ export interface ChatToolExecutionPorts {
     /** Live epoch, shared with reset/hydration and the existing approval actions. */
     readonly epoch: number;
     resolvers: Map<string, (resolution: PendingToolApprovalResolution) => void>;
+    settlements?: Map<string, Promise<PendingToolApprovalResolution>>;
+    beforeEffects?: Map<string, () => Promise<void>>;
     mutationVersions: Map<string, number>;
     challenges: Set<string>;
     serialize<T>(conversationId: string, run: () => Promise<T>): Promise<T>;

@@ -488,4 +488,32 @@ describe('linkedTaskDeletionSaga', () => {
       }),
     ]);
   });
+
+  it('preserves foreign journal entries while Pilot upserts and removes its own saga', async () => {
+    const legacy = { taskId: 'other-task', conversationId: 'other-conversation', phase: 'task_deleted',
+      createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z', legacyField: 'keep' };
+    const foreign = { journal: 'foreign', payload: { keep: true } };
+    const values = new Map<string, string>([['pendingLinkedTaskDeletions:v1', JSON.stringify([legacy, foreign])]]);
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async key => values.has(key)
+        ? { key, value_json: values.get(key)!, updated_at: '2026-08-12T00:00:00.000Z' } : null,
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson); return { applied: true };
+      },
+    };
+    const pilot: LinkedConversationDeletionSaga = {
+      ownerType: 'task', ownerId: 'pilot-task', conversationId: 'pilot-conversation',
+      phase: 'prepared', targetBranch: 'feature/pilot',
+      createdAt: '2026-08-12T00:00:01.000Z', updatedAt: '2026-08-12T00:00:01.000Z',
+      requiresPilotAuthorization: true,
+    };
+    await sagaService.upsertLinkedConversationDeletionSaga(pilot, transport);
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1')!)).toEqual([
+      legacy, foreign, expect.objectContaining({ ownerId: 'pilot-task', requiresPilotAuthorization: true }),
+    ]);
+    await sagaService.removeLinkedConversationDeletionSaga('task', 'pilot-task', 'feature/pilot', true, transport);
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1')!)).toEqual([legacy, foreign]);
+  });
 });

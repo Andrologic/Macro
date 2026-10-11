@@ -36,7 +36,7 @@ import {
 } from "../services/tauriWindow";
 import {
   commitWindowShutdown,
-  prepareForPotentialShutdown,
+  runWithPotentialShutdown,
   registerWindowStateFlushHandler,
 } from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
@@ -559,17 +559,16 @@ export function useWindowRestoration() {
           return;
         }
 
-        await prepareForPotentialShutdown(
-          getSelectedProjectGroupWorkspacePaths(),
-        );
-        if (installerRequestedClose) {
-          await appInstallerCloseRespond(true);
-          await appExitCleanly();
+        const { macroPilotRuntime } = await import('../composition/macroPilotDesktop');
+        await runWithPotentialShutdown(async () => {
+          if (installerRequestedClose) {
+            await appInstallerCloseRespond(true);
+            await appExitCleanly();
+          } else {
+            await appUpdateExitAfterCleanShutdown();
+          }
           commitWindowShutdown('window-close-requested');
-        } else {
-          await appUpdateExitAfterCleanShutdown();
-          commitWindowShutdown('window-close-requested');
-        }
+        }, releaseShutdownGate, macroPilotRuntime, getSelectedProjectGroupWorkspacePaths());
       } catch (error) {
         console.error('Failed to close window after flushing its state:', error);
         notify.error(i18n.t('shutdown.closeFailed', 'Macro could not close'), {

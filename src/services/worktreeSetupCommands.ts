@@ -8,6 +8,9 @@ export interface RunWorktreeSetupCommandParams {
   repoPath: string;
   worktreePath: string;
   command: string;
+  beforeEffect?: () => Promise<void>;
+  expectedBranch?: string | null;
+  signal?: AbortSignal;
 }
 
 export interface WorktreeSetupCommandResult {
@@ -25,6 +28,17 @@ const setupCommandKey = (params: RunWorktreeSetupCommandParams): string =>
     params.worktreePath,
     params.command.trim(),
   ].join('::');
+
+const awaitAbortable = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(new Error('Setup command wait cancelled.')); };
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) { abort(); return; }
+    promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); },
+      error => { signal.removeEventListener('abort', abort); reject(error); });
+  });
+};
 
 export const runWorktreeSetupCommand = async (
   params: RunWorktreeSetupCommandParams,
@@ -47,7 +61,8 @@ export const runWorktreeSetupCommand = async (
   const key = setupCommandKey({ ...params, command: trimmedCommand });
   const existing = inFlightSetupCommands.get(key);
   if (existing) {
-    return existing;
+    if (!params.signal) return existing;
+    return awaitAbortable(existing, params.signal);
   }
 
   const runPromise = (async () => {
@@ -60,9 +75,11 @@ export const runWorktreeSetupCommand = async (
       cwd: params.worktreePath,
       command: trimmedCommand,
       reveal: false,
+      beforeEffect: params.beforeEffect,
+      expectedBranch: params.beforeEffect ? params.expectedBranch : undefined,
     });
 
-    const finalTab = await runner.waitForCompletion(tab.id);
+    const finalTab = await runner.waitForCompletion(tab.id, params.signal);
     if (!finalTab) {
       return {
         exitCode: null,
@@ -75,7 +92,10 @@ export const runWorktreeSetupCommand = async (
     if (failed) {
       runner.reveal(finalTab.id);
     } else {
-      await runner.close(finalTab.id).catch(() => undefined);
+      await params.beforeEffect?.();
+      const closing = runner.close(finalTab.id);
+      if (params.beforeEffect) await closing;
+      else await closing.catch(() => undefined);
     }
 
     return {

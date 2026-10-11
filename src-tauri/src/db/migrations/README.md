@@ -43,7 +43,7 @@ does not decide when the UI should start an audit.
 
 The supported inputs are:
 
-- An empty database, initialized with version 1 and upgraded through version 9.
+- An empty database, initialized with version 1 and upgraded through version 11.
 - An unversioned database with historical runtime tables, adopted through the
   legacy path. Missing tables and known additive columns are supplied by the
   frozen compatibility helpers. Existing extra columns, tables, indexes and
@@ -55,7 +55,8 @@ The supported inputs are:
   recorded only after their completion and its checks.
 - A version 7 database, upgraded to version 8 without rebuilding its tool journal.
 - A version 8 database, upgraded to version 9 without rebuilding its run journal.
-- A version 9 database, reopened without compatibility helpers, DDL, timestamp
+- A version 9 database, upgraded with the additive Pilot migrations 10 and 11.
+- A version 11 database, reopened without compatibility helpers, DDL, timestamp
   backfills or FTS rebuilds. Default provider seeding retains its existing
   startup behavior and is separate from schema migration.
 
@@ -79,3 +80,16 @@ The checks do not certify arbitrary hand-edited types, constraint definitions,
 trigger bodies or FTS contents. A committed version 5 is trusted on subsequent
 openings; normal migration startup does not run a full integrity audit. Backup
 validation and recovery retain their separate schema validation contracts.
+
+Version 10 adds conversation tool-trace revision counters and triggers. Version
+11 adds conversation archive metadata, action receipts and per-response read
+revisions. Their original SQL files retain their historical filenames so the
+shipped migrations remain immutable.
+
+Local Pilot builds previously stamped these additions as versions 6 and 7.
+Only the exact names `006_pilot_tool_trace_revisions` and
+`007_conversation_management` are moved to 10 and 11 inside the migration
+transaction, preserving their timestamps and application data. Canonical
+versions 6 through 9 are then supplied. The historical Pilot version 5 stamp
+is reconciled with the frozen runtime schema before becoming the canonical
+version 5. Failure rolls back the entire transition.

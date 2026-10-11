@@ -1783,7 +1783,40 @@ Au redémarrage, le backend marque les audits restés `queued` ou `running` comm
 
 La désactivation d'un but courant utilise `(conversationId, goalId, expectedRevision)` et empêche sa réapparition après redémarrage. Le bandeau est réhydraté depuis le but courant natif ; Pause, édition, Reprendre et Stop utilisent la révision native avant de publier l'état dans le store. Les champs `lastExecutorTurnAt`, `awaitingUserSinceAt`, `executorTurnCount` et `lastError` sont lus directement. Les résultats d'audit sont des artefacts rattachés au but et à sa conversation de projet, écrits et récupérés par le journal de mutations des métadonnées existant. Le verdict natif appliqué permet de reconstruire un artefact manquant sans créer de plan fictif. Les listes utilisateur et le bootstrap de conversation excluent les enfants internes identifiés par leur run `goal_auditor`, pour que la restauration d’une tâche retrouve son exécuteur. Les snapshots complets et la lecture directe conservent ces enfants et leurs messages. La suppression du parent supprime ses enfants d’évaluation dans la même transaction ; Stop conserve les historiques.
 
+### 15.5 Supervision relayée Macro Pilot
+
+`src/services/macroPilot/runtime.ts` coordonne la supervision et le contenu d'une seule instance desktop active. Le client natif isole l'authentification, le coffre et le transport vers un relais compatible. L'exécution réutilise les tâches, stores et adaptateurs de providers existants ; elle nécessite que Macro reste ouvert. Le serveur de relais n'exécute ni les providers ni les outils locaux. Le kernel headless de la section suivante conserve son cycle de vie distinct.
+
+Les identifiants locaux des tâches peuvent contenir une branche Git encodée. `taskIdentity.ts` conserve ceux qui respectent déjà le contrat et calcule un identifiant SHA-256 stable pour les autres. La projection v1 et les références de contenu v2 utilisent cette même conversion. Les actions retrouvent une unique tâche du catalogue local par son identifiant de transport, sans modifier les identifiants stockés ni accepter un identifiant de nœud ambigu entre branches.
+
+Le [contrat public v2](macro-pilot/content-contract-v2.md) sépare la négociation ACCOUNT, sans instance, de la négociation du contenu d'une instance associée. Le runtime annonce le contenu seulement après préparation de ses sources et de sa politique. Les enveloppes et comportements v1 restent indépendants. La perte de session ou le remplacement du producteur annule puis attend les anciennes boucles avant de démarrer les suivantes.
+
+`contentHost.ts` coordonne les catalogues persistés de conversations, les captures Git et leurs événements. Les captures sont transitoires et liées au compte, à la session, à l'instance et à la révision. Les métadonnées durables conservent les révisions, décisions, empreintes, reçus idempotents et événements en attente, sans texte de conversation ni patch. Un nouveau cycle de vie renouvelle le flux lorsque la continuité ne peut pas être garantie. L'observation des conversations et les attentes HTTP d'événements ne retiennent pas la file des décisions ; les captures Git sont observées une par une. Les identités, titres et activités des conversations sont observés sans charger leur historique. La surveillance du contenu se limite aux conversations ayant une capture mobile encore valide (cinq minutes au maximum) ; une lecture explicite valide toujours l'historique demandé. Une capture expirée ou un changement de cycle de vie retire cette surveillance, sans supprimer les empreintes nécessaires à la validation suivante.
+
+Les commandes natives `pilot_content_policy` et `pilot_review_commit` passent par les wrappers typés de `tauriIpc.ts`. La première fournit des valeurs du coffre uniquement pour détecter les contenus à ne pas exporter. La seconde conserve le verrou du dépôt, acquiert le verrou d'écriture SQLite, recontrôle la capture, les branches suivies, la politique et l'échéance, puis enregistre ensemble décision, reçu et événement. Elle ne modifie pas Git. Les écritures d'un éditeur externe après le dernier contrôle ne sont pas rendues atomiques avec SQLite.
+
+L’extension négociée [network-reliability-1](macro-pilot/network-reliability-contract.md) ajoute des révisions durables par conversation, des diagnostics provider issus d’une liste fermée et une lecture conditionnelle des projets. Le journal de captures migre en version 3 ; les reçus des commandes restent indépendants. Les réponses et événements destinés aux anciens clients conservent leurs règles de compatibilité décrites dans ce contrat.
+
+Les budgets conservateurs sont de 24 Mio pour les captures de conversations, 32 Mio pour les captures natives et 7 Mio pour les métadonnées et réponses du host. Les limites de pagination, d'expiration et d'enveloppe restent celles du contrat. La préparation native refuse actuellement Windows et WSL pour le contenu v2 ; ACCOUNT et la supervision v1 gardent leurs capacités propres. Le [guide d'intégration](macro-pilot/content-consumer-guide.md) décrit les vérifications nécessaires avec un relais et un compagnon compatibles.
+
 ---
+
+### 15.6 Détails et actions des tâches dans Pilot
+
+Le [contrat de complétion](macro-pilot/task-completion-contract.md) ajoute deux
+capacités négociées à v2. `task.cards.list` fournit les descriptions et badges
+par pages, sans lecture par tâche. `TaskCompletionHost` capture séparément les
+artéfacts visibles et les traces structurées publiques ; les corps sont lus à
+la demande. Les empreintes et reçus persistent, les captures restent en mémoire,
+liées au compte, à la session, à l'instance et à la politique d'export.
+
+Les actions réutilisent les stores desktop avec réservation et contrôle avant
+effet. Le relais atteste `respond` pour les mutations de tâches et ajoute
+`approve_tools` pour les commandes configurées. Une action dont le reçu est
+consommé mais non terminé ne peut pas être relancée automatiquement. Les journaux
+de suppression et de réplication créés par Pilot conservent cette origine pour
+empêcher une reprise automatique après perte de l'autorisation. Une suppression
+avec restauration de code en attente exige une intervention desktop.
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
 

@@ -1,0 +1,20 @@
+{
+  "contract_version": "1.0",
+  "type": "tool_approval",
+  "ref": {
+    "type": "tool_approval",
+    "instance_id": "instance:studio-mac",
+    "conversation_id": "conv-5",
+    "assistant_message_id": "msg-5",
+    "tool_call_id": "call-5"
+  },
+  "state": "interrupted",
+  "tool_id": "terminal_run",
+  "action_group": "escape",
+  "risk_level": "strict",
+  "is_destructive": true,
+  "summary": "Resume the interrupted terminal request",
+  "allowed_scopes": ["once"],
+  "revision": 2,
+  "created_at": "2026-09-06T12:00:00Z"
+}

@@ -67,7 +67,7 @@ import {
 } from './architectPlanReadService';
 import { listArchitectPlans as listArchitectPlansImpl } from './architectPlanReadService';
 import { isArchitectPlanSlugAvailable as isArchitectPlanSlugAvailableImpl } from './architectPlanReadService';
-import { getArchitectPlan as getArchitectPlanImpl } from './architectPlanReadService';
+import { getArchitectPlan as getArchitectPlanImpl, readArchitectPlanSnapshot as readArchitectPlanSnapshotImpl } from './architectPlanReadService';
 import { getArchitectPlanChatMessages as getArchitectPlanChatMessagesImpl } from './architectPlanReadService';
 import {
   inspectArchitectPlanMetadataHealth as inspectArchitectPlanMetadataHealthImpl,
@@ -179,6 +179,7 @@ export const getArchitectPlanActivationPayload: typeof getArchitectPlanActivatio
 export const listArchitectPlans: typeof listArchitectPlansImpl = (...args) => listArchitectPlansImpl(...args);
 export const isArchitectPlanSlugAvailable: typeof isArchitectPlanSlugAvailableImpl = (...args) => isArchitectPlanSlugAvailableImpl(...args);
 export const getArchitectPlan: typeof getArchitectPlanImpl = (...args) => getArchitectPlanImpl(...args);
+export const readArchitectPlanSnapshot: typeof readArchitectPlanSnapshotImpl = (...args) => readArchitectPlanSnapshotImpl(...args);
 export const getArchitectPlanChatMessages: typeof getArchitectPlanChatMessagesImpl = (...args) => getArchitectPlanChatMessagesImpl(...args);
 export const inspectArchitectPlanMetadataHealth: typeof inspectArchitectPlanMetadataHealthImpl = (...args) => inspectArchitectPlanMetadataHealthImpl(...args);
 export const listArchitectPlanTargetBranches: typeof listArchitectPlanTargetBranchesImpl = (...args) => listArchitectPlanTargetBranchesImpl(...args);

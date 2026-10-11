@@ -1,0 +1,1215 @@
+import { createBrowserQaDependencies } from './browserQa';
+import { PilotClientError, type PilotClientErrorCode } from './clientError';
+export { PilotClientError, type PilotClientErrorCode } from './clientError';
+import { PilotAccountClient, type PilotAccountConfirmation } from './accountClient';
+import { validateContentMessage, validateContentResponse } from './contentProtocol';
+export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
+import { tauriFetch } from '../tauriHttp';
+import {
+  pilotDeviceName,
+  pilotSecretDelete,
+  pilotSecretRead,
+  pilotSecretWrite,
+  pilotVaultActivate,
+  pilotVaultInvalidate,
+  pilotVaultResume,
+  pilotVaultSubscribe,
+  stateGetSnapshot,
+  stateSetValue,
+  type PilotSecretKind,
+  type PilotSecretScope,
+  type PilotVaultLease,
+  type PilotVaultStatus,
+} from '../tauriIpc';
+
+const TRANSPORT_VERSION = '1.0' as const;
+const CONTRACT_VERSION = '1.0' as const;
+const STATE_KEY = 'macro_pilot_native_v1';
+const MAX_BODY_BYTES = 1_048_576;
+const GITHUB_DEVICE_VERIFICATION_URI = 'https://github.com/login/device';
+const PILOT_PERMISSIONS = new Set<PilotPermission>([
+  'supervise',
+  'respond',
+  'approve_tools',
+  'review',
+]);
+
+export type PilotPermission = 'supervise' | 'respond' | 'approve_tools' | 'review';
+export type PilotConnectionState =
+  | 'unconfigured'
+  | 'signed_out'
+  | 'authorizing'
+  | 'confirming_account'
+  | 'connected'
+  | 'offline'
+  | 'vault_unavailable';
+
+export interface PilotAccount {
+  contract_version: '1.0';
+  type: 'account';
+  account_id: string;
+  identity: {
+    provider: 'github';
+    subject: string;
+    login: string;
+    display_name?: string;
+    avatar_url?: string;
+  };
+  revision: number;
+}
+
+export interface PilotDeviceSession {
+  contract_version: '1.0';
+  type: 'device_session';
+  ref: { type: 'session'; account_id: string; session_id: string };
+  device_id: string;
+  state: 'active' | 'revoked' | 'expired';
+  issued_at: string;
+  expires_at?: string;
+  revoked_at?: string;
+  revision: number;
+}
+
+export interface PilotInstance {
+  contract_version: '1.0';
+  type: 'instance';
+  ref: { type: 'instance'; instance_id: string };
+  label: string;
+  connection_state: 'reachable' | 'unreachable' | 'revoked';
+  supported_contract_versions: string[];
+  last_seen_at?: string;
+  revision: number;
+}
+
+export interface PilotInstanceAccess {
+  contract_version: '1.0';
+  type: 'instance_access';
+  ref: {
+    type: 'instance_access';
+    account_id: string;
+    session_id: string;
+    instance_id: string;
+  };
+  state: 'granted' | 'revoked';
+  permissions: PilotPermission[];
+  granted_at: string;
+  revoked_at?: string;
+  revision: number;
+}
+
+export interface PilotAccessRequest {
+  access_request_id: string;
+  device_session: PilotDeviceSession;
+  device_label: string;
+  expires_at: string;
+}
+
+export interface PilotAuthAttempt {
+  attemptKey: string;
+  attemptId: string;
+  userCode: string;
+  verificationUri: string;
+  expiresAt: string;
+  interval: number;
+  identifiedAccount?: PilotAccount;
+}
+
+export interface PilotPublicState {
+  /** Native access state, separate from relay connectivity; never contains credentials. */
+  vaultStatus?: PilotVaultStatus;
+  /** Fresh /me check, independent of unrelated read errors and store activity. */
+  sessionVerification?: 'pending' | 'failed' | null;
+  /** Redacted reason retained after credentials and session references are cleared. */
+  sessionEndReason?: 'unauthorized' | 'session_revoked' | null;
+  status: PilotConnectionState;
+  configurationId: string | null;
+  relayOrigin: string | null;
+  account: PilotAccount | null;
+  deviceSession: PilotDeviceSession | null;
+  instance: PilotInstance | null;
+  instanceAccess: PilotInstanceAccess | null;
+  attempt: PilotAuthAttempt | null;
+  lastError: PilotClientErrorCode | null;
+  logoutRevocationConfirmed: boolean | null;
+}
+
+interface PersistedPilotState {
+  configurationId: string;
+  relayOrigin: string | null;
+  account: PilotAccount | null;
+  deviceSession: PilotDeviceSession | null;
+  instance: PilotInstance | null;
+  instanceAccess: PilotInstanceAccess | null;
+  instanceCreationId: string | null;
+  pendingInstanceLabel: string | null;
+  pendingSecretCleanup: PilotSecretScope[];
+  attempt: PilotAuthAttempt | null;
+}
+
+export interface PilotRequestOptions {
+  authenticated?: boolean;
+  producer?: boolean;
+  signal?: AbortSignal;
+  authorizationToken?: string;
+}
+
+export interface PilotResponse<T = unknown> {
+  status: number;
+  data: T | null;
+  requestId: string;
+}
+
+export interface PilotClientDependencies {
+  fetch: typeof tauriFetch;
+  getStateSnapshot: typeof stateGetSnapshot;
+  setStateValue: typeof stateSetValue;
+  secretRead: typeof pilotSecretRead;
+  secretWrite: typeof pilotSecretWrite;
+  secretDelete: typeof pilotSecretDelete;
+  // Optional only for fully injected synthetic transports. The native default supplies all four.
+  vaultActivate?: typeof pilotVaultActivate;
+  vaultInvalidate?: typeof pilotVaultInvalidate;
+  vaultResume?: typeof pilotVaultResume;
+  vaultSubscribe?: typeof pilotVaultSubscribe;
+  randomBytes: (size: number) => Uint8Array;
+  sha256: (value: Uint8Array) => Promise<Uint8Array>;
+  now: () => Date;
+  deviceName?: () => Promise<string>;
+}
+
+const base64Url = (bytes: Uint8Array): string => {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
+};
+
+const randomBytes = (size: number): Uint8Array => {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  return bytes;
+};
+
+const defaultDependencies: PilotClientDependencies = {
+  fetch: tauriFetch,
+  deviceName: pilotDeviceName,
+  getStateSnapshot: stateGetSnapshot,
+  setStateValue: stateSetValue,
+  secretRead: pilotSecretRead,
+  secretWrite: pilotSecretWrite,
+  secretDelete: pilotSecretDelete,
+  vaultActivate: pilotVaultActivate,
+  vaultInvalidate: pilotVaultInvalidate,
+  vaultResume: pilotVaultResume,
+  vaultSubscribe: pilotVaultSubscribe,
+  randomBytes,
+  sha256: async (value) =>
+    new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(value).buffer)),
+  now: () => new Date(),
+};
+
+const createOpaqueId = (prefix: string, dependencies: PilotClientDependencies): string =>
+  `${prefix}:${base64Url(dependencies.randomBytes(18))}`;
+
+const createSecret = (dependencies: PilotClientDependencies): string =>
+  base64Url(dependencies.randomBytes(32));
+
+const normalizeOrigin = (value: string): string => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new PilotClientError('invalid_configuration');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    throw new PilotClientError('invalid_configuration');
+  }
+  return url.origin;
+};
+
+const safePath = (path: string): string => {
+  if (!path.startsWith('/') || path.includes('://') || path.includes('..') || path.includes('?') || path.includes('#')) {
+    throw new PilotClientError('invalid_configuration');
+  }
+  // A1 opaque identifiers use ':' as a literal path character in relay routes.
+  // Preserve it while leaving reserved separators such as encoded '/' escaped.
+  return path.replace(/%3a/gi, ':');
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const errorCodeForStatus = (status: number, data: unknown): PilotClientErrorCode => {
+  const remoteCode = isRecord(data) && typeof data.code === 'string'
+    ? data.code
+    : isRecord(data) && isRecord(data.error) && typeof data.error.code === 'string'
+      ? data.error.code
+      : null;
+  if (remoteCode === 'session_revoked') return 'session_revoked';
+  if (remoteCode === 'stale_revision') return 'stale_revision';
+  if (remoteCode === 'snapshot_expired') return 'snapshot_expired';
+  if (remoteCode === 'resource_limit') return 'resource_limit';
+  if (remoteCode === 'unsupported_version') return 'extension_unavailable';
+  if (status === 401) return 'unauthorized';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 409) return 'conflict';
+  if (status === 429 || status === 503) return 'unavailable';
+  return 'invalid_response';
+};
+
+// Abort even when a transport promise does not settle promptly after cancellation.
+const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  const aborted = () => { reject(new PilotClientError('offline')); };
+  if (signal.aborted) aborted();
+  else signal.addEventListener('abort', aborted, { once: true });
+  void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+});
+
+const readBoundedJson = async (response: Response, maxBytes: number, signal: AbortSignal): Promise<unknown> => {
+  if (response.status === 204 || response.status === 205) return null;
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new PilotClientError('response_too_large', response.status);
+  }
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  if (signal.aborted) cancel();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (signal.aborted) throw new PilotClientError('offline');
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new PilotClientError('response_too_large', response.status);
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { throw new PilotClientError('invalid_response', response.status); }
+  } catch (error) {
+    cancel();
+    if (error instanceof PilotClientError) throw error;
+    throw new PilotClientError('offline', response.status);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    reader.releaseLock();
+  }
+};
+
+const emptyPublicState = (): PilotPublicState => ({
+  status: 'unconfigured',
+  configurationId: null,
+  relayOrigin: null,
+  account: null,
+  deviceSession: null,
+  instance: null,
+  instanceAccess: null,
+  attempt: null,
+  lastError: null,
+  logoutRevocationConfirmed: null,
+});
+
+const emptyPersistedState = (configurationId: string): PersistedPilotState => ({
+  configurationId,
+  relayOrigin: null,
+  account: null,
+  deviceSession: null,
+  instance: null,
+  instanceAccess: null,
+  instanceCreationId: null,
+  pendingInstanceLabel: null,
+  pendingSecretCleanup: [],
+  attempt: null,
+});
+
+export class MacroPilotNativeClient {
+  private publicState = emptyPublicState();
+  private persisted: PersistedPilotState | null = null;
+  private initializationPromise: Promise<PilotPublicState> | null = null;
+  private persistenceTail: Promise<void> = Promise.resolve();
+  private readonly listeners = new Set<() => void>();
+  private epoch = 0;
+  private scopeController = new AbortController();
+  private readonly pendingReads = new Set<AbortController>();
+  private vaultLease: PilotVaultLease | null = null;
+  private vaultOwner: string | null = null;
+  private vaultActivation: Promise<PilotVaultLease | null> | null = null;
+  private vaultUnsubscribe: (() => void) | null = null;
+  private cleanupPromise: Promise<void> | null = null;
+  private cleanupScheduled = false;
+  private vaultFence = 0;
+  private lastVaultScope: PilotSecretScope | null = null;
+  private vaultRecovering = false;
+  // Restored credentials alone cannot restart a producer until a fresh /me succeeds.
+  private sessionVerification: { generation: string; fence: number; phase: 'pending' | 'failed' } | null = null;
+  private readonly accountClient = new PilotAccountClient({
+    context: () => {
+      const state = this.persisted;
+      if (!this.publicState.deviceSession || !state?.deviceSession || !state.account) throw new PilotClientError('unauthorized');
+      return { key: this.contextKey(), accountId: state.account.account_id, sessionId: state.deviceSession.ref.session_id };
+    },
+    id: () => createOpaqueId('request', this.dependencies),
+    now: () => this.dependencies.now().getTime(),
+    send: async (path, body, requestId, signal) => (await this.sendRequest('POST', path, body, { authenticated: true, signal }, true, requestId)).data,
+    clear: reason => this.clearSession(reason),
+  });
+
+  private contextKey(): string {
+    return JSON.stringify([this.epoch, this.persisted?.configurationId, this.persisted?.relayOrigin,
+      this.persisted?.account?.account_id, this.persisted?.deviceSession?.ref.session_id, this.persisted?.attempt?.attemptKey]);
+  }
+
+  private checkContext(key: string): void {
+    if (this.contextKey() !== key) throw new PilotClientError('context_changed');
+  }
+
+  getAccountCatalog = (signal?: AbortSignal) => this.accountClient.getCatalog(signal);
+  revokeSession = (sessionId: string) => this.accountClient.mutate('session.revoke', sessionId);
+  revokeAllSessions = () => this.accountClient.mutate('sessions.revoke_all');
+  deleteAccount = (confirmation: PilotAccountConfirmation) => this.accountClient.mutate('account.delete', confirmation);
+
+  constructor(private readonly dependencies: PilotClientDependencies = defaultDependencies) {}
+
+  getState = (): PilotPublicState => this.publicState;
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  private blockedVaultState(): Partial<PilotPublicState> {
+    if (this.sessionVerification && this.vaultLease?.status === 'ready') return { status: 'vault_unavailable' };
+    if (!this.vaultLease || this.vaultLease.status === 'ready') return {};
+    const status = this.vaultLease.status;
+    return { status: 'vault_unavailable', vaultStatus: status,
+      lastError: status === 'suspended' ? 'vault_suspended' : status === 'cancelled' ? 'vault_cancelled'
+        : status === 'intervention_required' ? 'vault_intervention_required' : 'vault_unavailable' };
+  }
+
+  private publish(patch: Partial<PilotPublicState>): void {
+    const status = patch.status ?? this.publicState.status;
+    if (status === 'connected' || status === 'offline') patch = { ...patch, ...this.blockedVaultState() };
+    this.publicState = { ...this.publicState, ...patch, sessionVerification: this.sessionVerification?.phase ?? null };
+    for (const listener of this.listeners) listener();
+  }
+
+  private persist(patch: Partial<PersistedPilotState> | ((state: PersistedPilotState) => Partial<PersistedPilotState>)): Promise<void> {
+    const context = this.contextKey();
+    const write = this.persistenceTail.then(async () => {
+      this.checkContext(context);
+      if (!this.persisted) throw new PilotClientError('invalid_configuration');
+      const next = { ...this.persisted, ...(typeof patch === 'function' ? patch(this.persisted) : patch) };
+      try { await this.dependencies.setStateValue(STATE_KEY, next); }
+      catch (error) { this.checkContext(context); throw error; }
+      // A logout may have invalidated this write while native storage was busy.
+      // Its queued tombstone must finish before logout reports completion.
+      this.checkContext(context);
+      this.persisted = next;
+    });
+    this.persistenceTail = write.catch(() => undefined);
+    return write;
+  }
+
+  private secretScope(kind: PilotSecretKind, resourceId: string): PilotSecretScope {
+    if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
+    return {
+      configuration_id: this.persisted.configurationId,
+      relay_origin: this.persisted.relayOrigin,
+      kind,
+      resource_id: resourceId,
+    };
+  }
+
+  private vaultFailure(error: unknown): PilotClientError {
+    if (error instanceof PilotClientError) return error;
+    const code = typeof error === 'string' ? error : isRecord(error) ? error.code : undefined;
+    if (code === 'context_changed') return new PilotClientError('context_changed');
+    const status: PilotVaultStatus = code === 'intervention_required' || code === 'cancelled' || code === 'suspended'
+      ? code : 'vault_unavailable';
+    const lastError: PilotClientErrorCode = status === 'intervention_required' ? 'vault_intervention_required'
+      : status === 'cancelled' ? 'vault_cancelled' : status === 'suspended' ? 'vault_suspended' : 'vault_unavailable';
+    if (this.vaultLease) this.vaultLease = { ...this.vaultLease, status };
+    this.publish({ status: 'vault_unavailable', vaultStatus: status, lastError });
+    return new PilotClientError(lastError);
+  }
+
+  private async ensureVault(): Promise<PilotVaultLease | null> {
+    if (!this.dependencies.vaultActivate) return null;
+    if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
+    const context = this.contextKey();
+    const owner = JSON.stringify([this.persisted.configurationId, this.persisted.relayOrigin,
+      this.persisted.deviceSession?.ref.session_id ?? this.persisted.attempt?.attemptKey ?? 'signed-out']);
+    if (this.vaultOwner === owner && this.vaultLease) return this.vaultLease;
+    if (this.vaultActivation) {
+      await this.vaultActivation;
+      this.checkContext(context);
+      return this.ensureVault();
+    }
+    const fence = this.vaultFence;
+    const activation = (async () => {
+      const lease = await this.dependencies.vaultActivate!({
+        configuration_id: this.persisted!.configurationId,
+        relay_origin: this.persisted!.relayOrigin!,
+        owner_id: this.persisted!.deviceSession?.ref.session_id ?? this.persisted!.attempt?.attemptKey ?? 'signed-out',
+      }, this.vaultLease?.generation);
+      if (fence !== this.vaultFence || context !== this.contextKey()) {
+        await this.dependencies.vaultInvalidate?.(lease.generation);
+        throw new PilotClientError('context_changed');
+      }
+      this.vaultLease = lease;
+      this.vaultOwner = owner;
+      this.publish({ vaultStatus: lease.status });
+      return lease;
+    })();
+    this.vaultActivation = activation;
+    try { return await activation; }
+    finally { if (this.vaultActivation === activation) this.vaultActivation = null; }
+  }
+
+  private async invalidateVault(): Promise<void> {
+    const fence = ++this.vaultFence;
+    const lease = this.vaultLease;
+    this.vaultLease = null;
+    this.vaultOwner = null;
+    this.lastVaultScope = null;
+    this.sessionVerification = null;
+    // Pending activation/resume results carry their own fence and invalidate on return.
+    if (lease && this.dependencies.vaultInvalidate) {
+      const invalidated = await this.dependencies.vaultInvalidate(lease.generation);
+      if (fence === this.vaultFence) this.vaultLease = invalidated;
+    }
+  }
+
+  private async subscribeVault(): Promise<void> {
+    if (this.vaultUnsubscribe || !this.dependencies.vaultSubscribe) return;
+    this.vaultUnsubscribe = await this.dependencies.vaultSubscribe(lease => {
+      if (lease.status === 'ready') {
+        // Native silent recovery keeps the suspended generation. Explicit
+        // recovery owns its result separately, and stale owners cannot revive.
+        if (this.vaultRecovering || !this.vaultOwner || this.vaultLease?.status !== 'suspended' ||
+          this.vaultLease.generation !== lease.generation) return;
+        const context = this.contextKey();
+        const fence = this.vaultFence;
+        this.vaultLease = lease;
+        if (this.persisted?.deviceSession) {
+          this.sessionVerification = { generation: lease.generation, fence, phase: 'pending' };
+        }
+        this.publish({ vaultStatus: 'ready', lastError: null });
+        void (async () => {
+          // A suspended startup request may still be unwinding. Start a fresh
+          // authentication check after it settles, rather than coalescing it.
+          await this.initializationPromise?.catch(() => undefined);
+          if (context !== this.contextKey() || fence !== this.vaultFence || this.vaultLease !== lease) return;
+          await this.initialize();
+        })().catch(() => undefined);
+        return;
+      }
+      if (lease.status === 'suspended') {
+        this.vaultFence++;
+        if (this.persisted?.deviceSession) {
+          this.sessionVerification = { generation: lease.generation, fence: this.vaultFence, phase: 'pending' };
+        }
+      }
+      this.vaultLease = lease;
+      this.scopeController.abort();
+      this.scopeController = new AbortController();
+      this.accountClient.reset();
+      this.vaultFailure(lease.status);
+    });
+  }
+
+  /** Explicit UI action only. Never called by startup, polling, refresh, or cleanup. */
+  async resumeVaultAccess(): Promise<void> {
+    if (this.vaultRecovering) throw new PilotClientError('conflict');
+    if (!this.dependencies.vaultResume) throw new PilotClientError('invalid_configuration');
+    this.vaultRecovering = true;
+    try {
+      const context = this.contextKey();
+      const lease = await this.ensureVault();
+      if (!lease) throw new PilotClientError('invalid_configuration');
+      const scopes: PilotSecretScope[] = [];
+      if (this.persisted?.deviceSession) scopes.push(this.secretScope('session_token', this.persisted.deviceSession.ref.session_id));
+      if (this.persisted?.instanceCreationId) scopes.push(this.secretScope('instance_key', this.persisted.instanceCreationId));
+      if (this.persisted?.attempt && !this.persisted.deviceSession) {
+        scopes.push(this.secretScope('poll_secret', this.persisted.attempt.attemptKey), this.secretScope('claim_secret', this.persisted.attempt.attemptKey));
+      }
+      if (!scopes.length && this.lastVaultScope) scopes.push(this.lastVaultScope);
+      // A signed-out recovery unlocks against a fresh empty scope, never a tombstoned credential.
+      if (!scopes.length) scopes.push(this.secretScope('claim_secret', createOpaqueId('attempt', this.dependencies)));
+      const fence = this.vaultFence;
+      const resumed = await this.dependencies.vaultResume(scopes, lease.generation).catch(error => {
+        this.checkContext(context);
+        throw this.vaultFailure(error);
+      });
+      if (fence !== this.vaultFence || context !== this.contextKey()) {
+        await this.dependencies.vaultInvalidate?.(resumed.generation);
+        throw new PilotClientError('context_changed');
+      }
+      this.vaultLease = resumed;
+      if (resumed.status !== 'ready') throw this.vaultFailure(resumed.status);
+      if (this.persisted?.deviceSession) {
+        this.sessionVerification = { generation: resumed.generation, fence: this.vaultFence, phase: 'pending' };
+      }
+      this.publish({ vaultStatus: 'ready', lastError: null });
+      await this.initializationPromise?.catch(() => undefined);
+      this.checkContext(context);
+      if (fence !== this.vaultFence || this.vaultLease !== resumed) throw new PilotClientError('context_changed');
+      await this.initialize();
+    } finally { this.vaultRecovering = false; }
+  }
+
+  private async writeSecret(scope: PilotSecretScope, secret: string): Promise<void> {
+    const context = this.contextKey();
+    try {
+      this.lastVaultScope = scope;
+      const lease = await this.ensureVault();
+      this.checkContext(context);
+      if (lease && lease.status !== 'ready') throw this.vaultFailure(lease.status);
+      await this.dependencies.secretWrite(scope, secret, lease?.generation);
+      this.checkContext(context);
+    } catch (error) { this.checkContext(context); throw this.vaultFailure(error); }
+  }
+
+  private async deleteSecret(scope: PilotSecretScope): Promise<void> {
+    const context = this.contextKey();
+    const lease = await this.ensureVault();
+    this.checkContext(context);
+    await this.dependencies.secretDelete(scope, lease?.generation);
+    this.checkContext(context);
+  }
+
+  private async readSecret(kind: PilotSecretKind, resourceId: string, signal?: AbortSignal): Promise<string> {
+    const context = this.contextKey();
+    const check = () => {
+      this.checkContext(context);
+      if (signal?.aborted) throw new PilotClientError('context_changed');
+    };
+    try {
+      check();
+      const lease = await this.ensureVault();
+      check();
+      if (lease && lease.status !== 'ready') throw this.vaultFailure(lease.status);
+      const scope = this.secretScope(kind, resourceId);
+      this.lastVaultScope = scope;
+      const reading = this.dependencies.secretRead(scope, lease?.generation);
+      const value = await (signal ? abortable(reading, signal) : reading);
+      check();
+      if (!value) throw new PilotClientError('unauthorized');
+      return value;
+    } catch (error) {
+      check();
+      if (error instanceof PilotClientError) throw error;
+      throw this.vaultFailure(error);
+    }
+  }
+
+  initialize(): Promise<PilotPublicState> {
+    if (this.initializationPromise) return this.initializationPromise;
+    const initialization = this.initializeOnce();
+    this.initializationPromise = initialization;
+    void initialization.then(
+      () => {
+        if (this.initializationPromise === initialization) this.initializationPromise = null;
+      },
+      () => {
+        if (this.initializationPromise === initialization) this.initializationPromise = null;
+      },
+    );
+    return initialization;
+  }
+
+  private async initializeOnce(): Promise<PilotPublicState> {
+    const epoch = this.epoch;
+    await this.persistenceTail;
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+    const snapshot = await this.dependencies.getStateSnapshot();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+    const raw = snapshot.values[STATE_KEY];
+    const configurationId = isRecord(raw) && typeof raw.configurationId === 'string'
+      ? raw.configurationId
+      : createOpaqueId('config', this.dependencies);
+    this.persisted = isRecord(raw)
+      ? { ...emptyPersistedState(configurationId), ...raw, configurationId } as PersistedPilotState
+      : emptyPersistedState(configurationId);
+    if (!isRecord(raw)) await this.persist({});
+    await this.subscribeVault();
+    // A durable cleanup reference is also a tombstone, even in an older mixed snapshot.
+    const sessionId = this.persisted.deviceSession?.ref.session_id;
+    if (sessionId && this.persisted.pendingSecretCleanup.some(scope => scope.kind === 'session_token' &&
+      scope.resource_id === sessionId && scope.configuration_id === configurationId &&
+      scope.relay_origin === this.persisted?.relayOrigin)) {
+      await this.clearSession();
+    }
+    const configured = Boolean(this.persisted.relayOrigin);
+    this.publish({
+      configurationId,
+      relayOrigin: this.persisted.relayOrigin,
+      account: this.persisted.account,
+      deviceSession: this.persisted.deviceSession,
+      instance: this.persisted.instance,
+      instanceAccess: this.persisted.instanceAccess,
+      attempt: this.persisted.deviceSession ? null : this.persisted.attempt,
+      status: this.persisted.deviceSession ? 'offline' : configured ? 'signed_out' : 'unconfigured',
+      lastError: null,
+      ...this.blockedVaultState(),
+    });
+    if (!this.persisted.deviceSession) { this.scheduleCleanup(); return this.publicState; }
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+    const context = this.contextKey();
+    const fence = this.vaultFence;
+    const verification = this.sessionVerification;
+    const verificationIsCurrent = () => fence === this.vaultFence && verification === this.sessionVerification &&
+      (!verification || (verification.generation === this.vaultLease?.generation &&
+        verification.fence === this.vaultFence && this.vaultLease.status === 'ready'));
+    try {
+      if (verification && this.vaultLease?.status === 'ready') {
+        verification.phase = 'pending';
+        this.publish({});
+      }
+      const response = await this.request<{ account: PilotAccount; device_session: PilotDeviceSession }>(
+        'GET', '/me', undefined, { authenticated: true },
+      );
+      this.checkContext(context);
+      if (!verificationIsCurrent()) return this.publicState;
+      await this.persist({ account: response.data!.account, deviceSession: response.data!.device_session });
+      this.checkContext(context);
+      // A pre-lock /me may already be waiting for its metadata write. Only the
+      // fresh request for this barrier can release the producer after that write.
+      if (!verificationIsCurrent()) return this.publicState;
+      this.sessionVerification = null;
+      this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
+      if (this.dependencies.deviceName) await this.ensureDesktopInstance();
+    } catch (error) {
+      if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+      if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
+      if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'session_revoked')) {
+        await this.clearSession(error.code as 'unauthorized' | 'session_revoked');
+      } else if (error instanceof PilotClientError && error.code.startsWith('vault_')) {
+        // readSecret already published the precise state.
+      } else {
+        if (verification && verificationIsCurrent()) verification.phase = 'failed';
+        this.publish({ status: 'offline', lastError: 'offline' });
+      }
+    }
+    void this.finishClaimCleanup().catch(() => undefined);
+    this.scheduleCleanup();
+    return this.publicState;
+  }
+
+  async request<T = unknown>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: PilotRequestOptions = {},
+  ): Promise<PilotResponse<T>> {
+    return this.sendRequest<T>(method, path, body, options);
+  }
+
+  /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
+  async requestContent(path: string, body: unknown, signal: AbortSignal): Promise<PilotResponse> {
+    const instance = this.publicState.instance?.ref.instance_id;
+    const prefix = `/pilot/v2/instances/${encodeURIComponent(instance ?? '')}/deliveries/`;
+    if (!instance || !path.startsWith(prefix) || !validateContentMessage(body)) throw new PilotClientError('invalid_configuration');
+    const requestId = 'request_id' in body ? String(body.request_id) : createOpaqueId('request', this.dependencies);
+    return this.sendRequest('POST', path, body, { authenticated: true, producer: true, signal }, 'producer', requestId);
+  }
+
+  /** Detection-only values. The caller must keep these out of journals and logs. */
+  async contentSecretValues(): Promise<string[]> {
+    const context = this.contextKey();
+    const session = this.persisted?.deviceSession?.ref.session_id;
+    const creation = this.persisted?.instanceCreationId;
+    if (!session || !creation) throw new PilotClientError('unauthorized');
+    const values = await Promise.all([this.readSecret('session_token', session), this.readSecret('instance_key', creation)]);
+    this.checkContext(context);
+    return values;
+  }
+
+  private async sendRequest<T = unknown>(
+    method: string, path: string, body: unknown, options: PilotRequestOptions,
+    extension: boolean | 'producer' = false, requestId = createOpaqueId('request', this.dependencies),
+  ): Promise<PilotResponse<T>> {
+    const readController = method === 'GET' ? new AbortController() : null;
+    if (readController) this.pendingReads.add(readController);
+    const signal = readController
+      ? AbortSignal.any([readController.signal, ...(options.signal ? [options.signal] : [])])
+      : options.signal;
+    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId); }
+    finally { if (readController) this.pendingReads.delete(readController); }
+  }
+
+  private async sendRequestOnce<T = unknown>(
+    method: string, path: string, body: unknown, options: PilotRequestOptions,
+    extension: boolean | 'producer', requestId: string,
+  ): Promise<PilotResponse<T>> {
+    if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
+    const context = this.contextKey();
+    const signals = [this.scopeController.signal];
+    if (options.signal) signals.push(options.signal);
+    let signal = AbortSignal.any(signals);
+    const check = () => {
+      this.checkContext(context);
+      if (options.producer && this.sessionVerification) throw new PilotClientError('vault_suspended');
+      if (options.signal?.aborted) throw new PilotClientError('context_changed');
+      if (signal.aborted) {
+        if (this.vaultLease && this.vaultLease.status !== 'ready') throw this.vaultFailure(this.vaultLease.status);
+        if (options.authenticated) this.publish({ status: 'offline', lastError: 'offline' });
+        throw new PilotClientError('offline');
+      }
+    };
+    if (options.producer && this.sessionVerification) throw new PilotClientError('vault_suspended');
+    const url = `${normalizeOrigin(this.persisted.relayOrigin)}${extension ? '' : '/pilot/v1'}${safePath(path)}`;
+    const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
+    if (body !== undefined) headers.set('Content-Type', 'application/json; charset=utf-8');
+    let token = options.authorizationToken;
+    if (options.authenticated && !this.publicState.deviceSession) throw new PilotClientError('unauthorized');
+    if (options.authenticated && !token) {
+      const sessionId = this.persisted.deviceSession?.ref.session_id;
+      if (!sessionId) throw new PilotClientError('unauthorized');
+      token = await this.readSecret('session_token', sessionId, signal);
+    }
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    if (options.producer) {
+      if (!this.persisted.instanceCreationId) throw new PilotClientError('unauthorized');
+      headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId, signal));
+    }
+    check();
+    // Start the transport deadline only after the native credential read settles.
+    if (extension) signal = AbortSignal.any([...signals, AbortSignal.timeout(30_000)]);
+    check();
+    let response: Response;
+    try {
+      const fetching = this.dependencies.fetch(url, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal,
+        maxRedirections: 0,
+      });
+      // A late response after an abort must not retain an unread native body.
+      void fetching.then(result => { if (signal.aborted) void result.body?.cancel().catch(() => undefined); }, () => undefined);
+      response = await abortable(fetching, signal);
+    } catch (error) {
+      check();
+      if (error instanceof PilotClientError) throw error;
+      if (options.authenticated) {
+        this.publish({ status: 'offline', lastError: 'offline' });
+      }
+      throw new PilotClientError('offline');
+    }
+    check();
+    if (response.url && response.url !== url) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new PilotClientError('redirect_refused', response.status);
+    }
+    let data: unknown;
+    try { data = await readBoundedJson(response, extension ? 256 * 1024 : MAX_BODY_BYTES, signal); }
+    catch (error) {
+      check();
+      if (options.authenticated && error instanceof PilotClientError && error.code === 'offline') {
+        this.publish({ status: 'offline', lastError: 'offline' });
+      }
+      throw error;
+    }
+    check();
+    const responseRequestId = response.headers.get('x-request-id') || requestId;
+    if (
+      !extension && isRecord(data) &&
+      (('transport_version' in data && data.transport_version !== TRANSPORT_VERSION) ||
+        ('contract_version' in data && data.contract_version !== CONTRACT_VERSION))
+    ) {
+      throw new PilotClientError('invalid_response', response.status, false, responseRequestId);
+    }
+    if (extension) {
+      const responseHeader = response.headers.get('x-request-id');
+      const expectedHeader = extension === 'producer' && isRecord(body) && body.type === 'poll' && isRecord(data) && data.type === 'delivery' ? data.request_id : requestId;
+      if (responseHeader && responseHeader !== expectedHeader) throw new PilotClientError('invalid_response');
+      // Before authentication the relay may return a transport error, with no account envelope.
+      if (response.ok || (isRecord(data) && data.contract_version === '2.0')) {
+        if (extension === 'producer') {
+          const input = body as { type?: string; request_id?: string };
+          const empty = response.status === 204 && data === null && ['poll', 'delivery.result', 'event'].includes(input.type ?? '');
+          const valid = validateContentMessage(data) && isRecord(data) && (
+            (input.type === 'poll' && data.type === 'delivery') ||
+            (input.type === 'authorize' && data.type === 'authorized' && data.request_id === input.request_id)
+          );
+          if (!empty && !valid && !(isRecord(data) && data.type === 'error')) throw new PilotClientError('invalid_response');
+        } else if (!validateContentMessage(data) || !validateContentResponse(body, data)) throw new PilotClientError('invalid_response');
+      }
+    }
+    if (!response.ok || (extension && isRecord(data) && data.type === 'error')) {
+      const code = errorCodeForStatus(response.status, data);
+      if (
+        options.authenticated &&
+        (code === 'unauthorized' || code === 'session_revoked')
+      ) {
+        // The account mutation caller handles self-revocation acknowledgement loss.
+        if (!extension || extension === 'producer') await this.clearSession(code as 'unauthorized' | 'session_revoked');
+      }
+      throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
+    }
+    if (options.authenticated && ['offline', 'vault_unavailable'].includes(this.publicState.status)) {
+      this.publish({ status: 'connected', lastError: null });
+    }
+    return { status: response.status, data: data as T | null, requestId: responseRequestId };
+  }
+
+  async connect(relayOrigin: string, deviceLabel?: string): Promise<PilotAuthAttempt> {
+    deviceLabel ??= await this.deviceName();
+    if (!this.persisted) await this.initialize();
+    this.scheduleCleanup();
+    const origin = normalizeOrigin(relayOrigin.trim());
+    if (!deviceLabel.trim() || deviceLabel.trim().length > 120) {
+      throw new PilotClientError('invalid_configuration');
+    }
+    if (this.persisted!.deviceSession) {
+      throw new PilotClientError('invalid_configuration');
+    }
+    this.epoch += 1;
+    this.scopeController.abort();
+    this.scopeController = new AbortController();
+    this.accountClient.reset();
+    await this.invalidateVault();
+    await this.persist({ relayOrigin: origin });
+    this.publish({ relayOrigin: origin, status: 'authorizing', lastError: null, sessionEndReason: null });
+    const attemptKey = createOpaqueId('attempt', this.dependencies);
+    const claimSecret = createSecret(this.dependencies);
+    const challenge = base64Url(await this.dependencies.sha256(new TextEncoder().encode(claimSecret)));
+    try {
+      await this.writeSecret(this.secretScope('claim_secret', attemptKey), claimSecret);
+      const response = await this.request<{
+        attempt_id: string; poll_secret: string; user_code: string; verification_uri: string;
+        expires_at: string; interval: number;
+      }>('POST', '/auth/attempts', {
+        transport_version: TRANSPORT_VERSION,
+        client_kind: 'desktop',
+        device_label: deviceLabel.trim(),
+        claim_challenge: challenge,
+      });
+      const data = response.data!;
+      if (data.verification_uri !== GITHUB_DEVICE_VERIFICATION_URI) {
+        throw new PilotClientError('invalid_response', response.status);
+      }
+      await this.writeSecret(this.secretScope('poll_secret', attemptKey), data.poll_secret);
+      const attempt: PilotAuthAttempt = {
+        attemptKey,
+        attemptId: data.attempt_id,
+        userCode: data.user_code,
+        verificationUri: data.verification_uri,
+        expiresAt: data.expires_at,
+        interval: Math.max(5, data.interval),
+      };
+      await this.persist({ attempt });
+      this.publish({ attempt, status: 'authorizing' });
+      return attempt;
+    } catch (error) {
+      const scopes = (['claim_secret', 'poll_secret'] as const).map(kind => this.secretScope(kind, attemptKey));
+      await this.persist(state => ({ pendingSecretCleanup: this.appendCleanup(state, scopes) })).catch(() => undefined);
+      this.scheduleCleanup();
+      if (!(error instanceof PilotClientError)) {
+        this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+        throw new PilotClientError('vault_unavailable');
+      }
+      this.publish({ status: error.code.startsWith('vault_') ? 'vault_unavailable' : 'signed_out', lastError: error.code });
+      throw error;
+    }
+  }
+
+  async pollAuth(signal?: AbortSignal): Promise<PilotAccount | null> {
+    const attempt = this.persisted?.attempt;
+    if (!attempt) throw new PilotClientError('invalid_configuration');
+    if (this.dependencies.now().getTime() >= new Date(attempt.expiresAt).getTime()) {
+      await this.clearAttempt();
+      throw new PilotClientError('unauthorized');
+    }
+    const pollSecret = await this.readSecret('poll_secret', attempt.attemptKey);
+    const response = await this.request<{ status: 'pending'; interval: number } | { status: 'identified'; account: PilotAccount }>(
+      'POST', `/auth/attempts/${encodeURIComponent(attempt.attemptId)}/poll`,
+      { transport_version: TRANSPORT_VERSION },
+      { authorizationToken: pollSecret, signal },
+    );
+    if (response.data!.status === 'pending') {
+      const nextAttempt = { ...attempt, interval: Math.max(5, response.data!.interval) };
+      await this.persist({ attempt: nextAttempt });
+      this.publish({ attempt: nextAttempt, status: 'authorizing' });
+      return null;
+    }
+    const nextAttempt = { ...attempt, identifiedAccount: response.data!.account };
+    await this.persist({ attempt: nextAttempt });
+    this.publish({ attempt: nextAttempt, status: 'confirming_account' });
+    return response.data!.account;
+  }
+
+  async confirmAccount(accountId: string): Promise<PilotDeviceSession> {
+    const epoch = this.epoch;
+    const attempt = this.persisted?.attempt;
+    if (!attempt?.identifiedAccount || attempt.identifiedAccount.account_id !== accountId) {
+      throw new PilotClientError('invalid_configuration');
+    }
+    if (this.dependencies.now().getTime() >= new Date(attempt.expiresAt).getTime()) {
+      await this.clearAttempt();
+      throw new PilotClientError('unauthorized');
+    }
+    const [pollSecret, claimSecret] = await Promise.all([
+      this.readSecret('poll_secret', attempt.attemptKey),
+      this.readSecret('claim_secret', attempt.attemptKey),
+    ]);
+    const response = await this.request<{
+      account: PilotAccount; device_session: PilotDeviceSession; session_token: string;
+    }>('POST', `/auth/attempts/${encodeURIComponent(attempt.attemptId)}/claim`, {
+      transport_version: TRANSPORT_VERSION,
+      account_id: accountId,
+      claim_secret: claimSecret,
+    }, { authorizationToken: pollSecret }).catch(async (error: unknown) => {
+      if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'not_found')) {
+        await this.clearAttempt();
+      }
+      throw error;
+    });
+    const data = response.data!;
+    const sessionScope = this.secretScope('session_token', data.device_session.ref.session_id);
+    await this.writeSecret(sessionScope, data.session_token);
+    try {
+      // Keep the attempt identifier until its secrets have been cleaned up.
+      await this.persist({ account: data.account, deviceSession: data.device_session });
+    } catch {
+      await this.invalidateVault();
+      void this.deleteSecret(sessionScope).catch(() => undefined);
+      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+      throw new PilotClientError('vault_unavailable');
+    }
+    // The durable session is already usable. Keep the attempt for later cleanup
+    // if its separate metadata update fails.
+    await this.finishClaimCleanup().catch(error => {
+      if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
+    });
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+    await this.invalidateVault();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+    this.publish({
+      account: data.account,
+      deviceSession: data.device_session,
+      attempt: null,
+      status: 'connected',
+      lastError: null,
+    });
+    if (this.dependencies.deviceName) await this.ensureDesktopInstance();
+    return data.device_session;
+  }
+
+  private provisioning: { context: string; promise: Promise<PilotInstance> } | null = null;
+
+  private async deviceName(): Promise<string> {
+    const name = await this.dependencies.deviceName?.();
+    return name?.trim().slice(0, 120) || 'Macro desktop';
+  }
+
+  /** One idempotent creation per local profile. Existing or revoked grants are never upgraded here. */
+  ensureDesktopInstance(): Promise<PilotInstance> {
+    if (this.persisted?.instance) return Promise.resolve(this.persisted.instance);
+    const context = this.contextKey();
+    if (this.provisioning?.context === context) return this.provisioning.promise;
+    const work = (async () => {
+      const label = await this.deviceName();
+      this.checkContext(context);
+      return this.createOrAttachInstance({ label });
+    })();
+    this.provisioning = { context, promise: work };
+    void work.finally(() => { if (this.provisioning?.promise === work) this.provisioning = null; }).catch(() => undefined);
+    return work;
+  }
+
+  async createOrAttachInstance(input: { label?: string; instanceId?: string } = {}): Promise<PilotInstance> {
+    const context = this.contextKey();
+    if (!this.persisted?.deviceSession) throw new PilotClientError('unauthorized');
+    const existingId = input.instanceId || this.persisted.instance?.ref.instance_id;
+    if (existingId && this.persisted.instanceCreationId) {
+      const response = await this.request<{ instance: PilotInstance; instance_access: PilotInstanceAccess }>(
+        'POST', `/instances/${encodeURIComponent(existingId)}/attach`,
+        { transport_version: TRANSPORT_VERSION }, { authenticated: true, producer: true },
+      );
+      this.checkContext(context);
+      await this.persist({ instance: response.data!.instance, instanceAccess: response.data!.instance_access });
+      this.checkContext(context);
+      this.publish({ instance: response.data!.instance, instanceAccess: response.data!.instance_access });
+      return response.data!.instance;
+    }
+    const label = this.persisted.pendingInstanceLabel || input.label?.trim();
+    if (!label || label.length > 120) throw new PilotClientError('invalid_configuration');
+    const creationId = this.persisted.instanceCreationId || createOpaqueId('creation', this.dependencies);
+    const instanceKey = this.persisted.instanceCreationId
+      ? await this.readSecret('instance_key', creationId)
+      : createSecret(this.dependencies);
+    const instanceKeyHash = base64Url(await this.dependencies.sha256(new TextEncoder().encode(instanceKey)));
+    this.checkContext(context);
+    if (!this.persisted.instanceCreationId) {
+      await this.writeSecret(this.secretScope('instance_key', creationId), instanceKey);
+      this.checkContext(context);
+      try {
+        await this.persist({ instanceCreationId: creationId, pendingInstanceLabel: label });
+      } catch (error) {
+        this.checkContext(context);
+        await this.invalidateVault();
+        this.checkContext(context);
+        void this.deleteSecret(this.secretScope('instance_key', creationId)).catch(() => undefined);
+        throw error;
+      }
+    }
+    this.checkContext(context);
+    const response = await this.request<{ instance: PilotInstance; instance_access: PilotInstanceAccess }>(
+      'POST', '/instances', {
+        transport_version: TRANSPORT_VERSION,
+        creation_id: creationId,
+        label,
+        instance_key_hash: instanceKeyHash,
+      }, { authenticated: true },
+    );
+    this.checkContext(context);
+    await this.persist({
+      instance: response.data!.instance,
+      instanceAccess: response.data!.instance_access,
+      pendingInstanceLabel: null,
+    });
+    this.checkContext(context);
+    this.publish({ instance: response.data!.instance, instanceAccess: response.data!.instance_access });
+    return response.data!.instance;
+  }
+
+  async listAccessRequests(signal?: AbortSignal): Promise<PilotAccessRequest[]> {
+    const instanceId = this.persisted?.instance?.ref.instance_id;
+    if (!instanceId) throw new PilotClientError('invalid_configuration');
+    const response = await this.request<{ requests: PilotAccessRequest[] }>(
+      'GET', `/instances/${encodeURIComponent(instanceId)}/access-requests`, undefined,
+      { authenticated: true, producer: true, signal },
+    );
+    return response.data!.requests;
+  }
+
+  async resolveAccess(
+    accessRequestId: string,
+    verdict: 'grant' | 'deny',
+  ): Promise<'granted' | 'denied'> {
+    const instanceId = this.persisted?.instance?.ref.instance_id;
+    if (!instanceId) throw new PilotClientError('invalid_configuration');
+    const body: Record<string, unknown> = { transport_version: TRANSPORT_VERSION, verdict };
+    if (verdict === 'grant') body.permissions = [...PILOT_PERMISSIONS];
+    const response = await this.request<{ status: 'granted' | 'denied' }>(
+      'POST', `/instances/${encodeURIComponent(instanceId)}/access-requests/${encodeURIComponent(accessRequestId)}/resolve`,
+      body, { authenticated: true, producer: true },
+    );
+    return response.data!.status;
+  }
+
+  async logout(): Promise<{ revocationConfirmed: boolean }> {
+    for (const controller of this.pendingReads) controller.abort();
+    if (!this.persisted?.deviceSession || this.vaultActivation || this.vaultRecovering ||
+      (this.vaultLease && this.vaultLease.status !== 'ready')) {
+      await this.clearSession();
+      return { revocationConfirmed: false };
+    }
+    const result = await this.accountClient.mutate('session.logout');
+    this.publish({ logoutRevocationConfirmed: result.revocationConfirmed });
+    return result;
+  }
+
+  private appendCleanup(state: PersistedPilotState, scopes: PilotSecretScope[]): PilotSecretScope[] {
+    const entries = new Map([...state.pendingSecretCleanup, ...scopes].map(scope => [JSON.stringify(scope), scope]));
+    return [...entries.values()];
+  }
+
+  private async finishClaimCleanup(): Promise<void> {
+    const attempt = this.persisted?.attempt;
+    if (!this.persisted?.deviceSession || !attempt) return;
+    const scopes = [this.secretScope('claim_secret', attempt.attemptKey), this.secretScope('poll_secret', attempt.attemptKey)];
+    await this.persist(state => ({ attempt: null, pendingSecretCleanup: this.appendCleanup(state, scopes) }));
+    this.scheduleCleanup();
+  }
+
+  private async clearAttempt(): Promise<void> {
+    const attempt = this.persisted?.attempt;
+    const scopes = attempt ? [this.secretScope('claim_secret', attempt.attemptKey), this.secretScope('poll_secret', attempt.attemptKey)] : [];
+    await this.invalidateVault();
+    await this.persist(state => ({ attempt: null, pendingSecretCleanup: this.appendCleanup(state, scopes) }));
+    this.publish({ attempt: null, status: 'signed_out' });
+    this.scheduleCleanup();
+  }
+
+  private scheduleCleanup(): void {
+    if (this.cleanupScheduled || this.cleanupPromise || !this.persisted?.pendingSecretCleanup.length) return;
+    this.cleanupScheduled = true;
+    setTimeout(() => {
+      this.cleanupScheduled = false;
+      if (this.cleanupPromise) return;
+      const cleanup = this.cleanupPendingSecrets().catch(() => undefined);
+      this.cleanupPromise = cleanup;
+      void cleanup.finally(() => { if (this.cleanupPromise === cleanup) this.cleanupPromise = null; });
+    }, 0);
+  }
+
+  private async cleanupPendingSecrets(): Promise<void> {
+    const context = this.contextKey();
+    const pending = [...(this.persisted?.pendingSecretCleanup || [])];
+    for (const scope of pending) {
+      this.checkContext(context);
+      try { await this.deleteSecret(scope); }
+      catch { return; } // Retain tombstones; no automatic loop after a refusal.
+      this.checkContext(context);
+      await this.persist(state => ({ pendingSecretCleanup: state.pendingSecretCleanup.filter(candidate =>
+        JSON.stringify(candidate) !== JSON.stringify(scope)) }));
+    }
+  }
+
+  private async clearSession(reason: PilotPublicState['sessionEndReason'] = null): Promise<void> {
+    this.epoch += 1;
+    this.scopeController.abort();
+    this.scopeController = new AbortController();
+    this.accountClient.reset();
+    const pending = [...(this.persisted?.pendingSecretCleanup || [])];
+    const sessionId = this.persisted?.deviceSession?.ref.session_id;
+    if (sessionId) pending.push(this.secretScope('session_token', sessionId));
+    if (this.persisted?.instanceCreationId) pending.push(this.secretScope('instance_key', this.persisted.instanceCreationId));
+    if (this.persisted?.attempt) {
+      pending.push(this.secretScope('claim_secret', this.persisted.attempt.attemptKey));
+      pending.push(this.secretScope('poll_secret', this.persisted.attempt.attemptKey));
+    }
+    const cleared = { account: null, deviceSession: null, instanceAccess: null, attempt: null,
+      instance: null, instanceCreationId: null, pendingInstanceLabel: null, pendingSecretCleanup: pending };
+    // Stop new credential consumers before waiting for durable metadata or IPC.
+    if (this.persisted) this.persisted = { ...this.persisted, ...cleared };
+    const invalidating = this.invalidateVault();
+    this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, instance: null, status: 'signed_out', lastError: reason, sessionEndReason: reason });
+    // The durable tombstone precedes cleanup. A deferred delete cannot restore this session.
+    try {
+      await this.persist(cleared);
+      await invalidating;
+    } catch {
+      // Best-effort deletion is silent and never blocks reporting a metadata failure.
+      void invalidating.catch(() => undefined);
+      void Promise.allSettled(pending.map(scope => this.deleteSecret(scope)));
+      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+      throw new PilotClientError('vault_unavailable');
+    }
+    this.scheduleCleanup();
+  }
+}
+
+export const macroPilotNativeClient = new MacroPilotNativeClient(
+  import.meta.env.DEV && import.meta.env.VITE_MACRO_BROWSER_QA === '1'
+    ? createBrowserQaDependencies(defaultDependencies)
+    : defaultDependencies,
+);

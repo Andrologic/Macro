@@ -44,6 +44,10 @@ const locked = async <T>(callback: () => Promise<T>): Promise<T> => {
 type JournalTransport = Pick<typeof tauriIpc, 'isTauriAvailable' | 'dbGetAppSetting' | 'dbCompareAndSwapAppSetting'>;
 const MAX_CAS_ATTEMPTS = 12;
 
+export interface ArchitectPlanMutationJournalOptions {
+  pilotOnly?: boolean;
+}
+
 const parseArray = (raw: string | null): unknown[] => {
   if (!raw) return [];
   let parsed: unknown;
@@ -78,7 +82,10 @@ const appendQuarantine = async (entries: unknown[], reason: string, transport: J
   ], transport);
 };
 
-const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanMutationJournalEntry[]> => {
+const loadUnlocked = async (
+  transport: JournalTransport,
+  options?: ArchitectPlanMutationJournalOptions,
+): Promise<ArchitectPlanMutationJournalEntry[]> => {
   if (!transport.isTauriAvailable()) return [];
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
     const expectedValueJson = (await transport.dbGetAppSetting(JOURNAL_KEY))?.value_json ?? null;
@@ -99,6 +106,10 @@ const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanM
       throw new Error('Invalid artifact recovery journal envelope.');
     }
     if (invalid.length === 0) return valid;
+
+    if (options?.pilotOnly) {
+      throw new Error('Le journal des mutations de plans contient une entrée invalide.');
+    }
 
     await appendQuarantine(
       invalid,
@@ -122,23 +133,34 @@ export const createArchitectPlanMutationId = (entry: Pick<ArchitectPlanMutationJ
   return `${owner}:${entry.operation}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 };
 
-export const loadArchitectPlanMutationJournal = async (transport: JournalTransport = tauriIpc): Promise<ArchitectPlanMutationJournalEntry[]> =>
-  locked(() => loadUnlocked(transport));
+export const loadArchitectPlanMutationJournal = async (
+  transport: JournalTransport = tauriIpc,
+  options?: ArchitectPlanMutationJournalOptions,
+): Promise<ArchitectPlanMutationJournalEntry[]> =>
+  locked(() => loadUnlocked(transport, options));
 
-export const upsertArchitectPlanMutationJournal = async (entry: ArchitectPlanMutationJournalEntry, transport: JournalTransport = tauriIpc): Promise<void> =>
+export const upsertArchitectPlanMutationJournal = async (
+  entry: ArchitectPlanMutationJournalEntry,
+  transport: JournalTransport = tauriIpc,
+  options?: ArchitectPlanMutationJournalOptions,
+): Promise<void> =>
   locked(async () => {
     if (!transport.isTauriAvailable()) return;
-    await loadUnlocked(transport);
+    if (!options?.pilotOnly) await loadUnlocked(transport);
     await updateSetting(JOURNAL_KEY, (values) => [
       ...values.filter((candidate) => !isEntry(candidate) || candidate.id !== entry.id),
       entry,
     ], transport);
   });
 
-export const removeArchitectPlanMutationJournal = async (id: string, transport: JournalTransport = tauriIpc): Promise<void> =>
+export const removeArchitectPlanMutationJournal = async (
+  id: string,
+  transport: JournalTransport = tauriIpc,
+  options?: ArchitectPlanMutationJournalOptions,
+): Promise<void> =>
   locked(async () => {
     if (!transport.isTauriAvailable()) return;
-    await loadUnlocked(transport);
+    if (!options?.pilotOnly) await loadUnlocked(transport);
     await updateSetting(JOURNAL_KEY, (values) => values.filter((entry) => !isEntry(entry) || entry.id !== id), transport);
   });
 

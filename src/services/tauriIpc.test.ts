@@ -1434,3 +1434,117 @@ describe("tauriIpc persistent MCP runtime", () => {
     mock.restore();
   });
 });
+
+describe("Pilot native credential IPC", () => {
+  const scope = {
+    configuration_id: 'config:test-01', relay_origin: 'https://relay.example',
+    kind: 'session_token' as const, resource_id: 'session:test-01',
+  };
+
+  it('uses exact scoped payloads and does not turn errors into absence', async () => {
+    const ipc = await loadTauriIpc();
+    const runtime = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+    const previous = runtime.__TAURI_INTERNALS__;
+    runtime.__TAURI_INTERNALS__ = { invoke: () => undefined };
+    invokeCalls.length = 0;
+    try {
+      invokeMock.mockImplementationOnce(async (command: string, payload?: unknown) => {
+        invokeCalls.push({ command, payload });
+        return null as unknown as string;
+      });
+      expect(await ipc.pilotSecretRead(scope, '7')).toBeNull();
+      await ipc.pilotSecretWrite(scope, 'A'.repeat(43), '7');
+      await ipc.pilotSecretDelete(scope, '7');
+      expect(invokeCalls).toEqual([
+        { command: 'pilot_secret_read', payload: { scope, generation: '7' } },
+        { command: 'pilot_secret_write', payload: { scope, secret: 'A'.repeat(43), generation: '7' } },
+        { command: 'pilot_secret_delete', payload: { scope, generation: '7' } },
+      ]);
+      for (const status of ['intervention_required', 'cancelled', 'vault_unavailable', 'context_changed', 'suspended']) {
+        invokeMock.mockRejectedValueOnce(status);
+        await expect(ipc.pilotSecretRead(scope, '7')).rejects.toBe(status);
+      }
+      invokeCalls.length = 0;
+      const context = { configuration_id: scope.configuration_id, relay_origin: scope.relay_origin, owner_id: scope.resource_id };
+      await ipc.pilotVaultActivate(context, '7');
+      await ipc.pilotVaultResume([scope], '7');
+      await ipc.pilotVaultInvalidate('7');
+      expect(invokeCalls).toEqual([
+        { command: 'pilot_vault_activate', payload: { context, generation: '7' } },
+        { command: 'pilot_vault_resume', payload: { scopes: [scope], generation: '7' } },
+        { command: 'pilot_vault_invalidate', payload: { generation: '7' } },
+      ]);
+    } finally {
+      if (previous === undefined) delete runtime.__TAURI_INTERNALS__;
+      else runtime.__TAURI_INTERNALS__ = previous;
+    }
+  });
+
+  it('refuses storage outside native Tauri before invoking any command', async () => {
+    const ipc = await loadTauriIpc();
+    const runtime = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+    const previous = runtime.__TAURI_INTERNALS__;
+    delete runtime.__TAURI_INTERNALS__;
+    invokeCalls.length = 0;
+    try {
+      await expect(ipc.pilotSecretRead(scope, '7')).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretWrite(scope, 'A'.repeat(43), '7')).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretDelete(scope, '7')).rejects.toThrow('native desktop runtime');
+      expect(invokeCalls).toHaveLength(0);
+    } finally {
+      if (previous !== undefined) runtime.__TAURI_INTERNALS__ = previous;
+    }
+  });
+});
+
+describe('Pilot trace IPC errors', () => {
+  it('preserves controlled native errors and hides database diagnostics', async () => {
+    const ipc = await loadTauriIpc();
+    invokeMock.mockRejectedValueOnce({ message: 'resource_limit' });
+    await expect(ipc.pilotToolTracesList('conversation')).rejects.toThrow('resource_limit');
+    invokeMock.mockRejectedValueOnce({ message: 'stale_revision' });
+    await expect(ipc.pilotToolTraceRead({ conversationId: 'conversation', messageId: 'message', traceIndex: 0, expectedRevision: 1 })).rejects.toThrow('stale_revision');
+    invokeMock.mockRejectedValueOnce({ message: 'database error with private diagnostics' });
+    await expect(ipc.pilotToolTracesList('conversation')).rejects.toThrow('unavailable');
+  });
+});
+
+describe('Pilot loaded configuration IPC', () => {
+  it('requests observation without native document discovery', async () => {
+    const ipc = await loadTauriIpc();
+    invokeCalls.length = 0;
+    await ipc.configGetSnapshot(['project-fixture'], true);
+    expect(invokeCalls).toEqual([{ command: 'config_get_snapshot', payload: { projectIds: ['project-fixture'], observeOnly: true } }]);
+  });
+});
+
+describe('Pilot task mutation IPC', () => {
+  it('routes every workspace mutation to the targeted native operation', async () => {
+    const ipc = await loadTauriIpc();
+    invokeCalls.length = 0;
+    await ipc.workspaceRenameManualFeature({ taskId: 'task-fixture', title: 'New', pilotOnly: true });
+    await ipc.workspaceArchiveManualFeature({ taskId: 'task-fixture', pilotOnly: true });
+    await ipc.workspaceDeleteManualFeatureDraft('task-fixture', true);
+    await ipc.workspaceDeleteManualFeature('task-fixture', true);
+    await ipc.workspaceBindManualFeatureDirectCheckpoint({ taskId: 'task-fixture', projectId: 'project-fixture', checkpointId: 'checkpoint-fixture', pilotOnly: true });
+    expect(invokeCalls).toEqual([
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'rename', title: 'New' } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'archive', reason: null, mergedAt: null } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'delete', draftOnly: true } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'delete', draftOnly: false } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'bind_checkpoint', projectId: 'project-fixture', checkpointId: 'checkpoint-fixture' } } },
+    ]);
+  });
+});
+
+
+describe('Pilot native effect routing', () => {
+  it('requests non-repairing metadata commits and terminal preparation', async () => {
+    const ipc = await loadTauriIpc();
+    invokeCalls.length = 0;
+    await ipc.macroBranchCommitIfDirty({ workspacePath: '/synthetic/project', pilotOnly: true });
+    await ipc.terminalStartCommandTab({ kind: 'task', projectId: 'project-fixture', title: 'Run', command: 'echo fixture', pilotOnly: true });
+    expect(invokeCalls[0]).toEqual({ command: 'macro_branch_commit_if_dirty', payload: { workspacePath: '/synthetic/project', message: null, pilotOnly: true, metadataPaths: [] } });
+    expect(invokeCalls[1]).toMatchObject({ command: 'terminal_start_command_tab', payload: { pilotOnly: true } });
+  });
+});

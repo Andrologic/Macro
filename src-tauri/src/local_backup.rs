@@ -289,6 +289,16 @@ async fn check_database(path: &Path) -> Result<()> {
     {
         return Err("Incompatible database schema".into());
     }
+    let stamps: Vec<(i64, String)> = sqlx::query_as("SELECT version, name FROM schema_migrations")
+        .fetch_all(&mut db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let stamped = |version, name: &str| stamps.iter().any(|(v, n)| *v == version && n == name);
+    let legacy_trace = stamped(6, "006_pilot_tool_trace_revisions");
+    let legacy_management = stamped(7, "007_conversation_management");
+    let has_trace =
+        versions.contains(&10) || legacy_trace || stamped(5, "005_pilot_tool_trace_revisions");
+    let has_management = versions.contains(&11) || legacy_management;
     let reference_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let reference = crate::db::create_pool(&reference_dir.path().join("reference.db"))
         .await
@@ -296,6 +306,36 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !has_management {
+        for statement in [
+            "DROP TRIGGER conversation_management_insert",
+            "DROP TRIGGER conversation_management_update",
+            "DROP TRIGGER conversation_response_insert",
+            "DROP TRIGGER conversation_response_update",
+            "DROP TABLE conversation_response_versions",
+            "DROP TABLE conversation_action_receipts",
+            "DROP TABLE conversation_management",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if !has_trace {
+        for statement in [
+            "DROP TRIGGER messages_tool_trace_revision_insert",
+            "DROP TRIGGER messages_tool_trace_revision_delete",
+            "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+            "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+            "DROP TABLE conversation_tool_trace_revisions",
+        ] {
+            sqlx::query(statement)
+                .execute(&reference)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if !versions.contains(&9) {
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&reference)
@@ -318,13 +358,13 @@ async fn check_database(path: &Path) -> Result<()> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    if !versions.contains(&7) {
+    if !versions.contains(&7) || legacy_management {
         sqlx::query("DROP TABLE tool_invocations")
             .execute(&reference)
             .await
             .map_err(|e| e.to_string())?;
     }
-    if !versions.contains(&6) {
+    if !versions.contains(&6) || legacy_trace {
         sqlx::query("ALTER TABLE messages DROP COLUMN generation_attempts_json")
             .execute(&reference)
             .await
@@ -1231,6 +1271,23 @@ mod tests {
     }
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
+        for statement in [
+            "DROP TRIGGER conversation_management_insert",
+            "DROP TRIGGER conversation_management_update",
+            "DROP TRIGGER conversation_response_insert",
+            "DROP TRIGGER conversation_response_update",
+            "DROP TABLE conversation_response_versions",
+            "DROP TABLE conversation_action_receipts",
+            "DROP TABLE conversation_management",
+            "DROP TRIGGER messages_tool_trace_revision_insert",
+            "DROP TRIGGER messages_tool_trace_revision_delete",
+            "DROP TRIGGER messages_tool_trace_revision_update_same_conversation",
+            "DROP TRIGGER messages_tool_trace_revision_update_conversation",
+            "DROP TABLE conversation_tool_trace_revisions",
+            "DELETE FROM schema_migrations WHERE version >= 10",
+        ] {
+            sqlx::query(statement).execute(&mut *db).await.unwrap();
+        }
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&mut *db)
             .await
@@ -1411,7 +1468,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            9
+            11
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1444,7 +1501,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 11);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await

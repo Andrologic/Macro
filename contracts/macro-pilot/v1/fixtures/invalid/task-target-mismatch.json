@@ -1,0 +1,18 @@
+{
+  "contract_version": "1.0",
+  "type": "task",
+  "ref": {
+    "type": "task",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract"
+  },
+  "project_ids": ["project:macro-desktop", "project:macro-mobile"],
+  "execution_targets": [
+    { "project_id": "project:macro-desktop", "execution_mode": "git" }
+  ],
+  "title": "Define the Macro Pilot contract",
+  "state": "queued",
+  "revision": 1,
+  "updated_at": "2026-09-06T12:00:00Z"
+}

@@ -1,3 +1,4 @@
+import { assistantProvenance, type AssistantProvenance } from './macroPilot/assistantProvenance';
 import type {
   ChatMessage,
   Conversation,
@@ -72,6 +73,7 @@ export interface ChatPersistenceAdapters {
   ipc: ChatPersistenceIpc;
   now?: () => Date;
   randomIdSuffix?: () => string;
+  assistantProvenance?: AssistantProvenance;
 }
 
 export interface ChatBootstrapLoadResult {
@@ -88,6 +90,7 @@ export interface AssistantCompletionPersistenceResult {
   providerTurnState?: ProviderTurnState;
   toolTraces?: ToolTrace[];
   completionReason?: ChatMessage["completion_reason"];
+  interruptedProviderText?: string;
   generationAttempts?: ChatMessage["generation_attempts"];
 }
 
@@ -437,6 +440,23 @@ export const persistAssistantCompletionResult = async (
       generationAttempts: params.result.generationAttempts,
     },
   ));
+  // Every provider converges here with display and structured replay output from onComplete.
+  // A receipt is independent of completion_reason and bound to these exact bytes.
+  try {
+    const proof = adapters.assistantProvenance ?? assistantProvenance();
+    if (params.result.completionReason === "incomplete" && params.result.interruptedProviderText) {
+      await proof.recordInterrupted(params.assistantMessageId, params.result.visibleContent, params.result.interruptedProviderText);
+      return;
+    }
+    await proof.recordFinal(
+      params.assistantMessageId,
+      params.result.visibleContent,
+      params.result.providerInputItems ?? params.result.providerTurnState?.output_items,
+    );
+  } catch {
+    // Optional export evidence must not turn an already saved local reply into an
+    // error. Without a matching receipt the content producer withholds the text.
+  }
 };
 
 export const renameConversation = async (

@@ -101,6 +101,7 @@ export async function gitBranchCreate(params: {
 
 export async function gitBranchDelete(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   branchName: string;
   force?: boolean;
   archiveTaskId?: string | null;
@@ -109,6 +110,7 @@ export async function gitBranchDelete(params: {
 }): Promise<void> {
   return invoke("git_branch_delete", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     branchName: params.branchName,
     force: params.force ?? null,
     archiveTaskId: params.archiveTaskId ?? null,
@@ -555,6 +557,7 @@ export async function gitTaskStartPoints(params: {
 
 export async function gitWorktreeCreate(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   taskId: string;
   branchName: string;
   fromRef?: string | null;
@@ -563,6 +566,7 @@ export async function gitWorktreeCreate(params: {
 }): Promise<GitWorktreeEnsureDto> {
   return invoke<GitWorktreeEnsureDto>("git_worktree_create", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     taskId: params.taskId,
     branchName: params.branchName,
     fromRef: params.fromRef ?? null,
@@ -573,6 +577,7 @@ export async function gitWorktreeCreate(params: {
 
 export async function gitWorktreeRemove(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   taskId: string;
   force?: boolean;
   branchName?: string | null;
@@ -583,6 +588,7 @@ export async function gitWorktreeRemove(params: {
 }): Promise<GitWorktreeRemoveDto> {
   return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     taskId: params.taskId,
     force: params.force ?? null,
     branchName: params.branchName ?? null,

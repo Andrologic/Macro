@@ -5,6 +5,12 @@ import {
   flushPendingMacroMetadata,
 } from './macroMetadataCoordinator';
 
+export interface ShutdownPilotRuntime {
+  isStarted(): boolean;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 const normalizeWorkspacePaths = (workspacePaths?: string[]): string[] =>
   Array.from(
     new Set(
@@ -56,10 +62,12 @@ const withShutdownTimeout = async <T>(
 };
 
 export const prepareForPotentialShutdown = async (
+  macroPilotRuntime: ShutdownPilotRuntime,
   workspacePaths?: string[],
   timeoutMs = 5_000,
 ): Promise<void> => {
   await Promise.all([
+    macroPilotRuntime.stop(),
     flushWindowStateBeforeShutdown(timeoutMs),
     withShutdownTimeout(
       flushMacroMetadataForShutdown(workspacePaths),
@@ -67,6 +75,39 @@ export const prepareForPotentialShutdown = async (
       'workspace data',
     ),
   ]);
+};
+
+let shutdownAttemptActive = false;
+
+/** Keep the producer stopped only when the native close/install succeeds. */
+export const runWithPotentialShutdown = async (
+  operation: () => Promise<boolean | void>,
+  releaseShutdownGate: () => void,
+  macroPilotRuntime: ShutdownPilotRuntime,
+  workspacePaths?: string[],
+): Promise<boolean> => {
+  if (shutdownAttemptActive) {
+    releaseShutdownGate();
+    throw new Error('A shutdown is already in progress.');
+  }
+  shutdownAttemptActive = true;
+  let succeeded = false;
+  let resume: (() => Promise<void>) | undefined;
+  try {
+    if (macroPilotRuntime.isStarted()) resume = () => macroPilotRuntime.start();
+    await prepareForPotentialShutdown(macroPilotRuntime, workspacePaths);
+    succeeded = (await operation()) !== false;
+    return succeeded;
+  } finally {
+    if (!succeeded) {
+      // start() waits for stop(), including when a flush rejects before it settles.
+      releaseShutdownGate();
+      try { await resume?.(); }
+      finally { shutdownAttemptActive = false; }
+    } else {
+      shutdownAttemptActive = false;
+    }
+  }
 };
 
 const flushMacroMetadataForShutdown = async (workspacePaths?: string[]): Promise<void> => {
@@ -103,9 +144,10 @@ export const markWindowCloseShutdown = (
 
 export const prepareWindowShutdown = async (
   reason: string,
+  macroPilotRuntime: ShutdownPilotRuntime,
   workspacePaths?: string[],
 ): Promise<void> => {
-  await prepareForPotentialShutdown(workspacePaths);
+  await prepareForPotentialShutdown(macroPilotRuntime, workspacePaths);
   commitWindowShutdown(reason);
 };
 

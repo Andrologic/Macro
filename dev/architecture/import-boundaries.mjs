@@ -8,7 +8,7 @@ import ts from 'typescript';
 import { chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
 
 export const BASELINE_PATH = 'dev/architecture/import-boundaries.baseline.json';
-export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx']);
+export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx', '.js', '.mjs']);
 export const EXCLUDED_SUFFIXES = Object.freeze(['.d.ts', '.test.ts', '.test.tsx']);
 
 export const OWNERS = Object.freeze(['Chat', 'Tasks/Plans', 'Providers', 'Shell']);
@@ -162,7 +162,8 @@ export function createVirtualReader(sources) {
 }
 
 function scriptKindFor(path) {
-  return path.endsWith('.tsx') ? TSX_SCRIPT_KIND : ts.ScriptKind.TS;
+  if (path.endsWith('.tsx')) return TSX_SCRIPT_KIND;
+  return path.endsWith('.js') || path.endsWith('.mjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS;
 }
 
 function diagnosticMessage(diagnostic) {
@@ -486,6 +487,8 @@ function collectGraph(reader) {
     const result = collectImports(from, reader.read(from));
     diagnostics.push(...result.diagnostics.map((message) => ({ file: from, message })));
     for (const importEntry of result.imports) {
+      // JSON contracts are data, not executable modules in the dependency graph.
+      if (extname(importEntry.source.split(/[?#]/, 1)[0]).toLowerCase() === '.json') continue;
       let to;
       try {
         to = resolveLocalImport(from, importEntry.source, available, aliases);

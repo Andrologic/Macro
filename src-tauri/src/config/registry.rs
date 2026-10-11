@@ -1733,6 +1733,34 @@ mod tests {
     }
 
     #[test]
+    fn manual_model_reasoning_survives_document_validation_and_reload() {
+        let mut document = sparse_document(ConfigDocumentKind::Providers);
+        document["manualModels"] = json!({
+            "local:model": {
+                "providerId": "local",
+                "modelId": "local-reasoner",
+                "displayName": "Local reasoner",
+                "enabled": true,
+                "reasoningEfforts": ["low", "medium", "high"],
+                "defaultReasoningEffort": "medium"
+            }
+        });
+        let result =
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &document);
+        assert!(result.valid, "{:?}", result.diagnostics);
+        let parsed: ProvidersDocument = serde_json::from_value(document).unwrap();
+        let reloaded = serde_json::to_value(parsed).unwrap();
+        assert_eq!(
+            reloaded["manualModels"]["local:model"]["reasoningEfforts"],
+            json!(["low", "medium", "high"])
+        );
+        assert_eq!(
+            reloaded["manualModels"]["local:model"]["defaultReasoningEffort"],
+            "medium"
+        );
+    }
+
+    #[test]
     fn accepts_sparse_builtin_providers_but_requires_a_type_for_custom_providers() {
         let mut builtin = sparse_document(ConfigDocumentKind::Providers);
         builtin["providers"] = json!({ "openai": { "enabled": true } });

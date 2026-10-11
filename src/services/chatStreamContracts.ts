@@ -67,6 +67,7 @@ export interface FrozenToolCallContext {
 }
 
 export interface AssistantStreamLaunch {
+    pilotActionToken?: symbol;
     architectPlanContext?: ArchitectPlanRecord | null;
     architectPlanAtSend?: { planId: string; targetBranch: string };
     sessionId: string;

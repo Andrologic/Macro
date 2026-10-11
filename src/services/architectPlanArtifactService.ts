@@ -42,7 +42,7 @@ const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
 type ArtifactWorkspaceTarget = {
   workspacePath: string;
-  workspaceScope: 'metadata' | 'direct';
+  workspaceScope: 'metadata' | 'metadata_existing' | 'direct';
 };
 
 export class PlanTaskArtifactIndexReadError extends Error {
@@ -152,7 +152,7 @@ const unique = (items: Array<string | null | undefined>): string[] =>
     ),
   );
 
-const hashString = (value: string): string => {
+export const taskArtifactContentHash = (value: string): string => {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
@@ -322,6 +322,7 @@ const resolveWorkspacePaths = async (params: {
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   allowFallbackPaths?: boolean;
+  existingMetadataOnly?: boolean;
 }): Promise<ArtifactWorkspaceTarget[]> => {
   const appState = useAppStore.getState();
   const knownProjectIds = collectKnownProjectIds({
@@ -352,7 +353,7 @@ const resolveWorkspacePaths = async (params: {
       workspacePath: projectPath,
       workspaceScope: params.executionModesByProjectId?.[projectId] === 'direct'
         ? 'direct'
-        : METADATA_WORKSPACE_SCOPE,
+        : params.existingMetadataOnly ? 'metadata_existing' : METADATA_WORKSPACE_SCOPE,
     }];
   });
   if (registeredTargets.length > 0) {
@@ -374,7 +375,7 @@ const resolveWorkspacePaths = async (params: {
   }
   const fallbackScope = projectIds.length > 0 && projectIds.every(
     (projectId) => params.executionModesByProjectId?.[projectId] === 'direct'
-  ) ? 'direct' : METADATA_WORKSPACE_SCOPE;
+  ) ? 'direct' : params.existingMetadataOnly ? 'metadata_existing' : METADATA_WORKSPACE_SCOPE;
   return filterNonWslProjectPaths(
     unique([...(params.repoPaths || []), ...replicaRepoPaths, activeRoot]),
   ).map((workspacePath) => ({ workspacePath, workspaceScope: fallbackScope }));
@@ -399,7 +400,7 @@ const readTextAtWorkspace = async (
 
 const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
   count: index.artifacts.length,
-  indexHash: hashString(stableSerialize(index.artifacts.map((artifact) => ({
+  indexHash: taskArtifactContentHash(stableSerialize(index.artifacts.map((artifact) => ({
     id: artifact.id,
     taskId: artifact.taskId,
     kind: artifact.kind,
@@ -412,8 +413,8 @@ const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
     supersedes: artifact.supersedes,
     updatedAt: artifact.updatedAt,
   })))),
-  contentHash: hashString(index.artifacts.map((artifact) => artifact.contentHash).sort().join('\n')),
-  reviewHash: hashString(stableSerialize((index.reviews || []).map((review) => ({
+  contentHash: taskArtifactContentHash(index.artifacts.map((artifact) => artifact.contentHash).sort().join('\n')),
+  reviewHash: taskArtifactContentHash(stableSerialize((index.reviews || []).map((review) => ({
     artifactId: review.artifactId,
     taskId: review.taskId,
     validatedAt: review.validatedAt,
@@ -431,6 +432,7 @@ export const readPlanTaskArtifactIndex = async (params: {
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  existingMetadataOnly?: boolean;
 }): Promise<PlanTaskArtifactIndex> => withArtifactRecovery(async () => {
   if (!tauriIpc.isTauriAvailable()) {
     return emptyArtifactIndex(params.planId);
@@ -489,7 +491,7 @@ export const readPlanTaskArtifactIndex = async (params: {
           throw new Error(`Invalid artifact content path: ${artifact.id}`);
         }
         const content = await readArtifactFileSnapshot({ ...target, path: artifact.path });
-        if (content.content === null || hashString(content.content) !== artifact.contentHash) {
+        if (content.content === null || taskArtifactContentHash(content.content) !== artifact.contentHash) {
           throw new Error(`Artifact content does not match its index: ${artifact.id}`);
         }
       }
@@ -540,13 +542,14 @@ const writePlanTaskArtifactIndex = async (params: {
   if (targets.length === 0) throw new Error('No registered artifact workspace is available.');
   const files: ArtifactFileMutation[] = [];
   for (const target of targets) {
+    if (target.workspaceScope === 'metadata_existing') throw new Error('Artifact writes require a writable metadata scope.');
     const manifestPath = getPlanManifestPath(params.branchName, params.planId);
     const manifest = await readArtifactFileSnapshot({ ...target, path: manifestPath });
     const unchangedContents = [];
     for (const artifact of params.previousIndex.artifacts) {
       if (params.contentWrites?.some((write) => write.path === artifact.path)) continue;
       const snapshot = await readArtifactFileSnapshot({ ...target, path: artifact.path });
-      if (snapshot.content === null || hashString(snapshot.content) !== artifact.contentHash) {
+      if (snapshot.content === null || taskArtifactContentHash(snapshot.content) !== artifact.contentHash) {
         throw new Error(`Artifact content changed during mutation: ${artifact.id}`);
       }
       unchangedContents.push({ path: artifact.path, content: snapshot.content });
@@ -573,11 +576,12 @@ const writePlanTaskArtifactIndex = async (params: {
         }
       }
       const priorArtifact = params.previousIndex.artifacts.find((artifact) => artifact.path === write.path);
-      if (priorArtifact && (before.content === null || hashString(before.content) !== priorArtifact.contentHash)) {
+      if (priorArtifact && (before.content === null || taskArtifactContentHash(before.content) !== priorArtifact.contentHash)) {
         throw new Error(`Artifact content changed during mutation: ${priorArtifact.id}`);
       }
       if (before.content !== null && !before.revision) throw new Error(`Artifact revision unavailable: ${write.path}`);
-      files.push({ ...target, path: write.path, before: before.content, after: write.content });
+      files.push({ workspacePath: target.workspacePath, workspaceScope: target.workspaceScope as 'metadata' | 'direct',
+        path: write.path, before: before.content, after: write.content });
     }
   }
   await persistArtifactMutation({ branchName: normalizeBranchName(params.branchName), planId: sanitizeId(params.planId), workspaceKey, files });
@@ -749,11 +753,13 @@ export const listVisibleTaskArtifacts = async (params: {
   task: CatalogedImplementTask;
   includeInherited?: boolean;
   includeOwn?: boolean;
+  existingMetadataOnly?: boolean;
 }): Promise<VisiblePlanTaskArtifact[]> => {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
     ...getPlanWorkspaceHints(params.plan),
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   const visibleTaskIds = resolveVisiblePlanTaskIds({
     plan: params.plan,
@@ -860,11 +866,13 @@ export const readVisibleTaskArtifactContent = async (params: {
   plan: ArchitectPlanRecord;
   task: CatalogedImplementTask;
   artifactId: string;
+  existingMetadataOnly?: boolean;
 }): Promise<{ artifact: VisiblePlanTaskArtifact; content: string }> => {
   const artifacts = await listVisibleTaskArtifacts({
     branchName: params.branchName,
     plan: params.plan,
     task: params.task,
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   const artifact = artifacts.find((candidate) => candidate.id === sanitizeId(params.artifactId));
   if (!artifact) {
@@ -873,6 +881,7 @@ export const readVisibleTaskArtifactContent = async (params: {
   const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
     artifact,
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   return { artifact, content };
 };
@@ -885,6 +894,7 @@ const readArtifactContent = async (params: {
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   artifact: Pick<PlanTaskArtifact, 'id' | 'path' | 'contentHash'>;
+  existingMetadataOnly?: boolean;
 }): Promise<string> => {
   const workspaceTargets = await resolveWorkspacePaths({
     projectId: params.projectId,
@@ -893,12 +903,13 @@ const readArtifactContent = async (params: {
     replicas: params.replicas,
     repoPaths: params.repoPaths,
     executionModesByProjectId: params.executionModesByProjectId,
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   for (const target of workspaceTargets) {
     const content = await readTextAtWorkspace(target, params.artifact.path);
     if (content !== null) {
       // Validate the exact string returned: the file may change after index validation.
-      if (hashString(content) !== params.artifact.contentHash) {
+      if (taskArtifactContentHash(content) !== params.artifact.contentHash) {
         throw toServiceError(`Artifact content does not match its index: ${params.artifact.id}`);
       }
       return content;
@@ -1222,7 +1233,7 @@ const putTaskArtifactInternal = async ({
     summary,
     contentType,
     path,
-    contentHash: hashString(normalizedContent),
+    contentHash: taskArtifactContentHash(normalizedContent),
     createdAt: previous?.createdAt || now,
     updatedAt: now,
     createdBy,

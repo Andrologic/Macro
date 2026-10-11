@@ -1,0 +1,20 @@
+{
+  "contract_version": "1.0",
+  "type": "tool_approval",
+  "ref": {
+    "type": "tool_approval",
+    "instance_id": "instance:studio-mac",
+    "conversation_id": "conv-6",
+    "assistant_message_id": "msg-6",
+    "tool_call_id": "call-6"
+  },
+  "state": "expired",
+  "tool_id": "write",
+  "action_group": "change",
+  "risk_level": "balanced",
+  "is_destructive": false,
+  "summary": "Write the requested workspace file",
+  "allowed_scopes": ["once"],
+  "revision": 2,
+  "created_at": "2026-09-06T12:00:00Z"
+}

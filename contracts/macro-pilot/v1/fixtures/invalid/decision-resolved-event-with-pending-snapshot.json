@@ -1,0 +1,41 @@
+{
+  "contract_version": "1.0",
+  "type": "event",
+  "event_type": "decision.resolved",
+  "stream_id": "stream:workspace:macro-suite",
+  "sequence": 44,
+  "resume_cursor": "cursor:44:01J8T",
+  "emitted_at": "2026-09-06T12:00:00Z",
+  "resource": {
+    "type": "decision",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01",
+    "decision_id": "decision:topology:01"
+  },
+  "revision": 1,
+  "snapshot": {
+    "contract_version": "1.0",
+    "type": "decision",
+    "ref": {
+      "type": "decision",
+      "instance_id": "instance:studio-mac",
+      "workspace_id": "workspace:macro-suite",
+      "task_id": "task:pilot-contract",
+      "run_id": "run:pilot-contract:01",
+      "decision_id": "decision:topology:01"
+    },
+    "state": "pending",
+    "steps": [
+      {
+        "step_id": "scope",
+        "prompt": "How should the client connect?",
+        "choices": ["Automatic", "Local only", "Manual"],
+        "free_text_allowed": true
+      }
+    ],
+    "revision": 1,
+    "created_at": "2026-09-06T12:00:00Z"
+  }
+}

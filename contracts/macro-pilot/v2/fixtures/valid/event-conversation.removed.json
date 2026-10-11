@@ -1,0 +1,19 @@
+{
+  "contract_version": "2.0",
+  "type": "event",
+  "account_id": "account-demo",
+  "stream_id": "stream-demo",
+  "sequence": 1,
+  "occurred_at": "2026-01-01T00:00:00Z",
+  "change": {
+    "kind": "conversation.removed",
+    "scope": {
+      "instance_id": "instance-demo",
+      "kind": "implement",
+      "workspace_id": "workspace-demo",
+      "task_id": "task-demo",
+      "conversation_id": "conversation-task"
+    },
+    "revision": 2
+  }
+}

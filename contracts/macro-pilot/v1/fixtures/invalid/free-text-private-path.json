@@ -1,0 +1,10 @@
+{
+  "contract_version": "1.0",
+  "type": "error",
+  "request_id": "request:tasks:page:03",
+  "error": {
+    "code": "unavailable",
+    "message": "Read failed under /private/var/folders/runtime.db",
+    "retryable": false
+  }
+}
