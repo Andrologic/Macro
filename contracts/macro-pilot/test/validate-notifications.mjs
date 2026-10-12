@@ -140,3 +140,24 @@ for (const name of readdirSync(new URL('fixtures/notifications/valid/', root))) 
 }
 assert.equal(legacy(JSON.parse(readFileSync(new URL('fixtures/valid/review.json', v1Root), 'utf8'))), true);
 console.log(`Notifications: ${fixtures} fixtures, direct AJV, four correlated operations, bounds, frozen v1 rejection and ${denied} stale resolution contexts passed.`);
+
+// Private values must not be reflected through rejected property names, nested
+// paths or custom shape exceptions. Test every exported validation route.
+const privateValue = 'synthetic-notification-token-' + '9'.repeat(35);
+const malformed = structuredClone(requests[0]);
+malformed.body[privateValue] = { [privateValue]: true };
+for (const validator of [
+  () => validateMessage(malformed),
+  () => validateExchange(malformed, responses[0]),
+  () => validateResolution(malformed, responses[0], context),
+  () => fromFactory.validateMessage(malformed),
+  () => fromFactory.validateExchange(malformed, responses[0]),
+  () => fromFactory.validateResolution(malformed, responses[0], context),
+  () => createNotificationsValidator(() => { throw new Error(privateValue); }).validateMessage(malformed),
+]) {
+  const rejected = validator();
+  assert.equal(rejected.valid, false);
+  assert.ok(!JSON.stringify(rejected).includes(privateValue));
+  assert.deepEqual(rejected.errors, ['Invalid notification envelope']);
+}
+console.log('Notifications: seven malformed-input diagnostic paths refuse token reflection.');

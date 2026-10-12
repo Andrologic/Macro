@@ -200,6 +200,18 @@ y compris lors d'une validation échouée. Les logs techniques utilisent le code
 d'erreur, l'opération et des corrélations privées bornées. Les fixtures utilisent
 uniquement le token synthétique de 64 caractères.
 
+## Restauration d'une sauvegarde
+
+Une restauration invalide toutes les inscriptions sauvegardées avant de rendre
+le service disponible. Le serveur supprime leurs tokens du stockage restauré,
+retire leurs consentements, et invalide les reçus de notification et de mutation
+associés. Il change les générations de session, d'accès et de producteur selon
+les règles d'authentification existantes. Aucun ancien token, reçu ou retry ne
+peut donc reprendre après restauration. Le mobile doit effectuer une nouvelle
+inscription initialement désactivée, puis recueillir un nouveau consentement.
+La validation de sauvegarde et la procédure de restauration doivent appliquer
+cette règle, y compris si une sauvegarde contient encore un token chiffré.
+
 ## Validation de la tranche
 
 Exécuter `node contracts/macro-pilot/test/validate-notifications.mjs` ou la même
