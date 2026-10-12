@@ -46,6 +46,43 @@ describe('terminalSearch', () => {
     ]);
   });
 
+  it('preserves ASCII offsets, non-overlapping matches, row order and query trimming', () => {
+    expect(findTerminalSearchMatches(
+      buildTerminal(['\x00AaAa\x7f', '', 'MATCH match MATCH', 'no result']),
+      '  aa  '
+    )).toEqual([
+      { row: 0, column: 1, length: 2 },
+      { row: 0, column: 3, length: 2 },
+    ]);
+    expect(findTerminalSearchMatches(buildTerminal(['aaaaa']), 'aaa')).toEqual([
+      { row: 0, column: 0, length: 3 },
+    ]);
+    expect(findTerminalSearchMatches(buildTerminal(['MATCH match', 'match']), 'match')).toEqual([
+      { row: 0, column: 0, length: 5 },
+      { row: 0, column: 6, length: 5 },
+      { row: 1, column: 0, length: 5 },
+    ]);
+    expect(findTerminalSearchMatches(buildTerminal(['match']), '   ')).toEqual([]);
+    expect(findTerminalSearchMatches(buildTerminal(['match']), 'absent')).toEqual([]);
+  });
+
+  it('preserves mixed Unicode offsets, contextual lowercase and expanding queries', () => {
+    const terminal = buildTerminal(['ASCII İ match', '🧪İ ERROR', 'ΟΣ', '\x80MATCH', '\ud800MATCH']);
+    expect(findTerminalSearchMatches(terminal, 'match')).toEqual([
+      { row: 0, column: 8, length: 5 },
+      { row: 3, column: 1, length: 5 },
+      { row: 4, column: 1, length: 5 },
+    ]);
+    expect(findTerminalSearchMatches(terminal, 'İ')).toEqual([
+      { row: 0, column: 6, length: 1 },
+      { row: 1, column: 2, length: 1 },
+    ]);
+    expect(findTerminalSearchMatches(terminal, 'ος')).toEqual([
+      { row: 2, column: 0, length: 2 },
+    ]);
+    expect(findTerminalSearchMatches(buildTerminal(['ASCII']), 'İ')).toEqual([]);
+  });
+
   it('cycles forward and backward through matches', () => {
     expect(getNextTerminalSearchIndex(3, null, 'next')).toBe(0);
     expect(getNextTerminalSearchIndex(3, 2, 'next')).toBe(0);
