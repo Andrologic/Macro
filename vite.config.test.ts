@@ -15,6 +15,9 @@ it('keeps startup CSS and the shared preload helper out of deferred vendor chunk
   expect(output.manualChunks('/fixture/node_modules/xterm/lib/xterm.js', graph)).toBe('terminal-vendor');
   expect(output.manualChunks('/fixture/node_modules/xterm/css/xterm.css', graph)).toBeUndefined();
   expect(output.manualChunks('\0vite/preload-helper.js', graph)).toBe('utils-vendor');
+  expect(output.manualChunks('\0macro-pilot-schema-validators', graph)).toBe('pilot-schema-validators');
+  expect(output.manualChunks('/fixture/src/services/macroPilot/contentValidators.generated.js', graph)).toBe('nativeClient-content-validation');
+  expect(output.manualChunks('/fixture/src/services/markdownRenderProjection.ts', graph)).toBe('markdown-render-projection');
 });
 
 const tempDirs: string[] = [];

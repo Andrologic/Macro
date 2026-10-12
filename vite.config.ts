@@ -412,7 +412,18 @@ const manualVendorChunk = (id: string): string | undefined => {
   return undefined;
 };
 
-const manualChunk = (id: string): string | undefined => manualVendorChunk(id);
+const manualChunk = (id: string): string | undefined => {
+  if (id === MACRO_PILOT_VALIDATORS_VIRTUAL_ID) return "pilot-schema-validators";
+  // Keep content validation within the existing native-client transport budget,
+  // independently of the account and vault orchestration that imports it.
+  if (id.replace(/\\/g, "/").endsWith("/src/services/macroPilot/contentValidators.generated.js")) {
+    return "nativeClient-content-validation";
+  }
+  if (id.replace(/\\/g, "/").endsWith("/src/services/markdownRenderProjection.ts")) {
+    return "markdown-render-projection";
+  }
+  return manualVendorChunk(id);
+};
 
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {

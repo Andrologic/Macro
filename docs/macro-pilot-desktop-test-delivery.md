@@ -25,14 +25,19 @@ Les tests runtime, contrat réflexions et génération passent avec 28 réussite
 
 La compilation native, les trois tests SQLx du lecteur et les 144 tests DB réussis avec un ignoré proviennent de la livraison précédente sur cette même base. Le contrôle IPC généré sans écriture y passe aussi. Cette préparation ne les présente pas comme une nouvelle compilation d'application empaquetée.
 
-Le build frontend de production réussit avec 5 115 modules transformés. Le contrôle `bun run bundle:check` échoue sur deux assets :
+Le premier build de production a dépassé les budgets pour l'entrée et nativeClient. La correction partage les fonctions Ajv des schémas référencés, utilise des boucles pour les listes required longues et sépare la projection Markdown, les validateurs A1 et la validation content. Les schémas, le helper canonique, les types générés et les seuils de budget restent inchangés.
 
-| Asset | Taille réelle | Budget | Dépassement |
-| --- | ---: | ---: | ---: |
-| entrée index | 1 545 822 octets | 1 542 000 octets | 3 822 octets |
-| nativeClient | 1 597 380 octets | 830 000 octets | 767 380 octets |
+Le build frontend corrigé réussit avec 5 115 modules transformés et `bun run bundle:check` passe. Tailles mesurées :
 
-Les seuils restent inchangés. Le validateur content généré est une dépendance du client natif et pèse 1 067 922 octets source, contre 1 033 820 avant l'extension reflections. Cet écart source de 34 102 octets ne suffit pas à expliquer le dépassement du chunk natif. La cause exacte demande une analyse du graphe de bundle ; elle n'est pas établie ici. Ce contrôle en échec reste un défaut ouvert à traiter avant de déclarer la livraison desktop prête. L'archive frontend est un artefact de diagnostic, pas une app installable.
+| Asset | Taille réelle | Budget applicable |
+| --- | ---: | ---: |
+| entrée index | 1 538 253 octets | 1 542 000 octets |
+| transport nativeClient | 61 282 octets | 830 000 octets |
+| nativeClient-content-validation | 785 223 octets | 830 000 octets |
+| pilot-schema-validators | 418 700 octets | 600 000 octets |
+| markdown-render-projection | 12 667 octets | 600 000 octets |
+
+La validation content conserve le budget existant des chunks du transport natif ; aucun nouveau seuil ni exception n'est ajouté. Le découpage ne prétend pas réduire le volume total à lui seul. Le partage de génération Ajv réduit le code répété, et la séparation permet de contrôler les chunks indépendamment. Le graphe de chargement doit être joint aux preuves, avec comparaison à la base. Les tests de génération vérifient la conformité et l'absence d'eval ou Function ; l'audit indépendant porte sur la correction complète.
 
 Les journaux et hashes de cette préparation sont livrés hors du dépôt.
 
@@ -49,10 +54,10 @@ Les journaux et hashes de cette préparation sont livrés hors du dépôt.
      bun run tauri:build:debug --bundles app
    ```
 
-   Définir auparavant `CARGO_TARGET_DIR` vers le cache réservé et appliquer l'environnement limité de l'étape précédente. Cette commande est conditionnelle et n'a pas été exécutée ici. Son mode hors ligne protège Cargo ; il ne garantit pas à lui seul le comportement de la compilation Bun. Le fichier public `tauri.local.conf.json` désactive les artefacts updater. Le beforeBuildCommand compile le runtime AI puis le frontend. Conserver les ressources Copilot et les licences prévues par la configuration Tauri.
+   Définir auparavant `CARGO_TARGET_DIR` vers le cache réservé et appliquer l'environnement limité de l'étape précédente. Cette commande exige les protections de l'étape précédente ; le build de cette livraison utilise en plus un confinement macOS appliqué à tous ses processus enfants. Son mode hors ligne protège Cargo ; il ne garantit pas à lui seul le comportement de la compilation Bun. Le fichier public `tauri.local.conf.json` désactive les artefacts updater. Le beforeBuildCommand compile le runtime AI puis le frontend. Conserver les ressources Copilot et les licences prévues par la configuration Tauri.
 6. Si une condition manque, livrer la préparation et nommer le prérequis restant. Ne pas substituer un binaire de tests Rust à une app complète. Une fois le bundle produit, relever SHA source, version, architecture, mode debug/release, taille réelle et SHA-256 de chaque artefact. Vérifier les ressources, la signature ad hoc et les dépendances du bundle sans le lancer ni l'installer. Produire un DMG seulement si cette forme est ensuite demandée et ses prérequis locaux vérifiés.
 
-Les scripts actuels de bundle ne garantissent pas l'absence de téléchargement : Cargo est lancé sans option hors ligne par défaut et Bun compile un runtime ciblé. Le bundle natif est donc conservé comme préparation explicite dans cette livraison. Aucun paramètre privé de signature n'est lu ni modifié.
+Les scripts actuels de bundle ne garantissent pas seuls l'absence de téléchargement. Un premier bundle ARM64 debug a toutefois été produit dans un confinement macOS interdisant le réseau, l'exécution de security et les accès aux trousseaux. Le build utilise Cargo hors ligne, une identité ad hoc et un environnement limité sans secrets de signature. Les probes du confinement et la compilation du runtime Bun local passent. La reconstruction depuis le commit final et la vérification de sa signature et de ses ressources doivent être liées au SHA livré. Aucun paramètre privé de signature n'est lu ni modifié.
 
 ## Recette matérielle restante
 

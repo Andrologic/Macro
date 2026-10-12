@@ -29,6 +29,7 @@ export async function generateMacroPilotValidators(projectRoot: string): Promise
   const transport = schemas.at(-1)!;
   const ajv = new Ajv2020({
     strict: false,
+    inlineRefs: false,
     allErrors: false,
     messages: false,
     code: { source: true, esm: true, optimize: 2 },

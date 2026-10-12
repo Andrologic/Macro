@@ -24,7 +24,15 @@ export async function generateMacroPilotContentProtocol(projectRoot: string) {
     if (schema.$id !== resource.id) throw new Error(`Schema id mismatch: ${resource.path}`);
     return schema;
   }));
-  const ajv = new Ajv2020({ strict: false, allErrors: false, messages: false, code: { source: true, esm: true, optimize: 2 } });
+  const ajv = new Ajv2020({
+    strict: false,
+    // Share referenced validators and loop over long required lists to limit code size.
+    inlineRefs: false,
+    loopRequired: 8,
+    allErrors: false,
+    messages: false,
+    code: { source: true, esm: true, optimize: 2 },
+  });
   addFormats(ajv);
   for (const schema of schemas) ajv.addSchema(schema);
   const standalone = standaloneCode(ajv, { shape: registry.root });
