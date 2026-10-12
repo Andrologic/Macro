@@ -2386,6 +2386,9 @@
         },
         {
           "$ref": "#/$defs/request_conversation.file.read"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.reflections.read"
         }
       ]
     },
@@ -2510,6 +2513,9 @@
         },
         {
           "$ref": "#/$defs/response_conversation.file.read"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.reflections.read"
         }
       ]
     },
@@ -2586,7 +2592,8 @@
             "conversation.send.status",
             "conversation.files.list",
             "conversation.file.capture",
-            "conversation.file.read"
+            "conversation.file.read",
+            "conversation.reflections.read"
           ]
         },
         "code": {
@@ -2664,7 +2671,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 12,
+          "maxItems": 13,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2679,7 +2686,8 @@
               "project-icons-1",
               "attachment-transfer-1",
               "conversation-attachments-1",
-              "conversation-files-1"
+              "conversation-files-1",
+              "conversation-reflections-1"
             ]
           }
         }
@@ -2733,7 +2741,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 12,
+          "maxItems": 13,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2748,7 +2756,8 @@
               "project-icons-1",
               "attachment-transfer-1",
               "conversation-attachments-1",
-              "conversation-files-1"
+              "conversation-files-1",
+              "conversation-reflections-1"
             ]
           }
         }
@@ -3287,7 +3296,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 12,
+          "maxItems": 13,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3302,7 +3311,8 @@
               "project-icons-1",
               "attachment-transfer-1",
               "conversation-attachments-1",
-              "conversation-files-1"
+              "conversation-files-1",
+              "conversation-reflections-1"
             ]
           }
         },
@@ -3338,7 +3348,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 12,
+          "maxItems": 13,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3353,7 +3363,8 @@
               "project-icons-1",
               "attachment-transfer-1",
               "conversation-attachments-1",
-              "conversation-files-1"
+              "conversation-files-1",
+              "conversation-reflections-1"
             ]
           }
         }
@@ -8208,6 +8219,231 @@
         },
         "result": {
           "$ref": "#/$defs/conversationFileChunk"
+        }
+      }
+    },
+    "reflectionFragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fragment_id",
+        "block_id",
+        "block_index",
+        "offset_bytes",
+        "total_bytes",
+        "state",
+        "text"
+      ],
+      "properties": {
+        "fragment_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "block_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "block_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "state": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      }
+    },
+    "reflections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "message_id",
+        "turn_id",
+        "source",
+        "generation_id",
+        "content_state",
+        "page",
+        "items"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "enum": [
+            "history",
+            "active"
+          ]
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_state": {
+          "enum": [
+            "available",
+            "absent",
+            "pending",
+            "withheld",
+            "too_large",
+            "unavailable"
+          ]
+        },
+        "page": {
+          "$ref": "#/$defs/page"
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/reflectionFragment"
+          }
+        }
+      }
+    },
+    "request_conversation.reflections.read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.reflections.read"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "message_id"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "message_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "continuation": {
+              "$ref": "#/$defs/continuation"
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.reflections.read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.reflections.read"
+        },
+        "result": {
+          "$ref": "#/$defs/reflections"
         }
       }
     }

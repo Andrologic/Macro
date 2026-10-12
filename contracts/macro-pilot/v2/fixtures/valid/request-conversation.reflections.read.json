@@ -1,0 +1,15 @@
+{
+  "contract_version": "2.0",
+  "type": "request",
+  "account_id": "account-demo",
+  "request_id": "request-reflections-demo",
+  "operation": "conversation.reflections.read",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "message_id": "assistant-demo"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "account_id": "account-demo",
+  "request_id": "request-reflections-demo",
+  "operation": "conversation.reflections.read",
+  "result": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "message_id": "assistant-demo",
+    "turn_id": "turn-demo",
+    "source": "history",
+    "generation_id": null,
+    "content_state": "available",
+    "page": {
+      "snapshot_id": "capture-demo",
+      "revision": 1,
+      "observed_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2026-01-01T00:05:00Z",
+      "export_policy_revision": "visible-1",
+      "offset": 0,
+      "total": 1,
+      "next_cursor": null
+    },
+    "items": [
+      {
+        "fragment_id": "fragment-demo",
+        "block_id": "block-demo",
+        "block_index": 0,
+        "offset_bytes": 0,
+        "total_bytes": 10,
+        "state": "complete",
+        "text": "Réflexion"
+      }
+    ],
+    "provider_turn_state_json": "private"
+  }
+}

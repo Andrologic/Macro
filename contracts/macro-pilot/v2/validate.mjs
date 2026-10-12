@@ -14,7 +14,7 @@ for (const resource of registry.resources) {
 }
 const shape = ajv.getSchema(registry.root);
 const protectedPath = (path) => path && /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.git|\.ssh|credentials\.json|id_rsa|id_ed25519)(?:\/|$)|\.(?:key|p12)$/i.test(path);
-const fileCapability = operation => operation.startsWith('attachment.') ? 'attachment-transfer-1' : ['conversation.send.attachments','conversation.send.status'].includes(operation) ? 'conversation-attachments-1' : ['conversation.files.list','conversation.file.capture','conversation.file.read'].includes(operation) ? 'conversation-files-1' : null;
+const fileCapability = operation => operation.startsWith('attachment.') ? 'attachment-transfer-1' : ['conversation.send.attachments','conversation.send.status'].includes(operation) ? 'conversation-attachments-1' : ['conversation.files.list','conversation.file.capture','conversation.file.read'].includes(operation) ? 'conversation-files-1' : operation === 'conversation.reflections.read' ? 'conversation-reflections-1' : null;
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 
 /** Shape and within-envelope invariants. Authorization and freshness require state. */
@@ -102,6 +102,26 @@ export function validateMessage(message) {
     reject(capability && (!(message.capabilities ?? []).includes(capability) || !message.authority_binding), 'unattested file authority');
     reject(!capability && 'authority_binding' in message, 'legacy delivery authority extension');
   }
+  if (['negotiate','negotiated','poll','delivery'].includes(message.type)) reject((message.capabilities ?? []).includes('conversation-reflections-1') && !(message.capabilities ?? []).includes('conversations-1'), 'reflections require conversations capability');
+  if (message.type === 'response' && message.operation === 'conversation.reflections.read') {
+    const r = message.result;
+    reject((r.source === 'active') !== (r.generation_id !== null), 'reflection generation mismatch');
+    reject(r.content_state === 'pending' && r.source !== 'active', 'historical pending reflection');
+    reject(r.content_state === 'available' ? r.items.length === 0 : r.items.length !== 0 || r.page.total !== 0, 'reflection availability mismatch');
+    reject(r.page.total > 256 || r.page.direction !== undefined, 'reflection page bounds');
+    reject(Date.parse(r.page.expires_at) - Date.parse(r.page.observed_at) > (r.source === 'active' ? 15000 : 300000), 'reflection lifetime');
+    reject(r.items.reduce((n,f) => n + bytes(f.text),0) > 65536, 'reflection page UTF-8 bounds');
+    r.items.forEach((f,i) => {
+      reject(bytes(f.text) > 8192 || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(f.text), 'reflection fragment UTF-8');
+      reject(f.offset_bytes + bytes(f.text) > f.total_bytes, 'reflection fragment exceeds block');
+      if (i) { const p=r.items[i-1]; reject(f.block_index < p.block_index || f.block_index === p.block_index && (f.block_id !== p.block_id || f.total_bytes !== p.total_bytes || f.state !== p.state || f.offset_bytes !== p.offset_bytes + bytes(p.text)) || f.block_index > p.block_index && (f.block_index !== p.block_index+1 || p.offset_bytes + bytes(p.text) !== p.total_bytes || f.offset_bytes !== 0 || f.block_id === p.block_id), 'reflection fragment order'); }
+    });
+    if (r.items.length) {
+      const first=r.items[0],last=r.items.at(-1);
+      reject(r.page.offset === 0 && (first.block_index !== 0 || first.offset_bytes !== 0), 'reflection initial fragment');
+      reject(r.page.next_cursor === null && last.offset_bytes + bytes(last.text) !== last.total_bytes, 'reflection terminal block');
+    }
+  }
   if (message.type === 'request' && message.operation === 'attachment.chunk') {
     const b = message.body.data_base64;
     const size = b.length / 4 * 3 - (b.endsWith('==') ? 2 : b.endsWith('=') ? 1 : 0);
@@ -143,7 +163,7 @@ export function validateMessage(message) {
     reject(page.direction && message.operation !== 'conversation.window', 'history direction outside window');
     reject((page.next_cursor === null) !== (page.direction === 'backward' ? page.offset === 0 : page.offset + result.items.length === page.total), 'cursor does not match remaining items');
     reject(result.items.length === 0 && page.next_cursor !== null, 'empty nonterminal page');
-    const identities = result.items.map((item) => item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
+    const identities = result.items.map((item) => item.fragment_id ?? item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
     reject(new Set(identities).size !== identities.length, 'duplicate page identities');
     result.items.forEach((item, index) => {
       if ('position' in item) reject(item.position !== page.offset + index, 'noncontiguous positions');
@@ -237,6 +257,11 @@ export function validateExchange(request, response) {
       const result = response.result;
       const expectedSnapshot = body.snapshot_id ?? body.continuation?.snapshot_id;
       if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window', 'conversation.files.list', 'conversation.file.read'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
+      if (request.operation === 'conversation.reflections.read') {
+        reject(JSON.stringify(body.ref) !== JSON.stringify(result.ref) && (Object.keys(body.ref).length !== Object.keys(result.ref).length || Object.keys(body.ref).some(k => body.ref[k] !== result.ref[k])), 'reflection reference mismatch');
+        reject(body.message_id !== result.message_id, 'reflection message mismatch');
+        if (body.continuation) reject(body.continuation.snapshot_id !== result.page.snapshot_id, 'reflection snapshot mismatch');
+      }
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
       if (request.operation === 'conversation.window') {
         reject((body.direction ?? null) !== (result.page.direction ?? null), 'window direction mismatch');
@@ -305,7 +330,12 @@ export function validatePageContinuation(previous, next) {
   }
   if (previous.account_id !== next.account_id || previous.operation !== next.operation) errors.push('page scope changed');
   if (a.next_cursor === null || (a.direction === 'backward' ? b.offset + next.result.items.length !== a.offset : b.offset !== a.offset + previous.result.items.length)) errors.push('page continuation gap');
-  const identity = (item) => item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
+  const identity = (item) => item.fragment_id ?? item.hit_id ?? item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
+  if (previous.operation === 'conversation.reflections.read') {
+    for (const key of ['ref','message_id','turn_id','source','generation_id','content_state']) if (JSON.stringify(previous.result[key]) !== JSON.stringify(next.result[key])) errors.push(`reflection ${key} changed`);
+    const last=previous.result.items.at(-1),first=next.result.items[0];
+    if (!last || !first || (last.offset_bytes + bytes(last.text) < last.total_bytes ? first.block_id !== last.block_id || first.block_index !== last.block_index || first.total_bytes !== last.total_bytes || first.state !== last.state || first.offset_bytes !== last.offset_bytes + bytes(last.text) : first.block_index !== last.block_index + 1 || first.offset_bytes !== 0 || first.block_id === last.block_id)) errors.push('reflection continuation gap');
+  }
   const seen = new Set(previous.result.items.map(identity));
   if (next.result.items.some((item) => seen.has(identity(item)))) errors.push('repeated page identity');
   return { valid: errors.length === 0, errors };
