@@ -24,6 +24,14 @@ La requête porte une référence instance/workspace/projet. La réponse conserv
 
 La limite est de 98 304 octets bruts et 131 072 caractères base64, après encodage. Le plafond global d'enveloppe de 256 Kio reste applicable. Le résolveur natif existant conserve sa lecture bornée. Chaque consultation résout à nouveau l'icône pour détecter un changement de fichier. Le cache d'export contient au plus 64 ressources et 8 Mio de base64. Le retrait ou le déplacement d'un projet, un changement de contexte ou de politique, et la fermeture du producteur invalident les ressources concernées. Les réponses ne contiennent aucun chemin et ne permettent aucun téléchargement par URL.
 
+### Vérification du hash
+
+`validateMessage` et `validateExchange` restent synchrones et compatibles avec leurs appels historiques. Ils vérifient la forme, la signature du format, la taille et la corrélation, mais ne calculent pas SHA-256. Leur résultat seul ne prouve donc pas l'intégrité des octets.
+
+Avant d'accepter, d'afficher, de mettre en cache ou d'émettre un logo disponible, chaque consommateur appelle `validateResourceIntegrity(envelope)` depuis `validate.mjs`, ou son équivalent qui recalcule SHA-256 sur les octets base64 décodés. Le helper utilise Web Crypto dans les navigateurs, Bun et Node. Une absence de Web Crypto refuse la ressource. Le desktop génère ce même helper dans son validateur et l'appelle avant la réponse et avant l'émission native. Son producteur vérifie aussi le hash fourni par le résolveur local.
+
+`fixtures/integrity-invalid/project-icon-wrong-sha256.json` conserve une forme valide avec un hash faux. Il est refusé par la couche d'intégrité. Ces exemples sont séparés des fixtures de forme invalides pour préserver le contrat du validateur synchrone.
+
 ## Dernière activité
 
 L'extension du relais intégré est importée : `sessions.list` accepte `body.include_last_seen: true`, répété sur chaque page. Les items observés peuvent alors contenir `last_seen_at`. Sans opt-in ou avec `false`, ils gardent leur forme historique exacte. Un client qui reçoit `validation_failed` pour l'opt-in recommence une capture initiale sans ce paramètre ; il conserve les contrôles de pagination, d'identité et de révocation.

@@ -74,3 +74,6 @@ Before updating C, D or E, apply the unpublished A1 migration checklist in
 
 For the opt-in CPU/RAM and project logo operations, and the relay session activity
 projection, read [machine resource contracts](v2/machine-resources.md).
+
+Pour le transfert, l’envoi et l’export des fichiers avec leurs gardes, lire
+[fichiers de conversation](v2/conversation-files.md).

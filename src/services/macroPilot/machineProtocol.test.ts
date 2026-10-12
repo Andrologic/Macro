@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { readFile } from 'node:fs/promises';
-import { validateContentMessage, validateContentResponse } from './contentProtocol';
+import { validateContentIntegrity, validateContentMessage, validateContentResponse } from './contentProtocol';
 const fixture = async (name: string) => JSON.parse(await readFile(new URL(`../../../contracts/macro-pilot/v2/fixtures/valid/${name}.json`, import.meta.url), 'utf8'));
 it('keeps legacy sessions exact and permits activity only on the opt-in projection', async () => {
   const req = await fixture('request-sessions.list'); const res = await fixture('response-sessions.list');
@@ -21,4 +21,15 @@ it('requires machine capability attestation and rejects incorrect instances/proj
     else res.result.ref.project_id = 'other';
     expect(validateContentResponse(req, res)).toBe(false);
   }
+});
+
+it('distinguishes shape validity from resource integrity and rejects a false icon digest', async () => {
+  const valid = await fixture('project-icon-available');
+  const tampered = JSON.parse(await readFile(new URL('../../../contracts/macro-pilot/v2/fixtures/integrity-invalid/project-icon-wrong-sha256.json', import.meta.url), 'utf8'));
+  expect(validateContentMessage(valid)).toBe(true);
+  expect(await validateContentIntegrity(valid)).toBe(true);
+  // Keep the historical synchronous helper contract. Complete conformance also
+  // requires the shared asynchronous integrity check before accepting bytes.
+  expect(validateContentMessage(tampered)).toBe(true);
+  expect(await validateContentIntegrity(tampered)).toBe(false);
 });
