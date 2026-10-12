@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type {
   PlanNodeArtifactContract,
   PlanTaskArtifact,
@@ -20,11 +22,23 @@ import { getTaskBusinessId, resolveTaskReference, toTaskRuntimeId } from './dura
 import { isPlanFinalizationTask } from './implementTaskCatalog';
 import {
   enqueueArchitectPlanMutation,
+  getPlanExecutionModes,
   recoverArchitectPlanReplicaMutationsUnlocked,
   resolveReplicaWorkspaceKey,
   withReplicaTransactionLock,
 } from './architectPlanMutationPersistence';
-import { resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
+import {
+  resolveArchitectPlanServiceDependencies, getProjectMetadataScopes, getScopeWorkspaceScope, existingMetadataScope,
+} from './architectPlanReadContext';
+import {
+  assertGitFlowTargetBranch, normalizeBranchName as normalizePlanBranchName, sanitizeId as sanitizePlanId,
+  sanitizeArchitectPlanRecord, compareReplicaRecency, getPlanJsonPath,
+  getPlanManifestPath as getPlanManifestPathFromModel, buildComparablePlanSnapshot,
+  getArchitectPlanActionableProjectIds, normalizeContextProjectIds, toReplicaDescriptor,
+  type ArchitectMetadataScope, type ArchitectPlanManifest,
+} from './architectPlanReadModel';
+import { normalizeArchitectPlanScope, normalizeArchitectPlanIdList } from './architectPlanScope';
+import { normalizeArtifactManifestSummary } from './architectPlanReplicaStorage';
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 import type { ArtifactFileMutation } from './architectPlanArtifactPersistence';
 import * as tauriIpc from './tauriIpc';
@@ -779,6 +793,449 @@ export const listVisibleTaskArtifacts = async (params: {
       }
       return left.updatedAt.localeCompare(right.updatedAt) * -1;
     });
+};
+
+export const PILOT_TASK_ARTIFACT_EXPORT_LIMITS = Object.freeze({
+  metadataBytes: 1024 * 1024,
+  artifacts: 2000,
+  replicas: 32,
+  nativeFileBytes: 10 * 1024 * 1024,
+  nativeWorkingBytes: 20 * 1024 * 1024,
+  exportedFileBytes: 2 * 1024 * 1024,
+  aggregateBytes: 32 * 1024 * 1024,
+});
+
+/** A reservation must throw before allocation if it cannot be granted. */
+export interface PilotTaskArtifactExportBudget {
+  reserve(bytes: number): () => void;
+}
+
+export interface PilotTaskArtifactExportEntry {
+  artifact: VisiblePlanTaskArtifact;
+  sha256: string | null;
+  totalBytes: number;
+  contentState: 'available' | 'too_large';
+}
+
+export interface PilotTaskArtifactPlanSnapshotParams {
+  branchName: string;
+  planId: string;
+  budget?: PilotTaskArtifactExportBudget;
+  beforeRead?: () => Promise<void>;
+  /** Optional native reader that enforces maxBytes before allocating content. */
+  readFileLimited?: (params: {
+    path: string;
+    workspaceScope: tauriIpc.WorkspaceScope;
+    workspacePath: string | null;
+    allowOutsideWorkspace: false;
+    maxBytes: number;
+  }) => Promise<{ content: string }>;
+}
+
+/** Reads only registered plan metadata under the workflow lock. Never loads the
+ * historical replica set, chat, recursive files, participants or recovery journal. */
+export const readPilotTaskArtifactPlanSnapshot = async (
+  params: PilotTaskArtifactPlanSnapshotParams,
+): Promise<{ plan: ArchitectPlanRecord | null; release: () => void }> => {
+  const branchName = normalizePlanBranchName(params.branchName);
+  assertGitFlowTargetBranch(branchName);
+  const planId = sanitizePlanId(params.planId);
+  if (planId !== params.planId) throw new Error('Invalid Pilot artifact plan identifier.');
+  const releaseWorking = reservePilotArtifactBytes(params.budget, PILOT_ARTIFACT_METADATA_WORKING_BYTES);
+  let releaseRetained: (() => void) | undefined;
+  let succeeded = false;
+  try {
+    if (!tauriIpc.isTauriAvailable()) throw new Error('Pilot artifact export requires the desktop runtime.');
+    const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+    if (registry.validProjectIds.length === 0 || registry.validProjectIds.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) {
+      throw new Error('Pilot artifact plan requires a bounded registered workspace.');
+    }
+    const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
+    const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
+    const result = await withReplicaTransactionLock(workspaceKey, async () => {
+      const readMetadata = async (scope: ArchitectMetadataScope, path: string): Promise<unknown | null> => {
+        const target = { workspacePath: scope.workspacePath, workspaceScope: getScopeWorkspaceScope(scope) };
+        await params.beforeRead?.();
+        if (!await tauriIpc.fsExists(path, target)) return null;
+        const release = reservePilotArtifactBytes(params.budget, params.readFileLimited
+          ? PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes * 2 : PILOT_TASK_ARTIFACT_EXPORT_LIMITS.nativeWorkingBytes);
+        try {
+          await params.beforeRead?.();
+          const file = params.readFileLimited
+            ? await params.readFileLimited({ ...target, path, allowOutsideWorkspace: false,
+              maxBytes: PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes })
+            : await tauriIpc.fsReadFileWithOptions({ ...target, path, allowOutsideWorkspace: false });
+          pilotArtifactUtf8Size(file.content, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+          const parsed: unknown = JSON.parse(file.content);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid Pilot plan metadata.');
+          return parsed;
+        } finally { release(); }
+      };
+      const readPlan = async (scope: ArchitectMetadataScope): Promise<ArchitectPlanRecord | null> => {
+        const parsed = await readMetadata(scope, getPlanJsonPath(branchName, planId));
+        if (!parsed) return null;
+        const raw = parsed as ArchitectPlanRecord;
+        if (raw.id !== planId || !Array.isArray(raw.nodes) || raw.nodes.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.artifacts ||
+          (raw.predictedBranches !== undefined && (!Array.isArray(raw.predictedBranches) || raw.predictedBranches.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.artifacts))) {
+          throw new Error('Invalid or oversized Pilot artifact plan.');
+        }
+        const plan = sanitizeArchitectPlanRecord(branchName, planId, raw, registry).plan;
+        if (plan) pilotArtifactUtf8Size(stableSerialize(plan), PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+        return plan;
+      };
+      // Preserve persisted-direct discovery, but retain only its newest candidate.
+      let directPlan: ArchitectPlanRecord | null = null;
+      let directRepoPath: string | null = null;
+      const directModes = Object.fromEntries(registry.validProjectIds.map((id) => [id, 'direct' as const]));
+      for (const scope of getProjectMetadataScopes(registry, registry.validProjectIds, directModes)) {
+        const plan = await readPlan(scope);
+        if (!plan || !scope.projectId || getPlanExecutionModes(plan, registry)[scope.projectId] !== 'direct') continue;
+        if (!directPlan || compareReplicaRecency({ updatedAt: directPlan.updatedAt, repoPath: directRepoPath },
+          { updatedAt: plan.updatedAt, repoPath: scope.repoPath }) <= 0) {
+          directPlan = plan; directRepoPath = scope.repoPath;
+        }
+      }
+      const scopes = (directPlan
+        ? getProjectMetadataScopes(registry, normalizeArchitectPlanScope(directPlan, { useExpectedAsActionableFallback: true }).expectedProjectIds,
+          getPlanExecutionModes(directPlan, registry))
+        : getProjectMetadataScopes(registry)).map(existingMetadataScope);
+      directPlan = null;
+      if (scopes.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) throw new Error('Pilot plan replica limit exceeded.');
+      let canonical: ArchitectPlanRecord | null = null;
+      let canonicalRepoPath: string | null = null;
+      let canonicalDigest: string | null = null;
+      const replicas: ArchitectPlanRecord['replicas'] = [];
+      const availableIds = new Set<string>();
+      for (const scope of scopes) {
+        const plan = await readPlan(scope);
+        if (!plan) continue;
+        const parsed = await readMetadata(scope, getPlanManifestPathFromModel(branchName, planId)) as Partial<ArchitectPlanManifest> | null;
+        const actionableIds = getArchitectPlanActionableProjectIds(plan);
+        const contextIds = normalizeContextProjectIds(parsed?.contextProjectIds ?? plan.contextProjectIds, actionableIds, registry);
+        const snapshot: ArchitectPlanRecord = { ...plan, contextProjectIds: contextIds,
+          expectedProjectIds: normalizeArchitectPlanIdList(actionableIds, contextIds),
+          revision: typeof parsed?.revision === 'number' && Number.isFinite(parsed.revision) && parsed.revision > 0
+            ? Math.floor(parsed.revision) : plan.revision };
+        const comparable = stableSerialize({ plan: buildComparablePlanSnapshot(snapshot),
+          artifacts: normalizeArtifactManifestSummary(parsed?.artifacts) ?? null });
+        pilotArtifactUtf8Size(comparable, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+        const digest = bytesToHex(sha256(new TextEncoder().encode(comparable)));
+        if (canonicalDigest !== null && digest !== canonicalDigest) throw new Error('Pilot artifact plan replicas diverge.');
+        canonicalDigest = digest;
+        replicas.push(toReplicaDescriptor(scope, snapshot.updatedAt));
+        if (scope.projectId) availableIds.add(scope.projectId);
+        if (!canonical || compareReplicaRecency({ updatedAt: canonical.updatedAt, repoPath: canonicalRepoPath },
+          { updatedAt: snapshot.updatedAt, repoPath: scope.repoPath }) <= 0) {
+          canonical = snapshot; canonicalRepoPath = scope.repoPath;
+        }
+      }
+      if (!canonical) return null;
+      const projectIds = getArchitectPlanActionableProjectIds(canonical);
+      const expectedIds = normalizeArchitectPlanIdList(projectIds, canonical.contextProjectIds);
+      const availableProjectIds = expectedIds.filter((id) => availableIds.has(id));
+      const missingProjectIds = expectedIds.filter((id) => !availableIds.has(id));
+      for (const scope of getProjectMetadataScopes(registry, expectedIds, getPlanExecutionModes(canonical, registry))) {
+        if (scope.projectId && missingProjectIds.includes(scope.projectId)) replicas.push(toReplicaDescriptor(scope, null, true));
+      }
+      if (replicas.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) throw new Error('Pilot plan replica limit exceeded.');
+      return { ...canonical, projectId: projectIds[0], projectIds, expectedProjectIds: expectedIds,
+        availableProjectIds, missingProjectIds, replicas, hasReplicaDivergence: false,
+        replicationState: canonical.status === 'deleted' ? 'deleted' as const
+          : missingProjectIds.length ? 'missing_projects' as const : 'healthy' as const };
+    });
+    if (result) {
+      const size = pilotArtifactUtf8Size(stableSerialize(result), PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+      releaseRetained = reservePilotArtifactBytes(params.budget, size * 2);
+    }
+    releaseWorking();
+    succeeded = true;
+    return { plan: result, release: () => releaseRetained?.() };
+  } finally {
+    if (!succeeded) { try { releaseRetained?.(); } finally { releaseWorking(); } }
+  }
+};
+
+export interface PilotTaskArtifactExportParams {
+  branchName: string;
+  plan: ArchitectPlanRecord;
+  task: CatalogedImplementTask;
+  includeInherited?: boolean;
+  includeOwn?: boolean;
+  budget?: PilotTaskArtifactExportBudget;
+  /** Called before each native access. The adapter owns authorization and deadline. */
+  beforeRead?: () => Promise<void>;
+}
+
+/** Reservations cover simultaneous operations and retained results until release. */
+export const createPilotTaskArtifactExportBudget = (
+  maxBytes = PILOT_TASK_ARTIFACT_EXPORT_LIMITS.aggregateBytes,
+): PilotTaskArtifactExportBudget => {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.aggregateBytes) {
+    throw new Error('Invalid Pilot artifact export budget.');
+  }
+  let retained = 0;
+  return {
+    reserve(bytes) {
+      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxBytes - retained) {
+        throw new Error('Pilot artifact export budget exceeded.');
+      }
+      retained += bytes;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        retained -= bytes;
+      };
+    },
+  };
+};
+
+const pilotArtifactExportBudget = createPilotTaskArtifactExportBudget();
+// Covers canonical entries, one parsed replica, UTF-16 metadata strings and
+// serialization scratch. Both raw and normalized metadata are capped at 1 MiB.
+const PILOT_ARTIFACT_METADATA_WORKING_BYTES = 8 * 1024 * 1024;
+
+const reservePilotArtifactBytes = (budget: PilotTaskArtifactExportBudget | undefined, bytes: number): (() => void) => {
+  const releaseLocal = pilotArtifactExportBudget.reserve(bytes);
+  try {
+    const releaseParent = budget?.reserve(bytes);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      try { releaseParent?.(); } finally { releaseLocal(); }
+    };
+  } catch (error) {
+    releaseLocal();
+    throw error;
+  }
+};
+
+// Count before encoding so even an oversized native response cannot cause a
+// second unreserved allocation. Matches TextEncoder, including lone surrogates.
+const pilotArtifactUtf8Size = (text: string, maxBytes: number): number => {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < text.length &&
+      text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4;
+      index += 1;
+    } else bytes += 3;
+    if (bytes > maxBytes) throw new Error('Pilot artifact export size limit exceeded.');
+  }
+  return bytes;
+};
+
+const withPilotArtifactText = async <T>(
+  target: ArtifactWorkspaceTarget,
+  path: string,
+  budget: PilotTaskArtifactExportBudget | undefined,
+  consume: (text: string) => T,
+  beforeRead?: () => Promise<void>,
+): Promise<T> => {
+  // Reserve the worst-case UTF-16 string before invoking the native 10 MiB read.
+  const release = reservePilotArtifactBytes(budget, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.nativeWorkingBytes);
+  try {
+    await beforeRead?.();
+    const file = await tauriIpc.fsReadFileWithOptions({ ...target, path, allowOutsideWorkspace: false });
+    return consume(file.content);
+  } finally { release(); }
+};
+
+const readPilotArtifactReplicaMetadata = async (
+  params: PilotTaskArtifactExportParams,
+  target: ArtifactWorkspaceTarget,
+  visibleTaskIds: Set<string>,
+): Promise<{ entries: VisiblePlanTaskArtifact[]; indexSha256: string } | null> => {
+  const indexPath = getPlanArtifactIndexPath(params.branchName, params.plan.id);
+  const manifestPath = getPlanManifestPath(params.branchName, params.plan.id);
+  await params.beforeRead?.();
+  const exists = await tauriIpc.fsExists(indexPath, target);
+  let index: PlanTaskArtifactIndex | null = null;
+  let indexSha256 = '';
+  let entries: VisiblePlanTaskArtifact[] = [];
+  if (exists) {
+    ({ index, indexSha256, entries } = await withPilotArtifactText(target, indexPath, params.budget, (text) => {
+      pilotArtifactUtf8Size(text, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid artifact index.');
+      const raw = parsed as PlanTaskArtifactIndex;
+      if (raw.schemaVersion !== 1 || raw.planId !== params.plan.id || !Array.isArray(raw.artifacts) ||
+        raw.artifacts.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.artifacts ||
+        (raw.reviews !== undefined && (!Array.isArray(raw.reviews) || raw.reviews.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.artifacts))) {
+        throw new Error('Invalid or oversized artifact index.');
+      }
+      const normalized = normalizeArtifactIndex(params.plan.id, raw);
+      if (normalized.artifacts.length !== raw.artifacts.length ||
+        new Set(normalized.artifacts.map((artifact) => artifact.id)).size !== normalized.artifacts.length ||
+        raw.artifacts.some((artifact) => artifact.planId !== params.plan.id || artifact.id !== sanitizeId(artifact.id) ||
+          !artifact.taskId.trim() || !['markdown', 'json', 'text'].includes(artifact.contentType))) {
+        throw new Error('Invalid artifact entry.');
+      }
+      for (const artifact of normalized.artifacts) {
+        if (artifact.path.split('/').some((part) => part === '.' || part === '..') ||
+          artifact.path !== getPlanArtifactContentPath(params.branchName, params.plan.id, artifact.taskId, artifact.id, artifact.contentType)) {
+          throw new Error('Invalid artifact content path.');
+        }
+      }
+      const serialized = stableSerialize(normalized);
+      pilotArtifactUtf8Size(serialized, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+      return {
+        index: normalized,
+        indexSha256: bytesToHex(sha256(new TextEncoder().encode(serialized))),
+        entries: normalized.artifacts
+          .filter((artifact) => visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, params.branchName, params.plan)))
+          .map((artifact) => ({ ...artifact,
+            visibility: artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task)
+              ? 'own' as const : 'inherited' as const })),
+      };
+    }, params.beforeRead));
+  }
+  await params.beforeRead?.();
+  if (await tauriIpc.fsExists(manifestPath, target)) {
+    await withPilotArtifactText(target, manifestPath, params.budget, (text) => {
+      pilotArtifactUtf8Size(text, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid artifact manifest.');
+      const summary = (parsed as { artifacts?: unknown }).artifacts;
+      if (index ? stableSerialize(summary) !== stableSerialize(buildArtifactManifestSummary(index)) : summary !== undefined) {
+        throw new Error('Artifact manifest does not match its index.');
+      }
+    }, params.beforeRead);
+  }
+  return index ? { entries, indexSha256 } : null;
+};
+
+const exportPilotTaskArtifacts = async (
+  params: PilotTaskArtifactExportParams,
+  requested?: { artifactId: string; expectedSha256: string; expectedTotalBytes: number },
+): Promise<{ entries: PilotTaskArtifactExportEntry[]; bytes?: Uint8Array; release: () => void }> => {
+  assertArtifactTaskContext({ requestedTask: params.task, currentTask: params.task });
+  if (params.plan.id !== params.task.plan_id || params.plan.status === 'deleted') {
+    throw new Error('Invalid Pilot artifact plan context.');
+  }
+  if (requested && (!/^[a-f0-9]{64}$/.test(requested.expectedSha256) ||
+    !Number.isSafeInteger(requested.expectedTotalBytes) || requested.expectedTotalBytes < 0 ||
+    requested.expectedTotalBytes > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.exportedFileBytes ||
+    requested.artifactId !== sanitizeId(requested.artifactId))) {
+    throw new Error('Invalid Pilot artifact attestation.');
+  }
+  const releaseMetadata = reservePilotArtifactBytes(params.budget, PILOT_ARTIFACT_METADATA_WORKING_BYTES);
+  let releaseBytes: (() => void) | undefined;
+  let releaseRetainedMetadata: (() => void) | undefined;
+  let succeeded = false;
+  try {
+    if (!tauriIpc.isTauriAvailable()) throw new Error('Pilot artifact export requires the desktop runtime.');
+    const registeredTargets = await resolveWorkspacePaths({ ...getPlanWorkspaceHints(params.plan),
+      allowFallbackPaths: false, existingMetadataOnly: true });
+    if (registeredTargets.length === 0 || registeredTargets.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) {
+      throw new Error('Pilot artifact export requires a bounded registered workspace.');
+    }
+    const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
+    const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+    const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
+    const result = await withReplicaTransactionLock(workspaceKey, async () => {
+      // Use the workflow lock without replaying or modifying its recovery journal.
+      const targets = await resolveWorkspacePaths({ ...getPlanWorkspaceHints(params.plan),
+        allowFallbackPaths: false, existingMetadataOnly: true });
+      if (targets.length === 0 || targets.length > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.replicas) {
+        throw new Error('Pilot artifact export requires a bounded registered workspace.');
+      }
+      const visibleTaskIds = resolveVisiblePlanTaskIds(params);
+      let canonical: PilotTaskArtifactExportEntry[] | null = null;
+      let canonicalIndexSha256: string | null = null;
+      let presentCount = 0;
+      let bytes: Uint8Array | undefined;
+      for (const [targetIndex, target] of targets.entries()) {
+        const metadata = await readPilotArtifactReplicaMetadata(params, target, visibleTaskIds);
+        if (!metadata) continue;
+        presentCount += 1;
+        if (canonicalIndexSha256 !== null && canonicalIndexSha256 !== metadata.indexSha256) {
+          throw new Error('Artifact index replicas diverge.');
+        }
+        canonicalIndexSha256 = metadata.indexSha256;
+        if (requested && !metadata.entries.some((entry) => entry.id === requested.artifactId)) {
+          throw new Error('Artifact is not visible from the current task.');
+        }
+        const entries: PilotTaskArtifactExportEntry[] = [];
+        let exportedMetadataBytes = 0;
+        // Read the requested file last so retained bytes cannot overlap the next file allocation.
+        const artifacts = requested
+          ? [...metadata.entries.filter((entry) => entry.id !== requested.artifactId),
+            ...metadata.entries.filter((entry) => entry.id === requested.artifactId)]
+          : metadata.entries;
+        for (const artifact of artifacts) {
+          const retain = requested?.artifactId === artifact.id && targetIndex === targets.length - 1;
+          const entry = await withPilotArtifactText(target, artifact.path, params.budget, (text) => {
+            if (taskArtifactContentHash(text) !== artifact.contentHash) throw new Error('Artifact content does not match its index.');
+            const totalBytes = pilotArtifactUtf8Size(text, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.nativeFileBytes);
+            if (totalBytes > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.exportedFileBytes) {
+              if (requested?.artifactId === artifact.id) throw new Error('Pilot artifact is too large to export.');
+              return { artifact, sha256: null, totalBytes, contentState: 'too_large' as const };
+            }
+            const release = reservePilotArtifactBytes(params.budget, totalBytes);
+            try {
+              const encoded = new TextEncoder().encode(text);
+              const digest = bytesToHex(sha256(encoded));
+              if (requested?.artifactId === artifact.id &&
+                (digest !== requested.expectedSha256 || totalBytes !== requested.expectedTotalBytes)) {
+                throw new Error('Pilot artifact attestation changed.');
+              }
+              if (retain) { bytes = encoded; releaseBytes = release; }
+              return { artifact, sha256: digest, totalBytes, contentState: 'available' as const };
+            } finally { if (!retain || !bytes) release(); }
+          }, params.beforeRead);
+          exportedMetadataBytes += pilotArtifactUtf8Size(stableSerialize(entry), PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+          if (exportedMetadataBytes > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes) {
+            throw new Error('Pilot artifact catalog metadata limit exceeded.');
+          }
+          entries.push(entry);
+        }
+        if (canonical && entries.some((entry, i) => entry.sha256 !== canonical![i]?.sha256 || entry.totalBytes !== canonical![i]?.totalBytes || entry.contentState !== canonical![i]?.contentState)) {
+          throw new Error('Artifact content replicas diverge.');
+        }
+        if (!canonical) canonical = entries;
+      }
+      if (presentCount !== 0 && presentCount !== targets.length) throw new Error('Artifact index replica is missing.');
+      if (requested && !bytes) throw new Error('Artifact is not available.');
+      return { entries: (canonical || []).sort((left, right) =>
+        left.artifact.visibility !== right.artifact.visibility ? left.artifact.visibility === 'own' ? -1 : 1
+          : right.artifact.updatedAt.localeCompare(left.artifact.updatedAt)), bytes };
+    });
+    // Transfer only the returned metadata out of the temporary parse reservation.
+    const metadataBytes = pilotArtifactUtf8Size(stableSerialize(result.entries), PILOT_TASK_ARTIFACT_EXPORT_LIMITS.metadataBytes);
+    releaseRetainedMetadata = reservePilotArtifactBytes(params.budget, metadataBytes * 2 + result.entries.length * 128);
+    releaseMetadata();
+    succeeded = true;
+    return { ...result, release: () => { try { releaseBytes?.(); } finally { releaseRetainedMetadata?.(); } } };
+  } catch (error) {
+    throw new PlanTaskArtifactIndexReadError(params.plan.id, getPlanArtifactIndexPath(params.branchName, params.plan.id), error);
+  } finally {
+    if (!succeeded) { try { releaseBytes?.(); } finally {
+      try { releaseRetainedMetadata?.(); } finally { releaseMetadata(); }
+    } }
+  }
+};
+
+/** Local adapter API. Entries contain metadata paths; never forward them as wire
+ * paths. Keep the reservation until the catalog is discarded or copied into a
+ * separately reserved host record, then call release, including on rejection. */
+export const listPilotTaskArtifactExports = async (params: PilotTaskArtifactExportParams): Promise<{
+  entries: PilotTaskArtifactExportEntry[]; release: () => void;
+}> => exportPilotTaskArtifacts(params);
+
+/** Re-resolves registry and visibility, compares all replicas, and attests the
+ * actual UTF-8 bytes returned. The legacy workflow contentHash stays unchanged.
+ * Caller must release the result after use or transfer to its own reservation. */
+export const readPilotTaskArtifactExport = async (
+  params: PilotTaskArtifactExportParams & { artifactId: string; expectedSha256: string; expectedTotalBytes: number },
+): Promise<{ artifact: VisiblePlanTaskArtifact; sha256: string; totalBytes: number; bytes: Uint8Array; release: () => void }> => {
+  const result = await exportPilotTaskArtifacts(params, params);
+  const entry = result.entries.find((candidate) => candidate.artifact.id === params.artifactId)!;
+  return { ...entry, sha256: entry.sha256!, bytes: result.bytes!, release: result.release };
 };
 
 export const listVisibleTaskArtifactReviewEntries = async (params: {

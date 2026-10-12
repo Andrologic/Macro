@@ -1,8 +1,8 @@
 import { isBrowserRuntimeBridgeEnabled } from '../tauriRuntimeBridge';
 import * as ipc from '../tauriIpc';
 import { mapDbMessageToChatMessage } from '../chatDbMappers';
-import { readArchitectPlanSnapshot, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
-import { listVisibleTaskArtifacts, readVisibleTaskArtifactContent, taskArtifactContentHash } from '../architectPlanArtifactService';
+import { getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
+import { readPilotTaskArtifactPlanSnapshot, listPilotTaskArtifactExports, readPilotTaskArtifactExport } from '../architectPlanArtifactService';
 import { getTaskBusinessId, toTaskRuntimeId } from '../durableIdentity';
 import type { ConversationCaptures } from './conversationCaptures';
 import type { ContentConversationRef, ContentAttachmentTransferReceipt, ContentAttachmentSendReceipt } from './contentProtocol';
@@ -144,26 +144,39 @@ export function desktopAttachmentFiles(options: DesktopAttachmentFileOptions): A
       if (task.plan_id && ['architect', 'plan_finalization'].includes(task.task_source)) {
         await beforeEffect(); check();
         const branchName = resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
-        const plan = await readArchitectPlanSnapshot(branchName, task.plan_id); await beforeEffect(); check();
-        if (!plan || plan.status === 'deleted') return fail('content_unavailable');
-        const nodeIds = new Map(plan.nodes.map(node => [toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id }), node.id]));
-        const artifactTask = { ...task, id: getTaskBusinessId(task), dependencies: task.dependencies.map(id => nodeIds.get(id) ?? id) };
-        const target = { branchName, plan, task: artifactTask, existingMetadataOnly: true };
-        const artifacts = await listVisibleTaskArtifacts({ ...target, includeOwn: true, includeInherited: true }); await beforeEffect(); check();
-        if (artifacts.length + files.length > FILE_LIMITS.catalog) return fail('resource_limit');
-        artifactMetadata.push([task, artifacts]);
-        for (const artifact of artifacts) files.push({
-          entry: { file_id: pilotTaskId(`artifact/${stableJson([ref, artifact.id])}`), display_name: artifact.title,
-            mime_type: artifact.contentType === 'json' ? 'application/json' : artifact.contentType === 'markdown' ? 'text/markdown' : 'text/plain', size_bytes: null, sha256: null,
-            source: { kind: 'task_artifact', message_id: null, artifact_id: pilotTaskId(`artifact/${artifact.id}`), citation_id: null, citation_scope: null }, content_state: 'available' },
-          allocationBytes: 32 * 1024 * 1024,
-          read: async () => {
-            await beforeEffect(); check();
-            const current = await readVisibleTaskArtifactContent({ ...target, artifactId: artifact.id }); await beforeEffect(); check();
-            if (taskArtifactContentHash(current.content) !== artifact.contentHash || current.artifact.contentHash !== artifact.contentHash) return fail('stale_revision');
-            return { bytes: new TextEncoder().encode(current.content), mimeType: artifact.contentType === 'json' ? 'application/json' : artifact.contentType === 'markdown' ? 'text/markdown' : 'text/plain' };
-          },
-        });
+        const snapshot = await readPilotTaskArtifactPlanSnapshot({ branchName, planId: task.plan_id, beforeRead: async () => { await beforeEffect(); check(); } });
+        const plan = snapshot.plan;
+        try {
+          if (!plan || plan.status === 'deleted') return fail('content_unavailable');
+          const nodeIds = new Map(plan.nodes.map(node => [toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id }), node.id]));
+          const artifactTask = { ...task, id: getTaskBusinessId(task), dependencies: task.dependencies.map(id => nodeIds.get(id) ?? id) };
+          const target = { branchName, plan, task: artifactTask, existingMetadataOnly: true };
+          const exported = await listPilotTaskArtifactExports({ ...target, includeOwn: true, includeInherited: true,
+            beforeRead: async () => { await beforeEffect(); check(); } });
+          try {
+            const artifacts = exported.entries;
+            if (artifacts.length + files.length > FILE_LIMITS.catalog) return fail('resource_limit');
+            artifactMetadata.push([task, artifacts]);
+            for (const attested of artifacts) {
+              const artifact = attested.artifact;
+              const mimeType = artifact.contentType === 'json' ? 'application/json' : artifact.contentType === 'markdown' ? 'text/markdown' : 'text/plain';
+              files.push({
+                entry: { file_id: pilotTaskId(`artifact/${stableJson([ref, artifact.id])}`), display_name: artifact.title,
+                  mime_type: mimeType, size_bytes: attested.totalBytes, sha256: null,
+                  source: { kind: 'task_artifact', message_id: null, artifact_id: pilotTaskId(`artifact/${artifact.id}`), citation_id: null, citation_scope: null }, content_state: attested.contentState },
+                allocationBytes: 32 * 1024 * 1024,
+                read: async () => {
+                  await beforeEffect(); check();
+                  if (attested.contentState !== 'available' || !attested.sha256) return null;
+                  const current = await readPilotTaskArtifactExport({ ...target, artifactId: artifact.id,
+                    expectedSha256: attested.sha256, expectedTotalBytes: attested.totalBytes,
+                    beforeRead: async () => { await beforeEffect(); check(); } });
+                  try { check(); return { bytes: current.bytes, mimeType }; } finally { current.release(); }
+                },
+              });
+            }
+          } finally { exported.release(); }
+        } finally { snapshot.release(); }
       }
     }
     // Existing desktop images retain their native message association. A missing
@@ -238,7 +251,15 @@ export function desktopAttachmentFiles(options: DesktopAttachmentFileOptions): A
       } finally { contextIds.delete(ref.conversation_id); targets.delete(stableJson(local)); beforeSends.delete(stableJson(local)); nativeReceipts.clear(); }
     },
     catalog,
-    validateCatalog: async (ref, fingerprint, scope, beforeEffect) => { if ((await catalog(ref, scope, beforeEffect)).fingerprint !== fingerprint) fail('stale_revision'); },
+    validateCatalog: async (ref, fingerprint, scope, beforeEffect) => {
+      // The final observation follows authorization. Further reads share that
+      // bounded deadline, so no later authorization can change the source after
+      // it has already been compared and still permit emission.
+      const deadline = await beforeEffect(); check();
+      const current = async () => { check(); if (Date.parse(deadline) <= Date.now()) fail('unavailable'); return deadline; };
+      if ((await catalog(ref, scope, current)).fingerprint !== fingerprint) fail('stale_revision');
+      await current();
+    },
     dispose: async () => {
       for (const { scope, deadline } of activeScopes.values()) await fileIpc.pilotFilesAuthorize({ scope, executeBefore: deadline, active: false }).catch(() => undefined);
       activeScopes.clear(); targets.clear(); beforeSends.clear(); contextIds.clear(); nativeReceipts.clear();

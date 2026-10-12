@@ -199,7 +199,9 @@ describe('desktop attachment send bridge', () => {
     expect(f.native.markLaunchUncertain).not.toHaveBeenCalled();
     expect(f.chat.sendMessage).not.toHaveBeenCalled();
     f.options.hydrateContext = mock(async () => {});
+    f.native.inspectAttachments = mock(async () => { throw new Error('finalized staging rows no longer exist'); });
     expect((await f.send()).state).toBe('confirmed');
+    expect(f.native.inspectAttachments).not.toHaveBeenCalled();
     expect(f.events.filter(event => event === 'native-persist')).toHaveLength(1);
     expect(f.f.ports.stream.start).toHaveBeenCalledTimes(1);
   });

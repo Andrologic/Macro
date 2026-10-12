@@ -983,7 +983,7 @@ pub async fn prepare_send(
     let message_id = uuid::Uuid::new_v4().to_string();
     let turn_id = uuid::Uuid::new_v4().to_string();
     let now = date(clock())?;
-    let refs:Vec<_>=rows.iter().filter(|r|!r.get::<String,_>("mime_type").starts_with("image/")).map(|r|serde_json::json!({"id":r.get::<String,_>("attachment_id"),"kind":"source","title":r.get::<String,_>("file_name")})).collect();
+    let refs:Vec<_>=rows.iter().filter(|r|!r.get::<String,_>("mime_type").starts_with("image/")).map(|r|serde_json::json!({"id":r.get::<String,_>("attachment_id"),"kind":"file","path":format!("attachment://{}",r.get::<String,_>("attachment_id")),"title":r.get::<String,_>("file_name")})).collect();
     guard(&mut t, &i.scope, &effect_deadline, clock).await?;
     sqlx::query("INSERT INTO messages(id,conversation_id,turn_id,role,content,created_at,context_refs_json) VALUES (?,?,?,'user',?,?,?)")
         .bind(&message_id).bind(&i.scope.r#ref.conversation_id).bind(&turn_id).bind(&i.content).bind(&now).bind(json(&refs)?).execute(&mut *t).await.map_err(db)?;
@@ -2093,6 +2093,13 @@ mod tests {
             Some(format!("attachment://{}", out.receipt.attachment_ids[0]).as_str())
         );
         assert_eq!(out.context_refs[0].content, "hello");
+        let persisted_refs: serde_json::Value =
+            serde_json::from_str(out.message.context_refs_json.as_deref().unwrap()).unwrap();
+        assert_eq!(persisted_refs[0]["kind"], "file");
+        assert_eq!(
+            persisted_refs[0]["path"],
+            format!("attachment://{}", i.attachment_ids[0])
+        );
         let replay = prepare_send(&p, i.clone(), &c).await.unwrap();
         assert_eq!(out.receipt.message_id, replay.receipt.message_id);
         let mut changed_expiry = i.clone();

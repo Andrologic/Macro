@@ -208,10 +208,10 @@ export function createDesktopAttachmentSend<Scope>(options: DesktopAttachmentSen
         };
         assertIdle();
         await beforeEffect();
-        const attachments = await native.inspectAttachments(scope, body.attachment_ids);
+        const attachments = replay ? null : await native.inspectAttachments(scope, body.attachment_ids);
         captureTarget();
-        if (attachments.length !== body.attachment_ids.length || attachments.some((item, index) => item.id !== body.attachment_ids[index])) fail('integrity_failed');
-        hasImages = attachments.some(item => item.mimeType.startsWith('image/'));
+        if (attachments && (attachments.length !== body.attachment_ids.length || attachments.some((item, index) => item.id !== body.attachment_ids[index]))) fail('integrity_failed');
+        hasImages = replay ? replay.images.length > 0 : attachments!.some(item => item.mimeType.startsWith('image/'));
         await beforeEffect();
         assertIdle();
         // One native transaction persists text, images, references, citations and receipt.
@@ -225,14 +225,19 @@ export function createDesktopAttachmentSend<Scope>(options: DesktopAttachmentSen
             saved.id !== receipt.user_message_id || saved.content !== body.content || saved.task_id !== (target.taskId ?? '') ||
             stableJson(receipt.attachment_ids) !== stableJson(body.attachment_ids)) fail('integrity_failed');
         if (receipt.context_state !== 'ready') return receipt;
-        const textAttachments = attachments.filter(item => !item.mimeType.startsWith('image/'));
+        // A replay has already revalidated native durable bytes and the complete
+        // intent. Its original staging rows may have expired after attachment.
+        const expectedImages = attachments ? attachments.filter(item => item.mimeType.startsWith('image/'))
+          : prepared.images.map(image => ({ id: image.id, mimeType: image.mimeType }));
+        if (new Set(expectedImages.map(image => image.id)).size !== expectedImages.length ||
+            expectedImages.some(image => !body.attachment_ids.includes(image.id))) fail('integrity_failed');
+        const textIds = body.attachment_ids.filter(id => !expectedImages.some(image => image.id === id));
         const textPaths = new Set<string>();
-        for (const attachment of textAttachments) {
-          const context = saved.context_refs?.find(item => item.id === attachment.id);
+        for (const id of textIds) {
+          const context = saved.context_refs?.find(item => item.id === id);
           if (context?.kind !== 'file' || !context.path || textPaths.has(context.path)) fail('integrity_failed');
           textPaths.add(context.path);
         }
-        const expectedImages = attachments.filter(item => item.mimeType.startsWith('image/'));
         if (prepared.images.length !== expectedImages.length || prepared.images.some((image, index) =>
           image.id !== expectedImages[index].id || image.mimeType !== expectedImages[index].mimeType ||
           !image.dataUrl.startsWith(`data:${image.mimeType};base64,`))) fail('integrity_failed');

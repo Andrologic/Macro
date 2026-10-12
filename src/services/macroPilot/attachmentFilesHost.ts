@@ -3,6 +3,7 @@ import type {
   ContentConversationFileEntry, ContentConversationFileChunk, ContentConversationRef,
   ContentDelivery, ContentPage,
 } from './contentProtocol';
+import { inspectAttachmentImage } from './attachmentImagePolicy';
 import { controlledText, type TextPolicy } from './conversationText';
 import { stableJson } from './protocol';
 
@@ -68,7 +69,7 @@ function inspect(bytes: Uint8Array, mime: string, policy: TextPolicy): ContentCo
     const decoded = new TextDecoder().decode(bytes);
     let latin = ''; for (let i = 0; i < bytes.length; i += 8192) latin += String.fromCharCode(...bytes.subarray(i, i + 8192));
     return controlledText(decoded, inspection, FILE_LIMITS.file * 4).content_state === 'complete' &&
-      controlledText(latin, inspection, FILE_LIMITS.file * 4).content_state === 'complete' ? 'available' : 'withheld';
+      controlledText(latin, inspection, FILE_LIMITS.file * 4).content_state === 'complete' ? inspectAttachmentImage(bytes, mime) : 'withheld';
   }
   if (!mime.startsWith('text/') && !['application/json', 'application/xml', 'application/x-ndjson', 'application/javascript', 'application/yaml', 'application/x-yaml'].includes(mime)) return 'unsupported';
   try {
@@ -207,16 +208,19 @@ export class AttachmentFilesHost {
   }
   async validateEmission(delivery: ContentDelivery, result: unknown, beforeEffect: FileEffectGuard): Promise<void> {
     const scope = this.scope(delivery), ref = (delivery.request.body as { ref: ContentConversationRef }).ref;
-    const guarded = () => this.guard(ref, beforeEffect);
+    let deadline = 0;
+    const guarded = async () => { const value = await this.guard(ref, beforeEffect); deadline = Date.parse(value); return value; };
     await guarded();
     if (result && typeof result === 'object' && 'snapshot_id' in result && typeof result.snapshot_id === 'string') {
       const record = this.record(scope, ref, result.snapshot_id);
-      await this.validateCatalog(ref, record.fingerprint, scope, guarded); await this.guard(ref, beforeEffect);
+      await this.validateCatalog(ref, record.fingerprint, scope, guarded);
+      if (deadline <= this.now()) fail('unavailable');
       this.record(scope, ref, result.snapshot_id);
     } else if (result && typeof result === 'object' && 'page' in result) {
       const page = result.page as ContentPage;
       const record = this.record(scope, ref, page.snapshot_id);
-      await this.validateCatalog(ref, record.fingerprint, scope, guarded); await this.guard(ref, beforeEffect);
+      await this.validateCatalog(ref, record.fingerprint, scope, guarded);
+      if (deadline <= this.now()) fail('unavailable');
       this.record(scope, ref, page.snapshot_id);
     }
   }

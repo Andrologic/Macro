@@ -79,6 +79,19 @@ describe('desktop file captures', () => {
     const other = harness(); const later = await capture(other); other.advance(FILE_LIMITS.captureMs);
     await expect(other.host.validateEmission(other.delivery('conversation.file.capture', { ref, file_id: 'file-demo' }), later, other.guard)).rejects.toThrow('snapshot_expired');
   });
+  test('compares the source after the final authorization and makes no later authorization call', async () => {
+    const h = harness(); const cap = await capture(h);
+    const delivery = h.delivery('conversation.file.capture', { ref, file_id: 'file-demo' });
+    let calls = 0;
+    await expect(h.host.validateEmission(delivery, cap, async () => {
+      calls++; if (calls === 1) h.change(); return h.guard();
+    })).rejects.toThrow('stale_revision');
+    const unchanged = harness(); const fresh = await capture(unchanged); calls = 0;
+    await unchanged.host.validateEmission(unchanged.delivery('conversation.file.capture', { ref, file_id: 'file-demo' }), fresh, async () => {
+      calls++; return unchanged.guard();
+    });
+    expect(calls).toBe(1);
+  });
   test('never reads a client-provided file identifier without a current catalog', async () => {
     let touched = false;
     const h = harness([{ entry: entry('file-demo'), read: async () => { touched = true; return null; } }]);
