@@ -151,7 +151,7 @@ export function validateMessage(message) {
         reject(item.content_state === 'pending' && (item.role !== 'assistant' || item.completion !== 'unknown' || item.reason !== 'generating'), 'invalid pending message');
         reject(item.content_state === 'withheld' && item.reason === 'generating', 'withheld is not generating');
       }
-      if ('file_id' in item) {
+      if (message.operation === 'diff.files' && 'file_id' in item) {
         reject(protectedPath(item.old_path) || protectedPath(item.new_path), 'credential path must be withheld');
         reject(item.old_path === null && item.new_path === null && item.content_state !== 'withheld', 'file has no path');
         reject(item.content_state !== 'text' && item.patch_bytes !== 0, 'unavailable file advertises patch bytes');
