@@ -28,8 +28,8 @@ export function stageVerifiedBinary(source: string, destination: string, expecte
 }
 
 async function run() {
-  if (process.argv.slice(2).some((arg) => arg !== '--self-test') || process.argv.slice(2).length > 1) {
-    throw new Error('Usage: bun dev/performance/native-sqlite.ts [--self-test]');
+  if (process.argv.slice(2).some((arg) => arg !== '--self-test' && arg !== '--diagnostics') || process.argv.slice(2).length > 1) {
+    throw new Error('Usage: bun dev/performance/native-sqlite.ts [--self-test|--diagnostics]');
   }
   const head = git('rev-parse', 'HEAD');
   const fingerprint = sourceFingerprint();
