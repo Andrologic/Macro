@@ -1573,6 +1573,38 @@
     },
     {
       "families": [
+        "db"
+      ],
+      "name": "PilotReflectionMessage",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionMessage",
+      "path": "PilotReflectionMessage.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionMessageRead",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionMessageRead",
+      "path": "PilotReflectionMessageRead.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionToolAnchor",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionToolAnchor",
+      "path": "PilotReflectionToolAnchor.ts"
+    },
+    {
+      "families": [
+        "db"
+      ],
+      "name": "PilotReflectionToolStatus",
+      "origin": "macro_lib::db::pilot_reflections::PilotReflectionToolStatus",
+      "path": "PilotReflectionToolStatus.ts"
+    },
+    {
+      "families": [
         "pilot_files"
       ],
       "name": "PilotSendMarkInput",

@@ -1,3 +1,4 @@
+import { ConversationReflections, REFLECTION_OPERATION, type ReflectionSource } from './conversationReflections';
 import { AttachmentFilesHost, FILE_OPERATIONS, type AttachmentFileSource } from './attachmentFilesHost';
 import { MachineResources, MACHINE_OPERATIONS, type MachineResourceSource } from './machineResources';
 import { ConversationInteractions, INTERACTION_OPERATIONS, type InteractionSource } from './conversationInteractions';
@@ -34,6 +35,7 @@ export interface ContentHostDependencies {
   taskCompletion?: { source: TaskCompletionSource; storage: KernelStorage };
   machines?: MachineResourceSource;
   files?: AttachmentFileSource;
+  reflections?: ReflectionSource;
   now?: () => number;
 }
 const failure = (code: ContentError['code']): never => { throw new ContentHostError(code); };
@@ -57,17 +59,22 @@ export class ContentHost {
   private reliability = false;
   private machinesAdvertised = false;
   enableMachines(enabled: boolean): void { this.machinesAdvertised = enabled; if (!enabled) this.machines?.clear(); }
+  reflectionsAvailable(): boolean { return this.reflections?.available() ?? false; }
+  enableReflections(enabled: boolean): void { this.reflections?.enable(enabled); }
   filesAvailable(): boolean { return this.files?.available() ?? false; }
   enableFiles(capabilities: readonly string[]): void { this.files?.enable(capabilities); }
   enableReliability(): void { this.reliability = true; }
   private readonly taskCompletion?: TaskCompletionHost;
   private readonly interactions?: ConversationInteractions;
   private readonly files?: AttachmentFilesHost;
+  private readonly reflections?: ConversationReflections;
+  private readonly reflectionEmissions = new WeakMap<object, string | null>();
   private readonly fileEmissions = new WeakMap<object, string | null>();
   private readonly machines?: MachineResources;
   private readonly now: () => number;
   constructor(private readonly deps: ContentHostDependencies) {
     this.now = deps.now ?? Date.now;
+    if (deps.reflections) this.reflections = new ConversationReflections(deps.reflections,this.now);
     if (deps.files) this.files = new AttachmentFilesHost(deps.files, this.now);
     if (deps.machines) this.machines = new MachineResources(deps.machines, this.now);
     if (deps.interactions) this.interactions = new ConversationInteractions({ ...deps.interactions, now: this.now, emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
@@ -146,7 +153,7 @@ export class ContentHost {
     const policy = await this.deps.policy(); this.check();
     const key = await hash(policy); this.check();
     if (this.policyKey !== null && key !== this.policyKey) {
-      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear(); this.taskCompletion?.clear(); this.interactions?.clear();
+      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear(); this.reflections?.clear(); this.taskCompletion?.clear(); this.interactions?.clear();
       const snapshots = [...this.snapshots.values()]; this.snapshots.clear();
       await Promise.all(snapshots.map(snapshot => this.deps.reviews.release(snapshot.info.snapshot_id).catch(() => undefined)));
     }
@@ -309,7 +316,7 @@ export class ContentHost {
       if (!validateContentMessage(input) || input.type !== 'delivery') failure('validation_failed');
       const delivery = input as ContentDelivery; const request = delivery.request;
       if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
-        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !FILE_OPERATIONS.has(request.operation))) failure('validation_failed');
+        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !FILE_OPERATIONS.has(request.operation) && request.operation !== REFLECTION_OPERATION)) failure('validation_failed');
       if (MACHINE_OPERATIONS.has(request.operation) && !this.machinesAdvertised) failure('validation_failed');
       const body = request.body as { instance_id?: string; ref?: { instance_id: string } };
       if ((body.instance_id ?? body.ref?.instance_id) !== this.deps.instanceId) failure('validation_failed');
@@ -326,7 +333,15 @@ export class ContentHost {
         const readingPolicy = this.policyKey;
         let result: unknown;
         let machineContext: string | undefined;
-        if (FILE_OPERATIONS.has(request.operation)) {
+        if (request.operation === REFLECTION_OPERATION) {
+          if (!this.reflections) failure('content_unavailable');
+          await authorizeNow();
+          result = await this.reflections!.handle(delivery,await this.policy(),async () => {
+            deadline = 0; await authorizeNow(); await this.policy(); guard();
+            if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+            return new Date(deadline).toISOString();
+          });
+        } else if (FILE_OPERATIONS.has(request.operation)) {
           if (!this.files) failure('content_unavailable');
           await authorizeNow();
           result = await this.files!.handle(delivery, await this.policy(), async () => {
@@ -428,9 +443,10 @@ export class ContentHost {
         if (!validateContentResponse(request, response) || !await validateContentIntegrity(response)) failure('content_unavailable');
         await this.policy(); guard();
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+        if (request.operation === REFLECTION_OPERATION) this.reflectionEmissions.set(response as object, readingPolicy);
         if (FILE_OPERATIONS.has(request.operation)) this.fileEmissions.set(response as object, readingPolicy);
         if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext });
-        if (!FILE_OPERATIONS.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
+        if (request.operation !== REFLECTION_OPERATION && !FILE_OPERATIONS.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }
@@ -501,8 +517,26 @@ export class ContentHost {
       if (result.response.type === 'response') await this.files!.validateEmission(delivery, result.response.result, guard);
     });
   }
+  async validateReflectionEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {
+    if (delivery.request.operation !== REFLECTION_OPERATION) return;
+    await this.serial(async () => {
+      if (!this.reflections || delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId || !validateContentResponse(delivery.request,result.response)) failure('unavailable');
+      const retainedPolicy = this.reflectionEmissions.get(result.response);
+      if (result.response.type === 'response' && !this.reflectionEmissions.has(result.response)) failure('unavailable');
+      const guard = async () => {
+        this.check(); await this.policy();
+        if (result.response.type === 'response' && retainedPolicy !== this.policyKey) failure('snapshot_expired');
+        const deadline = Date.parse(await authorize(delivery)); this.check(); await this.policy();
+        if (result.response.type === 'response' && retainedPolicy !== this.policyKey) failure('snapshot_expired');
+        if (!Number.isFinite(deadline) || deadline <= this.now() || deadline > this.now()+10000 || deadline > Date.parse(delivery.expires_at)) failure('unavailable');
+        return new Date(deadline).toISOString();
+      };
+      if (result.response.type === 'response' && result.response.operation === REFLECTION_OPERATION) await this.reflections!.validateEmission(delivery,result.response.result,await this.policy(),guard);
+      else await guard();
+    });
+  }
   async dispose(): Promise<void> {
-    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.interactions?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear();
+    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.interactions?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear(); this.reflections?.clear();
     await this.files?.dispose(); await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear(); this.interactions?.clear();
   }
 }

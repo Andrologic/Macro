@@ -102,3 +102,18 @@ pub async fn db_conversation_set_archives(
         .await
         .map_err(command_error)
 }
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn db_get_pilot_reflection_message(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    message_id: String,
+) -> CommandResult<crate::db::pilot_reflections::PilotReflectionMessageRead> {
+    crate::db::pilot_reflections::get_pilot_reflection_message(
+        &get_pool(&pool).await?,
+        &conversation_id,
+        &message_id,
+    )
+    .await
+    .map_err(|_| command_error("unavailable"))
+}

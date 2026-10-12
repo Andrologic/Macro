@@ -1,3 +1,4 @@
+import { REFLECTION_OPERATION } from './conversationReflections';
 import { validateContentIntegrity } from './contentProtocol';
 import { FILE_OPERATIONS } from './attachmentFilesHost';
 import { createBrowserQaDependencies } from './browserQa';
@@ -730,7 +731,7 @@ export class MacroPilotNativeClient {
     const instance = this.publicState.instance?.ref.instance_id;
     const prefix = `/pilot/v2/instances/${encodeURIComponent(instance ?? '')}/deliveries/`;
     if (!instance || !path.startsWith(prefix) || !validateContentMessage(body)) throw new PilotClientError('invalid_configuration');
-    const machineResult = body.type === 'delivery.result' && body.response.type === 'response' && (['instance.telemetry', 'project.icon'].includes(body.response.operation) || FILE_OPERATIONS.has(body.response.operation));
+    const machineResult = body.type === 'delivery.result' && body.response.type === 'response' && (['instance.telemetry', 'project.icon'].includes(body.response.operation) || FILE_OPERATIONS.has(body.response.operation) || body.response.operation === REFLECTION_OPERATION);
     if (machineResult && !beforeSend) throw new PilotClientError('invalid_configuration');
     const requestId = 'request_id' in body ? String(body.request_id) : createOpaqueId('request', this.dependencies);
     return this.sendRequest('POST', path, body, { authenticated: true, producer: true, signal, beforeSend }, 'producer', requestId);

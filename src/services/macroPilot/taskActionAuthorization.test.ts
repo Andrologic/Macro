@@ -11,3 +11,9 @@ test('task mutations reject supervise-only and legacy execute-before responses',
     expect(() => assertTaskActionPermissions(required, { granted_permissions: ['respond', 'approve_tools'] })).not.toThrow();
   }
 });
+test('reflection reads require supervise independently of respond or capability possession',() => {
+  const required=taskActionPermissions({ operation: 'conversation.reflections.read' } as ContentRequest);
+  expect(required).toEqual(['supervise']);
+  expect(() => assertTaskActionPermissions(required,{ granted_permissions: ['respond'] })).toThrow('forbidden');
+  expect(() => assertTaskActionPermissions(required,{ granted_permissions: ['supervise'] })).not.toThrow();
+});

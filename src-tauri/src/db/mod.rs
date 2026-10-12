@@ -10,6 +10,7 @@ pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;
 pub mod pilot_files;
+pub mod pilot_reflections;
 pub mod pilot_tools;
 pub mod repository;
 pub mod tool_invocations;

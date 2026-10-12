@@ -1,3 +1,4 @@
+import { REFLECTION_CAPABILITY, REFLECTION_OPERATION } from './conversationReflections';
 import { FILE_CAPABILITIES, FILE_OPERATIONS } from './attachmentFilesHost';
 import { MACHINE_CAPABILITIES } from './machineResources';
 import { taskActionPermissions, assertTaskActionPermissions } from './taskActionAuthorization';
@@ -222,12 +223,14 @@ export class PilotRuntime {
     let models = Boolean(this.ports.providers);
     let machines = true;
     let files = host.filesAvailable();
+    let reflections = host.reflectionsAvailable();
     let advertised = false;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
         if (signal.aborted) break;
         advertised = true;
+        host.enableReflections(extended && reflections && conversations);
         host.enableMachines(extended && machines);
         host.enableFiles(extended && files ? FILE_CAPABILITIES : []);
         if (reliability) host.enableReliability();
@@ -241,7 +244,7 @@ export class PilotRuntime {
           const data = object(authorization.data);
           if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
           assertTaskActionPermissions(requiredPermissions, data);
-          if (FILE_OPERATIONS.has(delivery.request.operation) && (!delivery.authority_binding || data.authority_binding !== delivery.authority_binding)) throw new PilotError('forbidden');
+          if ((FILE_OPERATIONS.has(delivery.request.operation) || delivery.request.operation === REFLECTION_OPERATION) && (!delivery.authority_binding || data.authority_binding !== delivery.authority_binding)) throw new PilotError('forbidden');
           return data.execute_before;
         };
         const result = await host.handle(response.data, authorizeContent);
@@ -256,14 +259,16 @@ export class PilotRuntime {
               ['instance.telemetry', 'project.icon'].includes((response.data as ContentDelivery).request.operation)
                 ? () => host.validateMachineEmission(response.data as ContentDelivery, result, authorizeContent)
                 : FILE_OPERATIONS.has((response.data as ContentDelivery).request.operation)
-                  ? () => host.validateFileEmission(response.data as ContentDelivery, result, authorizeContent) : undefined); break;
+                  ? () => host.validateFileEmission(response.data as ContentDelivery, result, authorizeContent)
+                  : (response.data as ContentDelivery).request.operation === REFLECTION_OPERATION
+                    ? () => host.validateReflectionEmission(response.data as ContentDelivery,result,authorizeContent) : undefined); break;
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
         failures = 0;
       } catch (error) {
         if (signal.aborted) break;
         const status = object(error).status;
-        if (!advertised && extended && (status === 400 || status === 422)) { if (files) files = false; else if (machines) machines = false; else if (models) models = false; else if (interactions) interactions = false; else if (history) history = false; else if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
+        if (!advertised && extended && (status === 400 || status === 422)) { if (reflections) reflections = false; else if (files) files = false; else if (machines) machines = false; else if (models) models = false; else if (interactions) interactions = false; else if (history) history = false; else if (conversations) conversations = false; else if (reliability) reliability = false; else extended = false; continue; }
         this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal);
       }
     }

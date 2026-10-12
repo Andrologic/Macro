@@ -50,6 +50,11 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
   if (command === 'db_conversation_metadata') return conversations.map(c => ({ conversation_id: c.id, revision: 1, archived: false, response_revision: 0, read_revision: 0, pending_tool: false, question_message_id: null }));
   if (command === 'db_list_conversations') return structuredClone(conversations);
+  if (command === 'db_get_pilot_reflection_message') {
+    const message=messages.find(m => m.id === args.messageId && m.conversation_id === args.conversationId && m.role === 'assistant');
+    const target=conversations.find(c => c.id === args.conversationId);
+    return message && target ? { state: 'ready',message: { id: message.id,conversation_id: message.conversation_id,turn_id: message.turn_id ?? null,role: 'assistant',content: message.content,has_hidden_context: Boolean(message.hidden_context),tool_traces: [],conversation_scope_mode: target.scope_mode,conversation_task_id: target.task_id } } : { state: 'unavailable',message: null };
+  }
   if (command === 'db_get_conversation') return structuredClone(conversations.find(c => c.id === args.id) ?? null);
   if (command === 'db_list_messages') { if (messagesUnavailable) throw 'unavailable'; await messageWait; return structuredClone(messages.filter(message => message.conversation_id === args.conversationId)); }
   if (command === 'pilot_tool_traces_list') return { revision: 1, traces: messages.filter(message => message.conversation_id === args.conversationId && message.role === 'assistant').flatMap(message =>
@@ -172,7 +177,7 @@ function harness() {
       if (path.endsWith('/authorize')) {
         onAuthorize?.();
         if (revoked) return json({ code: 'session_revoked' }, 401);
-        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + 5000).toISOString(), ...(body.required_permissions ? { granted_permissions: body.required_permissions } : {}) });
+        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + 5000).toISOString(), ...(body.required_permissions ? { granted_permissions: body.required_permissions } : {}),...(body.required_permissions && requests.some(item => item.path.endsWith('/poll') && (item.body.capabilities as string[] | undefined)?.includes('conversation-reflections-1')) ? { authority_binding: 'grant:reflections' } : {}) });
       }
       if (path.endsWith('/result')) {
         results.push(structuredClone(body) as unknown as ContentDeliveryResult);
@@ -190,7 +195,7 @@ function harness() {
   });
   const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   async function deliver(input: ContentRequest, source = 'session:mobile') {
-    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
     const start = results.length; queue.push(delivery); wake?.();
     await until(() => results.slice(start).some(result => result.request_id === input.request_id));
@@ -714,4 +719,26 @@ it('routes negotiated telemetry and bounded project logos through native IPC wit
       expect(authorizations.every(item => JSON.stringify(item.body.required_permissions) === JSON.stringify(['supervise']))).toBe(true);
     }
   } finally { await h.runtime.stop(); }
+});
+
+it('routes real visible reflection history through negotiated runtime, supervise and minimal native IPC',async () => {
+  const runtimeWindow=window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  const oldRuntime=runtimeWindow.__TAURI_INTERNALS__;
+  runtimeWindow.__TAURI_INTERNALS__={invoke:()=>{}};
+  messages[0]={...messages[0],role:'assistant',turn_id:'turn:visible',content:'<think>Réflexion réelle é🙂</think>Réponse finale',hidden_context:null,provider_turn_state_json:'{"private":"never-export"}'};
+  const { mapDbConversationToConversation }=await import('../chatDbMappers');
+  const before=useChatStore.getState();useChatStore.setState({conversations:[mapDbConversationToConversation(conversation)]});
+  const h=harness();
+  try {
+    await h.runtime.start();
+    const input=request('conversation.reflections.read',{ref:{instance_id:instanceId,kind:'conversation',conversation_id:conversation.id},message_id:messages[0].id});
+    expect(await h.deliver(input)).toMatchObject({type:'response',result:{message_id:messages[0].id,turn_id:'turn:visible',source:'history',items:[{text:'Réflexion réelle é🙂'}]}});
+    const polls=h.requests.filter(item=>item.path.endsWith('/poll')&&item.path.includes('/v2/'));
+    expect(polls.some(item=>(item.body.capabilities as string[])?.includes('conversation-reflections-1'))).toBe(true);
+    const auth=h.requests.filter(item=>item.path.endsWith(`/${input.request_id}/authorize`));
+    expect(auth.length).toBeGreaterThanOrEqual(3);expect(auth.every(item=>JSON.stringify(item.body.required_permissions)==='["supervise"]')).toBe(true);
+    expect(nativeCalls.filter(command=>command==='db_get_pilot_reflection_message').length).toBeGreaterThanOrEqual(3);
+    expect(nativeCalls).not.toContain('db_get_message');expect(nativeCalls).not.toContain('db_list_messages');
+    expect(JSON.stringify(h.results)).not.toContain('never-export');
+  } finally {await h.runtime.stop();runtimeWindow.__TAURI_INTERNALS__=oldRuntime;useChatStore.setState(before,true);}
 });

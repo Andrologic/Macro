@@ -791,6 +791,7 @@ pub fn run() {
             commands::conversation_management::db_conversation_action,
             commands::conversation_management::db_conversation_import_archives,
             commands::conversation_management::db_get_message,
+            commands::conversation_management::db_get_pilot_reflection_message,
             commands::conversation_management::db_list_messages_bounded,
             commands::db_get_chat_snapshot,
             commands::db_get_chat_bootstrap_snapshot,

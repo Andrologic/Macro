@@ -52,6 +52,10 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::db::ConversationActionInput>("db")?;
     registry.add::<ipc_contracts::db::ConversationActionResult>("db")?;
     registry.add::<ipc_contracts::db::Message>("db")?;
+    registry.add::<ipc_contracts::db::PilotReflectionMessage>("db")?;
+    registry.add::<ipc_contracts::db::PilotReflectionMessageRead>("db")?;
+    registry.add::<ipc_contracts::db::PilotReflectionToolAnchor>("db")?;
+    registry.add::<ipc_contracts::db::PilotReflectionToolStatus>("db")?;
     registry.add::<ipc_contracts::db::MessageSearchResult>("db")?;
     registry.add::<ipc_contracts::db::MessageSearchPage>("db")?;
     registry.add::<ipc_contracts::db::ConversationCompactionStateRecord>("db")?;

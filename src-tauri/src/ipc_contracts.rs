@@ -34,6 +34,10 @@ pub mod db {
         UpsertConversationToolboxStateInput, UpsertProjectContextStateInput,
         UpsertSessionContextStateInput,
     };
+    pub use crate::db::pilot_reflections::{
+        PilotReflectionMessage, PilotReflectionMessageRead, PilotReflectionToolAnchor,
+        PilotReflectionToolStatus,
+    };
     pub use crate::db::tool_invocations::{
         CompleteToolInvocationInput, RecordToolInvocationInput, RecordToolInvocationResult,
         ToolEffectClass, ToolInvocation, ToolInvocationIdentity, ToolInvocationStatus,

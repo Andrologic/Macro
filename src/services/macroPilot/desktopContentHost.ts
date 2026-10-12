@@ -1,3 +1,4 @@
+import { desktopConversationReflections } from './desktopConversationReflections';
 import { desktopAttachmentFiles } from './desktopAttachmentFiles';
 import { desktopMachineResources } from './desktopMachineResources';
 import { desktopConversationInteractions } from './desktopConversationInteractions';
@@ -90,6 +91,7 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: managerKey, expectedValueJson: previous, valueJson: next })).applied } });
   return new ContentHost({ accountId, instanceId, signal, conversations, conversationManagement,
     files: desktopAttachmentFiles({ instanceId, workspaceId, ports: options.ports, conversations: managementCaptures, signal, validateSendTarget: (ref, revision) => conversationManagement.validateSendTarget(ref, revision, policy) }),
+    reflections: desktopConversationReflections({ instanceId,workspaceId,ports: options.ports,signal }),
     machines: desktopMachineResources(instanceId, workspaceId, options.ports),
     interactions: { source: desktopConversationInteractions(instanceId, managementCaptures, options.ports, signal), storage: {
       load: async () => (await dbGetAppSetting(`${key}:interactions:1`))?.value_json ?? null,

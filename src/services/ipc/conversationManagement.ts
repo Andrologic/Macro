@@ -11,3 +11,10 @@ export const getMessage = (messageId: string) => invoke<DbMessage | null>('db_ge
 export const listMessagesBounded = (conversationId: string) => invoke<DbMessage[]>('db_list_messages_bounded', { conversationId });
 
 export const conversationSetArchives = (ids: readonly string[], archived: boolean) => invoke<void>('db_conversation_set_archives', { ids, archived });
+
+export type { PilotReflectionMessage, PilotReflectionMessageRead, PilotReflectionToolAnchor } from '../../types/generated/ipc';
+import type { PilotReflectionMessageRead } from '../../types/generated/ipc';
+
+/** Native reader preserves raw content; questionnaire presentation happens in projection. */
+export const getPilotReflectionMessage = (conversationId: string, messageId: string) =>
+  invoke<PilotReflectionMessageRead>('db_get_pilot_reflection_message', { conversationId, messageId });
