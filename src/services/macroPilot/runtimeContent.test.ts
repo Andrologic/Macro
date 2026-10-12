@@ -138,6 +138,7 @@ function harness() {
   let wake: (() => void) | undefined;
   let rejectReliability = false;
   let acknowledgedLegacyPoll = false;
+  let acknowledgeIdlePoll = false;
   let loseResult = false;
   let lostResultDelay = 0;
   let loseEvent = false;
@@ -170,6 +171,7 @@ function harness() {
         if (path.includes('/v1/')) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); throw Error('aborted'); }
         if (rejectReliability && (body.capabilities as string[] | undefined)?.includes('network-reliability-1')) return json({ code: 'validation_failed' }, 422);
         if (rejectReliability && !acknowledgedLegacyPoll) { acknowledgedLegacyPoll = true; return new Response(null, { status: 204 }); }
+        if (acknowledgeIdlePoll) { acknowledgeIdlePoll = false; return new Response(null, { status: 204 }); }
         while (!queue.length && !signal?.aborted) await new Promise<void>(resolve => { wake = resolve; signal?.addEventListener('abort', () => resolve(), { once: true }); });
         if (signal?.aborted) throw Error('aborted');
         return json(queue.shift()!);
@@ -204,6 +206,7 @@ function harness() {
   }
   return { client, runtime, deliver, results, events, requests, values,
     legacyRelay: () => { rejectReliability = true; },
+    acceptIdlePoll: () => { acknowledgeIdlePoll = true; },
     waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
     waitEvents: (wait: Promise<void>) => { eventWait = wait; },
     loseResult: (delay = 0) => { loseResult = true; lostResultDelay = delay; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
@@ -747,12 +750,12 @@ it('keeps demand-only producers idle across observation, stop and restart withou
   const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
   const oldRuntime = runtimeWindow.__TAURI_INTERNALS__;
   runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
-  const h = harness();
+  const h = harness(); h.acceptIdlePoll();
   const metadataCalls = () => nativeCalls.filter(command => command === 'db_conversation_metadata').length;
   const demandCalls = () => nativeCalls.filter(command => /^(?:host_telemetry_read|workspace_resolve_project_icons|db_get_pilot_reflection_message|pilot_files_)/.test(command));
   try {
     await h.runtime.start();
-    await until(() => h.requests.some(item => item.path.includes('/v2/') && item.path.endsWith('/poll')));
+    await until(() => h.requests.filter(item => item.path.includes('/v2/') && item.path.endsWith('/poll')).length >= 2);
     const offer = h.requests.find(item => item.path.includes('/v2/') && item.path.endsWith('/poll'))!.body.capabilities;
     expect(offer).toEqual(expect.arrayContaining(['host-telemetry-1', 'project-icons-1', 'conversation-reflections-1', 'conversation-files-1']));
     const baseline = metadataCalls();
