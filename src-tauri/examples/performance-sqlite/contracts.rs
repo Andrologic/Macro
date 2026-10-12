@@ -12,13 +12,13 @@ fn input(conversation: &str, id: &str, content: &str) -> CreateMessageInput {
         role: "assistant".into(),
         content: content.into(),
         token_count: Some(37),
-        tool_traces_json: Some("[]".into()),
+        tool_traces_json: Some(r#"[{"synthetic":"tool"}]"#.into()),
         hidden_context: Some("Contexte synthétique".into()),
-        provider_input_items_json: Some("[]".into()),
-        provider_turn_state_json: Some("{}".into()),
-        context_refs_json: Some("[]".into()),
+        provider_input_items_json: Some(r#"[{"synthetic":"input"}]"#.into()),
+        provider_turn_state_json: Some(r#"{"synthetic":"state"}"#.into()),
+        context_refs_json: Some(r#"[{"synthetic":"refs"}]"#.into()),
         completion_reason: Some("stop".into()),
-        generation_attempts_json: Some("[]".into()),
+        generation_attempts_json: Some(r#"[{"synthetic":"attempt"}]"#.into()),
     }
 }
 async fn fts_count(pool: &SqlitePool, term: &str) -> Result<i64> {

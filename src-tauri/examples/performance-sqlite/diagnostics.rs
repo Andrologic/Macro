@@ -23,24 +23,6 @@ fn sql(function: &str, index: usize) -> Result<&'static str> {
         .ok_or_else(|| "Diagnostic SQL literal missing".into())
 }
 
-fn map(row: &sqlx::sqlite::SqliteRow) -> Message {
-    Message {
-        id: row.get("id"),
-        conversation_id: row.get("conversation_id"),
-        turn_id: row.get("turn_id"),
-        role: row.get("role"),
-        content: row.get("content"),
-        created_at: row.get("created_at"),
-        token_count: row.get("token_count"),
-        tool_traces_json: row.get("tool_traces_json"),
-        hidden_context: row.get("hidden_context"),
-        provider_input_items_json: row.get("provider_input_items_json"),
-        provider_turn_state_json: row.get("provider_turn_state_json"),
-        context_refs_json: row.get("context_refs_json"),
-        completion_reason: row.get("completion_reason"),
-        generation_attempts_json: row.get("generation_attempts_json"),
-    }
-}
 fn ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
@@ -145,7 +127,10 @@ pub(super) async fn reads(pool: &SqlitePool, id: &str, expected: usize) -> Resul
             .await?;
         keep(&mut fetch, i, start);
         let start = Instant::now();
-        let messages: Vec<_> = rows.into_iter().map(|row| map(&row)).collect();
+        let messages: Vec<_> = rows
+            .into_iter()
+            .map(|row| repository::map_list_message_row(&row))
+            .collect();
         keep(&mut convert, i, start);
         if messages.len() != expected {
             return Err("Diagnostic read count mismatch".into());

@@ -857,25 +857,31 @@ async fn list_messages_with_connection(
 
     let messages = rows
         .into_iter()
-        .map(|row| Message {
-            id: row.get("id"),
-            conversation_id: row.get("conversation_id"),
-            turn_id: row.get("turn_id"),
-            role: row.get("role"),
-            content: row.get("content"),
-            created_at: row.get("created_at"),
-            token_count: row.get("token_count"),
-            tool_traces_json: row.get("tool_traces_json"),
-            hidden_context: row.get("hidden_context"),
-            provider_input_items_json: row.get("provider_input_items_json"),
-            provider_turn_state_json: row.get("provider_turn_state_json"),
-            context_refs_json: row.get("context_refs_json"),
-            completion_reason: row.get("completion_reason"),
-            generation_attempts_json: row.get("generation_attempts_json"),
-        })
+        .map(|row| map_list_message_row(&row))
         .collect();
 
     Ok(messages)
+}
+
+// Ordinals belong only to the explicit 14-column list projection above.
+// Do not use this mapper for SELECT * or a differently ordered projection.
+pub(crate) fn map_list_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
+    Message {
+        id: row.get(0),
+        conversation_id: row.get(1),
+        turn_id: row.get(2),
+        role: row.get(3),
+        content: row.get(4),
+        created_at: row.get(5),
+        token_count: row.get(6),
+        tool_traces_json: row.get(7),
+        hidden_context: row.get(8),
+        provider_input_items_json: row.get(9),
+        provider_turn_state_json: row.get(10),
+        context_refs_json: row.get(11),
+        completion_reason: row.get(12),
+        generation_attempts_json: row.get(13),
+    }
 }
 
 /// The remote window has a conservative budget before any transcript strings
@@ -3600,6 +3606,67 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
         (temp_dir, pool)
+    }
+
+    #[tokio::test]
+    async fn list_message_projection_matches_named_decode_with_ties_and_nullable_fields() {
+        let (_directory, pool) = test_pool().await;
+        seed_search_conversation(&pool, "projection-chat", "Synthetic projection").await;
+        for id in ["tie-z", "tie-a", "early"] {
+            let populated = id != "tie-a";
+            let value =
+                |field: &str| populated.then(|| format!(r#"{{"synthetic":"{field}-{id}"}}"#));
+            create_message(
+                &pool,
+                CreateMessageInput {
+                    id: Some(id.into()),
+                    conversation_id: "projection-chat".into(),
+                    turn_id: populated.then(|| format!("turn-{id}")),
+                    role: "assistant".into(),
+                    content: format!("Contenu é界🙂 {id}"),
+                    token_count: populated.then_some(37),
+                    tool_traces_json: value("tools"),
+                    hidden_context: value("hidden"),
+                    provider_input_items_json: value("inputs"),
+                    provider_turn_state_json: value("state"),
+                    context_refs_json: value("refs"),
+                    completion_reason: populated.then(|| "stop".into()),
+                    generation_attempts_json: value("attempts"),
+                },
+            )
+            .await
+            .unwrap();
+            sqlx::query("UPDATE messages SET created_at = ? WHERE id = ?")
+                .bind(if id == "early" {
+                    "2026-01-01"
+                } else {
+                    "2026-01-02"
+                })
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // Independent named decoding also covers schema column order different
+        // from a later explicit projection. The optimized mapper is not reused.
+        let named = sqlx::query(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+        )
+        .bind("projection-chat")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let reference: Vec<_> = named.iter().map(map_message_row).collect();
+        let listed = list_messages(&pool, "projection-chat").await.unwrap();
+        assert_eq!(
+            listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["early", "tie-a", "tie-z"]
+        );
+        assert_eq!(
+            serde_json::to_value(listed).unwrap(),
+            serde_json::to_value(reference).unwrap()
+        );
+        pool.close().await;
     }
 
     #[tokio::test]
