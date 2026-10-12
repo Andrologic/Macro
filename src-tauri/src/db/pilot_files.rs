@@ -1603,6 +1603,11 @@ fn validate_gif(b: &[u8]) -> Result<()> {
                     return invalid();
                 }
                 p += 1;
+                // Image data needs a nonempty first sub-block; a terminator
+                // alone is not an encoded frame. Extensions may be empty.
+                if p >= b.len() || b[p] == 0 {
+                    return invalid();
+                }
                 gif_blocks(b, &mut p)?;
                 images += 1;
                 if images > 32 {
@@ -2538,6 +2543,59 @@ mod tests {
         assert_eq!(
             prepare_send(&p, i, &c).await.unwrap_err(),
             "integrity_failed"
+        );
+    }
+
+    #[test]
+    fn gif_frames_require_image_payload() {
+        let empty = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x00;";
+        let valid = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00;";
+        assert_eq!(validate_gif(empty).unwrap_err(), "validation_failed");
+        assert!(validate_gif(valid).is_ok());
+        for length in 0..valid.len() {
+            assert!(validate_gif(&valid[..length]).is_err());
+        }
+    }
+    #[tokio::test]
+    async fn empty_gif_cannot_be_finalized_or_associated() {
+        let (p, s, time) = fixture().await;
+        let c = || time.load(Ordering::SeqCst);
+        let bytes = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x00;";
+        let mut input = b(&s, "empty-gif", "batch", bytes);
+        input.mime_type = "image/gif".into();
+        input.file_name = "empty.gif".into();
+        let begun = begin(&p, input, &c).await.unwrap();
+        chunk(
+            &p,
+            PilotFileChunkInput {
+                scope: s.clone(),
+                execute_before: d(),
+                transfer_id: begun.transfer_id.clone(),
+                offset_bytes: 0,
+                data_base64: STANDARD.encode(bytes),
+                sha256: hash(bytes),
+            },
+            &c,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            finalize(&p, transfer_input(&s, &begun.transfer_id), &c)
+                .await
+                .unwrap_err(),
+            "validation_failed"
+        );
+        let receipt = status(&p, transfer_input(&s, &begun.transfer_id), &c)
+            .await
+            .unwrap();
+        assert_eq!(receipt.state, PilotFileState::Receiving);
+        assert!(receipt.attachment_id.is_none());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pilot_message_attachments")
+                .fetch_one(&p)
+                .await
+                .unwrap(),
+            0
         );
     }
     fn synthetic_png() -> Vec<u8> {
