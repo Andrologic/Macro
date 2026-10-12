@@ -1,0 +1,22 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "conversation.send.attachments",
+  "result": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "intent_id": "send-demo",
+    "state": "message_persisted",
+    "user_message_id": "message-demo",
+    "assistant_message_id": null,
+    "attachment_ids": [
+      "attachment-demo"
+    ],
+    "context_state": "ready"
+  }
+}

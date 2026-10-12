@@ -14,6 +14,7 @@ for (const resource of registry.resources) {
 }
 const shape = ajv.getSchema(registry.root);
 const protectedPath = (path) => path && /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.git|\.ssh|credentials\.json|id_rsa|id_ed25519)(?:\/|$)|\.(?:key|p12)$/i.test(path);
+const fileCapability = operation => operation.startsWith('attachment.') ? 'attachment-transfer-1' : ['conversation.send.attachments','conversation.send.status'].includes(operation) ? 'conversation-attachments-1' : ['conversation.files.list','conversation.file.capture','conversation.file.read'].includes(operation) ? 'conversation-files-1' : null;
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 
 /** Shape and within-envelope invariants. Authorization and freshness require state. */
@@ -95,6 +96,39 @@ export function validateMessage(message) {
 
       }
     }
+  }
+  if (message.type === 'delivery') {
+    const capability = fileCapability(message.request.operation);
+    reject(capability && (!(message.capabilities ?? []).includes(capability) || !message.authority_binding), 'unattested file authority');
+    reject(!capability && 'authority_binding' in message, 'legacy delivery authority extension');
+  }
+  if (message.type === 'request' && message.operation === 'attachment.chunk') {
+    const b = message.body.data_base64;
+    const size = b.length / 4 * 3 - (b.endsWith('==') ? 2 : b.endsWith('=') ? 1 : 0);
+    reject(size < 1 || size > 65536 || btoa(atob(b)) !== b, 'attachment fragment bounds');
+  }
+  if (message.type === 'response' && message.operation.startsWith('attachment.')) {
+    const r = message.result;
+    reject(r.received_bytes > r.total_bytes, 'transfer progress exceeds total');
+    reject(['finalized','attached'].includes(r.state) ? r.attachment_id === null || r.received_bytes !== r.total_bytes : r.attachment_id !== null, 'transfer receipt state');
+    reject(Date.parse(r.expires_at) - Date.parse(r.observed_at) > 900000, 'transfer lifetime');
+  }
+  if (message.type === 'response' && message.operation === 'conversation.file.capture') {
+    const r = message.result;
+    reject(Date.parse(r.expires_at) <= Date.parse(r.observed_at) || Date.parse(r.expires_at) - Date.parse(r.observed_at) > 300000, 'file capture lifetime');
+    reject(r.content_state === 'available' ? r.total_bytes === null || r.sha256 === null || r.mime_type === null : r.total_bytes !== null || r.sha256 !== null || r.mime_type !== null, 'file capture availability');
+  }
+  if (message.type === 'response' && message.operation === 'conversation.file.read') {
+    const r = message.result;
+    if (r.content_state === 'available') {
+      reject(r.data_base64 === null || r.total_bytes === null || r.sha256 === null, 'missing file bytes');
+      if (r.data_base64 !== null && r.total_bytes !== null) {
+        const b = r.data_base64;
+        const size = b.length / 4 * 3 - (b.endsWith('==') ? 2 : b.endsWith('=') ? 1 : 0);
+        reject(size > 65536 || btoa(atob(b)) !== b || r.offset_bytes + size > r.total_bytes, 'file fragment bounds');
+        reject(r.next_offset_bytes !== (r.offset_bytes + size < r.total_bytes ? r.offset_bytes + size : null), 'file fragment cursor');
+      }
+    } else reject(r.data_base64 !== null || r.total_bytes !== null || r.sha256 !== null || r.next_offset_bytes !== null, 'unavailable file bytes');
   }
   if (message.type === 'delivery.result') {
     reject(message.request_id !== message.response.request_id, 'result correlation mismatch');
@@ -202,7 +236,7 @@ export function validateExchange(request, response) {
       const body = request.body;
       const result = response.result;
       const expectedSnapshot = body.snapshot_id ?? body.continuation?.snapshot_id;
-      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
+      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window', 'conversation.files.list', 'conversation.file.read'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
       if (request.operation === 'conversation.window') {
         reject((body.direction ?? null) !== (result.page.direction ?? null), 'window direction mismatch');
@@ -231,10 +265,19 @@ export function validateExchange(request, response) {
       if (request.operation === 'task.get') reject(['instance_id', 'workspace_id', 'task_id'].some(key => body.ref[key] !== result.ref[key]), 'task reference mismatch');
       if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');
       if (['task.artifact.read', 'conversation.tool.read', 'conversations.catalog', 'conversations.search', 'conversation.window'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
-      if ('expected_revision' in body) reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
+      if ('expected_revision' in body && request.operation !== 'conversation.send.attachments') reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
       if (request.operation === 'sessions.list') reject(body.include_last_seen !== true && result.items.some(item => 'last_seen_at' in item), 'unrequested activity projection');
       if (request.operation === 'instance.telemetry') reject(result.instance_id !== body.instance_id, 'telemetry instance mismatch');
       if (request.operation === 'project.icon') reject(Object.keys(body.ref).some(key => body.ref[key] !== result.ref[key]), 'icon project mismatch');
+      if (fileCapability(request.operation) && request.operation !== 'conversation.files.list') {
+        reject(Object.keys(body.ref).some(key => result.ref[key] !== body.ref[key]) || Object.keys(body.ref).length !== Object.keys(result.ref).length, 'file reference mismatch');
+        if ('transfer_id' in body) reject(body.transfer_id !== result.transfer_id, 'transfer identity mismatch');
+        if ('intent_id' in body) reject(body.intent_id !== result.intent_id, 'file intent mismatch');
+        if ('file_id' in body) reject(body.file_id !== result.file_id, 'file identity mismatch');
+        if ('snapshot_id' in body) reject(body.snapshot_id !== result.snapshot_id, 'file capture identity mismatch');
+        if ('offset_bytes' in body && request.operation === 'conversation.file.read') reject(body.offset_bytes !== result.offset_bytes, 'file offset mismatch');
+        if (request.operation === 'conversation.send.attachments') reject(JSON.stringify(body.attachment_ids) !== JSON.stringify(result.attachment_ids), 'attachment selection mismatch');
+      }
       if (request.operation === 'account.get') reject(result.account_id !== request.account_id, 'account result mismatch');
     }
   } else if (request.type === 'events.request') {
@@ -269,3 +312,39 @@ export function validatePageContinuation(previous, next) {
 }
 
 export const isConversationOperation = operation => ['conversations.catalog', 'conversations.search', 'conversation.window', 'conversation.acknowledge', 'conversation.action', 'conversation.create', 'conversation.interactions', 'conversation.interact'].includes(operation);
+
+/** Synchronous validators prove shape and correlation only. Call this async
+ * check before accepting or emitting a complete resource with embedded bytes.
+ * Uses Web Crypto and the same API in browsers, Bun and Node with Web Crypto. */
+export async function validateResourceIntegrity(message) {
+  const validation = validateMessage(message);
+  if (!validation.valid) return validation;
+  const payload = message.type === 'delivery.result' ? message.response : message.type === 'delivery' ? message.request : message;
+  let expected, encoded;
+  if (payload.type === 'response' && payload.operation === 'project.icon' && payload.result.icon) {
+    expected = payload.result.icon.sha256; encoded = payload.result.icon.data_base64;
+  } else if (payload.type === 'request' && payload.operation === 'attachment.chunk') {
+    expected = payload.body.sha256; encoded = payload.body.data_base64;
+  } else if (payload.type === 'response' && payload.operation === 'conversation.file.read' && payload.result.content_state === 'available' &&
+    payload.result.offset_bytes === 0 && payload.result.next_offset_bytes === null) {
+    expected = payload.result.sha256; encoded = payload.result.data_base64;
+  }
+  if (encoded === undefined) return validation;
+  try {
+    const raw = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+    const actual = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', raw)), byte => byte.toString(16).padStart(2, '0')).join('');
+    return actual === expected ? validation : { valid: false, errors: ['resource sha256 mismatch'] };
+  } catch { return { valid: false, errors: ['resource integrity unavailable'] }; }
+}
+
+/** After collecting every bounded file fragment, verify the hash of the full
+ * exported bytes before display or saving. The capture must already have passed
+ * exchange, current authorization, scope and freshness checks. */
+export async function validateCapturedFileBytes(capture, raw) {
+  if (!capture || capture.content_state !== 'available' || !(raw instanceof Uint8Array) || raw.length > 2097152 ||
+    capture.total_bytes !== raw.length || !/^[a-f0-9]{64}$/.test(capture.sha256)) return false;
+  try {
+    const actual = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new Uint8Array(raw))), byte => byte.toString(16).padStart(2, '0')).join('');
+    return actual === capture.sha256;
+  } catch { return false; }
+}

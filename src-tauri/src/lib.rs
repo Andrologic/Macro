@@ -95,6 +95,15 @@ pub mod commands;
 pub mod config;
 pub mod core;
 mod db;
+/// Native file DTOs exposed for the checked IPC generator.
+pub mod pilot_file_contracts {
+    pub use crate::db::pilot_files::{
+        PilotAttachmentMetadata, PilotFileAuthorizeInput, PilotFileBeginInput, PilotFileChunkInput,
+        PilotFileGuard, PilotFileRead, PilotFileReadInput, PilotFileReceipt, PilotFileSource,
+        PilotFileTransferInput, PilotInspectAttachmentsInput, PilotPrepareSendInput,
+        PilotPreparedSend, PilotSendMarkInput, PilotSendReadInput, PilotSendReceipt,
+    };
+}
 mod dev_overrides;
 mod diagnostics;
 pub mod host_telemetry;
@@ -811,6 +820,19 @@ pub fn run() {
             commands::goal_audit::db_apply_conversation_goal_verdict,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::pilot_files::pilot_files_inspect_attachments,
+            commands::pilot_files::db_pilot_message_images,
+            commands::pilot_files::pilot_files_authorize,
+            commands::pilot_files::pilot_files_begin,
+            commands::pilot_files::pilot_files_chunk,
+            commands::pilot_files::pilot_files_status,
+            commands::pilot_files::pilot_files_finalize,
+            commands::pilot_files::pilot_files_abort,
+            commands::pilot_files::pilot_files_prepare_send,
+            commands::pilot_files::pilot_files_send_read,
+            commands::pilot_files::pilot_files_send_mark,
+            commands::pilot_files::pilot_files_list,
+            commands::pilot_files::pilot_files_read,
             commands::pilot_tools::pilot_tool_traces_list,
             commands::pilot_tools::pilot_tool_trace_read,
             commands::db_get_conversation_source_snapshot,
@@ -1187,5 +1209,47 @@ mod frontend_log_tests {
         );
 
         assert!(!source.contains(removed_command));
+    }
+}
+
+// Reuse the canonical generator in the existing test target when disk space
+// cannot accommodate the additional static library and desktop bundle link.
+#[cfg(test)]
+extern crate self as macro_lib;
+#[cfg(test)]
+mod ipc_artifact_generation {
+    mod artifacts {
+        include!("../examples/generate_config/artifacts.rs");
+    }
+    mod registry {
+        include!("../examples/generate_config/registry.rs");
+    }
+    mod register_ipc {
+        include!("../examples/generate_config/register_ipc.rs");
+    }
+
+    fn run(check: bool) {
+        let mut registry = registry::Registry::new(true);
+        register_ipc::register(&mut registry).expect("IPC roots");
+        let files = registry.artifacts(true).expect("IPC artifacts");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Repository root")
+            .join("src/types/generated/ipc");
+        artifacts::validate(&root, &files, check).expect("IPC artifact validation");
+        if !check {
+            artifacts::write(&root, &files).expect("IPC artifact generation");
+        }
+    }
+
+    #[test]
+    #[ignore = "Explicit generation writes the canonical IPC artifacts"]
+    fn generate_ipc_artifacts() {
+        run(false);
+    }
+
+    #[test]
+    fn check_ipc_artifacts() {
+        run(true);
     }
 }

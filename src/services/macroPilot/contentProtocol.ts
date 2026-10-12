@@ -1,4 +1,6 @@
 import {
+  validateResourceIntegrity as checkResourceIntegrity,
+  validateCapturedFileBytes as checkCapturedFileBytes,
   validateMessage as checkMessage,
   validateExchange as checkExchange,
   validatePageContinuation as checkPageContinuation,
@@ -55,3 +57,11 @@ export function validatePageContinuation(previous: unknown, next: unknown, conte
 }
 export const validateContentPageContinuation = (previous: unknown, next: unknown, context?: ContentPageContinuationContext): boolean =>
   validatePageContinuation(previous, next, context).valid;
+
+/** Required after synchronous validation for hash-bearing embedded resources. */
+export const validateContentIntegrity = async (value: unknown): Promise<boolean> => {
+  try { return (await checkResourceIntegrity(value)).valid; } catch { return false; }
+};
+export const validateContentFileBytes = async (capture: unknown, bytes: Uint8Array): Promise<boolean> => {
+  try { return await checkCapturedFileBytes(capture, bytes); } catch { return false; }
+};

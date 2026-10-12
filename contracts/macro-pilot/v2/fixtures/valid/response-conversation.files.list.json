@@ -1,0 +1,20 @@
+{
+  "contract_version": "2.0",
+  "type": "response",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "conversation.files.list",
+  "result": {
+    "page": {
+      "snapshot_id": "catalog-demo",
+      "revision": 1,
+      "observed_at": "2026-10-10T12:00:00.000Z",
+      "expires_at": "2026-10-10T12:05:00.000Z",
+      "export_policy_revision": "visible-1",
+      "offset": 0,
+      "total": 0,
+      "next_cursor": null
+    },
+    "items": []
+  }
+}

@@ -108,3 +108,12 @@ assert.equal(validateExchange(negotiate, await fixture('account-negotiated')).va
 assert.equal(validateExchange(events, await fixture('error-events')).valid, true);
 assert.equal(validateExchange(events, await fixture('error-unavailable')).valid, false);
 console.log(`A2: ${mismatches} independently valid wrong-operation pairs rejected without exceptions; account negotiation and event errors passed.`);
+
+// Shape-valid negative resources need the portable async integrity layer.
+const integrityHelper = await import('../v2/validate.mjs');
+const integrityRoot = new URL('../v2/fixtures/integrity-invalid/', import.meta.url);
+for (const name of await readdir(integrityRoot)) {
+  const fixture = JSON.parse(await readFile(new URL(name, integrityRoot), 'utf8'));
+  if (!integrityHelper.validateMessage(fixture).valid || (await integrityHelper.validateResourceIntegrity(fixture)).valid) throw new Error(`Integrity repro failed: ${name}`);
+}
+console.log('A2: shape-valid false resource digests rejected by shared async integrity helper.');

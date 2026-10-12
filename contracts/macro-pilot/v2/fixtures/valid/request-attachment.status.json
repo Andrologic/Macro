@@ -1,0 +1,15 @@
+{
+  "contract_version": "2.0",
+  "type": "request",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "attachment.status",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "kind": "conversation",
+      "conversation_id": "conversation-demo"
+    },
+    "transfer_id": "transfer-demo"
+  }
+}

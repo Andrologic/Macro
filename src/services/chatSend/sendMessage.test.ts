@@ -465,3 +465,39 @@ it('stop after saving image and text acknowledges that message without a second 
   expect(f.ports.projection.publishUser).toHaveBeenCalledTimes(1);
   expect(f.ports.stream.start).not.toHaveBeenCalled();
 });
+
+
+describe('Pilot attachment durable launch guards', () => {
+  it('awaits a preparation marker before any provider preparation', async () => {
+    const f = fixture();
+    const marker = deferred();
+    f.ports.preparation.authorizePilotEffect = async () => {};
+    const sending = sendMessage({ ...f.input, pilotTarget: { mode: 'Chat', actionToken: Symbol(),
+      beforeAssistantPrepare: () => marker.promise } }, f.snapshot, f.ports);
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(f.ports.stream.prepare).not.toHaveBeenCalled();
+    marker.resolve();
+    await sending;
+    expect(f.ports.stream.prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks asynchronous authorization before starting a prepared assistant', async () => {
+    const f = fixture();
+    let afterMarker = false;
+    f.ports.messages.beforeAssistantStart = async () => { afterMarker = true; };
+    f.ports.preparation.authorizePilotEffect = async () => { if (afterMarker) f.stop(); };
+    const result = await sendMessage({ ...f.input, pilotTarget: { mode: 'Chat', actionToken: Symbol() } }, f.snapshot, f.ports);
+    expect(result.assistantMessageId).toBeNull();
+    expect(f.ports.stream.start).not.toHaveBeenCalled();
+  });
+
+  it('rejects a different scoped model before user persistence', async () => {
+    const f = fixture('Implement');
+    f.ports.preparation.authorizePilotEffect = async () => {};
+    f.ports.configuration.selectScoped = () => ({ providerId: 'provider-1', modelId: 'changed-model', reasoningEffort: 'high' });
+    await expect(sendMessage({ ...f.input, pilotTarget: { taskId: 'task-1', actionToken: Symbol(),
+      expectedModel: { providerId: 'provider-1', modelId: 'model-1', reasoningEffort: 'high' } } }, f.snapshot, f.ports))
+      .rejects.toMatchObject({ message: 'The model changed before sending.' });
+    expect(f.createMessage).not.toHaveBeenCalled();
+  });
+});

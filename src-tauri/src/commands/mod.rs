@@ -7,6 +7,7 @@ pub mod goal_audit;
 pub mod goal_auditor_read;
 pub mod mcp;
 pub mod pilot_device;
+pub mod pilot_files;
 pub mod pilot_secrets;
 pub mod pilot_tools;
 pub mod repository_instructions;

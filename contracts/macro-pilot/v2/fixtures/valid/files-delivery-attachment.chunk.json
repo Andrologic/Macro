@@ -1,0 +1,31 @@
+{
+  "transport_version": "2.0",
+  "type": "delivery",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "instance_id": "instance-demo",
+  "source_session_id": "session-demo",
+  "expires_at": "2026-10-10T12:01:00.000Z",
+  "authority_binding": "authority-demo",
+  "capabilities": [
+    "attachment-transfer-1"
+  ],
+  "request": {
+    "contract_version": "2.0",
+    "type": "request",
+    "request_id": "request-demo",
+    "account_id": "account-demo",
+    "operation": "attachment.chunk",
+    "body": {
+      "ref": {
+        "instance_id": "instance-demo",
+        "kind": "conversation",
+        "conversation_id": "conversation-demo"
+      },
+      "transfer_id": "transfer-demo",
+      "offset_bytes": 0,
+      "data_base64": "aGVsbG8K",
+      "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    }
+  }
+}

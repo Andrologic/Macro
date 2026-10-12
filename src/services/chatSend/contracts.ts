@@ -34,6 +34,10 @@ export interface ChatSendInput {
   pilotTarget?: ({ mode: 'Chat'; taskId?: never } | { mode?: never; taskId: string }) & {
     actionToken: symbol;
     beforeEffect?: () => Promise<void>;
+    expectedModel?: { providerId: string; modelId: string; reasoningEffort: ReasoningEffort | null };
+    beforeAssistantPrepare?: () => Promise<void>;
+    beforeAssistantStart?: (assistant: ChatMessage) => Promise<void>;
+    onAssistantStarted?: (assistant: ChatMessage) => Promise<void>;
   };
   /** Resume preparation for this durable user message, without appending it again. */
   persistedUserMessage?: ChatMessage;
@@ -102,8 +106,8 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   messages: {
     persistence: ChatPersistenceAdapters;
     onUserPersisted?(message: ChatMessage): void;
-    beforeAssistantStart?(): void;
-    onAssistantStarted?(): void;
+    beforeAssistantStart?(assistant: ChatMessage): void | Promise<void>;
+    onAssistantStarted?(assistant: ChatMessage): void | Promise<void>;
     /** Must fail before writing text or acknowledging the composer. */
     saveImages?(messageId: string, images: SendImage[]): void;
     ensureLoaded(conversationId: string): Promise<void>;

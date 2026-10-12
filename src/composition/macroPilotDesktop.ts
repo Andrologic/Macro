@@ -1,3 +1,5 @@
+import { useCitationsStore } from '../stores/useCitationsStore';
+import { useConversationArchiveStore } from '../stores/useConversationArchiveStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
@@ -7,6 +9,8 @@ import { PilotRuntime } from '../services/macroPilot/runtime';
 import type { DesktopStorePorts } from '../services/macroPilot/desktopStorePorts';
 
 export const desktopStorePorts: DesktopStorePorts = {
+  citations: () => useCitationsStore.getState(),
+  archives: () => useConversationArchiveStore.getState(),
   providers: () => useProviderStore.getState(),
   app: () => useAppStore.getState(),
   chat: () => useChatStore.getState(),

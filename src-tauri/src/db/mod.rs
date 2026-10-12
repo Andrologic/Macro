@@ -9,6 +9,7 @@ pub mod goal_audit_children;
 pub mod goal_audit_transitions;
 #[allow(dead_code)]
 pub mod models;
+pub mod pilot_files;
 pub mod pilot_tools;
 pub mod repository;
 pub mod tool_invocations;
@@ -48,7 +49,7 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
-pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -74,6 +75,28 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let db_path = app_db_path(&app_dir);
 
     let pool = create_pool(&db_path).await?;
+    // A restarted producer must install a fresh authority generation locally.
+    sqlx::query("UPDATE pilot_file_authorities SET active = 0")
+        .execute(&pool)
+        .await?;
+    pilot_files::expire_staging(&pool, &pilot_files::system_now)
+        .await
+        .map_err(DbError::Validation)?;
+    let file_cleanup_pool = pool.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            if file_cleanup_pool.is_closed() {
+                break;
+            }
+            if let Err(error) =
+                pilot_files::expire_staging(&file_cleanup_pool, &pilot_files::system_now).await
+            {
+                tracing::warn!(%error,"Pilot staging expiry maintenance failed");
+            }
+        }
+    });
     agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
     conversation_goals::reconcile_audits_after_restart(&pool).await?;
     tool_invocations::reconcile_pending_after_restart(&pool).await?;
@@ -306,6 +329,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "011_conversation_management",
             include_str!("migrations/007_conversation_management.sql"),
         ),
+        (
+            12,
+            "012_pilot_files",
+            include_str!("migrations/012_pilot_files.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -369,6 +397,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&9) && !applied.contains(&8))
         || (applied.contains(&10) && !applied.contains(&5))
         || (applied.contains(&11) && !applied.contains(&10))
+        || (applied.contains(&12) && !applied.contains(&11))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),

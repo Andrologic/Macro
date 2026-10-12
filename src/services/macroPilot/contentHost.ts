@@ -1,3 +1,4 @@
+import { AttachmentFilesHost, FILE_OPERATIONS, type AttachmentFileSource } from './attachmentFilesHost';
 import { MachineResources, MACHINE_OPERATIONS, type MachineResourceSource } from './machineResources';
 import { ConversationInteractions, INTERACTION_OPERATIONS, type InteractionSource } from './conversationInteractions';
 import { CONVERSATION_OPERATIONS, type ConversationManager } from './conversationManager';
@@ -5,7 +6,7 @@ import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSour
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef, type CatalogObservation } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
-import { validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
+import { validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
 import type { KernelStorage } from './kernel';
 import { PilotError, stableJson } from './protocol';
 
@@ -32,6 +33,7 @@ export interface ContentHostDependencies {
   interactions?: { source: InteractionSource; storage: KernelStorage };
   taskCompletion?: { source: TaskCompletionSource; storage: KernelStorage };
   machines?: MachineResourceSource;
+  files?: AttachmentFileSource;
   now?: () => number;
 }
 const failure = (code: ContentError['code']): never => { throw new ContentHostError(code); };
@@ -55,13 +57,18 @@ export class ContentHost {
   private reliability = false;
   private machinesAdvertised = false;
   enableMachines(enabled: boolean): void { this.machinesAdvertised = enabled; if (!enabled) this.machines?.clear(); }
+  filesAvailable(): boolean { return this.files?.available() ?? false; }
+  enableFiles(capabilities: readonly string[]): void { this.files?.enable(capabilities); }
   enableReliability(): void { this.reliability = true; }
   private readonly taskCompletion?: TaskCompletionHost;
   private readonly interactions?: ConversationInteractions;
+  private readonly files?: AttachmentFilesHost;
+  private readonly fileEmissions = new WeakMap<object, string | null>();
   private readonly machines?: MachineResources;
   private readonly now: () => number;
   constructor(private readonly deps: ContentHostDependencies) {
     this.now = deps.now ?? Date.now;
+    if (deps.files) this.files = new AttachmentFilesHost(deps.files, this.now);
     if (deps.machines) this.machines = new MachineResources(deps.machines, this.now);
     if (deps.interactions) this.interactions = new ConversationInteractions({ ...deps.interactions, now: this.now, emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
     if (deps.taskCompletion) this.taskCompletion = new TaskCompletionHost({ ...deps.taskCompletion, now: this.now,
@@ -139,7 +146,7 @@ export class ContentHost {
     const policy = await this.deps.policy(); this.check();
     const key = await hash(policy); this.check();
     if (this.policyKey !== null && key !== this.policyKey) {
-      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.machines?.clear(); this.taskCompletion?.clear(); this.interactions?.clear();
+      this.deps.conversations.clear(); this.deps.conversationManagement?.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear(); this.taskCompletion?.clear(); this.interactions?.clear();
       const snapshots = [...this.snapshots.values()]; this.snapshots.clear();
       await Promise.all(snapshots.map(snapshot => this.deps.reviews.release(snapshot.info.snapshot_id).catch(() => undefined)));
     }
@@ -302,7 +309,7 @@ export class ContentHost {
       if (!validateContentMessage(input) || input.type !== 'delivery') failure('validation_failed');
       const delivery = input as ContentDelivery; const request = delivery.request;
       if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
-        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation))) failure('validation_failed');
+        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !CONVERSATION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !FILE_OPERATIONS.has(request.operation))) failure('validation_failed');
       if (MACHINE_OPERATIONS.has(request.operation) && !this.machinesAdvertised) failure('validation_failed');
       const body = request.body as { instance_id?: string; ref?: { instance_id: string } };
       if ((body.instance_id ?? body.ref?.instance_id) !== this.deps.instanceId) failure('validation_failed');
@@ -319,7 +326,15 @@ export class ContentHost {
         const readingPolicy = this.policyKey;
         let result: unknown;
         let machineContext: string | undefined;
-        if (request.operation === 'instance.telemetry' || request.operation === 'project.icon') {
+        if (FILE_OPERATIONS.has(request.operation)) {
+          if (!this.files) failure('content_unavailable');
+          await authorizeNow();
+          result = await this.files!.handle(delivery, await this.policy(), async () => {
+            deadline = 0; await authorizeNow(); await this.policy(); guard();
+            if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+            return new Date(deadline).toISOString();
+          });
+        } else if (request.operation === 'instance.telemetry' || request.operation === 'project.icon') {
           if (!this.machines) failure('content_unavailable');
           await authorizeNow();
           if (request.operation === 'instance.telemetry') {
@@ -395,6 +410,13 @@ export class ContentHost {
         }
         await this.policy(); guard();
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+        if (FILE_OPERATIONS.has(request.operation)) {
+          await this.files!.validateEmission(delivery, result, async () => {
+            deadline = 0; await authorizeNow(); await this.policy(); guard();
+            if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+            return new Date(deadline).toISOString();
+          });
+        }
         if (MACHINE_OPERATIONS.has(request.operation)) {
           deadline = 0; await authorizeNow();
           await this.policy(); guard();
@@ -403,9 +425,12 @@ export class ContentHost {
           if (Date.parse((result as { expires_at: string }).expires_at) <= this.now() || Date.parse((result as { observed_at: string }).observed_at) > this.now()) failure('snapshot_expired');
         }
         response = { contract_version: '2.0', type: 'response', request_id: request.request_id, account_id: request.account_id, operation: request.operation, result };
-        if (!validateContentResponse(request, response)) failure('content_unavailable');
+        if (!validateContentResponse(request, response) || !await validateContentIntegrity(response)) failure('content_unavailable');
+        await this.policy(); guard();
+        if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+        if (FILE_OPERATIONS.has(request.operation)) this.fileEmissions.set(response as object, readingPolicy);
         if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext });
-        if (!MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
+        if (!FILE_OPERATIONS.has(request.operation) && !MACHINE_OPERATIONS.has(request.operation) && request.operation !== 'review.verdict' && !CONVERSATION_OPERATIONS.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation) && !INTERACTION_OPERATIONS.has(request.operation) && !(request.operation === 'projects.list' && request.body.known_revision !== undefined)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }
@@ -414,7 +439,7 @@ export class ContentHost {
         // No cached body or controlled error is emitted without current authorization.
         if (!deadline) await authorizeNow(); else guard();
         const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
-        const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict']);
+        const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict', 'unsupported_model', 'unsupported_type', 'integrity_failed', 'transfer_expired']);
         const uncertainTaskAction = completedTaskAction || await this.taskCompletion?.hasActionReceipt(delivery) || await this.interactions?.hasReceipt(delivery);
         const code = uncertainTaskAction ? 'conflict' : error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
         response = { contract_version: '2.0', type: 'error', request_id: request.request_id, account_id: request.account_id, operation: request.operation, code, retryable: code === 'unavailable' };
@@ -445,6 +470,7 @@ export class ContentHost {
       if (!this.machinesAdvertised) failure('validation_failed');
       const metadata = this.machineEmissions.get(result.response);
       if ((result.response.type === 'response' && !metadata) || delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId || !validateContentResponse(delivery.request, result.response)) failure('unavailable');
+      if (!await validateContentIntegrity(result.response)) failure('integrity_failed');
       await this.policy();
       if (metadata && metadata.policy !== this.policyKey) failure('snapshot_expired');
       const deadline = Date.parse(await authorize(delivery)); this.check();
@@ -457,8 +483,26 @@ export class ContentHost {
       if (delivery.request.operation === 'project.icon') this.machines!.validate(delivery.request.body.ref, metadata!.context!);
     });
   }
+  async validateFileEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {
+    if (!FILE_OPERATIONS.has(delivery.request.operation)) return;
+    await this.serial(async () => {
+      if (!this.files || !validateContentResponse(delivery.request, result.response)) failure('unavailable');
+      const policy = this.fileEmissions.get(result.response);
+      if (result.response.type === 'response' && !this.fileEmissions.has(result.response)) failure('unavailable');
+      const guard = async () => {
+        this.check(); await this.policy();
+        if (result.response.type === 'response' && policy !== this.policyKey) failure('snapshot_expired');
+        const deadline = Date.parse(await authorize(delivery)); this.check(); await this.policy();
+        if (result.response.type === 'response' && policy !== this.policyKey) failure('snapshot_expired');
+        if (!Number.isFinite(deadline) || deadline <= this.now() || deadline > this.now() + 10000 || deadline > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
+        return new Date(deadline).toISOString();
+      };
+      await guard();
+      if (result.response.type === 'response') await this.files!.validateEmission(delivery, result.response.result, guard);
+    });
+  }
   async dispose(): Promise<void> {
-    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.interactions?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear(); this.machines?.clear();
-    await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear(); this.interactions?.clear();
+    this.disposed = true; this.deps.conversationManagement?.clear(); this.taskCompletion?.clear(); this.interactions?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear(); this.machines?.clear(); this.files?.clear();
+    await this.files?.dispose(); await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear(); this.interactions?.clear();
   }
 }

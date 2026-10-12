@@ -66,11 +66,14 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     const messageId = input.persistedUserMessage?.id ?? (images?.length ? crypto.randomUUID() : undefined);
     if (messageId && images?.length) {
       if (!messages.saveImages) throw new Error('Image persistence is unavailable.');
+      await authorizePilotEffect();
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving images.', 'AbortError');
       messages.saveImages(messageId, images);
       if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
     }
     try {
       await authorizePilotEffect();
+      if (!isCurrent()) throw new DOMException('Send cancelled before saving text.', 'AbortError');
       message = input.persistedUserMessage ?? await createUserMessage(messages.persistence, {
         id: messageId, conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
@@ -125,6 +128,13 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     const providerId = scopedModel?.providerId ?? provider.selectedProviderId;
     const modelId = scopedModel?.modelId ?? provider.selectedModelId;
     const reasoningEffort = scopedModel ? scopedModel.reasoningEffort : provider.selectedReasoningEffort;
+    const expectedModel = input.pilotTarget?.expectedModel;
+    if (expectedModel && (providerId !== expectedModel.providerId || modelId !== expectedModel.modelId ||
+        (reasoningEffort ?? null) !== expectedModel.reasoningEffort)) {
+      throw new Error('The model changed before sending.');
+    }
+    await authorizePilotEffect();
+    if (!isCurrent()) return cancelled();
     projection.persistSelection(mode, conversationId);
     if (provider.isLoading) throw new Error('Provider settings are still loading.');
     if (!providerId || !modelId) throw new Error('Select a provider and model before sending a message.');
@@ -218,12 +228,18 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       };
       await authorizePilotEffect();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await input.pilotTarget?.beforeAssistantPrepare?.();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await authorizePilotEffect();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       const launch = await stream.prepare(request);
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       timeline('compaction_done', { conversationId, providerId, providerType: providerForUse.providerType });
       let assistant: ChatMessage;
       try {
         await authorizePilotEffect();
+        if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         assistant = await createAssistantPlaceholderMessage(messages.persistence, {
           conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         });
@@ -241,7 +257,11 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       setPreparing(conversationId, current, assistant.id);
       timeline('provider_stream_start_requested', { conversationId, providerId, providerType: providerForUse.providerType });
-      messages.beforeAssistantStart?.();
+      await authorizePilotEffect();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await messages.beforeAssistantStart?.(assistant);
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      await authorizePilotEffect();
       if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       stream.start({
         ...request, sessionId: current.sessionId, assistantMessage: assistant,
@@ -249,7 +269,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         pilotActionToken: input.pilotTarget?.actionToken,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       }, launch);
-      messages.onAssistantStarted?.();
+      await messages.onAssistantStarted?.(assistant);
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
       if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);

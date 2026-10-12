@@ -2356,6 +2356,36 @@
         },
         {
           "$ref": "#/$defs/request_project.icon"
+        },
+        {
+          "$ref": "#/$defs/request_attachment.begin"
+        },
+        {
+          "$ref": "#/$defs/request_attachment.chunk"
+        },
+        {
+          "$ref": "#/$defs/request_attachment.status"
+        },
+        {
+          "$ref": "#/$defs/request_attachment.finalize"
+        },
+        {
+          "$ref": "#/$defs/request_attachment.abort"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.send.attachments"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.send.status"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.files.list"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.file.capture"
+        },
+        {
+          "$ref": "#/$defs/request_conversation.file.read"
         }
       ]
     },
@@ -2450,6 +2480,36 @@
         },
         {
           "$ref": "#/$defs/response_project.icon"
+        },
+        {
+          "$ref": "#/$defs/response_attachment.begin"
+        },
+        {
+          "$ref": "#/$defs/response_attachment.chunk"
+        },
+        {
+          "$ref": "#/$defs/response_attachment.status"
+        },
+        {
+          "$ref": "#/$defs/response_attachment.finalize"
+        },
+        {
+          "$ref": "#/$defs/response_attachment.abort"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.send.attachments"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.send.status"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.files.list"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.file.capture"
+        },
+        {
+          "$ref": "#/$defs/response_conversation.file.read"
         }
       ]
     },
@@ -2516,7 +2576,17 @@
             "conversation.interactions",
             "conversation.interact",
             "instance.telemetry",
-            "project.icon"
+            "project.icon",
+            "attachment.begin",
+            "attachment.chunk",
+            "attachment.status",
+            "attachment.finalize",
+            "attachment.abort",
+            "conversation.send.attachments",
+            "conversation.send.status",
+            "conversation.files.list",
+            "conversation.file.capture",
+            "conversation.file.read"
           ]
         },
         "code": {
@@ -2533,7 +2603,11 @@
             "resource_limit",
             "conflict",
             "validation_failed",
-            "unavailable"
+            "unavailable",
+            "unsupported_model",
+            "unsupported_type",
+            "integrity_failed",
+            "transfer_expired"
           ]
         },
         "retryable": {
@@ -2590,7 +2664,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 9,
+          "maxItems": 12,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2602,7 +2676,10 @@
               "conversation-interactions-1",
               "conversation-models-1",
               "host-telemetry-1",
-              "project-icons-1"
+              "project-icons-1",
+              "attachment-transfer-1",
+              "conversation-attachments-1",
+              "conversation-files-1"
             ]
           }
         }
@@ -2656,7 +2733,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 9,
+          "maxItems": 12,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -2668,7 +2745,10 @@
               "conversation-interactions-1",
               "conversation-models-1",
               "host-telemetry-1",
-              "project-icons-1"
+              "project-icons-1",
+              "attachment-transfer-1",
+              "conversation-attachments-1",
+              "conversation-files-1"
             ]
           }
         }
@@ -3207,7 +3287,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 9,
+          "maxItems": 12,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3219,9 +3299,18 @@
               "conversation-interactions-1",
               "conversation-models-1",
               "host-telemetry-1",
-              "project-icons-1"
+              "project-icons-1",
+              "attachment-transfer-1",
+              "conversation-attachments-1",
+              "conversation-files-1"
             ]
           }
+        },
+        "authority_binding": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         }
       }
     },
@@ -3249,7 +3338,7 @@
         },
         "capabilities": {
           "type": "array",
-          "maxItems": 9,
+          "maxItems": 12,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -3261,7 +3350,10 @@
               "conversation-interactions-1",
               "conversation-models-1",
               "host-telemetry-1",
-              "project-icons-1"
+              "project-icons-1",
+              "attachment-transfer-1",
+              "conversation-attachments-1",
+              "conversation-files-1"
             ]
           }
         }
@@ -3343,6 +3435,12 @@
               "review"
             ]
           }
+        },
+        "authority_binding": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         }
       }
     },
@@ -6589,6 +6687,1527 @@
         },
         "result": {
           "$ref": "#/$defs/projectIcon"
+        }
+      }
+    },
+    "attachmentFileName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[^/\\\\\\x00-\\x1f\\x7f]+$"
+    },
+    "attachmentMime": {
+      "enum": [
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "text/tab-separated-values",
+        "text/html",
+        "text/css",
+        "text/javascript",
+        "application/json",
+        "application/xml",
+        "application/x-ndjson",
+        "application/javascript",
+        "application/yaml",
+        "application/x-yaml",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp"
+      ]
+    },
+    "attachmentTransferReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "intent_id",
+        "batch_id",
+        "transfer_id",
+        "attachment_id",
+        "state",
+        "received_bytes",
+        "total_bytes",
+        "sha256",
+        "observed_at",
+        "expires_at"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "intent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "transfer_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "attachment_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "receiving",
+            "finalized",
+            "attached",
+            "aborted",
+            "expired"
+          ]
+        },
+        "received_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "attachmentSendReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "intent_id",
+        "state",
+        "user_message_id",
+        "assistant_message_id",
+        "attachment_ids",
+        "context_state"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "intent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "state": {
+          "enum": [
+            "message_persisted",
+            "launch_uncertain",
+            "confirmed"
+          ]
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "assistant_message_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attachment_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          }
+        },
+        "context_state": {
+          "enum": [
+            "ready",
+            "unavailable"
+          ]
+        }
+      }
+    },
+    "conversationFileSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message_id",
+        "artifact_id",
+        "citation_id",
+        "citation_scope"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "attachment",
+            "message_image",
+            "tool_output",
+            "task_artifact",
+            "citation"
+          ]
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifact_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "citation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "citation_scope": {
+          "enum": [
+            "context",
+            "source",
+            null
+          ]
+        }
+      }
+    },
+    "conversationFileEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file_id",
+        "display_name",
+        "mime_type",
+        "size_bytes",
+        "sha256",
+        "source",
+        "content_state"
+      ],
+      "properties": {
+        "file_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "display_name": {
+          "$ref": "#/$defs/attachmentFileName"
+        },
+        "mime_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/conversationFileSource"
+        },
+        "content_state": {
+          "enum": [
+            "available",
+            "withheld",
+            "unavailable",
+            "unsupported",
+            "too_large"
+          ]
+        }
+      }
+    },
+    "conversationFileCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "file_id",
+        "snapshot_id",
+        "observed_at",
+        "expires_at",
+        "export_policy_revision",
+        "content_state",
+        "mime_type",
+        "total_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "file_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "export_policy_revision": {
+          "const": "visible-1"
+        },
+        "content_state": {
+          "enum": [
+            "available",
+            "withheld",
+            "unavailable",
+            "unsupported",
+            "too_large"
+          ]
+        },
+        "mime_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "conversationFileChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "file_id",
+        "snapshot_id",
+        "content_state",
+        "offset_bytes",
+        "total_bytes",
+        "data_base64",
+        "sha256",
+        "next_offset_bytes"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/conversationRef"
+        },
+        "file_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "content_state": {
+          "enum": [
+            "available",
+            "withheld",
+            "unavailable",
+            "unsupported",
+            "too_large"
+          ]
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_base64": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_offset_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "request_attachment.begin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "attachment.begin"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "intent_id",
+            "batch_id",
+            "intent_expires_at",
+            "file_name",
+            "mime_type",
+            "total_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "intent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "batch_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "intent_expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "file_name": {
+              "$ref": "#/$defs/attachmentFileName"
+            },
+            "mime_type": {
+              "$ref": "#/$defs/attachmentMime"
+            },
+            "total_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2097152
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "response_attachment.begin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "attachment.begin"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentTransferReceipt"
+        }
+      }
+    },
+    "request_attachment.chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "attachment.chunk"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "transfer_id",
+            "offset_bytes",
+            "data_base64",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "transfer_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "offset_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "data_base64": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 87384,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "response_attachment.chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "attachment.chunk"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentTransferReceipt"
+        }
+      }
+    },
+    "request_attachment.status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "attachment.status"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "transfer_id"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "transfer_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        }
+      }
+    },
+    "response_attachment.status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "attachment.status"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentTransferReceipt"
+        }
+      }
+    },
+    "request_attachment.finalize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "attachment.finalize"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "transfer_id"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "transfer_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        }
+      }
+    },
+    "response_attachment.finalize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "attachment.finalize"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentTransferReceipt"
+        }
+      }
+    },
+    "request_attachment.abort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "attachment.abort"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "transfer_id"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "transfer_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        }
+      }
+    },
+    "response_attachment.abort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "attachment.abort"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentTransferReceipt"
+        }
+      }
+    },
+    "request_conversation.send.attachments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.send.attachments"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "intent_id",
+            "intent_expires_at",
+            "expected_revision",
+            "content",
+            "attachment_ids"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "intent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "intent_expires_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 16000
+            },
+            "attachment_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.send.attachments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.send.attachments"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentSendReceipt"
+        }
+      }
+    },
+    "request_conversation.send.status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.send.status"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "intent_id"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "intent_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.send.status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.send.status"
+        },
+        "result": {
+          "$ref": "#/$defs/attachmentSendReceipt"
+        }
+      }
+    },
+    "request_conversation.files.list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.files.list"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "continuation": {
+              "$ref": "#/$defs/continuation"
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.files.list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.files.list"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "page",
+            "items"
+          ],
+          "properties": {
+            "page": {
+              "$ref": "#/$defs/page"
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/conversationFileEntry"
+              }
+            }
+          }
+        }
+      }
+    },
+    "request_conversation.file.capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.file.capture"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "file_id"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "file_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.file.capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.file.capture"
+        },
+        "result": {
+          "$ref": "#/$defs/conversationFileCapture"
+        }
+      }
+    },
+    "request_conversation.file.read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "request"
+        },
+        "operation": {
+          "const": "conversation.file.read"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "snapshot_id",
+            "file_id",
+            "offset_bytes"
+          ],
+          "properties": {
+            "ref": {
+              "$ref": "#/$defs/conversationRef"
+            },
+            "snapshot_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "file_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            },
+            "offset_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "response_conversation.file.read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "request_id",
+        "account_id",
+        "type",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "type": {
+          "const": "response"
+        },
+        "operation": {
+          "const": "conversation.file.read"
+        },
+        "result": {
+          "$ref": "#/$defs/conversationFileChunk"
         }
       }
     }

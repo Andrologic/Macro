@@ -3,7 +3,24 @@ use macro_lib::ipc_contracts;
 
 /// Native wire roots. The registry follows their Rust dependencies.
 pub fn register(registry: &mut Registry) -> Result<(), String> {
+    registry.add::<macro_lib::pilot_file_contracts::PilotInspectAttachmentsInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotAttachmentMetadata>("pilot_files")?;
     registry.add::<macro_lib::host_telemetry::HostTelemetryDto>("host_telemetry")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileAuthorizeInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileBeginInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileChunkInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileGuard>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileRead>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileReadInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileReceipt>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileSource>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotFileTransferInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotPrepareSendInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotPreparedSend>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotSendMarkInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotSendReadInput>("pilot_files")?;
+    registry.add::<macro_lib::pilot_file_contracts::PilotSendReceipt>("pilot_files")?;
+
     registry.add::<ipc_contracts::db::ConversationGoal>("db")?;
     registry.add::<ipc_contracts::db::ConversationGoalAudit>("db")?;
     registry.add::<ipc_contracts::db::ActivateConversationGoalInput>("db")?;
