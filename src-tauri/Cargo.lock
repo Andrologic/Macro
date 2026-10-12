@@ -3126,6 +3126,7 @@ dependencies = [
  "json-patch",
  "keyring",
  "libc",
+ "libsqlite3-sys",
  "minisign-verify",
  "notify",
  "objc2",

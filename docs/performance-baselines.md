@@ -586,3 +586,78 @@ chunks now have dedicated budgets with approximately 1% headroom. Other lazy
 chunks retain their 600,000-byte cap. The largest ordinary locale fragment is
 153,341 bytes and Japanese is 169,841 bytes; their caps are 155,000 and 172,000
 bytes. These measurements describe the combined scope, not a performance gain.
+
+
+## Native SQLite stage diagnostics on the current schema
+
+The native example now has a separate `--diagnostics` mode. Keep the ordinary
+mode for timing the uninstrumented repository. The diagnostic mode replays the
+current literal statements, extracted from the compiled repository source, on
+fresh file-backed fixtures. It does not install production instrumentation.
+
+```sh
+bun --no-install dev/performance/native-sqlite.ts --self-test
+bun --no-install dev/performance/native-sqlite.ts
+bun --no-install dev/performance/native-sqlite.ts --diagnostics
+```
+
+Use the same explicit `PATH`, `RUSTC` and compatible `CARGO_TARGET_DIR` for every
+compared revision. The reduced dev/test overrides, one Cargo job, offline/locked
+resolution, compiled source/nonce handshake and private binary staging above
+still apply. Build before measuring; never time an operation during a Cargo job.
+The first build after a toolchain change can recompile dependencies. Its duration
+is excluded from the series. Keep three successive fresh processes per mode and
+revision, clean sources and the source/binary/lock fingerprints. Aggregate with
+the median of process-level p50 and p95, not a percentile over pooled samples.
+
+The fixture remains 100, 1,000 or 10,000 messages with 256 ASCII content bytes,
+identical seed timestamps and ordered distinct IDs. Seeding is outside timing.
+Both modes perform 10 warmups and 100 retained samples. Every append commits,
+so final row counts are 210, 1,110 and 10,110. The example now requires the exact
+current migration set `[1,3,4,5,6,7,8,9,10,11,12]`, with WAL, synchronous NORMAL,
+foreign keys and the production pool configuration. No migration was added.
+
+Read diagnostics report pool acquisition, `fetch_all` and conversion of the
+complete 14-column projection into `Message`. Fetch includes SQLite execution,
+SQLx worker dispatch, value copies, row-channel transfer and row allocation.
+Conversion includes field decoding, strings, model allocation and destruction
+of fetched SQLx rows. Every diagnostic output is compared field for field and
+in order against the real repository outside timing. These phase percentiles
+cannot be added or subtracted to reconstruct an operation percentile.
+
+A separate engine diagnostic locks the actual SQLx SQLite handle, prepares and
+binds the same SELECT, steps all rows and finalizes the statement. It records
+exact returned rows and VM steps. This uses the same locked SQLite library and
+file, with no SQLx row objects or Rust text/model copies. Pool/handle acquisition
+is excluded; statement preparation is included, unlike a warmed SQLx statement
+cache. It is an executed diagnostic with a different boundary, not an estimate
+of the SQLite contribution inside an asynchronous repository call. The pinned
+`libsqlite3-sys` dev dependency only exposes this existing library to the example.
+It is not a second SQLite engine or a production dependency change.
+
+Write diagnostics replay acquisition, `BEGIN IMMEDIATE`, the insert with FTS,
+COUNT, latest-row query, preview conversion, metadata update, commit and result
+construction. Statements come from the current source. Execution phases include
+SQLx dispatch/scheduling and returned rows, so they are not pure engine timers.
+The ordinary mode remains the measurement of actual `create_message`, including
+metadata refresh and commit acknowledgement. Diagnostic replay maintenance is
+required when the repository control flow changes; a source fingerprint does
+not automatically instrument new branches.
+
+The diagnostic also compares reads through a disposable second pool with the
+same cloned connection options and only its bounded row channel changed to 512.
+This is an exploratory throughput experiment. It does not change the production
+pool's default capacity of 50 and cannot justify that global change without
+assessing memory/backpressure on other queries and large payloads. Its series
+runs after the default pool; order and shared-machine effects remain possible.
+
+`--self-test` separately checks empty/missing histories, all 14 fields with null
+and non-null values, reverse insertion with timestamp ties, a future latest
+message, Unicode previews, duplicate/FK errors, rollback of the message and FTS
+after a metadata failure, and a WAL reader while an append waits for a writer.
+It closes and reopens the owned file and compares exact content, order, metadata
+and FTS results. Contract checks stay outside comparison runs. Every measured
+fixture also checks path ownership, final counts/content/metadata, committed
+append IDs, integrity and reopening, then closes and removes its own directory.
+Commit-to-file plus reopening is the tested durability boundary; process kill,
+power failure and physical-storage guarantees are untested.
