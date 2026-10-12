@@ -138,6 +138,7 @@ function harness() {
   let wake: (() => void) | undefined;
   let rejectReliability = false;
   let acknowledgedLegacyPoll = false;
+  let acknowledgeIdlePoll = false;
   let loseResult = false;
   let lostResultDelay = 0;
   let loseEvent = false;
@@ -170,6 +171,7 @@ function harness() {
         if (path.includes('/v1/')) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); throw Error('aborted'); }
         if (rejectReliability && (body.capabilities as string[] | undefined)?.includes('network-reliability-1')) return json({ code: 'validation_failed' }, 422);
         if (rejectReliability && !acknowledgedLegacyPoll) { acknowledgedLegacyPoll = true; return new Response(null, { status: 204 }); }
+        if (acknowledgeIdlePoll) { acknowledgeIdlePoll = false; return new Response(null, { status: 204 }); }
         while (!queue.length && !signal?.aborted) await new Promise<void>(resolve => { wake = resolve; signal?.addEventListener('abort', () => resolve(), { once: true }); });
         if (signal?.aborted) throw Error('aborted');
         return json(queue.shift()!);
@@ -204,6 +206,7 @@ function harness() {
   }
   return { client, runtime, deliver, results, events, requests, values,
     legacyRelay: () => { rejectReliability = true; },
+    acceptIdlePoll: () => { acknowledgeIdlePoll = true; },
     waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
     waitEvents: (wait: Promise<void>) => { eventWait = wait; },
     loseResult: (delay = 0) => { loseResult = true; lostResultDelay = delay; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
@@ -741,4 +744,41 @@ it('routes real visible reflection history through negotiated runtime, supervise
     expect(nativeCalls).not.toContain('db_get_message');expect(nativeCalls).not.toContain('db_list_messages');
     expect(JSON.stringify(h.results)).not.toContain('never-export');
   } finally {await h.runtime.stop();runtimeWindow.__TAURI_INTERNALS__=oldRuntime;useChatStore.setState(before,true);}
+});
+
+it('keeps demand-only producers idle across observation, stop and restart without remote reads', async () => {
+  const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  const oldRuntime = runtimeWindow.__TAURI_INTERNALS__;
+  runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
+  const h = harness(); h.acceptIdlePoll();
+  const metadataCalls = () => nativeCalls.filter(command => command === 'db_conversation_metadata').length;
+  const demandCalls = () => nativeCalls.filter(command => /^(?:host_telemetry_read|workspace_resolve_project_icons|db_get_pilot_reflection_message|pilot_files_)/.test(command));
+  try {
+    await h.runtime.start();
+    await until(() => h.requests.filter(item => item.path.includes('/v2/') && item.path.endsWith('/poll')).length >= 2);
+    const offer = h.requests.find(item => item.path.includes('/v2/') && item.path.endsWith('/poll'))!.body.capabilities;
+    expect(offer).toEqual(expect.arrayContaining(['host-telemetry-1', 'project-icons-1', 'conversation-reflections-1', 'conversation-files-1']));
+    const baseline = metadataCalls();
+    await until(() => metadataCalls() >= baseline + 4);
+    expect(demandCalls()).toEqual([]);
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.results).toEqual([]);
+    const observations = metadataCalls() - baseline;
+    await h.runtime.stop();
+    const stoppedCalls = nativeCalls.length;
+    const stoppedRequests = h.requests.length;
+    await sleep(1100);
+    expect(nativeCalls).toHaveLength(stoppedCalls);
+    expect(h.requests).toHaveLength(stoppedRequests);
+    const pausedCalls = nativeCalls.length - stoppedCalls;
+    await h.runtime.start();
+    await until(() => h.requests.length > stoppedRequests && h.requests.at(-1)!.path.endsWith('/poll'));
+    expect(demandCalls()).toEqual([]);
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toEqual([]);
+    expect(h.events).toEqual([]);
+    console.log('SYNTHETIC_IDLE_PRODUCERS', JSON.stringify({ metadata_calls_during_idle: observations,
+      telemetry_icon_reflection_file_calls: demandCalls().length, transcript_reads: 0,
+      remote_results: h.results.length, changed_events: h.events.length, paused_native_calls: pausedCalls }));
+  } finally { await h.runtime.stop(); runtimeWindow.__TAURI_INTERNALS__ = oldRuntime; }
 });
