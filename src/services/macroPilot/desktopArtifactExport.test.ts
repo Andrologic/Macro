@@ -48,6 +48,10 @@ beforeEach(() => {
     if (command === 'workspace_get_active_root') throw new Error('No workspace fallback.');
     const path = String(payload?.path ?? '');
     if (command === 'fs_exists') return files.has(path);
+    if (command === 'fs_stat') {
+      const text = files.get(path); if (text === undefined) throw new Error('Missing file.');
+      return { kind: 'file', size: Buffer.byteLength(text) };
+    }
     if (command === 'fs_read_file') {
       expect(payload?.allowOutsideWorkspace).toBe(false);
       reads.push(path);
@@ -90,5 +94,24 @@ test('rejects oversized plan metadata before parsing an artifact index', async (
   files.set(planPath, ' '.repeat(1024 * 1024 + 1));
   const h = harness(); await expect(h.run('conversation.files.list', { ref })).rejects.toThrow();
   expect(reads).not.toContain(indexPath); expect(reads).not.toContain(contentPath);
+  await h.host.dispose();
+});
+
+test('keeps a small artifact downloadable beside a file above the native read ceiling', async () => {
+  const largePath = getPlanArtifactContentPath(branchName, planId, 'child', 'large', 'text');
+  const text = 'q'.repeat(10 * 1024 * 1024 + 1);
+  const index = JSON.parse(files.get(indexPath)!);
+  index.artifacts.push({ ...index.artifacts[0], id: 'large', title: 'Large', path: largePath, contentHash: taskArtifactContentHash(text) });
+  files.set(indexPath, JSON.stringify(index)); files.set(largePath, text);
+  const h = harness(); const listing = await h.run('conversation.files.list', { ref }) as { items: ContentConversationFileEntry[] };
+  const large = listing.items.find(item => item.content_state === 'too_large')!;
+  expect(large).toBeDefined(); expect(reads).not.toContain(largePath);
+  const refused = await h.run('conversation.file.capture', { ref, file_id: large.file_id }) as ContentConversationFileCapture;
+  expect(refused).toMatchObject({ content_state: 'too_large', total_bytes: null, sha256: null });
+  const small = listing.items.find(item => item.content_state === 'available')!;
+  const capture = await h.run('conversation.file.capture', { ref, file_id: small.file_id }) as ContentConversationFileCapture;
+  expect(capture.content_state).toBe('available');
+  expect(capture.sha256).toBe(new Bun.CryptoHasher('sha256').update(original).digest('hex'));
+  expect(reads).not.toContain(largePath);
   await h.host.dispose();
 });

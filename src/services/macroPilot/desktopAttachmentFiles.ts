@@ -119,7 +119,7 @@ export function desktopAttachmentFiles(options: DesktopAttachmentFileOptions): A
     const metadata = await native(() => fileIpc.pilotFilesList(guard)); check();
     const files: FileDescriptor[] = metadata.map(item => ({
       entry: { file_id: item.sourceId, display_name: item.fileName, mime_type: item.mimeType, size_bytes: item.totalBytes, sha256: null,
-        content_state: item.contentState, source: { kind: item.sourceKind, message_id: pilotTaskId(item.messageId), artifact_id: null,
+        content_state: item.contentState, source: { kind: item.sourceKind, message_id: item.messageId ? pilotTaskId(item.messageId) : null, artifact_id: null,
           citation_id: item.citationId ? pilotTaskId(item.citationId) : null, citation_scope: item.citationScope } },
       read: async () => {
         if (item.contentState !== 'available') return null;

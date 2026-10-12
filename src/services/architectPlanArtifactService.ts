@@ -1169,7 +1169,16 @@ const exportPilotTaskArtifacts = async (
           : metadata.entries;
         for (const artifact of artifacts) {
           const retain = requested?.artifactId === artifact.id && targetIndex === targets.length - 1;
-          const entry = await withPilotArtifactText(target, artifact.path, params.budget, (text) => {
+          await params.beforeRead?.();
+          const stats = await tauriIpc.fsStat(artifact.path, target);
+          if (stats.kind !== 'file' || !Number.isSafeInteger(stats.size) || stats.size < 0) {
+            throw new Error('Invalid Pilot artifact file metadata.');
+          }
+          const oversized = stats.size > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.exportedFileBytes;
+          if (oversized && requested?.artifactId === artifact.id) throw new Error('Pilot artifact is too large to export.');
+          const entry = oversized
+            ? { artifact, sha256: null, totalBytes: stats.size, contentState: 'too_large' as const }
+            : await withPilotArtifactText(target, artifact.path, params.budget, (text) => {
             if (taskArtifactContentHash(text) !== artifact.contentHash) throw new Error('Artifact content does not match its index.');
             const totalBytes = pilotArtifactUtf8Size(text, PILOT_TASK_ARTIFACT_EXPORT_LIMITS.nativeFileBytes);
             if (totalBytes > PILOT_TASK_ARTIFACT_EXPORT_LIMITS.exportedFileBytes) {

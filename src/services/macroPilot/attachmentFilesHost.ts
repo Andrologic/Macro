@@ -94,13 +94,13 @@ export class AttachmentFilesHost {
   private check(): void { if (this.disposed) fail('unavailable'); }
   private sweep(): void { for (const [id, record] of this.records) if (record.expires <= this.now()) this.records.delete(id); }
   private binding(scope: FileScope, ref: ContentConversationRef): string { return stableJson([scope, ref]); }
-  private reserve(session: string, bytes: number): string {
+  private reserve(session: string, bytes: number, replacement?: string): string {
     this.sweep();
-    const allocations = [...this.records.values()].map(r => ({ session: r.session, bytes: r.reserved })).concat([...this.reserved.values()]);
+    const allocations = [...this.records.values()].map(r => ({ session: r.session, bytes: r.reserved })).concat([...this.reserved.entries()].filter(([id]) => id !== replacement).map(([, value]) => value));
     if (allocations.length >= FILE_LIMITS.instanceCaptures || allocations.filter(r => r.session === session).length >= FILE_LIMITS.sessionCaptures ||
       allocations.reduce((sum, r) => sum + r.bytes, bytes) > FILE_LIMITS.instanceMemory ||
       allocations.filter(r => r.session === session).reduce((sum, r) => sum + r.bytes, bytes) > FILE_LIMITS.sessionMemory) fail('resource_limit');
-    const token = crypto.randomUUID(); this.reserved.set(token, { session, bytes }); return token;
+    const token = replacement ?? crypto.randomUUID(); this.reserved.set(token, { session, bytes }); return token;
   }
   private async validateCatalog(ref: ContentConversationRef, fingerprint: string, scope: FileScope, guard: FileEffectGuard): Promise<void> {
     const token = this.reserve(scope.sessionId, 32 * 1024 * 1024);
@@ -170,16 +170,21 @@ export class AttachmentFilesHost {
       const catalog = [...this.records.values()].find(record => record.kind === 'catalog' && record.binding === this.binding(scope, ref) && record.expires > this.now() && record.files.some(file => file.entry.file_id === request.body.file_id));
       if (!catalog || catalog.kind !== 'catalog') return fail('snapshot_expired');
       const file = catalog.files.find(file => file.entry.file_id === request.body.file_id)!;
-      const token = this.reserve(scope.sessionId, file.allocationBytes ?? FILE_LIMITS.file * 12);
+      const token = this.reserve(scope.sessionId, 2048);
       try {
         await this.validateCatalog(ref, catalog.fingerprint, scope, guarded); await guarded();
         let state = file.entry.content_state;
         let bytes: Uint8Array | null = null, mime: string | null = file.entry.mime_type;
         if (state === 'available') {
-          const loaded = await file.read(); await guarded();
-          await this.validateCatalog(ref, catalog.fingerprint, scope, guarded); await guarded();
+          // Reserve source representations only while they are being read and
+          // inspected; metadata validation has its own independent reservation.
+          this.reserve(scope.sessionId, file.allocationBytes ?? FILE_LIMITS.file * 12, token);
+          let loaded = await file.read(); await guarded();
           if (!loaded) state = 'unavailable';
           else { mime = loaded.mimeType; state = inspect(loaded.bytes, loaded.mimeType, policy); if (state === 'available') bytes = loaded.bytes; }
+          loaded = null;
+          this.reserve(scope.sessionId, bytes ? FILE_LIMITS.file * 3 : 2048, token);
+          await this.validateCatalog(ref, catalog.fingerprint, scope, guarded); await guarded();
         }
         const sha = bytes ? await digest(bytes) : null; await guarded();
         const observed = this.now(), id = crypto.randomUUID();

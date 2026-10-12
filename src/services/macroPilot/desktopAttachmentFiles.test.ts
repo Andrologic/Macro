@@ -13,8 +13,9 @@ function harness(implement = false) {
     : { kind: 'conversation', instance_id: 'instance-demo', conversation_id: 'conversation-demo' };
   const scope = { accountId: 'account-demo', sessionId: 'mobile-demo', instanceId: ref.instance_id, authorityBinding: 'authority-demo' };
   const scopes: unknown[] = [], reads: number[] = [], effects: string[] = [];
+  let messageId = 'message-demo';
   let mimeType = 'text/plain', authority = scope.authorityBinding, fingerprint = sha;
-  const metadata = () => [{ sourceId: 'source-demo', sourceKind: 'citation', citationId: 'citation-demo', citationScope: 'source', contentState: 'available', messageId: 'message-demo', fileName: 'exemple.txt', mimeType, totalBytes: bytes.length, sha256: fingerprint }];
+  const metadata = () => [{ sourceId: 'source-demo', sourceKind: 'citation', citationId: 'citation-demo', citationScope: 'source', contentState: 'available', messageId, fileName: 'exemple.txt', mimeType, totalBytes: bytes.length, sha256: fingerprint }];
   const nativePorts = {
     pilotFilesAuthorize: async (input: { scope: unknown; active: boolean }) => { scopes.push(input.scope); effects.push(input.active ? 'authorize' : 'retire'); },
     pilotFilesList: async () => metadata(),
@@ -31,7 +32,7 @@ function harness(implement = false) {
   const delivery = (operation: string, body: unknown) => ({ transport_version: '2.0', type: 'delivery', account_id: scope.accountId, instance_id: scope.instanceId,
     source_session_id: scope.sessionId, authority_binding: authority, capabilities: [...FILE_CAPABILITIES], expires_at: new Date(Date.now() + 60000).toISOString(), request_id: 'request-demo',
     request: { contract_version: '2.0', type: 'request', account_id: scope.accountId, request_id: 'request-demo', operation, body } }) as unknown as ContentDelivery;
-  return { source, ref, scope, guard, scopes, reads, effects, delivery, changeDigest: () => { fingerprint = '0'.repeat(64); }, type: (type: string) => { mimeType = type; } };
+  return { source, ref, scope, guard, scopes, reads, effects, delivery, withoutMessage: () => { messageId = ''; }, changeDigest: () => { fingerprint = '0'.repeat(64); }, type: (type: string) => { mimeType = type; } };
 }
 test('maps a branch-qualified Implement task and keeps workspace distinct from project', async () => {
   const h = harness(true);
@@ -53,4 +54,11 @@ test('refuses byte corruption before an export can become a file capture', async
 test('retirement clears native authority without deleting local message sources', async () => {
   const h = harness(); await h.source.catalog(h.ref, h.scope, h.guard); await h.source.dispose?.();
   expect(h.effects.at(-1)).toBe('retire'); expect(h.reads).toHaveLength(0);
+});
+
+test('exports toolbox citation bytes without inventing a message association', async () => {
+  const h = harness(); h.withoutMessage();
+  const catalog = await h.source.catalog(h.ref, h.scope, h.guard);
+  expect(catalog.files[0]!.entry.source).toMatchObject({ kind: 'citation', citation_scope: 'source', citation_id: 'citation-demo', message_id: null });
+  expect((await catalog.files[0]!.read())?.bytes).toEqual(bytes);
 });

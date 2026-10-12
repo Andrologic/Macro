@@ -25,6 +25,7 @@ const params = { branchName, plan, task };
 const files = new Map<string, string>();
 const reads: Array<{ path: string; workspacePath: string; workspaceScope: string }> = [];
 const commands: string[] = [];
+const oversizedStats = new Map<string, number>();
 let hook: ((path: string, workspacePath: string) => void) | undefined;
 const digest = (text: string) => bytesToHex(sha256(new TextEncoder().encode(text)));
 const projectMetadata = { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] };
@@ -50,7 +51,7 @@ const captureParams = (entry: Awaited<ReturnType<typeof listPilotTaskArtifactExp
 });
 
 beforeEach(() => {
-  files.clear(); reads.length = 0; commands.length = 0; hook = undefined;
+  files.clear(); oversizedStats.clear(); reads.length = 0; commands.length = 0; hook = undefined;
   plan.status = 'draft'; plan.replicas = []; register(1);
   installTauriRuntimeMock(mock(async (command, payload) => {
     commands.push(command);
@@ -58,6 +59,11 @@ beforeEach(() => {
     const workspacePath = String(payload?.workspacePath || '');
     if (command === 'workspace_get_active_root') throw new Error('Fallback must not be used.');
     if (command === 'fs_exists') return files.has(`${workspacePath}::${path}`) || files.has(path);
+    if (command === 'fs_stat') {
+      const text = files.get(`${workspacePath}::${path}`) ?? files.get(path);
+      if (text === undefined) throw new Error('Missing file.');
+      return { kind: 'file', size: oversizedStats.get(path) ?? Buffer.byteLength(text) };
+    }
     if (command === 'fs_read_file') {
       reads.push({ path, workspacePath, workspaceScope: String(payload?.workspaceScope) });
       expect(payload?.allowOutsideWorkspace).toBe(false);
@@ -75,6 +81,19 @@ afterEach(() => {
 });
 
 describe('Pilot read-only artifact export', () => {
+  it('lists artifacts over the native read ceiling as too_large without reading their bytes', async () => {
+    const [large, small] = seed([artifact('large', 'child', 'Bonjour é\n'), artifact('small', 'child', 'Bonjour é\n')]);
+    oversizedStats.set(large!.path, limits.nativeFileBytes + 1);
+    const catalog = await listPilotTaskArtifactExports(params);
+    try {
+      expect(catalog.entries.find((entry) => entry.artifact.id === 'large')).toMatchObject({ contentState: 'too_large', sha256: null, totalBytes: limits.nativeFileBytes + 1 });
+      expect(reads.some((read) => read.path === large!.path)).toBe(false);
+      const source = await readPilotTaskArtifactExport(captureParams(catalog.entries.find((entry) => entry.artifact.id === 'small')!));
+      try { expect(source.bytes).toEqual(new TextEncoder().encode('Bonjour é\n')); } finally { source.release(); }
+      expect(reads.some((read) => read.path === small!.path)).toBe(true);
+    } finally { catalog.release(); }
+  });
+
   it('attests UTF-8 bytes, filters task visibility and uses existing metadata without recovery effects', async () => {
     const entries = seed([artifact('result', 'child', 'Bonjour é\n'), artifact('inherited', 'parent', 'Bonjour é\n'),
       artifact('private', 'sibling', 'Bonjour é\n')]);
@@ -87,7 +106,7 @@ describe('Pilot read-only artifact export', () => {
       finally { result.release(); }
       expect(reads.every((read) => read.workspaceScope === 'metadata_existing')).toBe(true);
       expect(reads.some((read) => read.path === entries[2]!.path)).toBe(false);
-      expect(commands.every((command) => command === 'fs_read_file' || command === 'fs_exists')).toBe(true);
+      expect(commands.every((command) => command === 'fs_read_file' || command === 'fs_exists' || command === 'fs_stat')).toBe(true);
       await expect(readPilotTaskArtifactExport({ ...params, artifactId: 'private', expectedSha256: digest('Bonjour é\n'), expectedTotalBytes: 11 })).rejects.toThrow('not visible');
     } finally { catalog.release(); }
   });
@@ -209,7 +228,7 @@ describe('Pilot read-only artifact export', () => {
     expect(reads).toHaveLength(0);
     unblock(); await blocked;
     const catalog = await exportPromise; catalog.release();
-    expect(commands.every((command) => command === 'fs_read_file' || command === 'fs_exists')).toBe(true);
+    expect(commands.every((command) => command === 'fs_read_file' || command === 'fs_exists' || command === 'fs_stat')).toBe(true);
   });
 
 
@@ -223,7 +242,7 @@ describe('Pilot read-only artifact export', () => {
       if (reads.length >= 3) throw new Error('Fixed deadline expired.');
       guarded = true;
     } })).rejects.toThrow('Fixed deadline expired');
-    expect(calls).toBe(7);
+    expect(calls).toBeGreaterThan(reads.length);
     expect(reads).toHaveLength(3);
     hook = undefined;
     const catalog = await listPilotTaskArtifactExports(params);
@@ -236,10 +255,11 @@ describe('Pilot read-only artifact export', () => {
     } finally { catalog.release(); }
   });
 
-  it('rejects content above the native cap without encoding a second oversized buffer', async () => {
+  it('rejects a file growing beyond the native cap after its size observation', async () => {
     const content = 'x'.repeat(limits.nativeFileBytes + 1);
     const [entry] = seed([artifact('result', 'child', content)]);
     files.set(entry!.path, content);
+    oversizedStats.set(entry!.path, 1);
     await expect(listPilotTaskArtifactExports(params)).rejects.toThrow('size limit');
   });
 

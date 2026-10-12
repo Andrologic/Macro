@@ -1114,14 +1114,14 @@ pub async fn list(
 ) -> Result<Vec<PilotFileSource>> {
     let mut t = tx(pool).await?;
     guard(&mut t, &i.scope, &i.execute_before, clock).await?;
-    let summary=sqlx::query("SELECT COUNT(*) AS count,COALESCE(SUM(size),0) AS bytes FROM (SELECT length(CAST(file_name AS BLOB))+length(CAST(a.id AS BLOB))+length(CAST(a.message_id AS BLOB))+256 AS size FROM pilot_message_attachments a JOIN messages m ON m.id=a.message_id WHERE a.instance_id=? AND a.ref_key=? AND m.conversation_id=? UNION ALL SELECT length(CAST(c.title AS BLOB))+length(CAST(c.id AS BLOB))+length(CAST(c.message_id AS BLOB))+256 FROM conversation_citations c JOIN messages m ON m.id=c.message_id AND m.conversation_id=c.conversation_id WHERE c.conversation_id=? AND c.content IS NOT NULL AND c.source<>'pilot_attachment' LIMIT 2001)")
+    let summary=sqlx::query("SELECT COUNT(*) AS count,COALESCE(SUM(size),0) AS bytes FROM (SELECT length(CAST(file_name AS BLOB))+length(CAST(a.id AS BLOB))+length(CAST(a.message_id AS BLOB))+256 AS size FROM pilot_message_attachments a JOIN messages m ON m.id=a.message_id WHERE a.instance_id=? AND a.ref_key=? AND m.conversation_id=? UNION ALL SELECT length(CAST(c.title AS BLOB))+length(CAST(c.id AS BLOB))+length(CAST(COALESCE(m.id,'') AS BLOB))+256 FROM conversation_citations c JOIN conversations v ON v.id=c.conversation_id LEFT JOIN messages m ON m.id=c.message_id AND m.conversation_id=c.conversation_id WHERE c.conversation_id=? AND c.content IS NOT NULL AND c.source<>'pilot_attachment' LIMIT 2001)")
         .bind(&i.scope.instance_id).bind(json(&i.scope.r#ref)?).bind(&i.scope.r#ref.conversation_id).bind(&i.scope.r#ref.conversation_id).fetch_one(&mut *t).await.map_err(db)?;
     if summary.get::<i64, _>("count") > 2000 || summary.get::<i64, _>("bytes") > 1024 * 1024 {
         return Err("resource_limit".into());
     }
     let attachments=sqlx::query("SELECT a.id,a.message_id,a.file_name,a.mime_type,a.total_bytes,a.sha256,length(a.data) AS actual FROM pilot_message_attachments a JOIN messages m ON m.id=a.message_id WHERE a.instance_id=? AND a.ref_key=? AND m.conversation_id=? LIMIT 2001")
         .bind(&i.scope.instance_id).bind(json(&i.scope.r#ref)?).bind(&i.scope.r#ref.conversation_id).fetch_all(&mut *t).await.map_err(db)?;
-    let citations=sqlx::query("SELECT c.id,c.message_id,c.title,c.scope,COALESCE(length(CAST(c.content AS BLOB)),0) AS total_bytes FROM conversation_citations c JOIN messages m ON m.id=c.message_id AND m.conversation_id=c.conversation_id WHERE c.conversation_id=? AND c.content IS NOT NULL AND c.source <> 'pilot_attachment' LIMIT 2001")
+    let citations=sqlx::query("SELECT c.id,COALESCE(m.id,'') AS message_id,c.title,c.scope,COALESCE(length(CAST(c.content AS BLOB)),0) AS total_bytes FROM conversation_citations c JOIN conversations v ON v.id=c.conversation_id LEFT JOIN messages m ON m.id=c.message_id AND m.conversation_id=c.conversation_id WHERE c.conversation_id=? AND c.content IS NOT NULL AND c.source <> 'pilot_attachment' LIMIT 2001")
         .bind(&i.scope.r#ref.conversation_id).fetch_all(&mut *t).await.map_err(db)?;
     if attachments.len() + citations.len() > 2000 {
         return Err("resource_limit".into());
@@ -1295,12 +1295,13 @@ pub async fn read(
     guard(&mut t, &i.scope, &effect_deadline, clock).await?;
     let kind: String = registration.get("kind");
     let native_id: String = registration.get("native_id");
-    // The native source must still be linked to an existing message in this ref.
+    // The source belongs to this durable conversation. Attachment rows also
+    // require their original message; toolbox citations can have no message.
     let r=if kind=="attachment" {
         sqlx::query("SELECT a.message_id,a.file_name,a.mime_type,a.data,NULL AS citation_scope FROM pilot_message_attachments a JOIN messages m ON m.id=a.message_id WHERE a.id=? AND a.instance_id=? AND a.ref_key=? AND m.conversation_id=? AND length(a.data)<=?")
             .bind(&native_id).bind(&i.scope.instance_id).bind(json(&i.scope.r#ref)?).bind(&i.scope.r#ref.conversation_id).bind(FILE).fetch_optional(&mut *t).await.map_err(db)?
     } else {
-        sqlx::query("SELECT c.message_id,c.scope AS citation_scope,c.title AS file_name,'text/plain' AS mime_type,CAST(c.content AS BLOB) AS data FROM conversation_citations c JOIN messages m ON m.id=c.message_id AND m.conversation_id=c.conversation_id WHERE c.id=? AND c.conversation_id=? AND c.content IS NOT NULL AND length(CAST(c.content AS BLOB))<=?")
+        sqlx::query("SELECT COALESCE(m.id,'') AS message_id,c.scope AS citation_scope,c.title AS file_name,'text/plain' AS mime_type,CAST(c.content AS BLOB) AS data FROM conversation_citations c JOIN conversations v ON v.id=c.conversation_id LEFT JOIN messages m ON m.id=c.message_id AND m.conversation_id=c.conversation_id WHERE c.id=? AND c.conversation_id=? AND c.content IS NOT NULL AND length(CAST(c.content AS BLOB))<=?")
             .bind(&native_id).bind(&i.scope.r#ref.conversation_id).bind(FILE).fetch_optional(&mut *t).await.map_err(db)?
     }.ok_or("not_found")?;
     let data: Vec<u8> = r.get("data");
@@ -2356,6 +2357,47 @@ mod tests {
             STANDARD.decode(bytes.data_base64).unwrap(),
             b"local message context"
         );
+    }
+    #[tokio::test]
+    async fn toolbox_citations_use_conversation_authority_without_a_message() {
+        let (p, s, time) = fixture().await;
+        let c = || time.load(Ordering::SeqCst);
+        sqlx::query("INSERT INTO conversation_citations(id,conversation_id,message_id,type,scope,source,title,content,path,created_at,updated_at) VALUES ('toolbox','conversation','manual-synthetic','file','context','manual','Notes','Toolbox bytes','attachment://manual-synthetic/notes.txt','now','now')").execute(&p).await.unwrap();
+        let entries = list(
+            &p,
+            PilotFileGuard {
+                scope: s.clone(),
+                execute_before: d(),
+            },
+            &c,
+        )
+        .await
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].message_id.is_empty());
+        assert_eq!(entries[0].citation_id.as_deref(), Some("toolbox"));
+        assert!(matches!(
+            entries[0].citation_scope.as_ref(),
+            Some(PilotCitationScope::Context)
+        ));
+        let input = PilotFileReadInput {
+            scope: s.clone(),
+            execute_before: d(),
+            source_id: entries[0].source_id.clone(),
+            offset_bytes: 0,
+        };
+        let bytes = read(&p, input.clone(), &c).await.unwrap();
+        assert!(bytes.source.message_id.is_empty());
+        assert_eq!(
+            STANDARD.decode(bytes.data_base64).unwrap(),
+            b"Toolbox bytes"
+        );
+        sqlx::query("INSERT INTO conversations(id,title,scope_mode,created_at,updated_at) VALUES ('other','Other','Chat','now','now')").execute(&p).await.unwrap();
+        sqlx::query("UPDATE conversation_citations SET conversation_id='other' WHERE id='toolbox'")
+            .execute(&p)
+            .await
+            .unwrap();
+        assert_eq!(read(&p, input, &c).await.unwrap_err(), "not_found");
     }
     #[tokio::test]
     async fn large_citations_are_metadata_only_and_changed_bytes_invalidate_attestation() {
