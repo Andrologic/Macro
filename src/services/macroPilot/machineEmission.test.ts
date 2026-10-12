@@ -7,7 +7,7 @@ import { validateContentMessage, type ContentHostTelemetry, type ContentDelivery
 import type { TextPolicy } from './conversationText';
 const memory = () => { let value: string | null = null; return { load: async () => value, compareAndSwap: async (old: string | null, next: string) => { if (old !== value) return false; value = next; return true; } }; };
 const epoch = Date.parse('2026-10-10T12:00:00.000Z');
-async function harness() {
+async function harness(icon: { dataUrl: string; revision: string } | null = null) {
   const controller = new AbortController(); let clock = epoch; let policy: TextPolicy = { revision: 'visible-1', secrets: [] };
   const captures = new ConversationCaptures({ instanceId: 'instance', workspaceId: 'workspace', now: () => clock, storage: memory(), policy: () => policy,
     source: { projects: async () => [], tasks: async () => [], listConversations: async () => [], getConversation: async () => null,
@@ -15,7 +15,7 @@ async function harness() {
   const sample: Omit<ContentHostTelemetry, 'instance_id'> = { sample_id: 'sample', observed_at: new Date(epoch).toISOString(), expires_at: new Date(epoch + 5000).toISOString(),
     availability: 'available', reason: null, cpu_percent: 25, memory_used_bytes: 512, memory_total_bytes: 1024 };
   const host = new ContentHost({ accountId: 'account', instanceId: 'instance', signal: controller.signal, now: () => clock,
-    conversations: captures, machines: { telemetry: async () => sample, projectKey: () => 'context', icon: async () => null },
+    conversations: captures, machines: { telemetry: async () => sample, projectKey: () => 'context', icon: async () => icon },
     storage: memory(), reviews: createReviewCaptureService(), policy: async () => structuredClone(policy), commitReview: async () => false, reviewRefs: async () => [], resolveReview: async () => { throw Error('not_found'); } });
   await host.initialize(); host.enableMachines(true);
   const request: ContentRequest<'instance.telemetry'> = { contract_version: '2.0', type: 'request', account_id: 'account', request_id: 'request', operation: 'instance.telemetry', body: { instance_id: 'instance' } };
@@ -53,5 +53,23 @@ it.each(['expiry', 'policy', 'revocation'] as const)('refuses %s changes during 
   delay = true;
   await expect(client.requestContent('/pilot/v2/instances/instance/deliveries/request/result', result, new AbortController().signal, () => h.host.validateMachineEmission(h.delivery, result, h.authorize))).rejects.toThrow(mode === 'revocation' ? 'unavailable' : 'snapshot_expired');
   expect(sent).toHaveLength(0);
+  await h.host.dispose();
+});
+
+it('refuses a forged icon hash in an otherwise valid application emission receipt', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const fixture = JSON.parse(await readFile(new URL('../../../contracts/macro-pilot/v2/fixtures/valid/project-icon-available.json', import.meta.url), 'utf8'));
+  const icon = fixture.result.icon;
+  const h = await harness({ dataUrl: `data:${icon.mime_type};base64,${icon.data_base64}`, revision: icon.sha256 });
+  const request: ContentRequest<'project.icon'> = { contract_version: '2.0', type: 'request', request_id: 'icon-request', account_id: 'account', operation: 'project.icon',
+    body: { ref: { instance_id: 'instance', workspace_id: 'workspace', project_id: 'project' } } };
+  const delivery: ContentDelivery = { ...h.delivery, request_id: request.request_id, request, capabilities: ['project-icons-1'] };
+  const result = await h.host.handle(delivery, h.authorize);
+  expect(result.response.type).toBe('response');
+  await h.host.validateMachineEmission(delivery, result, h.authorize);
+  const response = result.response as { result: { icon: { sha256: string } } };
+  response.result.icon.sha256 = '0'.repeat(64);
+  expect(validateContentMessage(result)).toBe(true);
+  await expect(h.host.validateMachineEmission(delivery, result, h.authorize)).rejects.toThrow('integrity_failed');
   await h.host.dispose();
 });

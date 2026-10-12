@@ -1153,6 +1153,9 @@ const dbCompareAndSwapAppSettingMock = mock(async ({ key, expectedValueJson, val
 const dbDeleteAppSettingMock = mock(async (key: string) =>
   appSettingValues.delete(key)
 );
+const dbPilotMessageImagesMock = mock(async (_messageId: string): Promise<Array<{
+  attachmentId: string; fileName: string; mimeType: string; readyDataURL: string;
+}>> => []);
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
@@ -1938,6 +1941,7 @@ const registerUseChatStoreMocks = async () => {
     getChatSnapshot: getChatSnapshotMock,
     importMessages: importMessagesMock,
     listMessages: listMessagesMock,
+    dbPilotMessageImages: dbPilotMessageImagesMock,
     getConversation: getConversationMock,
     getConversationSourceSnapshot: getConversationSourceSnapshotMock,
     dbGetArchitectPlanConversationSync: dbGetArchitectPlanConversationSyncMock,
@@ -2939,6 +2943,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getChatSnapshotMock.mockClear();
     getChatBootstrapSnapshotMock.mockClear();
     listMessagesMock.mockClear();
+    dbPilotMessageImagesMock.mockReset();
+    dbPilotMessageImagesMock.mockImplementation(async () => []);
     getConversationSourceSnapshotMock.mockClear();
     dbGetArchitectPlanConversationSyncMock.mockClear();
     dbGetArchitectPlanConversationSyncForPlanMock.mockClear();
@@ -4418,6 +4424,327 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
   registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
+  it('Pilot native attachments preserve the saved turn, durable images and read_file context', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    c.appState.mode = 'Implement';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('native-attachment-store'), scope_mode: 'Chat' as const,
+      task_id: null, provider_id: 'provider-1', model_id: 'model-1', reasoning_effort: null };
+    const filePath = 'attachment://native-file/fixture.txt';
+    const saved: ChatMessage = { id: 'native-user-fixture', turn_id: 'native-turn-fixture',
+      task_id: '', conversation_id: conversation.id, role: 'user', content: '',
+      timestamp: '2026-10-12T00:00:00Z',
+      context_refs: [{ id: 'native-file', kind: 'file', title: 'fixture.txt', path: filePath }] };
+    const images = [
+      { id: 'z-native-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: saved.timestamp },
+      { id: 'a-native-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,BAUG', createdAt: saved.timestamp },
+    ];
+    citationRecords.push({ id: 'native-citation-fixture', type: 'file', scope: 'context',
+      source: 'fixture.txt', title: 'fixture.txt', path: filePath, snippet: 'Synthetic native text',
+      content: 'Synthetic native text available through read_file.', messageId: saved.id,
+      conversationId: conversation.id, timestamp: saved.timestamp });
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], messages: [],
+      composerContextRefs: [{ id: 'unrelated-composer', kind: 'file', title: 'unrelated.txt', path: 'unrelated.txt' }] }));
+    const reservation = reservePilotAction({ conversationId: conversation.id });
+    let marked = false;
+    let confirmed = false;
+    const storage = window.localStorage, setItem = storage.setItem;
+    storage.setItem = (key, value) => {
+      if (key === 'macro_chat_message_images') throw new Error('synthetic quota for native image cache');
+      setItem.call(storage, key, value);
+    };
+    try {
+      const result = await store.getState().sendMessage({ conversationId: conversation.id, content: saved.content,
+        contextRefs: saved.context_refs, images, submissionTurnId: saved.turn_id!, persistedUserMessage: saved,
+        pilotTarget: { mode: 'Chat', actionToken: reservation.token, beforeEffect: async () => {},
+          expectedModel: { providerId: 'provider-1', modelId: 'model-1', reasoningEffort: null },
+          beforeAssistantPrepare: async () => { marked = true; },
+          onAssistantStarted: async () => { confirmed = true; } } });
+      await c.flushAsyncWork();
+      expect(result).toMatchObject({ status: 'sent', turnId: saved.turn_id, userMessageId: saved.id });
+      expect(c.createMessageMock.mock.calls.filter(call => call[1] === 'user')).toHaveLength(0);
+      expect(store.getState().messages.filter((message: ChatMessage) => message.role === 'user').map((message: ChatMessage) => message.id)).toEqual([saved.id]);
+      expect(marked).toBe(true);
+      expect(confirmed).toBe(true);
+      const local = await import('./chat/chatLocalSessionState');
+      expect(store.getState().getMessageImages(saved.id)).toEqual(images);
+      expect(local.loadMessageImagesFromStorage()[saved.id]).toBeUndefined();
+      expect(c.citationRecords.filter(citation => citation.path === filePath)).toHaveLength(1);
+      const options = c.getLatestStreamOptions<{
+        messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }>;
+        fileToolContext: Array<{ path?: string; content?: string }>;
+        onToolCall?: (name: string, args: Record<string, unknown>, id: string) => Promise<unknown>;
+      }>();
+      const user = options.messages.find(message => message.role === 'user');
+      expect(Array.isArray(user?.content)).toBe(true);
+      expect(Array.isArray(user?.content) && user.content.filter(part => part.type === 'image_url')).toEqual(
+        images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } })));
+      expect(JSON.stringify(user?.content)).toContain(filePath);
+      expect(JSON.stringify(user?.content)).not.toContain('unrelated.txt');
+      expect(options.fileToolContext).toContainEqual(expect.objectContaining({ path: filePath, content: 'Synthetic native text available through read_file.' }));
+      const read = await options.onToolCall?.('read_file', { file: filePath }, 'native-file-read-fixture');
+      expect(String(read)).toContain('Synthetic native text available through read_file.');
+    } finally { storage.setItem = setItem; reservation.release(); }
+  });
+
+  for (const ready of [false, true]) {
+    it(`native image hydration reconstructs missing cache for a transcript, ready=${ready}`, async () => {
+      const c = useChatStoreScenarioContext;
+      c.tauriAvailable = true; c.appState.mode = 'Chat';
+      const { useChatStore: store } = await c.loadChatStore();
+      const conversation = { ...c.createConversation('native-image-restart'), scope_mode: 'Chat' as const, task_id: null, message_count: 1 };
+      const message: ChatMessage = { id: 'native-image-user', conversation_id: conversation.id, task_id: '',
+        role: 'user', content: '', turn_id: 'native-image-turn', timestamp: '2026-10-12T00:00:00Z' };
+      const images = [
+        { attachmentId: 'z-first', fileName: 'first.png', mimeType: 'image/png', readyDataURL: 'data:image/png;base64,AQID' },
+        { attachmentId: 'a-second', fileName: 'second.png', mimeType: 'image/png', readyDataURL: 'data:image/png;base64,BAUG' },
+      ];
+      dbPilotMessageImagesMock.mockImplementation(async () => images);
+      store.setState(c.createIdleChatStoreState({ conversations: [conversation], messages: [message],
+        messageLoadStatusByConversationId: { [conversation.id]: ready ? 'ready' : 'idle' }, messageImagesByMessageId: {} }));
+      const storage = window.localStorage, setItem = storage.setItem;
+      storage.setItem = (key, value) => {
+        if (key === 'macro_chat_message_images') throw new Error('synthetic native cache quota');
+        setItem.call(storage, key, value);
+      };
+      try {
+        await store.getState().ensureMessagesLoaded(conversation.id);
+        expect(store.getState().getMessageImages(message.id)).toEqual(images.map(image => ({ id: image.attachmentId,
+          mimeType: image.mimeType, dataUrl: image.readyDataURL, createdAt: message.timestamp })));
+        await store.getState().ensureMessagesLoaded(conversation.id);
+        expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(1);
+        expect(c.createMessageMock).not.toHaveBeenCalled();
+        expect(c.streamChatMock).not.toHaveBeenCalled();
+      } finally { storage.setItem = setItem; }
+      if (ready) {
+        const ordinaryImages = [{ id: 'ordinary-after-native', mimeType: 'image/png', dataUrl: 'data:image/png;base64,BwgJ', createdAt: message.timestamp }];
+        const result = await store.getState().sendMessage({ conversationId: conversation.id, content: 'Synthetic follow-up', images: ordinaryImages });
+        await c.flushAsyncWork();
+        expect(result.status).toBe('sent');
+        if (result.status !== 'sent') throw new Error('Expected saved follow-up');
+        const local = await import('./chat/chatLocalSessionState');
+        expect(local.loadMessageImagesFromStorage()[result.userMessageId]).toEqual(ordinaryImages);
+        expect(local.loadMessageImagesFromStorage()[message.id]).toBeUndefined();
+        expect(store.getState().getMessageImages(message.id).map((image: { id: string }) => image.id)).toEqual(['z-first', 'a-second']);
+      }
+    });
+  }
+
+  for (const bootstrap of [false, true]) {
+    it(`native image hydration restores a DB transcript without a local image cache, bootstrap=${bootstrap}`, async () => {
+      const c = useChatStoreScenarioContext;
+      c.tauriAvailable = true; c.appState.mode = 'Chat';
+      const { useChatStore: store } = await c.loadChatStore();
+      const conversation = { ...c.createConversation('native-db-images'), scope_mode: 'Chat' as const,
+        task_id: null, message_count: 1 };
+      c.chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+      c.chatSnapshotMessages = [{ id: 'native-db-user', conversation_id: conversation.id, role: 'user', content: '', created_at: '2026-10-12T00:00:00Z' }];
+      dbPilotMessageImagesMock.mockImplementation(async () => [{ attachmentId: 'native-db-image', fileName: 'fixture.png', mimeType: 'image/png', readyDataURL: 'data:image/png;base64,AQID' }]);
+      if (bootstrap) await store.getState().initialize();
+      else {
+        store.setState(c.createIdleChatStoreState({ conversations: [conversation], messages: [], messageImagesByMessageId: {} }));
+        await store.getState().ensureMessagesLoaded(conversation.id);
+      }
+      expect(store.getState().getMessageImages('native-db-user')).toEqual([{ id: 'native-db-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: '2026-10-12T00:00:00Z' }]);
+      expect(store.getState().getConversationMessages(conversation.id).map((message: ChatMessage) => message.id)).toEqual(['native-db-user']);
+      expect(c.createMessageMock).not.toHaveBeenCalled();
+      expect(c.streamChatMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('restores native images only for the selected conversation after a broad bootstrap', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true; c.appState.mode = 'Chat';
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversations = Array.from({ length: 20 }, (_, index) => ({
+      ...c.createConversation(`native-lazy-${index}`), scope_mode: 'Chat' as const, task_id: null, message_count: 1,
+    }));
+    c.chatSnapshotConversations = conversations.map(conversation => ({ ...conversation, description: null, group_id: null, project_id: null }));
+    c.chatSnapshotMessages = conversations.map(conversation => ({ id: `${conversation.id}-user`, conversation_id: conversation.id,
+      role: 'user' as const, content: '', created_at: '2026-10-12T00:00:00Z' }));
+    getChatBootstrapSnapshotMock.mockImplementationOnce(async () => ({ conversations: c.chatSnapshotConversations,
+      messages_by_conversation_id: Object.fromEntries(conversations.map(conversation => [conversation.id,
+        c.chatSnapshotMessages.filter(message => message.conversation_id === conversation.id)])) }));
+    await store.getState().initialize();
+    const selected = store.getState().selectedConversationId;
+    expect(selected).toBeTruthy();
+    expect(dbPilotMessageImagesMock.mock.calls.map(call => call[0])).toEqual([`${selected}-user`]);
+    const other = conversations.find(conversation => conversation.id !== selected)!;
+    await store.getState().ensureMessagesLoaded(other.id);
+    expect(dbPilotMessageImagesMock.mock.calls.map(call => call[0])).toEqual([`${selected}-user`, `${other.id}-user`]);
+    expect(c.streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('reserves the maximum IPC representation before reads, evicts only native entries and rehydrates them', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversations = Array.from({ length: 5 }, (_, index) => ({ ...c.createConversation(`native-budget-${index}`),
+      scope_mode: 'Chat' as const, task_id: null, message_count: 1 }));
+    const messages: ChatMessage[] = conversations.map(conversation => ({ id: `${conversation.id}-user`, conversation_id: conversation.id,
+      task_id: '', role: 'user', content: '', timestamp: '2026-10-12T00:00:00Z' }));
+    const legacy = [{ id: 'legacy-image', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: messages[0].timestamp }];
+    // Synthetic strings only. Four bounded 2 MiB files form the 8 MiB native batch.
+    const dataURL = 'data:image/png;base64,' + 'A'.repeat(4 * Math.ceil(2 * 1024 * 1024 / 3));
+    const images = Array.from({ length: 4 }, (_, index) => ({ attachmentId: `budget-image-${index}`,
+      fileName: 'fixture.png', mimeType: 'image/png', readyDataURL: dataURL }));
+    const maximumRead = 2 * (4 * Math.ceil(8 * 1024 * 1024 / 3) + 10 * 512);
+    store.setState(c.createIdleChatStoreState({ conversations, messages,
+      messageLoadStatusByConversationId: Object.fromEntries(conversations.map(conversation => [conversation.id, 'ready'])),
+      messageImagesByMessageId: { 'legacy-user': legacy } }));
+    dbPilotMessageImagesMock.mockImplementation(async () => {
+      const nativeBytes = Object.entries(store.getState().messageImagesByMessageId)
+        .filter(([id]) => id !== 'legacy-user').reduce((total, [, entries]) => total +
+          (entries as Array<{ dataUrl: string }>).reduce((size, image) => size + image.dataUrl.length * 2, 0), 0);
+      expect(nativeBytes + maximumRead).toBeLessThanOrEqual(64 * 1024 * 1024);
+      expect(store.getState().getMessageImages('legacy-user')).toBe(legacy);
+      return images;
+    });
+    for (const conversation of conversations) await store.getState().ensureMessagesLoaded(conversation.id);
+    expect(store.getState().getMessageImages(messages[0].id)).toEqual([]);
+    expect(store.getState().getMessageImages(messages.at(-1)!.id)).toHaveLength(4);
+    expect(store.getState().getMessageImages('legacy-user')).toBe(legacy);
+    await store.getState().ensureMessagesLoaded(conversations[0].id);
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(6);
+    expect(store.getState().getMessageImages(messages[0].id)).toHaveLength(4);
+    expect(store.getState().getMessageImages('legacy-user')).toBe(legacy);
+  });
+
+  it('bounds native image count across conversations to 512 and reloads an evicted conversation', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversations = Array.from({ length: 53 }, (_, index) => ({ ...c.createConversation(`native-count-${index}`), message_count: 1 }));
+    const messages: ChatMessage[] = conversations.map(conversation => ({ id: `${conversation.id}-user`, conversation_id: conversation.id,
+      task_id: '', role: 'user', content: '', timestamp: '2026-10-12T00:00:00Z' }));
+    store.setState(c.createIdleChatStoreState({ conversations, messages,
+      messageLoadStatusByConversationId: Object.fromEntries(conversations.map(conversation => [conversation.id, 'ready'])) }));
+    dbPilotMessageImagesMock.mockImplementation(async () => Array.from({ length: 10 }, (_, index) => ({
+      attachmentId: `count-image-${index}`, fileName: 'fixture.png', mimeType: 'image/png', readyDataURL: 'data:image/png;base64,AQID',
+    })));
+    for (const conversation of conversations) {
+      await store.getState().ensureMessagesLoaded(conversation.id);
+      const counts = Object.values(store.getState().messageImagesByMessageId).map(entries => (entries as unknown[]).length);
+      expect(counts.reduce((total, count) => total + count, 0)).toBeLessThanOrEqual(512);
+    }
+    expect(store.getState().getMessageImages(messages[0].id)).toEqual([]);
+    await store.getState().ensureMessagesLoaded(conversations[0].id);
+    expect(store.getState().getMessageImages(messages[0].id)).toHaveLength(10);
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(54);
+  });
+
+  it('counts concurrent IPC reservations and releases them after a failed read', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversations = Array.from({ length: 3 }, (_, index) => ({ ...c.createConversation(`native-concurrent-${index}`), message_count: 1 }));
+    const messages: ChatMessage[] = conversations.map(conversation => ({ id: `${conversation.id}-user`, conversation_id: conversation.id,
+      task_id: '', role: 'user', content: '', timestamp: '2026-10-12T00:00:00Z' }));
+    store.setState(c.createIdleChatStoreState({ conversations, messages,
+      messageLoadStatusByConversationId: Object.fromEntries(conversations.map(conversation => [conversation.id, 'ready'])) }));
+    const reads = [createDeferred<Awaited<ReturnType<typeof dbPilotMessageImagesMock>>>(), createDeferred<Awaited<ReturnType<typeof dbPilotMessageImagesMock>>>()];
+    dbPilotMessageImagesMock.mockImplementation(() => {
+      const index = dbPilotMessageImagesMock.mock.calls.length - 1;
+      return reads[index].promise.then(images => {
+        if (index === 0) throw new Error('synthetic allocation/read failure');
+        return images;
+      });
+    });
+    const loads = conversations.map(conversation => store.getState().ensureMessagesLoaded(conversation.id));
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(2);
+    reads[0].resolve([]);
+    reads[1].resolve([]);
+    await Promise.all(loads);
+    dbPilotMessageImagesMock.mockImplementation(async () => []);
+    await store.getState().ensureMessagesLoaded(conversations[2].id);
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects an oversized native representation without replacing legacy images', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('native-oversized'), message_count: 1 };
+    const message: ChatMessage = { id: 'native-oversized-user', conversation_id: conversation.id, task_id: '', role: 'user',
+      content: '', timestamp: '2026-10-12T00:00:00Z' };
+    const legacy = [{ id: 'legacy', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: message.timestamp }];
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], messages: [message],
+      messageLoadStatusByConversationId: { [conversation.id]: 'ready' }, messageImagesByMessageId: { [message.id]: legacy } }));
+    const oversized = 'data:image/png;base64,' + 'A'.repeat(12 * 1024 * 1024);
+    dbPilotMessageImagesMock.mockImplementation(async () => [{ attachmentId: 'oversized', fileName: 'fixture.png', mimeType: 'image/png', readyDataURL: oversized }]);
+    await store.getState().ensureMessagesLoaded(conversation.id);
+    expect(store.getState().getMessageImages(message.id)).toBe(legacy);
+    expect(store.getState().getConversationMessages(conversation.id)).toEqual([message]);
+    dbPilotMessageImagesMock.mockImplementation(async () => []);
+    await store.getState().ensureMessagesLoaded(conversation.id);
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(2);
+    expect(store.getState().getMessageImages(message.id)).toBe(legacy);
+  });
+
+  it('discards a native image read when its loading lifecycle stops and releases the reservation', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true; c.appState.mode = 'Chat';
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('native-lifecycle'), scope_mode: 'Chat' as const, task_id: null, message_count: 1 };
+    c.chatSnapshotConversations = [{ ...conversation, description: null, group_id: null, project_id: null }];
+    c.chatSnapshotMessages = [{ id: 'native-lifecycle-user', conversation_id: conversation.id, role: 'user', content: '', created_at: '2026-10-12T00:00:00Z' }];
+    const scope = createLifecycleScope();
+    const started = createDeferred<void>();
+    const pending = createDeferred<Awaited<ReturnType<typeof dbPilotMessageImagesMock>>>();
+    dbPilotMessageImagesMock.mockImplementation(() => { started.resolve(); return pending.promise; });
+    const initializing = store.getState().initialize(scope).then(() => null, (error: Error) => error.name);
+    await started.promise;
+    scope.stop();
+    pending.resolve([{ attachmentId: 'retired-image', fileName: 'fixture.png', mimeType: 'image/png', readyDataURL: 'data:image/png;base64,AQID' }]);
+    expect(await initializing).toBe('LifecycleStoppedError');
+    expect(store.getState().getMessageImages('native-lifecycle-user')).toEqual([]);
+    dbPilotMessageImagesMock.mockImplementation(async () => []);
+    await store.getState().ensureMessagesLoaded(conversation.id);
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('failed native image hydration preserves cached images and retries without transcript rollback', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('native-image-retry'), message_count: 1 };
+    const message: ChatMessage = { id: 'native-retry-user', conversation_id: conversation.id, task_id: '', role: 'user',
+      content: 'Persisted', timestamp: '2026-10-12T00:00:00Z' };
+    const cached = [{ id: 'ordinary-cached', mimeType: 'image/png', dataUrl: 'data:image/png;base64,AQID', createdAt: message.timestamp }];
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], messages: [message],
+      messageLoadStatusByConversationId: { [conversation.id]: 'ready' }, messageImagesByMessageId: { [message.id]: cached } }));
+    dbPilotMessageImagesMock.mockImplementation(async () => { throw new Error('synthetic native reader failure'); });
+    await store.getState().ensureMessagesLoaded(conversation.id);
+    expect(store.getState().getMessageImages(message.id)).toEqual(cached);
+    expect(store.getState().getConversationMessages(conversation.id)).toEqual([message]);
+    expect(store.getState().messageLoadStatusByConversationId[conversation.id]).toBe('ready');
+    dbPilotMessageImagesMock.mockImplementation(async () => []);
+    await store.getState().ensureMessagesLoaded(conversation.id);
+    expect(dbPilotMessageImagesMock).toHaveBeenCalledTimes(2);
+    expect(store.getState().getMessageImages(message.id)).toEqual(cached);
+  });
+
+  it('native image hydration ignores a result after conversation deletion', async () => {
+    const c = useChatStoreScenarioContext;
+    c.tauriAvailable = true;
+    const { useChatStore: store } = await c.loadChatStore();
+    const conversation = { ...c.createConversation('native-image-deleted'), scope_mode: 'Chat' as const, task_id: null, message_count: 1 };
+    const message: ChatMessage = { id: 'native-deleted-user', conversation_id: conversation.id, task_id: '', role: 'user',
+      content: '', timestamp: '2026-10-12T00:00:00Z' };
+    store.setState(c.createIdleChatStoreState({ conversations: [conversation], messages: [message],
+      messageLoadStatusByConversationId: { [conversation.id]: 'ready' } }));
+    const pending = createDeferred<Array<{ attachmentId: string; fileName: string; mimeType: string; readyDataURL: string }>>();
+    dbPilotMessageImagesMock.mockImplementation(() => pending.promise);
+    const loading = store.getState().ensureMessagesLoaded(conversation.id);
+    await store.getState().deleteConversation(conversation.id);
+    pending.resolve([{ attachmentId: 'deleted-image', fileName: 'fixture.png', mimeType: 'image/png', readyDataURL: 'data:image/png;base64,AQID' }]);
+    await loading;
+    expect(store.getState().getMessageImages(message.id)).toEqual([]);
+    expect(store.getState().messages).toEqual([]);
+  });
+
   it('ordinary image send retains the draft on quota failure and retries once after storage reconstruction', async () => {
     const c = useChatStoreScenarioContext;
     c.tauriAvailable = true; c.appState.mode = 'Chat';

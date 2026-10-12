@@ -30,6 +30,7 @@ async fn accepts_develop_v9_with_historical_pilot_v5_stamp() {
             (9, "009_conversation_goals".into()),
             (10, "010_pilot_tool_trace_revisions".into()),
             (11, "011_conversation_management".into()),
+            (12, "012_pilot_files".into()),
         ]
     );
 }
@@ -116,7 +117,7 @@ async fn rehearses_upgrade_on_external_database_copy() {
             .unwrap()
             .iter()
             .max(),
-        Some(&11)
+        Some(&12)
     );
 }
 

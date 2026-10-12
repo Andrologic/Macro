@@ -661,3 +661,5 @@ export type { ConversationMetadata, ConversationActionInput, ConversationActionR
 export type { HostTelemetryDto, HostTelemetryAvailability, HostTelemetryReason } from "../types/generated/ipc";
 
 export { hostTelemetryRead } from "./ipc/hostTelemetry";
+
+export * from "./ipc/pilotFiles";

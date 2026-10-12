@@ -363,7 +363,8 @@
     },
     {
       "families": [
-        "db"
+        "db",
+        "pilot_files"
       ],
       "name": "ConversationCitation",
       "origin": "macro_lib::db::models::ConversationCitation",
@@ -1355,7 +1356,8 @@
     },
     {
       "families": [
-        "db"
+        "db",
+        "pilot_files"
       ],
       "name": "Message",
       "origin": "macro_lib::db::models::Message",
@@ -1384,6 +1386,222 @@
       "name": "OrphanSecretDto",
       "origin": "macro_lib::config::commands::OrphanSecretDto",
       "path": "OrphanSecretDto.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotAttachmentMetadata",
+      "origin": "macro_lib::db::pilot_files::PilotAttachmentMetadata",
+      "path": "PilotAttachmentMetadata.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotCitationScope",
+      "origin": "macro_lib::db::pilot_files::PilotCitationScope",
+      "path": "PilotCitationScope.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotConversationKind",
+      "origin": "macro_lib::db::pilot_files::PilotConversationKind",
+      "path": "PilotConversationKind.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileAuthorizeInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileAuthorizeInput",
+      "path": "PilotFileAuthorizeInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileBeginInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileBeginInput",
+      "path": "PilotFileBeginInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileChunkInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileChunkInput",
+      "path": "PilotFileChunkInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContentState",
+      "origin": "macro_lib::db::pilot_files::PilotFileContentState",
+      "path": "PilotFileContentState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContextRef",
+      "origin": "macro_lib::db::pilot_files::PilotFileContextRef",
+      "path": "PilotFileContextRef.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileContextState",
+      "origin": "macro_lib::db::pilot_files::PilotFileContextState",
+      "path": "PilotFileContextState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileGuard",
+      "origin": "macro_lib::db::pilot_files::PilotFileGuard",
+      "path": "PilotFileGuard.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileImage",
+      "origin": "macro_lib::db::pilot_files::PilotFileImage",
+      "path": "PilotFileImage.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileRead",
+      "origin": "macro_lib::db::pilot_files::PilotFileRead",
+      "path": "PilotFileRead.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileReadInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileReadInput",
+      "path": "PilotFileReadInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileReceipt",
+      "origin": "macro_lib::db::pilot_files::PilotFileReceipt",
+      "path": "PilotFileReceipt.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileRef",
+      "origin": "macro_lib::db::pilot_files::PilotFileRef",
+      "path": "PilotFileRef.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileScope",
+      "origin": "macro_lib::db::pilot_files::PilotFileScope",
+      "path": "PilotFileScope.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileSource",
+      "origin": "macro_lib::db::pilot_files::PilotFileSource",
+      "path": "PilotFileSource.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileSourceKind",
+      "origin": "macro_lib::db::pilot_files::PilotFileSourceKind",
+      "path": "PilotFileSourceKind.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileState",
+      "origin": "macro_lib::db::pilot_files::PilotFileState",
+      "path": "PilotFileState.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotFileTransferInput",
+      "origin": "macro_lib::db::pilot_files::PilotFileTransferInput",
+      "path": "PilotFileTransferInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotInspectAttachmentsInput",
+      "origin": "macro_lib::db::pilot_files::PilotInspectAttachmentsInput",
+      "path": "PilotInspectAttachmentsInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotPrepareSendInput",
+      "origin": "macro_lib::db::pilot_files::PilotPrepareSendInput",
+      "path": "PilotPrepareSendInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotPreparedSend",
+      "origin": "macro_lib::db::pilot_files::PilotPreparedSend",
+      "path": "PilotPreparedSend.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendMarkInput",
+      "origin": "macro_lib::db::pilot_files::PilotSendMarkInput",
+      "path": "PilotSendMarkInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendReadInput",
+      "origin": "macro_lib::db::pilot_files::PilotSendReadInput",
+      "path": "PilotSendReadInput.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendReceipt",
+      "origin": "macro_lib::db::pilot_files::PilotSendReceipt",
+      "path": "PilotSendReceipt.ts"
+    },
+    {
+      "families": [
+        "pilot_files"
+      ],
+      "name": "PilotSendState",
+      "origin": "macro_lib::db::pilot_files::PilotSendState",
+      "path": "PilotSendState.ts"
     },
     {
       "families": [
