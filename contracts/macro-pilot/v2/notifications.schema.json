@@ -1,0 +1,701 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/notifications.schema.json",
+  "title": "Macro Pilot account notifications 2.0",
+  "description": "Separate additive account-operation contract. No instance capability and no dependency on the legacy v2 root.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/response"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "notificationIdentity": {
+      "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v1/common.schema.json#/$defs/questionStepId"
+    },
+    "notificationRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "notificationEnrollment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enrollment_id",
+        "revision",
+        "enabled"
+      ],
+      "properties": {
+        "enrollment_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "revision": {
+          "$ref": "#/$defs/notificationRevision"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "notificationRemovedEnrollment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enrollment_id",
+        "revision",
+        "state",
+        "enabled"
+      ],
+      "properties": {
+        "enrollment_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "revision": {
+          "$ref": "#/$defs/notificationRevision"
+        },
+        "state": {
+          "const": "removed"
+        },
+        "enabled": {
+          "const": false
+        }
+      }
+    },
+    "notificationDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "instance_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "instance_activity"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        }
+      }
+    },
+    "notificationResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destination",
+        "observed_at",
+        "expires_at"
+      ],
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/notificationDestination"
+        },
+        "observed_at": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v1/common.schema.json#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "https://schemas.macro.andrologic.ai/macro-pilot/v1/common.schema.json#/$defs/timestamp"
+        }
+      }
+    },
+    "request_notifications.register": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.register"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "application",
+            "environment",
+            "token",
+            "idempotency_key"
+          ],
+          "properties": {
+            "provider": {
+              "enum": [
+                "apns",
+                "fcm"
+              ]
+            },
+            "application": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            },
+            "environment": {
+              "enum": [
+                "sandbox",
+                "production"
+              ]
+            },
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "idempotency_key": {
+              "$ref": "#/$defs/notificationIdentity"
+            },
+            "enrollment_id": {
+              "$ref": "#/$defs/notificationIdentity"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/notificationRevision"
+            }
+          },
+          "dependentRequired": {
+            "enrollment_id": [
+              "expected_revision"
+            ],
+            "expected_revision": [
+              "enrollment_id"
+            ]
+          },
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "fcm"
+              }
+            },
+            "required": [
+              "provider"
+            ]
+          },
+          "then": {
+            "properties": {
+              "environment": {
+                "const": "production"
+              }
+            }
+          }
+        }
+      }
+    },
+    "response_notifications.register": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.register"
+        },
+        "result": {
+          "$ref": "#/$defs/notificationEnrollment"
+        }
+      }
+    },
+    "error_notifications.register": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "error"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.register"
+        },
+        "code": {
+          "enum": [
+            "validation_failed",
+            "not_found",
+            "conflict",
+            "stale_revision",
+            "resource_limit",
+            "forbidden",
+            "unavailable"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "request_notifications.preference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.preference"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enrollment_id",
+            "enabled",
+            "expected_revision",
+            "idempotency_key"
+          ],
+          "properties": {
+            "enrollment_id": {
+              "$ref": "#/$defs/notificationIdentity"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/notificationRevision"
+            },
+            "idempotency_key": {
+              "$ref": "#/$defs/notificationIdentity"
+            }
+          }
+        }
+      }
+    },
+    "response_notifications.preference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.preference"
+        },
+        "result": {
+          "$ref": "#/$defs/notificationEnrollment"
+        }
+      }
+    },
+    "error_notifications.preference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "error"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.preference"
+        },
+        "code": {
+          "enum": [
+            "validation_failed",
+            "not_found",
+            "conflict",
+            "stale_revision",
+            "resource_limit",
+            "forbidden",
+            "unavailable"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "request_notifications.unregister": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.unregister"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enrollment_id",
+            "expected_revision",
+            "idempotency_key"
+          ],
+          "properties": {
+            "enrollment_id": {
+              "$ref": "#/$defs/notificationIdentity"
+            },
+            "expected_revision": {
+              "$ref": "#/$defs/notificationRevision"
+            },
+            "idempotency_key": {
+              "$ref": "#/$defs/notificationIdentity"
+            }
+          }
+        }
+      }
+    },
+    "response_notifications.unregister": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.unregister"
+        },
+        "result": {
+          "$ref": "#/$defs/notificationRemovedEnrollment"
+        }
+      }
+    },
+    "error_notifications.unregister": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "error"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notifications.unregister"
+        },
+        "code": {
+          "enum": [
+            "validation_failed",
+            "not_found",
+            "conflict",
+            "stale_revision",
+            "resource_limit",
+            "forbidden",
+            "unavailable"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "request_notification.resolve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "body"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notification.resolve"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "notification_id"
+          ],
+          "properties": {
+            "notification_id": {
+              "$ref": "#/$defs/notificationIdentity"
+            }
+          }
+        }
+      }
+    },
+    "response_notification.resolve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "result"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notification.resolve"
+        },
+        "result": {
+          "$ref": "#/$defs/notificationResolution"
+        }
+      }
+    },
+    "error_notification.resolve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "request_id",
+        "account_id",
+        "operation",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2.0"
+        },
+        "type": {
+          "const": "error"
+        },
+        "request_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "account_id": {
+          "$ref": "#/$defs/notificationIdentity"
+        },
+        "operation": {
+          "const": "notification.resolve"
+        },
+        "code": {
+          "enum": [
+            "validation_failed",
+            "not_found",
+            "conflict",
+            "stale_revision",
+            "resource_limit",
+            "forbidden",
+            "unavailable"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "request": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/request_notifications.register"
+        },
+        {
+          "$ref": "#/$defs/request_notifications.preference"
+        },
+        {
+          "$ref": "#/$defs/request_notifications.unregister"
+        },
+        {
+          "$ref": "#/$defs/request_notification.resolve"
+        }
+      ]
+    },
+    "response": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/response_notifications.register"
+        },
+        {
+          "$ref": "#/$defs/response_notifications.preference"
+        },
+        {
+          "$ref": "#/$defs/response_notifications.unregister"
+        },
+        {
+          "$ref": "#/$defs/response_notification.resolve"
+        }
+      ]
+    },
+    "error": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/error_notifications.register"
+        },
+        {
+          "$ref": "#/$defs/error_notifications.preference"
+        },
+        {
+          "$ref": "#/$defs/error_notifications.unregister"
+        },
+        {
+          "$ref": "#/$defs/error_notification.resolve"
+        }
+      ]
+    }
+  }
+}

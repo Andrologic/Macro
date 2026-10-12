@@ -1,0 +1,14 @@
+{
+  "contract_version": "2.0",
+  "type": "request",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "notifications.register",
+  "body": {
+    "provider": "apns",
+    "application": "ai.macro.synthetic",
+    "environment": "production",
+    "token": "synthetic-notification-token-00000000000000000000000000000000000",
+    "idempotency_key": "idempotency-demo"
+  }
+}

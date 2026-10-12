@@ -1,0 +1,13 @@
+{
+  "contract_version": "2.0",
+  "type": "request",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "notifications.preference",
+  "body": {
+    "enrollment_id": "enrollment-demo",
+    "enabled": true,
+    "expected_revision": 0,
+    "idempotency_key": "idempotency-demo"
+  }
+}

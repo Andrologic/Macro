@@ -1,0 +1,13 @@
+{
+  "root": "https://schemas.macro.andrologic.ai/macro-pilot/v2/notifications.schema.json",
+  "resources": [
+    {
+      "path": "../v1/common.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/common.schema.json"
+    },
+    {
+      "path": "notifications.schema.json",
+      "id": "https://schemas.macro.andrologic.ai/macro-pilot/v2/notifications.schema.json"
+    }
+  ]
+}
