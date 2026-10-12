@@ -661,3 +661,57 @@ fixture also checks path ownership, final counts/content/metadata, committed
 append IDs, integrity and reopening, then closes and removes its own directory.
 Commit-to-file plus reopening is the tested durability boundary; process kill,
 power failure and physical-storage guarantees are untested.
+
+
+### Executed ordinal-decoding comparison
+
+Product base `3ed3a91981ae6d8a5e9811469fe89582c878c1db` was compared with
+`c08df292ba7a2db04f40de1e871676640b5c43c5` on clean sources. An intermediate
+benchmark-only revision `f55d5558f67971f3a777c5eaa2427bfada4a60f3` supplied the
+before-stage diagnostics and an unchanged-product control. All groups used
+Rust/Cargo 1.97.1, native SQLite 3.46.0, the reduced debug settings above,
+one offline locked Cargo job, and the same cache. Each series ran in three
+successive fresh processes from a verified private binary, after Cargo exited.
+Values are milliseconds, median of the three process-level p50 / p95 values.
+
+| Seed messages | Base read | Candidate read | Base create + metadata + commit | Candidate create + metadata + commit | Final rows |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1.356 / 1.451 | 0.934 / 0.984 | 0.436 / 0.587 | 0.433 / 0.575 | 210 |
+| 1,000 | 12.992 / 13.194 | 8.679 / 8.914 | 0.510 / 1.163 | 0.503 / 1.135 | 1,110 |
+| 10,000 | 129.175 / 135.728 | 87.173 / 88.383 | 1.223 / 1.734 | 1.217 / 1.741 | 10,110 |
+
+| Diagnostic, 10,000 rows | Before p50 / p95 | After p50 / p95 |
+| --- | ---: | ---: |
+| Direct SQLite prepare/bind/step/finalize | 5.969 / 6.184 | 6.126 / 6.261 |
+| Pool acquisition | 0.088 / 0.125 | 0.091 / 0.119 |
+| SQLx fetch_all | 61.505 / 63.254 | 61.390 / 62.514 |
+| SQLx rows to Message | 67.850 / 68.550 | 25.826 / 26.735 |
+
+The 10,000-row actual repository read decreased by 32.5% at p50 and
+34.9% at p95 in this debug fixture. The conversion diagnostic decreased
+by 61.9% at p50. The only product change decodes the existing explicit
+14-column projection by ordinal rather than looking up every column name. The
+diagnostic now calls that actual mapper. An independent named-decode test with
+distinct field values, nullable fields, Unicode and timestamp/ID ties protects
+the projection contract. Statement contents, ordering, result volume, pool,
+transactions, metadata refresh and migrations are unchanged. Source comparison
+confirmed the complete create/metadata functions were identical. No write gain
+is established.
+
+Query plans used `idx_messages_conversation_created_at_id` for ordered reads
+and latest-row selection, and the covering `idx_messages_conversation` for
+COUNT, with no temporary sorting tree. The schema fingerprint was
+`a0719d4aeb484b4293317cfe6b95a8d6c15b72a9be12f0fdd5af6cc1315df283` in all diagnostic processes, and VM-step counts matched
+before/after. The exploratory 512-row channel did not yield a stable fetch gain;
+the default remains 50. COUNT cost scales with history size, but replacing it
+with a cached increment would change the metadata recomputation contract and
+was not justified by these observations.
+
+All 29 repository tests, native self-tests and the two staging/provenance tests
+passed. Every measured fixture passed its count, content, metadata, integrity,
+reopen and cleanup checks. Shared-machine load and OS caches were uncontrolled,
+outliers were retained, and no cold-disk, release-profile, large optional-payload,
+JavaScript, transport, production or UI speedup is established. The old Bun
+in-memory and historical 128 ms values are separate references. Full aggregate
+reports, process timestamps/load, manifests, source/binary fingerprints and
+superseded build failures remain outside Git.
