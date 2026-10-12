@@ -12,8 +12,12 @@ export function createNotificationsValidator(shape) {
 
   /** Synchronous shape and within-envelope checks; does not authorize an actor. */
   function validateMessage(message) {
-    if (!shape(message)) return { valid: false, errors: structuredClone(shape.errors) };
-    if (bytes(JSON.stringify(message)) > 262144) return fail('Envelope exceeds 256 KiB');
+    // AJV diagnostics can copy unknown property names supplied by the caller.
+    // Return a fixed reason so tokens in malformed keys remain private.
+    try {
+      if (!shape(message)) return fail('Invalid notification envelope');
+      if (bytes(JSON.stringify(message)) > 262144) return fail('Envelope exceeds 256 KiB');
+    } catch { return fail('Invalid notification envelope'); }
     if (message.type === 'request' && message.operation === 'notifications.register'
       && bytes(message.body.token) > 4096) return fail('Token exceeds 4096 UTF-8 bytes');
     if (message.type === 'error' && message.code !== 'unavailable' && message.retryable)
