@@ -123,5 +123,11 @@ Architect and Implement, conditional projects, migration and legacy behavior.
 Relay and mobile consumers must implement its selection and invalidation rules
 before enabling `network-reliability-1`.
 
+Conversation, catalog, search and conditional project read results revalidate
+current authorization and their source after native credential waits, immediately
+before each transport emission. Retries keep the original response and request;
+an invalidated capture blocks emission. This read guard does not reopen a
+mutation's effect lease or dispatch a command again.
+
 For the negotiated mobile conversation catalog, search, observed reading and Chat
 management operations, see [mobile conversations contract](../../../docs/mobile-conversations-contract.md).

@@ -103,6 +103,10 @@ export class ConversationCaptures {
       const current = await this.observe(operation === 'projects.list', new Set(operation === 'conversation.read' ? [(filter as ConversationRef).conversation_id] : []));
       const revision = scope.reliability && operation === 'conversation.read' ? current.resources[stableJson(filter)] : current.revision;
       if (capture.revision !== revision) throw new ConversationCaptureError('stale_revision');
+      if ((this.deps.now ?? Date.now)() >= capture.observed + 300000) {
+        this.captures.delete(snapshotId);
+        throw new ConversationCaptureError('snapshot_expired');
+      }
     });
   }
   /** Observe after source/policy changes to persist invalidation even without a read.

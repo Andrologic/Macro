@@ -156,6 +156,23 @@ export class ConversationManager {
     return { page: { snapshot_id: snapshotId, revision: snapshot.revision, observed_at: new Date(snapshot.observed).toISOString(), expires_at: new Date(snapshot.observed + 300000).toISOString(), export_policy_revision: policy.revision,
       offset, total: snapshot.items.length, next_cursor: cursor, ...(backward ? { direction: 'backward' as const } : {}) }, items };
   }
+  /** Recheck frozen pages after transport waits without allocating another page
+   * or read ticket. A fresh catalog alone cannot validate transcript bytes. */
+  async validateEmission(delivery: ContentDelivery, result: unknown, policy: TextPolicy): Promise<void> {
+    const epoch = this.epoch;
+    this.prune();
+    const page = (result as { page: PageMetadata }).page;
+    const snapshot = this.snapshots.get(page.snapshot_id);
+    const target = { operation: delivery.request.operation, ...delivery.request.body } as Record<string, unknown>;
+    delete target.continuation;
+    if (!snapshot || snapshot.binding !== this.binding(delivery, target)) fail('snapshot_expired');
+    if (delivery.request.operation === 'conversation.window') {
+      await this.deps.captures.validateCached({ accountId: delivery.account_id, sessionId: delivery.source_session_id,
+        instanceId: delivery.instance_id, reliability: true }, 'conversation.read', delivery.request.body.ref, snapshot.nativeSnapshot!);
+    } else if ((await this.catalog(policy)).fingerprint !== snapshot.fingerprint) fail('stale_revision');
+    if (epoch !== this.epoch) fail('unavailable');
+    if (snapshot.observed + 300000 <= this.now()) fail('snapshot_expired');
+  }
   async handle(delivery: ContentDelivery, policy: TextPolicy, authorize: () => Promise<string>): Promise<unknown> {
     const epoch = this.epoch;
     const check = () => { if (epoch !== this.epoch) fail('unavailable'); };

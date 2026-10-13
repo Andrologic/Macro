@@ -6,7 +6,7 @@ import { TASK_COMPLETION_CAPABILITIES } from './taskCompletionHost';
 import { findPilotTask, pilotTaskId, resolvePilotTask, resolvePilotStartTask } from './taskIdentity';
 import { createDesktopContentHost } from './desktopContentHost';
 import type { ContentHost } from './contentHost';
-import type { ContentDelivery } from './contentProtocol';
+import { CONVERSATION_READ_OPERATIONS, type ContentDelivery } from './contentProtocol';
 import type { DesktopStorePorts } from './desktopStorePorts';
 import { isAppShutdownGateActive } from '../appShutdownGate';
 import { frontendLog, gitBranchList, gitReviewSnapshot } from '../tauriIpc';
@@ -261,7 +261,9 @@ export class PilotRuntime {
                 : FILE_OPERATIONS.has((response.data as ContentDelivery).request.operation)
                   ? () => host.validateFileEmission(response.data as ContentDelivery, result, authorizeContent)
                   : (response.data as ContentDelivery).request.operation === REFLECTION_OPERATION
-                    ? () => host.validateReflectionEmission(response.data as ContentDelivery,result,authorizeContent) : undefined); break;
+                    ? () => host.validateReflectionEmission(response.data as ContentDelivery,result,authorizeContent)
+                    : CONVERSATION_READ_OPERATIONS.has((response.data as ContentDelivery).request.operation)
+                      ? () => host.validateConversationEmission(response.data as ContentDelivery, result, authorizeContent) : undefined); break;
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
         failures = 0;

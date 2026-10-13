@@ -8,6 +8,12 @@ import {
 } from './contentValidators.generated';
 import type { ContentMessage, ContentRequest } from './contentTypes.generated';
 
+/** Read results need source validation after credential waits and on every retry. */
+export const CONVERSATION_READ_OPERATIONS = new Set([
+  'projects.list', 'conversations.list', 'conversation.read',
+  'conversations.catalog', 'conversations.search', 'conversation.window',
+]);
+
 export type * from './contentTypes.generated';
 export type { ContentValidation } from './contentValidators.generated';
 

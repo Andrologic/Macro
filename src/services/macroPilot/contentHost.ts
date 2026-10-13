@@ -7,7 +7,7 @@ import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSour
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef, type CatalogObservation } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
-import { validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
+import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity, validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
 import type { KernelStorage } from './kernel';
 import { PilotError, stableJson } from './protocol';
 
@@ -54,6 +54,7 @@ export class ContentHost {
   private snapshots = new Map<string, Snapshot>();
   private replies = new Map<string, { digest: string; expires: number; response: unknown }>();
   private policyKey: string | null = null;
+  private readonly conversationEmissions = new WeakMap<object, { binding: string; policy: string | null }>();
   private readonly machineEmissions = new WeakMap<object, { policy: string | null; context?: string }>();
   private reviewOffset = 0;
   private reliability = false;
@@ -404,12 +405,6 @@ export class ContentHost {
         } else {
           const cached = this.replies.get(replyKey);
           if (cached && cached.expires > this.now()) {
-            if (request.operation === 'projects.list' || request.operation === 'conversations.list' || request.operation === 'conversation.read') {
-              const result = (cached.response as { result: { page?: { snapshot_id: string } } }).result;
-              if (result.page) await this.deps.conversations.validateCached({ accountId: delivery.account_id, sessionId: delivery.source_session_id,
-                instanceId: delivery.instance_id, reliability: request.body.consistency === 'network-reliability-1' }, request.operation,
-                request.operation === 'conversation.read' ? request.body.ref : request.operation === 'conversations.list' ? request.body.kind : null, result.page.snapshot_id);
-            }
             if (request.operation === 'diff.files' || request.operation === 'diff.read') this.snapshot(delivery, request.body.ref, request.body.snapshot_id);
             if (request.operation === 'review.get') {
               const capture = (cached.response as { result: ContentCapture }).result;
@@ -419,7 +414,11 @@ export class ContentHost {
             if (cached.digest !== requestDigest) failure('conflict');
             await this.policy(); guard();
             if (readingPolicy !== this.policyKey) failure('snapshot_expired');
-            return { transport_version: '2.0', type: 'delivery.result', request_id: delivery.request_id, instance_id: delivery.instance_id, response: structuredClone(cached.response) } as ContentDeliveryResult;
+            await this.validateConversationResult(delivery, (cached.response as { result: unknown }).result);
+            guard();
+            const response = structuredClone(cached.response) as object;
+            this.conversationEmissions.set(response, { binding: stableJson(delivery), policy: readingPolicy });
+            return { transport_version: '2.0', type: 'delivery.result', request_id: delivery.request_id, instance_id: delivery.instance_id, response } as ContentDeliveryResult;
           }
           result = await this.read(delivery, request); await authorizeNow();
         }
@@ -439,10 +438,12 @@ export class ContentHost {
           if (request.operation === 'project.icon') this.machines!.validate(request.body.ref, machineContext!);
           if (Date.parse((result as { expires_at: string }).expires_at) <= this.now() || Date.parse((result as { observed_at: string }).observed_at) > this.now()) failure('snapshot_expired');
         }
+        await this.validateConversationResult(delivery, result); guard();
         response = { contract_version: '2.0', type: 'response', request_id: request.request_id, account_id: request.account_id, operation: request.operation, result };
         if (!validateContentResponse(request, response) || !await validateContentIntegrity(response)) failure('content_unavailable');
         await this.policy(); guard();
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
+        if (CONVERSATION_READ_OPERATIONS.has(request.operation)) this.conversationEmissions.set(response as object, { binding: stableJson(delivery), policy: readingPolicy });
         if (request.operation === REFLECTION_OPERATION) this.reflectionEmissions.set(response as object, readingPolicy);
         if (FILE_OPERATIONS.has(request.operation)) this.fileEmissions.set(response as object, readingPolicy);
         if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext });
@@ -478,6 +479,47 @@ export class ContentHost {
         const next = structuredClone(this.state); next.outbox.shift(); await this.save(next);
       });
     }
+  }
+  private async validateConversationResult(delivery: ContentDelivery, result: unknown): Promise<void> {
+    const request = delivery.request;
+    if (!CONVERSATION_READ_OPERATIONS.has(request.operation)) return;
+    if (CONVERSATION_OPERATIONS.has(request.operation)) {
+      if (!this.deps.conversationManagement) failure('content_unavailable');
+      await this.deps.conversationManagement!.validateEmission(delivery, result, await this.policy());
+      return;
+    }
+    const scope = { accountId: delivery.account_id, sessionId: delivery.source_session_id,
+      instanceId: delivery.instance_id, reliability: 'consistency' in request.body && request.body.consistency === 'network-reliability-1' };
+    const payload = result as { page?: { snapshot_id: string }; revision?: number };
+    if (request.operation === 'projects.list' && !payload.page) {
+      if (await this.deps.conversations.refreshProjects() !== payload.revision) failure('stale_revision');
+    } else {
+      await this.deps.conversations.validateCached(scope, request.operation as 'projects.list' | 'conversations.list' | 'conversation.read',
+        request.operation === 'conversation.read' ? request.body.ref : request.operation === 'conversations.list' ? request.body.kind : null, payload.page!.snapshot_id);
+    }
+  }
+  /** Source checks run after the last asynchronous authorization/credential wait.
+   * Read retries refresh authority without extending any mutation's effect lease. */
+  async validateConversationEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {
+    if (!CONVERSATION_READ_OPERATIONS.has(delivery.request.operation)) return;
+    await this.serial(async () => {
+      if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
+        !validateContentResponse(delivery.request, result.response)) failure('unavailable');
+      const retained = this.conversationEmissions.get(result.response);
+      if (result.response.type === 'response' && (!retained || retained.binding !== stableJson(delivery))) failure('snapshot_expired');
+      await this.policy();
+      const deadline = Date.parse(await authorize(delivery)); this.check();
+      await this.policy();
+      if (retained && retained.policy !== this.policyKey) failure('snapshot_expired');
+      const guard = () => {
+        this.check();
+        if (!Number.isFinite(deadline) || deadline <= this.now() || deadline > this.now() + 10000 ||
+          deadline > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
+      };
+      guard();
+      if (result.response.type === 'response') await this.validateConversationResult(delivery, result.response.result);
+      guard();
+    });
   }
   /** Revalidate just before every transport emission, including retries. */
   async validateMachineEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {

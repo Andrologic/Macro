@@ -602,7 +602,7 @@ it('retries an identical result after its execution lease expires without execut
     await until(() => h.results.filter(result => result.request_id === input.request_id).length === 2);
     const replies = h.results.filter(result => result.request_id === input.request_id);
     expect(replies[1]).toEqual(replies[0]);
-    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(3);
   } finally { await h.runtime.stop(); }
 }, 12000);
 
@@ -781,4 +781,50 @@ it('keeps demand-only producers idle across observation, stop and restart withou
       telemetry_icon_reflection_file_calls: demandCalls().length, transcript_reads: 0,
       remote_results: h.results.length, changed_events: h.events.length, paused_native_calls: pausedCalls }));
   } finally { await h.runtime.stop(); runtimeWindow.__TAURI_INTERNALS__ = oldRuntime; }
+});
+
+for (const change of ['modify', 'delete'] as const) it(`refuses a transcript changed during final relay authorization: ${change}`, async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    h.authorize(() => {
+      if (change === 'modify') messages[0].content = 'Changed during authorization';
+      else conversations = [];
+    });
+    const result = await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, consistency: 'network-reliability-1' }));
+    expect(result).toMatchObject({ type: 'error', code: 'stale_revision' });
+    expect(JSON.stringify(result)).not.toContain('Hello from persistence');
+  } finally { await h.runtime.stop(); }
+});
+
+for (const change of ['modify', 'delete'] as const) it(`blocks a stale transcript retry after a lost transport acknowledgement: ${change}`, async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    let authorizations = 0;
+    h.authorize(() => {
+      if (++authorizations >= 3) {
+        if (change === 'modify') messages[0].content = 'Changed after the first emission';
+        else conversations = [];
+      }
+    });
+    h.loseResult();
+    const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, consistency: 'network-reliability-1' });
+    expect(await h.deliver(input)).toMatchObject({ type: 'response' });
+    await until(() => authorizations >= 4);
+    await h.runtime.stop();
+    expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
+}, 10000);
+
+it('requires the conversation emission guard in the native producer transport', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } });
+    await h.deliver(input);
+    const result = h.results.find(result => result.request_id === input.request_id)!;
+    await expect(h.client.requestContent(`/pilot/v2/instances/${instanceId}/deliveries/${input.request_id}/result`, result, new AbortController().signal)).rejects.toMatchObject({ code: 'invalid_configuration' });
+    expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(1);
+  } finally { await h.runtime.stop(); }
 });

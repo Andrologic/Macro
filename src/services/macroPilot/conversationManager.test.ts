@@ -216,3 +216,16 @@ test('window revisions follow their native transcript rather than the catalog co
   expect(window.page.revision).toBe(card.content_revision);
   expect(window.items).toHaveLength(4);
 });
+
+for (const operation of ['conversations.catalog', 'conversations.search', 'conversation.window'] as const) test(`rechecks a prepared management page before emission: ${operation}`, async () => {
+  const s = setup(); s.add(message('answer', s.ref.conversation_id));
+  const body = operation === 'conversation.window' ? { ref: s.ref } : { instance_id: 'instance', kind: 'conversation', ...(operation === 'conversations.search' ? { query: 'cafe' } : {}) };
+  const delivery = s.delivery(operation, body);
+  const result = await s.manager.handle(delivery, policy, async () => new Date(s.clock() + 9000).toISOString());
+  await s.manager.validateEmission(delivery, result, policy);
+  if (operation === 'conversation.window') s.messages[0].content = 'Changed observed response';
+  else s.conversations[0].title = 'Changed card title';
+  await expect(s.manager.validateEmission(delivery, result, policy)).rejects.toThrow('stale_revision');
+  s.clear();
+  await expect(s.manager.validateEmission(delivery, result, policy)).rejects.toThrow('snapshot_expired');
+});
