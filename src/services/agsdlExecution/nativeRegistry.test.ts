@@ -31,7 +31,7 @@ it('compiles approved Editions and projects absent provider settings from the ex
   const result = await compilePlan(source, { owner: { projectId: 'synthetic', planId: 'plan', branch: 'feature/test' }, revision: '1', sourceSha256: id(await sourceDigest(source)) }, registry);
   expect(result.runtime.supported).toBe(true);
   expect(result.plan!.agents[0].settingsJson).toBe(json('{"providerId":"p","modelId":"m"}'));
-  expect(result.productRuntimeAvailable).toBe(false);
+  expect(result.productRuntimeAvailable).toBe(true);
 });
 
 it('never promotes authored requirements or claims to adapter proof', () => {

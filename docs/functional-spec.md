@@ -1457,7 +1457,16 @@ Les règles suivantes sont fondatrices :
 - Plusieurs plans peuvent coexister en parallèle.
 - Les plans archivés restent lisibles mais non modifiables.
 - L'IA construit le document AgSDL avec l'utilisateur ; sa conception ne lance
-  pas le graphe.
+  pas le graphe. L'utilisateur peut vérifier puis lancer explicitement une
+  exécution depuis le panneau droit, avec un message d'entrée.
+- Le profil initial exécute les agents via le moteur Macro, leurs transmissions,
+  les préparations, les conditions et les outils locaux pris en charge. Les
+  compositions, Terminal, les MCP et les fournisseurs à processus externe
+  restent hors de ce profil ; le chat reçoit les diagnostics détaillés.
+- Les exécutions conservent leur capture et leur historique après rechargement.
+  Stop attend une preuve native de terminaison locale. Après un crash, un
+  résultat perdu reste signalé et aucun effet n'est rejoué automatiquement.
+  L'arrêt ne signifie pas que les fichiers déjà modifiés ont été restaurés.
 - La préparation automatique des branches et worktrees concerne les plans
   historiques exécutables, pas les nouveaux plans AgSDL.
 - Toute tâche Git complétée se termine par un commit. Une tâche en édition directe se termine par l'acceptation de son checkpoint, sans commit dans le projet utilisateur.

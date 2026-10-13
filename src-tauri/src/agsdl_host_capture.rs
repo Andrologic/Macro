@@ -385,7 +385,11 @@ impl CompilationCapture {
                 .into(),
             diagnostics,
             incomplete: findings.len() > 64,
-            product_runtime_available: false,
+            product_runtime_available: self
+                .result
+                .get("productRuntimeAvailable")
+                .and_then(Value::as_bool)
+                == Some(true),
         }
     }
 }

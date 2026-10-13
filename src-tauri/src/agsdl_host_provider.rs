@@ -284,7 +284,7 @@ pub(crate) async fn finish(
         .cancel_owned(&request_id)
         .await;
     // The physical cancellation above is attempted even for a revoked owner;
-    // only the durable settlement depends on current ownership.
+    // its original correlated native end receipt remains valid after rotation.
     let identity = EngineEffectIdentity::Provider {
         provider_attempt_id: request_id.clone(),
     };

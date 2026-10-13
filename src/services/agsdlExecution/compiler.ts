@@ -7,7 +7,7 @@ import { captureSourceRevision, metadataIdentity, metadataObject } from './metad
 
 export const COMPILER_VERSION = 'macro-agsdl-inline-compiler/1' as const;
 export const CONFORMANCE_VERSION = 'macro-agsdl-conformance/1' as const;
-export const PRODUCT_RUNTIME_AVAILABLE = false as const;
+export const PRODUCT_RUNTIME_AVAILABLE = true as const;
 export interface CompiledStep {
   readonly address: StepAddress;
   readonly declarationJson: ExactJsonText;
@@ -32,7 +32,7 @@ export interface CompilationResult {
   readonly runtime: RuntimeAssessment;
   readonly plan: CompiledPlan | null;
   readonly compiledPlanJson: ExactJsonText | null;
-  readonly productRuntimeAvailable: false;
+  readonly productRuntimeAvailable: boolean;
 }
 /** Credential key checks apply only to authored/effective settings, not public data or schemas. */
 function rejectSettingsSecrets(value: ExactValue, pointer: string): void {

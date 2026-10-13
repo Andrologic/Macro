@@ -18,12 +18,12 @@ function withCall() {
   return { doc, registry: { ...registry, bindings: [...registry.bindings.filter(binding => record(decode(binding.declarationJson)).implementation !== undefined && encode(decode(binding.declarationJson)) !== encode(callDeclaration())), invocationFixture(encode(callDeclaration()), searchSchema())] } };
 }
 describe('versioned compiler and fail-closed runtime assessment', () => {
-  it('compiles exact fixed configurations and serial routes while product availability stays false', async () => {
+  it('enables the qualified runtime for exact fixed configurations and serial routes', async () => {
     const result = await compileFixture(documentFixture());
     expect(result.static.valid).toBe(true);
     expect(result.runtime.supported).toBe(true);
-    expect(result.productRuntimeAvailable).toBe(false);
-    expect(PRODUCT_RUNTIME_AVAILABLE).toBe(false);
+    expect(result.productRuntimeAvailable).toBe(true);
+    expect(PRODUCT_RUNTIME_AVAILABLE).toBe(true);
     expect(result.plan!.steps[0].maxVisitsJson).toBe(json('1e20'));
     expect(result.plan!.steps[0].address).toEqual(['work']);
     expect(result.plan!.agents[0].settingsJson).toBe(json('{"budget":9007199254740993,"providerId":"synthetic-provider","modelId":"synthetic-model"}'));
@@ -35,6 +35,7 @@ describe('versioned compiler and fail-closed runtime assessment', () => {
     const unsupported = await compileFixture(valid);
     expect(unsupported.static.valid).toBe(true);
     expect(unsupported.runtime.supported).toBe(false);
+    expect(unsupported.productRuntimeAvailable).toBe(false);
     expect(unsupported.plan).toBeNull();
     const invalid = documentFixture(); record(record(invalid.agents).worker).configuration = 'missing';
     expect((await compileFixture(invalid)).static.valid).toBe(false);
