@@ -12,6 +12,9 @@ import type { KernelStorage } from './kernel';
 import { PilotError, stableJson } from './protocol';
 
 export const CONTENT_BUDGET = { conversations: 24 * 1024 * 1024, native: 32 * 1024 * 1024, host: 7 * 1024 * 1024 } as const;
+export type ConversationEmissionDecision =
+  | { type: 'ready' }
+  | { type: 'invalidated'; failure: Error; result: ContentDeliveryResult };
 export interface ReviewTarget { repoPath: string; source: ReviewCaptureSource; branches?: { base: string; head: string } }
 interface ReviewRecord { ref: ContentReviewRef; token: string; revision: number; state: ContentCapture['state'] }
 interface Receipt { digest: string; revision: number }
@@ -499,26 +502,54 @@ export class ContentHost {
         request.operation === 'conversation.read' ? request.body.ref : request.operation === 'conversations.list' ? request.body.kind : null, payload.page!.snapshot_id);
     }
   }
+  private conversationEmissionGrant(delivery: ContentDelivery, result: ContentDeliveryResult) {
+    this.check();
+    if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
+      !validateContentResponse(delivery.request, result.response)) failure('unavailable');
+    const retained = this.conversationEmissions.get(result.response);
+    if (!retained || retained.binding !== stableJson(delivery)) failure('snapshot_expired');
+    this.conversationEmissionLifetime(delivery, retained!);
+    return retained!;
+  }
+  private conversationEmissionLifetime(delivery: ContentDelivery, retained: { authorizedBefore: number }) {
+    this.check();
+    if (!Number.isFinite(retained.authorizedBefore) || !Number.isFinite(Date.parse(delivery.expires_at)) ||
+      retained.authorizedBefore > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
+  }
   /** Recheck source/policy after credential waits using the prepared response's
    * one-shot grant. Relay result acceptance rechecks live access. A result retry
    * may outlive execute_before, but cannot execute an effect or outlive delivery. */
   async validateConversationEmission(delivery: ContentDelivery, result: ContentDeliveryResult): Promise<void> {
     if (!CONVERSATION_READ_OPERATIONS.has(delivery.request.operation)) return;
     await this.serial(async () => {
-      if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
-        !validateContentResponse(delivery.request, result.response)) failure('unavailable');
-      const retained = this.conversationEmissions.get(result.response);
-      if (!retained || retained.binding !== stableJson(delivery)) failure('snapshot_expired');
-      const guard = () => {
-        this.check();
-        if (!Number.isFinite(retained!.authorizedBefore) || !Number.isFinite(Date.parse(delivery.expires_at)) ||
-          retained!.authorizedBefore > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
-      };
-      guard(); await this.policy(); guard();
-      if (retained!.policy !== this.policyKey) failure('snapshot_expired');
+      const retained = this.conversationEmissionGrant(delivery, result);
+      await this.policy(); this.conversationEmissionLifetime(delivery, retained);
+      if (retained.policy !== this.policyKey) failure('snapshot_expired');
       if (result.response.type === 'response') await this.validateConversationResult(delivery, result.response.result);
-      guard();
+      this.conversationEmissionLifetime(delivery, retained);
     });
+  }
+  /** Offer a content-free terminal response for an invalidated read. Only the
+   * runtime knows whether the prepared response has already reached transport. */
+  async prepareConversationEmission(delivery: ContentDelivery, result: ContentDeliveryResult): Promise<ConversationEmissionDecision> {
+    try { await this.validateConversationEmission(delivery, result); return { type: 'ready' }; }
+    catch (error) {
+      if (result.response.type !== 'response' ||
+        !(error instanceof ContentHostError || error instanceof ConversationCaptureError) ||
+        (error.code !== 'stale_revision' && error.code !== 'snapshot_expired')) throw error;
+      const code = error.code;
+      const rejection = error;
+      return this.serial(async () => {
+        const retained = this.conversationEmissionGrant(delivery, result);
+        await this.policy();
+        this.conversationEmissionLifetime(delivery, retained);
+        const response: ContentError = { contract_version: '2.0', type: 'error', request_id: delivery.request_id,
+          account_id: delivery.account_id, operation: delivery.request.operation, code, retryable: false };
+        if (!validateContentResponse(delivery.request, response)) failure('unavailable');
+        this.conversationEmissions.set(response, { ...retained, policy: this.policyKey });
+        return { type: 'invalidated', failure: rejection, result: { ...result, response } };
+      });
+    }
   }
   /** Revalidate just before every transport emission, including retries. */
   async validateMachineEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {

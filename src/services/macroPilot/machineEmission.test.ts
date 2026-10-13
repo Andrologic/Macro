@@ -51,7 +51,7 @@ it.each(['expiry', 'policy', 'revocation'] as const)('refuses %s changes during 
   expect(validateContentMessage(result)).toBe(true);
   await h.host.validateMachineEmission(h.delivery, result, h.authorize);
   delay = true;
-  await expect(client.requestContent('/pilot/v2/instances/instance/deliveries/request/result', result, new AbortController().signal, () => h.host.validateMachineEmission(h.delivery, result, h.authorize))).rejects.toThrow(mode === 'revocation' ? 'unavailable' : 'snapshot_expired');
+  await expect(client.requestContent('/pilot/v2/instances/instance/deliveries/request/result', result, new AbortController().signal, { beforeSend: () => h.host.validateMachineEmission(h.delivery, result, h.authorize) })).rejects.toThrow(mode === 'revocation' ? 'unavailable' : 'snapshot_expired');
   expect(sent).toHaveLength(0);
   await h.host.dispose();
 });

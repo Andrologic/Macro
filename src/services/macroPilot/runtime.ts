@@ -227,7 +227,7 @@ export class PilotRuntime {
     let advertised = false;
     // Retain at most the last delivery for duplicate/retry handling. This
     // checkpoint is scoped to this host generation and expires with the exchange.
-    let pending: { binding: string; expiresAt: number; authorization?: Promise<string>; result?: ContentDeliveryResult } | undefined;
+    let pending: { binding: string; expiresAt: number; authorization?: Promise<string>; result?: ContentDeliveryResult; dispatched?: boolean } | undefined;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       if (pending && pending.expiresAt <= Date.now()) pending = undefined;
       try {
@@ -262,25 +262,42 @@ export class PilotRuntime {
           if (signal.aborted) throw new PilotError('unavailable');
           return deadline;
         };
-        const result = checkpoint.result ??= await host.handle(response.data, authorizeContent);
+        checkpoint.result ??= await host.handle(response.data, authorizeContent);
         for (let attempt = 0; attempt < 3 && !signal.aborted; attempt++) {
+          let replacement: ContentDeliveryResult | undefined;
+          const result = checkpoint.result;
           try {
             // The native transport checks account/session/instance again at emission;
             // D validates the delivery authorization before accepting this result.
             // The host guards execution with execute_before. Delivery retries
             // use the longer exchange lifetime, including a lost acknowledgement.
             if (signal.aborted || !Number.isFinite(deliveryExpiresAt) || Date.now() >= deliveryExpiresAt) throw new PilotError('unavailable');
-            await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal,
-              ['instance.telemetry', 'project.icon'].includes((response.data as ContentDelivery).request.operation)
+            await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal, {
+              onDispatch: () => { checkpoint.dispatched = true; },
+              beforeSend: ['instance.telemetry', 'project.icon'].includes((response.data as ContentDelivery).request.operation)
                 ? () => host.validateMachineEmission(response.data as ContentDelivery, result, authorizeContent)
                 : FILE_OPERATIONS.has((response.data as ContentDelivery).request.operation)
                   ? () => host.validateFileEmission(response.data as ContentDelivery, result, authorizeContent)
                   : (response.data as ContentDelivery).request.operation === REFLECTION_OPERATION
                     ? () => host.validateReflectionEmission(response.data as ContentDelivery,result,authorizeContent)
                     : CONVERSATION_READ_OPERATIONS.has((response.data as ContentDelivery).request.operation)
-                      ? () => host.validateConversationEmission(response.data as ContentDelivery, result) : undefined);
+                      ? async () => {
+                        const decision = await host.prepareConversationEmission(response.data as ContentDelivery, result);
+                        if (decision.type === 'invalidated') {
+                          if (!checkpoint.dispatched) replacement = decision.result;
+                          throw decision.failure;
+                        }
+                      } : undefined });
             break;
-          } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
+          } catch {
+            if (replacement && !checkpoint.dispatched) {
+              // No fetch has been invoked for this exchange. Send the terminal
+              // error with the original grant, without recapture or execution.
+              checkpoint.result = replacement; attempt--; continue;
+            }
+            if (attempt === 2) throw new PilotError('unavailable');
+            await pause(500 * (attempt + 1), signal);
+          }
         }
         failures = 0;
       } catch (error) {

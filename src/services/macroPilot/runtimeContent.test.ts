@@ -58,6 +58,8 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
     const target=conversations.find(c => c.id === args.conversationId);
     return message && target ? { state: 'ready',message: { id: message.id,conversation_id: message.conversation_id,turn_id: message.turn_id ?? null,role: 'assistant',content: message.content,has_hidden_context: Boolean(message.hidden_context),tool_traces: [],conversation_scope_mode: target.scope_mode,conversation_task_id: target.task_id } } : { state: 'unavailable',message: null };
   }
+  if (command === 'db_get_message') return structuredClone(messages.find(m => m.id === args.messageId) ?? null);
+  if (command === 'db_search_messages') return { results: messages.filter(m => (args.conversationIds as string[]).includes(m.conversation_id) && m.content.includes('Hello')).map(m => ({ messageId: m.id, conversationId: m.conversation_id, conversationTitle: 'Synthetic', conversationDescription: null, role: m.role, snippet: 'Synthetic snippet', createdAt: m.created_at })), nextOffset: null };
   if (command === 'db_get_conversation') return structuredClone(conversations.find(c => c.id === args.id) ?? null);
   if (command === 'db_list_messages') { if (messagesUnavailable) throw 'unavailable'; await messageWait; return structuredClone(messages.filter(message => message.conversation_id === args.conversationId)); }
   if (command === 'pilot_tool_traces_list') return { revision: 1, traces: messages.filter(message => message.conversation_id === args.conversationId && message.role === 'assistant').flatMap(message =>
@@ -211,7 +213,7 @@ function harness() {
   });
   const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
   function enqueue(input: ContentRequest, source = 'session:mobile') {
-    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: deliveredRequests.get(input.request_id)?.expires_at ?? new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversation.files.list' ? { authority_binding: 'grant:files', capabilities: ['conversation-files-1'] } : input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: deliveredRequests.get(input.request_id)?.expires_at ?? new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversations.search' ? { capabilities: ['conversations-1'] } : input.operation === 'conversation.files.list' ? { authority_binding: 'grant:files', capabilities: ['conversation-files-1'] } : input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
     if (delivery.authority_binding) authorityBindings.set(input.request_id, delivery.authority_binding);
     deliveredRequests.set(input.request_id, delivery); queue.push(delivery); wake?.();
@@ -901,5 +903,80 @@ it('reuses the one-shot grant and prepared result on redelivery after exhausted 
     expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`))).toHaveLength(4);
     const attempts = h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`));
     expect(attempts.every(r => JSON.stringify(r.body) === JSON.stringify(attempts[0].body))).toBe(true);
+  } finally { await h.runtime.stop(); }
+}, 10000);
+
+
+it.each(['source', 'policy'] as const)('terminates a search invalidated by %s before fetch and replays its terminal receipt', async change => {
+  const h = harness();
+  const input = request('conversations.search', { instance_id: instanceId, kind: 'conversation', query: 'Hello' });
+  const bRef = { instance_id: instanceId, kind: 'conversation', conversation_id: 'chat:two' };
+  conversations[0].description = 'Public fixed description';
+  conversations.push({ ...conversation, id: bRef.conversation_id });
+  messages.push({ ...messages[0], id: 'message:two', conversation_id: bRef.conversation_id, content: 'Public B' });
+  const original = h.client.requestContent.bind(h.client);
+  let prepared = false, failedCalls = 0;
+  h.client.requestContent = async (path, body, signal, options) => {
+    if (decodeURIComponent(path).endsWith(`/${input.request_id}/result`) && !prepared) {
+      prepared = true;
+      if (change === 'source') messages[0].content = 'Public A after edit';
+      else secretValues = ['new-public-policy-value'];
+      // An API call rejected before reaching native credentials/guards cannot
+      // establish that the relay may have received this response.
+      failedCalls++;
+      throw new Error('Synthetic local failure before native request');
+    }
+    return original(path, body, signal, options);
+  };
+  try {
+    await h.runtime.start();
+    const terminal = await h.deliver(input);
+    expect(terminal).toMatchObject({ type: 'error', code: change === 'source' ? 'stale_revision' : 'snapshot_expired', retryable: false });
+    const reads = nativeCalls.filter(c => c === 'db_search_messages').length;
+    expect(reads).toBe(1);
+    expect(await h.deliver(input)).toEqual(terminal);
+    expect(nativeCalls.filter(c => c === 'db_search_messages')).toHaveLength(reads);
+    const sends = h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/result`));
+    expect(sends).toHaveLength(2);
+    expect(sends.every(r => JSON.stringify(r.body.response) === JSON.stringify(terminal))).toBe(true);
+    expect(JSON.stringify(sends)).not.toContain('Hello from persistence');
+    expect(JSON.stringify(sends)).not.toContain('Public A after edit');
+    expect(h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(failedCalls).toBe(1);
+    const b = await h.deliver(request('conversation.read', { ref: bRef, consistency: 'network-reliability-1' }));
+    expect(b).toMatchObject({ type: 'response' });
+    expect(JSON.stringify(b)).toContain('Public B');
+  } finally { await h.runtime.stop(); }
+});
+
+it('keeps the canonical search response after lost acknowledgement and stale redelivery', async () => {
+  const h = harness();
+  const input = request('conversations.search', { instance_id: instanceId, kind: 'conversation', query: 'Hello' });
+  conversations[0].description = 'Public fixed description';
+  const original = h.client.requestContent.bind(h.client);
+  let deliveries = 0;
+  h.client.requestContent = async (path, body, signal, options) => {
+    const response = await original(path, body, signal, options);
+    if (path.endsWith('/poll') && response.status === 200 && (response.data as ContentDelivery).request_id === input.request_id) deliveries++;
+    return response;
+  };
+  try {
+    await h.runtime.start();
+    h.loseResult(0, () => { messages[0].content = 'Public A after edit'; });
+    const canonical = await h.deliver(input);
+    expect(canonical.type).toBe('response');
+    await sleep(1700);
+    h.enqueue(input);
+    await until(() => deliveries === 2);
+    await sleep(1700);
+    await h.runtime.stop();
+    expect(deliveries).toBe(2);
+    expect(nativeCalls.filter(c => c === 'db_get_message').length).toBeGreaterThanOrEqual(6);
+    const sends = h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/result`));
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body.response).toEqual(canonical);
+    expect(h.requests.filter(r => decodeURIComponent(r.path).endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(nativeCalls.filter(c => c === 'db_search_messages')).toHaveLength(1);
+    expect(h.results.filter(r => r.request_id === input.request_id)).toHaveLength(1);
   } finally { await h.runtime.stop(); }
 }, 10000);

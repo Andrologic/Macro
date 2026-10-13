@@ -126,10 +126,15 @@ before enabling `network-reliability-1`.
 Conversation, catalog, search and conditional project read results revalidate
 policy and source after native credential waits, before each transport emission.
 V2 authorization is one-shot per delivery; runtime guards share its original
-execute_before. Conversation result retries keep the original response and
-request within the exchange lifetime. The relay rechecks live access at result
-acceptance and return. An invalidated capture blocks emission, and no retry
-renews a mutation's effect lease or dispatches a command again.
+execute_before. The native client reports dispatch only after invoking fetch,
+after credentials, integrity, context and the emission guard. A conversation
+capture invalidated before any result dispatch returns a content-free terminal
+stale_revision or snapshot_expired with the original grant, without recapture.
+Once fetch has been invoked, retries keep the canonical response because the
+relay may already have accepted it despite a lost acknowledgement. The relay
+rechecks live access at result acceptance and return. Each attempt still checks
+source, policy, context and expiration. No retry renews a mutation's effect lease
+or dispatches a command again.
 
 For the negotiated mobile conversation catalog, search, observed reading and Chat
 management operations, see [mobile conversations contract](../../../docs/mobile-conversations-contract.md).
