@@ -22,7 +22,7 @@ interface Dependencies {
 }
 interface Catalog { cards: ContentConversationCard[]; conversations: DbConversation[]; fingerprint: string; revision: number }
 type Items = ContentConversationCard[] | ContentConversationSearchHit[] | MessageItem[];
-interface Snapshot { binding: string; fingerprint: string; revision: number; observed: number; items: Items; cursors: Map<string, number>; bytes: number; ref?: ConversationRef; nativeSnapshot?: string }
+interface Snapshot { binding: string; fingerprint: string; revision: number; observed: number; items: Items; cursors: Map<string, number>; bytes: number; ref?: ConversationRef; nativeSnapshot?: string; messageFingerprints?: Record<string, string> }
 interface ReadTicket { binding: string; conversationId: string; observed: number[]; expires: number }
 function fail(code: ConstructorParameters<typeof ConversationCaptureError>[0]): never { throw new ConversationCaptureError(code); }
 export async function conversationHash(value: unknown): Promise<string> {
@@ -132,9 +132,9 @@ export class ConversationManager {
     if (!card) fail('not_found');
     if (card.revision !== expectedRevision) fail('stale_revision');
   }
-  private allocate(binding: string, catalog: Catalog, items: Items, ref?: ConversationRef, nativeSnapshot?: string, revision = catalog.revision): string {
-    const bytes = utf8Bytes(stableJson(items)) * 2 + 2048; this.quota(bytes);
-    const key = crypto.randomUUID(); this.snapshots.set(key, { binding, fingerprint: catalog.fingerprint, revision, observed: this.now(), items: structuredClone(items), cursors: new Map(), bytes, ref, nativeSnapshot }); return key;
+  private allocate(binding: string, catalog: Catalog, items: Items, ref?: ConversationRef, nativeSnapshot?: string, revision = catalog.revision, messageFingerprints?: Record<string, string>): string {
+    const bytes = (utf8Bytes(stableJson(items)) + utf8Bytes(stableJson(messageFingerprints ?? {}))) * 2 + 2048; this.quota(bytes);
+    const key = crypto.randomUUID(); this.snapshots.set(key, { binding, fingerprint: catalog.fingerprint, revision, observed: this.now(), items: structuredClone(items), cursors: new Map(), bytes, ref, nativeSnapshot, messageFingerprints }); return key;
   }
   private page(snapshotId: string, offset: number, policy: TextPolicy, backward = false): { page: PageMetadata; items: Items } {
     const snapshot = this.snapshots.get(snapshotId)!;
@@ -155,6 +155,35 @@ export class ConversationManager {
     }
     return { page: { snapshot_id: snapshotId, revision: snapshot.revision, observed_at: new Date(snapshot.observed).toISOString(), expires_at: new Date(snapshot.observed + 300000).toISOString(), export_policy_revision: policy.revision,
       offset, total: snapshot.items.length, next_cursor: cursor, ...(backward ? { direction: 'backward' as const } : {}) }, items };
+  }
+  /** Recheck frozen pages after transport waits without allocating another page
+   * or read ticket. A fresh catalog alone cannot validate transcript bytes. */
+  async validateEmission(delivery: ContentDelivery, result: unknown, policy: TextPolicy): Promise<void> {
+    const epoch = this.epoch;
+    this.prune();
+    const page = (result as { page: PageMetadata }).page;
+    const snapshot = this.snapshots.get(page.snapshot_id);
+    const target = { operation: delivery.request.operation, ...delivery.request.body } as Record<string, unknown>;
+    delete target.continuation;
+    if (!snapshot || snapshot.binding !== this.binding(delivery, target)) fail('snapshot_expired');
+    if (delivery.request.operation === 'conversation.window') {
+      await this.deps.captures.validateCached({ accountId: delivery.account_id, sessionId: delivery.source_session_id,
+        instanceId: delivery.instance_id, reliability: true }, 'conversation.read', delivery.request.body.ref, snapshot.nativeSnapshot!);
+    } else {
+      if ((await this.catalog(policy)).fingerprint !== snapshot.fingerprint) fail('stale_revision');
+      if (delivery.request.operation === 'conversations.search') {
+        for (const hit of (result as { items: ContentConversationSearchHit[] }).items) {
+          if (!hit.message_id) continue;
+          const message = await this.deps.source.message(hit.message_id);
+          if (!message || message.conversation_id !== hit.ref.conversation_id) fail('stale_revision');
+          const activity = this.deps.source.activity(message.conversation_id);
+          const provenance = await this.deps.source.finalProvenance?.(message);
+          if (await conversationHash([message, activity, provenance ?? null]) !== snapshot.messageFingerprints?.[message.id]) fail('stale_revision');
+        }
+      }
+    }
+    if (epoch !== this.epoch) fail('unavailable');
+    if (snapshot.observed + 300000 <= this.now()) fail('snapshot_expired');
   }
   async handle(delivery: ContentDelivery, policy: TextPolicy, authorize: () => Promise<string>): Promise<unknown> {
     const epoch = this.epoch;
@@ -205,6 +234,7 @@ export class ConversationManager {
     } else if (request.operation === 'conversations.catalog' || request.operation === 'conversations.search') {
       const cards = catalog.cards.filter(c => c.ref.kind === request.body.kind && matches(c, request.body.filter));
       let items: Items = cards;
+      const messageFingerprints: Record<string, string> = Object.create(null);
       if (request.operation === 'conversations.search') {
         const query = normalizeConversationSearch(request.body.query.trim());
         const results: ContentConversationSearchHit[] = [];
@@ -226,13 +256,15 @@ export class ConversationManager {
             const message = await this.deps.source.message(candidate.messageId);
             if (!message || message.conversation_id !== card.ref.conversation_id || !['user','assistant'].includes(message.role)) continue;
             const activity = this.deps.source.activity(message.conversation_id);
-            const text = messageText(message, message.role === 'assistant' && activity.activity === 'busy' && (activity.generatingMessageId === null || activity.generatingMessageId === message.id), policy, await this.deps.source.finalProvenance?.(message), 1024 * 1024);
+            const provenance = await this.deps.source.finalProvenance?.(message);
+            const text = messageText(message, message.role === 'assistant' && activity.activity === 'busy' && (activity.generatingMessageId === null || activity.generatingMessageId === message.id), policy, provenance, 1024 * 1024);
             if (!('text' in text)) continue;
             const normalized = normalizeConversationSearch(text.text); const terms = query.split(/\s+/).filter(Boolean);
             if (!terms.every(t => normalized.includes(t))) continue;
             // Never export the raw FTS snippet, which can contain reasoning/context.
             const index = normalized.indexOf(terms[0]);
             results.push({ hit_id: crypto.randomUUID(), ref: card.ref, title: card.title, source: 'message', excerpt: searchExcerpt(text.text, index, policy), message_id: message.id });
+            messageFingerprints[message.id] = await conversationHash([message, activity, provenance ?? null]);
             if (results.length > 2000) fail('resource_limit');
           }
           check();
@@ -242,7 +274,7 @@ export class ConversationManager {
         if ((await this.catalog(policy)).fingerprint !== catalog.fingerprint) fail('stale_revision');
         items = results;
       }
-      key = this.allocate(binding, catalog, items);
+      key = this.allocate(binding, catalog, items, undefined, undefined, catalog.revision, messageFingerprints);
     } else if (request.operation === 'conversation.window') {
       if (!catalog.cards.some(c => stableJson(c.ref) === stableJson(request.body.ref))) fail('not_found');
       const scope: CaptureScope = { accountId: delivery.account_id, sessionId: delivery.source_session_id, instanceId: delivery.instance_id, reliability: true };

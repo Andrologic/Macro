@@ -1,5 +1,5 @@
 import { REFLECTION_OPERATION } from './conversationReflections';
-import { validateContentIntegrity } from './contentProtocol';
+import { CONVERSATION_READ_OPERATIONS, validateContentIntegrity } from './contentProtocol';
 import { FILE_OPERATIONS } from './attachmentFilesHost';
 import { createBrowserQaDependencies } from './browserQa';
 import { PilotClientError, type PilotClientErrorCode } from './clientError';
@@ -156,7 +156,11 @@ export interface PilotRequestOptions {
   authorizationToken?: string;
   /** Last guard after credential awaits, immediately before fetch. */
   beforeSend?: () => Promise<void>;
+  /** Synchronous notification after fetch has been invoked, even if it throws.
+   * Credential, integrity, context and emission guard failures never notify. */
+  onDispatch?: () => void;
 }
+export type PilotContentRequestOptions = Pick<PilotRequestOptions, 'beforeSend' | 'onDispatch'>;
 
 export interface PilotResponse<T = unknown> {
   status: number;
@@ -727,14 +731,14 @@ export class MacroPilotNativeClient {
   }
 
   /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
-  async requestContent(path: string, body: unknown, signal: AbortSignal, beforeSend?: () => Promise<void>): Promise<PilotResponse> {
+  async requestContent(path: string, body: unknown, signal: AbortSignal, options: PilotContentRequestOptions = {}): Promise<PilotResponse> {
     const instance = this.publicState.instance?.ref.instance_id;
     const prefix = `/pilot/v2/instances/${encodeURIComponent(instance ?? '')}/deliveries/`;
     if (!instance || !path.startsWith(prefix) || !validateContentMessage(body)) throw new PilotClientError('invalid_configuration');
-    const machineResult = body.type === 'delivery.result' && body.response.type === 'response' && (['instance.telemetry', 'project.icon'].includes(body.response.operation) || FILE_OPERATIONS.has(body.response.operation) || body.response.operation === REFLECTION_OPERATION);
-    if (machineResult && !beforeSend) throw new PilotClientError('invalid_configuration');
+    const machineResult = body.type === 'delivery.result' && body.response.type === 'response' && (['instance.telemetry', 'project.icon'].includes(body.response.operation) || FILE_OPERATIONS.has(body.response.operation) || body.response.operation === REFLECTION_OPERATION || CONVERSATION_READ_OPERATIONS.has(body.response.operation));
+    if (machineResult && !options.beforeSend) throw new PilotClientError('invalid_configuration');
     const requestId = 'request_id' in body ? String(body.request_id) : createOpaqueId('request', this.dependencies);
-    return this.sendRequest('POST', path, body, { authenticated: true, producer: true, signal, beforeSend }, 'producer', requestId);
+    return this.sendRequest('POST', path, body, { ...options, authenticated: true, producer: true, signal }, 'producer', requestId);
   }
 
   /** Detection-only values. The caller must keep these out of journals and logs. */
@@ -811,13 +815,16 @@ export class MacroPilotNativeClient {
     check();
     let response: Response;
     try {
-      const fetching = this.dependencies.fetch(url, {
+      const init = {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal,
         maxRedirections: 0,
-      });
+      };
+      let fetching: ReturnType<PilotClientDependencies['fetch']>;
+      try { fetching = this.dependencies.fetch(url, init); }
+      finally { options.onDispatch?.(); }
       // A late response after an abort must not retain an unread native body.
       void fetching.then(result => { if (signal.aborted) void result.body?.cancel().catch(() => undefined); }, () => undefined);
       response = await abortable(fetching, signal);

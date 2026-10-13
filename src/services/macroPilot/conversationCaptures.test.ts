@@ -436,3 +436,13 @@ it('withholds persisted provider diagnostic text even with previous final eviden
   expect(messageText(row, false, policy, 'Final plus raw diagnostic')).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
   expect(completion(row.completion_reason)).toBe('unknown');
 });
+
+it('does not validate a cached page that expires during its source recheck', async () => {
+  const env = setup();
+  const first = await env.captures.conversationRead(scope, ref);
+  let clock = Date.parse(first.page.expires_at) - 1;
+  env.deps.now = () => clock;
+  const list = env.deps.source.listMessages;
+  env.deps.source.listMessages = async id => { clock++; return list(id); };
+  await expect(env.captures.validateCached(scope, 'conversation.read', ref, first.page.snapshot_id)).rejects.toMatchObject({ code: 'snapshot_expired' });
+});

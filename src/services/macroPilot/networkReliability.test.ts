@@ -3,7 +3,7 @@ import { gzipSync } from 'node:zlib';
 import { ConversationCaptures, type CaptureDependencies, type ConversationRef } from './conversationCaptures';
 import { ContentHost } from './contentHost';
 import { createReviewCaptureService } from './reviewCapture';
-import type { ContentEvent, ContentRequest } from './contentProtocol';
+import type { ContentDelivery, ContentDeliveryResult, ContentEvent, ContentRequest } from './contentProtocol';
 import { validateContentMessage, validateContentResponse } from './contentProtocol';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 import { safeProviderFailure } from '../chatErrorPresentation';
@@ -126,5 +126,37 @@ it('refuses unnegotiated or malformed extensions and exports only fixed diagnost
       const page = await h.captures.conversationsList({ accountId: 'account', sessionId: 'session', instanceId: 'instance', reliability: true }, 'conversation');
       expect(page.items[0].provider_error).toEqual(failure);
     }
+  } finally { await h.host.dispose(); }
+});
+
+for (const change of ['modify', 'delete', 'expiry', 'policy', 'session', 'dispose'] as const) it(`revalidates a prepared transcript at the actual emission boundary: ${change}`, async () => {
+  const h = await harness(true);
+  try {
+    const req = h.request('conversation.read', { ref: ref('a') });
+    const response = await h.deliver(req);
+    const delivery = { transport_version: '2.0', type: 'delivery', request_id: req.request_id, instance_id: 'instance', source_session_id: 'session',
+      account_id: 'account', expires_at: new Date(now + 60000).toISOString(), request: req, capabilities: [consistency] } as ContentDelivery;
+    const result = { transport_version: '2.0', type: 'delivery.result', request_id: req.request_id, instance_id: 'instance', response } as ContentDeliveryResult;
+    await h.host.validateConversationEmission(delivery, result);
+    if (change === 'modify') h.messages[0].content = 'Changed after preparation';
+    if (change === 'delete') h.conversations.splice(0, 1);
+    if (change === 'expiry') h.expire();
+    if (change === 'policy') h.deps.policy = () => ({ revision: 'visible-1', secrets: ['Synthetic public fixture'] });
+    if (change === 'session') delivery.source_session_id = 'other';
+    if (change === 'dispose') await h.host.dispose();
+    await expect(h.host.validateConversationEmission(delivery, result)).rejects.toThrow();
+  } finally { await h.host.dispose(); }
+});
+
+it('checks the current source after an asynchronous emission policy read', async () => {
+  const h = await harness(true);
+  try {
+    const req = h.request('conversation.read', { ref: ref('a') });
+    const response = await h.deliver(req);
+    const delivery = { transport_version: '2.0', type: 'delivery', request_id: req.request_id, instance_id: 'instance', source_session_id: 'session',
+      account_id: 'account', expires_at: new Date(now + 60000).toISOString(), request: req, capabilities: [consistency] } as ContentDelivery;
+    const result = { transport_version: '2.0', type: 'delivery.result', request_id: req.request_id, instance_id: 'instance', response } as ContentDeliveryResult;
+    h.deps.policy = () => { h.messages[0].content = 'Changed during policy read'; return { revision: 'visible-1', secrets: [] }; };
+    await expect(h.host.validateConversationEmission(delivery, result)).rejects.toThrow('stale_revision');
   } finally { await h.host.dispose(); }
 });

@@ -580,3 +580,30 @@ describe('Pilot vault audit regressions', () => {
       expect(h.requests).toHaveLength(0);
     });
 });
+
+
+it.each(['credentials', 'guard', 'fetch', 'accepted'] as const)('reports actual dispatch after %s only at the fetch boundary', async phase => {
+  const h = createHarness([jsonResponse({ account, device_session: session })]);
+  h.values.macro_pilot_native_v1 = { configurationId: 'config:test', relayOrigin: 'https://pilot.example.com', account, deviceSession: session,
+    instance: { contract_version: '1.0', type: 'instance', ref: { type: 'instance', instance_id: 'instance:test' }, label: 'Synthetic', connection_state: 'reachable', supported_contract_versions: ['1.0'], revision: 1 }, instanceCreationId: 'creation:test' };
+  h.secrets.set(`session_token:${session.ref.session_id}`, validSecret(8));
+  h.secrets.set('instance_key:creation:test', validSecret(9));
+  await h.client.initialize();
+  let dispatched = 0, fetched = 0, guarded = 0;
+  if (phase === 'credentials') h.dependencies.secretRead = async () => { throw new PilotClientError('offline'); };
+  h.dependencies.fetch = () => {
+    fetched++;
+    if (phase === 'fetch') throw new Error('Synchronous transport failure, acceptance unknown');
+    return Promise.resolve(new Response(null, { status: 204 }));
+  };
+  const sending = h.client.requestContent('/pilot/v2/instances/instance%3Atest/deliveries/poll',
+    { transport_version: '2.0', type: 'poll', commands: ['conversation.send'] }, new AbortController().signal, {
+      beforeSend: async () => { guarded++; if (phase === 'guard') throw new PilotClientError('snapshot_expired'); },
+      onDispatch: () => { dispatched++; },
+    });
+  if (phase === 'accepted') expect((await sending).status).toBe(204);
+  else await expect(sending).rejects.toThrow();
+  expect(fetched).toBe(phase === 'fetch' || phase === 'accepted' ? 1 : 0);
+  expect(dispatched).toBe(fetched);
+  expect(guarded).toBe(phase === 'credentials' ? 0 : 1);
+});
