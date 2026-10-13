@@ -123,9 +123,24 @@ describe('ConversationArchive', () => {
       expect(rowEvent.defaultPrevented).toBe(true);
     }
     expect(selectConversation).toHaveBeenCalledTimes(2);
+    menuButton!.getBoundingClientRect = () => ({
+      top: 30, bottom: 50, left: 180, right: 200, width: 20, height: 20,
+      x: 180, y: 30, toJSON: () => ({}),
+    });
     await act(async () => { menuButton?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(2);
-    expect(container?.textContent).toContain('Export JSON');
+    const renameButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Rename');
+    expect(document.body.textContent).toContain('Export JSON');
+    expect(renameButton).toBeDefined();
+    expect(container?.contains(renameButton!)).toBe(false);
+    expect(renameButton?.parentElement?.style.top).toBe('54px');
+    await act(async () => { renameButton?.click(); });
+    expect(document.body.textContent).toContain('Rename conversation');
+    expect(selectConversation).toHaveBeenCalledTimes(2);
+    const cancelButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Cancel');
+    await act(async () => { cancelButton?.click(); });
     await act(async () => { row?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(3);
   });

@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -121,6 +122,9 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -139,6 +143,34 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
     (state) => state.ensureConversationCitationContentsLoaded,
   );
   const isHighlighted = isMultiSelectMode ? isChecked : isCurrentConversation;
+
+  useLayoutEffect(() => {
+    if (!showMenu || !menuButtonRef.current || !menuRef.current) return;
+    const trigger = menuButtonRef.current.getBoundingClientRect();
+    const menu = menuRef.current.getBoundingClientRect();
+    setMenuPosition({
+      top: Math.max(8, Math.min(trigger.bottom + 4, window.innerHeight - menu.height - 8)),
+      left: Math.max(8, Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8)),
+    });
+    const close = () => setShowMenu(false);
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      close();
+      menuButtonRef.current?.focus();
+    };
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showMenu]);
 
   useEffect(() => {
     if (isMultiSelectMode) {
@@ -274,6 +306,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 
           {!isMultiSelectMode && (
             <button
+              ref={menuButtonRef}
               type="button"
               onClick={(event) => {
                 if (isDeleting) return;
@@ -289,11 +322,13 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
           )}
         </div>
       </div>
-      {showMenu && !isMultiSelectMode && (
+      {showMenu && !isMultiSelectMode && createPortal(
         <>
           <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
           <div
-            className="absolute right-2 top-full z-50 mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1"
+            ref={menuRef}
+            className="fixed z-50 w-40 max-h-[calc(100vh-1rem)] overflow-y-auto bg-card border border-border rounded-lg shadow-lg py-1"
+            style={menuPosition}
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -368,7 +403,8 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
               {t('common.delete', 'Delete')}
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
       <ConfirmPromptModal
