@@ -572,6 +572,7 @@
       "allRepositories": "Tous les dépôts",
       "gitScope": "Portée Git",
       "selectRepository": "Sélectionner un dépôt",
+      "noRepository": "Aucun dépôt Git sélectionné",
       "selectFolder": "Sélectionner un dossier Git",
       "folderNotGit": "Ce dossier n’est pas un dépôt Git.",
       "folderSelectionFailed": "Impossible de sélectionner ce dossier."

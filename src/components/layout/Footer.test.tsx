@@ -766,7 +766,7 @@ describe('Footer', () => {
     await waitForText(container, 'feature-b');
 
     expect(document.body.textContent ?? '').toContain('Web');
-    expect(document.body.textContent ?? '').not.toContain('Aucun projet');
+    expect(document.body.textContent ?? '').not.toContain('Aucun dépôt Git sélectionné');
 
     act(() => findButtonByIcon(container!, 'refresh-cw')?.click());
     await flushAsyncWork();
@@ -857,6 +857,20 @@ describe('Footer', () => {
     expect(gitStatusMock).toHaveBeenCalledTimes(0);
   });
 
+  it('describes a direct-mode plan as having no selected Git repository, rather than no project', async () => {
+    appState.projectGroups = [{ id: 'group-1', name: 'Macro', projects: [{ id: 'project-a', name: 'API', path: '/workspace/api', gitSetupState: 'not_git', directEdit: true }] }];
+    appState.visibleArchitectPlans = [{ id: 'plan-group-1', projectIds: ['project-a'] }];
+    const { Footer } = await loadFooter();
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    root.render(<Footer />); await flushAsyncWork();
+    expect(document.body.textContent ?? '').toContain('Aucun dépôt Git sélectionné');
+    expect(document.body.textContent ?? '').not.toContain('Aucun projet');
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitPullMock).not.toHaveBeenCalled();
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
   it('disables Git actions and executes no fallback command without an active Chat project', async () => {
     appState.mode = 'Chat';
     appState.selectedProjectId = 'project-a';
@@ -870,7 +884,7 @@ describe('Footer', () => {
     root.render(<Footer />);
     await flushAsyncWork();
 
-    expect(document.body.textContent ?? '').toContain('Aucun projet');
+    expect(document.body.textContent ?? '').toContain('Aucun dépôt Git sélectionné');
     expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
     expect(findButtonByIcon(container!, 'arrow-down')).toBeNull();
     expect(findButtonByIcon(container!, 'arrow-up')).toBeNull();

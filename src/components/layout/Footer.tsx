@@ -2119,7 +2119,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 ) : (
                   <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
                 )}
-                <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('project.noProject', 'Aucun projet')}</span>
+                <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('footer.scope.noRepository', 'Aucun dépôt Git sélectionné')}</span>
               </span>
             )}
             <Button

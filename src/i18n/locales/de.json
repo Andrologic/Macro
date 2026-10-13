@@ -572,6 +572,7 @@
       "allRepositories": "Alle Repositories",
       "gitScope": "Git-Bereich",
       "selectRepository": "Repository auswählen",
+      "noRepository": "Kein Git-Repository ausgewählt",
       "selectFolder": "Git-Ordner auswählen",
       "folderNotGit": "Dieser Ordner ist kein Git-Repository.",
       "folderSelectionFailed": "Dieser Ordner konnte nicht ausgewählt werden."

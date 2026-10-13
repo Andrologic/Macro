@@ -572,6 +572,7 @@
       "allRepositories": "Todos los repositorios",
       "gitScope": "Alcance de Git",
       "selectRepository": "Seleccionar repositorio",
+      "noRepository": "Ningún repositorio Git seleccionado",
       "selectFolder": "Seleccionar una carpeta Git",
       "folderNotGit": "Esta carpeta no es un repositorio Git.",
       "folderSelectionFailed": "No se pudo seleccionar esta carpeta."

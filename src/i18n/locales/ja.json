@@ -572,6 +572,7 @@
       "allRepositories": "すべてのリポジトリ",
       "gitScope": "Git スコープ",
       "selectRepository": "リポジトリを選択",
+      "noRepository": "Git リポジトリ未選択",
       "selectFolder": "Git フォルダーを選択",
       "folderNotGit": "このフォルダーは Git リポジトリではありません。",
       "folderSelectionFailed": "このフォルダーを選択できませんでした。"
