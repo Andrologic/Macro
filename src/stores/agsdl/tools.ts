@@ -8,7 +8,7 @@ import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition
 import { useProviderStore } from "../useProviderStore";
 import { paginateTextBytes, TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 
-/** A local revision guard rejected the request before editing or saving. */
+/** A revision guard refused a read, or an edit before any source mutation. */
 export class AgsdlAuthoringRefusal extends Error {
   constructor(message: string) { super(message); this.name = "AgsdlAuthoringRefusal"; }
 }
@@ -185,6 +185,9 @@ export async function handleAgsdlToolCall(params: {
   await store().load(target);
   if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   const current = () => store().sessions[agsdlSessionKey(target)];
+  if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== current().version) {
+    throw new AgsdlAuthoringRefusal("The document changed. Restart agsdl_get pagination with the current revision.");
+  }
   if (params.toolName === "agsdl_update") {
     if (current().saving)
       throw new Error("Wait for the current save to finish before editing.");
@@ -259,7 +262,11 @@ export async function handleAgsdlToolCall(params: {
   if (current().source) await store().validate(target);
   if (!params.isCurrent()) throw new Error("The authoring turn has ended.");
   const session = current();
-  if (!session || session.version !== validationVersion) throw new Error("The document changed during validation. Read agsdl_get again.");
+  if (!session || session.version !== validationVersion) {
+    const message = "The document changed during validation. Read agsdl_get again.";
+    if (params.toolName === "agsdl_get") throw new AgsdlAuthoringRefusal(message);
+    throw new Error(message);
+  }
   let doc: Record<string, unknown> = {};
   try {
     if (session.source) doc = readDocument(session.source);
@@ -268,7 +275,7 @@ export async function handleAgsdlToolCall(params: {
   }
   const pointer = typeof args.path === "string" ? args.path : "";
   const source = session.source && pointer ? sourceAt(session.source, pointer) : session.source;
-  if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== session.version) throw new Error("The document changed. Restart agsdl_get pagination with the current revision.");
+  if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== session.version) throw new AgsdlAuthoringRefusal("The document changed. Restart agsdl_get pagination with the current revision.");
   if (args.section !== undefined && !sections.includes(args.section as ReadSection)) throw new Error("Unknown AgSDL read section.");
   const section = args.section as ReadSection | undefined;
   const base = { plan_id: target.planId, target_branch: target.branchName, revision: session.version,

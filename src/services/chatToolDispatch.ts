@@ -21,12 +21,12 @@ export interface ChatToolInvocationJournal {
 const READ_ONLY_TOOLS = new Set([
   'read_sources', 'read_file', 'config_list', 'config_get', 'config_validate',
   'skill_activate', 'skill_read_resource', 'task_artifact_get', 'task_artifact_list',
-  'task_todo_get', 'strategy_get', 'plan_get', 'plan_list', 'list', 'read',
+  'task_todo_get', 'strategy_get', 'agsdl_get', 'plan_get', 'plan_list', 'list', 'read',
   'glob', 'grep', 'ast_grep', 'git_status', 'git_log', 'git_branch_list',
   'git_diff', 'git_get_tree', 'terminal_read',
 ]);
 const WORKSPACE_MUTATIONS = new Set([
-  'write', 'edit', 'delete', 'apply_patch', 'git_add', 'git_commit',
+  'write', 'edit', 'delete', 'apply_patch', 'agsdl_update', 'git_add', 'git_commit',
   'git_checkout', 'git_merge', 'git_reset', 'git_stash',
 ]);
 

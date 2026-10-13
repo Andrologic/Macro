@@ -79,6 +79,9 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
 }) {
   const { t } = useAgsdlTranslation();
   const configurations = agentConfigurations(source, card);
+  const hasResponse = card.details.contract === "agsdl-0.2.0" && ["Agent", "agent"].includes(card.kind) && !card.unresolved;
+  const responseRecipients = card.branches.filter(branch => branch.label === "next").map(branch => branch.reference)
+    .filter((ref, index, all) => all.findIndex(other => other.target === ref.target && other.label === ref.label) === index);
   const { catalogue, load } = useAgsdlModelCatalogue();
   useEffect(() => { void load().catch(() => {}); }, [load]);
   const reference = (ref: ViewerReference) => <ReferencePreview reference={ref} cards={cards} onSelect={onSelect} />;
@@ -120,6 +123,9 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
         {!!card.dependencies?.length && <div className="agsdl-agent-dependencies"><span className="agsdl-muted">{t("agsdl.viewer.dependencies")}</span>{card.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
       </section>
       <section><h4><ArrowUpFromLine size={14} />{t("agsdl.viewer.detail.outputs")}</h4>
+        {hasResponse && <div className="agsdl-io-card"><strong>{t("agsdl.edge.completion")}</strong>
+          {!!responseRecipients.length && <div className="agsdl-io-origin">{responseRecipients.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
+        </div>}
         {card.outputs.length ? card.outputs.map(port => {
           const recipients = outputRecipients(card, cards, port.name);
           return <div className="agsdl-io-card" key={port.name}><strong>{port.name}</strong>
@@ -129,7 +135,7 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
               <small>{t("agsdl.viewer.detail.toPort", { port: input })}</small>
             </div>) : <span className="agsdl-muted">{t("agsdl.viewer.detail.noRecipient")}</span>}</div>
           </div>;
-        }) : <p className="agsdl-muted">{t("agsdl.viewer.detail.noOutputs")}</p>}
+        }) : !hasResponse && <p className="agsdl-muted">{t("agsdl.viewer.detail.noOutputs")}</p>}
       </section>
     </div>
     <section className="agsdl-agent-configuration"><h4><Wrench size={14} />{t("agsdl.viewer.detail.tools")}</h4>

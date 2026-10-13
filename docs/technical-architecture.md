@@ -1690,6 +1690,12 @@ l’exécuteur et ne l’appelle que pour `is_new=true`. Après sa réponse et l
 traitement éventuel d’un gros résultat, il persiste le résultat normalisé
 effectivement rendu à la continuation dans `result_json`, avec son reçu de fin.
 Les réponses courtes et les refus sont donc conservés avant la continuation.
+Les contrôles de révision AgSDL renvoient un refus typé : une lecture périmée
+ou une édition refusée avant mutation est une erreur de validation confirmée,
+pas un effet incertain. Les lectures `agsdl_get` sont classées en lecture seule
+et les éditions `agsdl_update` en mutations du workspace. Les erreurs survenues
+après une édition ou pendant sa sauvegarde restent conservatrices : le refus
+de révision ne couvre pas ces opérations potentiellement appliquées.
 Si l’artefact diagnostic d’un refus échoue, le refus borné est conservé par la
 même clôture durable. Une clôture non confirmée bloque la continuation et
 laisse l’intention incertaine. `completed` atteste le résultat local conservé ;

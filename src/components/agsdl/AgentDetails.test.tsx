@@ -33,3 +33,25 @@ it("shows declared URI sources and keeps structured prompts and engine settings 
   act(() => configuration.querySelector<HTMLButtonElement>(".agsdl-reference-chip")!.click());
   expect(selections).toEqual(["/bindings/engine"]);
 });
+
+
+it("shows the agent response and its real successor without inventing a named result", async () => {
+  const source = JSON.stringify({ contract: "agsdl-0.2.0", id: "response-flow", bindings: {}, configurations: {},
+    agents: { worker: { configuration: "main", interface: { results: {} } } },
+    flow: { entry: "ask", steps: { ask: { type: "agent", agent: "worker", next: ["relay"], onError: ["failed"] },
+      relay: { type: "prepare", message: {} }, failed: { type: "prepare", message: {} } } } });
+  const viewer = projectViewer(source);
+  const cards = viewer.graphs[0].cards;
+  const selections: string[] = [];
+  host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<AgentDetails card={cards[0]} cards={cards} source={source} onSelect={path => selections.push(path)} />));
+  const outputs = host.querySelectorAll(".agsdl-agent-io section")[1]!;
+  expect(outputs.textContent).toContain("Response");
+  expect(outputs.textContent).not.toContain("No outputs declared");
+  expect(outputs.textContent).toContain("relay");
+  expect(outputs.textContent).not.toContain("failed");
+  act(() => outputs.querySelector<HTMLButtonElement>("button")!.click());
+  expect(selections).toEqual(["/flow/steps/relay"]);
+  await act(async () => root!.render(<AgentDetails card={cards[2]} cards={cards} source={source} onSelect={() => {}} />));
+  expect(host.querySelectorAll(".agsdl-agent-io section")[1]!.textContent).not.toContain("Response");
+});

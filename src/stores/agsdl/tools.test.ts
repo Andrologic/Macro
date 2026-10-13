@@ -37,7 +37,7 @@ mock.module("../../services/architectPlanService", () => ({
 const { useAgsdlStore, agsdlSessionKey } = await import(
   "../useAgsdlStore"
 );
-const { handleAgsdlToolCall, agsdlAuthoringGuide, AGSDL_TOOL_RESPONSE_BYTES } = await import("./tools");
+const { handleAgsdlToolCall, AgsdlAuthoringRefusal, agsdlAuthoringGuide, AGSDL_TOOL_RESPONSE_BYTES } = await import("./tools");
 const { useProviderStore } = await import("../useProviderStore");
 let restoreProviderCatalog: (() => void) | undefined;
 const providers = [
@@ -621,4 +621,15 @@ it('provides the current contract guide through bounded revision-safe text pages
   expect(guide.runtime).toContain('configuration.model');
   expect(guide.runtime).toContain('native Preflight');
   await expect(call('agsdl_get', { section: 'guide', offset: 1, expected_revision: 'stale' })).rejects.toThrow('changed');
+});
+
+
+it('refuses a stale read without saving, and allows a fresh read', async () => {
+  const read = JSON.parse(await call('agsdl_get'));
+  const source = current().source;
+  const persistedRevision = current().persistedRevision;
+  await expect(call('agsdl_get', { expected_revision: 'stale' })).rejects.toBeInstanceOf(AgsdlAuthoringRefusal);
+  expect(current().source).toBe(source);
+  expect(current().persistedRevision).toBe(persistedRevision);
+  expect(JSON.parse(await call('agsdl_get', { expected_revision: read.revision })).revision).toBe(read.revision);
 });

@@ -138,6 +138,8 @@ describe('durable Chat tool dispatch', () => {
 
   test('classifies unknown and MCP tools as external effects', () => {
     expect(classifyChatToolEffect('read')).toBe('read_only');
+    expect(classifyChatToolEffect('agsdl_get')).toBe('read_only');
+    expect(classifyChatToolEffect('agsdl_update')).toBe('workspace_mutation');
     expect(classifyChatToolEffect('git_commit')).toBe('workspace_mutation');
     expect(classifyChatToolEffect('mcp__server__read')).toBe('external_effect');
     expect(classifyChatToolEffect('terminal_run')).toBe('external_effect');
