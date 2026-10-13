@@ -10,6 +10,7 @@ import type { PublicSnapshot, PublicProjection, SourceOwner, SourceRevision, Sys
 import type { ExecutionPreflight, PublicRunSummary, ApprovalPage, PublicExecutionDiagnostic, PublicApproval, ResolvedCardTask } from "../types/generated/ipc";
 import { assertProjection, appendProjection, assertDiagnosticPage, executionInput, executionPrompt } from "../services/agsdl/executionView";
 import { sameSource } from "../services/agsdl/runtimeSelection";
+import { PRODUCT_RUNTIME_AVAILABLE } from "../services/agsdlExecution/compiler";
 
 interface ExecutionView {
   owner?: SourceOwner;
@@ -325,7 +326,9 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     }),
     deliver: (agentName, prompt) => intentOperation(async (initial, current) => {
       if (openIntent(get().intent)) throw new Error("agsdl.execution.intentOpen");
-      if (!initial.snapshot || !initial.preflight?.productRuntimeAvailable) throw new Error("agsdl.execution.unavailable");
+      // Deliver to the retained capture, independently of the current document preflight.
+      // Native intent admission still validates runtime availability and the captured run.
+      if (!initial.snapshot || !PRODUCT_RUNTIME_AVAILABLE) throw new Error("agsdl.execution.unavailable");
       const input = executionInput(initial.snapshot.authoredSource);
       if (!input.graphless || !input.agents.includes(agentName)) throw new Error("agsdl.execution.capturedAgentRequired");
       const request: ExternalDeliveryRequest = { systemStartId: initial.snapshot.systemStartId, deliveryId: crypto.randomUUID() as DeliveryId, agentName, messageJson: executionPrompt(prompt) };

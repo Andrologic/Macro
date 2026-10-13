@@ -399,3 +399,15 @@ it("publishes delivery acceptance only after Resume installs a retained receipt"
   expect(store.getState().acceptedDelivery).toEqual(row.payload.kind === "deliver" ? row.payload.request : undefined);
   expect(native.submitted).toHaveLength(1);
 });
+
+it("delivers to a retained graphless run without preflighting the current document", async () => {
+  await ready('{"agents":{"real":{}}}');
+  await store.getState().select("run" as SystemStartId);
+  store.setState({ preflight: undefined });
+  const checked = preflightCalls;
+  await store.getState().deliver("real", "Message after reopening");
+  expect(preflightCalls).toBe(checked);
+  expect(store.getState().error).toBeUndefined();
+  expect(store.getState().acceptedDelivery?.agentName).toBe("real");
+  expect(store.getState().acceptedDelivery?.systemStartId).toBe("run" as SystemStartId);
+});

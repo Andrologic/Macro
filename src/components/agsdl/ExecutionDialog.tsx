@@ -11,6 +11,7 @@ import type { SystemStartId } from "../../services/agsdlExecution/contracts";
 import { notify } from "../ui/toastService";
 import { agsdlErrorText } from "./errorText";
 import { DisclosureSummary } from "./DisclosureSummary";
+import { PRODUCT_RUNTIME_AVAILABLE } from "../../services/agsdlExecution/compiler";
 
 
 export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onClose: () => void }) {
@@ -138,7 +139,7 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
         {needsInspection && <div className="agsdl-execution-state agsdl-unresolved" role="alert"><AlertCircle size={15} /><span>{t("agsdl.execution.recovery.inspect")}</span></div>}
         {state.nextRuns && <button disabled={state.busy} onClick={() => void state.moreRuns()}>{t("agsdl.execution.moreRuns")}</button>}
         {snapshot && <>
-          {deliveryInput?.graphless && state.preflight?.productRuntimeAvailable && !deliveryClosed && <section className="agsdl-delivery">
+          {deliveryInput?.graphless && deliveryInput.agents.length > 0 && PRODUCT_RUNTIME_AVAILABLE && !deliveryClosed && <section className="agsdl-delivery">
             <label className="agsdl-edit-field"><span>{t("agsdl.execution.prompt")}</span><textarea rows={3} value={deliveryPrompt} maxLength={65536} disabled={locked || needsInspection} placeholder={t("agsdl.execution.promptPlaceholder")} onChange={event => setDeliveryPrompt(event.target.value)} /></label>
             <div className="agsdl-execution-actions"><select aria-label={t("agsdl.execution.agent")} value={agentName} disabled={locked || needsInspection} onChange={event => setAgentName(event.target.value)}><option value="">{t("agsdl.execution.agentRequired")}</option>{deliveryInput.agents.map(name => <option key={name} value={name}>{name}</option>)}</select><button className="agsdl-action-button is-primary" disabled={locked || needsInspection || !deliveryInput.agents.includes(agentName) || !deliveryPrompt.trim()} onClick={() => void state.deliver(agentName, deliveryPrompt)}>{t("agsdl.execution.deliver")}</button></div>
           </section>}

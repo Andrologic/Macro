@@ -25,10 +25,10 @@ it("offers a simple prompt and real Agent selection while keeping technical iden
   await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
   const panel = document.body.querySelector('[role="dialog"]')!;
   for (const detail of ['hidden-run-identity', source.sourceSha256, source.revision, '9007199254740995', 'A public error detail', 'A preflight error detail', 'A runtime error detail', 'Supported by this runtime']) expect(panel.textContent).not.toContain(detail);
-  expect(panel.querySelector('textarea')).toBeNull();
-  expect(panel.querySelector('select[aria-label="Agent"]')).toBeNull();
+  expect(panel.querySelector('.agsdl-delivery textarea')).not.toBeNull();
+  expect(panel.querySelector('select[aria-label="Agent"]')?.textContent).toContain('real-agent');
   expect(panel.querySelector<HTMLButtonElement>('[aria-label="Start"]')!.disabled).toBe(true);
-  expect([...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Send message')).toBeUndefined();
+  expect([...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Send message')?.disabled).toBe(true);
   act(() => useAgsdlExecutionStore.setState({ preflight: { ...useAgsdlExecutionStore.getState().preflight!, productRuntimeAvailable: true } }));
   expect(panel.querySelector('textarea')).not.toBeNull();
   expect(panel.querySelector('select[aria-label="Agent"]')?.textContent).toContain('real-agent');
@@ -183,7 +183,10 @@ it("keeps delivery beside its message, separate from a new run, and clears it wh
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
   await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
   const panel = document.querySelector('[role="dialog"]')!;
+  act(() => useAgsdlExecutionStore.setState({ preflight: undefined }));
   const input = panel.querySelector<HTMLTextAreaElement>('.agsdl-delivery textarea')!;
+  expect(input).not.toBeNull();
+  act(() => useAgsdlExecutionStore.setState({ preflight: { source, authoredSource: '{"flow":{"entry":"ask"}}', staticValid: true, runtimeSupported: true, productRuntimeAvailable: true, registryVersion: 'r', diagnostics: [], incomplete: false } }));
   expect(input.closest('details')).toBeNull();
   const write = (field: HTMLTextAreaElement, value: string) => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value);
