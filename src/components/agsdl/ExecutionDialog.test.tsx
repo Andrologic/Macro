@@ -8,7 +8,7 @@ import type { PublicSnapshot, PublicProjection, DeliveryId, ExactJsonText, Publi
 import i18n from "../../i18n";
 let root: Root | undefined;
 let host: HTMLDivElement;
-afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlExecutionStore.setState({ loaded: false, busy: false, error: undefined, runs: [], owner: undefined, snapshot: undefined, projection: undefined, preflight: undefined, diagnostic: undefined, approvals: undefined, intent: undefined, intentBusy: false, stopping: false }); useChatStore.setState({ selectedConversationId: null, conversations: [] }); });
+afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlExecutionStore.setState({ loaded: false, busy: false, error: undefined, runs: [], owner: undefined, snapshot: undefined, projection: undefined, preflight: undefined, diagnostic: undefined, approvals: undefined, intent: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined }); useChatStore.setState({ selectedConversationId: null, conversations: [] }); });
 it("offers a simple prompt and real Agent selection while keeping technical identities and error detail out of visible text", async () => {
   const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
   const source = { owner, revision: '9007199254740993', sourceSha256: 'a'.repeat(64) };
@@ -179,7 +179,7 @@ it("keeps delivery beside its message, separate from a new run, and clears it wh
     preflight: { source, authoredSource: '{"flow":{"entry":"ask"}}', staticValid: true, runtimeSupported: true, productRuntimeAvailable: true, registryVersion: 'r', diagnostics: [], incomplete: false },
     snapshot: { source, authoredSource: '{"agents":{"worker":{}}}', systemStartId: 'run-a' } as PublicSnapshot,
     projection: { source, systemStartId: 'run-a', cursor: '1', agents: [], activations: [], nextPage: null, systemStop: { kind: 'none' } } as unknown as PublicProjection,
-    runs: [], intent: undefined, intentBusy: false });
+    runs: [], intent: undefined, intentBusy: false, acceptedDelivery: undefined });
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
   await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
   const panel = document.querySelector('[role="dialog"]')!;
@@ -199,6 +199,17 @@ it("keeps delivery beside its message, separate from a new run, and clears it wh
   expect(send.disabled).toBe(false);
   await act(async () => send.click());
   expect(deliver).toHaveBeenCalledWith('worker', 'Message for worker');
+  expect(input.value).toBe('Message for worker'); // No admission yet: retain the draft.
+  const { executionPrompt } = await import('../../services/agsdl/executionView');
+  await act(async () => useAgsdlExecutionStore.setState({ acceptedDelivery: { systemStartId: 'run-a', deliveryId: 'accepted' as DeliveryId, agentName: 'worker', messageJson: executionPrompt('Message for worker') } as NonNullable<ReturnType<typeof useAgsdlExecutionStore.getState>['acceptedDelivery']> }));
+  expect(input.value).toBe('');
+  expect(send.disabled).toBe(true);
+  await act(async () => write(input, 'Message for worker'));
+  expect(input.value).toBe('Message for worker'); // The same text can be authored again deliberately.
+  act(() => useAgsdlExecutionStore.setState({ runs: [{ systemStartId: 'run-a', source, systemStop: { kind: 'none' }, counts: { queued: '0', active: '0', uncertain: '0', completed: '1', failed: '0', stopped: '0' } } as unknown as ReturnType<typeof useAgsdlExecutionStore.getState>['runs'][number]] }));
+  expect(panel.querySelector<HTMLButtonElement>('[aria-label="Request stop"]')?.disabled).toBe(false);
+  expect(panel.querySelector('[role="status"]')?.textContent).toBe("Waiting for a message");
+
   await act(async () => useAgsdlExecutionStore.setState({ snapshot: { ...useAgsdlExecutionStore.getState().snapshot!, systemStartId: 'run-b' } as PublicSnapshot }));
   expect(input.value).toBe('');
   expect(panel.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!.value).toBe('');

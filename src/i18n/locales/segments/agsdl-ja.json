@@ -385,6 +385,7 @@
       "active": "実行中",
       "uncertain": "不確定",
       "completed": "完了",
+      "waiting": "メッセージを待機中",
       "failed": "失敗",
       "stopped": "停止済み",
       "stopRequested": "停止要求済み",

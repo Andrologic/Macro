@@ -385,6 +385,7 @@
       "active": "Active",
       "uncertain": "Uncertain",
       "completed": "Completed",
+      "waiting": "Waiting for a message",
       "failed": "Failed",
       "stopped": "Stopped",
       "stopRequested": "Stop requested",

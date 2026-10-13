@@ -385,6 +385,7 @@
       "active": "활성",
       "uncertain": "불확실",
       "completed": "완료",
+      "waiting": "메시지 대기 중",
       "failed": "실패",
       "stopped": "중지됨",
       "stopRequested": "중지 요청됨",

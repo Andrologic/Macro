@@ -385,6 +385,7 @@
       "active": "Activa",
       "uncertain": "Incierta",
       "completed": "Completada",
+      "waiting": "Esperando un mensaje",
       "failed": "Fallida",
       "stopped": "Detenida",
       "stopRequested": "Detención solicitada",

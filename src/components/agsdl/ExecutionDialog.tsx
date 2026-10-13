@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, History, Loader2, MessageSquarePlus, Play, RefreshCw, RotateCw, Square, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { useAgsdlExecutionStore } from "../../stores/useAgsdlExecutionStore";
 import { useChatStore } from "../../stores/useChatStore";
 import { prepareAgsdlChatContext, prepareAgsdlRuntimeContext } from "../../stores/agsdl/chatContext";
-import { executionInput, nativeRunState } from "../../services/agsdl/executionView";
+import { executionInput, executionPrompt, nativeRunState } from "../../services/agsdl/executionView";
 import type { AgsdlTarget } from "../../stores/useAgsdlStore";
 import type { SystemStartId } from "../../services/agsdlExecution/contracts";
 import { notify } from "../ui/toastService";
@@ -43,7 +43,20 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
   const needsInspection = runState === "uncertain" || resultLost;
   useEffect(() => setEffectsReviewed(false), [runKey, runState, resultLost]);
   useEffect(() => { setAgentName(""); setDeliveryPrompt(""); }, [runKey]);
+  const observedDelivery = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const accepted = scoped ? state.acceptedDelivery : undefined;
+    if (!accepted || observedDelivery.current === accepted.deliveryId) return;
+    observedDelivery.current = accepted.deliveryId;
+    if (accepted.systemStartId !== runKey || accepted.agentName !== agentName) return;
+    let message;
+    try { message = executionPrompt(deliveryPrompt); } catch { return; }
+    if (accepted.messageJson === message) {
+      setDeliveryPrompt("");
+    }
+  }, [scoped, state.acceptedDelivery, runKey, agentName, deliveryPrompt]);
   const deliveryClosed = !!state.projection && state.projection.systemStop.kind !== "none";
+  const waitingForMessage = deliveryInput?.graphless && !deliveryClosed && (!runState || runState === "completed");
   // Native intent state drives the actions; its identities and codes stay out of the text.
   const intent = scoped ? state.intent : undefined;
   const intentOpen = !!intent && intent.state.kind !== "closed";
@@ -118,9 +131,9 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
         </details>
         {state.runs.length > 0 && <label className="agsdl-edit-field agsdl-run-selector"><span>{t("agsdl.execution.run")}</span><select disabled={state.busy || state.intentBusy} value={snapshot?.systemStartId ?? ""} onChange={event => { setAgentName(""); void state.select((event.target.value || undefined) as SystemStartId | undefined); }}>
           <option value="">{t("agsdl.execution.noRun")}</option>{snapshot && !state.runs.some(run => run.systemStartId === snapshot.systemStartId) && <option value={snapshot.systemStartId}>{t("agsdl.execution.run")}</option>}{state.runs.map((run, index) => <option value={run.systemStartId} key={run.systemStartId}>{t("agsdl.execution.runNumber", { number: index + 1 })} · {t("agsdl.execution.completedCount", { completed: run.counts.completed })}</option>)}</select></label>}
-        {runState && <div role="status" className={`agsdl-execution-state ${runState === 'failed' || runState === 'uncertain' ? 'agsdl-unresolved' : 'agsdl-muted'}`}>
-          {runState === 'active' || runState === 'queued' ? <Loader2 size={14} className="animate-spin" /> : runState === 'completed' ? <Check size={14} /> : runState === 'stopped' ? <Square size={14} /> : <AlertCircle size={14} />}
-          <span>{t(`agsdl.execution.state.${runState}`)}</span>
+        {(runState || waitingForMessage) && <div role="status" className={`agsdl-execution-state ${runState === 'failed' || runState === 'uncertain' ? 'agsdl-unresolved' : 'agsdl-muted'}`}>
+          {waitingForMessage ? <MessageSquarePlus size={14} /> : runState === 'active' || runState === 'queued' ? <Loader2 size={14} className="animate-spin" /> : runState === 'completed' ? <Check size={14} /> : runState === 'stopped' ? <Square size={14} /> : <AlertCircle size={14} />}
+          <span>{t(`agsdl.execution.state.${waitingForMessage ? "waiting" : runState}`)}</span>
         </div>}
         {needsInspection && <div className="agsdl-execution-state agsdl-unresolved" role="alert"><AlertCircle size={15} /><span>{t("agsdl.execution.recovery.inspect")}</span></div>}
         {state.nextRuns && <button disabled={state.busy} onClick={() => void state.moreRuns()}>{t("agsdl.execution.moreRuns")}</button>}
@@ -130,7 +143,7 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
             <div className="agsdl-execution-actions"><select aria-label={t("agsdl.execution.agent")} value={agentName} disabled={locked || needsInspection} onChange={event => setAgentName(event.target.value)}><option value="">{t("agsdl.execution.agentRequired")}</option>{deliveryInput.agents.map(name => <option key={name} value={name}>{name}</option>)}</select><button className="agsdl-action-button is-primary" disabled={locked || needsInspection || !deliveryInput.agents.includes(agentName) || !deliveryPrompt.trim()} onClick={() => void state.deliver(agentName, deliveryPrompt)}>{t("agsdl.execution.deliver")}</button></div>
           </section>}
           <div className="agsdl-execution-actions"><button className="agsdl-action-button" aria-pressed={state.captured} disabled={state.busy} onClick={() => { state.showCaptured(!state.captured); onClose(); }}><History size={14} />{t(state.captured ? "agsdl.execution.currentDocument" : "agsdl.execution.capture")}</button>
-            {(!runState || ["active", "queued", "uncertain"].includes(runState)) && <button className="agsdl-action-button" aria-label={t("agsdl.execution.stop")} title={t("agsdl.execution.stop")} disabled={state.stopping || state.projection?.systemStop.kind === "confirmed"} onClick={() => void state.stop()}><Square size={14} />{t("agsdl.execution.stop")}</button>}
+            {(!runState || ["active", "queued", "uncertain"].includes(runState) || (deliveryInput?.graphless && !deliveryClosed)) && <button className="agsdl-action-button" aria-label={t("agsdl.execution.stop")} title={t("agsdl.execution.stop")} disabled={state.stopping || state.projection?.systemStop.kind === "confirmed"} onClick={() => void state.stop()}><Square size={14} />{t("agsdl.execution.stop")}</button>}
             {state.projection && state.projection.systemStop.kind !== "none" && <span role="img" aria-label={t(`agsdl.execution.stopState.${state.projection.systemStop.kind}`)} title={t(`agsdl.execution.stopState.${state.projection.systemStop.kind}`)}><AlertCircle size={14} /></span>}
           </div>
           {state.projection?.nextPage && <button disabled={state.busy || state.stale} onClick={() => void state.moreProjection()}>{t("agsdl.execution.moreActivations")}</button>}

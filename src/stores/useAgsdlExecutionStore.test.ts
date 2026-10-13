@@ -86,7 +86,7 @@ const { useAgsdlStore, agsdlSessionKey } = await import("./useAgsdlStore");
 const { useAgsdlExecutionStore: store } = await import("./useAgsdlExecutionStore");
 const target = { planId: owner.planId, branchName: owner.branch };
 /** A renderer reload: the store forgets everything, native rows remain. */
-const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intentBusy: false, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null });
+const reload = () => store.setState({ owner: undefined, conversationId: undefined, snapshot: undefined, projection: undefined, approvals: undefined, diagnostic: undefined, preflight: undefined, intent: undefined, intentBusy: false, acceptedDelivery: undefined, stopping: false, busy: false, error: undefined, runs: [], nextRuns: null });
 beforeEach(async () => {
   selected = planConversation = "conversation"; snapshotOwner = owner; seenPages = []; seenDiagnostics = []; projectionChangesCursor = false; taskResult = null; available = false; authoredSource = '{}'; listCalls = preflightCalls = 0; native.reset(); completedCount = "0";
   readProjection = async id => projection(id);
@@ -330,6 +330,7 @@ it("sends Stop for the exact run while a submit is blocked and leaves the reques
   for (let turn = 0; turn < 50 && !native.calls.includes("submit"); turn++) await new Promise(resolve => setTimeout(resolve, 0));
   expect(native.calls).toContain("submit");
   expect(store.getState().intentBusy).toBe(true);
+  expect(store.getState().acceptedDelivery).toBeUndefined();
   await store.getState().stop();
   expect(native.stops).toEqual([{ systemStartId: "run" as SystemStartId, activationId: null }]);
   expect(store.getState().projection?.systemStop).toEqual({ kind: "requested", requestId: "native-stop-key" });
@@ -337,6 +338,7 @@ it("sends Stop for the exact run while a submit is blocked and leaves the reques
   release(); await delivering;
   const [row] = native.rows.values();
   expect(row.payload).toMatchObject({ kind: "deliver", source, request: { systemStartId: "run", agentName: "real" } });
+  expect(store.getState().acceptedDelivery).toEqual(row.payload.kind === "deliver" ? row.payload.request : undefined);
   expect(row.state.kind).toBe("closed");
 });
 it("targets an activation Stop by identity without a renderer request key", async () => {
@@ -382,4 +384,18 @@ it("refreshes native totals after foreground Stop, before a poll can miss the ne
   await store.getState().refreshRun();
   expect(listCalls).toBe(calls);
   expect(store.getState().runs[0].counts.completed).toBe("4");
+});
+
+
+it("publishes delivery acceptance only after Resume installs a retained receipt", async () => {
+  await ready('{"agents":{"real":{}}}');
+  await store.getState().select("run" as SystemStartId);
+  native.loseSubmit = true;
+  await store.getState().deliver("real", "Retained message");
+  expect(store.getState().acceptedDelivery).toBeUndefined();
+  const row = [...native.rows.values()][0];
+  expect(row.payload.kind).toBe("deliver");
+  await store.getState().resume();
+  expect(store.getState().acceptedDelivery).toEqual(row.payload.kind === "deliver" ? row.payload.request : undefined);
+  expect(native.submitted).toHaveLength(1);
 });

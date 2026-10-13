@@ -32,6 +32,8 @@ interface ExecutionView {
   intent?: PublicExecutionIntent;
   /** Start/Deliver/Resume/Discard in flight. Stop never waits for it. */
   intentBusy: boolean;
+  /** Delivery admitted natively and installed in this view, including after Resume. */
+  acceptedDelivery?: ExternalDeliveryRequest;
   stopping: boolean;
   cardTask?: { run: SystemStartId; path: string; resolved: ResolvedCardTask | null };
   inspectTask: (path: string) => Promise<void>;
@@ -54,7 +56,7 @@ interface ExecutionView {
   task: (path: string) => Promise<ResolvedCardTask | null>;
 }
 const sameSourceOwner = (left: SourceOwner, right: SourceOwner) => left.projectId === right.projectId && left.planId === right.planId && left.branch === right.branch;
-const empty = { runs: [], nextRuns: null, captured: false, loaded: false, busy: false, stale: false, diagnosticPinned: false, intent: undefined, intentBusy: false, stopping: false };
+const empty = { runs: [], nextRuns: null, captured: false, loaded: false, busy: false, stale: false, diagnosticPinned: false, intent: undefined, intentBusy: false, stopping: false, acceptedDelivery: undefined };
 let generation = 0;
 /** Changes only when the view leaves its project/plan/branch/conversation scope. */
 let scopeGeneration = 0;
@@ -136,7 +138,8 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     const page = await ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 });
     if (page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Run source owner differs");
     if (!(await current())) return false;
-    set({ ...result, runs: page.runs, nextRuns: page.nextCursor, captured: false });
+    set({ ...result, runs: page.runs, nextRuns: page.nextCursor, captured: false,
+      ...(payload.kind === "deliver" ? { acceptedDelivery: payload.request } : {}) });
     return true;
   };
   /** Advance one retained intent. Submit runs at most once per explicit action;
