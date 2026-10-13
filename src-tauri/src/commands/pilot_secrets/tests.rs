@@ -760,3 +760,67 @@ fn shutdown_cancels_recovery_and_deleted_scopes_are_not_restored() {
     manager.suspend();
     assert!(manager.take_recovery().is_none());
 }
+
+pub(super) fn qualification_backup_context(
+    actual: &serde_json::Value,
+    original_id: &str,
+    attached: bool,
+) {
+    let fake = Arc::new(Fake::default());
+    let original_context = PilotVaultContext {
+        configuration_id: original_id.into(),
+        relay_origin: "https://relay.example".into(),
+        owner_id: "owner:test-01".into(),
+    };
+    let current = PilotVaultContext {
+        configuration_id: actual["configurationId"].as_str().unwrap().into(),
+        relay_origin: actual["relayOrigin"].as_str().unwrap().into(),
+        owner_id: "owner:test-01".into(),
+    };
+    for kind in [
+        PilotSecretKind::SessionToken,
+        PilotSecretKind::InstanceKey,
+        PilotSecretKind::ClaimSecret,
+        PilotSecretKind::PollSecret,
+    ] {
+        let old = PilotSecretScope {
+            configuration_id: original_id.into(),
+            relay_origin: original_context.relay_origin.clone(),
+            kind,
+            resource_id: "resource:test-01".into(),
+        };
+        fake.values
+            .lock()
+            .unwrap()
+            .insert(entry_name(&old).unwrap(), secret());
+        // Warm a separate original manager cache, then create a fresh manager using the restored context.
+        let original = Manager::new(fake.clone());
+        let generation = original
+            .activate(original_context.clone(), None)
+            .unwrap()
+            .generation;
+        assert_eq!(original.read(&old, &generation).unwrap(), Some(secret()));
+        let reopened = Manager::new(fake.clone());
+        let generation = reopened.activate(current.clone(), None).unwrap().generation;
+        let scoped = PilotSecretScope {
+            configuration_id: current.configuration_id.clone(),
+            ..old.clone()
+        };
+        assert_eq!(
+            reopened.read(&scoped, &generation).unwrap(),
+            attached.then(secret),
+            "kind={kind:?}"
+        );
+        if !attached {
+            assert_eq!(
+                reopened.read(&old, &generation),
+                Err(PilotSecretError::InvalidScope)
+            );
+        }
+        assert_eq!(
+            fake.values.lock().unwrap().get(&entry_name(&old).unwrap()),
+            Some(&secret())
+        );
+    }
+    assert_eq!(fake.deletes.load(Ordering::SeqCst), 0);
+}
