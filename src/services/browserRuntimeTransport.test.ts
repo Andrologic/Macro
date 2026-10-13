@@ -219,6 +219,25 @@ test('borne le tampon du canal MCP si un index manque', async () => {
   expect(activeSocket.readyState).toBe(3);
 });
 
+test('préserve les octets audio et les en-têtes des invocations binaires', async () => {
+  const transport = await import('./browserRuntimeTransport');
+  const options = { headers: { 'x-macro-speech-mime-type': 'audio/wav' } };
+  const audio = new Uint8Array([9, 0, 128, 255, 8]);
+  for (const args of [audio.subarray(1, 4), new Uint8Array([0, 128, 255]).buffer]) {
+    const invocation = transport.invokeBrowserRuntime('speech_transcribe', args, options);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const activeSocket = FakeWebSocket.instances.at(-1)!;
+    const request = JSON.parse(activeSocket.sent.at(-1)!);
+    activeSocket.emit('message', { data: JSON.stringify({
+      id: request.id,
+      payload: JSON.stringify({ status: 'success', payload: { text: 'Audio QA' } }),
+    }) });
+    await expect(invocation).resolves.toEqual({ text: 'Audio QA' });
+    expect(request.args).toEqual([0, 128, 255]);
+    expect(request.option).toEqual(options);
+  }
+});
+
 test('arrête définitivement la reconnexion quand un autre onglet prend la session', async () => {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
