@@ -2905,6 +2905,30 @@ describe('ChatZone', () => {
     expect(details?.textContent).toContain('Review every release.');
   });
 
+  it('allows message editing after generation finishes without changing the message', async () => {
+    const messageImages: never[] = [];
+    const messages = [
+      buildMessage({ id: 'msg-user-1', role: 'user', content: 'Original prompt' }),
+      buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Generated answer' }),
+    ];
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      sendState: 'streaming',
+      getMessageImages: mock(() => messageImages),
+      messages,
+      messagesByConversationId: { 'conv-1': messages },
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    chatState = { ...chatState, isStreaming: false, sendState: 'idle' };
+    await act(async () => { useChatStore.emit(); });
+    await act(async () => {
+      requireContainer().querySelector<HTMLButtonElement>('button[title="common.edit"]')?.click();
+    });
+    expect(requireContainer().querySelector('[data-chat-composer-editing="true"]')).not.toBeNull();
+    expect(getComposerEditor().value).toBe('Original prompt');
+  });
+
   it('moves message editing into the composer and saves bracket text', async () => {
     chatState = {
       ...chatState,

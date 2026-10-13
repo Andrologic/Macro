@@ -1095,6 +1095,13 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
+    prev.measureElement === next.measureElement &&
+    prev.onImageMouseDown === next.onImageMouseDown &&
+    prev.onOpenImagePreview === next.onOpenImagePreview &&
+    prev.onEditCancel === next.onEditCancel &&
+    prev.onCopy === next.onCopy &&
+    prev.onEditStart === next.onEditStart &&
+    prev.onRegenerate === next.onRegenerate &&
     prev.onRetryPersistence === next.onRetryPersistence &&
     prev.onDeleteUnsavedResponse === next.onDeleteUnsavedResponse &&
     prev.skillTurnFeedback === next.skillTurnFeedback &&
