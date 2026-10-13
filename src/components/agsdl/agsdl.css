@@ -189,3 +189,5 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-design-summary > p { margin: 0; line-height: 1.6; }
 
 .agsdl-system-summary { display: flex; align-items: center; gap: 8px; color: rgb(var(--muted-foreground)); font-size: 12px; }
+
+.agsdl-delivery { display: flex; flex-direction: column; gap: 10px; }

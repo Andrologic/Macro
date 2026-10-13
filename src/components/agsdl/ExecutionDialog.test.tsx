@@ -8,7 +8,7 @@ import type { PublicSnapshot, PublicProjection, DeliveryId, ExactJsonText, Publi
 import i18n from "../../i18n";
 let root: Root | undefined;
 let host: HTMLDivElement;
-afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlExecutionStore.setState({ loaded: false, busy: false, error: undefined, runs: [], owner: undefined, snapshot: undefined, projection: undefined, intent: undefined, intentBusy: false, stopping: false }); useChatStore.setState({ selectedConversationId: null, conversations: [] }); });
+afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); act(() => root?.unmount()); host?.remove(); mock.restore(); useAgsdlExecutionStore.setState({ loaded: false, busy: false, error: undefined, runs: [], owner: undefined, snapshot: undefined, projection: undefined, preflight: undefined, diagnostic: undefined, approvals: undefined, intent: undefined, intentBusy: false, stopping: false }); useChatStore.setState({ selectedConversationId: null, conversations: [] }); });
 it("offers a simple prompt and real Agent selection while keeping technical identities and error detail out of visible text", async () => {
   const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
   const source = { owner, revision: '9007199254740993', sourceSha256: 'a'.repeat(64) };
@@ -167,4 +167,46 @@ it("requires inspection before starting anew after a lost result, without treati
   expect(start.mock.calls.length).toBe(0);
   act(() => useAgsdlExecutionStore.setState({snapshot: {...useAgsdlExecutionStore.getState().snapshot!,systemStartId:'another-run'} as PublicSnapshot,runs:[]}));
   expect(panel.querySelector<HTMLInputElement>('input[type="checkbox"]')).toBeNull();
+});
+
+it("keeps delivery beside its message, separate from a new run, and clears it when the selected run changes", async () => {
+  const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
+  const source = { owner, revision: '1', sourceSha256: 'e'.repeat(64) };
+  spyOn(useAgsdlExecutionStore.getState(), 'open').mockResolvedValue(undefined);
+  const deliver = spyOn(useAgsdlExecutionStore.getState(), 'deliver').mockResolvedValue(undefined);
+  useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', loaded: true, busy: false, error: undefined,
+    preflight: { source, authoredSource: '{"flow":{"entry":"ask"}}', staticValid: true, runtimeSupported: true, productRuntimeAvailable: true, registryVersion: 'r', diagnostics: [], incomplete: false },
+    snapshot: { source, authoredSource: '{"agents":{"worker":{}}}', systemStartId: 'run-a' } as PublicSnapshot,
+    projection: { source, systemStartId: 'run-a', cursor: '1', agents: [], activations: [], nextPage: null, systemStop: { kind: 'none' } } as unknown as PublicProjection,
+    runs: [], intent: undefined, intentBusy: false });
+  host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<ExecutionDialog target={{ planId: 'plan', branchName: 'work' }} onClose={() => {}} />));
+  const panel = document.querySelector('[role="dialog"]')!;
+  const input = panel.querySelector<HTMLTextAreaElement>('.agsdl-delivery textarea')!;
+  expect(input.closest('details')).toBeNull();
+  const write = (field: HTMLTextAreaElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  await act(async () => {
+    write(panel.querySelector<HTMLTextAreaElement>('details textarea')!, 'New run prompt');
+    write(input, 'Message for worker');
+    const select = panel.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!;
+    select.value = 'worker'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  const send = [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Send message')!;
+  expect(send.disabled).toBe(false);
+  await act(async () => send.click());
+  expect(deliver).toHaveBeenCalledWith('worker', 'Message for worker');
+  await act(async () => useAgsdlExecutionStore.setState({ snapshot: { ...useAgsdlExecutionStore.getState().snapshot!, systemStartId: 'run-b' } as PublicSnapshot }));
+  expect(input.value).toBe('');
+  expect(panel.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!.value).toBe('');
+  expect(panel.querySelector<HTMLTextAreaElement>('details textarea')!.value).toBe('New run prompt');
+  act(() => useAgsdlExecutionStore.setState({ projection: { ...useAgsdlExecutionStore.getState().projection!, systemStop: { kind: 'confirmed', requestId: 'stop' } } as unknown as PublicProjection }));
+  expect(panel.querySelector('.agsdl-delivery')).toBeNull();
+  act(() => useAgsdlExecutionStore.setState({ preflight: { ...useAgsdlExecutionStore.getState().preflight!, staticValid: false } }));
+  const start = panel.querySelector<HTMLButtonElement>('[aria-label="Start"]')!;
+  expect(start.disabled).toBe(true);
+  expect(start.title).toBe('Product execution unavailable');
 });
