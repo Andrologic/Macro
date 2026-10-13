@@ -119,7 +119,7 @@ export function AgentDetails({ card, cards, source, onSelect, captured = false }
                   : port.binding?.uri ? <span className="agsdl-source-uri"><FileText size={14} /><span title={port.binding.uri}>{port.binding.uri}</span>{port.type && <small>{port.type}</small>}</span>
                     : t("agsdl.viewer.detail.unspecifiedSource")}</div>}
           </div>
-        </div>) : !card.flowInputs?.length && <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>}
+        </div>) : !card.flowInputs?.length && (hasResponse ? <div className="agsdl-io-card"><strong>{t("agsdl.edge.Message")}</strong></div> : <p className="agsdl-muted">{t("agsdl.viewer.detail.noInputs")}</p>)}
         {!!card.dependencies?.length && <div className="agsdl-agent-dependencies"><span className="agsdl-muted">{t("agsdl.viewer.dependencies")}</span>{card.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</div>}
       </section>
       <section><h4><ArrowUpFromLine size={14} />{t("agsdl.viewer.detail.outputs")}</h4>

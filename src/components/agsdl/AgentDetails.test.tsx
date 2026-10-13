@@ -55,3 +55,17 @@ it("shows the agent response and its real successor without inventing a named re
   await act(async () => root!.render(<AgentDetails card={cards[2]} cards={cards} source={source} onSelect={() => {}} />));
   expect(host.querySelectorAll(".agsdl-agent-io section")[1]!.textContent).not.toContain("Response");
 });
+
+
+it("shows Message and Response for a graphless Agent without inventing a source or recipient", async () => {
+  const source = JSON.stringify({ contract: "agsdl-0.2.0", id: "messages", bindings: {}, configurations: {}, agents: { worker: { configuration: "main", prompt: [], interface: { results: {} } } } });
+  const viewer = projectViewer(source);
+  host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<AgentDetails card={viewer.declarations.find(card => card.path === "/agents/worker")!} cards={viewer.declarations} source={source} onSelect={() => {}} />));
+  const [inputs, outputs] = host.querySelectorAll(".agsdl-agent-io section");
+  expect(inputs!.textContent).toContain("Message");
+  expect(inputs!.textContent).not.toContain("No inputs declared");
+  expect(inputs!.querySelector("button")).toBeNull();
+  expect(outputs!.textContent).toContain("Response");
+  expect(outputs!.querySelector("button")).toBeNull();
+});

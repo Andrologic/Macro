@@ -221,7 +221,7 @@ async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
       Object.hasOwn(args, key),
     );
     if (alternatives.length !== 1)
-      throw new Error("Supply exactly one of changes, source, example, design_json, or display_json.");
+      throw new AgsdlAuthoringRefusal("Supply exactly one of changes, source, example, design_json, or display_json.");
     if (alternatives[0] === "changes") {
       if (!Array.isArray(args.changes))
         throw new Error("changes must be an array.");

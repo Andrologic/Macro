@@ -649,3 +649,15 @@ it('keeps an update response failure uncertain after its source was saved', asyn
   expect(plan.agsdl?.source).toBe(source);
   expect(current().dirty).toBe(false);
 });
+
+
+it('refuses conflicting update alternatives before mutating or saving the source', async () => {
+  const read = JSON.parse(await call('agsdl_get'));
+  const before = current().source;
+  const revision = current().persistedRevision;
+  await expect(call('agsdl_update', { expected_revision: read.revision, source: '{}', example: 'feature' })).rejects.toBeInstanceOf(AgsdlAuthoringRefusal);
+  expect(current().source).toBe(before);
+  expect(current().dirty).toBe(false);
+  expect(current().persistedRevision).toBe(revision);
+  expect(plan.agsdl?.source).toBe(before);
+});
