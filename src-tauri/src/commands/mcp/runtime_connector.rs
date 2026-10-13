@@ -1663,3 +1663,12 @@ pub(super) async fn cleanup_fixture_session(
         _ => panic!("unknown adapter"),
     }
 }
+
+#[cfg(test)]
+pub(crate) fn qualification_header(
+    server_id: &str,
+    name: &str,
+    value: &str,
+) -> Result<String, McpRuntimeError> {
+    resolve_remote_header_value(server_id, name, value)
+}

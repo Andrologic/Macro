@@ -234,3 +234,12 @@ pub async fn pilot_secret_delete(
     let manager = manager()?;
     blocking(move || manager.delete(&scope, &generation)).await
 }
+
+#[cfg(test)]
+pub(crate) fn qualification_backup_context(
+    actual: &serde_json::Value,
+    original_id: &str,
+    attached: bool,
+) {
+    tests::qualification_backup_context(actual, original_id, attached);
+}

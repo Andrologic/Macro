@@ -292,6 +292,16 @@ async fn interruption_child() {
         if phase == "partial-replacement" || phase == "rollback-before-status" {
             atomic(&config.join("settings.json"), b"partial replacement").unwrap();
             atomic(&data.join("macro.db"), b"partial database").unwrap();
+            atomic(
+                &data.join(PROVIDER_SECRETS_FILE),
+                b"partial secret generation",
+            )
+            .unwrap();
+            atomic(
+                &data.join("provider-secrets.json.v0.bak"),
+                b"partial migration backup",
+            )
+            .unwrap();
         }
         if phase == "rollback-before-status" {
             fs::create_dir(dir.join("status.json")).unwrap();
@@ -331,7 +341,7 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
             br#"{"$schema":"settings.schema.json","schemaVersion":1,"language":"en"}"#,
         )
         .unwrap();
-        fs::write(data.join(PROVIDER_SECRETS_FILE), br#"{"version":2,"namespaces":{"providers":{"receiver":"synthetic-only"}},"chatgpt_sessions":{}}"#).unwrap();
+        super::secrets_qualification::seed(&data, &config, "receiver", 2).await;
         let expected = capture_raw(&data, &config, receiver_browser.clone()).unwrap();
         queue_restore(&data, &archive);
         atomic(
@@ -351,6 +361,7 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
                 "--ignored",
                 "--nocapture",
             ])
+            .current_dir(temp.path())
             .env("MACRO_BACKUP_CHILD_ROOT", temp.path())
             .env("MACRO_BACKUP_CHILD_PHASE", phase)
             .stdout(std::process::Stdio::null())
@@ -379,6 +390,7 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
                 "--ignored",
                 "--nocapture",
             ])
+            .current_dir(temp.path())
             .env("MACRO_BACKUP_CHILD_ROOT", temp.path())
             .env("MACRO_BACKUP_CHILD_PHASE", "resume")
             .output()
@@ -411,6 +423,10 @@ async fn killed_subprocess_recovers_at_five_restore_boundaries() {
                     &serde_json::to_vec_pretty(&receiver_browser).unwrap(),
                 );
             }
+        }
+        if phase != "preserved-before-journal" {
+            super::secrets_qualification::reopen(temp.path(), "rollback", "receiver", "source");
+            super::secrets_qualification::reopen(temp.path(), "rollback", "receiver", "source");
         }
         assert!(!data.join("local-backup/request.json").exists());
         assert!(!data.join("local-backup/restoring.json").exists());
@@ -456,4 +472,24 @@ async fn damaged_preservation_blocks_recovery_and_retains_journal_for_retry() {
         &original,
     );
     assert!(path.exists());
+}
+
+#[tokio::test]
+async fn version_zero_migration_backup_is_managed_with_its_profile() {
+    let (_temp, data, config) = profile().await;
+    fs::write(
+        data.join("provider-secrets.json.v0.bak"),
+        b"synthetic-v0-source",
+    )
+    .unwrap();
+    let raw = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+    assert!(
+        raw.files.contains_key("data/provider-secrets.json.v0.bak"),
+        "supported version-zero migration backup must be preserved and detached"
+    );
+    let portable = capture(&data, &config, BTreeMap::new(), true)
+        .await
+        .unwrap();
+    apply(&portable, &data, &config).unwrap();
+    assert!(!data.join("provider-secrets.json.v0.bak").exists());
 }

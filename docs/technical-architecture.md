@@ -959,6 +959,18 @@ Au démarrage, une demande illisible est isolée et signalée par un statut de
 récupération. Le bootstrap portable laisse `ConfigManager` choisir le runtime
 approuvé avant d'appliquer le workspace ; il ne parse pas le fichier brut.
 
+Toute restauration portable détache les secrets gérés, même sur le même poste
+avec les mêmes identifiants. Le magasin de secrets du receveur et ses fichiers
+de migration sont retirés ; les champs d'authentification SQLite et de
+configuration sont nettoyés. L'état Pilot conserve l'adresse du relais mais
+reçoit un nouveau contexte de configuration sans identité de session ou
+d'instance, sans accès ni effacement du vault OS. Les services nécessitent une
+reconnexion. Le rollback automatique interne restitue conjointement les octets
+privés de la configuration, de l'état et des secrets dans leur contexte original.
+Une préservation sélectionnée volontairement est normalisée en portable et ne
+réactive pas les clés. Ces garanties n'impliquent ni chiffrement des archives ni
+révocation distante des credentials ou des authentifications d'outils externes.
+
 Avant la capture ou la restauration, les chemins gérés sont contrôlés même si
 l'archive omet leurs fichiers. Les checkpoints utilisent les mêmes limites de
 profondeur et de nombre de nœuds implicites lors de la validation et de la

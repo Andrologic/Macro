@@ -17,6 +17,7 @@ const PROVIDER_SECRETS_RECOVERY_FILES: &[&str] = &[
     PROVIDER_SECRETS_FILE,
     "provider-secrets.migration-pending.json",
     "provider-secrets.json.v1.bak",
+    "provider-secrets.json.v0.bak",
 ];
 const CONFIG_FILES: &[&str] = &[
     "settings.json",
@@ -609,6 +610,36 @@ fn make_config_files_portable(files: &mut BTreeMap<String, Entry>) -> Result<()>
     }
     Ok(())
 }
+// Native authentication identities must not reconnect to an existing OS vault.
+// Keep the relay address and display label, but allocate a new configuration context.
+fn make_state_file_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
+    let Some(entry) = files.get_mut("data/state.json") else {
+        return Ok(());
+    };
+    let bytes = STANDARD
+        .decode(&entry.data)
+        .map_err(|error| error.to_string())?;
+    crate::state_manager::validate_backup_state(&bytes)?;
+    let mut snapshot: crate::state_manager::StateSnapshot =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if let Some(pilot) = snapshot.values.get_mut("macro_pilot_native_v1") {
+        let mut detached = serde_json::json!({
+            "configurationId": format!("config:{}", uuid::Uuid::new_v4().simple()),
+            "relayOrigin": pilot.get("relayOrigin").filter(|value| value.is_string()).cloned(),
+        });
+        if let Some(label) = pilot
+            .get("pendingInstanceLabel")
+            .filter(|value| value.is_string())
+        {
+            detached["pendingInstanceLabel"] = label.clone();
+        }
+        *pilot = detached;
+    }
+    let bytes = serde_json::to_vec(&snapshot).map_err(|error| error.to_string())?;
+    entry.sha256 = hash(&bytes);
+    entry.data = STANDARD.encode(bytes);
+    Ok(())
+}
 async fn capture(
     data: &Path,
     config: &Path,
@@ -656,6 +687,7 @@ async fn capture(
     }
     if portable {
         make_config_files_portable(&mut files)?;
+        make_state_file_portable(&mut files)?;
     }
     Ok(Archive {
         format: "macro-local-profile".into(),
@@ -1013,7 +1045,11 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
         )?;
         make_config_files_portable(&mut archive.files)?;
         archive.format = "macro-local-profile".into();
+    } else {
+        // Verify original checksums before detaching identities in older portable archives.
+        validate(&archive).await?;
     }
+    make_state_file_portable(&mut archive.files)?;
     validate(&archive).await?;
     Ok(archive)
 }
@@ -2850,3 +2886,7 @@ mod tests {
 #[cfg(test)]
 #[path = "local_backup_qualification.rs"]
 mod qualification;
+
+#[cfg(test)]
+#[path = "local_backup_secrets_qualification.rs"]
+mod secrets_qualification;

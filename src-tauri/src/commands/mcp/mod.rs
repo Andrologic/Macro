@@ -314,3 +314,10 @@ pub async fn mcp_runtime_cancel_operation(
 ) -> Result<bool, McpRuntimeError> {
     Ok(runtime.cancel_operation(&operation_id).await)
 }
+
+#[cfg(test)]
+mod backup_qualification;
+#[cfg(test)]
+pub(crate) use backup_qualification::qualification_backup_consumers;
+#[cfg(test)]
+pub(crate) use oauth::oauth_credential_secret_id as qualification_oauth_id;
