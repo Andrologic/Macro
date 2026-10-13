@@ -8,10 +8,12 @@ import { macroNativeModelEdition } from "../../services/agsdl/nativeModelEdition
 import { useProviderStore } from "../useProviderStore";
 import { paginateTextBytes, TOOL_OUTPUT_LIMITS } from "../../shared/toolOutputLimits";
 
-/** A revision guard refused a read, or an edit before any source mutation. */
+/** An authoring request was refused without changing the source. */
 export class AgsdlAuthoringRefusal extends Error {
   constructor(message: string) { super(message); this.name = "AgsdlAuthoringRefusal"; }
 }
+
+class AgsdlReadArgumentError extends Error {}
 
 export const AGSDL_AUTHORING_INSTRUCTION =
   "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Read section: guide for the contract before structural changes; it is available even when a scoped source read omits the overview. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
@@ -39,6 +41,9 @@ const guide02 = {
   contract: "agsdl-0.2.0",
   workflow: "Read source and revision. Follow outline.next_offset with section: outline, offset and expected_revision until null to discover every declaration; read each path for its exact source. Full static reports are available with section: report and report_index. Read each *_omitted.section explicitly before editing its data. For any text_page, concatenate content in next_offset order for the same revision before parsing the JSON text. Apply atomic JSON-pointer changes with the returned revision, preserve opaque settings and numeric tokens, then inspect fresh diagnostics. Preserve imported editions and author a separate 0.2.0 document only after deliberate migration of intent and losses.",
   document: "The closed document requires contract:'agsdl-0.2.0', id, agents, configurations and bindings. Optional fields are content, skills, flow, compositions and baseUri. id and catalog names match ^[A-Za-z][A-Za-z0-9_-]*$. Catalogs are maps. Use only the 0.2.0 shapes. Unknown fields fail validation, except in literal values, settings and external requirement parameters.",
+  agent_shape: { configuration: "main", prompt: [{ value: "Reply briefly to the received message.", mediaType: "text/plain" }], interface: { inputMediaTypes: ["text/plain"], outputMediaTypes: ["text/plain"], results: {} } },
+  configuration_shape: { engine: "desktop", settings: { providerId: "COPY_FROM_MODELS", modelId: "COPY_FROM_MODELS", mode: "Chat", maxTurns: 1 }, tools: {} },
+  shapes: "agent_shape and configuration_shape are literal shape examples. Agent prompt is an ordered array, not a single Source. Tools belong to Configuration, not Agent. Copy the selected model's edition object into configuration.model; placeholders are not runnable. A binding named desktop needs the Engine contract and implementation shown in runtime. mode accepts Chat, Architect, Implement or build; inline is not a mode. For a graphless system, omit flow entirely.",
   content: "A source has exactly value or uri, with optional mediaType. A content use may instead be {ref:catalogName}. When an interface restricts inputMediaTypes, declare a matching mediaType on every delivered Source, including prepared prompt instructions. Messages separate ordered prompt instructions from named resources containing information. An Agent declares a fixed configuration name or {select:Operand,cases:map}; successful selection before initialization remains fixed for that persistent Agent. Skills expand in declared order before the Agent prompt and cannot overwrite resource names. An interface uses inputMediaTypes, outputMediaTypes and named results with mediaTypes, optional required and the bounded valueSchema constraint language. URI access and media delivery require integration evidence. Relative URIs use only their originating explicit baseUri; preserve unresolved origins.",
   flow: "Optional flow contains entry and a steps map. Steps have type agent, call, condition, prepare, join, approval or compose and their type-specific closed fields. next lists activate every destination; agent decisions use an explicit decision binding, choices and a matching next map. condition uses test and true/false next lists. prepare authors message roles. Operands resolve against the current incoming value. Agent completion is {text:string,results:map,choice?:string}; call completion exposes data. After an Agent, prepare a text resource with {select:{path:['text']},mediaType:'text/plain'}. source copies a complete content Source object, while select wraps a value. Direct Agent completion transfers visible text as information; prepared Messages retain prompt/resources. call results expose data; join results expose members. Default Agent delivery is queue. Steering, joins, loops, bounded composition and approval chains need their declared 0.2.0 constraints and scoped static checks. Normal path termination is an absent or empty next list. Use onError for explicit recovery.",
   flow_shapes: "Use operands {value:literal} or {path:[stringOrNonnegativeIndex,...]}. Predicates are {equals:[Operand,Operand]}, {all:[Predicate,...]} or {not:Predicate}. An agent step requires agent; optional decision is {binding,choices}, delivery is queue|steering and steers names its ordinary owner step. call requires binding and may map arguments to Operands. condition requires test and next:{true:[steps],false:[steps]}. prepare requires message:{prompt?,resources?}; prepared resources may use a Content, {select:Operand,mediaType?} or {source:Operand}. join requires after and members; mode is all|first, first requires accept, and remaining is stop-and-wait|finish. approval requires call, binding, timeoutMs, validForMs and next:{approved:[steps],denied:[steps]}; call names the protected action step. Protected targets require scope:{action,resources:[descriptions],context:Operand}. compose requires composition, agents and a next map covering composition outputs. A composition requires entry, steps and outputs, with optional agentParameters; its body is non-nested and serial or conditional. Ordinary steps may declare maxVisits and onError; compose has onError but no maxVisits. Validate the bounded Join and approval structure before reporting it as structurally valid.",
@@ -82,7 +87,7 @@ function inventory(doc: Record<string, unknown>, path: string): InventoryEntry[]
 function integerArg(args: Record<string, unknown>, key: string, fallback: number): number {
   const value = args[key];
   if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${key} must be a nonnegative safe integer.`);
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new AgsdlReadArgumentError(`${key} must be a nonnegative safe integer.`);
   return value;
 }
 function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], args: Record<string, unknown>) {
@@ -90,8 +95,8 @@ function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], 
     return { contract: bytes(doc.contract ?? null) < 256 ? doc.contract : undefined, supported: false };
   }
   const offset = integerArg(args, "offset", 0), limit = Math.min(integerArg(args, "limit", 100), 200);
-  if (!limit) throw new Error("limit must be positive.");
-  if (offset > entries.length) throw new Error("offset exceeds the inventory total.");
+  if (!limit) throw new AgsdlReadArgumentError("limit must be positive.");
+  if (offset > entries.length) throw new AgsdlReadArgumentError("offset exceeds the inventory total.");
   const items: Array<InventoryEntry | { entry_index: number; entry_omitted: { section: string; total_bytes: number } }> = [];
   let index = offset;
   while (index < entries.length && items.length < limit) {
@@ -119,16 +124,16 @@ function inventoryPage(doc: Record<string, unknown>, entries: InventoryEntry[], 
 }
 function textPage(content: string, args: Record<string, unknown>, section: ReadSection, base: Record<string, unknown>) {
   const offset = integerArg(args, "offset", 0);
-  if (section === "models" && offset > 0 && args.cursor === undefined) throw new Error("Use the returned cursor to continue the provider catalog read.");
+  if (section === "models" && offset > 0 && args.cursor === undefined) throw new AgsdlReadArgumentError("Use the returned cursor to continue the provider catalog read.");
   let limit = Math.min(integerArg(args, "limit", PAGE_BYTES), PAGE_BYTES);
-  if (!limit) throw new Error("limit must be positive.");
+  if (!limit) throw new AgsdlReadArgumentError("limit must be positive.");
   while (true) {
     const page = paginateTextBytes(content, { ...(args.cursor === undefined ? { start_byte: offset } : { cursor: args.cursor, ...(args.offset !== undefined ? { start_byte: offset } : {}) }), max_bytes: limit }, JSON.stringify({ ...base, section, path: typeof args.path === "string" ? args.path : "" }) + "\n" + content);
     const response = { ...base, section, text_page: { format: "json-text", encoding: "utf-8", content: page.content,
       offset: page.startByte, limit: page.maxBytes, total_bytes: page.totalBytes, returned_bytes: page.returnedBytes,
       next_offset: page.truncated ? page.endByte : null, next_cursor: page.nextCursor } };
     if (bytes(response) <= AGSDL_TOOL_RESPONSE_BYTES) return JSON.stringify(response);
-    if (limit <= 4) throw new Error("The read target identifiers exceed the response budget.");
+    if (limit <= 4) throw new AgsdlReadArgumentError("The read target identifiers exceed the response budget.");
     limit = Math.max(4, Math.floor(limit / 2));
   }
 }
@@ -157,12 +162,26 @@ export function updateAgsdlDisplayMetadata(source: string, previous: AgsdlDispla
   return next;
 }
 
-export async function handleAgsdlToolCall(params: {
+type AgsdlToolCall = {
   toolName: string;
   args: Record<string, unknown>;
   conversationId: string;
   isCurrent: () => boolean;
-}): Promise<string> {
+};
+
+export async function handleAgsdlToolCall(params: AgsdlToolCall): Promise<string> {
+  try {
+    return await handleAgsdlToolRequest(params);
+  } catch (error) {
+    // Read argument errors have no source effect; update response errors may follow a save.
+    if (params.toolName === "agsdl_get" && error instanceof AgsdlReadArgumentError) {
+      throw new AgsdlAuthoringRefusal(error.message);
+    }
+    throw error;
+  }
+}
+
+async function handleAgsdlToolRequest(params: AgsdlToolCall): Promise<string> {
   const { args } = params;
   const target = {
     planId: text(args.plan_id),
@@ -276,7 +295,7 @@ export async function handleAgsdlToolCall(params: {
   const pointer = typeof args.path === "string" ? args.path : "";
   const source = session.source && pointer ? sourceAt(session.source, pointer) : session.source;
   if (params.toolName === "agsdl_get" && args.expected_revision !== undefined && args.expected_revision !== session.version) throw new AgsdlAuthoringRefusal("The document changed. Restart agsdl_get pagination with the current revision.");
-  if (args.section !== undefined && !sections.includes(args.section as ReadSection)) throw new Error("Unknown AgSDL read section.");
+  if (args.section !== undefined && !sections.includes(args.section as ReadSection)) throw new AgsdlReadArgumentError("Unknown AgSDL read section.");
   const section = args.section as ReadSection | undefined;
   const base = { plan_id: target.planId, target_branch: target.branchName, revision: session.version,
     persisted_revision: session.persistedRevision, dirty: session.dirty, ...(bytes(pointer) <= 1024 ? { path: pointer } : { path_omitted: true }) };
@@ -289,11 +308,11 @@ export async function handleAgsdlToolCall(params: {
     providerId: provider.id, name: provider.name,
     models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name, edition: macroNativeModelEdition(provider.id, model.id) })),
   }));
-  if ((integerArg(args, "offset", 0) > 0 || args.cursor !== undefined) && args.expected_revision === undefined) throw new Error("expected_revision is required after the first page.");
-  if (args.cursor !== undefined && (!section || section === "outline")) throw new Error("cursor is only available for text sections.");
+  if ((integerArg(args, "offset", 0) > 0 || args.cursor !== undefined) && args.expected_revision === undefined) throw new AgsdlReadArgumentError("expected_revision is required after the first page.");
+  if (args.cursor !== undefined && (!section || section === "outline")) throw new AgsdlReadArgumentError("cursor is only available for text sections.");
   if (section === "outline") {
     const response = { ...base, outline: inventoryPage(doc, entries, args) };
-    if (bytes(response) > AGSDL_TOOL_RESPONSE_BYTES) throw new Error("The read target identifiers exceed the response budget.");
+    if (bytes(response) > AGSDL_TOOL_RESPONSE_BYTES) throw new AgsdlReadArgumentError("The read target identifiers exceed the response budget.");
     return JSON.stringify(response);
   }
   if (section) {
@@ -302,12 +321,12 @@ export async function handleAgsdlToolCall(params: {
     else if (section === "guide") content = JSON.stringify(agsdlAuthoringGuide(doc.contract, !session.source));
     else if (section === "report") {
       const index = integerArg(args, "report_index", 0), report = session.reports[index];
-      if (!report) throw new Error("report_index does not identify an available report.");
+      if (!report) throw new AgsdlReadArgumentError("report_index does not identify an available report.");
       content = typeof report.documentReportJson === "string" ? report.documentReportJson : JSON.stringify(report);
       return textPage(content, args, section, { ...base, report_index: index });
     } else if (section === "outline_entry") {
       const index = integerArg(args, "entry_index", 0);
-      if (!entries[index]) throw new Error("entry_index does not identify an available inventory entry.");
+      if (!entries[index]) throw new AgsdlReadArgumentError("entry_index does not identify an available inventory entry.");
       return textPage(JSON.stringify(entries[index]), args, section, { ...base, entry_index: index });
     } else content = JSON.stringify(({ design: designContext ?? null, display: session.display ?? null,
       models, annex_ids: Object.keys(session.annexes), error: session.error })[section]);
@@ -338,6 +357,6 @@ export async function handleAgsdlToolCall(params: {
   }
   addBounded(response, "error", session.error, "error");
   addBounded(response, "source", source, "source");
-  if (bytes(response) > AGSDL_TOOL_RESPONSE_BYTES) throw new Error("The read target identifiers exceed the response budget.");
+  if (bytes(response) > AGSDL_TOOL_RESPONSE_BYTES) throw new AgsdlReadArgumentError("The read target identifiers exceed the response budget.");
   return JSON.stringify(response);
 }

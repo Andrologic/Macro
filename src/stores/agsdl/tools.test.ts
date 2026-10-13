@@ -462,7 +462,7 @@ it('recovers oversized names and literal source without splitting UTF-8 or losin
   await expect(call('agsdl_get', { section: 'source', offset: 1 })).rejects.toThrow('expected_revision');
   await expect(call('agsdl_get', { section: 'outline', offset: 1, expected_revision: 'stale' })).rejects.toThrow('changed');
   for (const args of [{ section: 'missing' }, { section: 'outline', offset: -1 }, { section: 'outline', limit: 0 }, { section: 'source', limit: 1.5 }, { section: 'report', report_index: 99 }]) {
-    await expect(call('agsdl_get', args)).rejects.toThrow();
+    await expect(call('agsdl_get', args)).rejects.toBeInstanceOf(AgsdlAuthoringRefusal);
   }
 });
 
@@ -616,6 +616,10 @@ it('provides the current contract guide through bounded revision-safe text pages
   } while (offset !== null);
   const guide = JSON.parse(content);
   expect(guide.contract).toBe('agsdl-0.2.0');
+  expect(guide.agent_shape.prompt).toEqual([{ value: 'Reply briefly to the received message.', mediaType: 'text/plain' }]);
+  expect(guide.agent_shape.tools).toBeUndefined();
+  expect(guide.configuration_shape.tools).toEqual({});
+  expect(guide.shapes).toContain('inline is not a mode');
   expect(guide.flow_shapes).toContain('maxVisits');
   expect(guide.runtime).toContain('macro/agent-engine');
   expect(guide.runtime).toContain('configuration.model');
@@ -632,4 +636,16 @@ it('refuses a stale read without saving, and allows a fresh read', async () => {
   expect(current().source).toBe(source);
   expect(current().persistedRevision).toBe(persistedRevision);
   expect(JSON.parse(await call('agsdl_get', { expected_revision: read.revision })).revision).toBe(read.revision);
+});
+
+
+it('keeps an update response failure uncertain after its source was saved', async () => {
+  const read = JSON.parse(await call('agsdl_get'));
+  const source = createExample('feature');
+  const result = await call('agsdl_update', { expected_revision: read.revision, source, section: 'missing' }).catch(error => error);
+  expect(result).toBeInstanceOf(Error);
+  expect(result).not.toBeInstanceOf(AgsdlAuthoringRefusal);
+  expect(result.message).toContain('Unknown AgSDL read section');
+  expect(plan.agsdl?.source).toBe(source);
+  expect(current().dirty).toBe(false);
 });
