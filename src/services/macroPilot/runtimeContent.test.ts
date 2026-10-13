@@ -15,6 +15,7 @@ let fresh = true;
 let secretValues = ['configured-password'];
 let repoPath = '/private/test-repository';
 let bridge: ((command: string, args: Record<string, unknown>) => Promise<unknown>) | undefined;
+let policyWait: Promise<unknown> | undefined;
 let beforeFresh: (() => void) | undefined;
 let nativeFailure: string | undefined;
 let captureWait: Promise<void> | undefined;
@@ -37,7 +38,9 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
     if (applied) settings.set(String(args.key), String(args.valueJson));
     return { applied };
   }
-  if (command === 'pilot_content_policy') { if (!supported) throw 'content_unavailable'; return secretValues; }
+  if (command === 'pilot_files_authorize') return;
+  if (command === 'pilot_files_list') return [];
+  if (command === 'pilot_content_policy') { await policyWait; if (!supported) throw 'content_unavailable'; return secretValues; }
   if (command === 'host_telemetry_read') return { sampleId: 'sample:synthetic', observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 5000).toISOString(), availability: 'available', reason: null, cpuPercent: 25, memoryUsedBytes: 1024, memoryTotalBytes: 4096 };
   if (command === 'workspace_resolve_project_icons') {
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
@@ -132,6 +135,7 @@ function harness() {
   const values: Record<string, unknown> = { macro_pilot_native_v1: { configurationId: 'config:test', relayOrigin: 'https://pilot.example.test', account, deviceSession: session,
     instance: { contract_version: '1.0', type: 'instance', ref: { type: 'instance', instance_id: instanceId }, label: 'Test', connection_state: 'reachable', supported_contract_versions: ['1.0'], revision: 1 }, instanceCreationId: 'creation:test' } };
   const queue: ContentDelivery[] = [];
+  const deliveredRequests = new Map<string, ContentDelivery>();
   const results: ContentDeliveryResult[] = [];
   const events: ContentEvent[] = [];
   const requests: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
@@ -141,12 +145,17 @@ function harness() {
   let acknowledgeIdlePoll = false;
   let loseResult = false;
   let lostResultDelay = 0;
+  let rejectResults = 0;
   let loseEvent = false;
   let revoked = false;
   let eventWait: Promise<void> | undefined;
   let disconnectWait: Promise<void> | undefined;
   let disconnectFailures = 0;
   let onAuthorize: (() => void) | undefined;
+  let onLostResult: (() => void) | undefined;
+  const authorizedRequests = new Set<string>();
+  const authorityBindings = new Map<string, string>();
+  let authorizationMs = 5000;
   const client = new MacroPilotNativeClient({
     randomBytes: size => crypto.getRandomValues(new Uint8Array(size)),
     sha256: async value => new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(value))),
@@ -177,13 +186,18 @@ function harness() {
         return json(queue.shift()!);
       }
       if (path.endsWith('/authorize')) {
+        const id = String(body.request_id);
+        if (authorizedRequests.has(id)) return json({ code: 'conflict' }, 409);
+        authorizedRequests.add(id);
         onAuthorize?.();
         if (revoked) return json({ code: 'session_revoked' }, 401);
-        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + 5000).toISOString(), ...(body.required_permissions ? { granted_permissions: body.required_permissions } : {}),...(body.required_permissions && requests.some(item => item.path.endsWith('/poll') && (item.body.capabilities as string[] | undefined)?.includes('conversation-reflections-1')) ? { authority_binding: 'grant:reflections' } : {}) });
+        return json({ transport_version: '2.0', type: 'authorized', request_id: body.request_id, execute_before: new Date(Date.now() + authorizationMs).toISOString(), ...(body.required_permissions ? { granted_permissions: body.required_permissions } : {}),...(authorityBindings.has(id) ? { authority_binding: authorityBindings.get(id) } : {}) });
       }
       if (path.endsWith('/result')) {
+        if (rejectResults-- > 0) throw Error('Synthetic request lost before relay acceptance');
+        if (revoked) return json({ code: 'session_revoked' }, 401);
         results.push(structuredClone(body) as unknown as ContentDeliveryResult);
-        if (loseResult) { loseResult = false; await sleep(lostResultDelay); throw Error('lost response'); }
+        if (loseResult) { loseResult = false; onLostResult?.(); await sleep(lostResultDelay); throw Error('lost response'); }
         return new Response(null, { status: 204 });
       }
       if (path.endsWith('/events')) {
@@ -196,24 +210,30 @@ function harness() {
     },
   });
   const runtime = new PilotRuntime(client, undefined, desktopStorePorts);
-  async function deliver(input: ContentRequest, source = 'session:mobile') {
-    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
+  function enqueue(input: ContentRequest, source = 'session:mobile') {
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', request_id: input.request_id, instance_id: instanceId, account_id: accountId, source_session_id: source, expires_at: deliveredRequests.get(input.request_id)?.expires_at ?? new Date(Date.now() + 60_000).toISOString(), request: input, ...(input.operation === 'conversation.files.list' ? { authority_binding: 'grant:files', capabilities: ['conversation-files-1'] } : input.operation === 'conversation.reflections.read' ? { authority_binding: 'grant:reflections',capabilities: ['conversations-1','conversation-reflections-1'] } : input.operation === 'instance.telemetry' || input.operation === 'project.icon' ? { capabilities: ['host-telemetry-1', 'project-icons-1'] } : 'consistency' in input.body ? { capabilities: ['task-details-1', 'network-reliability-1'] } : {}) };
     expect(validateContentMessage(delivery)).toBe(true);
-    const start = results.length; queue.push(delivery); wake?.();
+    if (delivery.authority_binding) authorityBindings.set(input.request_id, delivery.authority_binding);
+    deliveredRequests.set(input.request_id, delivery); queue.push(delivery); wake?.();
+  }
+  async function deliver(input: ContentRequest, source = 'session:mobile') {
+    const start = results.length; enqueue(input, source);
     await until(() => results.slice(start).some(result => result.request_id === input.request_id));
     const result = results.slice(start).find(result => result.request_id === input.request_id)!;
     expect(validateContentMessage(result)).toBe(true); return result.response;
   }
-  return { client, runtime, deliver, results, events, requests, values,
+  return { client, runtime, deliver, enqueue, results, events, requests, values,
+    rejectResults: (count: number) => { rejectResults = count; },
+    authorizationDuration: (ms: number) => { authorizationMs = ms; },
     legacyRelay: () => { rejectReliability = true; },
     acceptIdlePoll: () => { acknowledgeIdlePoll = true; },
     waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
     waitEvents: (wait: Promise<void>) => { eventWait = wait; },
-    loseResult: (delay = 0) => { loseResult = true; lostResultDelay = delay; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
+    loseResult: (delay = 0, onLoss?: () => void) => { loseResult = true; lostResultDelay = delay; onLostResult = onLoss; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
     authorize: (callback: () => void) => { onAuthorize = callback; } };
 }
 beforeEach(() => {
-  settings.clear(); nativeCalls.length = 0; nativeSnapshots.clear(); supported = true; fresh = true; bridge = undefined; beforeFresh = undefined;
+  settings.clear(); nativeCalls.length = 0; nativeSnapshots.clear(); supported = true; fresh = true; bridge = undefined; beforeFresh = undefined; policyWait = undefined;
   nativeFailure = undefined; captureWait = undefined; messageWait = undefined; messagesUnavailable = false; branchRecords = []; extraProjects = [];
   taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Todo', execution_targets: [] }];
   nativeRevision = 'a'.repeat(64); secretValues = ['configured-password']; repoPath = '/private/test-repository';
@@ -602,7 +622,7 @@ it('retries an identical result after its execution lease expires without execut
     await until(() => h.results.filter(result => result.request_id === input.request_id).length === 2);
     const replies = h.results.filter(result => result.request_id === input.request_id);
     expect(replies[1]).toEqual(replies[0]);
-    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(3);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
   } finally { await h.runtime.stop(); }
 }, 12000);
 
@@ -718,7 +738,7 @@ it('routes negotiated telemetry and bounded project logos through native IPC wit
     expect(JSON.stringify(response)).not.toContain('public/favicon.png');
     for (const input of [cpu, logo]) {
       const authorizations = h.requests.filter(item => item.path.endsWith(`/${input.request_id}/authorize`));
-      expect(authorizations.length).toBeGreaterThanOrEqual(3);
+      expect(authorizations).toHaveLength(1);
       expect(authorizations.every(item => JSON.stringify(item.body.required_permissions) === JSON.stringify(['supervise']))).toBe(true);
     }
   } finally { await h.runtime.stop(); }
@@ -739,7 +759,7 @@ it('routes real visible reflection history through negotiated runtime, supervise
     const polls=h.requests.filter(item=>item.path.endsWith('/poll')&&item.path.includes('/v2/'));
     expect(polls.some(item=>(item.body.capabilities as string[])?.includes('conversation-reflections-1'))).toBe(true);
     const auth=h.requests.filter(item=>item.path.endsWith(`/${input.request_id}/authorize`));
-    expect(auth.length).toBeGreaterThanOrEqual(3);expect(auth.every(item=>JSON.stringify(item.body.required_permissions)==='["supervise"]')).toBe(true);
+    expect(auth).toHaveLength(1);expect(auth.every(item=>JSON.stringify(item.body.required_permissions)==='["supervise"]')).toBe(true);
     expect(nativeCalls.filter(command=>command==='db_get_pilot_reflection_message').length).toBeGreaterThanOrEqual(3);
     expect(nativeCalls).not.toContain('db_get_message');expect(nativeCalls).not.toContain('db_list_messages');
     expect(JSON.stringify(h.results)).not.toContain('never-export');
@@ -801,17 +821,14 @@ for (const change of ['modify', 'delete'] as const) it(`blocks a stale transcrip
   const h = harness();
   try {
     await h.runtime.start();
-    let authorizations = 0;
-    h.authorize(() => {
-      if (++authorizations >= 3) {
-        if (change === 'modify') messages[0].content = 'Changed after the first emission';
-        else conversations = [];
-      }
+    h.loseResult(0, () => {
+      if (change === 'modify') messages[0].content = 'Changed after the first emission';
+      else conversations = [];
     });
-    h.loseResult();
     const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, consistency: 'network-reliability-1' });
     expect(await h.deliver(input)).toMatchObject({ type: 'response' });
-    await until(() => authorizations >= 4);
+    await sleep(1700);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
     await h.runtime.stop();
     expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(1);
   } finally { await h.runtime.stop(); }
@@ -828,3 +845,61 @@ it('requires the conversation emission guard in the native producer transport', 
     expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(1);
   } finally { await h.runtime.stop(); }
 });
+
+it('uses one-shot V2 authorization across guarded conversation, machine, file and reflection reads', async () => {
+  const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  const oldRuntime = runtimeWindow.__TAURI_INTERNALS__; runtimeWindow.__TAURI_INTERNALS__ = { invoke: () => {} };
+  messages[0] = { ...messages[0], role: 'assistant', turn_id: 'turn:visible', content: '<think>Public reflection</think>Public answer', hidden_context: null };
+  const { mapDbConversationToConversation } = await import('../chatDbMappers');
+  const beforeChat = useChatStore.getState(); useChatStore.setState({ conversations: [mapDbConversationToConversation(conversation)] });
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const reads = [
+      request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }),
+      request('conversations.list', { instance_id: instanceId, kind: 'conversation' }),
+      request('conversation.files.list', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }),
+      request('project.icon', { ref: { instance_id: instanceId, workspace_id: 'workspace:config:test', project_id: 'project:one' } }),
+      request('instance.telemetry', { instance_id: instanceId }),
+      request('conversation.reflections.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id }, message_id: messages[0].id }),
+    ];
+    for (const input of reads) {
+      expect(await h.deliver(input)).toMatchObject({ type: 'response', operation: input.operation });
+      expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    }
+  } finally { await h.runtime.stop(); runtimeWindow.__TAURI_INTERNALS__ = oldRuntime; useChatStore.setState(beforeChat); }
+});
+
+it('does not renew an effect lease during asynchronous policy validation', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const capture = await h.deliver(request('review.get', { ref }));
+    if (capture.type !== 'response' || capture.operation !== 'review.get') throw Error('capture');
+    h.authorizationDuration(20);
+    h.authorize(() => { policyWait = sleep(60); });
+    const input = request('review.verdict', { ref, snapshot_id: capture.result.snapshot_id, expected_revision: capture.result.revision, verdict: 'approve', idempotency_key: 'verdict:expired:one-shot' });
+    h.enqueue(input);
+    await until(() => h.requests.some(r => r.path.endsWith(`/${input.request_id}/authorize`)));
+    await sleep(100);
+    await h.runtime.stop();
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(nativeCalls.filter(command => command === 'pilot_review_commit')).toHaveLength(0);
+    expect(h.results.filter(result => result.request_id === input.request_id)).toHaveLength(0);
+  } finally { await h.runtime.stop(); }
+});
+
+it('reuses the one-shot grant and prepared result on redelivery after exhausted transport retries', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start(); h.rejectResults(3);
+    const input = request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } });
+    h.enqueue(input);
+    await until(() => h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`)).length === 3);
+    expect((await h.deliver(input)).type).toBe('response');
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/authorize`))).toHaveLength(1);
+    expect(h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`))).toHaveLength(4);
+    const attempts = h.requests.filter(r => r.path.endsWith(`/${input.request_id}/result`));
+    expect(attempts.every(r => JSON.stringify(r.body) === JSON.stringify(attempts[0].body))).toBe(true);
+  } finally { await h.runtime.stop(); }
+}, 10000);

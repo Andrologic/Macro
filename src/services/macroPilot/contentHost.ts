@@ -54,7 +54,7 @@ export class ContentHost {
   private snapshots = new Map<string, Snapshot>();
   private replies = new Map<string, { digest: string; expires: number; response: unknown }>();
   private policyKey: string | null = null;
-  private readonly conversationEmissions = new WeakMap<object, { binding: string; policy: string | null }>();
+  private readonly conversationEmissions = new WeakMap<object, { binding: string; policy: string | null; authorizedBefore: number }>();
   private readonly machineEmissions = new WeakMap<object, { policy: string | null; context?: string }>();
   private reviewOffset = 0;
   private reliability = false;
@@ -417,7 +417,7 @@ export class ContentHost {
             await this.validateConversationResult(delivery, (cached.response as { result: unknown }).result);
             guard();
             const response = structuredClone(cached.response) as object;
-            this.conversationEmissions.set(response, { binding: stableJson(delivery), policy: readingPolicy });
+            this.conversationEmissions.set(response, { binding: stableJson(delivery), policy: readingPolicy, authorizedBefore: deadline });
             return { transport_version: '2.0', type: 'delivery.result', request_id: delivery.request_id, instance_id: delivery.instance_id, response } as ContentDeliveryResult;
           }
           result = await this.read(delivery, request); await authorizeNow();
@@ -443,7 +443,7 @@ export class ContentHost {
         if (!validateContentResponse(request, response) || !await validateContentIntegrity(response)) failure('content_unavailable');
         await this.policy(); guard();
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
-        if (CONVERSATION_READ_OPERATIONS.has(request.operation)) this.conversationEmissions.set(response as object, { binding: stableJson(delivery), policy: readingPolicy });
+        if (CONVERSATION_READ_OPERATIONS.has(request.operation)) this.conversationEmissions.set(response as object, { binding: stableJson(delivery), policy: readingPolicy, authorizedBefore: deadline });
         if (request.operation === REFLECTION_OPERATION) this.reflectionEmissions.set(response as object, readingPolicy);
         if (FILE_OPERATIONS.has(request.operation)) this.fileEmissions.set(response as object, readingPolicy);
         if (MACHINE_OPERATIONS.has(request.operation)) this.machineEmissions.set(response as object, { policy: readingPolicy, context: machineContext });
@@ -463,6 +463,7 @@ export class ContentHost {
         if (!validateContentResponse(request, response)) failure('unavailable');
       }
       guard();
+      if (CONVERSATION_READ_OPERATIONS.has(request.operation)) this.conversationEmissions.set(response as object, { binding: stableJson(delivery), policy: this.policyKey, authorizedBefore: deadline });
       return { transport_version: '2.0', type: 'delivery.result', request_id: delivery.request_id, instance_id: delivery.instance_id, response } as ContentDeliveryResult;
     });
   }
@@ -498,25 +499,23 @@ export class ContentHost {
         request.operation === 'conversation.read' ? request.body.ref : request.operation === 'conversations.list' ? request.body.kind : null, payload.page!.snapshot_id);
     }
   }
-  /** Source checks run after the last asynchronous authorization/credential wait.
-   * Read retries refresh authority without extending any mutation's effect lease. */
-  async validateConversationEmission(delivery: ContentDelivery, result: ContentDeliveryResult, authorize: (delivery: ContentDelivery) => Promise<string>): Promise<void> {
+  /** Recheck source/policy after credential waits using the prepared response's
+   * one-shot grant. Relay result acceptance rechecks live access. A result retry
+   * may outlive execute_before, but cannot execute an effect or outlive delivery. */
+  async validateConversationEmission(delivery: ContentDelivery, result: ContentDeliveryResult): Promise<void> {
     if (!CONVERSATION_READ_OPERATIONS.has(delivery.request.operation)) return;
     await this.serial(async () => {
       if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
         !validateContentResponse(delivery.request, result.response)) failure('unavailable');
       const retained = this.conversationEmissions.get(result.response);
-      if (result.response.type === 'response' && (!retained || retained.binding !== stableJson(delivery))) failure('snapshot_expired');
-      await this.policy();
-      const deadline = Date.parse(await authorize(delivery)); this.check();
-      await this.policy();
-      if (retained && retained.policy !== this.policyKey) failure('snapshot_expired');
+      if (!retained || retained.binding !== stableJson(delivery)) failure('snapshot_expired');
       const guard = () => {
         this.check();
-        if (!Number.isFinite(deadline) || deadline <= this.now() || deadline > this.now() + 10000 ||
-          deadline > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
+        if (!Number.isFinite(retained!.authorizedBefore) || !Number.isFinite(Date.parse(delivery.expires_at)) ||
+          retained!.authorizedBefore > Date.parse(delivery.expires_at) || Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
       };
-      guard();
+      guard(); await this.policy(); guard();
+      if (retained!.policy !== this.policyKey) failure('snapshot_expired');
       if (result.response.type === 'response') await this.validateConversationResult(delivery, result.response.result);
       guard();
     });

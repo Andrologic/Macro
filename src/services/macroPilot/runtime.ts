@@ -6,7 +6,7 @@ import { TASK_COMPLETION_CAPABILITIES } from './taskCompletionHost';
 import { findPilotTask, pilotTaskId, resolvePilotTask, resolvePilotStartTask } from './taskIdentity';
 import { createDesktopContentHost } from './desktopContentHost';
 import type { ContentHost } from './contentHost';
-import { CONVERSATION_READ_OPERATIONS, type ContentDelivery } from './contentProtocol';
+import { CONVERSATION_READ_OPERATIONS, type ContentDelivery, type ContentDeliveryResult } from './contentProtocol';
 import type { DesktopStorePorts } from './desktopStorePorts';
 import { isAppShutdownGateActive } from '../appShutdownGate';
 import { frontendLog, gitBranchList, gitReviewSnapshot } from '../tauriIpc';
@@ -225,7 +225,11 @@ export class PilotRuntime {
     let files = host.filesAvailable();
     let reflections = host.reflectionsAvailable();
     let advertised = false;
+    // Retain at most the last delivery for duplicate/retry handling. This
+    // checkpoint is scoped to this host generation and expires with the exchange.
+    let pending: { binding: string; expiresAt: number; authorization?: Promise<string>; result?: ContentDeliveryResult } | undefined;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
+      if (pending && pending.expiresAt <= Date.now()) pending = undefined;
       try {
         const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES, ...(reflections && conversations ? [REFLECTION_CAPABILITY] : []), ...(files ? FILE_CAPABILITIES : []), ...(machines ? MACHINE_CAPABILITIES : []), ...(reliability ? ['network-reliability-1'] : []), ...(conversations ? ['conversations-1', ...(history ? ['conversation-history-1'] : []), ...(interactions ? ['conversation-interactions-1', ...(models ? ['conversation-models-1'] : [])] : [])] : [])] } : {}) }, signal);
         if (signal.aborted) break;
@@ -236,18 +240,29 @@ export class PilotRuntime {
         if (reliability) host.enableReliability();
         if (response.status === 204) { failures = 0; await pause(25, signal); continue; }
         const deliveryExpiresAt = Date.parse((response.data as ContentDelivery).expires_at);
+        const deliveryBinding = stableJson(response.data);
+        if (!pending || pending.binding !== deliveryBinding || pending.expiresAt <= Date.now()) pending = { binding: deliveryBinding, expiresAt: deliveryExpiresAt };
+        const checkpoint = pending;
         const authorizeContent = async (delivery: ContentDelivery) => {
           if (signal.aborted) throw new PilotError('unavailable');
-          const requiredPermissions = taskActionPermissions(delivery.request);
-          const authorization = await this.client.requestContent!(`${base}/${encodeURIComponent(delivery.request_id)}/authorize`,
-            { transport_version: '2.0', type: 'authorize', request_id: delivery.request_id, ...(requiredPermissions ? { required_permissions: requiredPermissions } : {}) }, signal);
-          const data = object(authorization.data);
-          if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
-          assertTaskActionPermissions(requiredPermissions, data);
-          if ((FILE_OPERATIONS.has(delivery.request.operation) || delivery.request.operation === REFLECTION_OPERATION) && (!delivery.authority_binding || data.authority_binding !== delivery.authority_binding)) throw new PilotError('forbidden');
-          return data.execute_before;
+          if (stableJson(delivery) !== deliveryBinding) throw new PilotError('forbidden');
+          // Public V2 authorize is one-shot. Share its original deadline across
+          // this delivery's guards, including failures, without renewing it.
+          checkpoint.authorization ??= (async () => {
+            const requiredPermissions = taskActionPermissions(delivery.request);
+            const authorization = await this.client.requestContent!(`${base}/${encodeURIComponent(delivery.request_id)}/authorize`,
+              { transport_version: '2.0', type: 'authorize', request_id: delivery.request_id, ...(requiredPermissions ? { required_permissions: requiredPermissions } : {}) }, signal);
+            const data = object(authorization.data);
+            if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
+            assertTaskActionPermissions(requiredPermissions, data);
+            if ((FILE_OPERATIONS.has(delivery.request.operation) || delivery.request.operation === REFLECTION_OPERATION) && (!delivery.authority_binding || data.authority_binding !== delivery.authority_binding)) throw new PilotError('forbidden');
+            return data.execute_before;
+          })();
+          const deadline = await checkpoint.authorization;
+          if (signal.aborted) throw new PilotError('unavailable');
+          return deadline;
         };
-        const result = await host.handle(response.data, authorizeContent);
+        const result = checkpoint.result ??= await host.handle(response.data, authorizeContent);
         for (let attempt = 0; attempt < 3 && !signal.aborted; attempt++) {
           try {
             // The native transport checks account/session/instance again at emission;
@@ -263,7 +278,8 @@ export class PilotRuntime {
                   : (response.data as ContentDelivery).request.operation === REFLECTION_OPERATION
                     ? () => host.validateReflectionEmission(response.data as ContentDelivery,result,authorizeContent)
                     : CONVERSATION_READ_OPERATIONS.has((response.data as ContentDelivery).request.operation)
-                      ? () => host.validateConversationEmission(response.data as ContentDelivery, result, authorizeContent) : undefined); break;
+                      ? () => host.validateConversationEmission(response.data as ContentDelivery, result) : undefined);
+            break;
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
         failures = 0;
