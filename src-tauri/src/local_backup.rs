@@ -1227,7 +1227,7 @@ pub fn local_backup_acknowledge(app: tauri::AppHandle) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    async fn profile() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    pub(super) async fn profile() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("data");
         let config = temp.path().join("config");
@@ -1468,7 +1468,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            11
+            12
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1501,7 +1501,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await
@@ -2346,7 +2346,7 @@ mod tests {
             Some(&serde_json::json!("https://current.invalid/v1"))
         );
     }
-    fn queue_restore(data: &Path, archive: &Archive) {
+    pub(super) fn queue_restore(data: &Path, archive: &Archive) {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
         atomic(
@@ -2846,3 +2846,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "local_backup_qualification.rs"]
+mod qualification;

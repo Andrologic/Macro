@@ -52,7 +52,7 @@ it('restores recovery identities and text with queued work paused after hydratio
   await runtime.drain(entry.input.conversationId);
   expect(send).not.toHaveBeenCalled();
   expect(read).not.toHaveBeenCalled();
-  expect(previews).toHaveBeenLastCalledWith([{ id: entry.id, conversationId: entry.input.conversationId, content: entry.input.content }]);
+  expect(previews).toHaveBeenLastCalledWith([{ id: entry.id, conversationId: entry.input.conversationId, content: entry.input.content, state: 'paused' }]);
 });
 it('replaces newer recovery values when a historical archive omits them', () => {
   const { values } = fixture();
