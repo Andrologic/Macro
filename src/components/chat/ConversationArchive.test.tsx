@@ -266,6 +266,47 @@ describe('ConversationArchive', () => {
     expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
   });
 
+  it('keeps archive selection while its transcript loads asynchronously', async () => {
+    let finishSelection: ((applied: boolean) => void) | undefined;
+    const selectConversation = mock((conversationId: string) => {
+      useChatStore.setState({ selectedConversationId: conversationId });
+      return conversationId === 'conversation-2'
+        ? new Promise<boolean>((resolve) => { finishSelection = resolve; })
+        : Promise.resolve(true);
+    });
+    useChatStore.setState({
+      conversations: [
+        ...useChatStore.getState().conversations,
+        {
+          ...useChatStore.getState().conversations[0],
+          id: 'conversation-2',
+          title: 'Conversation archivée',
+        },
+      ],
+      selectConversation,
+    });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, ['conversation-2']);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds(['conversation-2']);
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+    const archiveToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-archive-toggle"]',
+    );
+    await act(async () => {
+      archiveToggle?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      finishSelection?.(useChatStore.getState().selectedConversationId === 'conversation-2');
+      await flushRender();
+    });
+    expect(selectConversation).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
+    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('opens and closes search inside the existing compact header', async () => {
     await act(async () => {
       root?.render(<ConversationArchive />);

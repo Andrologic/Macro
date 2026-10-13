@@ -652,7 +652,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   );
 
   useEffect(() => {
-    if (!areViewFiltersHydrated || !isArchiveHydrated) return;
+    if (!areViewFiltersHydrated || !isArchiveHydrated || isArchiveViewSwitching) return;
     const selectionMatchesView = selectedConversationId
       ? archivedIds.has(selectedConversationId) === showArchived
       : archiveSourceConversations.length === 0;
@@ -676,6 +676,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     chatConversations,
     clearSelectedConversation,
     isArchiveHydrated,
+    isArchiveViewSwitching,
     selectConversation,
     selectedConversationId,
     showArchived,
