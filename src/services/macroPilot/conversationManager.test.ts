@@ -229,3 +229,14 @@ for (const operation of ['conversations.catalog', 'conversations.search', 'conve
   s.clear();
   await expect(s.manager.validateEmission(delivery, result, policy)).rejects.toThrow('snapshot_expired');
 });
+
+for (const change of ['edit', 'delete', 'provenance'] as const) test(`invalidates a search hit when its message changes without a catalog edit: ${change}`, async () => {
+  const s = setup(); s.add(message('answer', s.ref.conversation_id));
+  const delivery = s.delivery('conversations.search', { instance_id: 'instance', kind: 'conversation', query: 'cafe' });
+  const result = await s.manager.handle(delivery, policy, async () => new Date(s.clock() + 9000).toISOString());
+  await s.manager.validateEmission(delivery, result, policy);
+  if (change === 'edit') s.messages[0].content = 'Changed response without the search term';
+  if (change === 'delete') s.messages.length = 0;
+  if (change === 'provenance') s.withhold();
+  await expect(s.manager.validateEmission(delivery, result, policy)).rejects.toThrow('stale_revision');
+});
