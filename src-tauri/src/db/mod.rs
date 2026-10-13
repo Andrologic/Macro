@@ -50,7 +50,7 @@ const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 pub(crate) const SUPPORTED_MIGRATION_VERSIONS: &[i64] =
-    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 const MIGRATION_005_VERSION: i64 = 5;
 const MIGRATION_005_NAME: &str = "005_runtime_schema";
 const MIGRATION_005_CHECK_SQL: &str = include_str!("migrations/005_runtime_schema_check.sql");
@@ -304,6 +304,11 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             "013_execution_ui_intents",
             include_str!("migrations/013_execution_ui_intents.sql"),
         ),
+        (
+            14,
+            "014_execution_process_receipts",
+            include_str!("migrations/014_execution_process_receipts.sql"),
+        ),
     ] {
         if !list_applied_migrations(connection)
             .await?
@@ -336,6 +341,7 @@ fn validate_migration_history(applied: &HashSet<i64>) -> DbResult<()> {
         || (applied.contains(&11) && !applied.contains(&10))
         || (applied.contains(&12) && !applied.contains(&11))
         || (applied.contains(&13) && !applied.contains(&12))
+        || (applied.contains(&14) && !applied.contains(&13))
     {
         return Err(DbError::Migration(
             "Unsupported or inconsistent migration history; database left unchanged".to_string(),
@@ -2397,6 +2403,7 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("initial pool");
         for statement in [
+            "DROP TABLE engine_effect_processes",
             "DROP TABLE engine_ui_intents",
             "DROP TABLE engine_prepared_terminals",
             "DROP TABLE engine_approvals",

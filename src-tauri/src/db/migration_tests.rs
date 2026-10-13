@@ -49,7 +49,8 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
 }
 
 /// Tables added after v11 are removed first so older migrations can replay.
-const POST_V9_ENGINE_TABLES: [&str; 6] = [
+const POST_V9_ENGINE_TABLES: [&str; 7] = [
+    "DROP TABLE engine_effect_processes",
     "DROP TABLE engine_ui_intents",
     "DROP TABLE engine_prepared_terminals",
     "DROP TABLE engine_approvals",

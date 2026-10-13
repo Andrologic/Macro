@@ -3417,3 +3417,208 @@ async fn stop_recovers_only_revoked_calls_with_cancelled_undispatched_approval()
         );
     }
 }
+
+#[tokio::test]
+async fn retired_native_receipts_close_stop_only_after_every_effect_ends() {
+    let (_temp, pool, receipt, runtime) = setup().await;
+    let d = delivery(&pool, &runtime, "second", "retired").await;
+    accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+    begin(&pool, &runtime, "retired").await.unwrap();
+    let provider = effect(&runtime, &d.work);
+    register_effect(&pool, provider.clone()).await.unwrap();
+    let mut tool = provider.clone();
+    tool.effect = EngineEffectIdentity::Tool {
+        tool_invocation_id: "tool-retired".into(),
+        provider_attempt_id: Some("provider-1".into()),
+    };
+    register_effect(&pool, tool.clone()).await.unwrap();
+    revoke_host_owners(&pool, std::slice::from_ref(&runtime))
+        .await
+        .unwrap();
+    ensure_stop(&pool, &receipt.system_start_id, None)
+        .await
+        .unwrap();
+    let joined = EngineSettlement {
+        context: provider.context.clone(),
+        effect: provider.effect.clone(),
+        status: "ended".into(),
+        evidence_json: "{\"joined\":true}".into(),
+    };
+    let mut foreign = joined.clone();
+    foreign.context.scope_json = "{\"foreign\":true}".into();
+    assert!(settle_owned_effect(&pool, foreign, None).await.is_err());
+    let mut uncertain = joined.clone();
+    uncertain.status = "uncertain".into();
+    assert!(settle_owned_effect(&pool, uncertain, None).await.is_err());
+    settle_owned_effect(&pool, joined.clone(), None)
+        .await
+        .unwrap();
+    let partial = read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap();
+    assert_eq!(partial.activations[0].work_state, "uncertain");
+    assert!(!matches!(
+        partial.system_stop,
+        EngineStopState::Confirmed { .. }
+    ));
+    let ended = EngineSettlement {
+        context: tool.context.clone(),
+        effect: tool.effect.clone(),
+        status: "ended".into(),
+        evidence_json: "{\"physicalEnd\":true}".into(),
+    };
+    assert!(settle_owned_effect(&pool, ended.clone(), None)
+        .await
+        .is_err());
+    settle_owned_effect(&pool, ended.clone(), Some("\"actual result\"".into()))
+        .await
+        .unwrap();
+    let final_state = read_projection(&pool, &receipt.system_start_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        final_state.system_stop,
+        EngineStopState::Confirmed { .. }
+    ));
+    assert!(matches!(
+        final_state.activations[0].terminal,
+        Some(EngineOutcome::Stopped { .. })
+    ));
+    let before = final_state.cursor;
+    settle_owned_effect(&pool, joined, None).await.unwrap();
+    settle_owned_effect(&pool, ended.clone(), Some("\"actual result\"".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_projection(&pool, &receipt.system_start_id)
+            .await
+            .unwrap()
+            .cursor,
+        before
+    );
+    assert!(
+        settle_owned_effect(&pool, ended, Some("\"different result\"".into()))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn process_exit_recovery_preserves_unknown_tool_outcome_and_never_replays() {
+    let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+    if cfg!(windows) {
+        child.args(["/C", "exit", "0"]);
+    } else {
+        child.args(["-c", "exit 0"]);
+    }
+    let mut child = child.spawn().unwrap();
+    let dead_pid = child.id();
+    child.wait().unwrap();
+    for provenance in [
+        Some(i64::from(std::process::id())),
+        None,
+        Some(i64::from(dead_pid)),
+    ] {
+        let (_temp, pool, receipt, runtime) = setup().await;
+        let d = delivery(&pool, &runtime, "second", "crashed").await;
+        accept_delivery(&pool, &runtime, d.clone()).await.unwrap();
+        begin(&pool, &runtime, "crashed").await.unwrap();
+        let mut tool = effect(&runtime, &d.work);
+        tool.effect = EngineEffectIdentity::Tool {
+            tool_invocation_id: "write-before-crash".into(),
+            provider_attempt_id: None,
+        };
+        register_effect(&pool, tool.clone()).await.unwrap();
+        // A synthetic process receipt replaces the fixture's live process. The
+        // application has no public write port to this provenance table.
+        sqlx::query("DELETE FROM engine_effect_processes WHERE system_id=?")
+            .bind(&receipt.system_start_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        if let Some(pid) = provenance {
+            sqlx::query("INSERT INTO engine_effect_processes VALUES (?, ?, ?)")
+                .bind(&receipt.system_start_id)
+                .bind(effect_key(&tool.effect).unwrap())
+                .bind(pid)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        revoke_host_owners(&pool, std::slice::from_ref(&runtime))
+            .await
+            .unwrap();
+        // Process absence alone is insufficient without a user Stop intent.
+        process_recovery::close_dead_process_effects(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_effects(&pool, &d.work).await.unwrap()[0].status,
+            "uncertain"
+        );
+        ensure_stop(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        process_recovery::close_dead_process_effects(
+            &pool,
+            &receipt.system_start_id,
+            Some("different-activation"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_effects(&pool, &d.work).await.unwrap()[0].status,
+            "uncertain"
+        );
+        process_recovery::close_dead_process_effects(&pool, &receipt.system_start_id, None)
+            .await
+            .unwrap();
+        let effects = read_effects(&pool, &d.work).await.unwrap();
+        let projection = read_projection(&pool, &receipt.system_start_id)
+            .await
+            .unwrap();
+        if provenance == Some(i64::from(dead_pid)) {
+            assert_eq!(effects[0].status, "ended");
+            assert!(effects[0]
+                .result_json
+                .as_ref()
+                .unwrap()
+                .contains("result unavailable"));
+            let evidence: serde_json::Value =
+                serde_json::from_str(&effects[0].settlement.as_ref().unwrap().evidence_json)
+                    .unwrap();
+            assert_eq!(evidence["outcomeUnknown"], true);
+            assert_eq!(evidence["failed"], true);
+            assert!(matches!(
+                projection.system_stop,
+                EngineStopState::Confirmed { .. }
+            ));
+            let cursor = projection.cursor;
+            process_recovery::close_dead_process_effects(&pool, &receipt.system_start_id, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                read_projection(&pool, &receipt.system_start_id)
+                    .await
+                    .unwrap()
+                    .cursor,
+                cursor
+            );
+            assert!(register_effect(&pool, tool).await.is_err());
+        } else {
+            assert_eq!(effects[0].status, "uncertain");
+            assert!(effects[0].result_json.is_none());
+            assert!(!matches!(
+                projection.system_stop,
+                EngineStopState::Confirmed { .. }
+            ));
+        }
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM engine_effects WHERE system_id=?")
+                .bind(&receipt.system_start_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+}

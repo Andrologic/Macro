@@ -25,6 +25,7 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
   const [attaching, setAttaching] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [agentName, setAgentName] = useState("");
+  const [effectsReviewed, setEffectsReviewed] = useState(false);
   useEffect(() => { if (conversationId && !conversationPending) void open(target, conversationId); }, [target, conversationId, conversationPending, open]);
   const scoped = state.owner?.planId === target.planId && state.owner.branch === target.branchName && state.conversationId === conversationId && state.owner.projectId === conversationProjectId;
   const snapshot = scoped ? state.snapshot : undefined;
@@ -36,6 +37,10 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
   const runKey = snapshot?.systemStartId;
   const selectedRun = state.runs.find(run => run.systemStartId === runKey);
   const runState = selectedRun ? nativeRunState({ ...selectedRun, systemStop: state.projection?.systemStop ?? selectedRun.systemStop }) : undefined;
+  const resultLost = !!snapshot && state.diagnostic?.systemStartId === snapshot.systemStartId
+    && state.diagnostic.diagnostics.some(item => item.code === "RECOVERY_RESULT_LOST");
+  const needsInspection = runState === "uncertain" || resultLost;
+  useEffect(() => setEffectsReviewed(false), [runKey, runState, resultLost]);
   // Native intent state drives the actions; its identities and codes stay out of the text.
   const intent = scoped ? state.intent : undefined;
   const intentOpen = !!intent && intent.state.kind !== "closed";
@@ -104,7 +109,8 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
           {!state.preflight && <button className="agsdl-action-button" disabled={state.busy} onClick={() => void state.refresh()}><RefreshCw size={14} />{t("agsdl.execution.refresh")}</button>}
           {state.preflight && !ready && <p className="agsdl-muted">{status}</p>}
           {(ready || (state.preflight?.productRuntimeAvailable && deliveryInput?.graphless)) && startControls}
-          <button className="agsdl-action-button is-primary" aria-label={t("agsdl.execution.start")} title={status} disabled={locked || !ready || (startInput?.hasEntry && !prompt.trim())} onClick={() => void state.start(prompt)}><Play size={14} />{t("agsdl.execution.start")}</button>
+          {needsInspection && <label className="agsdl-execution-state"><input type="checkbox" checked={effectsReviewed} onChange={event => setEffectsReviewed(event.target.checked)} /><span>{t("agsdl.execution.recovery.newRunAcknowledgement")}</span></label>}
+          <button className="agsdl-action-button is-primary" aria-label={t("agsdl.execution.start")} title={status} disabled={locked || !ready || (needsInspection && !effectsReviewed) || (startInput?.hasEntry && !prompt.trim())} onClick={() => void state.start(prompt)}><Play size={14} />{t("agsdl.execution.start")}</button>
           {!!state.preflight?.diagnostics.length && <button className="agsdl-action-button" disabled={attaching} onClick={() => void explainPreflight()}><MessageSquarePlus size={14} />{t("agsdl.reviewWithAI")}</button>}
         </details>
         {state.runs.length > 0 && <label className="agsdl-edit-field agsdl-run-selector"><span>{t("agsdl.execution.run")}</span><select disabled={state.busy || state.intentBusy} value={snapshot?.systemStartId ?? ""} onChange={event => { setAgentName(""); void state.select((event.target.value || undefined) as SystemStartId | undefined); }}>
@@ -113,9 +119,10 @@ export function ExecutionDialog({ target, onClose }: { target: AgsdlTarget; onCl
           {runState === 'active' || runState === 'queued' ? <Loader2 size={14} className="animate-spin" /> : runState === 'completed' ? <Check size={14} /> : runState === 'stopped' ? <Square size={14} /> : <AlertCircle size={14} />}
           <span>{t(`agsdl.execution.state.${runState}`)}</span>
         </div>}
+        {needsInspection && <div className="agsdl-execution-state agsdl-unresolved" role="alert"><AlertCircle size={15} /><span>{t("agsdl.execution.recovery.inspect")}</span></div>}
         {state.nextRuns && <button disabled={state.busy} onClick={() => void state.moreRuns()}>{t("agsdl.execution.moreRuns")}</button>}
         {snapshot && <>
-          {deliveryInput?.graphless && state.preflight?.productRuntimeAvailable && <div className="agsdl-execution-actions"><select aria-label={t("agsdl.execution.agent")} value={agentName} disabled={locked} onChange={event => setAgentName(event.target.value)}><option value="">{t("agsdl.execution.agentRequired")}</option>{deliveryInput.agents.map(name => <option key={name} value={name}>{name}</option>)}</select><button disabled={locked || !state.preflight?.productRuntimeAvailable || !deliveryInput.agents.includes(agentName) || !prompt.trim()} onClick={() => void state.deliver(agentName, prompt)}>{t("agsdl.execution.deliver")}</button></div>}
+          {deliveryInput?.graphless && state.preflight?.productRuntimeAvailable && <div className="agsdl-execution-actions"><select aria-label={t("agsdl.execution.agent")} value={agentName} disabled={locked} onChange={event => setAgentName(event.target.value)}><option value="">{t("agsdl.execution.agentRequired")}</option>{deliveryInput.agents.map(name => <option key={name} value={name}>{name}</option>)}</select><button disabled={locked || needsInspection || !state.preflight?.productRuntimeAvailable || !deliveryInput.agents.includes(agentName) || !prompt.trim()} onClick={() => void state.deliver(agentName, prompt)}>{t("agsdl.execution.deliver")}</button></div>}
           <div className="agsdl-execution-actions"><button className="agsdl-action-button" aria-pressed={state.captured} disabled={state.busy} onClick={() => { state.showCaptured(!state.captured); onClose(); }}><History size={14} />{t(state.captured ? "agsdl.execution.currentDocument" : "agsdl.execution.capture")}</button>
             {(!runState || ["active", "queued", "uncertain"].includes(runState)) && <button className="agsdl-action-button" aria-label={t("agsdl.execution.stop")} title={t("agsdl.execution.stop")} disabled={state.stopping || state.projection?.systemStop.kind === "confirmed"} onClick={() => void state.stop()}><Square size={14} />{t("agsdl.execution.stop")}</button>}
             {state.projection && state.projection.systemStop.kind !== "none" && <span role="img" aria-label={t(`agsdl.execution.stopState.${state.projection.systemStop.kind}`)} title={t(`agsdl.execution.stopState.${state.projection.systemStop.kind}`)}><AlertCircle size={14} /></span>}

@@ -427,7 +427,11 @@
     "emptyHint": "Los sistemas ejecutados aparecerán aquí.",
     "firstMessageRequired": "Envía un primer mensaje en este plan para acceder al seguimiento.",
     "loading": "Cargando ejecuciones…",
-    "readFailed": "No se pudieron cargar las ejecuciones."
+    "readFailed": "No se pudieron cargar las ejecuciones.",
+    "recovery": {
+      "inspect": "El resultado anterior es desconocido. Revisa sus efectos en el chat antes de volver a iniciar.",
+      "newRunAcknowledgement": "He revisado los efectos anteriores. Iniciar una nueva ejecución desde el principio."
+    }
   },
   "actionFailed": "La acción falló. Inténtelo de nuevo.",
   "userError": {

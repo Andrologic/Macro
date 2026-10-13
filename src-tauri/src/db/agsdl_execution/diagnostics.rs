@@ -43,6 +43,7 @@ pub struct PublicExecutionDiagnostic {
 }
 fn known_message(code: &str) -> (&'static str, &'static str) {
     match code {
+        "RECOVERY_RESULT_LOST" => ("RECOVERY_RESULT_LOST", "The native process ended. Its tool result was lost; inspect workspace effects before starting another execution."),
         "VISIT_LIMIT" => ("VISIT_LIMIT", "The step reached its captured visit limit."),
         "OUTPUT_CONSTRAINT" => (
             "OUTPUT_CONSTRAINT",

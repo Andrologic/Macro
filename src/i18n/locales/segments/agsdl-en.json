@@ -427,7 +427,11 @@
     "emptyHint": "Executed systems will appear here.",
     "firstMessageRequired": "Send a first message in this plan to enable execution tracking.",
     "loading": "Loading executions…",
-    "readFailed": "Could not load executions."
+    "readFailed": "Could not load executions.",
+    "recovery": {
+      "inspect": "The previous result is unknown. Inspect its effects in the chat before starting again.",
+      "newRunAcknowledgement": "I have checked the previous effects. Start a new execution from the beginning."
+    }
   },
   "actionFailed": "The action failed. Try again.",
   "userError": {

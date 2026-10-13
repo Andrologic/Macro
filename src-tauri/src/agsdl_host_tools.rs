@@ -665,6 +665,25 @@ pub(crate) async fn execution_host_invoke_tool(
             Ok(Err(error)) => (serde_json::to_string(&error.message).ok(), true),
             Err(_) => (None, true),
         };
+        // Isolated fault injection lets QA kill the real process after the file
+        // effect, before its receipt. Never available in a product build/profile.
+        #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+        if owned_app
+            .config()
+            .identifier
+            .starts_with("com.macro.desktop.qa.")
+        {
+            if let Some(delay) = std::env::var("MACRO_AGSDL_QA_DELAY_TOOL_SETTLEMENT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v <= 30_000)
+            {
+                tracing::warn!(
+                    "AgSDL QA: delaying native tool settlement after physical completion"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+        }
         let status = if result_json.is_some() {
             "ended"
         } else {
@@ -672,7 +691,7 @@ pub(crate) async fn execution_host_invoke_tool(
         };
         let settlement=EngineSettlement {context:request.context,effect:effect.effect,status:status.into(),
             evidence_json:json!({"kind":"macro-owned-workspace/1","executionId":execution_key,"status":status,"failed":failed}).to_string()};
-        let _ = repository::settle_effect(&pool, settlement, result_json).await;
+        let _ = repository::settle_owned_effect(&pool, settlement, result_json).await;
         owned_app
             .state::<HostState>()
             .tools()

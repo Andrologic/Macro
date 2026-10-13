@@ -43,6 +43,7 @@ struct Entry {
     abort: Option<AbortHandle>,
     finished: watch::Receiver<Option<Result<(), String>>>,
     cleanups: Vec<JoinHandle<Result<(), String>>>,
+    admitted: bool,
 }
 
 impl StreamTasks {
@@ -70,6 +71,7 @@ impl StreamTasks {
             request_id.clone(),
             Entry {
                 abort: Some(handle.abort_handle()),
+                admitted: true,
                 finished: receiver,
                 cleanups: Vec::new(),
             },
@@ -187,6 +189,19 @@ impl StreamTasks {
     /// A cancel received before admission leaves a tombstone. IDs remain
     /// single-use so delayed starts, duplicate cancels and late starts cannot
     /// replace a previous owner. The registry is cleared only on process exit.
+    /// A cancellation tombstone is not evidence that an earlier physical stream
+    /// ended. Recovery must distinguish an owned task from an absent request.
+    pub async fn cancel_owned(&self, request_id: &str) -> Result<bool, String> {
+        let admitted = self
+            .entries
+            .lock()
+            .map_err(|_| "Stream registry poisoned")?
+            .get(request_id)
+            .is_some_and(|entry| entry.admitted);
+        self.cancel(request_id).await?;
+        Ok(admitted)
+    }
+
     pub async fn cancel(&self, request_id: &str) -> Result<(), String> {
         let mut finished = {
             let mut entries = self
@@ -197,6 +212,7 @@ impl StreamTasks {
                 let (_, receiver) = watch::channel(Some(Ok(())));
                 Entry {
                     abort: None,
+                    admitted: false,
                     finished: receiver,
                     cleanups: Vec::new(),
                 }
@@ -333,5 +349,20 @@ mod process_tests {
         assert!(registry.entries.lock().unwrap()["synthetic-copilot"]
             .cleanups
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[tokio::test]
+    async fn recovery_distinguishes_tombstones_from_joined_streams() {
+        let tasks = StreamTasks::default();
+        assert!(!tasks.cancel_owned("missing").await.unwrap());
+        assert!(!tasks.cancel_owned("missing").await.unwrap());
+        tasks.start("owned".into(), std::future::pending()).unwrap();
+        assert!(tasks.cancel_owned("owned").await.unwrap());
+        assert!(tasks.cancel_owned("owned").await.unwrap());
+        assert!(tasks.start("missing".into(), async {}).is_err());
     }
 }

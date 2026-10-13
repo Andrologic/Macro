@@ -94,6 +94,23 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
     catch (error) { if (token === generation) set(executionError(error)); }
     finally { if (token === generation) set({ busy: false }); }
   };
+  const refreshedSummaries = async (initial: ExecutionView) => {
+    const latest = new Map<string, PublicRunSummary>();
+    const cursors = new Set<string>();
+    let after: string | null = null;
+    do {
+      const page = await ipc.listExecutionRuns({ owner: initial.owner!, after, limit: 100 });
+      for (const run of page.runs) {
+        if (!sameSourceOwner(run.source.owner, initial.owner!)) throw new Error("Run source owner differs");
+        latest.set(run.systemStartId, run);
+      }
+      if (!page.nextCursor || latest.has(initial.snapshot?.systemStartId ?? "")) break;
+      if (cursors.has(page.nextCursor)) throw new Error("Repeated run page");
+      cursors.add(page.nextCursor);
+      after = page.nextCursor;
+    } while (after);
+    return initial.runs.map(run => latest.get(run.systemStartId) ?? run);
+  };
   const readRun = async (snapshot: PublicSnapshot) => {
     const projection = await ipc.readExecutionProjection(snapshot.systemStartId);
     assertProjection(projection, snapshot);
@@ -231,9 +248,7 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         // the user's paginated history or selected run.
         let runs = initial.runs;
         if (result.projection.cursor !== initial.projection?.cursor) {
-          const page = await ipc.listExecutionRuns({ owner: initial.owner!, after: null, limit: 20 });
-          if (page.runs.some(run => !sameSourceOwner(run.source.owner, initial.owner!))) throw new Error("Run source owner differs");
-          runs = initial.runs.map(run => page.runs.find(latest => latest.systemStartId === run.systemStartId) ?? run);
+          runs = await refreshedSummaries(initial);
         }
         if (!(await current())) return;
         const pinned = !!initial.projection?.nextPage || (initial.projection?.agents.length ?? 0) > 64 || (initial.projection?.activations.length ?? 0) > 64;
@@ -336,14 +351,17 @@ export const useAgsdlExecutionStore = create<ExecutionView>((set, get) => {
         await ipc.ensureExecutionStop({ systemStartId, activationId: activationId ?? null });
         if (!sameRun()) return;
         const result = await readRun(get().snapshot!);
-        if (sameRun()) set(result);
+        const runs = await refreshedSummaries(initial);
+        if (sameRun()) set({ ...result, runs });
       } catch (error) { if (token === scopeGeneration) set(executionError(error)); }
       finally { if (token === scopeGeneration) set({ stopping: false }); }
     },
     decide: (approval, approve) => operation(async (initial, current) => {
       if (!initial.snapshot || !initial.approvals?.approvals.some(item => item.approvalId === approval.approvalId && item.status === "pending" && item.work.systemStartId === initial.snapshot!.systemStartId)) return;
       await ipc.decideExecutionApproval({ scope: { systemStartId: initial.snapshot.systemStartId, source: initial.snapshot.source }, approvalId: approval.approvalId, approve });
-      const result = await readRun(initial.snapshot); if (await current()) set(result);
+      const result = await readRun(initial.snapshot);
+      const runs = await refreshedSummaries(initial);
+      if (await current()) set({ ...result, runs });
     }),
     async inspectTask(path) {
       const token = ++taskGeneration;

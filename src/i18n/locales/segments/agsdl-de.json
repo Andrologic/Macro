@@ -427,7 +427,11 @@
     "emptyHint": "Ausgeführte Systeme erscheinen hier.",
     "firstMessageRequired": "Sende in diesem Plan eine erste Nachricht, um die Ausführungen zu verfolgen.",
     "loading": "Ausführungen werden geladen…",
-    "readFailed": "Ausführungen konnten nicht geladen werden."
+    "readFailed": "Ausführungen konnten nicht geladen werden.",
+    "recovery": {
+      "inspect": "Das vorherige Ergebnis ist unbekannt. Prüfen Sie seine Auswirkungen im Chat, bevor Sie erneut starten.",
+      "newRunAcknowledgement": "Ich habe die bisherigen Auswirkungen geprüft. Eine neue Ausführung von Anfang an starten."
+    }
   },
   "actionFailed": "Die Aktion ist fehlgeschlagen. Versuchen Sie es erneut.",
   "userError": {

@@ -342,10 +342,27 @@ numériques et les valeurs opaques ; les objets de projection JavaScript ne sont
 pas utilisés pour réécrire le document entier. Une mutation d’outil vérifie la
 conversation propriétaire, le statut brouillon et la révision lue. Ces outils
 sont exposés uniquement dans Architect, avec la politique partagée des outils.
-Aucun moteur d’exécution AgSDL n’est introduit à cette étape.
-Les [contrats du moteur à construire](agsdl-engine-architecture.md) définissent
-le propriétaire natif, le profil initial et les garanties attendues. Ces contrats
-ne rendent pas encore les documents exécutables.
+Le moteur résident AgSDL utilise le transport fournisseur et les outils natifs de
+Macro. Le profil `macro-serial-inline-v1` compile une capture immuable avant Start ;
+le journal SQLite fait autorité pour les admissions, les approbations, les effets,
+les réponses et Stop. Le navigateur ne possède ni les droits d'exécution ni la
+preuve de terminaison. Voir les [contrats du moteur](agsdl-engine-architecture.md).
+
+Une perte du host révoque son epoch et bloque les continuations anciennes. Les
+exécuteurs natifs peuvent encore enregistrer leurs reçus de fin corrélés, sans
+publier les sorties de cette ancienne activation. Stop confirme la terminaison
+locale uniquement lorsque tous ses effets sont terminés. La provenance du
+processus est enregistrée nativement lors de la réservation, sans backfill des
+anciens effets. Après un crash, son absence peut prouver la fin de l'exécuteur
+local pour ce profil ; le résultat perdu reste explicitement inconnu. Cela ne
+prouve ni l'annulation d'une écriture ni l'absence de travail distant chez le
+fournisseur. Aucun replay automatique n'est permis. L'utilisateur doit vérifier
+les effets avant de demander une nouvelle exécution.
+
+Le profil initial exclut les compositions, les fournisseurs qui lancent un
+processus externe, Terminal et les MCP. Un document statiquement valide peut donc
+rester non exécutable dans Macro. La disponibilité produit est annoncée seulement
+après qualification des commandes réelles de l'application.
 
 ### 5.3 Découpage des panneaux
 

@@ -72,6 +72,8 @@ async fn stop_effects(
     activation_id: Option<&str>,
     gate: tokio::sync::MutexGuard<'_, ()>,
 ) -> repository::Result<PublicStopState> {
+    repository::process_recovery::close_dead_process_effects(pool, system_start_id, activation_id)
+        .await?;
     repository::confirm_stopped_undispatched_calls(pool, system_start_id, activation_id).await?;
     let projection = repository::read_projection(&pool, system_start_id).await?;
     let mut joins = Vec::new();
@@ -109,6 +111,7 @@ async fn stop_effects(
             )
         })??;
     }
+    repository::confirm_stopped_retired_work(pool, system_start_id).await?;
     repository::read_stop_target(&pool, system_start_id, activation_id)
         .await
         .map(Into::into)

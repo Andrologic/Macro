@@ -9,6 +9,7 @@ pub mod dto;
 pub(crate) mod inspection;
 pub(crate) mod intents;
 pub(crate) mod prepared;
+pub(crate) mod process_recovery;
 pub(crate) mod public;
 pub(crate) mod responses;
 use super::exact_json::{equal_optional, record_equal};
@@ -987,6 +988,12 @@ async fn register_effect_on(
         .bind(raw.clone())
         .execute(&mut *db)
         .await?;
+    sqlx::query("INSERT INTO engine_effect_processes VALUES (?, ?, ?)")
+        .bind(&stored.snapshot.system_start_id)
+        .bind(effect_key(&effect.effect)?)
+        .bind(i64::from(std::process::id()))
+        .execute(&mut *db)
+        .await?;
     event(
         &mut *db,
         &mut stored.state,
@@ -1003,6 +1010,14 @@ pub(crate) async fn settle_effect(
     pool: &SqlitePool,
     settlement: EngineSettlement,
     result: Option<String>,
+) -> Result<()> {
+    settle_effect_on(pool, settlement, result, false).await
+}
+async fn settle_effect_on(
+    pool: &SqlitePool,
+    settlement: EngineSettlement,
+    result: Option<String>,
+    physical_end: bool,
 ) -> Result<()> {
     require(
         ["ended", "uncertain"].contains(&settlement.status.as_str()),
@@ -1033,12 +1048,22 @@ pub(crate) async fn settle_effect(
     let mut c = pool.acquire().await?;
     let mut tx = durable(&mut c).await?;
     let mut stored = load(&mut tx, &settlement.context.work.system_start_id).await?;
-    owner(
-        &stored.state,
-        &settlement.context.owner,
-        &settlement.context.work.system_start_id,
-    )?;
-    activation(&stored.state, &settlement.context.work)?;
+    let retired = stored.state.epoch != settlement.context.owner.owner_epoch;
+    let a = activation(&stored.state, &settlement.context.work)?;
+    if retired && physical_end {
+        require(
+            settlement.status == "ended"
+                && a.admitted_epoch.as_deref()
+                    == Some(settlement.context.owner.owner_epoch.as_str()),
+            "Recovery requires an original physical end receipt",
+        )?;
+    } else {
+        owner(
+            &stored.state,
+            &settlement.context.owner,
+            &settlement.context.work.system_start_id,
+        )?;
+    }
     let row=sqlx::query("SELECT record_json, status, settlement_json, result_json FROM engine_effects WHERE system_id = ? AND effect_key = ?").bind(&stored.snapshot.system_start_id).bind(&key).fetch_optional(&mut *tx).await?.ok_or_else(||failure("CORRELATION","effect","Unregistered effect"))?;
     let registered: EngineEffect = serde_json::from_str(row.get("record_json"))?;
     require(
@@ -1058,7 +1083,9 @@ pub(crate) async fn settle_effect(
         tx.commit().await?;
         return Ok(());
     }
-    context(&stored, &settlement.context)?;
+    if !retired {
+        context(&stored, &settlement.context)?;
+    }
     sqlx::query("UPDATE engine_effects SET status = ?, settlement_json = ?, result_json = ? WHERE system_id = ? AND effect_key = ?").bind(&settlement.status).bind(&raw).bind(result).bind(&stored.snapshot.system_start_id).bind(&key).execute(&mut *tx).await?;
     if settlement.status == "uncertain" {
         stored
@@ -1081,6 +1108,90 @@ pub(crate) async fn settle_effect(
     tx.commit().await?;
     Ok(())
 }
+/// Only physical native executors call this after joining their work. A retired
+/// host cannot write through the IPC settlement port, but its native executor
+/// must not lose an actual completion receipt when ownership was rotated.
+pub(crate) async fn settle_owned_effect(
+    pool: &SqlitePool,
+    settlement: EngineSettlement,
+    result: Option<String>,
+) -> Result<()> {
+    let system_id = settlement.context.work.system_start_id.clone();
+    settle_effect_on(pool, settlement, result, true).await?;
+    confirm_stopped_retired_work(pool, &system_id).await
+}
+
+/// Stop can discard a retired continuation only when every physical effect has
+/// a native end receipt. Outputs and provisional memory are never published.
+pub(crate) async fn confirm_stopped_retired_work(pool: &SqlitePool, system_id: &str) -> Result<()> {
+    let mut c = pool.acquire().await?;
+    let mut tx = durable(&mut c).await?;
+    let mut stored = load(&mut tx, system_id).await?;
+    let mut closed = Vec::new();
+    for a in stored.state.activations.values_mut() {
+        if a.work_state != "uncertain"
+            || a.admitted_epoch
+                .as_deref()
+                .is_none_or(|e| e == stored.state.epoch)
+        {
+            continue;
+        }
+        let request_id = match &a.stop_state {
+            EngineStopState::Requested { request_id }
+            | EngineStopState::Uncertain { request_id, .. } => request_id.clone(),
+            _ => continue,
+        };
+        let work = &a.delivery.delivery.work;
+        let effects: (i64, i64) = sqlx::query_as("SELECT count(*),coalesce(sum(status<>'ended'),0) FROM engine_effects WHERE system_id=? AND activation_id=?")
+            .bind(system_id).bind(&work.activation_id).fetch_one(&mut *tx).await?;
+        if effects.1 != 0 {
+            continue;
+        }
+        if effects.0 == 0 {
+            // Every physical effect requires registration before dispatch. The
+            // retired epoch cannot reserve one later. Partial publications without
+            // an effect receipt remain inconsistent, so never infer their closure.
+            let responses: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM engine_responses WHERE system_id=? AND activation_id=?",
+            )
+            .bind(system_id)
+            .bind(&work.activation_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if responses != 0 {
+                continue;
+            }
+        }
+        let evidence = "{\"kind\":\"native-retired-work-effects-ended\"}".to_string();
+        a.work_state = "terminal".into();
+        a.terminal = Some(EngineOutcome::Stopped {
+            evidence_json: evidence.clone(),
+        });
+        a.stop_state = EngineStopState::Confirmed {
+            request_id,
+            evidence_json: evidence,
+        };
+        closed.push(work.clone());
+    }
+    for work in &closed {
+        event(
+            &mut tx,
+            &mut stored.state,
+            system_id,
+            Some(work.clone()),
+            "terminal",
+            "{\"outcome\":{\"kind\":\"stopped\"},\"nativeRetiredEffectsEnded\":true}".into(),
+        )
+        .await?;
+    }
+    if !closed.is_empty() {
+        confirm_system_stop(&mut tx, &mut stored).await?;
+        save(&mut tx, system_id, &stored.state).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Records a native provider stream join for Stop. When the effect's owner was
 /// revoked after registering it, that owner can no longer settle the effect:
 /// nothing is written, the effect keeps its uncertainty and the caller gets the

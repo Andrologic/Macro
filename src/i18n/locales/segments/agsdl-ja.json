@@ -427,7 +427,11 @@
     "emptyHint": "実行されたシステムはここに表示されます。",
     "firstMessageRequired": "このプランで最初のメッセージを送信すると、実行状況を確認できます。",
     "loading": "実行を読み込み中…",
-    "readFailed": "実行を読み込めませんでした。"
+    "readFailed": "実行を読み込めませんでした。",
+    "recovery": {
+      "inspect": "前回の結果は不明です。再実行する前にチャットで影響を確認してください。",
+      "newRunAcknowledgement": "前回の影響を確認しました。最初から新しい実行を開始します。"
+    }
   },
   "actionFailed": "操作に失敗しました。もう一度お試しください。",
   "userError": {

@@ -140,3 +140,31 @@ it("shows a failed readiness check for a system with no execution and sends deta
   expect(panel.querySelector('[aria-label="Execution diagnostics"]')).not.toBeNull();
   expect(panel.querySelector('[aria-label="Start"]')).toBeNull();
 });
+
+it("requires inspection before starting anew after a lost result, without treating Stop as rollback", async () => {
+  const owner = { projectId: 'project', planId: 'plan', branch: 'work' };
+  const source = { owner, revision: '1', sourceSha256: 'd'.repeat(64) };
+  spyOn(useAgsdlExecutionStore.getState(), 'open').mockResolvedValue(undefined);
+  const start = spyOn(useAgsdlExecutionStore.getState(), 'start').mockResolvedValue(undefined);
+  useChatStore.setState({ selectedConversationId: 'conversation', conversations: [{ id: 'conversation', project_id: 'project' } as ReturnType<typeof useChatStore.getState>['conversations'][number]] });
+  useAgsdlExecutionStore.setState({ owner, conversationId: 'conversation', loaded: true, busy: false, error: undefined,
+    preflight: { source, authoredSource: '{"flow":{}}', staticValid: true, runtimeSupported: true, productRuntimeAvailable: true, registryVersion: 'r', diagnostics: [], incomplete: false },
+    snapshot: { source, authoredSource: '{"flow":{}}', systemStartId: 'lost-run' } as PublicSnapshot,
+    runs: [{ source, systemStartId: 'lost-run', systemStop: { kind: 'confirmed', requestId: 'stop' }, counts: { queued:'0', active:'0', uncertain:'0', completed:'0', failed:'0', stopped:'1' } } as unknown as ReturnType<typeof useAgsdlExecutionStore.getState>['runs'][number]],
+    projection: undefined,
+    diagnostic: { source, systemStartId: 'lost-run', activation: null, through: '3', diagnostics: [{ id:'lost-run:1', sequence:'1', code:'RECOVERY_RESULT_LOST', pointer:'', message:'technical lost result detail', work:null }], incomplete:false, nextBefore:null },
+    intent: undefined, approvals: undefined });
+  host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host);
+  await act(async () => root!.render(<ExecutionDialog target={{planId:'plan',branchName:'work'}} onClose={()=>{}} />));
+  const panel = document.querySelector('[role="dialog"]')!;
+  expect(panel.textContent).toContain('The previous result is unknown');
+  expect(panel.textContent).not.toContain('technical lost result detail');
+  const button = panel.querySelector<HTMLButtonElement>('[aria-label="Start"]')!;
+  expect(button.disabled).toBe(true);
+  await act(async () => panel.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  expect(button.disabled).toBe(false);
+  // No restart is performed by acknowledgement itself.
+  expect(start.mock.calls.length).toBe(0);
+  act(() => useAgsdlExecutionStore.setState({snapshot: {...useAgsdlExecutionStore.getState().snapshot!,systemStartId:'another-run'} as PublicSnapshot,runs:[]}));
+  expect(panel.querySelector<HTMLInputElement>('input[type="checkbox"]')).toBeNull();
+});

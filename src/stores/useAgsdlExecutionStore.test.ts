@@ -371,3 +371,15 @@ it("refreshes progress summaries only when the native projection advances", asyn
   expect(store.getState().runs[0].counts.completed).toBe("3");
   expect(store.getState().snapshot?.systemStartId).toBe("started" as SystemStartId);
 });
+
+it("refreshes native totals after foreground Stop, before a poll can miss the new cursor", async () => {
+  await ready(); await store.getState().start("Synthetic input");
+  completedCount = "4";
+  readProjection = async id => ({ ...projection(id, "9007199254740994"), systemStop: {kind: "confirmed", requestId: "stop"} });
+  await store.getState().stop();
+  expect(store.getState().runs[0].counts.completed).toBe("4");
+  const calls = listCalls;
+  await store.getState().refreshRun();
+  expect(listCalls).toBe(calls);
+  expect(store.getState().runs[0].counts.completed).toBe("4");
+});
