@@ -108,7 +108,7 @@ export const registerComposerSubmitCommand = (
   COMMAND_PRIORITY_HIGH,
 );
 
-const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source|conversation|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 const appendTextWithContextReferences = (
   parent: ElementNode,
