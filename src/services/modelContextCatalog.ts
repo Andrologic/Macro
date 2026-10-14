@@ -6,6 +6,26 @@ import type { ModelContextLimitSource, ReasoningTransportMode } from '../types';
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 export const MODEL_CONTEXT_CATALOG_TTL_MS = 5 * 60 * 1000;
 
+export interface ModelCatalogProviderParams {
+  providerType?: string | null;
+  providerId?: string | null;
+  baseUrl?: string | null;
+}
+
+/** Catalogue facts only. These do not grant account access or enable a model. */
+export interface ModelCatalogMetadata {
+  id: string;
+  name: string;
+  description?: string;
+  family?: string;
+  contextTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  images?: boolean;
+  toolCall?: boolean;
+  updatedAt: string;
+}
+
 const STORAGE_KEY = 'macro_modelContextCatalog_v1';
 
 export interface CatalogModelLimits {
@@ -127,11 +147,7 @@ const isFresh = (catalog: CachedCatalog, now = Date.now()): boolean => {
   return Number.isFinite(fetchedMs) && now - fetchedMs < MODEL_CONTEXT_CATALOG_TTL_MS;
 };
 
-const getProviderAliases = (params: {
-  providerType?: string | null;
-  providerId?: string | null;
-  baseUrl?: string | null;
-}): string[] => {
+const getProviderAliases = (params: ModelCatalogProviderParams): string[] => {
   const type = normalize(params.providerType);
   const id = normalize(params.providerId);
   const baseUrl = normalizeBaseUrl(params.baseUrl);
@@ -162,42 +178,94 @@ const providerFromCatalog = (
   return matches.length > 1 ? null : matches[0]?.[1];
 };
 
-const findModel = (provider: ModelsDevProvider, alias: string, modelId: string): ModelsDevModel | null | undefined => {
+const findModel = (provider: ModelsDevProvider, alias: string, modelId: string): [string, ModelsDevModel] | null | undefined => {
   const entries = Object.entries(provider.models);
   const exact = entries.filter(([key, model]) => normalize(key) === modelId || normalize(model.id) === modelId);
-  if (exact.length) return exact.length === 1 ? exact[0][1] : null;
+  if (exact.length) return exact.length === 1 ? exact[0] : null;
   const canonical = entries.filter(([key, model]) =>
     normalize(model.canonical_model_id) === modelId ||
     normalize(model.canonical_model_id) === `${alias}/${modelId}` ||
     `${alias}/${normalize(model.id ?? key)}` === modelId);
-  return canonical.length > 1 ? null : canonical[0]?.[1];
+  return canonical.length > 1 ? null : canonical[0];
 };
 
-const lookupModel = (params: {
-  providerType?: string | null;
-  providerId?: string | null;
-  baseUrl?: string | null;
-  modelId?: string | null;
-}): { model: ModelsDevModel; fetchedAt: string } | null => {
-  const modelId = normalize(params.modelId);
-  if (!modelId) return null;
+const selectProviderCatalogs = (params: ModelCatalogProviderParams) => {
   const catalogs = [readCachedCatalog(), getSnapshotCatalog()].filter(
     (catalog): catalog is CachedCatalog => Boolean(catalog),
   );
   // Select one provider before looking for a model, including when its model is absent.
   const alias = getProviderAliases(params).find((candidate) =>
     catalogs.some((catalog) => providerFromCatalog(catalog, candidate) !== undefined));
-  if (!alias) return null;
+  return alias ? { alias, catalogs } : null;
+};
+
+const lookupModel = (params: ModelCatalogProviderParams & {
+  modelId?: string | null;
+}): { model: ModelsDevModel; id: string; fetchedAt: string } | null => {
+  const modelId = normalize(params.modelId);
+  if (!modelId) return null;
+  const selected = selectProviderCatalogs(params);
+  if (!selected) return null;
+  const { alias, catalogs } = selected;
   for (const catalog of catalogs) {
     const provider = providerFromCatalog(catalog, alias);
     if (provider === null) return null;
     if (!provider) continue;
-    const model = findModel(provider, alias, modelId);
-    if (model === null) return null;
-    if (model) return { model, fetchedAt: catalog.providers === SNAPSHOT_PROVIDERS
-      ? model.updatedAt ?? catalog.fetchedAt : catalog.fetchedAt };
+    const match = findModel(provider, alias, modelId);
+    if (match === null) return null;
+    if (match) {
+      const [key, model] = match;
+      return {
+        model, id: model.id ?? key,
+        fetchedAt: catalog.providers === SNAPSHOT_PROVIDERS
+          ? model.updatedAt ?? catalog.fetchedAt : catalog.fetchedAt,
+      };
+    }
   }
   return null;
+};
+
+const metadataFromMatch = (match: NonNullable<ReturnType<typeof lookupModel>>): ModelCatalogMetadata => {
+  const { model, id, fetchedAt } = match;
+  return {
+    id,
+    name: model.name ?? id,
+    ...(model.description !== undefined ? { description: model.description } : {}),
+    ...(model.family !== undefined ? { family: model.family } : {}),
+    contextTokens: toPositiveInteger(model.limit?.context),
+    inputTokens: toPositiveInteger(model.limit?.input),
+    outputTokens: toPositiveInteger(model.limit?.output),
+    ...(model.modalities?.input !== undefined ? { images: model.modalities.input.includes('image') } : {}),
+    ...(model.tool_call !== undefined ? { toolCall: model.tool_call } : {}),
+    updatedAt: fetchedAt,
+  };
+};
+
+export const lookupModelCatalogMetadata = (params: Parameters<typeof lookupModel>[0]): ModelCatalogMetadata | null => {
+  const match = lookupModel(params);
+  return match ? metadataFromMatch(match) : null;
+};
+
+/** Synchronous provider-scoped suggestions. Cached entries precede bundled fallbacks. */
+export const listProviderCatalogModels = (params: ModelCatalogProviderParams): ModelCatalogMetadata[] => {
+  const selected = selectProviderCatalogs(params);
+  if (!selected) return [];
+  const ids = new Set<string>();
+  const result = new Map<string, ModelCatalogMetadata>();
+  for (const catalog of selected.catalogs) {
+    const provider = providerFromCatalog(catalog, selected.alias);
+    if (provider === null) return [];
+    if (!provider) continue;
+    for (const [key, model] of Object.entries(provider.models)) {
+      const id = model.id ?? key;
+      const normalizedId = normalize(id);
+      if (ids.has(normalizedId)) continue;
+      ids.add(normalizedId);
+      const metadata = lookupModelCatalogMetadata({ ...params, modelId: id });
+      if (metadata && !result.has(normalize(metadata.id))) result.set(normalize(metadata.id), metadata);
+    }
+  }
+  return [...result.values()];
 };
 
 const limitFromModel = (
