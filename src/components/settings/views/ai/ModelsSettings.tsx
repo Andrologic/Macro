@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
@@ -8,6 +8,7 @@ import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { Input } from '../../../ui/Input';
+import { DialogContext } from '../../../ui/Dialog';
 import { Switch } from '../../../ui/Switch';
 import {
   Accordion,
@@ -121,6 +122,7 @@ const parseContextWindowInput = (value: string): number | null => {
 
 export const ModelsSettings: React.FC = () => {
   const { t } = useTranslation();
+  const dialogContext = useContext(DialogContext);
   const setSettingsTab = useAppStore((state) => state.setSettingsTab);
   const { matches, query } = useSettingsSearch();
   const {
@@ -395,6 +397,13 @@ export const ModelsSettings: React.FC = () => {
   ).slice(0, 8);
   const showCatalogSuggestions = catalogSuggestionsOpen && catalogSuggestions.length > 0;
   const activeCatalogSuggestion = showCatalogSuggestions ? catalogSuggestions[catalogSuggestionIndex] : undefined;
+  useEffect(() => {
+    if (!showCatalogSuggestions || !dialogContext) return;
+    return dialogContext.registerEscapeHandler(() => {
+      setCatalogSuggestionsOpen(false);
+      setCatalogSuggestionIndex(-1);
+    });
+  }, [showCatalogSuggestions, dialogContext]);
   useEffect(() => {
     if (!activeCatalogSuggestion) return;
     document.getElementById(`${catalogSuggestionsId}-${catalogSuggestionIndex}`)

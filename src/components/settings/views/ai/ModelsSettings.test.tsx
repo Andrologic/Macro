@@ -503,6 +503,29 @@ describe('ModelsSettings metadata model config', () => {
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
   });
 
+  it('consumes Escape for open catalog suggestions before the surrounding Dialog closes', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    const { Dialog } = await import('../../../ui/Dialog');
+    const closeDialog = mock(() => undefined);
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<Dialog title="Settings" onClose={closeDialog}><ModelsSettings /></Dialog>);
+      await flush();
+    });
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model')?.click());
+    const input = document.body.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    act(() => setInputValue(input, 'vision'));
+    expect(document.body.querySelector('[role="listbox"]')).not.toBeNull();
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.body.textContent).toContain('Add Custom Model');
+    expect(input.value).toBe('vision');
+    expect(closeDialog).not.toHaveBeenCalled();
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(closeDialog).toHaveBeenCalledTimes(1);
+  });
+
   it('clears an automatic catalog name when replacing the suggested ID with a free ID', async () => {
     const { ModelsSettings } = await loadModelsSettings();
     await act(async () => {
