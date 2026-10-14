@@ -695,6 +695,55 @@ export const registerChatToolsAndSourcesScenarios = (
       expect(fsReadFileWithOptionsMock).not.toHaveBeenCalled();
     });
 
+    it('injects only current conversation attachments and stops adding them after removal', async () => {
+      appState.mode = 'Chat';
+      appState.selectedProjectId = null;
+      appState.selectedGroupId = null;
+      for (const type of ['file', 'web', 'document'] as const) {
+        context.citationRecords.push({
+          id: `context-${type}`, type, scope: 'context',
+          source: `${type}.txt`, title: `Selected ${type}`,
+          snippet: `Selected ${type} with UTF-8 éà漢字`,
+          content: `Selected ${type} with UTF-8 éà漢字`,
+          messageId: 'manual-context', conversationId: 'chat-conv',
+          timestamp: '2026-03-19T00:00:00.000Z',
+        });
+      }
+      context.citationRecords.push({
+        ...context.citationRecords[0], id: 'foreign-context',
+        conversationId: 'other-chat', snippet: 'FOREIGN_CONTEXT_SENTINEL',
+      });
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: ['chat-conv', 'other-chat'].map((id) => ({
+          ...createConversation(id, ''), project_id: null, group_id: null,
+        })),
+        selectedConversationId: 'chat-conv', selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      }));
+      streamChatMock.mockImplementationOnce((async (options: import('../../services/streamingChat').StreamingChatOptions) => {
+        await options.onComplete?.({ visibleContent: 'Synthetic answer', toolTraces: [] });
+      }) as unknown as typeof streamChatMock);
+      await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Inspect selected context.' });
+      await flushAsyncWork();
+      const first = getLatestStreamOptions<{ messages: Array<{ content: unknown }> }>();
+      const firstRequest = String(first.messages.at(-1)?.content);
+      for (const type of ['file', 'web', 'document']) {
+        expect(firstRequest).toContain(`Selected ${type} with UTF-8 éà漢字`);
+      }
+      expect(JSON.stringify(first.messages)).not.toContain('FOREIGN_CONTEXT_SENTINEL');
+
+      context.citationRecords.splice(0, 3);
+      await useChatStore.getState().sendMessage({ conversationId: 'chat-conv', content: 'Continue after removal.' });
+      const second = getLatestStreamOptions<{ messages: Array<{ content: unknown }> }>();
+      const secondRequest = String(second.messages.at(-1)?.content);
+      expect(secondRequest).toContain('Continue after removal.');
+      expect(secondRequest).not.toContain('CONTEXT INFORMATION:');
+      for (const type of ['file', 'web', 'document']) {
+        expect(secondRequest).not.toContain(`Selected ${type} with UTF-8 éà漢字`);
+      }
+      expect(JSON.stringify(second.messages)).not.toContain('FOREIGN_CONTEXT_SENTINEL');
+    });
+
     it('reads the full attached file content through the chat read_file tool', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Chat';

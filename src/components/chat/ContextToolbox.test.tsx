@@ -206,7 +206,11 @@ const getMockCitationState = () => ({
   removeCitation: removeCitationMock,
 });
 const toggleChatToolMock = mock((_toolId: string) => undefined);
-const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
+const createConversationMock = mock(async () => {
+  selectedConversationIdMock = 'chat-conv';
+  emitCitationChange();
+  return { id: 'chat-conv' };
+});
 const addComposerContextRefMock = mock((ref: {
   id: string;
   kind: string;
@@ -679,6 +683,97 @@ describe('ContextToolbox', () => {
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
     expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
+  });
+
+  it('clears the previous conversation context when the selection is cleared', async () => {
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+    });
+    expect(container?.textContent).toContain('notes.md');
+
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    expect(container?.textContent).not.toContain('notes.md');
+  });
+
+  it('keeps a delayed paste in its original conversation after navigation', async () => {
+    let resolveClipboard!: (text: string) => void;
+    clipboardReadTextMock = mock(() => new Promise<string>((resolve) => {
+      resolveClipboard = resolve;
+    }));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText: clipboardReadTextMock },
+    });
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      findButtonByText(container!, 'Paste').click();
+    });
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolveClipboard('Original conversation only');
+      await Promise.resolve();
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original conversation only',
+    }));
+    expect(container?.textContent).not.toContain('Clipboard text');
+    expect(container?.textContent).not.toContain('notes.md');
+  });
+
+  it('keeps a delayed URL preview in its original conversation after navigation', async () => {
+    let resolvePreview!: (preview: Awaited<ReturnType<typeof fetchWebPageMock>>) => void;
+    fetchWebPageMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePreview = resolve;
+    }));
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await changeInputByPlaceholder('https://example.com/article', 'example.com/delayed');
+    await act(async () => { findButtonByExactText(container!, 'Add').click(); });
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolvePreview({ url: 'https://example.com/delayed', title: 'Delayed preview',
+        snippet: 'Original URL only', content: 'Original URL only', favicon: '' });
+      await Promise.resolve();
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original URL only',
+    }));
+    expect(container?.textContent).not.toContain('Delayed preview');
+  });
+
+  it('keeps a delayed file import in its original conversation after navigation', async () => {
+    let resolveFile!: (bytes: ArrayBuffer) => void;
+    const file = new File(['Original file only'], 'delayed.md', { type: 'text/markdown' });
+    file.arrayBuffer = () => new Promise((resolve) => { resolveFile = resolve; });
+    const { ContextToolbox } = await loadContextToolbox();
+    await act(async () => { root?.render(<ContextToolbox />); });
+    await uploadFile(container!, file);
+    await act(async () => {
+      selectedConversationIdMock = null;
+      root?.render(<ContextToolbox />);
+    });
+    await act(async () => {
+      resolveFile(new TextEncoder().encode('Original file only').buffer);
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(addCitationMock).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'chat-conv', content: 'Original file only',
+    }));
+    expect(container?.textContent).not.toContain('delayed.md');
   });
 
   it('offers only conversations in the current project as explicit sources', async () => {
