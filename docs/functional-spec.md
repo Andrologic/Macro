@@ -1297,6 +1297,14 @@ Matrice fonctionnelle des raccourcis configurables :
 
 ---
 
+Le sélecteur de modèles du composeur propose une recherche compacte parmi les modèles
+activés du fournisseur courant, par nom, identifiant ou description, sans distinction de
+casse ni d'accents. Les noms de famille présents dans ces champs sont également
+recherchables. La saisie ne change pas le modèle sélectionné : l'utilisateur valide un
+résultat au clavier ou à la souris. Le champ garde le focus pendant la navigation avec
+les flèches ; Entrée valide le résultat actif et Échap ferme le sélecteur. La fermeture
+efface la recherche pour la prochaine ouverture.
+
 ## 22. Données, audit et trace historique
 
 ### 22.1 Auditabilité
