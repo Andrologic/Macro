@@ -1246,7 +1246,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addComposerContextRef,
     clearComposerContextRefs,
     questionnaireDraftsByConversationId,
-    getPendingToolApproval,
+    activePendingToolApproval,
     approvePendingToolApprovalOnce,
     approvePendingToolApprovalForConversation,
     denyPendingToolApproval,
@@ -1311,7 +1311,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addComposerContextRef: state.addComposerContextRef,
     clearComposerContextRefs: state.clearComposerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
-    getPendingToolApproval: state.getPendingToolApproval,
+    activePendingToolApproval: state.selectedConversationId
+      ? state.pendingToolApprovalByConversationId[state.selectedConversationId] ?? null
+      : null,
     approvePendingToolApprovalOnce: state.approvePendingToolApprovalOnce,
     approvePendingToolApprovalForConversation:
       state.approvePendingToolApprovalForConversation,
@@ -1751,9 +1753,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeQuestionnaireDraft = selectedConversationId
     ? questionnaireDraftsByConversationId[selectedConversationId]
     : undefined;
-  const activePendingToolApproval = selectedConversationId
-    ? getPendingToolApproval(selectedConversationId)
-    : null;
   const activeQuestionnaire = useMemo(
     () =>
       selectedConversationId

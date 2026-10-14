@@ -306,9 +306,30 @@ const getMockConversationRuntime = (
 const useAppStore = createStoreHookMock(() => appState, (nextState) => {
   appState = nextState;
 });
-const useChatStore = createStoreHookMock(() => chatState, (nextState) => {
+// Approval publication must exercise selector equality, not whole-state notifications.
+let useSelectiveChatSubscriptions = false;
+const chatStoreMock = createStoreHookMock(() => chatState, (nextState) => {
   chatState = nextState;
 });
+const useChatStore = Object.assign(
+  ((selector: (state: MockChatState) => unknown = (state) => state) => {
+    if (!useSelectiveChatSubscriptions) return chatStoreMock(selector);
+    const getSelection = React.useMemo(() => {
+      let previousState: MockChatState | undefined;
+      let selection: unknown;
+      return () => {
+        const state = chatStoreMock.getState();
+        if (state !== previousState) {
+          previousState = state;
+          selection = selector(state);
+        }
+        return selection;
+      };
+    }, [selector]);
+    return React.useSyncExternalStore(chatStoreMock.subscribe, getSelection, getSelection);
+  }) as typeof chatStoreMock,
+  chatStoreMock,
+);
 const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
@@ -4038,6 +4059,31 @@ describe('ChatZone', () => {
     emitTaskStore: () => useTaskStore.emit(),
     getConversationGoal: (conversationId) =>
       useConversationGoalStore.getState().goalsByConversationId[conversationId],
+  });
+
+  it('shows and clears an approval published after render without another state change', async () => {
+    const runtime = chatState.getConversationRuntime('conv-1');
+    chatState = { ...chatState, messagesByConversationId: {}, getConversationRuntime: () => runtime };
+    useSelectiveChatSubscriptions = true;
+    try {
+      await act(async () => { root?.render(<ChatZone />); });
+      expect(container?.querySelector('[data-testid="tool-approval-footer"]')).toBeNull();
+      await act(async () => {
+        useChatStore.setState({ pendingToolApprovalByConversationId: { 'conv-1': {
+          conversationId: 'conv-1', assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'skill-call', toolId: 'skill_run_script', actionGroup: 'escape',
+          riskLevel: 'balanced', isDestructive: false, summary: 'Run a skill script',
+          rememberKey: 'skill:sample',
+        } } });
+      });
+      expect(container?.querySelector('[data-testid="tool-approval-footer"]')?.textContent).toContain('Allow once');
+      expect(container?.querySelector('[data-testid="composer-editor"]')).toBeNull();
+      await act(async () => { useChatStore.setState({ pendingToolApprovalByConversationId: {} }); });
+      expect(container?.querySelector('[data-testid="tool-approval-footer"]')).toBeNull();
+      expect(container?.querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+    } finally {
+      useSelectiveChatSubscriptions = false;
+    }
   });
 
   registerQuestionnaireApprovalScenarios({
