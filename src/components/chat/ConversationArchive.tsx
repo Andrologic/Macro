@@ -42,7 +42,7 @@ import {
 
 const SearchHighlight = ({ text, query }: { text: string; query: string }) => (
   <>{splitSearchHighlights(text, query).map((part, index) => part.matched
-    ? <mark key={index} className="rounded-sm bg-primary/20 text-foreground font-medium">{part.text}</mark>
+    ? <mark key={index} className="rounded-sm bg-primary/15 text-foreground font-medium">{part.text}</mark>
     : <React.Fragment key={index}>{part.text}</React.Fragment>)}</>
 );
 
@@ -485,6 +485,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   })));
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [focusedSearchMessageId, setFocusedSearchMessageId] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [messageSearchResults, setMessageSearchResults] = useState<MessageSearchResult[]>([]);
   const [messageSearchNextOffset, setMessageSearchNextOffset] = useState<number | null>(null);
@@ -617,6 +618,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   useEffect(() => {
     messageSearchRequestRef.current += 1;
     setMessageSearchResults([]);
+    setFocusedSearchMessageId(null);
     setMessageSearchNextOffset(null);
     setMessageSearchError(null);
     setIsMessageSearchLoading(false);
@@ -656,6 +658,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
   const activateMessageSearchResult = useCallback(async (result: MessageSearchResult) => {
     if (!(await selectConversation(result.conversationId))) return;
+    setFocusedSearchMessageId(result.messageId);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         window.dispatchEvent(new CustomEvent('macro:focus-message', {
@@ -1231,40 +1234,59 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
         {searchQuery.trim().length >= 2 && (
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2" data-tour-id="chat-message-search-results">
-            <div className="mb-1 flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <Icon name="message-square" size={12} />
-              {t('chat.searchResults', 'Search results')}
+            <div className="mb-2 flex items-center justify-between gap-2 px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              <span>{t('chat.searchResults', 'Search results')}</span>
+              <span className="tabular-nums">{searchGroups.length}</span>
             </div>
             {searchGroups.map((group) => (
-              <section key={group.id} className="mb-2 rounded-md border border-border/60 overflow-hidden" data-search-conversation={group.id}>
+              <section key={group.id} className="mb-4 last:mb-0" data-search-conversation={group.id}>
                 <button
                   type="button"
                   onClick={() => void selectConversation(group.id)}
-                  className="flex w-full items-start gap-2 px-2 py-2 text-left hover:bg-accent"
+                  aria-current={selectedConversationId === group.id ? 'true' : undefined}
+                  className={cn(
+                    'group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset',
+                    selectedConversationId === group.id ? 'border-primary/30 bg-primary/10' : 'border-transparent hover:bg-accent',
+                  )}
                 >
-                  <Icon name="message-circle" size={13} className="mt-0.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 break-words text-xs font-medium text-foreground">
-                    <SearchHighlight text={group.title} query={searchQuery} />
+                  <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', selectedConversationId === group.id ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground')}>
+                    <Icon name="message-circle" size={14} />
                   </span>
-                  {group.results.length > 0 && <span className="shrink-0 rounded bg-accent px-1.5 text-xs text-muted-foreground" aria-label={t('chat.matchingMessages', '{{count}} matching messages', { count: group.results.length })}>{group.results.length}</span>}
+                  <span className="min-w-0 flex-1 self-center">
+                    <span className="line-clamp-2 break-words text-sm font-medium leading-5 text-foreground" title={group.title}>
+                      <SearchHighlight text={group.title} query={searchQuery} />
+                    </span>
+                  </span>
+                  {group.results.length > 0 && <span className="mt-1 shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={t('chat.matchingMessages', '{{count}} matching messages', { count: group.results.length })}>{group.results.length}</span>}
                 </button>
-                {group.results.map((result) => (
-                  <button
-                    key={result.messageId}
-                    type="button"
-                    onClick={() => void activateMessageSearchResult(result)}
-                    className="block w-full border-t border-border/50 px-2 py-2 text-left hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:-outline-offset-2"
-                    data-message-search-result={result.messageId}
-                  >
-                    <span className="mb-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                      <span>{result.role === 'user' ? t('chat.searchYou', 'You') : 'Macro'}</span>
-                      <span>{formatDate(result.createdAt)}</span>
-                    </span>
-                    <span className="line-clamp-3 break-words text-xs text-muted-foreground">
-                      <SearchHighlight text={result.snippet} query={searchQuery} />
-                    </span>
-                  </button>
-                ))}
+                {group.results.length > 0 && (
+                  <div className="ml-7 mt-1 space-y-0.5 border-l border-border pl-2">
+                    {group.results.map((result) => {
+                      const isFocused = focusedSearchMessageId === result.messageId && selectedConversationId === group.id;
+                      return (
+                        <button
+                          key={result.messageId}
+                          type="button"
+                          onClick={() => void activateMessageSearchResult(result)}
+                          aria-current={isFocused ? 'true' : undefined}
+                          className={cn(
+                            'block w-full rounded-md border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset',
+                            isFocused ? 'border-primary/25 bg-primary/10' : 'border-transparent hover:bg-accent',
+                          )}
+                          data-message-search-result={result.messageId}
+                        >
+                          <span className="mb-1 flex items-baseline justify-between gap-2 text-[11px] leading-4 text-muted-foreground">
+                            <span className="font-medium">{result.role === 'user' ? t('chat.searchYou', 'You') : 'Macro'}</span>
+                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">{formatDate(result.createdAt, { day: 'numeric', month: 'short' })}</span>
+                          </span>
+                          <span className="line-clamp-3 break-words text-xs leading-5 text-foreground/80">
+                            <SearchHighlight text={result.snippet} query={searchQuery} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </section>
             ))}
             {isMessageSearchLoading && visibleMessageSearchResults.length === 0 && (

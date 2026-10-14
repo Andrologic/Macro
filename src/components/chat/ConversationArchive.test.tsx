@@ -505,6 +505,7 @@ describe('ConversationArchive', () => {
     });
     expect(selectConversation).toHaveBeenCalledWith('conversation-1');
     expect(focusedMessages).toEqual(['message-not-loaded']);
+    expect(result?.getAttribute('aria-current')).toBe('true');
     window.removeEventListener('macro:focus-message', focusListener);
   });
 });
