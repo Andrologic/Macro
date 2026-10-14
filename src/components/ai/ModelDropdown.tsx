@@ -1,11 +1,13 @@
 import React, { useId, useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { matchesLocalSearchQuery } from '../../services/localModeSearch';
+import { lookupModelCatalogMetadata } from '../../services/modelContextCatalog';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { useDropdownListNavigation } from './useDropdownListNavigation';
+import { ModelCatalogSummary } from './ModelCatalogSummary';
 
 export const ModelDropdown: React.FC = () => {
   const { t } = useTranslation();
@@ -13,6 +15,7 @@ export const ModelDropdown: React.FC = () => {
     selectedProviderId,
     selectedModelId,
     modelsByProvider,
+    providerConfigs,
     selectModel,
     isLoadingModels,
   } = useProviderStore();
@@ -26,10 +29,17 @@ export const ModelDropdown: React.FC = () => {
   const models = selectedProviderId ? (modelsByProvider[selectedProviderId] || []) : [];
   const enabledModels = models.filter((model) => model.isEnabled !== false);
   const selectedModel = enabledModels.find((m) => m.id === selectedModelId);
+  const selectedProvider = providerConfigs.find((provider) => provider.id === selectedProviderId);
 
-  const filteredModels = enabledModels.filter((model) =>
-    matchesLocalSearchQuery(query, [model.name, model.id, model.description]),
-  );
+  const filteredModels = enabledModels.filter((model) => {
+    const metadata = lookupModelCatalogMetadata({
+      providerId: selectedProviderId,
+      providerType: selectedProvider?.providerType,
+      baseUrl: selectedProvider?.baseUrl,
+      modelId: model.id,
+    });
+    return matchesLocalSearchQuery(query, [model.name, model.id, model.description, metadata?.name, metadata?.family]);
+  });
 
   const handleSelect = (modelId: string) => {
     selectModel(modelId);
@@ -175,6 +185,7 @@ export const ModelDropdown: React.FC = () => {
                     {model.description}
                   </span>
                 )}
+                {selectedProvider && <ModelCatalogSummary model={model} provider={selectedProvider} />}
               </button>
             ))}
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AIModel } from '../../types';
+import { __testables } from '../../services/modelContextCatalog';
 
 const selectModelMock = mock((_modelId: string) => undefined);
 let importCounter = 0;
@@ -31,7 +32,9 @@ const loadModelDropdown = async (availableModels = models) => {
 
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
-      t: (_key: string, fallback?: string) => fallback ?? _key,
+      i18n: { language: 'en' },
+      t: (_key: string, fallback?: string, values?: Record<string, string>) =>
+        (fallback ?? _key).replace(/\{\{(\w+)\}\}/g, (_, key) => values?.[key] ?? ''),
     }),
   }));
   mock.module('../../stores/useProviderStore', () => ({
@@ -39,6 +42,7 @@ const loadModelDropdown = async (availableModels = models) => {
       selectedProviderId: 'macro-ai',
       selectedModelId: 'macro-ai',
       modelsByProvider: { 'macro-ai': availableModels, other: [{ id: 'other', name: 'Other provider', provider_id: 'other' }] },
+      providerConfigs: [{ id: 'macro-ai', name: 'Macro AI', providerType: 'openai', baseUrl: 'https://macro.invalid/v1', nativeToolCalling: true }],
       selectModel: selectModelMock,
       isLoadingModels: false,
     }),
@@ -56,6 +60,8 @@ describe('ModelDropdown', () => {
   let root: Root | null;
 
   beforeEach(() => {
+    window.localStorage.clear();
+    __testables.reset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = null;
@@ -183,6 +189,30 @@ describe('ModelDropdown', () => {
     });
     expect(container.querySelector<HTMLInputElement>('[role="combobox"]')?.value).toBe('');
     expect(container.querySelectorAll('[role="option"]').length).toBe(3);
+  });
+
+  it('searches catalogue-only names and families while preserving enabled scope and compact information', async () => {
+    __testables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: {
+      'macro-ai': { models: {
+        'macro-ai': { id: 'macro-ai', name: 'Catalogue Name', family: 'Famille Visuelle',
+          limit: { context: 128000 }, tool_call: true, modalities: { input: ['text', 'image'] } },
+        disabled: { id: 'disabled', family: 'Disabled family' },
+      } },
+    } });
+    const { search } = await renderOpen();
+    for (const query of ['catalogue name', 'FAMILLE VISUELLE']) {
+      typeQuery(search, query);
+      const options = container.querySelectorAll('[role="option"]');
+      expect(options.length).toBe(1);
+      expect(options[0]?.textContent).toContain('Macro AI Fast');
+      expect(options[0]?.textContent).toContain('Qwen3.6-35B-A3B');
+      expect(options[0]?.textContent).toContain('128K context Images Tools');
+      expect(document.activeElement).toBe(search);
+      expect(selectModelMock).not.toHaveBeenCalled();
+    }
+    typeQuery(search, 'disabled family');
+    expect(container.querySelector('[role="option"]')).toBeNull();
+    expect(container.textContent).toContain('No matching models.');
   });
 
   it('opens an empty enabled catalogue without selecting anything', async () => {

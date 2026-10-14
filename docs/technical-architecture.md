@@ -108,6 +108,11 @@ ChatGPT, outils natifs autorisés par le fournisseur et non refusés par le
 modèle. Copilot projette actuellement les images en texte et ne les annonce
 donc pas comme utilisables.
 
+Le sélecteur de modèles affiche ce résumé dans les options activées du fournisseur
+courant. Sa recherche conserve nom, identifiant et description configurés, et
+consulte aussi le nom et la famille du catalogue, sans persister ces métadonnées
+dans `AIModel` ou activer de modèles supplémentaires.
+
 Les efforts models.dev proviennent de `reasoning_options` de type `effort`.
 Les options `toggle` et `budget_tokens` ne produisent aucun contrôle. Un défaut
 absent reste absent dans les métadonnées source ; la sélection conserve la
