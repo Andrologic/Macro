@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { splitSearchHighlights } from './searchHighlights';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -38,6 +39,12 @@ import {
   searchMessages,
   type MessageSearchResult,
 } from '../../services/tauriIpc';
+
+const SearchHighlight = ({ text, query }: { text: string; query: string }) => (
+  <>{splitSearchHighlights(text, query).map((part, index) => part.matched
+    ? <mark key={index} className="rounded-sm bg-primary/20 text-foreground font-medium">{part.text}</mark>
+    : <React.Fragment key={index}>{part.text}</React.Fragment>)}</>
+);
 
 interface ConversationArchiveProps {
   className?: string;
@@ -634,6 +641,19 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [archivedIds, chatConversationIdSet, messageSearchResults, showArchived],
   );
 
+  const messageSearchGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; title: string; results: MessageSearchResult[] }>();
+    for (const result of visibleMessageSearchResults) {
+      let group = groups.get(result.conversationId);
+      if (!group) {
+        group = { id: result.conversationId, title: result.conversationTitle, results: [] };
+        groups.set(group.id, group);
+      }
+      if (!group.results.some((item) => item.messageId === result.messageId)) group.results.push(result);
+    }
+    return groups;
+  }, [visibleMessageSearchResults]);
+
   const activateMessageSearchResult = useCallback(async (result: MessageSearchResult) => {
     if (!(await selectConversation(result.conversationId))) return;
     window.requestAnimationFrame(() => {
@@ -705,6 +725,16 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     () => filterConversationsByQuery(archiveSourceConversations, searchQuery),
     [archiveSourceConversations, searchQuery]
   );
+  const searchGroups = useMemo(() => {
+    const groups = new Map(messageSearchGroups);
+    for (const conversation of filteredConversations) {
+      if (!groups.has(conversation.id)) groups.set(conversation.id, {
+        id: conversation.id, title: conversation.title, results: [],
+      });
+    }
+    return Array.from(groups.values());
+  }, [filteredConversations, messageSearchGroups]);
+
   const { pinnedConversations, regularConversations } = useMemo(
     () => partitionPinnedConversations(filteredConversations, pinnedIds),
     [filteredConversations, pinnedIds]
@@ -1200,22 +1230,42 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         )}
 
         {searchQuery.trim().length >= 2 && (
-          <div className="max-h-64 shrink-0 overflow-y-auto border-b border-border px-2 py-2" data-tour-id="chat-message-search-results">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2" data-tour-id="chat-message-search-results">
             <div className="mb-1 flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               <Icon name="message-square" size={12} />
-              {t('chat.messageResults', 'Message results')}
+              {t('chat.searchResults', 'Search results')}
             </div>
-            {visibleMessageSearchResults.map((result) => (
-              <button
-                key={`${result.conversationId}:${result.messageId}`}
-                type="button"
-                onClick={() => void activateMessageSearchResult(result)}
-                className="w-full rounded-md px-2 py-2 text-left hover:bg-accent"
-                data-message-search-result={result.messageId}
-              >
-                <div className="truncate text-xs font-medium text-foreground">{result.conversationTitle}</div>
-                <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{result.snippet}</div>
-              </button>
+            {searchGroups.map((group) => (
+              <section key={group.id} className="mb-2 rounded-md border border-border/60 overflow-hidden" data-search-conversation={group.id}>
+                <button
+                  type="button"
+                  onClick={() => void selectConversation(group.id)}
+                  className="flex w-full items-start gap-2 px-2 py-2 text-left hover:bg-accent"
+                >
+                  <Icon name="message-circle" size={13} className="mt-0.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 break-words text-xs font-medium text-foreground">
+                    <SearchHighlight text={group.title} query={searchQuery} />
+                  </span>
+                  {group.results.length > 0 && <span className="shrink-0 rounded bg-accent px-1.5 text-xs text-muted-foreground" aria-label={t('chat.matchingMessages', '{{count}} matching messages', { count: group.results.length })}>{group.results.length}</span>}
+                </button>
+                {group.results.map((result) => (
+                  <button
+                    key={result.messageId}
+                    type="button"
+                    onClick={() => void activateMessageSearchResult(result)}
+                    className="block w-full border-t border-border/50 px-2 py-2 text-left hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:-outline-offset-2"
+                    data-message-search-result={result.messageId}
+                  >
+                    <span className="mb-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                      <span>{result.role === 'user' ? t('chat.searchYou', 'You') : 'Macro'}</span>
+                      <span>{formatDate(result.createdAt)}</span>
+                    </span>
+                    <span className="line-clamp-3 break-words text-xs text-muted-foreground">
+                      <SearchHighlight text={result.snippet} query={searchQuery} />
+                    </span>
+                  </button>
+                ))}
+              </section>
             ))}
             {isMessageSearchLoading && visibleMessageSearchResults.length === 0 && (
               <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading', 'Loading...')}</div>
@@ -1223,7 +1273,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             {messageSearchError && (
               <div className="px-2 py-2 text-xs text-destructive">{t('chat.messageSearchFailed', 'Message search failed.')}</div>
             )}
-            {!isMessageSearchLoading && !messageSearchError && visibleMessageSearchResults.length === 0 && (
+            {!isMessageSearchLoading && !messageSearchError && searchGroups.length === 0 && (
               <div className="px-2 py-2 text-xs text-muted-foreground">{t('chat.noMessageResults', 'No matching messages')}</div>
             )}
             {messageSearchNextOffset !== null && (
@@ -1244,7 +1294,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           </div>
         )}
 
-        <div ref={archiveListRef} className="flex-1 overflow-y-auto">
+        <div ref={archiveListRef} className={cn("flex-1 overflow-y-auto", searchQuery.trim().length >= 2 && "hidden")}>
           {archiveRows.length > 0 ? (
             <div className="p-2">
               <div className="relative" style={{ height: archiveListTotalSize }}>

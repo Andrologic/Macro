@@ -24,6 +24,52 @@ fn message_search_expression(query: &str) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
+fn message_search_snippet(content: &str, role: &str, query: &str) -> String {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    static THINKING: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let cleaned = if role == "assistant" {
+        THINKING.get_or_init(|| regex::Regex::new(
+            r"(?is)<\s*(?:think|thinking)\s*>.*?(?:<\s*/\s*(?:think|thinking)\s*>|$)|<\s*/\s*(?:think|thinking)\s*>"
+        ).expect("valid thinking block pattern")).replace_all(content, " ")
+    } else {
+        std::borrow::Cow::Borrowed(content)
+    };
+    let fold = |text: &str| {
+        text.nfkd()
+            .filter(|c| !is_combining_mark(*c))
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| fold(term.trim_matches(|c: char| !c.is_alphanumeric())))
+        .filter(|term| !term.is_empty())
+        .take(8)
+        .collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let matched = words
+        .iter()
+        .position(|word| {
+            let normalized = fold(word);
+            terms.iter().any(|term| normalized.contains(term))
+        })
+        .unwrap_or(0);
+    let start = matched.saturating_sub(8);
+    let end = (start + 32).min(words.len());
+    let excerpt: String = words[start..end].join(" ").chars().take(320).collect();
+    let truncated = excerpt.chars().count() < words[start..end].join(" ").chars().count();
+    format!(
+        "{}{}{}",
+        if start > 0 { "… " } else { "" },
+        excerpt,
+        if end < words.len() || truncated {
+            " …"
+        } else {
+            ""
+        }
+    )
+}
+
 pub async fn search_messages(
     pool: &SqlitePool,
     query: &str,
@@ -55,7 +101,7 @@ pub async fn search_messages(
             conversations.title AS conversation_title,
             conversations.description AS conversation_description,
             messages.role,
-            snippet(message_search, 0, '', '', ' … ', 24) AS snippet,
+            messages.content AS search_content,
             messages.created_at
         FROM message_search
         JOIN messages ON messages.rowid = message_search.rowid
@@ -83,7 +129,7 @@ pub async fn search_messages(
             conversation_title: row.get("conversation_title"),
             conversation_description: row.get("conversation_description"),
             role: row.get("role"),
-            snippet: row.get("snippet"),
+            snippet: message_search_snippet(row.get("search_content"), row.get("role"), query),
             created_at: row.get("created_at"),
         })
         .collect();
@@ -3777,6 +3823,58 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed search message");
+    }
+
+    #[test]
+    fn search_snippets_hide_assistant_reasoning_before_excerpting() {
+        let reasoning = "Internal analysis ".repeat(100);
+        let content = format!("<think>{reasoning}</think>Le budget est de 42 euros.");
+        assert_eq!(
+            message_search_snippet(&content, "assistant", "budget"),
+            "Le budget est de 42 euros."
+        );
+        assert_eq!(
+            message_search_snippet(
+                "Visible <THINKING>unfinished secret",
+                "assistant",
+                "Visible"
+            ),
+            "Visible"
+        );
+        assert_eq!(
+            message_search_snippet("Explain <think> tags", "user", "think"),
+            "Explain <think> tags"
+        );
+        let long = format!(
+            "{}Une réponse accentuée : café et budget final.",
+            "Un ancien passage. ".repeat(100)
+        );
+        let snippet = message_search_snippet(&long, "assistant", "cafe");
+        assert!(snippet.contains("café"));
+        assert!(snippet.starts_with("… "));
+        assert!(snippet.chars().count() <= 324);
+    }
+
+    #[tokio::test]
+    async fn message_search_returns_clean_excerpts_without_changing_messages() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "clean", "Clean excerpts").await;
+        let content = "<think>Private budget analysis</think>Le budget est de 42 euros.";
+        seed_search_message(&pool, "answer", "clean", content).await;
+        sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = 'answer'")
+            .execute(&pool)
+            .await
+            .expect("set assistant role");
+        let page = search_messages(&pool, "budget", &["clean".to_string()], 25, 0)
+            .await
+            .expect("search answer");
+        assert_eq!(page.results[0].snippet, "Le budget est de 42 euros.");
+        let original: String =
+            sqlx::query_scalar("SELECT content FROM messages WHERE id = 'answer'")
+                .fetch_one(&pool)
+                .await
+                .expect("read original");
+        assert_eq!(original, content);
     }
 
     #[tokio::test]

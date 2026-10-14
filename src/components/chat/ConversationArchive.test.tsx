@@ -436,6 +436,14 @@ describe('ConversationArchive', () => {
             role: 'user',
             snippet: 'Indexed needle in the transcript',
             createdAt: '2026-08-16T10:00:00.000Z',
+          }, {
+            messageId: 'assistant-match',
+            conversationId: 'conversation-1',
+            conversationTitle: 'Conversation active',
+            conversationDescription: null,
+            role: 'assistant',
+            snippet: 'The NEEDLE answer',
+            createdAt: '2026-08-16T10:01:00.000Z',
           }],
           nextOffset: null,
         };
@@ -485,6 +493,12 @@ describe('ConversationArchive', () => {
       offset: 0,
     });
     expect(result?.textContent).toContain('Indexed needle');
+    const groups = document.body.querySelectorAll('[data-search-conversation]');
+    expect(groups.length).toBe(1);
+    expect(groups[0]?.querySelectorAll('[data-message-search-result]').length).toBe(2);
+    expect(groups[0]?.textContent?.match(/Conversation active/g)?.length).toBe(1);
+    expect(result?.querySelector('mark')?.textContent).toBe('needle');
+    expect(document.body.querySelector('[data-message-search-result="assistant-match"] mark')?.textContent).toBe('NEEDLE');
     await act(async () => {
       result?.click();
       await flushRender();
