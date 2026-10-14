@@ -1201,6 +1201,8 @@ Une future ligne remote pourra viser les scénarios suivants :
 
 ## 21. Réglages et contrôle utilisateur
 
+Dans le formulaire d'ajout manuel d'un modèle, le champ ID propose les modèles du catalogue du fournisseur courant. La recherche porte sur leur ID et leur nom. La sélection au clavier ou à la souris renseigne l'ID et propose le nom sans remplacer un nom personnalisé. La saisie libre reste possible. Seule la confirmation du formulaire enregistre le modèle ; la recherche ne déclenche aucun appel réseau.
+
 Macro doit exposer un contrôle utilisateur sur au moins les dimensions suivantes :
 
 - fournisseurs et modèles IA

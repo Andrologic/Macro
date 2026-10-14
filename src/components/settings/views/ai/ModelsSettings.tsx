@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
@@ -37,6 +37,7 @@ import {
 } from '../../../../services/reasoningCatalog';
 import {
   getModelContextCatalogStatus,
+  listProviderCatalogModels,
   MODEL_CONTEXT_CATALOG_TTL_MS,
   refreshModelContextCatalog,
   subscribeModelContextCatalogStatus,
@@ -156,6 +157,10 @@ export const ModelsSettings: React.FC = () => {
   } | null>(null);
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
+  const [catalogSuggestionsOpen, setCatalogSuggestionsOpen] = useState(false);
+  const [catalogSuggestionIndex, setCatalogSuggestionIndex] = useState(-1);
+  const suggestedNameRef = useRef<string | null>(null);
+  const catalogSuggestionsId = useId();
   const [manualReasoningConfigurable, setManualReasoningConfigurable] = useState(false);
   const [manualReasoningEfforts, setManualReasoningEfforts] = useState<ReasoningEffort[]>([]);
   const [manualDefaultReasoningEffort, setManualDefaultReasoningEffort] =
@@ -373,10 +378,45 @@ export const ModelsSettings: React.FC = () => {
     saveCommitModelConfig(normalizedMetadataModelConfig);
   }, [normalizedMetadataModelConfig, saveCommitModelConfig, metadataModelConfig]);
 
+  const manualProvider = providerConfigs.find((provider) => provider.id === manualModelEditor?.providerId);
+  const providerCatalogModels = useMemo(() => manualProvider && !manualModelEditor?.originalModelId
+    ? listProviderCatalogModels({
+        providerType: manualProvider.providerType,
+        providerId: manualProvider.id,
+        baseUrl: manualProvider.baseUrl,
+      })
+    : [],
+    // A catalog synchronization replaces the service snapshot without changing the provider.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [manualProvider, manualModelEditor?.originalModelId, catalogStatus]);
+  const catalogQuery = manualModelId.trim().toLowerCase();
+  const catalogSuggestions = providerCatalogModels.filter((model) =>
+    model.id.toLowerCase().includes(catalogQuery) || model.name.toLowerCase().includes(catalogQuery)
+  ).slice(0, 8);
+  const showCatalogSuggestions = catalogSuggestionsOpen && catalogSuggestions.length > 0;
+  const activeCatalogSuggestion = showCatalogSuggestions ? catalogSuggestions[catalogSuggestionIndex] : undefined;
+  useEffect(() => {
+    if (!activeCatalogSuggestion) return;
+    document.getElementById(`${catalogSuggestionsId}-${catalogSuggestionIndex}`)
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeCatalogSuggestion, catalogSuggestionIndex, catalogSuggestionsId]);
+  const selectCatalogSuggestion = (model: typeof catalogSuggestions[number]) => {
+    setManualModelId(model.id);
+    if (!manualModelName.trim() || manualModelName === suggestedNameRef.current) {
+      setManualModelName(model.name);
+      suggestedNameRef.current = model.name;
+    }
+    setCatalogSuggestionsOpen(false);
+    setCatalogSuggestionIndex(-1);
+  };
+
   const closeManualModelEditor = () => {
     setManualModelEditor(null);
     setManualModelId('');
     setManualModelName('');
+    suggestedNameRef.current = null;
+    setCatalogSuggestionsOpen(false);
+    setCatalogSuggestionIndex(-1);
     setManualReasoningConfigurable(false);
     setManualReasoningEfforts([]);
     setManualDefaultReasoningEffort(null);
@@ -392,6 +432,9 @@ export const ModelsSettings: React.FC = () => {
     setManualModelEditor({ providerId, originalModelId: null });
     setManualModelId('');
     setManualModelName('');
+    suggestedNameRef.current = null;
+    setCatalogSuggestionsOpen(false);
+    setCatalogSuggestionIndex(-1);
     setManualReasoningConfigurable(false);
     setManualReasoningEfforts([]);
     setManualDefaultReasoningEffort(null);
@@ -1082,13 +1125,66 @@ export const ModelsSettings: React.FC = () => {
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
               <div className="space-y-1.5">
-                <label className="text-sm font-medium">{t('models.modelId', 'Model ID')}</label>
+                <label htmlFor={`${catalogSuggestionsId}-input`} className="text-sm font-medium">{t('models.modelId', 'Model ID')}</label>
                 <Input
+                  id={`${catalogSuggestionsId}-input`}
                   value={manualModelId}
-                  onChange={(event) => setManualModelId(event.target.value)}
+                  role={!isEditingManualModel ? 'combobox' : undefined}
+                  aria-autocomplete={!isEditingManualModel ? 'list' : undefined}
+                  aria-expanded={!isEditingManualModel ? showCatalogSuggestions : undefined}
+                  aria-controls={showCatalogSuggestions ? catalogSuggestionsId : undefined}
+                  aria-activedescendant={activeCatalogSuggestion
+                    ? `${catalogSuggestionsId}-${catalogSuggestionIndex}` : undefined}
+                  autoComplete="off"
+                  onFocus={() => setCatalogSuggestionsOpen(true)}
+                  onBlur={() => setCatalogSuggestionsOpen(false)}
+                  onChange={(event) => {
+                    setManualModelId(event.target.value);
+                    setCatalogSuggestionsOpen(true);
+                    setCatalogSuggestionIndex(-1);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setCatalogSuggestionsOpen(false);
+                      setCatalogSuggestionIndex(-1);
+                    } else if (catalogSuggestions.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                      event.preventDefault();
+                      setCatalogSuggestionsOpen(true);
+                      setCatalogSuggestionIndex((index) => event.key === 'ArrowDown'
+                        ? (index + 1) % catalogSuggestions.length
+                        : (index <= 0 ? catalogSuggestions.length : index) - 1);
+                    } else if (event.key === 'Enter' && activeCatalogSuggestion) {
+                      event.preventDefault();
+                      selectCatalogSuggestion(activeCatalogSuggestion);
+                    }
+                  }}
                   placeholder={t('models.modelIdPlaceholder', 'e.g. gpt-4o-mini')}
                   className="font-mono text-sm"
                 />
+                {showCatalogSuggestions && (
+                  <div id={catalogSuggestionsId} role="listbox"
+                    aria-label={t('models.catalogSuggestions', 'Catalog suggestions')}
+                    className="max-h-48 overflow-y-auto rounded-lg border border-border bg-card">
+                    {catalogSuggestions.map((model, index) => (
+                      <button key={model.id} id={`${catalogSuggestionsId}-${index}`} type="button"
+                        role="option" aria-selected={index === catalogSuggestionIndex}
+                        tabIndex={-1}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectCatalogSuggestion(model)}
+                        className={cn('block w-full px-3 py-2 text-left text-sm hover:bg-accent',
+                          index === catalogSuggestionIndex && 'bg-accent')}>
+                        <span className="block truncate">{model.name}</span>
+                        <span className="block truncate font-mono text-xs text-muted-foreground">{model.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!isEditingManualModel && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('models.catalogSuggestionsHint', 'Search the provider catalog by ID or name, or enter any model ID.')}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1.5">

@@ -2236,6 +2236,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "カタログの候補",
+    "catalogSuggestionsHint": "プロバイダーのカタログをIDまたは名前で検索するか、任意のモデルIDを入力してください。",
     "collectionTitle": "モデル",
     "collectionDescription": "プロバイダーごとにモデルを管理します",
     "searchPlaceholder": "モデルを検索...",

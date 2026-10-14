@@ -2236,6 +2236,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "카탈로그 추천",
+    "catalogSuggestionsHint": "공급자 카탈로그에서 ID나 이름으로 검색하거나 모델 ID를 직접 입력하세요.",
     "collectionTitle": "모델",
     "collectionDescription": "공급자별로 모델을 관리합니다",
     "searchPlaceholder": "모델 검색...",
