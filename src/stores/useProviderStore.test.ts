@@ -2616,6 +2616,8 @@ describe('useProviderStore secret resolution', () => {
             provider_id: 'provider-openai',
             isEnabled: true,
             contextWindowTokens: 64_000,
+            inputLimitTokens: 123_000,
+            outputLimitTokens: 8_000,
             contextWindowSource: 'provider_overflow_error',
             contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
           },
@@ -2633,8 +2635,8 @@ describe('useProviderStore secret resolution', () => {
       ][0]
     ).toMatchObject({
       contextWindowTokens: 222_000,
-      inputLimitTokens: 200_000,
-      outputLimitTokens: 16_000,
+      inputLimitTokens: 123_000,
+      outputLimitTokens: 8_000,
       contextWindowSource: 'models_dev',
     });
     expect(upsertProviderModelsMock).toHaveBeenCalledWith({
@@ -2643,6 +2645,8 @@ describe('useProviderStore secret resolution', () => {
         expect.objectContaining({
           model_id: 'gpt-catalog',
           context_window_tokens: 222_000,
+          input_limit_tokens: 123_000,
+          output_limit_tokens: 8_000,
           context_window_source: 'models_dev',
         }),
       ],
@@ -2875,6 +2879,40 @@ describe('useProviderStore secret resolution', () => {
     });
   });
 
+  for (const desktop of [false, true]) {
+    for (const source of ['provider_metadata', 'model_metadata'] as const) {
+      it(`preserves a known ${source} window and its date after an incomplete scan, desktop=${desktop}`, async () => {
+        tauriAvailable = desktop;
+        const { useProviderStore: store } = await loadProviderStore();
+        catalogTestables.writeCachedCatalog({ fetchedAt: new Date().toISOString(), providers: {
+          openai: { models: { 'gpt-5': { limit: { context: 400_000 } } } },
+        } });
+        (probeModelsEndpointMock as unknown as {
+          mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+        }).mockImplementationOnce(async () => ({ success: true, status: 'reachable', source: 'models_endpoint',
+          message: 'Connected', models: [{ id: 'gpt-5', name: 'GPT-5' }] }));
+        store.setState({ providerConfigs: [{ id: 'provider-openai', name: 'OpenAI', providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1', apiKey: 'synthetic', hasStoredApiKey: true,
+          apiKeyLoaded: true, isEnabled: true, isLocal: false }],
+          modelsByProvider: { 'provider-openai': [{ id: 'gpt-5', name: 'GPT-5', provider_id: 'provider-openai',
+            isEnabled: true, contextWindowTokens: 123_000, contextWindowSource: source,
+            contextLimitsUpdatedAt: '2026-10-01', inputLimitTokens: 100_000, outputLimitTokens: 8_000 }] } });
+        await store.getState().scanModelsForProvider('provider-openai');
+        if (desktop) {
+          expect(upsertProviderModelsMock.mock.calls.at(-1)?.[0].models[0]).toMatchObject({
+            context_window_tokens: 123_000, context_window_source: source, context_limits_updated_at: '2026-10-01',
+            input_limit_tokens: 100_000, output_limit_tokens: 8_000,
+          });
+        } else {
+          expect(store.getState().modelsByProvider['provider-openai'][0]).toMatchObject({
+            contextWindowTokens: 123_000, contextWindowSource: source, contextLimitsUpdatedAt: '2026-10-01',
+            inputLimitTokens: 100_000, outputLimitTokens: 8_000,
+          });
+        }
+      });
+    }
+  }
+
   it('preserves user context overrides when provider scans return metadata', async () => {
     const providerStore = await loadProviderStore();
     (probeModelsEndpointMock as unknown as {
@@ -2918,6 +2956,7 @@ describe('useProviderStore secret resolution', () => {
             contextWindowTokens: 16_000,
             contextWindowSource: 'user_override',
             contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
+            outputLimitTokens: 12_000,
           },
         ],
       },
@@ -2935,6 +2974,7 @@ describe('useProviderStore secret resolution', () => {
           model_id: 'manual-model',
           context_window_tokens: 16_000,
           input_limit_tokens: 180_000,
+          output_limit_tokens: 12_000,
           context_window_source: 'user_override',
         }),
       ],

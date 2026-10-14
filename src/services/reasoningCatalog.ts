@@ -174,6 +174,9 @@ export const getReasoningCapabilityForModel = (params: {
     return EMPTY_REASONING_CAPABILITY;
   }
 
+  const matched = reasoningCatalog.entries.find((entry) =>
+    matchesCatalogEntry(providerType, modelId, entry),
+  );
   const modelsDev = lookupModelReasoningCatalogCapability({
     providerType,
     providerId: params.providerId,
@@ -183,7 +186,8 @@ export const getReasoningCapabilityForModel = (params: {
   if (modelsDev && modelsDev.reasoningEfforts.length > 0) {
     return buildCapability({
       efforts: modelsDev.reasoningEfforts,
-      preferredDefault: modelsDev.defaultReasoningEffort,
+      // Keep Macro's established selection policy separate from source metadata.
+      preferredDefault: modelsDev.defaultReasoningEffort ?? matched?.default_effort,
       providerType,
       modelId,
       source: 'models_dev',
@@ -192,9 +196,6 @@ export const getReasoningCapabilityForModel = (params: {
     });
   }
 
-  const matched = reasoningCatalog.entries.find((entry) =>
-    matchesCatalogEntry(providerType, modelId, entry),
-  );
   if (!matched) return EMPTY_REASONING_CAPABILITY;
   return buildCapability({
     efforts: matched.supported_efforts,
