@@ -201,6 +201,34 @@ describe('ConversationArchive', () => {
     expect(toolbar?.querySelector('[aria-label="Cancel"] span')?.className).toContain('sr-only');
   });
 
+  it('keeps the filtered conversation list available while searching in multi-select mode', async () => {
+    const selectConversation = mock(async () => true);
+    useChatStore.setState({ selectConversation: selectConversation as never });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-multiselect"]')?.click();
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')?.click();
+      await flushRender();
+    });
+    const input = document.body.querySelector<HTMLInputElement>('[data-tour-id="chat-conversation-search"] input');
+    const propsKey = Object.keys(input ?? {}).find((key) => key.startsWith('__reactProps$'));
+    const inputProps = (input as unknown as Record<string, { onChange?: (event: unknown) => void }>)[propsKey!];
+    await act(async () => {
+      inputProps.onChange?.({ target: { value: 'active' } });
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-message-search-results"]') === null).toBe(true);
+    const list = document.body.querySelector('[data-tour-id="chat-conversations-panel"] > .flex-1.overflow-y-auto');
+    expect(list !== null).toBe(true);
+    expect(list?.classList.contains('hidden')).toBe(false);
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Select all"]')?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-multiselect-toolbar"]')?.textContent).toContain('1 selected');
+    expect(selectConversation).not.toHaveBeenCalled();
+  });
+
   it('shows the archive toggle in the header and switches to the archived view', async () => {
     await act(async () => {
       root?.render(<ConversationArchive />);

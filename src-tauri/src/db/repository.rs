@@ -46,27 +46,50 @@ fn message_search_snippet(content: &str, role: &str, query: &str) -> String {
         .filter(|term| !term.is_empty())
         .take(8)
         .collect();
-    let words: Vec<&str> = cleaned.split_whitespace().collect();
-    let matched = words
+    let text = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let characters: Vec<char> = text.chars().collect();
+    // Relate normalized UTF-8 match offsets to the original Unicode characters.
+    let mut normalized = String::new();
+    let mut original_positions = Vec::new();
+    for (index, character) in characters.iter().enumerate() {
+        let folded = fold(&character.to_string());
+        original_positions.extend(std::iter::repeat_n(index, folded.len()));
+        normalized.push_str(&folded);
+    }
+    let (matched_start, matched_end) = terms
         .iter()
-        .position(|word| {
-            let normalized = fold(word);
-            terms.iter().any(|term| normalized.contains(term))
+        .filter_map(|term| {
+            normalized
+                .find(term)
+                .map(|start| (start, start + term.len()))
         })
-        .unwrap_or(0);
-    let start = matched.saturating_sub(8);
-    let end = (start + 32).min(words.len());
-    let excerpt: String = words[start..end].join(" ").chars().take(320).collect();
-    let truncated = excerpt.chars().count() < words[start..end].join(" ").chars().count();
+        .min_by_key(|(start, _)| *start)
+        .map(|(start, end)| (original_positions[start], original_positions[end - 1] + 1))
+        .unwrap_or((0, 0));
+    let context_start = matched_start.saturating_sub(80);
+    let start = if context_start == 0 {
+        0
+    } else {
+        (context_start..matched_start)
+            .find(|index| characters[*index].is_whitespace())
+            .map(|index| index + 1)
+            .unwrap_or(context_start)
+    };
+    let mut end = (start + 320).min(characters.len());
+    if end < characters.len() && end > matched_end {
+        if let Some(boundary) = (matched_end..end)
+            .rev()
+            .find(|index| characters[*index].is_whitespace())
+        {
+            end = boundary;
+        }
+    }
+    let excerpt: String = characters[start..end].iter().collect();
     format!(
         "{}{}{}",
         if start > 0 { "… " } else { "" },
-        excerpt,
-        if end < words.len() || truncated {
-            " …"
-        } else {
-            ""
-        }
+        excerpt.trim(),
+        if end < characters.len() { " …" } else { "" }
     )
 }
 
@@ -3853,6 +3876,15 @@ mod tests {
         assert!(snippet.contains("café"));
         assert!(snippet.starts_with("… "));
         assert!(snippet.chars().count() <= 324);
+        let long_context = format!(
+            "{}needle is the matching term.",
+            format!("{} ", "x".repeat(50)).repeat(8)
+        );
+        let snippet = message_search_snippet(&long_context, "assistant", "needle");
+        assert!(
+            snippet.contains("needle"),
+            "the excerpt must retain the match: {snippet}"
+        );
     }
 
     #[tokio::test]
