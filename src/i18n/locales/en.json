@@ -2310,6 +2310,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "Catalog suggestions",
+    "catalogSuggestionsHint": "Search the provider catalog by ID or name, or enter any model ID.",
     "noProviders": "No providers configured yet. Add a provider first.",
     "noProvidersTitle": "Add a provider before adding models",
     "collectionTitle": "Models",

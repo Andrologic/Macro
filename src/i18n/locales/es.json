@@ -2241,6 +2241,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "Sugerencias del catálogo",
+    "catalogSuggestionsHint": "Busca por ID o nombre en el catálogo del proveedor, o introduce cualquier ID de modelo.",
     "collectionTitle": "Modelos",
     "collectionDescription": "Gestiona los modelos por proveedor",
     "searchPlaceholder": "Buscar modelos...",

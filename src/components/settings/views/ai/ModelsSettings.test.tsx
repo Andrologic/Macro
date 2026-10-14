@@ -15,6 +15,7 @@ let loadMetadataModelConfigMock: ReturnType<typeof mock>;
 let saveMetadataModelConfigMock: ReturnType<typeof mock>;
 let addManualModelMock: ReturnType<typeof mock>;
 let updateManualModelMock: ReturnType<typeof mock>;
+let listProviderCatalogModelsMock: ReturnType<typeof mock>;
 let refreshCatalogMock: ReturnType<typeof mock>;
 let refreshLoadedCatalogMock: ReturnType<typeof mock>;
 let catalogStatus: {
@@ -83,6 +84,7 @@ const loadModelsSettings = async () => {
   mock.module('../../../../services/modelContextCatalog', () => ({
     MODELS_DEV_URL: 'https://models.dev/api.json',
     MODEL_CONTEXT_CATALOG_TTL_MS: 300_000,
+    listProviderCatalogModels: (params: unknown) => listProviderCatalogModelsMock(params),
     lookupModelContextCatalogLimit: () => null,
     lookupModelReasoningCatalogCapability: () => null,
     getModelContextCatalogStatus: () => catalogStatus,
@@ -228,6 +230,9 @@ describe('ModelsSettings metadata model config', () => {
       }
       return value;
     });
+    listProviderCatalogModelsMock = mock((params: { providerId: string }) => params.providerId === 'provider-a'
+      ? [{ id: 'vision-plus', name: 'Visual Assistant' }, { id: 'text-mini', name: 'Writing Studio' }]
+      : [{ id: 'foreign-model', name: 'Foreign Model' }]);
     addManualModelMock = mock(async () => undefined);
     updateManualModelMock = mock(async () => undefined);
     catalogStatus = {
@@ -462,6 +467,113 @@ describe('ModelsSettings metadata model config', () => {
     expect(container!.textContent).toContain('33k');
     expect(container!.textContent).toContain('Set');
     expect(container!.textContent).toContain('Edit');
+  });
+
+  it('searches the provider catalog by ID and name and selects with the keyboard without saving', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model')?.click());
+    const input = container!.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    const name = container!.querySelector<HTMLInputElement>('input[placeholder="e.g. GPT-4o Mini"]')!;
+    act(() => setInputValue(input, 'vision'));
+    expect(container!.querySelector('[role="listbox"]')?.textContent).toContain('Visual Assistant');
+    expect(container!.querySelector('[role="listbox"]')?.textContent).not.toContain('foreign-model');
+    act(() => setInputValue(input, 'writing'));
+    expect(container!.querySelectorAll('[role="option"]').length).toBe(1);
+    expect(container!.querySelector('[role="option"]')?.textContent).toContain('text-mini');
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+    expect(container!.querySelector('[role="option"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(document.getElementById(input.getAttribute('aria-activedescendant')!)?.textContent).toContain('Writing Studio');
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(input.value).toBe('text-mini');
+    expect(name.value).toBe('Writing Studio');
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+    expect(addManualModelMock).not.toHaveBeenCalled();
+    expect(refreshCatalogMock).not.toHaveBeenCalled();
+    expect(listProviderCatalogModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-a', providerType: 'openai', baseUrl: 'https://provider-a.example.test/v1',
+    });
+    act(() => setInputValue(input, 'vision'));
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container!.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  it('consumes Escape for open catalog suggestions before the surrounding Dialog closes', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    const { Dialog } = await import('../../../ui/Dialog');
+    const closeDialog = mock(() => undefined);
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<Dialog title="Settings" onClose={closeDialog}><ModelsSettings /></Dialog>);
+      await flush();
+    });
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model')?.click());
+    const input = document.body.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    act(() => setInputValue(input, 'vision'));
+    expect(document.body.querySelector('[role="listbox"]')).not.toBeNull();
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.body.textContent).toContain('Add Custom Model');
+    expect(input.value).toBe('vision');
+    expect(closeDialog).not.toHaveBeenCalled();
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(closeDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears an automatic catalog name when replacing the suggested ID with a free ID', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model')?.click());
+    const input = container!.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    const name = container!.querySelector<HTMLInputElement>('input[placeholder="e.g. GPT-4o Mini"]')!;
+    act(() => setInputValue(input, 'vision'));
+    act(() => container!.querySelector<HTMLButtonElement>('[role="option"]')?.click());
+    expect(name.value).toBe('Visual Assistant');
+    act(() => setInputValue(input, 'private-model'));
+    expect(name.value).toBe('');
+    await act(async () => {
+      Array.from(container!.querySelectorAll<HTMLButtonElement>('div.fixed button'))
+        .find((button) => button.textContent?.trim() === 'Add Model')?.click();
+      await flush();
+    });
+    expect(addManualModelMock).toHaveBeenCalledWith('provider-a', 'private-model', 'private-model', null);
+  });
+
+  it('preserves a custom name on suggestion selection and saves a free model ID only on confirmation', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model')?.click());
+    const input = container!.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    const name = container!.querySelector<HTMLInputElement>('input[placeholder="e.g. GPT-4o Mini"]')!;
+    act(() => { setInputValue(name, 'My personal name'); setInputValue(input, 'vision'); });
+    act(() => container!.querySelector<HTMLButtonElement>('[role="option"]')?.click());
+    expect(input.value).toBe('vision-plus');
+    expect(name.value).toBe('My personal name');
+    act(() => setInputValue(input, 'unknown-private-model'));
+    expect(container!.querySelector('[role="listbox"]')).toBeNull();
+    expect(addManualModelMock).not.toHaveBeenCalled();
+    await act(async () => {
+      Array.from(container!.querySelectorAll<HTMLButtonElement>('div.fixed button'))
+        .find((button) => button.textContent?.trim() === 'Add Model')?.click();
+      await flush();
+    });
+    expect(addManualModelMock).toHaveBeenCalledWith('provider-a', 'unknown-private-model', 'My personal name', null);
   });
 
   it('saves ordered standard and custom reasoning levels for a manual model', async () => {

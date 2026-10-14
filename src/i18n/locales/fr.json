@@ -2264,6 +2264,8 @@
     }
   },
   "models": {
+    "catalogSuggestions": "Suggestions du catalogue",
+    "catalogSuggestionsHint": "Recherchez par ID ou nom dans le catalogue du fournisseur, ou saisissez un ID de modèle libre.",
     "noProviders": "Aucun provider configuré pour l'instant. Ajoutez d'abord un provider.",
     "noProvidersTitle": "Ajoutez un fournisseur avant d’ajouter des modèles",
     "collectionTitle": "Modèles",
