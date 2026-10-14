@@ -123,9 +123,42 @@ describe('ConversationArchive', () => {
       expect(rowEvent.defaultPrevented).toBe(true);
     }
     expect(selectConversation).toHaveBeenCalledTimes(2);
+    menuButton!.getBoundingClientRect = () => ({
+      top: 30, bottom: 50, left: 180, right: 200, width: 20, height: 20,
+      x: 180, y: 30, toJSON: () => ({}),
+    });
     await act(async () => { menuButton?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(2);
-    expect(container?.textContent).toContain('Export JSON');
+    const renameButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Rename');
+    expect(document.body.textContent).toContain('Export JSON');
+    expect(renameButton).toBeDefined();
+    expect(container?.contains(renameButton!)).toBe(false);
+    expect(renameButton?.parentElement?.style.top).toBe('54px');
+    expect(document.activeElement).toBe(renameButton?.parentElement?.querySelector('button') ?? null);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(menuButton ?? null);
+    await act(async () => { menuButton?.click(); });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(menuButton ?? null);
+    await act(async () => { menuButton?.click(); });
+    const lastAction = Array.from(document.activeElement?.parentElement?.querySelectorAll('button') ?? []).at(-1);
+    await act(async () => {
+      lastAction?.focus();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(menuButton ?? null);
+    await act(async () => { menuButton?.click(); });
+    await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Rename')?.click(); });
+    expect(document.body.textContent).toContain('Rename conversation');
+    expect(selectConversation).toHaveBeenCalledTimes(2);
+    const cancelButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Cancel');
+    await act(async () => { cancelButton?.click(); });
     await act(async () => { row?.click(); });
     expect(selectConversation).toHaveBeenCalledTimes(3);
   });
@@ -166,6 +199,34 @@ describe('ConversationArchive', () => {
     expect(toolbar?.querySelector('[aria-label="Archive"] span')?.className).toContain('sr-only');
     expect(toolbar?.querySelector('[aria-label="Delete"] span')?.className).toContain('sr-only');
     expect(toolbar?.querySelector('[aria-label="Cancel"] span')?.className).toContain('sr-only');
+  });
+
+  it('keeps the filtered conversation list available while searching in multi-select mode', async () => {
+    const selectConversation = mock(async () => true);
+    useChatStore.setState({ selectConversation: selectConversation as never });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-multiselect"]')?.click();
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')?.click();
+      await flushRender();
+    });
+    const input = document.body.querySelector<HTMLInputElement>('[data-tour-id="chat-conversation-search"] input');
+    const propsKey = Object.keys(input ?? {}).find((key) => key.startsWith('__reactProps$'));
+    const inputProps = (input as unknown as Record<string, { onChange?: (event: unknown) => void }>)[propsKey!];
+    await act(async () => {
+      inputProps.onChange?.({ target: { value: 'active' } });
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-message-search-results"]') === null).toBe(true);
+    const list = document.body.querySelector('[data-tour-id="chat-conversations-panel"] > .flex-1.overflow-y-auto');
+    expect(list !== null).toBe(true);
+    expect(list?.classList.contains('hidden')).toBe(false);
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Select all"]')?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-multiselect-toolbar"]')?.textContent).toContain('1 selected');
+    expect(selectConversation).not.toHaveBeenCalled();
   });
 
   it('shows the archive toggle in the header and switches to the archived view', async () => {
@@ -249,6 +310,47 @@ describe('ConversationArchive', () => {
 
     expect(selectConversation).toHaveBeenCalledWith('conversation-2');
     expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
+  });
+
+  it('keeps archive selection while its transcript loads asynchronously', async () => {
+    let finishSelection: ((applied: boolean) => void) | undefined;
+    const selectConversation = mock((conversationId: string) => {
+      useChatStore.setState({ selectedConversationId: conversationId });
+      return conversationId === 'conversation-2'
+        ? new Promise<boolean>((resolve) => { finishSelection = resolve; })
+        : Promise.resolve(true);
+    });
+    useChatStore.setState({
+      conversations: [
+        ...useChatStore.getState().conversations,
+        {
+          ...useChatStore.getState().conversations[0],
+          id: 'conversation-2',
+          title: 'Conversation archivée',
+        },
+      ],
+      selectConversation,
+    });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, ['conversation-2']);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds(['conversation-2']);
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+    const archiveToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-archive-toggle"]',
+    );
+    await act(async () => {
+      archiveToggle?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      finishSelection?.(useChatStore.getState().selectedConversationId === 'conversation-2');
+      await flushRender();
+    });
+    expect(selectConversation).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
+    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('opens and closes search inside the existing compact header', async () => {
@@ -362,6 +464,14 @@ describe('ConversationArchive', () => {
             role: 'user',
             snippet: 'Indexed needle in the transcript',
             createdAt: '2026-08-16T10:00:00.000Z',
+          }, {
+            messageId: 'assistant-match',
+            conversationId: 'conversation-1',
+            conversationTitle: 'Conversation active',
+            conversationDescription: null,
+            role: 'assistant',
+            snippet: 'The NEEDLE answer',
+            createdAt: '2026-08-16T10:01:00.000Z',
           }],
           nextOffset: null,
         };
@@ -411,12 +521,19 @@ describe('ConversationArchive', () => {
       offset: 0,
     });
     expect(result?.textContent).toContain('Indexed needle');
+    const groups = document.body.querySelectorAll('[data-search-conversation]');
+    expect(groups.length).toBe(1);
+    expect(groups[0]?.querySelectorAll('[data-message-search-result]').length).toBe(2);
+    expect(groups[0]?.textContent?.match(/Conversation active/g)?.length).toBe(1);
+    expect(result?.querySelector('mark')?.textContent).toBe('needle');
+    expect(document.body.querySelector('[data-message-search-result="assistant-match"] mark')?.textContent).toBe('NEEDLE');
     await act(async () => {
       result?.click();
       await flushRender();
     });
     expect(selectConversation).toHaveBeenCalledWith('conversation-1');
     expect(focusedMessages).toEqual(['message-not-loaded']);
+    expect(result?.getAttribute('aria-current')).toBe('true');
     window.removeEventListener('macro:focus-message', focusListener);
   });
 });

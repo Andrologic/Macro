@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { splitSearchHighlights } from './searchHighlights';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -37,6 +39,12 @@ import {
   searchMessages,
   type MessageSearchResult,
 } from '../../services/tauriIpc';
+
+const SearchHighlight = ({ text, query }: { text: string; query: string }) => (
+  <>{splitSearchHighlights(text, query).map((part, index) => part.matched
+    ? <mark key={index} className="rounded-sm bg-primary/15 text-foreground font-medium">{part.text}</mark>
+    : <React.Fragment key={index}>{part.text}</React.Fragment>)}</>
+);
 
 interface ConversationArchiveProps {
   className?: string;
@@ -121,6 +129,9 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -139,6 +150,45 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
     (state) => state.ensureConversationCitationContentsLoaded,
   );
   const isHighlighted = isMultiSelectMode ? isChecked : isCurrentConversation;
+
+  useLayoutEffect(() => {
+    if (!showMenu || !menuButtonRef.current || !menuRef.current) return;
+    const trigger = menuButtonRef.current.getBoundingClientRect();
+    const menu = menuRef.current.getBoundingClientRect();
+    setMenuPosition({
+      top: Math.max(8, Math.min(trigger.bottom + 4, window.innerHeight - menu.height - 8)),
+      left: Math.max(8, Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8)),
+    });
+    menuRef.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+    const close = () => setShowMenu(false);
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && menuRef.current) {
+        const buttons = Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+        const boundary = event.shiftKey ? buttons[0] : buttons.at(-1);
+        if (document.activeElement === boundary) {
+          event.preventDefault();
+          close();
+          menuButtonRef.current?.focus({ preventScroll: true });
+        }
+        return;
+      }
+      if (event.key !== 'Escape') return;
+      close();
+      menuButtonRef.current?.focus();
+    };
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showMenu]);
 
   useEffect(() => {
     if (isMultiSelectMode) {
@@ -274,6 +324,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 
           {!isMultiSelectMode && (
             <button
+              ref={menuButtonRef}
               type="button"
               onClick={(event) => {
                 if (isDeleting) return;
@@ -289,11 +340,13 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
           )}
         </div>
       </div>
-      {showMenu && !isMultiSelectMode && (
+      {showMenu && !isMultiSelectMode && createPortal(
         <>
           <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
           <div
-            className="absolute right-2 top-full z-50 mt-1 w-40 bg-card border border-border rounded-lg shadow-lg py-1"
+            ref={menuRef}
+            className="fixed z-50 w-40 max-h-[calc(100vh-1rem)] overflow-y-auto bg-card border border-border rounded-lg shadow-lg py-1"
+            style={menuPosition}
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -368,7 +421,8 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
               {t('common.delete', 'Delete')}
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
       <ConfirmPromptModal
@@ -431,6 +485,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   })));
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [focusedSearchMessageId, setFocusedSearchMessageId] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [messageSearchResults, setMessageSearchResults] = useState<MessageSearchResult[]>([]);
   const [messageSearchNextOffset, setMessageSearchNextOffset] = useState<number | null>(null);
@@ -563,6 +618,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   useEffect(() => {
     messageSearchRequestRef.current += 1;
     setMessageSearchResults([]);
+    setFocusedSearchMessageId(null);
     setMessageSearchNextOffset(null);
     setMessageSearchError(null);
     setIsMessageSearchLoading(false);
@@ -587,8 +643,22 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [archivedIds, chatConversationIdSet, messageSearchResults, showArchived],
   );
 
+  const messageSearchGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; title: string; results: MessageSearchResult[] }>();
+    for (const result of visibleMessageSearchResults) {
+      let group = groups.get(result.conversationId);
+      if (!group) {
+        group = { id: result.conversationId, title: result.conversationTitle, results: [] };
+        groups.set(group.id, group);
+      }
+      if (!group.results.some((item) => item.messageId === result.messageId)) group.results.push(result);
+    }
+    return groups;
+  }, [visibleMessageSearchResults]);
+
   const activateMessageSearchResult = useCallback(async (result: MessageSearchResult) => {
     if (!(await selectConversation(result.conversationId))) return;
+    setFocusedSearchMessageId(result.messageId);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         window.dispatchEvent(new CustomEvent('macro:focus-message', {
@@ -616,7 +686,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   );
 
   useEffect(() => {
-    if (!areViewFiltersHydrated || !isArchiveHydrated) return;
+    if (!areViewFiltersHydrated || !isArchiveHydrated || isArchiveViewSwitching) return;
     const selectionMatchesView = selectedConversationId
       ? archivedIds.has(selectedConversationId) === showArchived
       : archiveSourceConversations.length === 0;
@@ -640,6 +710,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     chatConversations,
     clearSelectedConversation,
     isArchiveHydrated,
+    isArchiveViewSwitching,
     selectConversation,
     selectedConversationId,
     showArchived,
@@ -657,6 +728,16 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     () => filterConversationsByQuery(archiveSourceConversations, searchQuery),
     [archiveSourceConversations, searchQuery]
   );
+  const searchGroups = useMemo(() => {
+    const groups = new Map(messageSearchGroups);
+    for (const conversation of filteredConversations) {
+      if (!groups.has(conversation.id)) groups.set(conversation.id, {
+        id: conversation.id, title: conversation.title, results: [],
+      });
+    }
+    return Array.from(groups.values());
+  }, [filteredConversations, messageSearchGroups]);
+
   const { pinnedConversations, regularConversations } = useMemo(
     () => partitionPinnedConversations(filteredConversations, pinnedIds),
     [filteredConversations, pinnedIds]
@@ -1151,23 +1232,62 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           </div>
         )}
 
-        {searchQuery.trim().length >= 2 && (
-          <div className="max-h-64 shrink-0 overflow-y-auto border-b border-border px-2 py-2" data-tour-id="chat-message-search-results">
-            <div className="mb-1 flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <Icon name="message-square" size={12} />
-              {t('chat.messageResults', 'Message results')}
+        {!isMultiSelectMode && searchQuery.trim().length >= 2 && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2" data-tour-id="chat-message-search-results">
+            <div className="mb-2 flex items-center justify-between gap-2 px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              <span>{t('chat.searchResults', 'Search results')}</span>
+              <span className="tabular-nums">{searchGroups.length}</span>
             </div>
-            {visibleMessageSearchResults.map((result) => (
-              <button
-                key={`${result.conversationId}:${result.messageId}`}
-                type="button"
-                onClick={() => void activateMessageSearchResult(result)}
-                className="w-full rounded-md px-2 py-2 text-left hover:bg-accent"
-                data-message-search-result={result.messageId}
-              >
-                <div className="truncate text-xs font-medium text-foreground">{result.conversationTitle}</div>
-                <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{result.snippet}</div>
-              </button>
+            {searchGroups.map((group) => (
+              <section key={group.id} className="mb-4 last:mb-0" data-search-conversation={group.id}>
+                <button
+                  type="button"
+                  onClick={() => void selectConversation(group.id)}
+                  aria-current={selectedConversationId === group.id ? 'true' : undefined}
+                  className={cn(
+                    'group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset',
+                    selectedConversationId === group.id ? 'border-primary/30 bg-primary/10' : 'border-transparent hover:bg-accent',
+                  )}
+                >
+                  <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', selectedConversationId === group.id ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground')}>
+                    <Icon name="message-circle" size={14} />
+                  </span>
+                  <span className="min-w-0 flex-1 self-center">
+                    <span className="line-clamp-2 break-words text-sm font-medium leading-5 text-foreground" title={group.title}>
+                      <SearchHighlight text={group.title} query={searchQuery} />
+                    </span>
+                  </span>
+                  {group.results.length > 0 && <span className="mt-1 shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={t('chat.matchingMessages', '{{count}} matching messages', { count: group.results.length })}>{group.results.length}</span>}
+                </button>
+                {group.results.length > 0 && (
+                  <div className="ml-7 mt-1 space-y-0.5 border-l border-border pl-2">
+                    {group.results.map((result) => {
+                      const isFocused = focusedSearchMessageId === result.messageId && selectedConversationId === group.id;
+                      return (
+                        <button
+                          key={result.messageId}
+                          type="button"
+                          onClick={() => void activateMessageSearchResult(result)}
+                          aria-current={isFocused ? 'true' : undefined}
+                          className={cn(
+                            'block w-full rounded-md border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-inset',
+                            isFocused ? 'border-primary/25 bg-primary/10' : 'border-transparent hover:bg-accent',
+                          )}
+                          data-message-search-result={result.messageId}
+                        >
+                          <span className="mb-1 flex items-baseline justify-between gap-2 text-[11px] leading-4 text-muted-foreground">
+                            <span className="font-medium">{result.role === 'user' ? t('chat.searchYou', 'You') : 'Macro'}</span>
+                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">{formatDate(result.createdAt, { day: 'numeric', month: 'short' })}</span>
+                          </span>
+                          <span className="line-clamp-3 break-words text-xs leading-5 text-foreground/80">
+                            <SearchHighlight text={result.snippet} query={searchQuery} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             ))}
             {isMessageSearchLoading && visibleMessageSearchResults.length === 0 && (
               <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading', 'Loading...')}</div>
@@ -1175,7 +1295,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             {messageSearchError && (
               <div className="px-2 py-2 text-xs text-destructive">{t('chat.messageSearchFailed', 'Message search failed.')}</div>
             )}
-            {!isMessageSearchLoading && !messageSearchError && visibleMessageSearchResults.length === 0 && (
+            {!isMessageSearchLoading && !messageSearchError && searchGroups.length === 0 && (
               <div className="px-2 py-2 text-xs text-muted-foreground">{t('chat.noMessageResults', 'No matching messages')}</div>
             )}
             {messageSearchNextOffset !== null && (
@@ -1196,7 +1316,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           </div>
         )}
 
-        <div ref={archiveListRef} className="flex-1 overflow-y-auto">
+        <div ref={archiveListRef} className={cn("flex-1 overflow-y-auto", !isMultiSelectMode && searchQuery.trim().length >= 2 && "hidden")}>
           {archiveRows.length > 0 ? (
             <div className="p-2">
               <div className="relative" style={{ height: archiveListTotalSize }}>

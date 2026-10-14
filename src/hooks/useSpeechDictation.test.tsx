@@ -213,6 +213,29 @@ describe('useSpeechDictation', () => {
     expect(currentHook?.completion).toBeNull();
   });
 
+  it('preserves structured backend errors when transcription fails', async () => {
+    useSpeechToTextStore.setState({
+      providers: [provider],
+      selectedProviderId: provider.id,
+      isInitialized: true,
+      initialize: mock(async () => undefined),
+      transcribe: mock(async () => {
+        throw { message: 'Speech provider request failed: HTTP 400' };
+      }),
+    });
+    await act(async () => { root.render(<Harness contextKey="conversation:a" />); });
+    await act(async () => {
+      await currentHook?.toggle();
+      await currentHook?.finish('insert');
+    });
+    expect(onError).toHaveBeenCalledWith({
+      code: 'transcription-failed',
+      detail: 'Speech provider request failed: HTTP 400',
+    });
+    expect(currentHook?.phase).toBe('idle');
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
   it('improves the transcript before forwarding it when cleanup is enabled', async () => {
     let resolveEnhancement: ((text: string) => void) | undefined;
     enhanceTranscript.mockImplementationOnce(() => new Promise<string>((resolve) => {

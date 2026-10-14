@@ -403,8 +403,12 @@ les archives et le tri déjà actifs restent appliqués aux résultats. Une
 recherche sans correspondance affiche un état vide explicite. Choisir un
 résultat déclenche la même sélection que dans la liste non filtrée.
 
-Dans Chat, les correspondances trouvées dans les messages affichent un extrait.
-La sélection charge la conversation si nécessaire, puis place le message trouvé
+Dans Chat, la recherche regroupe les résultats par conversation, sans répéter
+son titre pour chaque message. Chaque extrait indique son auteur et sa date ;
+les termes recherchés sont surlignés sans tenir compte de la casse ni des accents.
+Les extraits des réponses assistant excluent les blocs de raisonnement, y compris
+les blocs interrompus, avant leur découpage. Le contenu enregistré reste intact.
+La sélection d'un extrait charge la conversation si nécessaire, puis place le message trouvé
 dans la zone visible. La recherche du contenu reste locale, indexée et paginée.
 Elle ne charge pas les transcriptions de toutes les conversations dans le frontend.
 

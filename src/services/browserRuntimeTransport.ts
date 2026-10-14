@@ -271,7 +271,12 @@ async function invokeBrowserRuntimeWithId<T>(
       timeout,
     });
     try {
-      bridgeSocket.send(JSON.stringify({ id, cmd: command, args, option: options }));
+      const wireArgs = args instanceof Uint8Array
+        ? Array.from(args)
+        : args instanceof ArrayBuffer
+          ? Array.from(new Uint8Array(args))
+          : args;
+      bridgeSocket.send(JSON.stringify({ id, cmd: command, args: wireArgs, option: options }));
     } catch (error) {
       pendingRequests.delete(id);
       clearTimeout(timeout);

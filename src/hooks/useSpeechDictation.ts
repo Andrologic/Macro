@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isMacroAiSpeechProvider } from '../config/macroAi';
+import { toServiceError } from '../services/contracts/errors';
 import { prepareAudioForSpeechProvider } from '../services/speech/andrologicAudio';
 import { MicrophoneRecorder } from '../services/speech/microphoneRecorder';
 import {
@@ -202,7 +203,7 @@ export const useSpeechDictation = ({
           ) {
             return;
           }
-          onEnhancementError?.(error instanceof Error ? error.message : undefined);
+          onEnhancementError?.(toServiceError(error).message);
           finalText = rawText;
         } finally {
           if (enhancementAbortControllerRef.current === controller) {
@@ -221,7 +222,7 @@ export const useSpeechDictation = ({
       if (mountedRef.current && operationId === operationIdRef.current) {
         onError({
           code: 'transcription-failed',
-          detail: error instanceof Error ? error.message : undefined,
+          detail: toServiceError(error).message,
         });
       }
     } finally {

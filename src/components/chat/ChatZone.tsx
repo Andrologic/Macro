@@ -1095,6 +1095,13 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
+    prev.measureElement === next.measureElement &&
+    prev.onImageMouseDown === next.onImageMouseDown &&
+    prev.onOpenImagePreview === next.onOpenImagePreview &&
+    prev.onEditCancel === next.onEditCancel &&
+    prev.onCopy === next.onCopy &&
+    prev.onEditStart === next.onEditStart &&
+    prev.onRegenerate === next.onRegenerate &&
     prev.onRetryPersistence === next.onRetryPersistence &&
     prev.onDeleteUnsavedResponse === next.onDeleteUnsavedResponse &&
     prev.skillTurnFeedback === next.skillTurnFeedback &&
@@ -1152,6 +1159,15 @@ const buildImplementKickoffPrompt = (params: {
       : []),
   ].join('\n');
 };
+
+// Keep row actions stable while calling the handler from the latest committed render.
+function useMessageAction<Args extends unknown[], Result>(handler: (...args: Args) => Result) {
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => {
+    handlerRef.current = handler;
+  });
+  return useCallback((...args: Args) => handlerRef.current(...args), []);
+}
 
 const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const { t } = useTranslation();
@@ -2966,19 +2982,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setComposerImages((prev) => prev.filter((image) => image.id !== imageId));
   };
 
-  const preventImageMouseDown = (event: React.MouseEvent<HTMLElement>) => {
+  const preventImageMouseDown = useMessageAction((event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
-  };
+  });
 
-  const openImagePreview = (
+  const openImagePreview = useMessageAction((
     event: React.MouseEvent<HTMLElement>,
     image: MessageImageAttachment
   ) => {
     event.preventDefault();
     event.stopPropagation();
     setPreviewImage(image);
-  };
+  });
 
   const applySavedComposerDraft = useCallback((session: SavedComposerDraft) => {
     setComposerImages(session.savedDraftImages);
@@ -3525,7 +3541,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     void sendArchitectButtonAction(architectStrategyProgressAction);
   };
 
-  const handleEditStart = (message: ChatMessage) => {
+  const handleEditStart = useMessageAction((message: ChatMessage) => {
     if (
       composerEditSession ||
       goalComposerEditSession ||
@@ -3566,12 +3582,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     requestAnimationFrame(() => {
       composerEditorRef.current?.focus();
     });
-  };
+  });
 
-  const handleEditCancel = () => {
+  const handleEditCancel = useMessageAction(() => {
     if (!composerEditSession) return;
     restoreComposerDraft(composerEditSession);
-  };
+  });
 
   const handleEditCommitted = useCallback(() => {
     const session = composerEditSession;
@@ -3614,11 +3630,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return () => window.removeEventListener('macro:composer-secondary-send', handleSecondarySend);
   });
 
-  const handleCopy = async (content: string, messageId: string) => {
+  const handleCopy = useMessageAction(async (content: string, messageId: string) => {
     await navigator.clipboard.writeText(content);
     setCopiedMessageId(messageId);
     setTimeout(() => setCopiedMessageId(null), 2000);
-  };
+  });
 
   const handleRetryAssistantPersistence = useCallback(async (messageId: string) => {
     try {
@@ -3636,13 +3652,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [deleteUnsavedAssistantResponse]);
 
-  const handleRegenerate = async (messageId: string, content: string) => {
+  const handleRegenerate = useMessageAction(async (messageId: string, content: string) => {
     await requestReplay({
       kind: 'regenerate',
       messageId,
       content,
     });
-  };
+  });
 
   const canSend =
     !isAttachingFiles &&
