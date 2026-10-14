@@ -502,6 +502,10 @@
     "maximize": "maximizar"
   },
   "chat": {
+    "modelInfoContext": "Contexto {{tokens}}",
+    "modelInfoContextFull": "Contexto de {{tokens}} tokens",
+    "modelInfoImages": "Imágenes",
+    "modelInfoTools": "Herramientas",
     "conversationSourcesUsed": "{{count}} conversaciones citadas como fuentes",
     "imageImportContextChanged": "La conversación ha cambiado. No se añadieron las imágenes; selecciónalas de nuevo.",
     "imageImportFailed": "No se añadieron imágenes. Usa PNG, JPEG, GIF o WebP válidos: máximo 2 MB por imagen, 8 MB en total y 10 imágenes.",

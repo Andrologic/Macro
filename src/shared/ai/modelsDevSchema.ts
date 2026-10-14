@@ -2,6 +2,11 @@
 export interface ModelsDevModel {
   id?: string;
   canonical_model_id?: string;
+  name?: string;
+  description?: string;
+  family?: string;
+  modalities?: { input?: string[] };
+  tool_call?: boolean;
   reasoning?: boolean;
   reasoning_options?: { type: string; values?: string[]; default?: string }[];
   limit?: { context?: number; input?: number; output?: number };
@@ -30,10 +35,23 @@ export const parseModelsDevProviders = (value: unknown): Record<string, ModelsDe
     for (const [key, model] of Object.entries(provider.models)) {
       if (!key.trim() || !record(model)) return null;
       const result: ModelsDevModel = {};
-      for (const field of ['id', 'canonical_model_id'] as const) {
+      for (const field of ['id', 'canonical_model_id', 'name', 'description', 'family'] as const) {
         if (model[field] !== undefined) {
           if (typeof model[field] !== 'string' || !model[field].trim()) return null;
           result[field] = model[field];
+        }
+      }
+      if (model.tool_call !== undefined) {
+        if (typeof model.tool_call !== 'boolean') return null;
+        result.tool_call = model.tool_call;
+      }
+      if (model.modalities !== undefined) {
+        if (!record(model.modalities)) return null;
+        if (model.modalities.input !== undefined) {
+          if (!Array.isArray(model.modalities.input) || model.modalities.input.some(
+            (entry) => typeof entry !== 'string' || !entry.trim(),
+          )) return null;
+          result.modalities = { input: [...model.modalities.input] };
         }
       }
       if (model.limit !== undefined) {

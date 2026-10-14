@@ -6,12 +6,70 @@ import {
   lookupModelReasoningCatalogCapability,
   getModelContextCatalogStatus,
   refreshModelContextCatalog,
+  lookupModelCatalogMetadata,
+  listProviderCatalogModels,
 } from './modelContextCatalog';
 
 describe('modelContextCatalog', () => {
   beforeEach(() => {
     window.localStorage.clear();
     __testables.reset();
+  });
+
+  it('exposes scoped model names and capabilities without enabling models', () => {
+    const models = listProviderCatalogModels({ providerType: 'openai' });
+    expect(models.map((model) => model.id)).toEqual(['gpt-4o', 'gpt-4.1', 'gpt-5']);
+    expect(models[0]).toMatchObject({ name: 'GPT-4o', images: true, toolCall: true });
+    expect(models[0]).not.toHaveProperty('isEnabled');
+    expect(lookupModelCatalogMetadata({ providerType: 'openai', modelId: 'openai/gpt-5' })?.id).toBe('gpt-5');
+  });
+
+  it('preserves unknown capability metadata and explicit false independently', () => {
+    __testables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: {
+      custom: { models: {
+        unknown: { id: 'unknown' },
+        text: { id: 'text', name: 'Text', modalities: { input: ['text'] }, tool_call: false },
+      } },
+    } });
+    const models = listProviderCatalogModels({ providerId: 'custom' });
+    expect(models[0]).not.toHaveProperty('images');
+    expect(models[0]).not.toHaveProperty('toolCall');
+    expect(models[1]).toMatchObject({ images: false, toolCall: false });
+  });
+
+  it('combines cache entries with scoped snapshot fallbacks, with cache precedence', () => {
+    __testables.writeCachedCatalog({ fetchedAt: '2026-10-13', providers: {
+      openai: { models: {
+        'gpt-4o': { id: 'gpt-4o', name: 'Provider label', tool_call: false },
+        custom: { id: 'custom', name: 'Custom' },
+      } },
+    } });
+    const models = listProviderCatalogModels({ providerType: 'openai' });
+    expect(models.map((model) => model.id)).toEqual(['gpt-4o', 'custom', 'gpt-4.1', 'gpt-5']);
+    expect(models[0]).toMatchObject({ name: 'Provider label', toolCall: false, updatedAt: '2026-10-13' });
+    expect(models[0]).not.toHaveProperty('images');
+    expect(models[2]?.images).toBe(true);
+    expect(listProviderCatalogModels({ providerType: 'openai', baseUrl: 'https://custom.invalid/v1' })).toEqual([]);
+  });
+
+  it('does not list a second offer or ambiguous identities', () => {
+    __testables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: {
+      custom: { models: { private: { id: 'private' } } },
+      ambiguous1: { id: 'ambiguous', models: { one: {} } },
+      ambiguous2: { id: 'ambiguous', models: { two: {} } },
+      duplicate: { models: { one: { id: 'same' }, two: { id: 'same' } } },
+    } });
+    expect(listProviderCatalogModels({ providerType: 'openai', providerId: 'custom' }).map((model) => model.id)).toEqual(['private']);
+    expect(listProviderCatalogModels({ providerId: 'ambiguous' })).toEqual([]);
+    expect(listProviderCatalogModels({ providerId: 'duplicate' })).toEqual([]);
+  });
+
+  it('lists a canonical cache match only once when it shadows a snapshot identifier', () => {
+    __testables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: {
+      openai: { models: { renamed: { id: 'renamed', canonical_model_id: 'openai/gpt-5' } } },
+    } });
+    expect(listProviderCatalogModels({ providerType: 'openai' }).map((model) => model.id))
+      .toEqual(['renamed', 'gpt-4o', 'gpt-4.1']);
   });
 
   it('uses the local snapshot for OpenCode Go Kimi limits offline', () => {

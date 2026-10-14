@@ -90,6 +90,24 @@ un fournisseur avant le modèle, privilégie les identifiants exacts et accepte
 une identité canonique seulement si elle est unique dans ce fournisseur. Un
 endpoint tiers compatible OpenAI ne désigne pas l'offre officielle OpenAI.
 
+`lookupModelCatalogMetadata` et `listProviderCatalogModels` exposent un contrat
+synchrone commun pour les informations et suggestions de modèles. Ils partagent
+la résolution fournisseur/modèle des limites et ne déclenchent aucun accès
+réseau. La liste conserve les entrées du cache, puis les modèles absents du
+snapshot de la même offre, sans contourner une identité ambiguë. Le contrat
+retourne l'identifiant, le nom, les éventuels description/famille, les limites,
+la date et les capacités optionnelles images/outils. Une capacité absente reste
+inconnue, distincte de `false`. Le catalogue ne vérifie ni les droits du compte
+ni l'activation d'un modèle.
+
+`ModelCatalogSummary` affiche ces informations sans modifier `AIModel` ni le
+transport. Le contexte configuré reste prioritaire, sauf le repli Macro remplacé
+par une limite catalogue connue. Les capacités positives sont croisées avec les
+chemins existants : images dans Chat Completions OpenAI/OpenRouter ou Responses
+ChatGPT, outils natifs autorisés par le fournisseur et non refusés par le
+modèle. Copilot projette actuellement les images en texte et ne les annonce
+donc pas comme utilisables.
+
 Les efforts models.dev proviennent de `reasoning_options` de type `effort`.
 Les options `toggle` et `budget_tokens` ne produisent aucun contrôle. Un défaut
 absent reste absent dans les métadonnées source ; la sélection conserve la
