@@ -868,6 +868,7 @@ interface ProviderStore {
   } | null>;
   selectProvider: (providerId: string) => void;
   selectModel: (modelId: string) => void;
+  selectProviderModel: (providerId: string, modelId: string) => void;
   selectReasoningEffort: (effort: ReasoningEffort | null) => void;
   getAvailableReasoningEfforts: (providerId?: string | null, modelId?: string | null) => ReasoningEffort[];
   selectedSupportsReasoningEffort: () => boolean;
@@ -2735,6 +2736,28 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         'model_selection',
       );
     }
+  },
+
+  selectProviderModel: (providerId: string, modelId: string) => {
+    const state = get();
+    const provider = state.providerConfigs.find((entry) => entry.id === providerId);
+    const model = (state.modelsByProvider[providerId] ?? [])
+      .find((entry) => entry.id === modelId && entry.isEnabled !== false);
+    if (!provider || !providerHasCredentials(provider) || !model) return;
+
+    set({
+      selectedProviderId: providerId,
+      selectedModelId: modelId,
+      selectedReasoningEffort: resolveSelectedReasoningEffort({
+        providerId,
+        modelId,
+        modelsByProvider: state.modelsByProvider,
+        unsupported: state.reasoningUnsupportedModelKeys,
+        requested: state.selectedProviderId === providerId ? state.selectedReasoningEffort : null,
+      }),
+    });
+    void get().refreshModelsForProviderIfNeeded(providerId, 'provider_selection');
+    void get().ensureSelectedModelContextMetadata(providerId, modelId, 'model_selection');
   },
 
   selectReasoningEffort: (effort: ReasoningEffort | null) => {

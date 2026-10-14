@@ -3209,6 +3209,63 @@ describe('useProviderStore secret resolution', () => {
     expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
   });
 
+  it('selects a provider/model pair atomically and resolves that model’s reasoning', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const refresh = mock(async () => []);
+    const context = mock(async () => []);
+    useProviderStore.setState({
+      selectedProviderId: 'previous', selectedModelId: 'shared-model', selectedReasoningEffort: 'high',
+      providerConfigs: [{ id: 'target', name: 'Target', providerType: 'openai', baseUrl: 'http://localhost/v1',
+        isEnabled: true, isLocal: true, hasStoredApiKey: false }],
+      modelsByProvider: { target: [{ id: 'shared-model', name: 'Shared model', provider_id: 'target',
+        reasoningCapability: { reasoningEfforts: ['low', 'medium'], defaultReasoningEffort: 'medium',
+          transportMode: 'openai_effort', configurable: true, source: 'manual_override' } }] },
+      refreshModelsForProviderIfNeeded: refresh,
+      ensureSelectedModelContextMetadata: context,
+    });
+    const selections: Array<[string | null, string | null]> = [];
+    const unsubscribe = useProviderStore.subscribe((state: { selectedProviderId: string | null; selectedModelId: string | null }) => {
+      selections.push([state.selectedProviderId, state.selectedModelId]);
+    });
+    useProviderStore.getState().selectProviderModel('target', 'shared-model');
+    unsubscribe();
+    expect(selections).toEqual([['target', 'shared-model']]);
+    expect(useProviderStore.getState().selectedReasoningEffort).toBe('medium');
+    expect(refresh).toHaveBeenCalledWith('target', 'provider_selection');
+    expect(context).toHaveBeenCalledWith('target', 'shared-model', 'model_selection');
+
+    useProviderStore.getState().selectReasoningEffort('low');
+    useProviderStore.getState().selectProviderModel('target', 'shared-model');
+    expect(useProviderStore.getState().selectedReasoningEffort).toBe('low');
+  });
+
+  it('rejects stale model choices from disabled or disconnected providers and disabled models', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const refresh = mock(async () => []);
+    const context = mock(async () => []);
+    const provider = { id: 'target', name: 'Target', providerType: 'openai', baseUrl: 'http://localhost/v1',
+      isEnabled: true, isLocal: true, hasStoredApiKey: false };
+    useProviderStore.setState({
+      selectedProviderId: 'previous', selectedModelId: 'previous-model',
+      providerConfigs: [provider, { ...provider, id: 'disabled', isEnabled: false },
+        { ...provider, id: 'disconnected', isLocal: false }],
+      modelsByProvider: Object.fromEntries(['target', 'disabled', 'disconnected'].map((id) => [id, [
+        { id: 'shared-model', name: 'Shared model', provider_id: id },
+        { id: 'hidden-model', name: 'Hidden model', provider_id: id, isEnabled: false },
+      ]])),
+      refreshModelsForProviderIfNeeded: refresh,
+      ensureSelectedModelContextMetadata: context,
+    });
+    for (const [providerId, modelId] of [['disabled', 'shared-model'], ['disconnected', 'shared-model'],
+      ['missing', 'shared-model'], ['target', 'hidden-model'], ['target', 'missing-model']]) {
+      useProviderStore.getState().selectProviderModel(providerId!, modelId!);
+      expect(useProviderStore.getState().selectedProviderId).toBe('previous');
+      expect(useProviderStore.getState().selectedModelId).toBe('previous-model');
+    }
+    expect(refresh).not.toHaveBeenCalled();
+    expect(context).not.toHaveBeenCalled();
+  });
+
   it('lets manual refresh bypass the provider selection cooldown', async () => {
     const providerStore = await loadProviderStore();
     providerStore.useProviderStore.setState({
