@@ -124,7 +124,7 @@ pub async fn search_messages(
             conversations.title AS conversation_title,
             conversations.description AS conversation_description,
             messages.role,
-            messages.content AS search_content,
+            message_search.content AS search_content,
             messages.created_at
         FROM message_search
         JOIN messages ON messages.rowid = message_search.rowid
@@ -3907,6 +3907,148 @@ mod tests {
                 .await
                 .expect("read original");
         assert_eq!(original, content);
+    }
+
+    #[tokio::test]
+    async fn message_search_excludes_reasoning_and_tracks_role_and_content_changes() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "visible", "Visible search").await;
+        let original = "Before<THINKING>secretneedle</THINKING> café after";
+        seed_search_message(&pool, "assistant", "visible", original).await;
+        sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let scope = vec!["visible".to_string()];
+        assert!(search_messages(&pool, "secretneedle", &scope, 25, 0)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        assert_eq!(
+            search_messages(&pool, "cafe", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        // User-authored examples of these tags remain searchable.
+        seed_search_message(&pool, "user", "visible", "<think>userneedle</think>").await;
+        assert_eq!(
+            search_messages(&pool, "userneedle", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE messages SET content = '< think >privatechange< / think >New answer <think>unfinishedneedle' WHERE id = 'assistant'")
+            .execute(&pool).await.unwrap();
+        for query in ["cafe", "secretneedle", "privatechange", "unfinishedneedle"] {
+            assert!(
+                search_messages(&pool, query, &scope, 25, 0)
+                    .await
+                    .unwrap()
+                    .results
+                    .is_empty(),
+                "unexpected match: {query}"
+            );
+        }
+        assert_eq!(
+            search_messages(&pool, "answer", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE messages SET role = 'user' WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            search_messages(&pool, "privatechange", &scope, 25, 0)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+        sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        rebuild_message_search_index(&pool).await.unwrap();
+        assert!(search_messages(&pool, "privatechange", &scope, 25, 0)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        sqlx::query("DELETE FROM messages WHERE id = 'assistant'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(search_messages(&pool, "answer", &scope, 25, 0)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        sqlx::query(
+            "INSERT INTO message_search(message_search, rank) VALUES ('integrity-check', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn message_search_projection_matches_thinking_tag_variants() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "variants", "Tag variants").await;
+        for (index, content) in [
+            "Before<think>hiddenneedle</think>after",
+            "Before< THINKING >hiddenneedle< / THINKING >after",
+            "Before<\u{a0}think\u{a0}>hiddenneedle</think>after",
+            "Before<think>hiddenneedle",
+            "Before<think>one</think><thinking>hiddenneedle</thinking>after",
+            "Before <b>visible</b> and 2 < 3",
+            "Before 2 < 3 <think>hiddenneedle</think>after",
+            "Before<<think>hiddenneedle</think>after",
+            "Before<think invalid <think>hiddenneedle</think>after",
+            "",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let id = format!("variant-{index}");
+            seed_search_message(&pool, &id, "variants", content).await;
+            sqlx::query("UPDATE messages SET role = 'assistant' WHERE id = ?")
+                .bind(&id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let projected: String = sqlx::query_scalar("SELECT content FROM message_search_content WHERE rowid = (SELECT rowid FROM messages WHERE id = ?)")
+                .bind(&id).fetch_one(&pool).await.unwrap();
+            let normalized = projected.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                normalized,
+                message_search_snippet(content, "assistant", "Before")
+            );
+            let stored: String = sqlx::query_scalar("SELECT content FROM messages WHERE id = ?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(stored, *content);
+        }
+        assert!(
+            search_messages(&pool, "hiddenneedle", &["variants".to_string()], 25, 0)
+                .await
+                .unwrap()
+                .results
+                .is_empty()
+        );
     }
 
     #[tokio::test]

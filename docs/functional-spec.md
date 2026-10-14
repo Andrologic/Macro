@@ -407,7 +407,11 @@ Dans Chat, la recherche regroupe les résultats par conversation, sans répéter
 son titre pour chaque message. Chaque extrait indique son auteur et sa date ;
 les termes recherchés sont surlignés sans tenir compte de la casse ni des accents.
 Les extraits des réponses assistant excluent les blocs de raisonnement, y compris
-les blocs interrompus, avant leur découpage. Le contenu enregistré reste intact.
+les blocs interrompus, avant leur découpage. L'index exclut aussi ces blocs pour
+qu'un terme présent uniquement dans le raisonnement ne produise pas de résultat.
+Cette exclusion s'applique aux messages existants après une migration unique,
+ainsi qu'aux insertions et éditions suivantes. Les exemples de balises écrits par
+l'utilisateur restent recherchables. Le contenu enregistré reste intact.
 La sélection d'un extrait charge la conversation si nécessaire, puis place le message trouvé
 dans la zone visible. La recherche du contenu reste locale, indexée et paginée.
 Elle ne charge pas les transcriptions de toutes les conversations dans le frontend.

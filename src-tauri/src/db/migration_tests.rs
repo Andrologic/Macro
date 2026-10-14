@@ -48,7 +48,27 @@ async fn fixture(path: &Path, stamped: bool) -> SqliteConnection {
     connection
 }
 
+async fn drop_v10(connection: &mut SqliteConnection) {
+    sqlx::raw_sql(
+        "DROP TRIGGER messages_search_insert;
+         DROP TRIGGER messages_search_delete;
+         DROP TRIGGER messages_search_update;
+         DROP TRIGGER messages_search_update_insert;
+         DROP TABLE message_search;
+         DROP VIEW message_search_content;
+         DELETE FROM schema_migrations WHERE version = 10;",
+    )
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    sqlx::raw_sql(MIGRATION_004_SQL)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+}
+
 async fn drop_v9(connection: &mut SqliteConnection) {
+    drop_v10(connection).await;
     sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
         .execute(&mut *connection)
         .await
@@ -571,4 +591,115 @@ async fn published_baseline_preserves_provider_and_model_data_through_v5() {
     );
     assert!(sqlx::query("INSERT INTO ai_models (id, provider_id, model_id, name, first_seen_at, last_seen_at) VALUES ('orphan', 'absent', 'x', 'x', 'x', 'x')")
         .execute(&pool).await.is_err());
+}
+
+#[tokio::test]
+async fn upgrades_v9_search_without_rewriting_messages_and_only_rebuilds_once() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("v9.db");
+    let old = fixture(&path, true).await;
+    old.close().await.unwrap();
+    let current = create_pool(&path).await.unwrap();
+    let mut connection = current.acquire().await.unwrap();
+    drop_v10(&mut connection).await;
+    let content = "<think>historicalneedle</think> Visible café answer";
+    sqlx::query("UPDATE messages SET role = 'assistant', content = ? WHERE id = 'message'")
+        .bind(content)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'historicalneedle'"
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap(),
+        1
+    );
+    drop(connection);
+    current.close().await;
+
+    let upgraded = create_pool(&path).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'historicalneedle'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'cafe'"
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT content FROM messages WHERE id = 'message'")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap(),
+        content
+    );
+    // A subsequent open must not silently rebuild the index again.
+    sqlx::query("DELETE FROM message_search")
+        .execute(&upgraded)
+        .await
+        .unwrap();
+    upgraded.close().await;
+    let reopened = create_pool(&path).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM message_search WHERE message_search MATCH 'cafe'"
+        )
+        .fetch_one(&reopened)
+        .await
+        .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn visible_search_migration_failure_restores_previous_index_atomically() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("rollback.db");
+    let old = fixture(&path, true).await;
+    old.close().await.unwrap();
+    let current = create_pool(&path).await.unwrap();
+    let mut connection = current.acquire().await.unwrap();
+    drop_v10(&mut connection).await;
+    sqlx::query("CREATE TABLE message_search_content (sentinel TEXT)")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    drop(connection);
+    current.close().await;
+    assert!(create_pool(&path).await.is_err());
+    let mut connection =
+        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT max(version) FROM schema_migrations")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+        9
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT content FROM message_search WHERE message_search MATCH 'Original'"
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap(),
+        "Original message"
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('messages_search_insert','messages_search_delete','messages_search_update')")
+        .fetch_one(&mut connection).await.unwrap(), 3);
 }
