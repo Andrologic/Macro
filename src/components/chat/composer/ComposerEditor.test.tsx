@@ -596,6 +596,35 @@ describe('ComposerEditor context references', () => {
     expect(onTextChange.mock.calls.map((call) => call[0])).toEqual(['']);
   });
 
+  it('restores a conversation mention without duplicating its saved text', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    const ref = {
+      kind: 'conversation', id: 'source-conversation', title: 'QA Référence',
+      data: { conversationId: 'source-conversation' },
+    } as const;
+    const renderComposer = () => (
+      <ComposerEditor ref={editorRef} editable placeholder="Message"
+        onTextChange={() => undefined} onSend={() => undefined} />
+    );
+    await act(async () => {
+      root.render(renderComposer());
+      await Promise.resolve();
+    });
+    const savedText = '[conversation: QA Référence] ';
+    await act(async () => {
+      editorRef.current?.setText(savedText, [ref]);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      composerContextRefs = [ref];
+      root.render(renderComposer());
+      await Promise.resolve();
+    });
+    expect(editorRef.current?.getTextContent()).toBe(savedText);
+    expect(container.querySelectorAll('[data-context-reference-kind="conversation"]').length).toBe(1);
+    expect(composerContextRefs).toEqual([ref]);
+  });
+
   it('preserves context refs when imperative text replacement removes mention nodes', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
     const ref = {

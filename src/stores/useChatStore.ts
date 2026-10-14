@@ -9733,8 +9733,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       clearConversationSecurityState(state.selectedConversationId, true);
     }
 
+    const conversationChanged = state.selectedConversationId !== conversationId;
+    if (conversationChanged) {
+      composerContextRefsRevision += 1;
+    }
     set((current) => ({
       selectedConversationId: conversationId,
+      composerContextRefs: conversationChanged ? [] : current.composerContextRefs,
       selectedConversationContextKey: current.activeContextKey,
       selectedConversationIdsByMode: {
         ...current.selectedConversationIdsByMode,
