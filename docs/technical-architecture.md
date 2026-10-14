@@ -109,7 +109,7 @@ publique `dev/models-dev/source.json`. Le périmètre fixé dans
 Les entrées absentes de la source gardent leurs limites historiques du 11 mai
 2026 et cette date, sans récupérer les efforts ou la date d'une autre offre.
 Les données réutilisées de models.dev sont sous licence MIT, dont la mention
-complète est conservée dans `dev/models-dev/LICENSE`.
+complète est distribuée depuis `public/licenses/models.dev-LICENSE.txt`.
 
 Pour une maintenance locale, télécharger `https://models.dev/api.json` hors du
 dépôt, puis lancer `bun dev/models-dev/generate.ts --source <api.json> --date

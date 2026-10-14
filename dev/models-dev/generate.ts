@@ -46,7 +46,7 @@ for (const [id, provider] of Object.entries(coverage.providers) as [string, Mode
   providers[id] = { id, models };
 }
 const snapshot = { source: source.source, fetchedAt: source.fetchedAt,
-  license: 'MIT', notice: 'dev/models-dev/LICENSE', providers };
+  license: 'MIT', notice: 'licenses/models.dev-LICENSE.txt', providers };
 const serialized = JSON.stringify(snapshot, null, 2) + '\n';
 if (check) {
   if (await readFile(outputPath, 'utf8') !== serialized) throw new Error('Snapshot is out of date');

@@ -158,29 +158,28 @@ export const enrichModelWithCatalogContextLimits = (
   };
 };
 
+export const mergeProviderModelContextLimits = (model: AIModel, providerModel: ProviderModel): AIModel => {
+  const overlay = buildProviderModelContextLimitOverlay(providerModel);
+  if (model.contextWindowSource === 'user_override') {
+    const {
+      contextWindowTokens: _contextWindowTokens,
+      contextWindowSource: _contextWindowSource,
+      contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
+      ...nonWindowOverlay
+    } = overlay;
+    return { ...model, ...nonWindowOverlay };
+  }
+  return { ...model, ...overlay,
+    ...(overlay.contextWindowTokens ? { contextLimitsUpdatedAt: new Date().toISOString() } : {}) };
+};
+
 export const mergeProviderModelContextLimitOverlays = (
   models: AIModel[],
   providerModels: ProviderModel[]
 ): AIModel[] => {
-  const overlaysById = new Map(
-    providerModels.map((model) => [
-      model.id,
-      buildProviderModelContextLimitOverlay(model),
-    ])
-  );
-
+  const byId = new Map(providerModels.map((model) => [model.id, model]));
   return models.map((model) => {
-    const overlay = overlaysById.get(model.id);
-    if (!overlay) return model;
-    if (model.contextWindowSource === 'user_override') {
-      const {
-        contextWindowTokens: _contextWindowTokens,
-        contextWindowSource: _contextWindowSource,
-        contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
-        ...nonWindowOverlay
-      } = overlay;
-      return { ...model, ...nonWindowOverlay };
-    }
-    return { ...model, ...overlay };
+    const providerModel = byId.get(model.id);
+    return providerModel ? mergeProviderModelContextLimits(model, providerModel) : model;
   });
 };

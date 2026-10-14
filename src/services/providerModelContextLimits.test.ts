@@ -9,6 +9,7 @@ import {
   inferProviderInputLimitTokens,
   inferProviderOutputLimitTokens,
   mergeProviderModelContextLimitOverlays,
+  mergeProviderModelContextLimits,
 } from './providerModelContextLimits';
 
 describe('providerModelContextLimits', () => {
@@ -277,6 +278,21 @@ describe('providerModelContextLimits', () => {
       inputLimitTokens: 150, outputLimitTokens: 50 }, { providerType: 'openai' }, { refreshCatalogSource: true }))
       .toMatchObject({ contextWindowTokens: 400, contextWindowSource: 'models_dev',
         contextLimitsUpdatedAt: '2026-10-14', inputLimitTokens: 150, outputLimitTokens: 50 });
+  });
+
+  it('replaces an old provider window only when fresh provider metadata supplies a new window', () => {
+    const existing = { id: 'test', name: 'Test', provider_id: 'test', contextWindowTokens: 100,
+      contextWindowSource: 'provider_metadata' as const, contextLimitsUpdatedAt: '2026-01-01' };
+    expect(mergeProviderModelContextLimits(existing, { id: 'test', max_output_tokens: 10 }))
+      .toMatchObject({ contextWindowTokens: 100, contextWindowSource: 'provider_metadata', contextLimitsUpdatedAt: '2026-01-01' });
+    const refreshed = mergeProviderModelContextLimits(existing, { id: 'test', context_length: 200 });
+    expect(refreshed.contextWindowTokens).toBe(200);
+    expect(refreshed.contextWindowSource).toBe('provider_metadata');
+    expect(Date.parse(refreshed.contextLimitsUpdatedAt!)).toBeGreaterThan(Date.parse(existing.contextLimitsUpdatedAt));
+    expect(mergeProviderModelContextLimits({ ...existing, contextWindowSource: 'user_override' },
+      { id: 'test', context_length: 200, max_output_tokens: 10 })).toMatchObject({
+        contextWindowTokens: 100, contextWindowSource: 'user_override', contextLimitsUpdatedAt: '2026-01-01', outputLimitTokens: 10,
+      });
   });
 
 });

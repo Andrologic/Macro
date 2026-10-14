@@ -24,7 +24,7 @@ describe('models.dev snapshot maintenance', () => {
       }
     }
     expect(snapshot.license).toBe('MIT');
-    expect(await readFile(snapshot.notice, 'utf8')).toContain('Copyright (c) 2025 models.dev');
+    expect(await readFile(new URL(`../../public/${snapshot.notice}`, import.meta.url), 'utf8')).toContain('Copyright (c) 2025 models.dev');
     expect(JSON.stringify(snapshot)).not.toContain('pricing');
     expect(JSON.stringify(snapshot)).not.toContain('budget_tokens');
   });

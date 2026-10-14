@@ -2,7 +2,7 @@
   "source": "https://models.dev/api.json",
   "fetchedAt": "2026-10-14",
   "license": "MIT",
-  "notice": "dev/models-dev/LICENSE",
+  "notice": "licenses/models.dev-LICENSE.txt",
   "providers": {
     "openai": {
       "id": "openai",
