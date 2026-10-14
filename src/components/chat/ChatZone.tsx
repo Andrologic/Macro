@@ -43,7 +43,6 @@ import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon, type IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
-import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -1373,6 +1372,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
 
   const [inputValue, setInputValue] = useState('');
+  const [openModelSelector, setOpenModelSelector] = useState<'model' | 'reasoning' | null>(null);
+  useEffect(() => {
+    setOpenModelSelector(null);
+  }, [selectedConversationId, selectedProviderId, selectedModelId]);
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
@@ -4302,9 +4305,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     </button>
                   </div>
                 )}
-                <ProviderDropdown />
-                <ModelDropdown />
-                <ReasoningDropdown />
+                <ModelDropdown
+                  isOpen={openModelSelector === 'model'}
+                  onOpenChange={(open) => setOpenModelSelector((current) => open ? 'model' : current === 'model' ? null : current)}
+                />
+                <ReasoningDropdown
+                  isOpen={openModelSelector === 'reasoning'}
+                  onOpenChange={(open) => setOpenModelSelector((current) => open ? 'reasoning' : current === 'reasoning' ? null : current)}
+                />
               </div>
               {mode === 'Architect' && architectStrategyProgressButton && (
                   <div className="flex items-center gap-2">

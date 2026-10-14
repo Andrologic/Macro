@@ -1303,13 +1303,22 @@ Matrice fonctionnelle des raccourcis configurables :
 
 ---
 
-Le sélecteur de modèles du composeur propose une recherche compacte parmi les modèles
-activés du fournisseur courant, par nom, identifiant ou description, sans distinction de
-casse ni d'accents. Les noms de famille présents dans ces champs sont également
-recherchables. La saisie ne change pas le modèle sélectionné : l'utilisateur valide un
-résultat au clavier ou à la souris. Le champ garde le focus pendant la navigation avec
-les flèches ; Entrée valide le résultat actif et Échap ferme le sélecteur. La fermeture
-efface la recherche pour la prochaine ouverture.
+Le composeur réunit fournisseur et modèle dans un seul sélecteur. Son bouton affiche
+le fournisseur et le modèle courants. Le menu présente une liste compacte à plat,
+avec le modèle à gauche, son fournisseur à droite et une coche sur le couple actif.
+Il contient uniquement les modèles activés des fournisseurs disposant d'identifiants
+utilisables. La recherche porte sur le fournisseur, le nom, l'identifiant et la
+description du modèle, ainsi que sur les noms et familles du catalogue, sans
+distinction de casse ni d'accents. La saisie ne change pas la sélection : l'utilisateur
+valide un résultat au clavier ou à la souris, ce qui sélectionne le fournisseur et le
+modèle ensemble. Le champ garde le focus pendant la navigation avec les flèches ;
+Entrée valide le résultat actif et Échap ferme le sélecteur. La fermeture efface la
+recherche pour la prochaine ouverture.
+
+Le raisonnement garde un bouton séparé, sans icône, affichant le niveau courant.
+Il ouvre une liste simple des seuls niveaux pris en charge par le modèle, avec une
+coche sur le niveau actif. Ce bouton est masqué si aucun niveau fiable n'est connu.
+Un seul de ces deux menus peut être ouvert à la fois.
 
 ## 22. Données, audit et trace historique
 

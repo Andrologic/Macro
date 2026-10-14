@@ -544,10 +544,6 @@ const loadChatZoneModule = async () => {
     },
   }));
 
-  mock.module('../ai/ProviderDropdown', () => ({
-    ProviderDropdown: () => <div data-testid="provider-dropdown" />,
-  }));
-
   mock.module('../ai/ModelDropdown', () => ({
     ModelDropdown: () => <div data-testid="model-dropdown" />,
   }));
@@ -3901,12 +3897,12 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
 
-  it('renders provider, model, and reasoning selectors in the toolbar', async () => {
+  it('renders the combined model selector and separate reasoning selector in the toolbar', async () => {
     await act(async () => {
       requireRoot().render(<ChatZone />);
     });
 
-    expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
+    expect(requireContainer().querySelector('[data-tour-id="provider-dropdown"]')).toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
   });

@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { AIModel } from '../../types';
 import { __testables } from '../../services/modelContextCatalog';
 
-const selectModelMock = mock((_modelId: string) => undefined);
+const selectModelMock = mock((_providerId: string, _modelId: string) => undefined);
 let importCounter = 0;
 
 const models: AIModel[] = [
@@ -38,12 +38,13 @@ const loadModelDropdown = async (availableModels = models) => {
     }),
   }));
   mock.module('../../stores/useProviderStore', () => ({
+    providerHasCredentials: (provider: { isEnabled?: boolean; isLocal?: boolean }) => provider.isEnabled && provider.isLocal,
     useProviderStore: () => ({
       selectedProviderId: 'macro-ai',
       selectedModelId: 'macro-ai',
-      modelsByProvider: { 'macro-ai': availableModels, other: [{ id: 'other', name: 'Other provider', provider_id: 'other' }] },
-      providerConfigs: [{ id: 'macro-ai', name: 'Macro AI', providerType: 'openai', baseUrl: 'https://macro.invalid/v1', nativeToolCalling: true }],
-      selectModel: selectModelMock,
+      modelsByProvider: { 'macro-ai': availableModels, other: availableModels.length ? [{ id: 'macro-ai', name: 'Macro AI Fast', provider_id: 'other' }] : [], disabled: [{ id: 'hidden', name: 'Disconnected model', provider_id: 'disabled' }], unknown: [{ id: 'unknown', name: 'Unconfigured model', provider_id: 'unknown' }] },
+      providerConfigs: [{ id: 'macro-ai', name: 'Macro AI', providerType: 'openai', baseUrl: 'https://macro.invalid/v1', nativeToolCalling: true, isEnabled: true, isLocal: true }, { id: 'other', name: 'Second Provider', providerType: 'openai', isEnabled: true, isLocal: true }, { id: 'disabled', name: 'Disconnected', isEnabled: false, isLocal: true }],
+      selectProviderModel: selectModelMock,
       isLoadingModels: false,
     }),
   }));
@@ -73,7 +74,7 @@ describe('ModelDropdown', () => {
     mock.restore();
   });
 
-  it('shows model descriptions as subtitles in the open selector', async () => {
+  it('shows compact model/provider rows and keeps descriptions in their tooltip', async () => {
     const { ModelDropdown } = await loadModelDropdown();
 
     await act(async () => {
@@ -86,8 +87,11 @@ describe('ModelDropdown', () => {
 
     act(() => trigger?.click());
 
-    expect(container.textContent).toContain('Qwen3.6-35B-A3B');
-    expect(container.textContent).toContain('Qwen3.8-27B');
+    expect(trigger?.textContent).toContain('Macro AI · Macro AI Fast');
+    expect(container.textContent).not.toContain('Qwen3.6-35B-A3B');
+    expect(container.querySelector('[role="option"]')?.getAttribute('title')).toContain('Qwen3.6-35B-A3B');
+    expect(container.querySelectorAll('[role="option"]')[3]?.textContent).toContain('Second Provider');
+    expect(container.querySelectorAll('[aria-selected="true"]').length).toBe(1);
   });
 
   it('exposes a named listbox and selects models with the keyboard', async () => {
@@ -116,7 +120,7 @@ describe('ModelDropdown', () => {
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
     });
 
-    expect(selectModelMock).toHaveBeenCalledWith('macro-ai-deep');
+    expect(selectModelMock).toHaveBeenCalledWith('macro-ai', 'macro-ai-deep');
     expect(document.activeElement).toBe(trigger ?? null);
   });
 
@@ -141,10 +145,11 @@ describe('ModelDropdown', () => {
     });
   };
 
-  it('filters enabled models of the current provider by name, id and description without case or accents', async () => {
+  it('filters enabled models across usable providers by name, id and description without case or accents', async () => {
     const { search } = await renderOpen();
     expect(container.textContent).not.toContain('Hidden model');
-    expect(container.textContent).not.toContain('Other provider');
+    expect(container.textContent).not.toContain('Disconnected model');
+    expect(container.textContent).not.toContain('Unconfigured model');
     for (const query of ['MODELE ELITE', 'accented-id', 'FAMILLE PRECISE']) {
       typeQuery(search, query);
       const options = container.querySelectorAll('[role="option"]');
@@ -157,7 +162,7 @@ describe('ModelDropdown', () => {
     typeQuery(search, 'qWEN3.8');
     expect(container.querySelector('[role="option"]')?.textContent).toContain('Macro AI Deep');
     act(() => container.querySelector<HTMLButtonElement>('[role="option"]')?.click());
-    expect(selectModelMock).toHaveBeenCalledWith('macro-ai-deep');
+    expect(selectModelMock).toHaveBeenCalledWith('macro-ai', 'macro-ai-deep');
   });
 
   it('allows text editing keys, handles empty results, clears and resets on reopening', async () => {
@@ -175,7 +180,7 @@ describe('ModelDropdown', () => {
     expect(selectModelMock).not.toHaveBeenCalled();
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="Clear model search"]')?.click());
     expect(search.value).toBe('');
-    expect(container.querySelectorAll('[role="option"]').length).toBe(3);
+    expect(container.querySelectorAll('[role="option"]').length).toBe(4);
     typeQuery(search, 'deep');
     await act(async () => {
       search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -188,10 +193,10 @@ describe('ModelDropdown', () => {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
     expect(container.querySelector<HTMLInputElement>('[role="combobox"]')?.value).toBe('');
-    expect(container.querySelectorAll('[role="option"]').length).toBe(3);
+    expect(container.querySelectorAll('[role="option"]').length).toBe(4);
   });
 
-  it('searches catalogue-only names and families while preserving enabled scope and compact information', async () => {
+  it('searches catalogue-only names and families while preserving enabled scope and flat rows', async () => {
     __testables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: {
       'macro-ai': { models: {
         'macro-ai': { id: 'macro-ai', name: 'Catalogue Name', family: 'Famille Visuelle',
@@ -205,14 +210,24 @@ describe('ModelDropdown', () => {
       const options = container.querySelectorAll('[role="option"]');
       expect(options.length).toBe(1);
       expect(options[0]?.textContent).toContain('Macro AI Fast');
-      expect(options[0]?.textContent).toContain('Qwen3.6-35B-A3B');
-      expect(options[0]?.textContent).toContain('128K context Images Tools');
+      expect(options[0]?.textContent).toContain('Macro AI');
+      expect(options[0]?.textContent).not.toContain('128K');
       expect(document.activeElement).toBe(search);
       expect(selectModelMock).not.toHaveBeenCalled();
     }
     typeQuery(search, 'disabled family');
     expect(container.querySelector('[role="option"]')).toBeNull();
     expect(container.textContent).toContain('No matching models.');
+  });
+
+  it('searches providers and selects the matching pair when model ids are identical', async () => {
+    const { search } = await renderOpen();
+    typeQuery(search, 'SECOND PROVIDER');
+    const options = container.querySelectorAll<HTMLButtonElement>('[role="option"]');
+    expect(options.length).toBe(1);
+    expect(options[0]?.getAttribute('aria-selected')).toBe('false');
+    act(() => options[0]?.click());
+    expect(selectModelMock).toHaveBeenCalledWith('other', 'macro-ai');
   });
 
   it('opens an empty enabled catalogue without selecting anything', async () => {

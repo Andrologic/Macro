@@ -108,10 +108,14 @@ ChatGPT, outils natifs autorisés par le fournisseur et non refusés par le
 modèle. Copilot projette actuellement les images en texte et ne les annonce
 donc pas comme utilisables.
 
-Le sélecteur de modèles affiche ce résumé dans les options activées du fournisseur
-courant. Sa recherche conserve nom, identifiant et description configurés, et
-consulte aussi le nom et la famille du catalogue, sans persister ces métadonnées
-dans `AIModel` ou activer de modèles supplémentaires.
+Le sélecteur du composeur affiche une liste compacte des couples fournisseur/modèle
+activés, avec le fournisseur sur chaque ligne. Sa recherche conserve fournisseur,
+nom, identifiant et description configurés, et consulte aussi le nom et la famille
+du catalogue, sans persister ces métadonnées dans `AIModel` ou activer de modèles
+supplémentaires. `useProviderStore.selectProviderModel` valide le couple et change
+fournisseur, modèle et effort compatible dans une seule mutation. Les rafraîchissements
+existants du fournisseur et du contexte restent délégués au store. `ChatZone` contrôle
+l'ouverture exclusive du menu de modèles et de la liste séparée de raisonnement.
 
 Les efforts models.dev proviennent de `reasoning_options` de type `effort`.
 Les options `toggle` et `budget_tokens` ne produisent aucun contrôle. Un défaut
