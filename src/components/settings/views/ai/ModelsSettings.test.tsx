@@ -503,6 +503,30 @@ describe('ModelsSettings metadata model config', () => {
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
   });
 
+  it('clears an automatic catalog name when replacing the suggested ID with a free ID', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    act(() => Array.from(container!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model')?.click());
+    const input = container!.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    const name = container!.querySelector<HTMLInputElement>('input[placeholder="e.g. GPT-4o Mini"]')!;
+    act(() => setInputValue(input, 'vision'));
+    act(() => container!.querySelector<HTMLButtonElement>('[role="option"]')?.click());
+    expect(name.value).toBe('Visual Assistant');
+    act(() => setInputValue(input, 'private-model'));
+    expect(name.value).toBe('');
+    await act(async () => {
+      Array.from(container!.querySelectorAll<HTMLButtonElement>('div.fixed button'))
+        .find((button) => button.textContent?.trim() === 'Add Model')?.click();
+      await flush();
+    });
+    expect(addManualModelMock).toHaveBeenCalledWith('provider-a', 'private-model', 'private-model', null);
+  });
+
   it('preserves a custom name on suggestion selection and saves a free model ID only on confirmation', async () => {
     const { ModelsSettings } = await loadModelsSettings();
     await act(async () => {

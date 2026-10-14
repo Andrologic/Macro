@@ -1140,6 +1140,10 @@ export const ModelsSettings: React.FC = () => {
                   onBlur={() => setCatalogSuggestionsOpen(false)}
                   onChange={(event) => {
                     setManualModelId(event.target.value);
+                    if (suggestedNameRef.current !== null) {
+                      setManualModelName('');
+                      suggestedNameRef.current = null;
+                    }
                     setCatalogSuggestionsOpen(true);
                     setCatalogSuggestionIndex(-1);
                   }}
@@ -1196,7 +1200,10 @@ export const ModelsSettings: React.FC = () => {
                 </label>
                 <Input
                   value={manualModelName}
-                  onChange={(event) => setManualModelName(event.target.value)}
+                  onChange={(event) => {
+                    setManualModelName(event.target.value);
+                    suggestedNameRef.current = null;
+                  }}
                   placeholder={t('models.displayNamePlaceholder', 'e.g. GPT-4o Mini')}
                 />
               </div>
