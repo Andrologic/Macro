@@ -1,0 +1,192 @@
+{
+  "source": "https://models.dev/api.json",
+  "fetchedAt": "2026-10-14",
+  "license": "MIT",
+  "notice": "dev/models-dev/LICENSE",
+  "providers": {
+    "openai": {
+      "id": "openai",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "reasoning": false,
+          "updatedAt": "2026-10-14"
+        },
+        "gpt-4.1": {
+          "id": "gpt-4.1",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          },
+          "reasoning": false,
+          "updatedAt": "2026-10-14"
+        },
+        "gpt-5": {
+          "id": "gpt-5",
+          "canonical_model_id": "openai/gpt-5",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "reasoning": true,
+          "reasoning_options": [
+            {
+              "type": "effort",
+              "values": [
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ]
+            }
+          ],
+          "updatedAt": "2026-10-14"
+        }
+      }
+    },
+    "anthropic": {
+      "id": "anthropic",
+      "models": {
+        "claude-3-5-sonnet-latest": {
+          "id": "claude-3-5-sonnet-latest",
+          "limit": {
+            "context": 200000,
+            "output": 8192
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "claude-sonnet-4-5": {
+          "id": "claude-sonnet-4-5",
+          "canonical_model_id": "anthropic/claude-sonnet-4-5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        }
+      }
+    },
+    "openrouter": {
+      "id": "openrouter",
+      "models": {
+        "moonshotai/kimi-k2": {
+          "id": "moonshotai/kimi-k2",
+          "canonical_model_id": "moonshotai/kimi-k2",
+          "limit": {
+            "context": 131072,
+            "output": 98304
+          },
+          "reasoning": false,
+          "updatedAt": "2026-10-14"
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "id": "anthropic/claude-sonnet-4.5",
+          "canonical_model_id": "anthropic/claude-sonnet-4-5",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "canonical_model_id": "alibaba/qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 66000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        }
+      }
+    },
+    "github-copilot": {
+      "id": "github-copilot",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "claude-sonnet-4.5": {
+          "id": "claude-sonnet-4.5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        }
+      }
+    },
+    "opencode-go": {
+      "id": "opencode-go",
+      "models": {
+        "kimi-k2.6": {
+          "id": "kimi-k2.6",
+          "limit": {
+            "context": 262144,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "kimi-k2": {
+          "id": "kimi-k2",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": [],
+          "updatedAt": "2026-10-14"
+        },
+        "qwen3-6-plus": {
+          "id": "qwen3-6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "limit": {
+            "context": 262144,
+            "output": 66000
+          },
+          "updatedAt": "2026-05-11T00:00:00.000Z"
+        }
+      }
+    }
+  }
+}

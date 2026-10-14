@@ -122,8 +122,8 @@ export const buildCatalogModelContextLimitOverlay = (params: {
   if (!limit) return {};
   return {
     contextWindowTokens: limit.contextTokens,
-    inputLimitTokens: limit.inputTokens,
-    outputLimitTokens: limit.outputTokens,
+    ...(limit.inputTokens ? { inputLimitTokens: limit.inputTokens } : {}),
+    ...(limit.outputTokens ? { outputLimitTokens: limit.outputTokens } : {}),
     contextWindowSource: 'models_dev',
     contextLimitsUpdatedAt: limit.updatedAt,
   };
@@ -140,17 +140,22 @@ export const enrichModelWithCatalogContextLimits = (
     refreshCatalogSource?: boolean;
   } = {}
 ): AIModel => {
-  if (
-    shouldKeepExistingContextWindow(model) &&
-    !(options.refreshCatalogSource && model.contextWindowSource === 'models_dev')
-  ) {
-    return model;
-  }
-  const overlay = buildCatalogModelContextLimitOverlay({
-    ...params,
-    modelId: model.id,
-  });
-  return Object.keys(overlay).length > 0 ? { ...model, ...overlay } : model;
+  const overlay = buildCatalogModelContextLimitOverlay({ ...params, modelId: model.id });
+  if (!overlay.contextWindowTokens) return model;
+  const keepWindow = shouldKeepExistingContextWindow(model) &&
+    !(options.refreshCatalogSource && model.contextWindowSource === 'models_dev');
+  return {
+    ...model,
+    ...(!keepWindow ? {
+      contextWindowTokens: overlay.contextWindowTokens,
+      contextWindowSource: overlay.contextWindowSource,
+      contextLimitsUpdatedAt: overlay.contextLimitsUpdatedAt,
+    } : {}),
+    ...(model.inputLimitTokens === undefined && overlay.inputLimitTokens !== undefined
+      ? { inputLimitTokens: overlay.inputLimitTokens } : {}),
+    ...(model.outputLimitTokens === undefined && overlay.outputLimitTokens !== undefined
+      ? { outputLimitTokens: overlay.outputLimitTokens } : {}),
+  };
 };
 
 export const mergeProviderModelContextLimitOverlays = (

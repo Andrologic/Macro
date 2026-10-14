@@ -1774,9 +1774,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               context_window_tokens:
                 userOverrideContext?.contextWindowTokens ?? contextWindowTokens,
               input_limit_tokens:
-                providerInputLimitTokens ?? catalogOverlay.inputLimitTokens ?? null,
+                providerInputLimitTokens ?? existingModel?.inputLimitTokens ?? catalogOverlay.inputLimitTokens ?? null,
               output_limit_tokens:
-                providerOutputLimitTokens ?? catalogOverlay.outputLimitTokens ?? null,
+                providerOutputLimitTokens ?? existingModel?.outputLimitTokens ?? catalogOverlay.outputLimitTokens ?? null,
               context_window_source:
                 userOverrideContext?.contextWindowSource ?? contextWindowSource,
               context_limits_updated_at:
@@ -1893,6 +1893,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
           ...catalogOverlay,
           ...providerOverlay,
+          inputLimitTokens: providerOverlay.inputLimitTokens ?? existingModel?.inputLimitTokens ?? catalogOverlay.inputLimitTokens,
+          outputLimitTokens: providerOverlay.outputLimitTokens ?? existingModel?.outputLimitTokens ?? catalogOverlay.outputLimitTokens,
           ...(existingModel?.contextWindowSource === 'user_override' &&
           existingModel.contextWindowTokens
             ? {

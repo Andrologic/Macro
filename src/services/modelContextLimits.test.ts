@@ -71,7 +71,7 @@ describe('modelContextLimits', () => {
       modelId: 'kimi-k2.6',
     });
 
-    expect(limits.contextTokens).toBe(128_000);
+    expect(limits.contextTokens).toBe(262_144);
     expect(limits.source).toBe('models_dev');
     expect(limits.isAuthoritative).toBe(true);
     expect(limits.confidence).toBe('catalog');
@@ -85,8 +85,8 @@ describe('modelContextLimits', () => {
       modelId: 'qwen3.6-plus',
     });
 
-    expect(limits.contextTokens).toBe(262_144);
-    expect(limits.outputTokens).toBe(66_000);
+    expect(limits.contextTokens).toBe(1_000_000);
+    expect(limits.outputTokens).toBe(65_536);
     expect(limits.source).toBe('models_dev');
     expect(limits.isAuthoritative).toBe(true);
   });

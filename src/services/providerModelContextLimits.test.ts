@@ -254,4 +254,29 @@ describe('providerModelContextLimits', () => {
       contextWindowSource: 'provider_overflow_error',
     });
   });
+  it('fills missing peripheral limits without replacing protected context provenance or explicit limits', () => {
+    const date = '2026-01-01T00:00:00.000Z';
+    catalogTestables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: { openai: { models: {
+      test: { limit: { context: 400, input: 300, output: 100 } },
+    } } } });
+    for (const source of ['user_override', 'provider_metadata', 'model_metadata'] as const) {
+      const result = enrichModelWithCatalogContextLimits({ id: 'test', name: 'Test', provider_id: 'test',
+        contextWindowTokens: 200, contextWindowSource: source, contextLimitsUpdatedAt: date,
+        inputLimitTokens: 150 }, { providerType: 'openai' }, { refreshCatalogSource: true });
+      expect(result).toMatchObject({ contextWindowTokens: 200, contextWindowSource: source,
+        contextLimitsUpdatedAt: date, inputLimitTokens: 150, outputLimitTokens: 100 });
+    }
+  });
+
+  it('refreshes a catalog window without replacing an existing provider input limit of unknown provenance', () => {
+    catalogTestables.writeCachedCatalog({ fetchedAt: '2026-10-14', providers: { openai: { models: {
+      test: { limit: { context: 400, output: 100 } },
+    } } } });
+    expect(enrichModelWithCatalogContextLimits({ id: 'test', name: 'Test', provider_id: 'test',
+      contextWindowTokens: 200, contextWindowSource: 'models_dev', contextLimitsUpdatedAt: '2026-01-01',
+      inputLimitTokens: 150, outputLimitTokens: 50 }, { providerType: 'openai' }, { refreshCatalogSource: true }))
+      .toMatchObject({ contextWindowTokens: 400, contextWindowSource: 'models_dev',
+        contextLimitsUpdatedAt: '2026-10-14', inputLimitTokens: 150, outputLimitTokens: 50 });
+  });
+
 });

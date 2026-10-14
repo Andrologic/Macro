@@ -1,0 +1,124 @@
+{
+  "source": "https://models.dev/api.json",
+  "fetchedAt": "2026-10-14",
+  "providers": {
+    "openai": {
+      "id": "openai",
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "reasoning": false
+        },
+        "gpt-4.1": {
+          "id": "gpt-4.1",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          },
+          "reasoning": false
+        },
+        "gpt-5": {
+          "id": "gpt-5",
+          "canonical_model_id": "openai/gpt-5",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "reasoning": true,
+          "reasoning_options": [
+            {
+              "type": "effort",
+              "values": [
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "anthropic": {
+      "id": "anthropic",
+      "models": {
+        "claude-sonnet-4-5": {
+          "id": "claude-sonnet-4-5",
+          "canonical_model_id": "anthropic/claude-sonnet-4-5",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          },
+          "reasoning": true,
+          "reasoning_options": []
+        }
+      }
+    },
+    "openrouter": {
+      "id": "openrouter",
+      "models": {
+        "moonshotai/kimi-k2": {
+          "id": "moonshotai/kimi-k2",
+          "canonical_model_id": "moonshotai/kimi-k2",
+          "limit": {
+            "context": 131072,
+            "output": 98304
+          },
+          "reasoning": false
+        },
+        "anthropic/claude-sonnet-4.5": {
+          "id": "anthropic/claude-sonnet-4.5",
+          "canonical_model_id": "anthropic/claude-sonnet-4-5",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          },
+          "reasoning": true,
+          "reasoning_options": []
+        },
+        "qwen/qwen3.6-plus": {
+          "id": "qwen/qwen3.6-plus",
+          "canonical_model_id": "alibaba/qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": []
+        }
+      }
+    },
+    "github-copilot": {
+      "id": "github-copilot",
+      "models": {}
+    },
+    "opencode-go": {
+      "id": "opencode-go",
+      "models": {
+        "kimi-k2.6": {
+          "id": "kimi-k2.6",
+          "limit": {
+            "context": 262144,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": []
+        },
+        "qwen3.6-plus": {
+          "id": "qwen3.6-plus",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "reasoning": true,
+          "reasoning_options": []
+        }
+      }
+    }
+  }
+}
