@@ -1,3 +1,5 @@
+import snapshot from '../shared/ai/modelsDevSnapshot.json';
+import { parseModelsDevProviders, validCatalogDate, type ModelsDevModel, type ModelsDevProvider } from '../shared/ai/modelsDevSchema';
 import { tauriFetch } from './tauriHttp';
 import type { ModelContextLimitSource, ReasoningTransportMode } from '../types';
 
@@ -28,99 +30,13 @@ export interface ModelContextCatalogStatus {
   error: string | null;
 }
 
-interface ModelsDevModel {
-  id?: unknown;
-  reasoning?: unknown;
-  limit?: {
-    context?: unknown;
-    input?: unknown;
-    output?: unknown;
-  };
-}
-
-interface ModelsDevProvider {
-  id?: unknown;
-  models?: Record<string, ModelsDevModel>;
-}
-
 interface CachedCatalog {
   fetchedAt: string;
   providers: Record<string, ModelsDevProvider>;
 }
 
-const SNAPSHOT_FETCHED_AT = '2026-05-11T00:00:00.000Z';
-
-const SNAPSHOT_PROVIDERS: Record<string, ModelsDevProvider> = {
-  openai: {
-    id: 'openai',
-    models: {
-      'gpt-4o': { id: 'gpt-4o', limit: { context: 128_000, output: 16_384 } },
-      'gpt-4.1': { id: 'gpt-4.1', limit: { context: 1_047_576, output: 32_768 } },
-      'gpt-5': {
-        id: 'gpt-5',
-        reasoning: { efforts: ['minimal', 'low', 'medium', 'high'], default: 'medium' },
-        limit: { context: 400_000, output: 128_000 },
-      },
-    },
-  },
-  anthropic: {
-    id: 'anthropic',
-    models: {
-      'claude-3-5-sonnet-latest': {
-        id: 'claude-3-5-sonnet-latest',
-        limit: { context: 200_000, output: 8_192 },
-      },
-      'claude-sonnet-4-5': {
-        id: 'claude-sonnet-4-5',
-        limit: { context: 200_000, output: 64_000 },
-      },
-    },
-  },
-  openrouter: {
-    id: 'openrouter',
-    models: {
-      'moonshotai/kimi-k2': {
-        id: 'moonshotai/kimi-k2',
-        limit: { context: 128_000, output: 32_000 },
-      },
-      'anthropic/claude-sonnet-4.5': {
-        id: 'anthropic/claude-sonnet-4.5',
-        limit: { context: 200_000, output: 64_000 },
-      },
-      'qwen/qwen3.6-plus': {
-        id: 'qwen/qwen3.6-plus',
-        limit: { context: 1_000_000, output: 66_000 },
-      },
-      'qwen3.6-plus': {
-        id: 'qwen3.6-plus',
-        limit: { context: 1_000_000, output: 66_000 },
-      },
-    },
-  },
-  'github-copilot': {
-    id: 'github-copilot',
-    models: {
-      'gpt-4o': { id: 'gpt-4o', limit: { context: 128_000, output: 16_384 } },
-      'claude-sonnet-4.5': {
-        id: 'claude-sonnet-4.5',
-        limit: { context: 200_000, output: 64_000 },
-      },
-    },
-  },
-  'opencode-go': {
-    id: 'opencode-go',
-    models: {
-      'kimi-k2.6': { id: 'kimi-k2.6', limit: { context: 128_000, output: 32_000 } },
-      'kimi-k2': { id: 'kimi-k2', limit: { context: 128_000, output: 32_000 } },
-      'qwen3.6-plus': { id: 'qwen3.6-plus', limit: { context: 262_144, output: 66_000 } },
-      'qwen3-6-plus': { id: 'qwen3-6-plus', limit: { context: 262_144, output: 66_000 } },
-      'qwen/qwen3.6-plus': {
-        id: 'qwen/qwen3.6-plus',
-        limit: { context: 262_144, output: 66_000 },
-      },
-    },
-  },
-};
+const SNAPSHOT_FETCHED_AT = snapshot.fetchedAt;
+const SNAPSHOT_PROVIDERS: Record<string, ModelsDevProvider> = snapshot.providers;
 
 let loadedCatalog: CachedCatalog | null = null;
 let loadedCatalogSource: ModelContextCatalogStatus['source'] | null = null;
@@ -156,30 +72,17 @@ const toStringArray = (value: unknown): string[] => {
     .filter((entry) => entry.length > 0 && !seen.has(entry) && seen.add(entry));
 };
 
-const toTransportMode = (value: unknown): ReasoningTransportMode | undefined => {
-  if (
-    value === 'openai_effort' ||
-    value === 'openrouter_reasoning' ||
-    value === 'deepseek_thinking' ||
-    value === 'kimi_fixed'
-  ) return value;
-  return undefined;
-};
-
 const normalizeBaseUrl = (value?: string | null): string =>
   normalize(value).replace(/\/+$/, '');
 
 const safeParseCatalog = (raw: string | null): CachedCatalog | null => {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Partial<CachedCatalog>;
-    if (!parsed || typeof parsed.fetchedAt !== 'string' || !parsed.providers) {
-      return null;
-    }
-    return {
-      fetchedAt: parsed.fetchedAt,
-      providers: parsed.providers as Record<string, ModelsDevProvider>,
-    };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !('fetchedAt' in parsed) ||
+      !validCatalogDate(parsed.fetchedAt) || !('providers' in parsed)) return null;
+    const providers = parseModelsDevProviders(parsed.providers);
+    return providers ? { fetchedAt: parsed.fetchedAt, providers } : null;
   } catch {
     return null;
   }
@@ -187,10 +90,17 @@ const safeParseCatalog = (raw: string | null): CachedCatalog | null => {
 
 const readCachedCatalog = (): CachedCatalog | null => {
   if (loadedCatalog && loadedCatalogSource !== 'snapshot') return loadedCatalog;
-  if (typeof window === 'undefined' || !window.localStorage) return null;
-  loadedCatalog = safeParseCatalog(window.localStorage.getItem(STORAGE_KEY));
-  loadedCatalogSource = loadedCatalog ? 'cache' : null;
-  return loadedCatalog;
+  try {
+    if (typeof window === 'undefined') return null;
+    const cached = safeParseCatalog(window.localStorage.getItem(STORAGE_KEY));
+    if (cached) {
+      loadedCatalog = cached;
+      loadedCatalogSource = 'cache';
+    }
+    return cached;
+  } catch {
+    return null;
+  }
 };
 
 const writeCachedCatalog = (
@@ -199,8 +109,8 @@ const writeCachedCatalog = (
 ) => {
   loadedCatalog = catalog;
   loadedCatalogSource = source;
-  if (typeof window === 'undefined' || !window.localStorage) return;
   try {
+    if (typeof window === 'undefined') return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(catalog));
   } catch {
     // Cache persistence failure should not block context-limit resolution.
@@ -222,55 +132,73 @@ const getProviderAliases = (params: {
   providerId?: string | null;
   baseUrl?: string | null;
 }): string[] => {
-  const aliases = new Set<string>();
-  const providerType = normalize(params.providerType);
-  const providerId = normalize(params.providerId);
+  const type = normalize(params.providerType);
+  const id = normalize(params.providerId);
   const baseUrl = normalizeBaseUrl(params.baseUrl);
-
-  [providerId, providerType].forEach((value) => {
-    if (value) aliases.add(value);
-  });
-
-  if (providerType === 'chatgpt' || providerType === 'openai') aliases.add('openai');
-  if (providerType === 'anthropic') aliases.add('anthropic');
-  if (providerType === 'openrouter') aliases.add('openrouter');
-  if (providerType === 'copilot') aliases.add('github-copilot');
-  if (baseUrl.includes('opencode.ai/zen/go')) aliases.add('opencode-go');
-  if (baseUrl.includes('openrouter.ai')) aliases.add('openrouter');
-  if (baseUrl.includes('api.openai.com')) aliases.add('openai');
-  if (baseUrl.includes('api.anthropic.com')) aliases.add('anthropic');
-
-  return Array.from(aliases);
-};
-
-const getModelCandidates = (modelId?: string | null): string[] => {
-  const normalized = normalize(modelId);
-  if (!normalized) return [];
-  const qualifiedCandidates = [normalized];
-  const colonIndex = normalized.lastIndexOf(':');
-  if (colonIndex >= 0 && colonIndex < normalized.length - 1) {
-    qualifiedCandidates.push(normalized.slice(0, colonIndex));
-  }
-
-  const candidates = new Set<string>();
-  for (const candidate of qualifiedCandidates) {
-    candidates.add(candidate);
-    const slashIndex = candidate.lastIndexOf('/');
-    if (slashIndex >= 0 && slashIndex < candidate.length - 1) {
-      candidates.add(candidate.slice(slashIndex + 1));
+  if (baseUrl) {
+    try {
+      const url = new URL(baseUrl);
+      if (url.hostname === 'opencode.ai' && /^\/zen\/go(?:\/|$)/.test(url.pathname)) return ['opencode-go'];
+      if (url.hostname === 'openrouter.ai') return ['openrouter'];
+      if (url.hostname === 'api.openai.com') return ['openai'];
+      if (url.hostname === 'api.anthropic.com') return ['anthropic'];
+    } catch {
+      return [];
     }
+    // An OpenAI-compatible endpoint does not identify the official OpenAI offer.
+    if (type === 'openai') return id && id !== 'openai' ? [id] : [];
   }
-  return Array.from(candidates);
+  return [...new Set([id, type === 'copilot' ? 'github-copilot' : type === 'chatgpt' ? 'openai' : type])]
+    .filter(Boolean);
 };
 
 const providerFromCatalog = (
   catalog: CachedCatalog,
-  providerAlias: string,
-): ModelsDevProvider | undefined =>
-  catalog.providers[providerAlias] ??
-  Object.values(catalog.providers).find(
-    (provider) => normalize(provider.id as string | undefined) === providerAlias,
+  alias: string,
+): ModelsDevProvider | null | undefined => {
+  if (Object.hasOwn(catalog.providers, alias)) return catalog.providers[alias];
+  const matches = Object.entries(catalog.providers).filter(([key, provider]) =>
+    normalize(key) === alias || normalize(provider.id) === alias);
+  return matches.length > 1 ? null : matches[0]?.[1];
+};
+
+const findModel = (provider: ModelsDevProvider, alias: string, modelId: string): ModelsDevModel | null | undefined => {
+  const entries = Object.entries(provider.models);
+  const exact = entries.filter(([key, model]) => normalize(key) === modelId || normalize(model.id) === modelId);
+  if (exact.length) return exact.length === 1 ? exact[0][1] : null;
+  const canonical = entries.filter(([key, model]) =>
+    normalize(model.canonical_model_id) === modelId ||
+    normalize(model.canonical_model_id) === `${alias}/${modelId}` ||
+    `${alias}/${normalize(model.id ?? key)}` === modelId);
+  return canonical.length > 1 ? null : canonical[0]?.[1];
+};
+
+const lookupModel = (params: {
+  providerType?: string | null;
+  providerId?: string | null;
+  baseUrl?: string | null;
+  modelId?: string | null;
+}): { model: ModelsDevModel; fetchedAt: string } | null => {
+  const modelId = normalize(params.modelId);
+  if (!modelId) return null;
+  const catalogs = [readCachedCatalog(), getSnapshotCatalog()].filter(
+    (catalog): catalog is CachedCatalog => Boolean(catalog),
   );
+  // Select one provider before looking for a model, including when its model is absent.
+  const alias = getProviderAliases(params).find((candidate) =>
+    catalogs.some((catalog) => providerFromCatalog(catalog, candidate) !== undefined));
+  if (!alias) return null;
+  for (const catalog of catalogs) {
+    const provider = providerFromCatalog(catalog, alias);
+    if (provider === null) return null;
+    if (!provider) continue;
+    const model = findModel(provider, alias, modelId);
+    if (model === null) return null;
+    if (model) return { model, fetchedAt: catalog.providers === SNAPSHOT_PROVIDERS
+      ? model.updatedAt ?? catalog.fetchedAt : catalog.fetchedAt };
+  }
+  return null;
+};
 
 const limitFromModel = (
   model: ModelsDevModel | undefined,
@@ -290,93 +218,27 @@ const limitFromModel = (
 const reasoningFromModel = (
   model: ModelsDevModel | undefined,
 ): CatalogReasoningCapability | null => {
-  const reasoning = model?.reasoning;
-  if (!reasoning || typeof reasoning !== 'object' || Array.isArray(reasoning)) return null;
-  const metadata = reasoning as Record<string, unknown>;
-  const reasoningEfforts = toStringArray(
-    metadata.efforts ?? metadata.levels ?? metadata.supported_efforts,
-  );
+  if (model?.reasoning !== true) return null;
+  const options = model.reasoning_options?.filter((option) => option.type === 'effort') ?? [];
+  const reasoningEfforts = toStringArray(options.flatMap((option) => option.values ?? []))
+    .filter((effort) => ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort));
   if (reasoningEfforts.length === 0) return null;
-  const requestedDefault =
-    typeof metadata.default === 'string'
-      ? metadata.default.trim()
-      : typeof metadata.default_effort === 'string'
-        ? metadata.default_effort.trim()
-        : '';
+  const requestedDefault = options.find((option) => option.default)?.default;
   return {
     reasoningEfforts,
-    defaultReasoningEffort: reasoningEfforts.includes(requestedDefault)
-      ? requestedDefault
-      : reasoningEfforts[0] ?? null,
-    configurable: typeof metadata.configurable === 'boolean'
-      ? metadata.configurable
-      : reasoningEfforts.length > 1,
-    transportMode: toTransportMode(metadata.transport_mode ?? metadata.transportMode),
+    defaultReasoningEffort: requestedDefault && reasoningEfforts.includes(requestedDefault)
+      ? requestedDefault : null,
+    configurable: reasoningEfforts.length > 1,
   };
 };
 
-export const lookupModelContextCatalogLimit = (params: {
-  providerType?: string | null;
-  providerId?: string | null;
-  baseUrl?: string | null;
-  modelId?: string | null;
-}): CatalogModelLimits | null => {
-  const catalogs = [readCachedCatalog(), getSnapshotCatalog()].filter(
-    (catalog): catalog is CachedCatalog => Boolean(catalog),
-  );
-  const providerAliases = getProviderAliases(params);
-  const modelCandidates = getModelCandidates(params.modelId);
-
-  for (const catalog of catalogs) {
-    for (const providerAlias of providerAliases) {
-      const provider = providerFromCatalog(catalog, providerAlias);
-      if (!provider?.models) continue;
-      const indexedModels = new Map(
-        Object.entries(provider.models).map(([key, model]) => [
-          normalize((model.id as string | undefined) ?? key),
-          model,
-        ]),
-      );
-      for (const candidate of modelCandidates) {
-        const direct = limitFromModel(indexedModels.get(candidate), catalog.fetchedAt);
-        if (direct) return direct;
-      }
-    }
-  }
-
-  return null;
+export const lookupModelContextCatalogLimit = (params: Parameters<typeof lookupModel>[0]): CatalogModelLimits | null => {
+  const match = lookupModel(params);
+  return match ? limitFromModel(match.model, match.fetchedAt) : null;
 };
 
-export const lookupModelReasoningCatalogCapability = (params: {
-  providerType?: string | null;
-  providerId?: string | null;
-  baseUrl?: string | null;
-  modelId?: string | null;
-}): CatalogReasoningCapability | null => {
-  const catalogs = [readCachedCatalog(), getSnapshotCatalog()].filter(
-    (catalog): catalog is CachedCatalog => Boolean(catalog),
-  );
-  const providerAliases = getProviderAliases(params);
-  const modelCandidates = getModelCandidates(params.modelId);
-
-  for (const catalog of catalogs) {
-    for (const providerAlias of providerAliases) {
-      const provider = providerFromCatalog(catalog, providerAlias);
-      if (!provider?.models) continue;
-      const indexedModels = new Map(
-        Object.entries(provider.models).map(([key, model]) => [
-          normalize((model.id as string | undefined) ?? key),
-          model,
-        ]),
-      );
-      for (const candidate of modelCandidates) {
-        const capability = reasoningFromModel(indexedModels.get(candidate));
-        if (capability) return capability;
-      }
-    }
-  }
-  return null;
-};
+export const lookupModelReasoningCatalogCapability = (params: Parameters<typeof lookupModel>[0]): CatalogReasoningCapability | null =>
+  reasoningFromModel(lookupModel(params)?.model);
 
 export const getModelContextCatalogStatus = (): ModelContextCatalogStatus => {
   const cache = readCachedCatalog();
@@ -415,14 +277,15 @@ export const refreshModelContextCatalog = async (params: {
   const fetchImpl = params.fetchImpl ?? tauriFetch;
   refreshPromise = (async () => {
     try {
-      const response = await fetchImpl(MODELS_DEV_URL, {
+      const response = await Promise.resolve().then(() => fetchImpl(MODELS_DEV_URL, {
         method: 'GET',
         headers: { Accept: 'application/json' },
-      });
+      }));
       if (!response.ok) {
         throw new Error(`Models.dev returned ${response.status}`);
       }
-      const providers = (await response.json()) as Record<string, ModelsDevProvider>;
+      const providers = parseModelsDevProviders(await response.json());
+      if (!providers) throw new Error('Models.dev returned an invalid catalog');
       const fetchedAt = new Date().toISOString();
       const catalog: CachedCatalog = { fetchedAt, providers };
       writeCachedCatalog(catalog, 'network');
@@ -453,7 +316,6 @@ export const refreshModelContextCatalog = async (params: {
 export const __testables = {
   STORAGE_KEY,
   getProviderAliases,
-  getModelCandidates,
   safeParseCatalog,
   writeCachedCatalog,
   reset: () => {

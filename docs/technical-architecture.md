@@ -82,6 +82,43 @@ Elle fournit :
 
 Elle a pour rôle d'isoler le reste de l'interface des détails du transport.
 
+Le service `modelContextCatalog` valide les données models.dev au chargement du
+cache et après une réponse réseau. Une erreur conserve le dernier catalogue
+valide, puis le snapshot embarqué si aucun cache n'est disponible. La clé de
+cache v1 et son TTL de cinq minutes restent inchangés. La résolution sélectionne
+un fournisseur avant le modèle, privilégie les identifiants exacts et accepte
+une identité canonique seulement si elle est unique dans ce fournisseur. Un
+endpoint tiers compatible OpenAI ne désigne pas l'offre officielle OpenAI.
+
+Les efforts models.dev proviennent de `reasoning_options` de type `effort`.
+Les options `toggle` et `budget_tokens` ne produisent aucun contrôle. Un défaut
+absent reste absent dans les métadonnées source ; la sélection conserve la
+politique Macro et le défaut embarqué du modèle quand il est encore autorisé.
+Les surcharges manuelles et les métadonnées fournisseur restent prioritaires.
+
+La provenance et la date des limites décrivent la fenêtre de contexte. Le contrat
+actuel ne distingue pas la provenance de chaque limite d'entrée ou de sortie.
+Le catalogue complète donc seulement les limites périphériques absentes et
+conserve prudemment les valeurs existantes, même lors d'un rafraîchissement de
+la fenêtre catalogue. Les valeurs explicites du fournisseur et la fenêtre
+utilisateur restent prioritaires.
+
+Le snapshot `src/shared/ai/modelsDevSnapshot.json` est généré depuis la projection
+publique `dev/models-dev/source.json`. Le périmètre fixé dans
+`dev/models-dev/coverage.json` reprend uniquement les modèles du snapshot initial.
+Les entrées absentes de la source gardent leurs limites historiques du 11 mai
+2026 et cette date, sans récupérer les efforts ou la date d'une autre offre.
+Les données réutilisées de models.dev sont sous licence MIT, dont la mention
+complète est distribuée depuis `public/licenses/models.dev-LICENSE.txt`.
+
+Pour une maintenance locale, télécharger `https://models.dev/api.json` hors du
+dépôt, puis lancer `bun dev/models-dev/generate.ts --source <api.json> --date
+<date-de-récupération-ISO>`. La commande conserve seulement les champs consommés,
+sans tarifs, et génère le snapshot dans un ordre stable. La date fournie décrit
+la récupération, pas une mise à jour annoncée par le fournisseur. Vérifier sans
+réseau avec `bun dev/models-dev/generate.ts --check` ; la commande sans arguments
+régénère depuis la projection suivie dans Git.
+
 ### 3.4 Couche runtime desktop
 
 Le runtime desktop est fourni par Tauri.
