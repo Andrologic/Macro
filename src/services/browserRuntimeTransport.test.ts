@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 
 type Listener = (event: { code?: number; data?: string; reason?: string }) => void;
 
@@ -276,4 +277,27 @@ test('arrête définitivement la reconnexion quand un autre onglet prend la sess
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
   }
+});
+
+// Exercise the exact JavaScript embedded by the native remote UI plugin.
+const hydrateRpcArgs = new Function(`return (${readFileSync(
+  new URL('../../src-tauri/vendor/tauri-remote-ui/src/remote_ui/rpc-args.js', import.meta.url),
+  'utf8',
+)})`)() as (args: unknown) => unknown;
+
+test('preserves binary RPC bytes through the native fetch body', async () => {
+  const bytes = new Uint8Array([82, 73, 70, 70, 0, 128, 255, 87, 65, 86, 69]);
+  const wireArgs: unknown = JSON.parse(JSON.stringify(Array.from(bytes)));
+  const request = new Request('http://localhost/not-sent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: hydrateRpcArgs(wireArgs) as Uint8Array<ArrayBuffer>,
+  });
+  expect(Array.from(new Uint8Array(await request.arrayBuffer()))).toEqual(Array.from(bytes));
+});
+
+test('preserves structured RPC arguments and absent arguments', () => {
+  const args = { query: 'test', ids: [1, 2] };
+  expect(hydrateRpcArgs(args)).toBe(args);
+  expect(hydrateRpcArgs(null)).toBeNull();
 });
