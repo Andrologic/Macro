@@ -294,6 +294,23 @@ async fn check_database(path: &Path) -> Result<()> {
     // Compare the archive with the schema its migration stamps describe. Do
     // not migrate the untrusted archive until its original objects pass this
     // strict comparison; startup validation migrates a temporary copy later.
+    if !versions.contains(&10) {
+        sqlx::raw_sql(
+            "DROP TRIGGER messages_search_insert;
+             DROP TRIGGER messages_search_delete;
+             DROP TRIGGER messages_search_update;
+             DROP TRIGGER messages_search_update_insert;
+             DROP TABLE message_search;
+             DROP VIEW message_search_content;",
+        )
+        .execute(&reference)
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::raw_sql(include_str!("db/migrations/004_message_search.sql"))
+            .execute(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     if !versions.contains(&9) {
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&reference)
@@ -1229,6 +1246,23 @@ mod tests {
     }
 
     async fn remove_v9_schema(db: &mut SqliteConnection) {
+        sqlx::raw_sql(
+            "DROP TRIGGER messages_search_insert;
+             DROP TRIGGER messages_search_delete;
+             DROP TRIGGER messages_search_update;
+             DROP TRIGGER messages_search_update_insert;
+             DROP TABLE message_search;
+             DROP VIEW message_search_content;
+             DELETE FROM schema_migrations WHERE version = 10;",
+        )
+        .execute(&mut *db)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("db/migrations/004_message_search.sql"))
+            .execute(&mut *db)
+            .await
+            .unwrap();
+
         sqlx::query("DROP TRIGGER conversation_goal_audit_run_status")
             .execute(&mut *db)
             .await
@@ -1409,7 +1443,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            9
+            10
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -1442,7 +1476,7 @@ mod tests {
             .fetch_one(&mut db)
             .await
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
             .execute(&mut db)
             .await

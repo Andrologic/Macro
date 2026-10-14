@@ -977,11 +977,17 @@ Le module `db` porte :
 - les modèles et repositories
 - les commandes de persistance de conversations, messages, providers et contextes locaux
 
-La migration `004_message_search` crée un index FTS5 externe sur le contenu des
-messages. Trois triggers le synchronisent avec les insertions, modifications et
-suppressions. Le repository reçoit la liste des conversations admissibles et
-applique cette portée avant la pagination, puis expose une recherche bornée et
-paginée ainsi qu'une reconstruction déterministe de l'index depuis `messages`.
+La migration `004_message_search` introduit l'index FTS5. La version 10,
+`010_visible_message_search`, le reconstruit sur la vue `message_search_content`.
+Cette projection filtre les blocs `think` et `thinking` des messages assistant,
+y compris sans fermeture, tout en conservant le texte des autres rôles.
+La projection est corrélée à la ligne source ; les triggers ciblent son `rowid`
+sans relire les autres transcriptions. Les mises à jour retirent l'ancien texte
+avant la mutation puis indexent le nouveau texte après la mutation, y compris
+lors d'un changement de rôle. Les suppressions retirent l'ancien texte avant la
+cascade. Le contenu original de `messages` n'est jamais réécrit.
+Le repository applique la portée des conversations avant la pagination, expose
+une recherche bornée et paginée, et reconstruit l'index depuis cette même vue.
 La validation des sauvegardes compare les colonnes, les clés étrangères et leurs
 actions de cascade, les définitions des tables virtuelles, les index applicatifs,
 les vues et les triggers au schéma de référence de la version courante. Une clé
