@@ -1,5 +1,6 @@
 import React, { useId, useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { matchesLocalSearchQuery } from '../../services/localModeSearch';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
@@ -17,12 +18,18 @@ export const ModelDropdown: React.FC = () => {
   } = useProviderStore();
 
   const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const listboxId = useId();
 
   const models = selectedProviderId ? (modelsByProvider[selectedProviderId] || []) : [];
   const enabledModels = models.filter((model) => model.isEnabled !== false);
   const selectedModel = enabledModels.find((m) => m.id === selectedModelId);
+
+  const filteredModels = enabledModels.filter((model) =>
+    matchesLocalSearchQuery(query, [model.name, model.id, model.description]),
+  );
 
   const handleSelect = (modelId: string) => {
     selectModel(modelId);
@@ -40,13 +47,22 @@ export const ModelDropdown: React.FC = () => {
   } = useDropdownListNavigation({
     isOpen,
     setIsOpen,
-    itemCount: enabledModels.length,
-    selectedIndex: enabledModels.findIndex((model) => model.id === selectedModelId),
+    itemCount: filteredModels.length,
+    selectedIndex: filteredModels.findIndex((model) => model.id === selectedModelId),
+    searchInputRef,
     onSelect: (index) => {
-      const model = enabledModels[index];
+      const model = filteredModels[index];
       if (model) handleSelect(model.id);
     },
   });
+
+  useEffect(() => {
+    if (!isOpen) setQuery('');
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen) optionRefs.current[activeIndex]?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeIndex, isOpen, optionRefs, query]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -101,51 +117,77 @@ export const ModelDropdown: React.FC = () => {
       {/* Dropdown */}
       {isOpen && (
         <div
-          id={listboxId}
-          role="listbox"
-          aria-label={t('chat.modelSelector', 'Choose AI model')}
-          onKeyDown={handleListKeyDown}
-          className={cn(
-            'absolute z-50 w-[320px] bottom-full mb-1 bg-card border border-border',
-            'rounded-lg shadow-xl max-h-96 overflow-y-auto',
-            'flex flex-col'
-          )}
+          onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented) handleListKeyDown(event); }}
+          className="absolute z-50 w-[320px] bottom-full mb-1 bg-card border border-border rounded-lg shadow-xl flex flex-col"
         >
-          {enabledModels.map((model, index) => (
-            <button
-              key={model.id}
-              ref={(element) => { optionRefs.current[index] = element; }}
-              type="button"
-              role="option"
-              aria-selected={selectedModelId === model.id}
-              tabIndex={index === activeIndex ? 0 : -1}
-              onFocus={() => setActiveIndex(index)}
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => select(index)}
-              className={cn(
-                'w-full px-3 py-2 text-left text-sm',
-                'flex flex-col gap-1 transition-colors',
-                selectedModelId === model.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent'
-              )}
-            >
-              <span className="font-medium">{model.name || model.id}</span>
-              {model.description && (
-                <span className="text-xs leading-snug opacity-75">
-                  {model.description}
-                </span>
-              )}
-            </button>
-          ))}
+          <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border">
+            <input
+              ref={searchInputRef}
+              role="combobox"
+              aria-label={t('chat.modelSearchLabel', 'Search models')}
+              aria-autocomplete="list"
+              aria-expanded={isOpen}
+              aria-controls={listboxId}
+              aria-activedescendant={filteredModels[activeIndex] ? `${listboxId}-${activeIndex}` : undefined}
+              placeholder={t('chat.modelSearchPlaceholder', 'Search models…')}
+              value={query}
+              onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }}
+              onKeyDown={(event) => {
+                if (!event.nativeEvent.isComposing && ['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) {
+                  handleListKeyDown(event);
+                }
+              }}
+              className="w-full min-w-0 bg-transparent px-1 py-1 text-xs outline-none focus:ring-1 focus:ring-primary rounded"
+            />
+            {query && (
+              <button type="button" aria-label={t('chat.modelSearchClear', 'Clear model search')}
+                onClick={() => { setQuery(''); setActiveIndex(0); searchInputRef.current?.focus(); }}
+                className="p-1 text-muted-foreground hover:text-foreground">
+                <Icon name="x" size={12} />
+              </button>
+            )}
+          </div>
+          <div id={listboxId} role="listbox" aria-label={t('chat.modelSelector', 'Choose AI model')}
+            onKeyDown={handleListKeyDown} className="max-h-80 overflow-y-auto">
+            {filteredModels.map((model, index) => (
+              <button
+                key={model.id}
+                id={`${listboxId}-${index}`}
+                ref={(element) => { optionRefs.current[index] = element; }}
+                type="button"
+                role="option"
+                aria-selected={selectedModelId === model.id}
+                tabIndex={-1}
+                onFocus={() => setActiveIndex(index)}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => select(index)}
+                className={cn(
+                  'w-full px-3 py-2 text-left text-sm',
+                  'flex flex-col gap-1 transition-colors',
+                  selectedModelId === model.id
+                    ? 'bg-primary text-primary-foreground'
+                    : cn('text-muted-foreground hover:bg-accent', index === activeIndex && 'bg-accent')
+                )}
+              >
+                <span className="font-medium">{model.name || model.id}</span>
+                {model.description && (
+                  <span className="text-xs leading-snug opacity-75">
+                    {model.description}
+                  </span>
+                )}
+              </button>
+            ))}
 
-          {enabledModels.length === 0 && (
-            <div className="px-3 py-2 text-sm text-muted-foreground">
-              {selectedProviderId
-                ? t('chat.noEnabledModels', 'No enabled models. Enable models in Settings.')
-                : t('chat.selectProviderFirst', 'Select a provider first')}
-            </div>
-          )}
+            {filteredModels.length === 0 && (
+              <div className="px-3 py-2 text-sm text-muted-foreground">
+                {query.trim()
+                  ? t('chat.modelSearchEmpty', 'No matching models.')
+                  : selectedProviderId
+                  ? t('chat.noEnabledModels', 'No enabled models. Enable models in Settings.')
+                  : t('chat.selectProviderFirst', 'Select a provider first')}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
