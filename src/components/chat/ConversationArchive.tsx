@@ -152,12 +152,23 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
       top: Math.max(8, Math.min(trigger.bottom + 4, window.innerHeight - menu.height - 8)),
       left: Math.max(8, Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8)),
     });
+    menuRef.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
     const close = () => setShowMenu(false);
     const onScroll = (event: Event) => {
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
       close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab' && menuRef.current) {
+        const buttons = Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+        const boundary = event.shiftKey ? buttons[0] : buttons.at(-1);
+        if (document.activeElement === boundary) {
+          event.preventDefault();
+          close();
+          menuButtonRef.current?.focus({ preventScroll: true });
+        }
+        return;
+      }
       if (event.key !== 'Escape') return;
       close();
       menuButtonRef.current?.focus();

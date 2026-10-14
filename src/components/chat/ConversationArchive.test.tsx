@@ -135,7 +135,25 @@ describe('ConversationArchive', () => {
     expect(renameButton).toBeDefined();
     expect(container?.contains(renameButton!)).toBe(false);
     expect(renameButton?.parentElement?.style.top).toBe('54px');
-    await act(async () => { renameButton?.click(); });
+    expect(document.activeElement).toBe(renameButton?.parentElement?.querySelector('button') ?? null);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(menuButton ?? null);
+    await act(async () => { menuButton?.click(); });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(menuButton ?? null);
+    await act(async () => { menuButton?.click(); });
+    const lastAction = Array.from(document.activeElement?.parentElement?.querySelectorAll('button') ?? []).at(-1);
+    await act(async () => {
+      lastAction?.focus();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(menuButton ?? null);
+    await act(async () => { menuButton?.click(); });
+    await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Rename')?.click(); });
     expect(document.body.textContent).toContain('Rename conversation');
     expect(selectConversation).toHaveBeenCalledTimes(2);
     const cancelButton = Array.from(document.body.querySelectorAll('button'))
