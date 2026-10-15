@@ -599,7 +599,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                   <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{webCitations.length}</span>
                 </div>
               </div>
-              <div data-tour-id="chat-context-add-url" className="rounded-lg border border-border bg-accent/20 p-2.5 space-y-2">
+              <div data-tour-id="chat-context-add-url" className="space-y-2">
                 <div className="flex items-center gap-2">
                   <Input
                     ref={urlInputRef}
