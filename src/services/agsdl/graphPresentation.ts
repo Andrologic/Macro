@@ -54,6 +54,17 @@ export function presentGraph(cards: ViewerCard[], edges: ViewerEdge[], collapsed
   return { cards: projectedCards, edges: [...bundles.values()], groups, owner };
 }
 
+/** Keep the process visible; reveal additional declared exchanges around the selection. */
+export function presentFocusedGraph(cards: ViewerCard[], edges: ViewerEdge[], collapsed: ReadonlySet<string>, selected: string) {
+  const overview = presentGraph(cards, edges, collapsed, 'overview');
+  if (!selected) return overview;
+  const focus = overview.owner.get(selected) ?? selected;
+  const exchanges = presentGraph(cards, edges, collapsed, 'exchanges').edges;
+  const existing = new Set(overview.edges.map(edge => edge.id));
+  return { ...overview, edges: [...overview.edges, ...exchanges.filter(edge =>
+    edge.exchangeOnly && !existing.has(edge.id) && (edge.source === focus || edge.target === focus || edge.id === focus))] };
+}
+
 export function graphNeighborhood(path: string, edges: ViewerEdge[]) {
   const nodes = new Set([path]);
   const relations = new Set<string>();

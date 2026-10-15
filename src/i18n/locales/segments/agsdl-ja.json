@@ -126,6 +126,7 @@
   "inspectAgent": "エージェントを確認",
   "allDeclarations": "すべての宣言",
   "viewer": {
+    "componentDetails": "ブロックの詳細",
     "editComponent": "コンポーネントを編集",
     "componentName": "名前",
     "editScope": "指示はこのエージェントの他の呼び出しでも共有されます。",

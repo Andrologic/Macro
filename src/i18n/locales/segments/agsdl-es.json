@@ -126,6 +126,7 @@
   "inspectAgent": "Inspeccionar un agente",
   "allDeclarations": "Todas las declaraciones",
   "viewer": {
+    "componentDetails": "Detalles del bloque",
     "editComponent": "Editar componente",
     "componentName": "Nombre",
     "editScope": "Las instrucciones se comparten con otras llamadas a este agente.",

@@ -126,6 +126,7 @@
   "inspectAgent": "에이전트 살펴보기",
   "allDeclarations": "모든 선언",
   "viewer": {
+    "componentDetails": "블록 세부 정보",
     "editComponent": "구성 요소 편집",
     "componentName": "이름",
     "editScope": "지침은 이 에이전트의 다른 호출과 공유됩니다.",

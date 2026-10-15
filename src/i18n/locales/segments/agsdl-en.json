@@ -126,6 +126,7 @@
   "inspectAgent": "Inspect an agent",
   "allDeclarations": "All declarations",
   "viewer": {
+    "componentDetails": "Component details",
     "editComponent": "Edit component",
     "componentName": "Name",
     "editScope": "Instructions are shared with other calls to this agent.",

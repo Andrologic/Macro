@@ -126,6 +126,7 @@
   "inspectAgent": "Agent untersuchen",
   "allDeclarations": "Alle Deklarationen",
   "viewer": {
+    "componentDetails": "Blockdetails",
     "editComponent": "Komponente bearbeiten",
     "componentName": "Name",
     "editScope": "Die Anweisungen gelten auch für andere Aufrufe dieses Agenten.",
