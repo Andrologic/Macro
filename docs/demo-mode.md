@@ -11,8 +11,8 @@ profil utilisateur ou un dépôt réel.
 bun run dev:demo
 ```
 
-Ouvrir `http://127.0.0.1:1438/`. Le bandeau « Démo · Données fictives » identifie
-ce mode. « Réinitialiser » recharge le scénario initial, y compris les préférences.
+Ouvrir `http://127.0.0.1:1438/`. Recharger la page restaure le scénario initial,
+y compris les préférences.
 Le port est strict pour éviter d'ouvrir accidentellement une autre instance.
 
 Le lancement actuel utilise le frontend réel dans le navigateur. Ce mode refuse
@@ -61,4 +61,4 @@ bun run typecheck
 
 Pour une vérification visuelle, changer de projet, ouvrir un agent, modifier ses
 instructions et son modèle, enregistrer, envoyer un message, parcourir les tâches
-et les paramètres, puis réinitialiser. Les données initiales doivent réapparaître.
+et les paramètres, puis recharger la page. Les données initiales doivent réapparaître.

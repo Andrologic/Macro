@@ -22,20 +22,6 @@ export async function installDemoRuntime(): Promise<void> {
   const runtime = createDemoRuntime((name, payload) => { void emit(name, payload); });
   mockIPC((command, args) => runtime.invoke(command, args as Record<string, unknown>), { shouldMockEvents: true });
   mockWindows('main');
-  const badge = document.createElement('div');
-  badge.id = 'macro-demo-controls';
-  badge.setAttribute('role', 'region');
-  badge.setAttribute('aria-label', 'Mode démo');
-  badge.style.cssText = 'position:fixed;bottom:28px;right:12px;z-index:99999;display:flex;align-items:center;gap:10px;background:#18181b;border:1px solid #6366f1;border-radius:8px;padding:7px 10px;color:#e4e4e7;font:12px system-ui;box-shadow:0 4px 18px #0006';
-  const label = document.createElement('span');
-  label.textContent = 'Démo · Données fictives';
-  badge.append(label);
-  const reset = document.createElement('button');
-  reset.textContent = 'Réinitialiser';
-  reset.style.cssText = 'border:0;background:#34343d;color:inherit;border-radius:4px;padding:4px 7px;cursor:pointer';
-  reset.onclick = () => location.reload();
-  badge.append(reset);
-  document.body.append(badge);
   // Only demo diagnostics, never real application data.
   Object.defineProperty(window, '__MACRO_DEMO__', { value: runtime, configurable: true });
   document.title = 'Macro · Démo';
