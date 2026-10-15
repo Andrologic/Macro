@@ -441,6 +441,19 @@ pub async fn execution_submit_intent(
     let result = coordinator
         .submit(key.clone(), move || submit_retained(worker_app, worker_key))
         .await;
+    // Isolated QA can interrupt the observer after admission, before its acknowledgement.
+    // This never delays a release build or a non-QA profile.
+    #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+    if crate::agsdl_host::execution_qa_available(app.clone()) && result.is_ok() {
+        if let Some(delay) = std::env::var("MACRO_AGSDL_QA_DELAY_ADMISSION_ACK_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value <= 30_000)
+        {
+            tracing::warn!("AgSDL QA: delaying admission acknowledgement");
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+    }
     // Every observer proves its full canonical scope again before seeing the result.
     let _guard = intent_scope(&app, &key.scope).await?;
     intents::conversation(&mut *intent_pool(&app).await?.acquire().await?, &key.scope).await?;

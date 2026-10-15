@@ -354,6 +354,61 @@ pub async fn list_unresolved(
         .collect()
 }
 
+/// Overlay confirmed receipts on chat reads without rewriting historical messages.
+/// The full journal identity and tool name must match; absence is never completion.
+pub(super) async fn project_completed_traces(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+    messages: &mut [super::models::Message],
+) -> DbResult<()> {
+    let receipts = sqlx::query("SELECT * FROM tool_invocations WHERE conversation_id = ? AND status = 'completed' AND receipt_id IS NOT NULL")
+        .bind(conversation_id)
+        .fetch_all(connection)
+        .await?
+        .into_iter()
+        .map(map_row)
+        .collect::<DbResult<Vec<_>>>()?;
+    for message in messages {
+        let Some(raw) = message.tool_traces_json.as_deref() else {
+            continue;
+        };
+        let Ok(Value::Array(mut traces)) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        let mut changed = false;
+        for trace in &mut traces {
+            // Approval and denial are separate user decisions, not receipt states.
+            if !matches!(
+                trace.get("status").and_then(Value::as_str),
+                Some("running" | "done")
+            ) {
+                continue;
+            }
+            let receipt = receipts.iter().find(|receipt| {
+                receipt.conversation_id == message.conversation_id
+                    && Some(receipt.turn_id.as_str()) == message.turn_id.as_deref()
+                    && receipt.message_id == message.id
+                    && Some(receipt.call_id.as_str())
+                        == trace.get("tool_call_id").and_then(Value::as_str)
+                    && Some(receipt.tool_name.as_str())
+                        == trace.get("tool_name").and_then(Value::as_str)
+            });
+            if receipt.is_some() {
+                trace["status"] = Value::String("done".into());
+                trace["recovery_state"] = Value::String("completed".into());
+                changed = true;
+            }
+        }
+        if changed {
+            message.tool_traces_json = Some(
+                serde_json::to_string(&traces)
+                    .map_err(|error| DbError::Validation(error.to_string()))?,
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn reconcile_pending_after_restart(pool: &SqlitePool) -> DbResult<()> {
     sqlx::query(
         "UPDATE tool_invocations SET status = 'unknown', updated_at = ? WHERE status = 'pending'",
@@ -410,6 +465,69 @@ mod tests {
         .unwrap()
         .id;
         (temp, pool, conversation_id)
+    }
+
+    #[tokio::test]
+    async fn chat_reads_project_exact_receipts_without_rewriting_history() {
+        let (_temp, pool, conversation_id) = setup().await;
+        let traces = json!([
+            {"tool_call_id":"call-1","tool_name":"write","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"other-call","tool_name":"write","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"call-1","tool_name":"read","status":"done","recovery_state":"unknown"},
+            {"tool_call_id":"call-1","tool_name":"write","status":"denied","recovery_state":"unknown"}
+        ]).to_string();
+        let message: crate::db::models::CreateMessageInput = serde_json::from_value(json!({
+            "id":"message-1", "conversation_id":conversation_id, "turn_id":"turn-1",
+            "role":"assistant", "content":"Synthetic", "tool_traces_json":traces
+        }))
+        .unwrap();
+        repository::create_message(&pool, message).await.unwrap();
+        record(&pool, input(&conversation_id)).await.unwrap();
+        assert_eq!(
+            repository::list_messages(&pool, &conversation_id)
+                .await
+                .unwrap()[0]
+                .tool_traces_json
+                .as_deref(),
+            Some(traces.as_str())
+        );
+        complete(
+            &pool,
+            CompleteToolInvocationInput {
+                identity: identity(&conversation_id),
+                receipt_id: "receipt-1".into(),
+                result_json: Some("{}".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let loaded = repository::list_messages(&pool, &conversation_id)
+            .await
+            .unwrap();
+        let projected: Value =
+            serde_json::from_str(loaded[0].tool_traces_json.as_deref().unwrap()).unwrap();
+        assert_eq!(projected[0]["recovery_state"], "completed");
+        for index in 1..4 {
+            assert_eq!(projected[index]["recovery_state"], "unknown");
+        }
+        let persisted: String =
+            sqlx::query_scalar("SELECT tool_traces_json FROM messages WHERE id = 'message-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted, traces);
+        sqlx::query("UPDATE messages SET turn_id = 'other-turn' WHERE id = 'message-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository::list_messages(&pool, &conversation_id)
+                .await
+                .unwrap()[0]
+                .tool_traces_json
+                .as_deref(),
+            Some(traces.as_str())
+        );
     }
 
     #[tokio::test]

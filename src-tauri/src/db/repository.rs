@@ -823,7 +823,14 @@ pub async fn update_git_worktree_project_access(
 
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let mut connection = pool.acquire().await?;
-    list_messages_with_connection(&mut connection, conversation_id).await
+    let mut messages = list_messages_with_connection(&mut connection, conversation_id).await?;
+    super::tool_invocations::project_completed_traces(
+        &mut connection,
+        conversation_id,
+        &mut messages,
+    )
+    .await?;
+    Ok(messages)
 }
 
 async fn list_messages_with_connection(
