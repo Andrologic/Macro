@@ -234,6 +234,56 @@ const approvals = scenario('demo-approvals', 'Publication à double accord', 'de
 }
 demoPlans.push(advancedDelivery, persistentWriter, residentTeam, competition, structured, approvals);
 
+const crisis = scenario('demo-crisis', 'Cellule de crise', 'demo-helio', 'Croiser trois analyses, retenir la première piste étayée, choisir une réponse, faire approuver l’intervention puis comparer les contrôles techniques et métier. Les sous-processus conservent leurs agents et leurs sorties propres.', {
+  metrics: { title: 'Expert métriques', prompt: 'Chercher une cause dans les métriques. Produire report JSON avec approved, hypothesis et evidence. approved doit être étayé par des preuves.' },
+  traces: { title: 'Expert traces', prompt: 'Chercher une cause dans les traces. Produire report JSON avec approved, hypothesis et evidence.' },
+  customer: { title: 'Expert parcours client', prompt: 'Examiner les parcours affectés. Produire report JSON avec approved, hypothesis et evidence.' },
+  lead: { title: 'Responsable de crise', prompt: 'Examiner la piste sous members et choisir intervenir, observer ou escalader selon le risque et les preuves.' },
+  planner: { title: 'Concepteur de l’intervention', prompt: 'Préparer une intervention réversible. Produire report JSON avec approved, hypothesis et evidence.' },
+  observer: { title: 'Analyste de surveillance', prompt: 'Évaluer la surveillance nécessaire. Produire report JSON avec approved, hypothesis et evidence.' },
+  technical: { title: 'Contrôle technique', prompt: 'Vérifier la latence et les erreurs après la décision. Produire report JSON avec approved, hypothesis et evidence.' },
+  business: { title: 'Contrôle métier', prompt: 'Vérifier les commandes et les parcours clients. Produire report JSON avec approved, hypothesis et evidence.' },
+  reviewer: { title: 'Auditeur des preuves', prompt: 'Comparer toutes les preuves transmises. Produire report JSON avec approved, hypothesis et evidence.' },
+  report: { title: 'Rapport de clôture', prompt: 'Présenter les faits, les décisions, les effets observés et les points à suivre.' },
+  escalation: { title: 'Coordination humaine', prompt: 'Expliquer le refus ou les preuves manquantes. Préparer les questions à trancher sans lancer d’intervention.' },
+  recovery: { title: 'Examiner l’échec technique', prompt: 'Identifier la frontière qui a échoué. Vérifier les effets réels avant toute nouvelle tentative.' },
+}, 'launch', {
+  launch: { type: 'prepare', message: { prompt: [{ value: 'Incident catalogue : identifier une piste étayée et préserver les commandes.' }], resources: { mode: { ref: 'mode' }, incident: { ref: 'incident' } } }, next: ['metrics', 'traces', 'customer'] },
+  metrics: agentStep('metrics', 'first'), traces: agentStep('traces', 'first'), customer: agentStep('customer', 'first'),
+  first: { type: 'join', after: 'launch', members: ['metrics', 'traces', 'customer'], mode: 'first', accept: { equals: [{ path: ['results', 'report', 'value', 'approved'] }, { value: true }] }, remaining: 'finish', next: ['decide'], onError: ['recovery'] },
+  decide: { type: 'agent', agent: 'lead', decision: { binding: 'decision', choices: ['intervenir', 'observer', 'escalader'] }, next: { intervenir: ['intervention'], observer: ['observation'], escalader: ['escalation'] } },
+  intervention: { type: 'compose', composition: 'assessment', agents: { specialist: 'planner' }, next: { ready: ['operationsApproval'], revise: ['escalation'] }, onError: ['recovery'] },
+  observation: { type: 'compose', composition: 'assessment', agents: { specialist: 'observer' }, next: { ready: ['watch'], revise: ['escalation'] }, onError: ['recovery'] },
+  operationsApproval: { type: 'approval', call: 'deploy', binding: 'operationsApproval', timeoutMs: 600000, validForMs: 900000, next: { approved: ['securityApproval'], denied: ['escalation'] }, onError: ['recovery'] },
+  securityApproval: { type: 'approval', call: 'deploy', binding: 'securityApproval', timeoutMs: 300000, validForMs: 300000, next: { approved: ['deploy'], denied: ['escalation'] }, onError: ['recovery'] },
+  deploy: { type: 'call', binding: 'deployment', arguments: { assessment: { path: ['results', 'report', 'value'] } }, scope: { action: 'deploy', resources: ['demo:catalog-service'], context: { path: [] } }, next: ['watch'], onError: ['recovery'] },
+  watch: { type: 'prepare', message: { prompt: [{ value: 'Contrôler les indicateurs techniques et les parcours métier.' }], resources: { observation: { select: { path: [] }, mediaType: 'application/json' } } }, next: ['technical', 'business'] },
+  technical: agentStep('technical', 'all'), business: agentStep('business', 'all'),
+  all: { type: 'join', after: 'watch', members: ['technical', 'business'], mode: 'all', next: ['evidence'], onError: ['recovery'] },
+  evidence: { type: 'prepare', message: { resources: { technical: { source: { path: ['members', 'technical', 'results', 'report'] } }, business: { source: { path: ['members', 'business', 'results', 'report'] } } }, prompt: [{ value: 'Auditer les deux contrôles joints et statuer sur la clôture.' }] }, next: ['closure'] },
+  closure: { type: 'compose', composition: 'assessment', agents: { specialist: 'reviewer' }, next: { ready: ['report'], revise: ['escalation'] }, onError: ['recovery'] },
+  report: agentStep('report'), escalation: agentStep('escalation'), recovery: agentStep('recovery'),
+}, { launch: 'Ouvrir les trois investigations', metrics: 'Analyser les métriques', traces: 'Analyser les traces', customer: 'Analyser les parcours', first: 'Première piste étayée', decide: 'Choisir la réponse', intervention: 'Préparer une intervention', observation: 'Évaluer la surveillance', operationsApproval: 'Accord opérations', securityApproval: 'Accord sécurité', deploy: 'Intervenir sur le service', watch: 'Déclencher les contrôles', technical: 'Vérifier les indicateurs', business: 'Vérifier les commandes', all: 'Attendre les deux contrôles', evidence: 'Rassembler les preuves', closure: 'Auditer la clôture' });
+{
+  const source = JSON.parse(crisis.agsdl.source);
+  const binding = (name: string, effects = 'none') => ({ contract: { identity: `demo/${name}`, version: '1' }, implementation: { identity: 'demo/local-fixtures', version: '1' }, effects });
+  source.bindings.decision = binding('crisis-decision');
+  source.bindings.operationsApproval = binding('operations-approval');
+  source.bindings.securityApproval = binding('security-approval');
+  source.bindings.deployment = binding('deployment', 'external');
+  source.content.incident = { value: { service: 'catalog', latencyP95: 840, failedOrders: 17, targetP95: 250 }, mediaType: 'application/json' };
+  source.compositions = { assessment: { agentParameters: ['specialist'], entry: 'review', outputs: ['ready', 'revise'], steps: {
+    review: { type: 'agent', agent: { parameter: 'specialist' }, next: ['check'], onError: [{ error: true }], maxVisits: 2 },
+    check: { type: 'condition', test: { all: [{ equals: [{ path: ['results', 'report', 'value', 'approved'] }, { value: true }] }, { not: { equals: [{ path: ['results', 'report', 'value', 'hypothesis'] }, { value: '' }] } }] }, next: { true: [{ output: 'ready' }], false: [{ output: 'revise' }] }, onError: [{ error: true }] },
+  } } };
+  for (const [group, members] of Object.entries({ 'Investigation concurrente': ['launch', 'metrics', 'traces', 'customer', 'first'], 'Intervention autorisée': ['intervention', 'operationsApproval', 'securityApproval', 'deploy'], 'Contrôles croisés': ['watch', 'technical', 'business', 'all', 'evidence', 'closure'] })) {
+    for (const name of members) crisis.agsdl.display!.cards![`/flow/steps/${name}`].macroGroup = group;
+  }
+  crisis.agsdl.source = JSON.stringify(source, null, 2);
+  for (const [path, title] of Object.entries({ '/compositions/assessment': 'Expertise paramétrée', '/compositions/assessment/steps/review': 'Mobiliser le spécialiste', '/compositions/assessment/steps/check': 'Preuves suffisantes ?', '/bindings/operationsApproval': 'Opérations', '/bindings/securityApproval': 'Sécurité', '/bindings/deployment': 'Déploiement' })) crisis.agsdl.display!.cards![path] = { title };
+}
+demoPlans.push(crisis);
+
 // Shared content and capability declarations remain part of the real AgSDL documents.
 for (const plan of demoPlans.slice(2)) {
   const source = JSON.parse(plan.agsdl.source);
@@ -252,6 +302,18 @@ for (const plan of demoPlans.slice(2)) {
   if (plan.id === 'demo-delivery') for (const name of ['webReviewer', 'mobileReviewer', 'coordinatorReview']) source.agents[name].interface.results.report = {
     mediaTypes: ['application/json'], required: true,
   };
+  if (plan.id === 'demo-crisis') {
+    const report = { mediaTypes: ['application/json'], required: true, valueSchema: { type: 'object', properties: { approved: { type: 'boolean' }, hypothesis: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } }, required: ['approved', 'hypothesis', 'evidence'], additionalProperties: false } };
+    for (const name of ['metrics', 'traces', 'customer', 'planner', 'observer', 'technical', 'business', 'reviewer']) source.agents[name].interface.results.report = report;
+    source.skills.diagnosis = { prompt: [{ value: 'Séparer les observations des hypothèses et joindre les mesures qui les étayent.' }] };
+    source.skills.risk = { prompt: [{ value: 'Examiner la réversibilité et l’impact sur les commandes avant toute intervention.' }] };
+    source.skills.reporting = { prompt: [{ value: 'Présenter les décisions et les preuves dans un compte rendu concis.' }] };
+    for (const name of ['metrics', 'traces', 'customer']) source.agents[name].skills.push('diagnosis');
+    source.agents.planner.skills.push('risk');
+    source.agents.reviewer.skills.push('risk');
+    source.agents.report.skills.push('reporting');
+    for (const [name, title] of Object.entries({ evidence: 'Preuves', diagnosis: 'Diagnostic', risk: 'Analyse des risques', reporting: 'Compte rendu' })) plan.agsdl.display!.cards![`/skills/${name}`] = { title };
+  }
   if (plan.id === 'demo-competition') for (const name of ['direct', 'traces']) source.agents[name].interface.results.report = {
     mediaTypes: ['application/json'], required: true, valueSchema: { type: 'object', properties: { approved: { type: 'boolean' }, hypothesis: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } }, required: ['approved', 'hypothesis', 'evidence'], additionalProperties: false },
   };

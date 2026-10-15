@@ -14,6 +14,9 @@ const target = { branchName: "develop", planId: "viewer-test" };
 const key = agsdlSessionKey(target);
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
+const inspectNode = async (node: HTMLButtonElement) => act(async () => {
+  node.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+});
 afterEach(() => {
   act(() => root?.unmount());
   mock.restore();
@@ -46,6 +49,8 @@ describe("AgSDL viewer", () => {
     const first = container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!;
     expect(first.textContent).toContain("Specification visit");
     act(() => first.click());
+    expect(document.body.querySelector(".agsdl-agent-details")).toBeNull();
+    await inspectNode(first);
     expect(document.body.querySelector(".agsdl-agent-details")?.textContent).toContain("acceptance criteria");
     expect(document.body.querySelector(".agsdl-reference-chip")?.textContent).toContain("specify");
     expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
@@ -83,7 +88,7 @@ describe("AgSDL viewer", () => {
     act(() => useAgsdlExecutionStore.getState().showCaptured(true));
     expect(container!.textContent).toContain("View execution graph");
     expect(container!.querySelector(".agsdl-native-active")).not.toBeNull();
-    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
     expect(document.body.querySelector(".agsdl-prompt")?.textContent).toBe("Clarify the request and produce acceptance criteria.");
     expect(document.body.querySelector('[aria-label="Edit component"]')).toBeNull();
     expect(useAgsdlStore.getState().sessions[key].source).toBe(currentSource);
@@ -97,7 +102,7 @@ describe("AgSDL viewer", () => {
     const closeExpanded = mock(() => undefined);
     const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockRejectedValueOnce(new Error("Storage unavailable"));
     await act(async () => root!.render(<AgsdlEditor target={target} expanded onExpand={closeExpanded} />));
-    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
     const button = document.body.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!;
     await act(async () => button.click());
     expect(closeExpanded).not.toHaveBeenCalled();
@@ -118,7 +123,7 @@ describe("AgSDL viewer", () => {
       { rule: "unknown-rule", outcome: "fail", details: "Unknown location", location: { pointer: "/missing" } },
     ] }] }] } } })));
     await act(async () => root!.render(<AgsdlEditor target={target} expanded onExpand={closeExpanded} />));
-    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
     const button = [...document.body.querySelectorAll<HTMLButtonElement>(".agsdl-inspector button")].find(button => button.textContent === "Prepare correction in chat")!;
     await act(async () => button.click());
     expect(attach).toHaveBeenCalledWith(target, { path: "/graphs/0/steps/0/resources/0", title: "Specification", diagnostic: "resource-rule: Check this resource" });
@@ -143,7 +148,7 @@ describe("AgSDL viewer", () => {
     expect(overview.textContent).not.toContain("All declarations");
     expect(overview.querySelector("details")).toBeNull();
     expect(overview.querySelector(".agsdl-provenance")).toBeNull();
-    act(() => nodes[0].click());
+    await inspectNode(nodes[0]);
     const agentDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
     expect(agentDetails.querySelector(".agsdl-prompt")?.textContent).toBe("Clarify the request and produce acceptance criteria.");
     expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("System input");
@@ -167,7 +172,7 @@ describe("AgSDL viewer", () => {
   it("previews a linked agent on focus and opens its modal on click without changing source", async () => {
     await mount();
     const agents = container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node");
-    act(() => agents[1].click());
+    await inspectNode(agents[1]);
     const input = document.body.querySelector<HTMLButtonElement>(".agsdl-agent-io .agsdl-reference-chip")!;
     act(() => input.focus());
     expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain("acceptance criteria");
@@ -218,7 +223,7 @@ describe("AgSDL viewer", () => {
     document.graphs.push(...["second", "third"].map(id => ({ ...structuredClone(document.graphs[0]), id })));
     await mount(JSON.stringify(document));
     const selector = container!.querySelector("select")!;
-    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
     expect(globalThis.document.body.querySelector(".agsdl-inspector")).not.toBeNull();
     act(() => { selector.value = "2"; selector.dispatchEvent(new Event("change", { bubbles: true })); });
     expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
@@ -302,10 +307,10 @@ describe("AgSDL viewer", () => {
     const firstCard = container.querySelector<HTMLButtonElement>(
       ".agsdl-graph-node:not(.is-boundary)",
     )!;
-    act(() => firstCard.click());
+    await inspectNode(firstCard);
     expect(globalThis.document.body.querySelector(".agsdl-inspector")?.textContent).toContain("Clarify the request and produce acceptance criteria.");
     const nextNode = container.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node:not(.is-boundary)")[1];
-    act(() => nextNode.click());
+    await inspectNode(nextNode);
     const nextDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
     expect(nextDetails.querySelector(".agsdl-prompt")?.textContent).toBeTruthy();
     expect(nextDetails.textContent).not.toContain("Specification · report");

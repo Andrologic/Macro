@@ -22,11 +22,11 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 ## Scénario et interactions
 
 - Quatre projets fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
-- Quatorze systèmes AgSDL 0.2, avec graphes et conversations : release, assistant client,
+- Quinze systèmes AgSDL 0.2, avec graphes et conversations : release, assistant client,
   compte rendu vocal, revue avant livraison, import de catalogue, diagnostic
   d’incident, remboursement accompagné, dossier éditorial, livraison multi-plateforme, rédaction
   supervisée, équipe support permanente, recherche en compétition, extraction avec
-  correction et publication à double accord.
+  correction, publication à double accord et cellule de crise.
 - Graphes avec branches conditionnelles, contrôles parallèles et regroupement,
   points de validation humaine, traitement des erreurs et boucle de diagnostic.
 - Compositions paramétrées réutilisées pour plusieurs agents, avec des sorties
@@ -38,6 +38,12 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 - Résultat JSON contraint par `valueSchema`, correction sur `OUTPUT_CONSTRAINT`
   dans le même agent et chemin distinct pour les erreurs techniques.
 - Deux approbations successives sur une même publication à effets externes.
+- Cellule de crise : trois analystes en compétition, décision à trois issues, même
+  composition utilisée pour trois spécialistes, double accord, effet externe,
+  contrôles parallèles obligatoires et transmission de leurs résultats nommés.
+- Les cartes distinguent les types de blocs et indiquent les compétences, les
+  résultats contraints, la sélection de configuration et les effets externes déclarés.
+  Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
 - Quatorze tâches couvrant les sept états du produit, avec dépendances et
   conversations contextualisées. Fichiers virtuels propres à chaque projet.

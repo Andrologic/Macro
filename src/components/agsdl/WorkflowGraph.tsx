@@ -1,7 +1,7 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Background, BaseEdge, getSmoothStepPath, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange, type Edge, type EdgeProps } from "@xyflow/react";
-import { Bot, Box, Boxes, ChevronDown, CircleHelp, GitBranch, Hand, Info, Layers, LocateFixed, Minus, Plus } from "lucide-react";
+import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, LocateFixed, Minus, Plus, Plug, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, routeViewerEdge, outsideViewerEdgePath, type ViewerEdgeRoute, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
@@ -32,7 +32,7 @@ type GraphNode = Node<{
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { card } = data;
   const { t } = useAgsdlTranslation();
-  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
+  const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : card.kind === "join" ? card.details.mode === "first" ? Trophy : GitMerge : card.kind === "compose" ? Boxes : card.kind === "call" ? Plug : card.kind === "prepare" ? ArrowRightLeft : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   return (
@@ -58,6 +58,13 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         <span className="agsdl-node-text">
           <span className="agsdl-node-title">{data.title}</span>
           {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
+          {!data.members && card.capabilities && <span className="agsdl-node-capabilities">
+            {card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
+            {card.capabilities.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
+            {card.capabilities.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
+            {card.capabilities.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
+          </span>}
+
         </span>
         {data.members && <ChevronDown size={14} aria-hidden="true" />}
         {data.changed && <span className="agsdl-graph-change-dot" title={t("agsdl.designGraph.changed", { defaultValue: "Modified" })} />}
@@ -130,7 +137,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       measured: heights[card.path] === undefined ? undefined : { width: 210, height: heights[card.path] },
       style: { width: 210, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.65 : 1, transition: "opacity 140ms" },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
-        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
+        subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && card.details.delivery === "steering" ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
         select: setHighlighted, inspect: path => { setHighlighted(path); select(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),

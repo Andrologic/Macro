@@ -1,4 +1,14 @@
 {
+  "graphHints": {
+    "skills": "Habilidades",
+    "structured": "Resultado estructurado validado",
+    "dynamic": "Configuración elegida al iniciar",
+    "external": "Efecto externo declarado",
+    "externalShort": "Efecto externo",
+    "first": "Primer resultado aceptable",
+    "all": "Todos los resultados requeridos",
+    "steering": "Instrucción durante el trabajo"
+  },
   "editor": "Visor AgSDL",
   "legacyStrategy": "Estrategia heredada",
   "loading": "Cargando AgSDL...",

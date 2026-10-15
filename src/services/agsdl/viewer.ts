@@ -54,6 +54,7 @@ export interface ViewerCard {
   inputs: ViewerPort[];
   outputs: ViewerPort[];
   branches: Array<{ label: string; reference: ViewerReference; path?: string; transfers?: string[] }>;
+  capabilities?: { skills: string[]; structuredResults: boolean; dynamicConfiguration: boolean; externalEffects: boolean };
   details: Value;
 }
 export interface ViewerGraph {

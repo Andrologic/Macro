@@ -146,6 +146,25 @@ describe('populated demo scenarios', () => {
     expect(publication.flow.steps.legal.call).toBe('publish');
     expect(publication.bindings.publication.effects).toBe('external');
   });
+  test('crisis system combines first/all joins, reusable expertise, three decisions and protected external effects', () => {
+    const plan = demoPlans.find(plan => plan.id === 'demo-crisis')!;
+    const source = JSON.parse(plan.agsdl.source), viewer = projectViewer(plan.agsdl.source, plan.agsdl);
+    expect(Object.keys(source.flow.steps)).toHaveLength(20);
+    expect(source.flow.steps.first).toMatchObject({ mode: 'first', remaining: 'finish', members: ['metrics', 'traces', 'customer'] });
+    expect(source.flow.steps.all).toMatchObject({ mode: 'all', members: ['technical', 'business'] });
+    expect(source.flow.steps.decide.decision.choices).toEqual(['intervenir', 'observer', 'escalader']);
+    expect(['intervention', 'observation', 'closure'].map(name => source.flow.steps[name].composition)).toEqual(['assessment', 'assessment', 'assessment']);
+    const cards = viewer.graphs[0].cards;
+    expect(cards.find(card => card.id === 'metrics')?.capabilities).toMatchObject({ skills: ['Preuves', 'Diagnostic'], structuredResults: true, dynamicConfiguration: true, externalEffects: false });
+    expect(cards.find(card => card.id === 'deploy')?.capabilities?.externalEffects).toBe(true);
+    expect(cards.find(card => card.id === 'watch')?.capabilities?.externalEffects).toBe(false);
+    expect(source.compositions.assessment.steps.review.onError).toEqual([{ error: true }]);
+    const document = record(decode(plan.agsdl.source));
+    const steps = record(record(document.flow).steps);
+    const report = { value: { approved: true, hypothesis: 'Cache', evidence: ['p95'] }, mediaType: 'application/json' };
+    const message = JSON.parse(encode(prepareMessage(document, record(steps.evidence), { members: { technical: { results: { report } }, business: { results: { report } } } })));
+    expect(message.resources).toEqual({ technical: report, business: report });
+  });
   test('every project has its own plans, conversations and virtual files', async () => {
     const demo = createDemoRuntime();
     for (const project of demoProjects) {

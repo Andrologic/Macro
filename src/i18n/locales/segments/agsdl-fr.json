@@ -1,4 +1,14 @@
 {
+  "graphHints": {
+    "skills": "Compétences",
+    "structured": "Résultat structuré contrôlé",
+    "dynamic": "Configuration choisie à l’initialisation",
+    "external": "Effet externe déclaré",
+    "externalShort": "Effet externe",
+    "first": "Premier résultat acceptable",
+    "all": "Tous les résultats requis",
+    "steering": "Consigne en cours de travail"
+  },
   "editor": "Visualiseur AgSDL",
   "legacyStrategy": "Stratégie existante",
   "loading": "Chargement d’AgSDL...",

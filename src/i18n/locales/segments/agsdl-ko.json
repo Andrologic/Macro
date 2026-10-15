@@ -1,4 +1,14 @@
 {
+  "graphHints": {
+    "skills": "스킬",
+    "structured": "구조화된 결과 검증",
+    "dynamic": "초기화 시 구성 선택",
+    "external": "선언된 외부 영향",
+    "externalShort": "외부 영향",
+    "first": "첫 번째 적합한 결과",
+    "all": "모든 결과 필요",
+    "steering": "작업 중 지시"
+  },
   "editor": "AgSDL 뷰어",
   "legacyStrategy": "기존 전략",
   "loading": "AgSDL 로드 중...",

@@ -74,11 +74,17 @@ export function projectViewer020(doc: Value, inputSource: string, metadata?: Ags
   const configurationNames = (agent: Value) => typeof agent.configuration === "string"
     ? [agent.configuration] : Object.values(object(object(agent.configuration).cases)).map(text);
   const tools = (agent: Value): ViewerReference[] => [...new Set(configurationNames(agent).flatMap(name => Object.values(object(object(configurations[name]).tools)).map(text)))].map(name => named("bindings", name));
+  const capabilities = (agent: Value | undefined, binding?: unknown) => ({
+    skills: agent ? list(agent.skills).map(name => metadata?.display?.cards?.[pathFor("skills", text(name))]?.title || text(name)) : [],
+    structuredResults: !!agent && Object.values(object(object(agent.interface).results)).some(rule => Object.hasOwn(object(rule), "valueSchema")),
+    dynamicConfiguration: !!agent && typeof agent.configuration !== "string",
+    externalEffects: object(object(doc.bindings)[text(binding)]).effects === "external",
+  });
   const details = (value: Value, extras: Value = {}) => ({ ...value, ...extras, contract: "agsdl-0.2.0" });
   const agentCard = (name: string, value: unknown): ViewerCard => {
     const agent = object(value);
     return { path: pathFor("agents", name), id: name, title: name, kind: "Agent", mission: prompt(agent, pathFor("agents", name)), promptSources: promptSources(agent, pathFor("agents", name)), unresolved: false,
-      inputs: resources(agent, pathFor("agents", name)), outputs: results(agent), tools: tools(agent), resources: list(agent.skills).map(name => named("skills", name)),
+      capabilities: capabilities(agent), inputs: resources(agent, pathFor("agents", name)), outputs: results(agent), tools: tools(agent), resources: list(agent.skills).map(name => named("skills", name)),
       branches: [], details: details(agent, { agentName: name, agentPath: pathFor("agents", name) }) };
   };
   const declarations = Object.entries(agents).map(([name, value]) => agentCard(name, value));
@@ -118,7 +124,7 @@ export function projectViewer020(doc: Value, inputSource: string, metadata?: Ags
         ...(agent ? { promptSources: promptSources(agent, pathFor("agents", agentName)) } : {}),
         unresolved: type === "agent" ? !!participant.unresolved : type === "compose" ? !!named("compositions", step.composition).unresolved
           : ["call", "approval"].includes(type) ? !!named("bindings", step.binding).unresolved : false,
-        inputs: agent ? resources(agent, pathFor("agents", agentName)) : [], outputs: agent ? results(agent) : [],
+        capabilities: capabilities(agent, step.binding), inputs: agent ? resources(agent, pathFor("agents", agentName)) : [], outputs: agent ? results(agent) : [],
         branches: flowRoutes(step).map(route => ({ label: route.label, reference: reference(route.target), path: `${path}/steps/${pointerPart(name)}${route.path}` })),
         details: details(step, { ...(composition ? { composition } : {}), ...(agent ? { agentDefinition: agent, agentName, agentPath: pathFor("agents", agentName) } : {}) }),
       };

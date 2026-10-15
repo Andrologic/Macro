@@ -1,4 +1,14 @@
 {
+  "graphHints": {
+    "skills": "スキル",
+    "structured": "構造化結果の検証",
+    "dynamic": "初期化時に構成を選択",
+    "external": "宣言された外部への作用",
+    "externalShort": "外部への作用",
+    "first": "最初の適切な結果",
+    "all": "すべての結果が必要",
+    "steering": "実行中の指示"
+  },
   "editor": "AgSDL ビューアー",
   "legacyStrategy": "従来の戦略",
   "loading": "AgSDLを読み込み中...",

@@ -3,8 +3,14 @@
 .agsdl-reading-groups { position: relative; background: rgb(var(--background)); border: 1px solid rgb(var(--border)); border-radius: 6px; }
 .agsdl-reading-groups summary { display: flex; padding: 8px; cursor: pointer; list-style: none; }
 .agsdl-reading-groups summary::-webkit-details-marker { display: none; }
-.agsdl-reading-groups > div { position: absolute; top: calc(100% + 5px); right: 0; min-width: 190px; max-width: 240px; padding: 4px; background: rgb(var(--background)); border: 1px solid rgb(var(--border)); border-radius: 7px; box-shadow: 0 5px 20px #0003; }
+.agsdl-reading-groups > div { position: absolute; top: calc(100% + 5px); left: 0; min-width: 190px; max-width: 240px; padding: 4px; background: rgb(var(--background)); border: 1px solid rgb(var(--border)); border-radius: 7px; box-shadow: 0 5px 20px #0003; }
 .agsdl-reading-groups button { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 12px; padding: 7px 8px; font-size: 12px; text-align: left; }
 .agsdl-reading-groups button:hover { background: rgb(var(--muted)); }
 .agsdl-graph-change-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--primary)); }
 .agsdl-graph-pending { display: inline-flex; color: rgb(var(--muted-foreground)); }
+
+.agsdl-node-capabilities { display: flex; align-items: center; gap: 9px; color: rgb(var(--muted-foreground)); font-size: 10px; line-height: 1.3; }
+.agsdl-node-capabilities:empty { display: none; }
+.agsdl-node-capabilities:not(:empty) { margin-top: 5px; }
+.agsdl-node-capabilities > span { display: inline-flex; align-items: center; gap: 3px; }
+.agsdl-node-capabilities .agsdl-node-skill-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
