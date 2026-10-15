@@ -30,6 +30,7 @@ The repo uses:
 | Script | Description |
 | --- | --- |
 | `bun run dev` | Start the Vite frontend dev server only. |
+| `bun run dev:demo` | Explore the real UI with isolated synthetic data. See [Demo mode](docs/demo-mode.md). |
 | `bun run tauri:dev` | Run Macro as a desktop app in development mode. |
 | `bun run tauri:dev:browser` | Run the Tauri backend and expose its UI to a local browser for debugging. |
 | `bun run build` | Build the frontend for production. |

@@ -429,6 +429,7 @@ export default defineConfig(({ command }) => {
   }
 
   return {
+    cacheDir: process.env.VITE_MACRO_DEMO === '1' ? '.demo-vite-cache' : 'node_modules/.vite',
     base: command === "build" ? "./" : "/",
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),

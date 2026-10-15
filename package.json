@@ -84,7 +84,8 @@
     "version:sync": "bun dev/version/sync.mjs",
     "version:check": "bun dev/version/check.mjs",
     "version:bump": "bun dev/version/bump.mjs",
-    "ci": "bun ./dev/ci/run-checks.mjs --profile full"
+    "ci": "bun ./dev/ci/run-checks.mjs --profile full",
+    "dev:demo": "VITE_MACRO_DEMO=1 bun node_modules/vite/bin/vite.js --configLoader runner --host 127.0.0.1 --port 1438 --strictPort"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.2",
