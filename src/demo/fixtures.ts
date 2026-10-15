@@ -3,10 +3,16 @@ import type { DbConversation, DbMessage, DbProviderConfig, DbAiModel } from '../
 import { createExampleDocument } from '../services/agsdl/examples';
 export const DEMO_ROOT = '/demo';
 export const DEMO_DATE = '2026-01-15T10:00:00Z';
-export const demoProjects: Project[] = ['Luma Mobile', 'Atlas Studio'].map((name, i) => ({
-  id: i ? 'demo-atlas' : 'demo-luma', name, mountName: i ? 'atlas' : 'luma', path: `/demo/${i ? 'atlas' : 'luma'}`,
+const projectSeeds = [
+  { id: 'demo-luma', name: 'Luma Mobile', mount: 'luma', description: 'Notes vocales, transcription et synthèse de réunions.', tags: ['React Native', 'Audio', 'TypeScript'] },
+  { id: 'demo-atlas', name: 'Atlas Studio', mount: 'atlas', description: 'Portail client et production éditoriale d’un studio créatif.', tags: ['React', 'Accessibilité', 'Contenu'] },
+  { id: 'demo-helio', name: 'Helio Data', mount: 'helio', description: 'Import de données, contrôle de qualité et traitement des incidents.', tags: ['Python', 'Données', 'API'] },
+  { id: 'demo-meridian', name: 'Meridian Commerce', mount: 'meridian', description: 'Commandes, service client et remboursements.', tags: ['TypeScript', 'Commerce', 'Support'] },
+];
+export const demoProjects: Project[] = projectSeeds.map(seed => ({
+  id: seed.id, name: seed.name, mountName: seed.mount, path: `/demo/${seed.mount}`,
   created_at: DEMO_DATE, status: 'active', gitSetupState: 'ready',
-  metadata: { description: i ? 'Site et espace client du studio.' : 'Application de notes et de conversations vocales.', tags: ['React', 'TypeScript'], team_members: [], api_contracts: [], dependencies: [] },
+  metadata: { description: seed.description, tags: seed.tags, team_members: [], api_contracts: [], dependencies: [] },
 }));
 export const demoTasks: Task[] = [
   { id: 'demo-audio', plan_id: 'demo-release', project_id: 'demo-luma', title: 'Améliorer la lecture audio', description: 'Conserver la position de lecture et afficher un état de chargement clair.', status: 'Pending', dependencies: [], estimated_changes: [{ path: 'src/audio/player.ts', operation: 'Modify', diff_preview: 'Lecture asynchrone et reprise de position.' }], task_kind: 'feature', standalone_kind: 'manual_feature', conversation_id: 'demo-task-chat', assigned_branch: 'feature/audio-playback', branch_name: 'feature/audio-playback', task_source: 'standalone', is_ready: true },
@@ -28,13 +34,235 @@ export function demoPlan(id: string, title: string, projectId: string, kind: 're
   parsed.content.projectGuidance.value = 'Projet fictif. Les actions et résultats sont simulés dans le mode démo.';
   return { id, slug: id, title, label: title, description: kind === 'release' ? 'Préparer une publication de Luma sans oublier les vérifications.' : 'Concevoir un assistant pour le studio.', planKind: kind, status: 'draft', targetBranch: 'main', projectId, projectIds: [projectId], contextProjectIds: [], conversationId: `${id}-chat`, createdAt: DEMO_DATE, updatedAt: DEMO_DATE, nodes: [], predictedBranches: [], expectedProjectIds: [projectId], availableProjectIds: [projectId], missingProjectIds: [], replicationState: 'complete', revision: 1, replicas: [], hasReplicaDivergence: false, agsdl: { ...document, source: JSON.stringify(parsed, null, 2), revision: 1, updatedAt: DEMO_DATE, display: { ...document.display, title } } };
 }
-export const demoPlans = [demoPlan('demo-release', 'Release mobile', 'demo-luma', 'release'), demoPlan('demo-assistant', 'Assistant client', 'demo-atlas', 'feature')];
+type DemoAgent = { title: string; prompt: string; group?: string };
+function scenario(id: string, title: string, projectId: string, description: string, agents: Record<string, DemoAgent>, entry: string, steps: Record<string, Record<string, unknown>>, labels: Record<string, string> = {}) {
+  const plan = demoPlan(id, title, projectId, 'feature');
+  const source = JSON.parse(plan.agsdl.source);
+  source.id = id;
+  source.agents = Object.fromEntries(Object.entries(agents).map(([name, agent]) => [name, {
+    configuration: 'project', prompt: [{ value: agent.prompt }, { ref: 'projectGuidance' }],
+    interface: { results: { report: { mediaTypes: ['text/plain'], required: true } } },
+  }]));
+  source.flow = { entry, steps };
+  source.bindings.knowledge = { contract: { identity: 'demo/knowledge', version: '1' }, implementation: { identity: 'demo/local-fixtures', version: '1' } };
+  source.configurations.project.tools = { documentation: 'knowledge' };
+  source.content.projectGuidance.value = `${description} Données fictives uniquement. Aucune action réelle.`;
+  plan.description = description;
+  plan.agsdl.source = JSON.stringify(source, null, 2);
+  plan.agsdl.display = { title, cards: Object.fromEntries([
+    ...Object.entries(agents).map(([name, agent]) => [`/agents/${name}`, { title: agent.title, ...(agent.group ? { macroGroup: agent.group } : {}) }]),
+    ...Object.entries(steps).map(([name, step]) => [`/flow/steps/${name}`, { title: labels[name] ?? agents[String(step.agent)]?.title ?? name }]),
+  ]) };
+  return plan;
+}
+const agentStep = (agent: string, ...next: string[]) => ({ type: 'agent', agent, next });
+const relay = (...next: string[]) => ({ type: 'prepare', message: { resources: { report: { source: { path: ['results', 'report'] } } } }, next });
+const condition = (value: string, yes: string[], no: string[]) => ({ type: 'condition', test: { equals: [{ path: ['text'] }, { value }] }, next: { true: yes, false: no } });
+
+export const demoPlans = [
+  demoPlan('demo-release', 'Release mobile', 'demo-luma', 'release'),
+  demoPlan('demo-assistant', 'Assistant client', 'demo-atlas', 'feature'),
+  scenario('demo-voice', 'Compte rendu vocal', 'demo-luma', 'Transformer une réunion en compte rendu, avec une vérification des passages ambigus.', {
+    transcribe: { title: 'Transcrire la réunion', prompt: 'Transcrire l’enregistrement. Marquer les passages incertains et identifier les interlocuteurs.' },
+    clarify: { title: 'Clarifier les passages ambigus', prompt: 'Demander à la personne qui a fourni l’audio de préciser les passages ambigus. Conserver les incertitudes non résolues.' },
+    summarize: { title: 'Rédiger le compte rendu', prompt: 'Produire un résumé structuré : décisions, responsables et échéances. Ne pas inventer de décisions.' },
+    review: { title: 'Vérifier la fidélité', prompt: 'Comparer le compte rendu à la transcription et signaler les omissions.' },
+  }, 'transcribe', {
+    transcribe: agentStep('transcribe', 'confidence'), confidence: condition('À clarifier', ['clarify'], ['prepare']),
+    clarify: agentStep('clarify', 'prepare'), prepare: relay('summarize'), summarize: agentStep('summarize', 'handoff'), handoff: relay('review'), review: agentStep('review'),
+  }, { confidence: 'Passages incertains ?', prepare: 'Préparer la transcription', handoff: 'Transmettre le compte rendu' }),
+  scenario('demo-quality', 'Revue avant livraison', 'demo-atlas', 'Croiser une revue de sécurité, d’accessibilité et de contenu avant de demander une validation humaine.', {
+    scope: { title: 'Définir le périmètre', prompt: 'Identifier les pages modifiées et les critères de livraison.' },
+    security: { title: 'Auditer la sécurité', prompt: 'Examiner les accès, les formulaires et l’exposition des données. Classer les constats par gravité.', group: 'Contrôles indépendants' },
+    accessibility: { title: 'Tester l’accessibilité', prompt: 'Contrôler le clavier, les libellés, les contrastes et les messages d’erreur.', group: 'Contrôles indépendants' },
+    content: { title: 'Relire le contenu', prompt: 'Vérifier les textes, les liens et les informations du portail client.', group: 'Contrôles indépendants' },
+    synthesize: { title: 'Synthétiser les contrôles', prompt: 'Rassembler les trois rapports. Distinguer les blocages des améliorations facultatives.' },
+    revise: { title: 'Préparer les corrections', prompt: 'Décrire les corrections demandées par le responsable de livraison.' },
+  }, 'scope', {
+    scope: agentStep('scope', 'fork'), fork: relay('security', 'accessibility', 'content'),
+    security: agentStep('security', 'join'), accessibility: agentStep('accessibility', 'join'), content: agentStep('content', 'join'),
+    join: { type: 'join', after: 'fork', members: ['security', 'accessibility', 'content'], next: ['synthesize'] },
+    synthesize: agentStep('synthesize', 'approval'),
+    approval: { type: 'approval', call: 'deliver', binding: 'knowledge', timeoutMs: 3600000, validForMs: 3600000, next: { approved: ['deliver'], denied: ['revise'] } },
+    deliver: { type: 'call', binding: 'knowledge', scope: { action: 'deliver', resources: ['demo:delivery'], context: { value: 'Dossier fictif' } } }, revise: agentStep('revise'),
+  }, { fork: 'Distribuer les contrôles', join: 'Rassembler les rapports', approval: 'Valider la livraison', deliver: 'Livrer le dossier' }),
+  scenario('demo-ingestion', 'Import de catalogue', 'demo-helio', 'Importer un catalogue fournisseur, isoler les lignes invalides et produire un bilan exploitable.', {
+    inspect: { title: 'Analyser le fichier', prompt: 'Détecter les colonnes, le séparateur et les champs obligatoires. Signaler les changements de format.' },
+    normalize: { title: 'Normaliser les données', prompt: 'Uniformiser les unités, les dates et les identifiants. Préserver les valeurs originales dans le rapport.' },
+    repair: { title: 'Traiter les anomalies', prompt: 'Expliquer les lignes rejetées et proposer une correction. Ne pas supprimer silencieusement les doublons.' },
+    report: { title: 'Présenter le bilan', prompt: 'Présenter le nombre de lignes acceptées, rejetées et modifiées, avec des exemples.' },
+  }, 'inspect', {
+    inspect: agentStep('inspect', 'prepare'), prepare: relay('normalize'), normalize: agentStep('normalize', 'validate'),
+    validate: { type: 'call', binding: 'knowledge', next: ['valid'], onError: ['repair'] },
+    valid: condition('Valide', ['store'], ['repair']), repair: agentStep('repair', 'handoff'),
+    store: { type: 'call', binding: 'knowledge', next: ['handoff'] }, handoff: relay('report'), report: agentStep('report'),
+  }, { prepare: 'Préparer les lignes', validate: 'Contrôler le schéma', valid: 'Catalogue conforme ?', store: 'Enregistrer le catalogue', handoff: 'Transmettre les statistiques' }),
+  scenario('demo-incident', 'Diagnostic d’incident', 'demo-helio', 'Rechercher la cause d’une latence anormale, puis vérifier une hypothèse avant de conclure.', {
+    triage: { title: 'Qualifier l’incident', prompt: 'Délimiter la période, les utilisateurs concernés et les symptômes observés.' },
+    investigate: { title: 'Examiner les traces', prompt: 'Comparer les traces avec les métriques. Présenter une hypothèse vérifiable, sans la confondre avec un fait.' },
+    verify: { title: 'Tester l’hypothèse', prompt: 'Vérifier l’hypothèse contre les traces. Répondre Confirmée uniquement avec une preuve.' },
+    conclude: { title: 'Rédiger le post-mortem', prompt: 'Résumer la cause, l’impact et les mesures de prévention.' },
+  }, 'triage', {
+    triage: agentStep('triage', 'collect'), collect: { type: 'call', binding: 'knowledge', next: ['investigate'] },
+    investigate: agentStep('investigate', 'handoff'), handoff: relay('verify'), verify: agentStep('verify', 'confirmed'),
+    confirmed: condition('Confirmée', ['conclude'], ['investigate']), conclude: agentStep('conclude'),
+  }, { collect: 'Collecter les métriques', handoff: 'Transmettre l’hypothèse', confirmed: 'Hypothèse confirmée ?' }),
+  scenario('demo-refund', 'Remboursement accompagné', 'demo-meridian', 'Vérifier une demande de remboursement et demander un accord avant toute décision.', {
+    understand: { title: 'Comprendre la demande', prompt: 'Identifier la commande, le motif et la solution souhaitée. Demander les informations manquantes.' },
+    eligibility: { title: 'Vérifier l’éligibilité', prompt: 'Comparer la commande à la politique de remboursement. Expliquer les exceptions.' },
+    alternative: { title: 'Proposer une alternative', prompt: 'Proposer un échange ou une prise en charge adaptée, sans promettre une action non autorisée.' },
+    notify: { title: 'Informer le client', prompt: 'Présenter la décision avec empathie, le délai attendu et les prochaines étapes.' },
+  }, 'understand', {
+    understand: agentStep('understand', 'lookup'), lookup: { type: 'call', binding: 'knowledge', next: ['eligibility'] },
+    eligibility: agentStep('eligibility', 'eligible'), eligible: condition('Éligible', ['approval'], ['alternative']),
+    approval: { type: 'approval', call: 'refund', binding: 'knowledge', timeoutMs: 3600000, validForMs: 3600000, next: { approved: ['refund'], denied: ['alternative'] } },
+    refund: { type: 'call', binding: 'knowledge', scope: { action: 'refund', resources: ['demo:order-1042'], context: { value: 'Commande fictive de 89 €' } }, next: ['notify'] }, alternative: agentStep('alternative', 'notify'), notify: agentStep('notify'),
+  }, { lookup: 'Consulter la commande', eligible: 'Remboursement possible ?', approval: 'Accord du responsable', refund: 'Préparer le remboursement' }),
+  scenario('demo-editorial', 'Dossier éditorial', 'demo-atlas', 'Préparer un dossier avec une recherche documentaire et deux angles de rédaction en parallèle.', {
+    research: { title: 'Rechercher les sources', prompt: 'Rassembler des sources vérifiables et distinguer les faits des interprétations.' },
+    technical: { title: 'Rédiger l’angle technique', prompt: 'Expliquer le sujet avec des exemples précis et les limites de la solution.' },
+    practical: { title: 'Rédiger le guide pratique', prompt: 'Présenter les étapes et les questions courantes du lecteur.' },
+    edit: { title: 'Harmoniser le dossier', prompt: 'Assembler les deux contributions, supprimer les répétitions et vérifier les sources.' },
+  }, 'research', {
+    research: agentStep('research', 'fork'), fork: relay('technical', 'practical'),
+    technical: agentStep('technical', 'join'), practical: agentStep('practical', 'join'),
+    join: { type: 'join', after: 'fork', members: ['technical', 'practical'], next: ['edit'] }, edit: agentStep('edit'),
+  }, { fork: 'Partager les sources', join: 'Assembler les contributions' }),
+];
+
+const advancedDelivery = scenario('demo-delivery', 'Livraison multi-plateforme', 'demo-luma', 'Réutiliser le même contrôle qualité pour le web et le mobile, puis autoriser une livraison avec un périmètre précis.', {
+  coordinator: { title: 'Préparer la livraison', prompt: 'Identifier les versions web et mobile et leurs critères de validation.' },
+  webReviewer: { title: 'Spécialiste web', prompt: 'Vérifier le paquet web et produire un rapport structuré avec les preuves.' },
+  mobileReviewer: { title: 'Spécialiste mobile', prompt: 'Vérifier les paquets mobiles et les contraintes de distribution.' },
+  coordinatorReview: { title: 'Consolider les preuves', prompt: 'Comparer les rapports web et mobile avant de demander l’accord de publication.' },
+  repair: { title: 'Préparer une nouvelle version', prompt: 'Rassembler les constats qui empêchent la livraison. Préparer une nouvelle proposition.' },
+}, 'coordinator', {
+  coordinator: agentStep('coordinator', 'web'),
+  web: { type: 'compose', composition: 'packageReview', agents: { specialist: 'webReviewer' }, next: { ready: ['mobile'], blocked: ['repair'] } },
+  mobile: { type: 'compose', composition: 'packageReview', agents: { specialist: 'mobileReviewer' }, next: { ready: ['coordinatorReview'], blocked: ['repair'] } },
+  coordinatorReview: agentStep('coordinatorReview', 'approval'),
+  approval: { type: 'approval', binding: 'knowledge', call: 'publish', timeoutMs: 3600000, validForMs: 300000, next: { approved: ['publish'], denied: ['repair'] } },
+  publish: { type: 'call', binding: 'knowledge', scope: { action: 'publish', resources: ['demo:release-2'], context: { value: { release: '2.0.0', targets: ['web', 'mobile'] } } } },
+  repair: agentStep('repair'),
+}, { web: 'Contrôler la version web', mobile: 'Contrôler la version mobile', approval: 'Autoriser la publication', publish: 'Publier la version validée' });
+{
+  const source = JSON.parse(advancedDelivery.agsdl.source);
+  source.compositions = {
+    evidenceReview: { agentParameters: ['reviewer'], entry: 'review', outputs: ['pass', 'fail'], steps: {
+      review: { type: 'agent', agent: { parameter: 'reviewer' }, next: ['check'] },
+      check: { type: 'condition', test: { equals: [{ path: ['results', 'report', 'value', 'approved'] }, { value: true }] }, next: { true: [{ output: 'pass' }], false: [{ output: 'fail' }] } },
+    } },
+    packageReview: { agentParameters: ['specialist'], entry: 'prepare', outputs: ['ready', 'blocked'], steps: {
+      prepare: { type: 'prepare', message: { prompt: [{ ref: 'reviewInstructions' }], resources: { criteria: { ref: 'criteria' } } }, next: ['audit'] },
+      audit: { type: 'agent', agent: { parameter: 'specialist' }, next: ['check'] },
+      check: { type: 'condition', test: { equals: [{ path: ['results', 'report', 'value', 'approved'] }, { value: true }] }, next: { true: [{ output: 'ready' }], false: [{ output: 'blocked' }] } },
+    } },
+  };
+  source.flow.steps.coordinatorReview = { type: 'compose', composition: 'evidenceReview', agents: { reviewer: 'coordinatorReview' }, next: { pass: ['approval'], fail: ['repair'] } };
+  source.content.criteria = { value: { required: ['signature', 'version', 'smoke-tests'], targets: ['web', 'mobile'] }, mediaType: 'application/json' };
+  source.content.reviewInstructions = { value: 'Évaluer chaque critère et joindre une preuve à chaque conclusion.' };
+  source.content.sampleReport = { value: { approved: true, findings: [], evidence: ['Signature valide', 'Tests de démarrage réussis'] }, mediaType: 'application/json' };
+  advancedDelivery.agsdl.source = JSON.stringify(source, null, 2);
+  for (const [path, title] of Object.entries({
+    '/compositions/packageReview/steps/prepare': 'Préparer les critères', '/compositions/packageReview/steps/audit': 'Examiner le paquet', '/compositions/packageReview/steps/check': 'Paquet conforme ?',
+    '/compositions/evidenceReview/steps/review': 'Examiner les preuves', '/compositions/evidenceReview/steps/check': 'Critères satisfaits ?',
+  })) advancedDelivery.agsdl.display!.cards![path] = { title };
+}
+const persistentWriter = scenario('demo-persistent', 'Rédaction supervisée', 'demo-atlas', 'Un agent de rédaction conserve son contexte. Un observateur lui transmet des consignes pendant le travail, puis une revue peut demander une nouvelle passe.', {
+  writer: { title: 'Rédacteur persistant', prompt: 'Rédiger le dossier en conservant les décisions éditoriales entre les messages. Intégrer les consignes reçues pendant la rédaction.' },
+  observer: { title: 'Observateur éditorial', prompt: 'Vérifier l’angle et les sources. Transmettre une consigne courte au rédacteur si le dossier s’éloigne de la demande.' },
+  reviewer: { title: 'Relecteur indépendant', prompt: 'Comparer le dossier au brief. Répondre Prêt lorsque les critères sont satisfaits, sinon formuler une demande de révision.' },
+}, 'start', {
+  start: { type: 'prepare', message: { prompt: [{ ref: 'projectGuidance' }] }, next: ['write', 'observe'] },
+  write: agentStep('writer', 'review'), observe: agentStep('observer', 'advice'),
+  advice: { type: 'prepare', message: { prompt: [{ value: 'Intégrer la consigne de l’observateur.' }], resources: { guidance: { source: { path: ['text'] } } } }, next: ['steer'] },
+  steer: { type: 'agent', agent: 'writer', delivery: 'steering', steers: 'write' },
+  review: { ...agentStep('reviewer', 'ready'), maxVisits: 3 },
+  ready: condition('Prêt', ['finish'], ['revise']),
+  revise: { ...agentStep('writer', 'review'), maxVisits: 2 }, finish: { type: 'prepare', message: { resources: { dossier: { source: { path: ['text'] } } } } },
+}, { start: 'Lancer la rédaction supervisée', write: 'Rédiger le dossier', observe: 'Observer le travail', advice: 'Préparer une consigne', steer: 'Réorienter le rédacteur', review: 'Relire le dossier', ready: 'Dossier prêt ?', revise: 'Reprendre avec le même agent', finish: 'Conserver le dossier' });
+const residentTeam = scenario('demo-resident', 'Équipe support permanente', 'demo-meridian', 'Trois agents persistants reçoivent des messages à la demande. Ce système n’impose aucun ordre d’exécution.', {
+  concierge: { title: 'Accueil client', prompt: 'Clarifier la demande et identifier le bon interlocuteur. Conserver l’historique des échanges avec le client.' },
+  orders: { title: 'Spécialiste commandes', prompt: 'Expliquer l’état d’une commande à partir des ressources fournies. Demander les références manquantes.' },
+  policy: { title: 'Référent politique commerciale', prompt: 'Expliquer la politique commerciale applicable et les cas qui demandent une décision humaine.' },
+}, 'concierge', { concierge: agentStep('concierge') });
+{
+  const source = JSON.parse(residentTeam.agsdl.source);
+  delete source.flow;
+  residentTeam.agsdl.source = JSON.stringify(source, null, 2);
+}
+demoPlans.push(advancedDelivery, persistentWriter, residentTeam);
+
+// Shared content and capability declarations remain part of the real AgSDL documents.
+for (const plan of demoPlans.slice(2)) {
+  const source = JSON.parse(plan.agsdl.source);
+  source.content.policy = { value: 'Conserver les preuves et signaler les informations manquantes avant de conclure.' };
+  source.content.reference = { uri: 'demo://documents/reference.pdf', mediaType: 'application/pdf' };
+  source.content.mode = { value: 'thorough', mediaType: 'text/plain' };
+  source.skills = { evidence: { prompt: [{ ref: 'policy' }], resources: { reference: { ref: 'reference' } } } };
+  source.configurations.fast = { engine: 'engine', tools: { documentation: 'knowledge' }, settings: { temperature: 0.2 } };
+  source.configurations.thorough = { engine: 'engine', tools: { documentation: 'knowledge' }, settings: { temperature: 0 } };
+  for (const agent of Object.values(source.agents) as Array<Record<string, unknown>>) {
+    agent.skills = ['evidence'];
+    agent.resources = { brief: { ref: 'projectGuidance' }, mode: { ref: 'mode' } };
+  }
+  const selectable = source.agents[Object.keys(source.agents)[0]];
+  selectable.configuration = { select: { path: ['resources', 'mode', 'value'] }, cases: { fast: 'fast', thorough: 'thorough' } };
+  if (plan.id === 'demo-delivery') for (const name of ['webReviewer', 'mobileReviewer', 'coordinatorReview']) source.agents[name].interface.results.report = {
+    mediaTypes: ['application/json'], required: true,
+  };
+  if (plan.id === 'demo-incident') {
+    source.bindings.classification = { contract: { identity: 'demo/decision', version: '1' }, implementation: { identity: 'demo/classifier', version: '1' }, effects: 'none' };
+    source.flow.steps.triage.decision = { binding: 'classification', choices: ['investigate', 'escalate'] };
+    source.flow.steps.triage.next = { investigate: ['collect'], escalate: ['conclude'] };
+    source.flow.steps.investigate.maxVisits = 3;
+    source.flow.steps.verify.maxVisits = 3;
+    source.flow.steps.collect.arguments = { interval: { value: '15m' }, service: { value: 'catalog-api' } };
+  }
+  plan.agsdl.display!.cards!['/flow'] = { title: plan.title };
+  if (plan.id === 'demo-delivery') {
+    plan.agsdl.display!.cards!['/compositions/evidenceReview'] = { title: 'Contrôle des preuves' };
+    plan.agsdl.display!.cards!['/compositions/packageReview'] = { title: 'Contrôle d’un paquet' };
+  }
+  plan.agsdl.design = { ...plan.agsdl.design!, purpose: plan.description, context: 'Jeu de données fictives pour explorer les capacités AgSDL.' };
+  plan.agsdl.source = JSON.stringify(source, null, 2);
+}
+
+const taskSeeds: Array<[string, string, string, string, Task['status'], string]> = [
+  ['demo-transcript', 'demo-luma', 'demo-voice', 'Clarifier deux passages de la réunion', 'AwaitingResponse', 'Les noms de deux participants sont ambigus. Confirmer leur orthographe avant la synthèse.'],
+  ['demo-summary', 'demo-luma', 'demo-voice', 'Préparer le résumé de la réunion', 'Blocked', 'En attente des précisions sur la transcription.'],
+  ['demo-installers', 'demo-luma', 'demo-release', 'Comparer les paquets de la release', 'InReview', 'Les paquets iOS et Android ont été contrôlés. Relire le bilan avant publication.'],
+  ['demo-security', 'demo-atlas', 'demo-quality', 'Vérifier les accès au portail', 'Completed', 'Les routes privées refusent les sessions expirées. Aucun blocage dans ce scénario.'],
+  ['demo-keyboard', 'demo-atlas', 'demo-quality', 'Corriger le focus du formulaire', 'InProgress', 'Le focus doit revenir sur le premier champ invalide après une erreur.'],
+  ['demo-copy', 'demo-atlas', 'demo-editorial', 'Relire le guide de démarrage', 'Pending', 'Harmoniser les titres et vérifier les exemples.'],
+  ['demo-catalog', 'demo-helio', 'demo-ingestion', 'Contrôler les données fournisseur', 'Failed', 'Le fichier ne contient pas la colonne SKU. Une reprise avec un fichier corrigé est nécessaire.'],
+  ['demo-deduplicate', 'demo-helio', 'demo-ingestion', 'Examiner les doublons du catalogue', 'InReview', 'Douze références ont des variantes proches. Choisir les enregistrements à conserver.'],
+  ['demo-latency', 'demo-helio', 'demo-incident', 'Analyser la hausse de latence', 'InProgress', 'L’analyse compare le cache, les accès base de données et les requêtes lentes.'],
+  ['demo-postmortem', 'demo-helio', 'demo-incident', 'Préparer le compte rendu d’incident', 'Blocked', 'La cause doit être confirmée avant de rédiger les mesures préventives.'],
+  ['demo-refund-review', 'demo-meridian', 'demo-refund', 'Valider la demande de remboursement', 'AwaitingResponse', 'Le montant est de 89 €. Le dossier attend la décision du responsable.'],
+  ['demo-order-mail', 'demo-meridian', 'demo-refund', 'Préparer la réponse au client', 'Completed', 'Le brouillon précise le délai de traitement et les prochaines étapes.'],
+];
+demoTasks.push(...taskSeeds.map(([id, project_id, plan_id, title, status, description]): Task => ({
+  id, project_id, plan_id, title, status, description, dependencies: id === 'demo-summary' ? ['demo-transcript'] : id === 'demo-postmortem' ? ['demo-latency'] : [],
+  estimated_changes: [], task_kind: 'feature', standalone_kind: 'manual_feature', task_source: 'standalone',
+  conversation_id: `${id}-chat`, assigned_branch: `feature/${id.replace('demo-', '')}`, branch_name: `feature/${id.replace('demo-', '')}`,
+  is_blocked: status === 'Blocked', is_ready: status === 'Pending',
+})));
 export const demoProvider: DbProviderConfig = { id: 'demo-provider', name: 'Macro AI · Démo', provider_type: 'openai', base_url: 'https://demo.invalid', api_key: null, has_stored_api_key: true, is_enabled: true, is_local: true, auth_status: 'authenticated', auth_source: null, plan_type: null, account_label: null, token_expires_at: null, created_at: DEMO_DATE, updated_at: DEMO_DATE };
 export const demoModel: DbAiModel = { id: 'demo-model', provider_id: demoProvider.id, model_id: 'demo-model', name: 'Assistant simulé', description: 'Réponses locales de démonstration', owned_by: null, pricing_prompt: null, pricing_completion: null, pricing_request: null, reasoning_efforts: null, default_reasoning_effort: null, context_window_tokens: 128000, input_limit_tokens: 120000, output_limit_tokens: 8000, context_window_source: 'manual', context_limits_updated_at: DEMO_DATE, is_enabled: true, is_manual: true, first_seen_at: DEMO_DATE, last_seen_at: DEMO_DATE };
-export const demoConversations: DbConversation[] = [
-  ['demo-release-chat', 'Release mobile', 'Architect', 'demo-luma', null], ['demo-assistant-chat', 'Assistant client', 'Architect', 'demo-atlas', null],
-  ['demo-task-chat', 'Améliorer la lecture audio', 'Implement', 'demo-luma', 'demo-audio'], ['demo-chat', 'Idées pour Luma', 'Chat', 'demo-luma', null],
-].map(([id, title, scope_mode, project_id, task_id]) => ({ id: id!, title: title!, scope_mode: scope_mode as DbConversation['scope_mode'], project_id, task_id, group_id: null, description: null, provider_id: 'demo-provider', model_id: 'demo-model', reasoning_effort: null, created_at: DEMO_DATE, updated_at: DEMO_DATE, last_message: null, message_count: 2, is_pinned: false }));
+const conversationSeeds: Array<[string, string, DbConversation['scope_mode'], string, string | null]> = [
+  ...demoPlans.map((plan): [string, string, DbConversation['scope_mode'], string, null] => [plan.conversationId, plan.title, 'Architect', plan.projectId, null]),
+  ['demo-task-chat', 'Améliorer la lecture audio', 'Implement', 'demo-luma', 'demo-audio'],
+  ...demoTasks.filter(task => task.conversation_id && task.id !== 'demo-audio').map((task): [string, string, DbConversation['scope_mode'], string, string] => [task.conversation_id!, task.title, 'Implement', task.project_id, task.id]),
+  ['demo-chat', 'Idées pour Luma', 'Chat', 'demo-luma', null],
+  ['demo-atlas-chat', 'Livraison du portail client', 'Chat', 'demo-atlas', null],
+  ['demo-helio-chat', 'Qualité des données', 'Chat', 'demo-helio', null],
+  ['demo-meridian-chat', 'Politique de remboursement', 'Chat', 'demo-meridian', null],
+];
+export const demoConversations: DbConversation[] = conversationSeeds.map(([id, title, scope_mode, project_id, task_id]) => ({
+  id, title, scope_mode, project_id, task_id, group_id: null, description: null, provider_id: 'demo-provider', model_id: 'demo-model', reasoning_effort: null,
+  created_at: DEMO_DATE, updated_at: DEMO_DATE, last_message: null, message_count: 2, is_pinned: id === 'demo-helio-chat',
+}));
 export function demoMessage(conversationId: string, role: string, content: string): DbMessage {
   return { id: crypto.randomUUID(), conversation_id: conversationId, role, content, created_at: DEMO_DATE, turn_id: null, token_count: null, tool_traces_json: null, hidden_context: null, provider_input_items_json: null, provider_turn_state_json: null, context_refs_json: null, completion_reason: role === 'assistant' ? 'completed' : null, generation_attempts_json: null };
 }
@@ -48,6 +276,46 @@ export const demoMessages = [
   demoMessage('demo-chat', 'user', 'Quelles améliorations seraient utiles pour Luma ?'),
   demoMessage('demo-chat', 'assistant', 'Nous pouvons améliorer la reprise audio, simplifier les réglages et ajouter un assistant vocal. Par quoi souhaitez-vous commencer ?'),
 ];
+for (const plan of demoPlans.slice(2)) {
+  demoMessages.push(
+    demoMessage(plan.conversationId, 'user', plan.description),
+    demoMessage(plan.conversationId, 'assistant', `Le graphe est prêt à être exploré.
+
+${plan.description}
+
+Sélectionnez un bloc pour suivre ses échanges. Ouvrez ses détails pour lire les instructions et voir les outils déclarés.`),
+  );
+}
+for (const task of demoTasks.filter(task => task.conversation_id && task.id !== 'demo-audio')) {
+  const waiting = task.status === 'AwaitingResponse';
+  demoMessages.push(demoMessage(task.conversation_id!, 'user', task.description), demoMessage(task.conversation_id!, 'assistant',
+    waiting ? `${task.description}
+
+J’attends votre réponse pour poursuivre. Les informations de ce dossier sont fictives.`
+      : task.status === 'Failed' ? `Le contrôle a détecté un problème.
+
+${task.description}
+
+Aucune modification n’a été appliquée. On peut examiner le fichier puis préparer une reprise.`
+      : task.status === 'Blocked' ? `Cette étape attend la tâche précédente.
+
+${task.description}`
+      : `${task.description}
+
+Le résultat de cette étape est disponible pour relecture dans ce scénario de démonstration.`));
+}
+const projectChats: Array<[string, string, string]> = [
+  ['demo-atlas-chat', 'Quels points devons-nous vérifier avant de livrer le portail ?', 'La revue avant livraison répartit les contrôles entre sécurité, accessibilité et contenu. Une synthèse précède la validation du responsable. Le dossier éditorial illustre une autre forme de travail parallèle.'],
+  ['demo-helio-chat', 'Pourquoi l’import du catalogue est-il bloqué ?', 'Le fichier fournisseur manque de références SKU. Douze autres lignes présentent des doublons. Le scénario Import de catalogue montre le chemin de contrôle et le traitement des anomalies.'],
+  ['demo-meridian-chat', 'Dans quels cas demander une validation humaine ?', 'Une validation du responsable intervient avant le remboursement. Le client reçoit ensuite une réponse adaptée à la décision. La branche alternative permet de proposer un échange.'],
+];
+for (const [id, question, answer] of projectChats) demoMessages.push(demoMessage(id, 'user', question), demoMessage(id, 'assistant', answer));
+for (const conversation of demoConversations) {
+  const messages = demoMessages.filter(message => message.conversation_id === conversation.id);
+  conversation.message_count = messages.length;
+  conversation.last_message = messages.at(-1)?.content ?? null;
+}
+
 export const demoSkill = {
   id: 'demo-review', name: 'release-review', description: 'Vérifier les prérequis avant une publication.', license: 'AGPL-3.0-or-later', compatibility: null, allowedTools: null, metadata: {},
   rootPath: '/demo/skills/release-review', skillFilePath: '/demo/skills/release-review/SKILL.md', location: { kind: 'local', uri: '/demo/skills/release-review' },

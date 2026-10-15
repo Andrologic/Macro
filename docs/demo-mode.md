@@ -21,8 +21,21 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 
 ## Scénario et interactions
 
-- Deux projets fictifs : Luma Mobile et Atlas Studio.
-- Deux plans AgSDL 0.2, avec graphes et conversations.
+- Quatre projets fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
+- Onze systèmes AgSDL 0.2, avec graphes et conversations : release, assistant client,
+  compte rendu vocal, revue avant livraison, import de catalogue, diagnostic
+  d’incident, remboursement accompagné, dossier éditorial, livraison multi-plateforme, rédaction
+  supervisée et équipe support permanente.
+- Graphes avec branches conditionnelles, contrôles parallèles et regroupement,
+  points de validation humaine, traitement des erreurs et boucle de diagnostic.
+- Compositions paramétrées réutilisées pour plusieurs agents, avec des sorties
+  nommées et des graphes de détail. Les compositions ne sont pas imbriquées,
+  conformément au contrat 0.2.
+- Agents persistants, messages de steering, décisions nommées, limites de visites,
+  configurations choisies à l’initialisation et ressources structurées.
+- Compétences partagées, contenus référencés et équipe sans graphe imposé.
+- Quatorze tâches couvrant les sept états du produit, avec dépendances et
+  conversations contextualisées. Fichiers virtuels propres à chaque projet.
 - Consultation et modification des instructions et du modèle d'un agent.
 - Tâches avec états et conversations, navigation entre les modes.
 - Composeur normal et réponses locales simulées, sans appel à un fournisseur.

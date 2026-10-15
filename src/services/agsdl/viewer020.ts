@@ -147,6 +147,10 @@ export function projectViewer020(doc: Value, inputSource: string, metadata?: Ags
   };
   if (Object.hasOwn(doc, "flow")) graphs.push(graph(doc.flow, "/flow", text(doc.id)));
   if (Object.hasOwn(doc, "flow")) for (const [name, value] of Object.entries(compositions)) graphs.push(graph(value, pathFor("compositions", name), name, name));
+  for (const graph of graphs) {
+    const title = metadata?.display?.cards?.[graph.path]?.title;
+    if (title?.trim()) graph.title = title;
+  }
   for (const card of [...declarations, ...graphs.flatMap(graph => graph.cards)]) {
     const own = metadata?.display?.cards?.[card.path];
     const participant = metadata?.display?.cards?.[text(card.details.agentPath)];

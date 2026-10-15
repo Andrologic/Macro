@@ -18,6 +18,12 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const messages = structuredClone(demoMessages);
   const values: Args = { leftPanelWidth: 300, architectLeftPanelWidth: 300, rightPanelWidth: 420, lastActiveMode: 'Architect', lastSelectedProjectId: 'demo-luma', lastOpenProjectPath: '/demo/luma', isLeftPanelOpen: true, isRightPanelOpen: true, onboardingState: { completed: true }, architectNavigatorExpandedScopeIds: ['project:demo-luma', 'demo-luma'], aiContextSelections: {} };
   const settings = new Map<string, string>();
+  let sessionContext: Args = { mode: 'Architect', selected_project_id: 'demo-luma', selected_group_id: null, selected_task_id: null, active_plan_id: 'demo-release' };
+  const projectContexts = new Map<string, Args>(projects.map(project => {
+    const plan = plans.find(plan => plan.projectId === project.id);
+    return [project.id, { project_id: project.id, last_plan_id: plan?.id ?? null, architect_conversation_id: plan?.conversationId ?? null,
+      implement_conversation_id: tasks.find(task => task.project_id === project.id && task.conversation_id)?.conversation_id ?? null }];
+  }));
   const transcriptSync = new Map<string, Args>(demoPlans.map(p=>[p.conversationId,{conversation_id:p.conversationId,plan_id:p.id,target_branch:'main',transcript_revision:null,message_count:2,updated_at:DEMO_DATE}]));
   const files = new Map<string, string>([
     ['/demo/luma/README.md', '# Luma Mobile\n\nApplication de notes vocales. Projet fictif du mode démo.'],
@@ -25,6 +31,15 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     ['/demo/luma/src/audio/player.ts', 'export async function resumeAudio(position: number) {\n  await player.prepare();\n  await player.seek(position);\n  await player.play();\n}\n'],
     ['/demo/luma/src/App.tsx', 'export default function App() {\n  return <main>Luma Mobile</main>;\n}\n'],
     ['/demo/atlas/README.md', '# Atlas Studio\n\nUn espace client simple et accessible.'],
+    ['/demo/atlas/src/components/ClientForm.tsx', 'export function ClientForm() { return <form aria-label="Demande client"><input aria-label="Votre demande" /></form>; }'],
+    ['/demo/atlas/docs/delivery.md', '# Livraison\n\n- Revue de sécurité\n- Navigation clavier\n- Validation des contenus'],
+    ['/demo/helio/README.md', '# Helio Data\n\nImport et contrôle de qualité des catalogues fournisseurs.'],
+    ['/demo/helio/fixtures/catalog.csv', 'name,price,unit\nLampe,49.90,EUR\nSupport,12.00,EUR\n'],
+    ['/demo/helio/src/validate.py', 'def validate(row):\n    return bool(row.get("sku")) and float(row["price"]) >= 0\n'],
+    ['/demo/helio/docs/incident.md', '# Incident synthétique\n\nLatence p95 : 840 ms. Hypothèse à vérifier : expiration simultanée des entrées de cache.'],
+    ['/demo/meridian/README.md', '# Meridian Commerce\n\nService client et suivi des commandes.'],
+    ['/demo/meridian/fixtures/order.json', JSON.stringify({ id: '1042', total: 89, currency: 'EUR', status: 'delivered', customer: 'Client exemple' }, null, 2)],
+    ['/demo/meridian/docs/refunds.md', '# Remboursements\n\nVérifier la commande et demander la validation du responsable avant de confirmer une décision.'],
   ]);
   const config: ConfigSnapshot = { schemaVersion: 1, effective: { settings: { language: 'fr', appearance: { theme: 'macro-dark' }, notifications: { inAppEnabled: true }, onboarding: { completed: true } }, providers: {}, tools: { mcpServers: { documentation: { enabled: true, name: 'Documentation', transport: { type: 'stdio', command: 'demo-docs' } } } }, skills: {}, agents: {}, git: {}, runtime: {} }, projectEffective: {}, documents: [], provenance: [], diagnostics: [], pendingRestartPaths: [] };
   let revision = 1;
@@ -34,7 +49,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const activeStreams = new Map<string, ReturnType<typeof setTimeout>>();
   const seen = new Map<string, number>();
   const unsupported = new Set<string>();
-  const summary = (p: typeof plans[number]) => ({ ...p, hasAgsdl: !!p.agsdl, nodeCount: 3, chatMessageCount: messages.filter(m => m.conversation_id === p.conversationId).length });
+  const summary = (p: typeof plans[number]) => ({ ...p, hasAgsdl: !!p.agsdl, nodeCount: Object.keys(JSON.parse(p.agsdl.source).flow?.steps ?? {}).length, chatMessageCount: messages.filter(m => m.conversation_id === p.conversationId).length });
   const state = () => ({ schemaVersion: 1, values: structuredClone(values) });
   const gitStatus = () => ({ branch: 'main', head_commit: null, staged_files: [], unstaged_files: [{ path: 'src/audio/player.ts', status: 'modified', staged: false }], untracked_files: [], conflicted_files: [], merge_in_progress: false, is_clean: false, has_origin: true, has_upstream: true, ahead: 0, behind: 0 });
   const branch = (name: string) => ({ name, is_current: name === 'main', is_remote: false, upstream: `origin/${name}`, ahead: 0, behind: 0 });
@@ -192,10 +207,18 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         settings.set(string(args.key), string(args.valueJson));
         return { key: args.key, value_json: args.valueJson, updated_at: DEMO_DATE };
       case 'db_delete_app_setting': return settings.delete(string(args.key));
-      case 'db_get_session_context_state': return { mode: 'Architect', selected_project_id: 'demo-luma', selected_group_id: null, selected_task_id: null, active_plan_id: 'demo-release' };
-      case 'db_get_project_context_state': return { project_id: args.projectId, last_plan_id: args.projectId === 'demo-atlas' ? 'demo-assistant' : 'demo-release', architect_conversation_id: args.projectId === 'demo-atlas' ? 'demo-assistant-chat' : 'demo-release-chat', implement_conversation_id: 'demo-task-chat' };
+      case 'db_get_session_context_state': return structuredClone(sessionContext);
+      case 'db_get_project_context_state': return structuredClone(projectContexts.get(string(args.projectId)) ?? null);
       case 'db_upsert_session_context_state':
-      case 'db_upsert_project_context_state': return args.input;
+        sessionContext = { ...sessionContext, ...object(args.input) };
+        return structuredClone(sessionContext);
+      case 'db_upsert_project_context_state': {
+        const input = object(args.input);
+        const id = string(input.project_id);
+        const context = { ...projectContexts.get(id), ...input };
+        projectContexts.set(id, context);
+        return structuredClone(context);
+      }
       case 'workspace_create_project': {
         const p = { ...structuredClone(demoProjects[0]), id: crypto.randomUUID(), name: string(args.name) || 'Nouveau projet', path: string(args.path) || '/demo/new-project' };
         p.metadata.description = string(args.description);
@@ -232,10 +255,10 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'workspace_architect_list_plans':
         if (request.branchName !== 'main')
           return { activePlanId: null, plans: [], runtimeStatus: null };
-        return { activePlanId: 'demo-release', plans: plans.filter(p => !request.scopedProjectIdsHint || !(request.scopedProjectIdsHint as string[]).length || (request.scopedProjectIdsHint as string[]).includes(p.projectId)).map(summary), runtimeStatus: null };
+        return { activePlanId: null, plans: plans.filter(p => !request.scopedProjectIdsHint || !(request.scopedProjectIdsHint as string[]).length || (request.scopedProjectIdsHint as string[]).includes(p.projectId)).map(summary), runtimeStatus: null };
       case 'workspace_architect_activate_plan_head': {
         const p = plans.find(p => p.id === request.planId);
-        return p ? { plan: p, conversationId: p.conversationId, sharedConversation: true, targetBranch: 'main', replicaScopeKey: `project:${p.projectId}`, replicaProjectId: p.projectId, resolutionMode: 'canonical', chatTranscriptRevision: null, chatMessageCount: 2 } : null;
+        return p ? { plan: p, conversationId: p.conversationId, sharedConversation: false, targetBranch: 'main', replicaScopeKey: `project:${p.projectId}`, replicaProjectId: p.projectId, resolutionMode: 'canonical', chatTranscriptRevision: null, chatMessageCount: 2 } : null;
       }
       case 'workspace_architect_get_plan': return plans.find(p => p.id === (request.planId ?? args.planId)) ?? null;
       case 'workspace_architect_activate_plan_chat':

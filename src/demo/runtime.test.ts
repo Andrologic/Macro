@@ -1,11 +1,14 @@
 import { describe, expect, test } from 'bun:test';
+import { demoPlans, demoProjects, demoTasks, demoConversations, demoMessages } from './fixtures';
+import { validateDocument } from '../services/agsdl/document';
+import { projectViewer } from '../services/agsdl/viewer';
 import { createDemoRuntime, DemoUnsupportedCommand } from './runtime';
 
 describe('isolated Macro demo runtime', () => {
   test('provides projects, real AgSDL source and task conversations', async () => {
     const demo = createDemoRuntime();
     const bootstrap = await demo.invoke('workspace_get_bootstrap') as { standaloneProjects: unknown[] };
-    expect(bootstrap.standaloneProjects).toHaveLength(2);
+    expect(bootstrap.standaloneProjects).toHaveLength(4);
     const file = await demo.invoke('fs_read_file', {
       path: 'branches/main/plans/demo-release/plan.json',
       workspaceScope: 'metadata', workspacePath: '/demo/luma',
@@ -65,5 +68,73 @@ describe('isolated Macro demo runtime', () => {
     await expect(demo.invoke('shell_execute', { command: 'anything' })).rejects.toBeInstanceOf(DemoUnsupportedCommand);
     await expect(demo.invoke('plugin:http|fetch', { clientConfig: { url: 'https://example.invalid' } })).rejects.toBeInstanceOf(DemoUnsupportedCommand);
     expect(demo.unsupported.has('shell_execute')).toBe(true);
+  });
+});
+
+describe('populated demo scenarios', () => {
+  test('all authored systems pass the AgSDL reader and project their real graph structure', async () => {
+    const kinds = new Set<string>();
+    for (const plan of demoPlans) {
+      const reports = await validateDocument(plan.agsdl.source);
+      for (const report of reports) {
+        if (typeof report.documentReportJson !== 'string') throw new Error('Missing AgSDL reader report');
+        expect(JSON.parse(report.documentReportJson).valid).toBe(true);
+      }
+      const viewer = projectViewer(plan.agsdl.source, plan.agsdl);
+      if (viewer.graphs.length) {
+        expect(viewer.graphs[0].cards.length).toBeGreaterThanOrEqual(5);
+        for (const graph of viewer.graphs) for (const card of graph.cards) kinds.add(card.kind);
+      } else expect(viewer.declarations.filter(card => card.kind === 'Agent')).toHaveLength(3);
+    }
+    expect([...kinds]).toEqual(expect.arrayContaining(['agent', 'prepare', 'call', 'condition', 'approval', 'join', 'compose']));
+  });
+  test('exposes reusable compositions, persistent steering and adaptive participants without fabricating flow', () => {
+    const delivery = demoPlans.find(plan => plan.id === 'demo-delivery')!;
+    const source = JSON.parse(delivery.agsdl.source);
+    expect(source.flow.steps.web.composition).toBe(source.flow.steps.mobile.composition);
+    expect(source.flow.steps.web.agents).not.toEqual(source.flow.steps.mobile.agents);
+    expect(projectViewer(delivery.agsdl.source, delivery.agsdl).graphs.map(graph => graph.title)).toEqual(['Livraison multi-plateforme', 'Contrôle des preuves', 'Contrôle d’un paquet']);
+    const writer = JSON.parse(demoPlans.find(plan => plan.id === 'demo-persistent')!.agsdl.source);
+    expect(writer.flow.steps.steer).toMatchObject({ delivery: 'steering', agent: writer.flow.steps.write.agent, steers: 'write' });
+    expect(writer.flow.steps.steer.next).toBeUndefined();
+    expect(writer.flow.steps.revise.agent).toBe(writer.flow.steps.write.agent);
+    expect(writer.agents.writer.configuration.cases).toEqual({ fast: 'fast', thorough: 'thorough' });
+    expect(writer.skills.evidence.resources.reference.ref).toBe('reference');
+    const incident = JSON.parse(demoPlans.find(plan => plan.id === 'demo-incident')!.agsdl.source);
+    expect(Object.keys(incident.flow.steps.triage.next)).toEqual(incident.flow.steps.triage.decision.choices);
+    expect(incident.flow.steps.investigate.maxVisits).toBe(3);
+    const resident = demoPlans.find(plan => plan.id === 'demo-resident')!;
+    expect(JSON.parse(resident.agsdl.source).flow).toBeUndefined();
+    expect(projectViewer(resident.agsdl.source, resident.agsdl).graphs).toEqual([]);
+  });
+  test('every project has its own plans, conversations and virtual files', async () => {
+    const demo = createDemoRuntime();
+    for (const project of demoProjects) {
+      const context = await demo.invoke('db_get_project_context_state', { projectId: project.id }) as { last_plan_id: string; architect_conversation_id: string };
+      expect(demoPlans.find(plan => plan.id === context.last_plan_id)?.projectId).toBe(project.id);
+      expect(demoConversations.find(chat => chat.id === context.architect_conversation_id)?.project_id).toBe(project.id);
+      expect(await demo.invoke('fs_read_file', { path: `${project.path}/README.md` })).toHaveProperty('content');
+      const listing = await demo.invoke('workspace_architect_list_plans', { request: { branchName: 'main', scopedProjectIdsHint: [project.id] } }) as { plans: Array<{ projectId: string }> };
+      expect(listing.plans.length).toBeGreaterThan(0);
+      expect(listing.plans.every(plan => plan.projectId === project.id)).toBe(true);
+      const activation = await demo.invoke('workspace_architect_activate_plan_head', { request: { planId: context.last_plan_id } });
+      expect(activation).toMatchObject({ conversationId: context.architect_conversation_id, sharedConversation: false });
+    }
+  });
+  test('remembers the selected plan independently for each project until reload', async () => {
+    const demo = createDemoRuntime();
+    await demo.invoke('db_upsert_project_context_state', { input: { project_id: 'demo-atlas', last_plan_id: 'demo-quality', architect_conversation_id: 'demo-quality-chat' } });
+    expect(await demo.invoke('db_get_project_context_state', { projectId: 'demo-atlas' })).toMatchObject({ last_plan_id: 'demo-quality' });
+    expect(await demo.invoke('db_get_project_context_state', { projectId: 'demo-luma' })).toMatchObject({ last_plan_id: 'demo-release' });
+    expect(await createDemoRuntime().invoke('db_get_project_context_state', { projectId: 'demo-atlas' })).toMatchObject({ last_plan_id: 'demo-assistant' });
+  });
+  test('task and conversation references remain consistent across waiting, failed and completed examples', () => {
+    expect(new Set(demoTasks.map(task => task.status)).size).toBe(7);
+    for (const task of demoTasks) {
+      expect(demoPlans.some(plan => plan.id === task.plan_id && plan.projectId === task.project_id)).toBe(true);
+      for (const dependency of task.dependencies) expect(demoTasks.some(other => other.id === dependency && other.project_id === task.project_id)).toBe(true);
+      if (task.conversation_id) expect(demoConversations.find(chat => chat.id === task.conversation_id)?.task_id).toBe(task.id);
+    }
+    for (const chat of demoConversations) expect(chat.message_count).toBe(demoMessages.filter(message => message.conversation_id === chat.id).length);
   });
 });
