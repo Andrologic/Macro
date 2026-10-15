@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { demoPlans, demoProjects, demoTasks, demoConversations, demoMessages } from './fixtures';
 import { validateDocument } from '../services/agsdl/document';
+import { prepareMessage } from '../services/agsdlExecution/content';
+import { evaluatePredicate, validateCompletion } from '../services/agsdlExecution/constraints';
+import { decode, encode, record } from '../services/agsdlExecution/exact';
 import { projectViewer } from '../services/agsdl/viewer';
 import { createDemoRuntime, DemoUnsupportedCommand } from './runtime';
 
@@ -106,6 +109,42 @@ describe('populated demo scenarios', () => {
     const resident = demoPlans.find(plan => plan.id === 'demo-resident')!;
     expect(JSON.parse(resident.agsdl.source).flow).toBeUndefined();
     expect(projectViewer(resident.agsdl.source, resident.agsdl).graphs).toEqual([]);
+  });
+  test('prepared writer text is wrapped as information instead of interpreted as a Source', () => {
+    const document = record(decode(demoPlans.find(plan => plan.id === 'demo-persistent')!.agsdl.source));
+    const steps = record(record(document.flow).steps);
+    for (const [step, resource] of [['advice', 'guidance'], ['finish', 'dossier']]) {
+      const message = prepareMessage(document, record(steps[step]), { text: 'Texte conservé\navec ses accents.' });
+      expect(JSON.parse(encode(message)).resources[resource]).toEqual({ value: 'Texte conservé\navec ses accents.', mediaType: 'text/plain' });
+    }
+  });
+  test('structured extraction rejects malformed output and prepares a correction for the same participant', () => {
+    const document = record(decode(demoPlans.find(plan => plan.id === 'demo-structured')!.agsdl.source));
+    const agent = record(record(document.agents).extractor), steps = record(record(document.flow).steps), step = record(steps.extract);
+    const result = (value: unknown) => decode(JSON.stringify({ results: { report: { value, mediaType: 'application/json' } } }));
+    for (const bad of [{ sku: 'A1', price: '49', currency: 'EUR' }, { sku: 'A1', price: 49, currency: 'GBP' }, { sku: 'A1', price: 49 }, { sku: 'A1', price: 49, currency: 'EUR', extra: true }]) {
+      expect(() => validateCompletion(record(agent.interface), step, result(bad))).toThrow();
+    }
+    expect(() => validateCompletion(record(agent.interface), step, result({ sku: 'A1', price: 49, currency: 'EUR' }))).not.toThrow();
+    const error = { code: 'OUTPUT_CONSTRAINT', message: 'Format incorrect', details: [] };
+    const predicate = record(steps.correctable).test;
+    expect(evaluatePredicate(predicate, { error })).toBe(true);
+    expect(evaluatePredicate(predicate, { error: { ...error, code: 'AGENT_FAILED' } })).toBe(false);
+    const message = JSON.parse(encode(prepareMessage(document, record(steps.feedback), { error })));
+    expect(message.resources.outputErrors.value).toEqual(error);
+    expect(record(steps.feedback).next).toEqual(['extract']);
+    expect(step.agent).toBe('extractor');
+  });
+  test('competition accepts only an approved result and approvals form an ordered chain for one captured action', () => {
+    const race = JSON.parse(demoPlans.find(plan => plan.id === 'demo-competition')!.agsdl.source);
+    expect(race.flow.steps.winner).toMatchObject({ mode: 'first', remaining: 'stop-and-wait' });
+    for (const approved of [true, false]) expect(evaluatePredicate(decode(JSON.stringify(race.flow.steps.winner.accept)), { results: { report: { value: { approved } } } })).toBe(approved);
+    const publication = JSON.parse(demoPlans.find(plan => plan.id === 'demo-approvals')!.agsdl.source);
+    expect(publication.flow.steps.editorial.next.approved).toEqual(['legal']);
+    expect(publication.flow.steps.legal.next.approved).toEqual(['publish']);
+    expect(publication.flow.steps.editorial.call).toBe('publish');
+    expect(publication.flow.steps.legal.call).toBe('publish');
+    expect(publication.bindings.publication.effects).toBe('external');
   });
   test('every project has its own plans, conversations and virtual files', async () => {
     const demo = createDemoRuntime();

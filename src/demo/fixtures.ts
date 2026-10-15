@@ -175,11 +175,11 @@ const persistentWriter = scenario('demo-persistent', 'Rédaction supervisée', '
 }, 'start', {
   start: { type: 'prepare', message: { prompt: [{ ref: 'projectGuidance' }] }, next: ['write', 'observe'] },
   write: agentStep('writer', 'review'), observe: agentStep('observer', 'advice'),
-  advice: { type: 'prepare', message: { prompt: [{ value: 'Intégrer la consigne de l’observateur.' }], resources: { guidance: { source: { path: ['text'] } } } }, next: ['steer'] },
+  advice: { type: 'prepare', message: { prompt: [{ value: 'Intégrer la consigne de l’observateur.' }], resources: { guidance: { select: { path: ['text'] }, mediaType: 'text/plain' } } }, next: ['steer'] },
   steer: { type: 'agent', agent: 'writer', delivery: 'steering', steers: 'write' },
   review: { ...agentStep('reviewer', 'ready'), maxVisits: 3 },
   ready: condition('Prêt', ['finish'], ['revise']),
-  revise: { ...agentStep('writer', 'review'), maxVisits: 2 }, finish: { type: 'prepare', message: { resources: { dossier: { source: { path: ['text'] } } } } },
+  revise: { ...agentStep('writer', 'review'), maxVisits: 2 }, finish: { type: 'prepare', message: { resources: { dossier: { select: { path: ['text'] }, mediaType: 'text/plain' } } } },
 }, { start: 'Lancer la rédaction supervisée', write: 'Rédiger le dossier', observe: 'Observer le travail', advice: 'Préparer une consigne', steer: 'Réorienter le rédacteur', review: 'Relire le dossier', ready: 'Dossier prêt ?', revise: 'Reprendre avec le même agent', finish: 'Conserver le dossier' });
 const residentTeam = scenario('demo-resident', 'Équipe support permanente', 'demo-meridian', 'Trois agents persistants reçoivent des messages à la demande. Ce système n’impose aucun ordre d’exécution.', {
   concierge: { title: 'Accueil client', prompt: 'Clarifier la demande et identifier le bon interlocuteur. Conserver l’historique des échanges avec le client.' },
@@ -191,7 +191,48 @@ const residentTeam = scenario('demo-resident', 'Équipe support permanente', 'de
   delete source.flow;
   residentTeam.agsdl.source = JSON.stringify(source, null, 2);
 }
-demoPlans.push(advancedDelivery, persistentWriter, residentTeam);
+const competition = scenario('demo-competition', 'Recherche en compétition', 'demo-helio', 'Deux analystes cherchent en parallèle. Le premier résultat étayé est retenu ; les autres travaux sont arrêtés et leur fin est confirmée avant la synthèse.', {
+  direct: { title: 'Analyste des métriques', prompt: 'Chercher une cause dans les métriques. Produire report avec approved, hypothesis et evidence. approved vaut true uniquement si une preuve étaye l’hypothèse.' },
+  traces: { title: 'Analyste des traces', prompt: 'Chercher une cause dans les traces. Produire report avec approved, hypothesis et evidence. approved vaut true uniquement si une preuve étaye l’hypothèse.' },
+  summarize: { title: 'Présenter la piste retenue', prompt: 'Présenter le résultat retenu sous members, ses preuves et les vérifications encore nécessaires.' },
+  fallback: { title: 'Demander de nouvelles preuves', prompt: 'Expliquer pourquoi aucune piste n’a pu être retenue. Demander les données nécessaires à une nouvelle recherche.' },
+}, 'fork', {
+  fork: { type: 'prepare', message: { prompt: [{ value: 'Rechercher une hypothèse étayée sur la latence du catalogue.' }], resources: { mode: { ref: 'mode' } } }, next: ['metrics', 'traces'] },
+  metrics: agentStep('direct', 'winner'), traces: agentStep('traces', 'winner'),
+  winner: { type: 'join', after: 'fork', members: ['metrics', 'traces'], mode: 'first', accept: { equals: [{ path: ['results', 'report', 'value', 'approved'] }, { value: true }] }, remaining: 'stop-and-wait', next: ['summarize'], onError: ['fallback'] },
+  summarize: agentStep('summarize'), fallback: agentStep('fallback'),
+}, { fork: 'Lancer les deux recherches', metrics: 'Examiner les métriques', traces: 'Examiner les traces', winner: 'Retenir la première piste étayée' });
+const structured = scenario('demo-structured', 'Extraction avec correction', 'demo-helio', 'Extraire une fiche produit structurée. Une sortie non conforme revient au même agent avec les erreurs ; une panne technique prend un autre chemin.', {
+  extractor: { title: 'Extraire la fiche produit', prompt: 'Produire le résultat report en application/json : sku textuel, price numérique et currency parmi EUR ou USD. Ne pas ajouter d’autres propriétés. Si outputErrors est fourni, corriger la sortie en conservant le contexte.' },
+  recovery: { title: 'Examiner le blocage', prompt: 'Présenter l’erreur technique ou la limite de correction atteinte. Indiquer ce qu’il faut vérifier avant une nouvelle tentative.' },
+  publish: { title: 'Présenter la fiche validée', prompt: 'Présenter la fiche produit fournie dans product. Sa structure a été contrôlée ; ne pas affirmer que ses données commerciales ont été vérifiées.' },
+}, 'extract', {
+  extract: { ...agentStep('extractor', 'handoff'), maxVisits: 3, onError: ['correctable'] },
+  correctable: { type: 'condition', test: { equals: [{ path: ['error', 'code'] }, { value: 'OUTPUT_CONSTRAINT' }] }, next: { true: ['feedback'], false: ['recovery'] } },
+  feedback: { type: 'prepare', message: { prompt: [{ value: 'Corriger le résultat report selon les erreurs de validation jointes.' }], resources: { outputErrors: { select: { path: ['error'] }, mediaType: 'application/json' } } }, next: ['extract'] },
+  handoff: { type: 'prepare', message: { resources: { product: { source: { path: ['results', 'report'] } } } }, next: ['publish'] },
+  publish: agentStep('publish'), recovery: agentStep('recovery'),
+}, { extract: 'Extraire la fiche produit', correctable: 'Erreur de format corrigeable ?', feedback: 'Transmettre les erreurs', handoff: 'Transmettre la fiche validée' });
+const approvals = scenario('demo-approvals', 'Publication à double accord', 'demo-atlas', 'Capturer une publication précise, obtenir l’accord éditorial puis juridique, et publier seulement si les deux autorisations sont encore valides.', {
+  prepare: { title: 'Préparer la publication', prompt: 'Préparer le dossier à publier avec sa version et son périmètre. Les accords portent sur cette publication précise.' },
+  revise: { title: 'Revoir la proposition', prompt: 'Prendre en compte le refus. Préparer une nouvelle proposition sans réutiliser les autorisations précédentes.' },
+  recover: { title: 'Examiner l’interruption', prompt: 'Expliquer l’échec de validation ou de publication. Vérifier les effets avant de proposer une nouvelle tentative.' },
+  confirm: { title: 'Présenter le résultat', prompt: 'Présenter le résultat de la publication et sa référence. Mentionner les vérifications restantes.' },
+}, 'prepare', {
+  prepare: agentStep('prepare', 'editorial'),
+  editorial: { type: 'approval', call: 'publish', binding: 'editorialApproval', timeoutMs: 600000, validForMs: 900000, next: { approved: ['legal'], denied: ['revise'] }, onError: ['recover'] },
+  legal: { type: 'approval', call: 'publish', binding: 'legalApproval', timeoutMs: 300000, validForMs: 300000, next: { approved: ['publish'], denied: ['revise'] }, onError: ['recover'] },
+  publish: { type: 'call', binding: 'publication', arguments: { dossier: { path: ['text'] } }, scope: { action: 'publish', resources: ['demo:editorial-release'], context: { path: ['text'] } }, next: ['confirm'], onError: ['recover'] },
+  revise: agentStep('revise'), recover: agentStep('recover'), confirm: agentStep('confirm'),
+}, { editorial: 'Accord éditorial', legal: 'Accord juridique', publish: 'Publier le dossier autorisé' });
+{
+  const source = JSON.parse(approvals.agsdl.source);
+  for (const [name, contract, effects] of [['editorialApproval', 'editorial-approval', 'none'], ['legalApproval', 'legal-approval', 'none'], ['publication', 'publication', 'external']]) source.bindings[name] = {
+    contract: { identity: `demo/${contract}`, version: '1' }, implementation: { identity: 'demo/local-fixtures', version: '1' }, effects,
+  };
+  approvals.agsdl.source = JSON.stringify(source, null, 2);
+}
+demoPlans.push(advancedDelivery, persistentWriter, residentTeam, competition, structured, approvals);
 
 // Shared content and capability declarations remain part of the real AgSDL documents.
 for (const plan of demoPlans.slice(2)) {
@@ -210,6 +251,12 @@ for (const plan of demoPlans.slice(2)) {
   selectable.configuration = { select: { path: ['resources', 'mode', 'value'] }, cases: { fast: 'fast', thorough: 'thorough' } };
   if (plan.id === 'demo-delivery') for (const name of ['webReviewer', 'mobileReviewer', 'coordinatorReview']) source.agents[name].interface.results.report = {
     mediaTypes: ['application/json'], required: true,
+  };
+  if (plan.id === 'demo-competition') for (const name of ['direct', 'traces']) source.agents[name].interface.results.report = {
+    mediaTypes: ['application/json'], required: true, valueSchema: { type: 'object', properties: { approved: { type: 'boolean' }, hypothesis: { type: 'string' }, evidence: { type: 'array', items: { type: 'string' } } }, required: ['approved', 'hypothesis', 'evidence'], additionalProperties: false },
+  };
+  if (plan.id === 'demo-structured') source.agents.extractor.interface.results.report = {
+    mediaTypes: ['application/json'], required: true, valueSchema: { type: 'object', properties: { sku: { type: 'string' }, price: { type: 'number' }, currency: { type: 'string', enum: ['EUR', 'USD'] } }, required: ['sku', 'price', 'currency'], additionalProperties: false },
   };
   if (plan.id === 'demo-incident') {
     source.bindings.classification = { contract: { identity: 'demo/decision', version: '1' }, implementation: { identity: 'demo/classifier', version: '1' }, effects: 'none' };
