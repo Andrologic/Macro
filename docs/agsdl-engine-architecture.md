@@ -4,8 +4,9 @@ Ce document fixe les interfaces et les garanties du moteur AgSDL. Les contrats,
 les invariants, le repository SQLite et les ports produit sont intégrés. Les
 modules Conformance portent la compilation pure et les contrôles de contenu.
 Hosting fournit le host résident, la capture native et les adaptateurs ; Flow
-raccorde les transformations et le scheduler. La disponibilité produit reste
-`false` jusqu’à la qualification finale du point 15 et de ses parcours produit.
+raccorde les transformations et le scheduler. La disponibilité produit est
+activée pour le profil pris en charge. La [qualification native](agsdl-qualification.md)
+précise les parcours vérifiés et les essais de panne encore manquants.
 Les déclarations sont dans
 [`contracts.ts`](../src/services/agsdlExecution/contracts.ts), les vérifications
 locales dans [`invariants.ts`](../src/services/agsdlExecution/invariants.ts).
@@ -305,7 +306,8 @@ la rotation d'epoch, n'est une commande produit dans ce lot.
 
 Les commandes produit exposent preflight, start, deliver, lecture, pagination
 et arrêt. Le démarrage natif exige le host de confiance et sa capture validée.
-La disponibilité produit reste `false` jusqu’à la qualification du point 15.
+La disponibilité produit est activée pour le profil pris en charge ; les limites
+de qualification du point 15 figurent dans la matrice de qualification native.
 La reprise compare toutes les versions capturées aux versions disponibles.
 Elle rend les activités engagées incertaines, conserve leurs verrous et fence
 les anciens propriétaires. Une résolution opérateur native avec preuve reste
@@ -390,8 +392,9 @@ Une perte d’accusé de terminal reprend seulement la même opération sans eff
 Les effets incertains et les continuations perdues ne sont pas rejoués ; le
 verrou reste propre à l’Agent concerné. Graphless conserve ses identités null-step.
 
-La disponibilité produit reste false. Les tests de transformations et de pompe
-ne remplacent pas la qualification finale native et les parcours du point 15.
+La disponibilité produit est activée pour le profil pris en charge. Les tests
+de transformations et de pompe ne remplacent pas les essais natifs ; leur
+couverture réelle est décrite dans la matrice de qualification native.
 
 ## Intentions produit
 

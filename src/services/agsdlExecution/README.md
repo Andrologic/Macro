@@ -2,8 +2,10 @@
 
 Le compilateur pur évalue le profil `macro-serial-inline-v1`. Les raccords natifs
 et `ResidentAgent` ajoutent les frontières privées d’exécution.
-`PRODUCT_RUNTIME_AVAILABLE` et `CompilationResult.productRuntimeAvailable` restent
-`false` jusqu’à la qualification finale du point 15 et de ses parcours produit.
+`PRODUCT_RUNTIME_AVAILABLE` vaut `true`. `CompilationResult.productRuntimeAvailable`
+ne vaut `true` que pour une compilation acceptée par le profil Macro.
+La [qualification native](../../../docs/agsdl-qualification.md) distingue les
+parcours vérifiés des essais de panne restant à réaliser.
 
 ## Versions et représentation
 
@@ -291,8 +293,9 @@ Agents. Les diagnostics publics permettent une sélection exacte ou une page
 récente bornée et ne révèlent pas la capture privée.
 
 Hosting fournit les frontières natives intégrées. Flow raccorde la pompe et
-les transformations à ces ports. La disponibilité produit reste false jusqu’à
-la qualification finale du point 15, avec le scheduler et les parcours produit.
+les transformations à ces ports. La disponibilité produit est activée pour le
+profil pris en charge ; elle ne constitue pas une qualification de tous les
+scénarios de panne du point 15. Voir la matrice de qualification native.
 
 ## Vérifications
 
