@@ -4,14 +4,14 @@ import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
 import { createEmptySystemDocument, readDesign } from "../../services/agsdl/design";
-import { builtInDesignSources, instantiateDesign, listDesignSources, saveBlueprint, type DesignSource } from "../../stores/agsdl/blueprints";
+import { builtInDesignSources, instantiateDesign, listDesignSources, type DesignSource } from "../../stores/agsdl/blueprints";
 import { projectViewer, type ViewerCard } from "../../services/agsdl/viewer";
 import "./design.css";
 import "./designLibrary.css";
 import { AgsdlUserError } from "../../services/agsdl/userErrors";
 import { agsdlErrorText } from "./errorText";
 
-type DesignLibraryMode = "start" | "blueprint" | "system" | "save";
+type DesignLibraryMode = "start" | "blueprint" | "system";
 type DesignLibraryProps = { target: AgsdlTarget; mode: DesignLibraryMode; onClose: () => void; onCreated?: () => void };
 
 const sourcePreview = (source: DesignSource) => {
@@ -33,7 +33,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
   const [version, setVersion] = useState(session.version);
   const [tab, setTab] = useState(mode === "system" ? "system" : "blueprint");
   const [sources, setSources] = useState<DesignSource[]>(builtInDesignSources);
-  const [loading, setLoading] = useState(mode !== "save" && mode !== "start");
+  const [loading, setLoading] = useState(mode !== "start");
   const [loadFailureCount, setLoadFailureCount] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -44,7 +44,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
   const [busy, setBusy] = useState(false);
   const [applied, setApplied] = useState(false);
   useEffect(() => {
-    if (mode === "save" || mode === "start") return;
+    if (mode === "start") return;
     let active = true;
     setLoading(true);
     setError("");
@@ -63,7 +63,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [loadAttempt, mode]);
-  const title = t(mode === "save" ? "agsdl.design.saveBlueprint" : mode === "start" ? "agsdl.design.newSystem" : "agsdl.design.library");
+  const title = t(mode === "start" ? "agsdl.design.newSystem" : "agsdl.design.library");
   const selectionLocked = loading || busy || applied || session.saving;
   const visibleSources = useMemo(() => sources.filter(item => item.kind === tab && item.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, sources, tab]);
   const selectedPreview = useMemo(() => selected ? sourcePreview(selected) : undefined, [selected]);
@@ -82,9 +82,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
       const store = useAgsdlStore.getState();
       const current = store.sessions[agsdlSessionKey(target)];
       if (current.version !== version) throw new AgsdlUserError("agsdl.viewer.editConflict", t("agsdl.viewer.editConflict"));
-      if (mode === "save") {
-        await saveBlueprint(target, name.trim(), undefined, version);
-      } else if (applied) {
+      if (applied) {
         await store.save(target);
       } else if (mode === "start") {
         if (current.source) throw new AgsdlUserError("agsdl.design.notEmpty", t("agsdl.design.notEmpty"));
@@ -101,7 +99,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
     } catch (error) { setError(agsdlErrorText(error, t)); }
     finally { setBusy(false); }
     if (succeeded) {
-      try { if (mode !== "save") onCreated?.(); }
+      try { onCreated?.(); }
       finally { onClose(); }
     }
   };
@@ -112,8 +110,8 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
     backdropClassName="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" panelClassName="agsdl-detail-modal agsdl-design-modal">
     <header><strong>{title}</strong><button className="agsdl-icon-button" disabled={busy} onClick={onClose} aria-label={t("agsdl.close")}><X size={16} /></button></header>
     <div className="agsdl-inspector-body">
-      {mode === "save" || mode === "start" ? <form id="agsdl-library-form" onSubmit={event => { event.preventDefault(); void submit(); }}>
-        <p className="agsdl-muted">{t(mode === "save" ? "agsdl.design.snapshotHint" : "agsdl.design.startHint")}</p>
+      {mode === "start" ? <form id="agsdl-library-form" onSubmit={event => { event.preventDefault(); void submit(); }}>
+        <p className="agsdl-muted">{t("agsdl.design.startHint")}</p>
         <label className="agsdl-edit-field"><span>{t("agsdl.design.name")}</span><input required maxLength={120} value={name} disabled={busy || applied} onChange={event => setName(event.target.value)} /></label>
       </form> : <>
         <div className="agsdl-design-tabs">
@@ -149,7 +147,7 @@ export function DesignLibraryDialog({ target, mode, onClose, onCreated }: Design
       {error && <p role="alert" className="agsdl-unresolved">{error}</p>}
     </div>
     <footer><button onClick={onClose} disabled={busy}>{t("agsdl.cancel")}</button>
-      <button type="submit" form={mode === "save" || mode === "start" ? "agsdl-library-form" : undefined} onClick={mode === "save" || mode === "start" ? undefined : () => void submit()} disabled={busy || loading || session.saving || (mode === "save" || mode === "start" ? !name.trim() : !selected)}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : mode === "save" ? "agsdl.save" : "agsdl.design.create")}</button>
+      <button type="submit" form={mode === "start" ? "agsdl-library-form" : undefined} onClick={mode === "start" ? undefined : () => void submit()} disabled={busy || loading || session.saving || (mode === "start" ? !name.trim() : !selected)}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : "agsdl.design.create")}</button>
     </footer>
   </Dialog>;
 }

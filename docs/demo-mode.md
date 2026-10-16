@@ -60,8 +60,10 @@ Architect, Operate et les parcours d'export dans l'application elle-même.
 ## Limites actuelles
 
 Toutes les commandes de Macro ne sont pas encore simulées. Les opérations
-inconnues échouent explicitement, sans transfert vers le backend réel. Le dialogue
-d'exécution peut lire son état vide ; une exécution AgSDL complète, les approbations,
+inconnues échouent explicitement, sans transfert vers le backend réel. Architecte
+reste consacré à la conception : son en-tête ne conserve que l’agrandissement. Les
+dialogues d’exécution, de fiche système et d’enregistrement de blueprint ont été
+retirés, en attendant de définir les accès adaptés. Une exécution AgSDL complète, les approbations,
 les intégrations externes, la dictée, la sauvegarde et la mise à jour de
 l'application ne sont pas reproduites. Les réponses du chat sont prédéfinies.
 

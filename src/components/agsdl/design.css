@@ -20,9 +20,6 @@
 .agsdl-design-source span { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
 .agsdl-design-source small { color: rgb(var(--muted-foreground)); line-height: 1.5; }
 .agsdl-design-search { width: 100%; padding: 8px 10px; background: rgb(var(--background)); border: 1px solid rgb(var(--border)); border-radius: 6px; margin-bottom: 12px; }
-.agsdl-design-summary { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
-.agsdl-design-summary p { margin: 0; white-space: pre-wrap; }
-.agsdl-design-summary button { align-self: flex-start; }
 .agsdl-design-pending { color: rgb(var(--muted-foreground)); font-size: 11px; display: flex; gap: 6px; align-items: center; }
 .agsdl-change-notice { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid rgb(var(--border)); font-size: 11px; }
 .agsdl-change-notice > button:first-child { flex: 1; text-align: left; color: rgb(var(--primary)); }

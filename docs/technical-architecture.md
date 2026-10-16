@@ -302,6 +302,11 @@ Le panneau de conversations Chat conserve son mode de sélection multiple dans u
 
 Le visualisateur AgSDL est chargé dans `ArchitectStrategyPanel`. `useAgsdlStore`
 partage le document avec les outils `agsdl_get`/`agsdl_update`, par clé branche/plan.
+`AgsdlEditor` lit uniquement ce document de conception. Il ne souscrit plus au
+store d’exécution et ne propose ni lancement, ni capture historique, ni arrêt.
+Son en-tête ne contient que l’agrandissement. Les dialogues de fiche système et
+d’enregistrement de blueprint sont retirés ; la bibliothèque reste utilisée pour
+créer un système dans un plan vide.
 `projectSystemOverview` dérive une vue des participants, des conditions et des
 approbations. Les interfaces et les fins techniques restent dans les détails du
 système ; elles ne créent pas de nœuds artificiels. Les bindings typés fournissent

@@ -7,8 +7,7 @@ import * as chatContext from "../../stores/agsdl/chatContext";
 import { createLegacyExample, createExample } from "../../services/agsdl/examples";
 import { useAgsdlExecutionStore } from "../../stores/useAgsdlExecutionStore";
 import { useChatStore } from "../../stores/useChatStore";
-import type { PublicSnapshot, PublicProjection, PublicActivation, SourceRevision, Sequence } from "../../services/agsdlExecution/contracts";
-import { projectViewer } from "../../services/agsdl/viewer";
+import type { PublicSnapshot, SourceRevision } from "../../services/agsdlExecution/contracts";
 
 const target = { branchName: "develop", planId: "viewer-test" };
 const key = agsdlSessionKey(target);
@@ -56,45 +55,29 @@ describe("AgSDL viewer", () => {
     expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
   });
 
-  it("keeps historical source read-only and shows native badges only on an exact confirmed source", async () => {
+  it("keeps Architect on the authored document even when an execution capture is selected", async () => {
     const authoredSource = createExample("feature");
     const currentDocument = JSON.parse(authoredSource);
     const agent = Object.keys(currentDocument.agents)[0];
-    currentDocument.agents[agent].prompt = "Current draft prompt";
+    currentDocument.agents[agent].prompt = [{ value: "Current draft prompt" }];
     const currentSource = JSON.stringify(currentDocument);
     await mount(currentSource);
     const owner = { projectId: "viewer-project", planId: target.planId, branch: target.branchName };
     const source = { owner, revision: "1", sourceSha256: "a".repeat(64) } as SourceRevision;
     const snapshot = { source, authoredSource, systemStartId: "viewer-run" } as PublicSnapshot;
-    const card = projectViewer(authoredSource).graphs[0].cards[0];
-    const activation = { work: { systemStartId: snapshot.systemStartId, activationId: "viewer-activation", step: [card.path.slice("/flow/steps/".length)], agentInstanceId: null }, workState: "active", stopState: { kind: "none" }, terminalKind: null } as unknown as PublicActivation;
-    const projection = { source, systemStartId: snapshot.systemStartId, cursor: "1" as Sequence, agents: [], activations: [activation], nextPage: null, systemStop: { kind: "none" } } as PublicProjection;
-    spyOn(useAgsdlExecutionStore.getState(), "inspectTask").mockResolvedValue(undefined);
+    const watch = spyOn(useAgsdlExecutionStore.getState(), "watch");
     act(() => {
       useChatStore.setState({ selectedConversationId: "viewer-conversation", conversations: [{ id: "viewer-conversation", project_id: owner.projectId } as ReturnType<typeof useChatStore.getState>["conversations"][number]] });
-      useAgsdlExecutionStore.setState({ owner, conversationId: "viewer-conversation", snapshot, projection, captured: false });
+      useAgsdlExecutionStore.setState({ owner, conversationId: "viewer-conversation", snapshot, captured: true });
     });
-    expect(container!.textContent).toContain("Current source not confirmed");
-    expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
-    act(() => useAgsdlExecutionStore.setState({ preflight: { source: { ...source, revision: "2" }, authoredSource: currentSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: false, registryVersion: "registry", diagnostics: [], incomplete: false } as import("../../types/generated/ipc").ExecutionPreflight }));
-    expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
-    act(() => {
-      useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], source: authoredSource, persistedRevision: 7 } } }));
-      useAgsdlExecutionStore.setState({ preflight: { source, authoredSource, staticValid: true, runtimeSupported: true, productRuntimeAvailable: false, registryVersion: "registry", diagnostics: [], incomplete: false } as import("../../types/generated/ipc").ExecutionPreflight });
-    });
-    expect(container!.querySelector(".agsdl-native-active")).not.toBeNull();
-    act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], source: currentSource, dirty: true } } })));
-    expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
-    act(() => useAgsdlExecutionStore.getState().showCaptured(true));
-    expect(container!.textContent).toContain("View execution graph");
-    expect(container!.querySelector(".agsdl-native-active")).not.toBeNull();
+    expect(watch).not.toHaveBeenCalled();
+    expect(container!.querySelector(".agsdl-native-dot, .agsdl-graph-caption")).toBeNull();
+    const header = container!.querySelector(".agsdl-viewer-header")!;
+    expect([...header.querySelectorAll("button")]).toHaveLength(0);
     await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
-    expect(document.body.querySelector(".agsdl-prompt")?.textContent).toBe("Clarify the request and produce acceptance criteria.");
-    expect(document.body.querySelector('[aria-label="Edit component"]')).toBeNull();
+    expect(document.body.querySelector(".agsdl-prompt")?.textContent).toBe("Current draft prompt");
+    expect(document.body.querySelector('[aria-label="Edit component"]')).not.toBeNull();
     expect(useAgsdlStore.getState().sessions[key].source).toBe(currentSource);
-    act(() => useChatStore.setState({ selectedConversationId: "another-conversation" }));
-    expect(container!.querySelector(".agsdl-native-dot")).toBeNull();
-    expect(container!.textContent).not.toContain("View execution graph");
   });
 
   it("returns from the expanded graph only after attaching context successfully", async () => {
@@ -135,38 +118,18 @@ describe("AgSDL viewer", () => {
     expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
   });
 
-  it("separates agent prompts, input provenance and output recipients from system contracts", async () => {
+  it("keeps agent prompts, input provenance and output recipients in focused details", async () => {
     await mount();
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
     expect(nodes).toHaveLength(3);
     expect(container!.querySelector(".is-boundary, .react-flow__edge-text")).toBeNull();
     expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
-    act(() => container!.querySelector<HTMLButtonElement>('[aria-label="System details"]')!.click());
-    const overview = globalThis.document.body.querySelector(".agsdl-inspector")!;
-    expect(overview.textContent).not.toContain("brief");
-    expect(overview.textContent).not.toContain("Technical details");
-    expect(overview.textContent).not.toContain("All declarations");
-    expect(overview.querySelector("details")).toBeNull();
-    expect(overview.querySelector(".agsdl-provenance")).toBeNull();
     await inspectNode(nodes[0]);
     const agentDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
     expect(agentDetails.querySelector(".agsdl-prompt")?.textContent).toBe("Clarify the request and produce acceptance criteria.");
     expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("System input");
     expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("Implementation");
     expect(agentDetails.querySelector(".agsdl-properties")).toBeNull();
-  });
-
-  it("attaches the whole system to chat without exposing its technical contracts", async () => {
-    await mount();
-    const source = useAgsdlStore.getState().sessions[key].source;
-    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValue(undefined);
-    act(() => container!.querySelector<HTMLButtonElement>('[aria-label="System details"]')!.click());
-    const button = document.body.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!;
-    expect(button).not.toBeNull();
-    await act(async () => button.click());
-    expect(attach).toHaveBeenCalledWith(target, { path: "", title: "Feature", diagnostic: undefined });
-    expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
-    expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
   });
 
   it("previews a linked agent on focus and opens its modal on click without changing source", async () => {
@@ -200,12 +163,7 @@ describe("AgSDL viewer", () => {
     } } })));
     expect(container!.querySelector('[role="status"]')).not.toBeNull();
     expect(container!.querySelector('[aria-label="Undo"], [aria-label="Redo"]')).toBeNull();
-    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValue(undefined);
-    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="System details"]')!.click());
-    expect(globalThis.document.body.querySelector(".agsdl-inspector")).not.toBeNull();
-    const review = [...globalThis.document.body.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Review with AI")!;
-    await act(async () => review.click());
-    expect(attach.mock.calls[0][1].diagnostic).toContain("Unknown agent reference");
+    expect(container!.querySelector('[aria-label="System details"]')).toBeNull();
   });
 
   it("keeps an unreadable document recoverable through chat with technical details collapsed", async () => {
@@ -304,6 +262,10 @@ describe("AgSDL viewer", () => {
     )!;
     act(() => expand.click());
     expect(expanded).toBe(true);
+    const headerButtons = [...container.querySelectorAll<HTMLButtonElement>(".agsdl-viewer-header button")];
+    expect(headerButtons).toHaveLength(1);
+    expect(headerButtons[0]).toBe(expand);
+    expect(container.querySelector('[aria-label="Executions"], [aria-label="System details"], [aria-label="Save as blueprint"]')).toBeNull();
     const firstCard = container.querySelector<HTMLButtonElement>(
       ".agsdl-graph-node:not(.is-boundary)",
     )!;

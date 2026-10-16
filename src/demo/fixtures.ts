@@ -377,7 +377,7 @@ export function demoMessage(conversationId: string, role: string, content: strin
 }
 export const demoMessages = [
   demoMessage('demo-release-chat', 'user', 'Préparons la release de Luma. Je voudrais relire les changements et vérifier les installateurs.'),
-  demoMessage('demo-release-chat', 'assistant', 'Le système est prêt à être exploré.\n\nLes agents vérifient les prérequis, relisent les changements puis contrôlent les installateurs. Sélectionnez une étape pour voir ses échanges. Le bouton d’information ouvre ses instructions.\n\nDans ce mode démo, vous pouvez modifier les informations sans toucher à vos projets.'),
+  demoMessage('demo-release-chat', 'assistant', 'Le système est prêt à être exploré.\n\nLes agents vérifient les prérequis, relisent les changements puis contrôlent les installateurs. Sélectionnez une étape pour voir ses échanges. Double-cliquez sur un bloc pour ouvrir ses instructions.\n\nDans ce mode démo, vous pouvez modifier les informations sans toucher à vos projets.'),
   demoMessage('demo-assistant-chat', 'user', 'Créons un assistant pour les demandes des clients du studio.'),
   demoMessage('demo-assistant-chat', 'assistant', 'L’assistant clarifie la demande, prépare une réponse et vérifie sa cohérence. Nous pouvons ajuster les instructions ensemble.'),
   demoMessage('demo-task-chat', 'user', 'La lecture audio doit reprendre à la dernière position.'),
