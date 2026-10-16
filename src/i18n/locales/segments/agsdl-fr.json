@@ -450,5 +450,25 @@
     "saving": "Attendez la fin de l’enregistrement en cours.",
     "nameRequired": "Donnez un nom au blueprint.",
     "systemRequired": "Créez un système avant d’enregistrer un blueprint."
+  },
+  "persistence": {
+    "title": "Enregistrer et exporter",
+    "destination": "Destination",
+    "project": "Projet",
+    "blueprint": "Blueprint",
+    "export": "Exporter",
+    "pending": "Modifications à enregistrer",
+    "saved": "Conservé dans le projet",
+    "projectHint": "Votre travail reste dans la branche de métadonnées @Macro du projet.",
+    "blueprintHint": "Créer une copie indépendante et réutilisable. Le système actuel reste inchangé.",
+    "format": "Format",
+    "source": "Source AgSDL",
+    "macro": "Copie Macro complète",
+    "sourceHint": "Le document AgSDL seul. Les fichiers référencés sont à fournir séparément.",
+    "macroHint": "Inclut la source, les annexes et les informations de conception Macro.",
+    "downloaded": "Téléchargement demandé.",
+    "success": "Enregistré.",
+    "download": "Télécharger",
+    "createBlueprint": "Créer le blueprint"
   }
 }

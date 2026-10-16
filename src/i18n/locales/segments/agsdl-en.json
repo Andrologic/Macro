@@ -450,5 +450,25 @@
     "saving": "Wait for the current save to finish.",
     "nameRequired": "Give the blueprint a name.",
     "systemRequired": "Create a system before saving a blueprint."
+  },
+  "persistence": {
+    "title": "Save and export",
+    "destination": "Destination",
+    "project": "Project",
+    "blueprint": "Blueprint",
+    "export": "Export",
+    "pending": "Changes to save",
+    "saved": "Saved in the project",
+    "projectHint": "Your work stays with the project in its Macro metadata branch.",
+    "blueprintHint": "Create an independent, reusable copy. The current system stays unchanged.",
+    "format": "Format",
+    "source": "AgSDL source",
+    "macro": "Complete Macro copy",
+    "sourceHint": "The AgSDL document only. Referenced files must be supplied separately.",
+    "macroHint": "Includes the source, annexes and Macro design information.",
+    "downloaded": "Download requested.",
+    "success": "Saved.",
+    "download": "Download",
+    "createBlueprint": "Create blueprint"
   }
 }

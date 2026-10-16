@@ -113,9 +113,11 @@ Le contrat complet des fichiers, scopes et règles de sécurité est défini dan
 Dans le parcours Architect actuel, l'utilisateur décrit son intention dans une
 conversation. L'IA inspecte le contexte, pose les questions nécessaires et aide
 à construire un système AgSDL. L'utilisateur peut consulter le graphe, modifier
-les propriétés prises en charge. L’en-tête du graphe conserve uniquement
-l’agrandissement à droite. Les interfaces d’exécution, de fiche système et
-d’enregistrement de blueprint sont retirées pendant la refonte de leurs accès.
+les propriétés prises en charge. L’en-tête du graphe propose « Enregistrer et
+exporter », puis l’agrandissement à droite. Un seul modal regroupe la conservation
+dans le projet, la création d’une copie blueprint et le téléchargement du document
+AgSDL ou d’une copie Macro complète. Les interfaces d’exécution et de fiche
+système restent retirées.
 La création depuis un blueprint reste disponible pour un plan vide. Cette
 conception ne lance pas les agents du graphe et ne crée pas de tâches Implement.
 

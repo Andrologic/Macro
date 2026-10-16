@@ -450,5 +450,25 @@
     "saving": "Warten Sie, bis das aktuelle Speichern abgeschlossen ist.",
     "nameRequired": "Geben Sie dem Blueprint einen Namen.",
     "systemRequired": "Erstellen Sie ein System, bevor Sie einen Blueprint speichern."
+  },
+  "persistence": {
+    "title": "Speichern und exportieren",
+    "destination": "Ziel",
+    "project": "Projekt",
+    "blueprint": "Blueprint",
+    "export": "Export",
+    "pending": "Änderungen speichern",
+    "saved": "Im Projekt gespeichert",
+    "projectHint": "Ihre Arbeit bleibt im Macro-Metadatenzweig des Projekts.",
+    "blueprintHint": "Eine unabhängige, wiederverwendbare Kopie erstellen. Das aktuelle System bleibt unverändert.",
+    "format": "Format",
+    "source": "AgSDL-Quelldatei",
+    "macro": "Vollständige Macro-Kopie",
+    "sourceHint": "Nur das AgSDL-Dokument. Referenzierte Dateien müssen separat bereitgestellt werden.",
+    "macroHint": "Enthält Quelle, Anhänge und Macro-Entwurfsinformationen.",
+    "downloaded": "Download angefordert.",
+    "success": "Gespeichert.",
+    "download": "Herunterladen",
+    "createBlueprint": "Blueprint erstellen"
   }
 }

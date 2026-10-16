@@ -450,5 +450,25 @@
     "saving": "現在の保存が完了するまでお待ちください。",
     "nameRequired": "ブループリントに名前を付けてください。",
     "systemRequired": "ブループリントを保存する前にシステムを作成してください。"
+  },
+  "persistence": {
+    "title": "保存とエクスポート",
+    "destination": "保存先",
+    "project": "プロジェクト",
+    "blueprint": "ブループリント",
+    "export": "エクスポート",
+    "pending": "未保存の変更",
+    "saved": "プロジェクトに保存済み",
+    "projectHint": "作業内容はプロジェクトのMacroメタデータブランチに保存されます。",
+    "blueprintHint": "独立した再利用可能なコピーを作成します。現在のシステムは変更されません。",
+    "format": "形式",
+    "source": "AgSDLソース",
+    "macro": "Macro完全コピー",
+    "sourceHint": "AgSDL文書のみ。参照ファイルは別途提供する必要があります。",
+    "macroHint": "ソース、添付資料、Macroの設計情報を含みます。",
+    "downloaded": "ダウンロードを要求しました。",
+    "success": "保存しました。",
+    "download": "ダウンロード",
+    "createBlueprint": "ブループリントを作成"
   }
 }

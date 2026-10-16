@@ -61,9 +61,10 @@ Architect, Operate et les parcours d'export dans l'application elle-même.
 
 Toutes les commandes de Macro ne sont pas encore simulées. Les opérations
 inconnues échouent explicitement, sans transfert vers le backend réel. Architecte
-reste consacré à la conception : son en-tête ne conserve que l’agrandissement. Les
-dialogues d’exécution, de fiche système et d’enregistrement de blueprint ont été
-retirés, en attendant de définir les accès adaptés. Une exécution AgSDL complète, les approbations,
+reste consacré à la conception : son en-tête regroupe l’enregistrement et l’export
+dans un modal unique, à gauche de l’agrandissement. Les blueprints sont créés dans
+les données fictives ; les exports téléchargent réellement un fichier local. Les
+dialogues d’exécution et de fiche système restent retirés. Une exécution AgSDL complète, les approbations,
 les intégrations externes, la dictée, la sauvegarde et la mise à jour de
 l'application ne sont pas reproduites. Les réponses du chat sont prédéfinies.
 

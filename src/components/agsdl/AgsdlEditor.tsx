@@ -1,6 +1,7 @@
+import { SaveSystemDialog } from "./SaveSystemDialog";
 import { DisclosureSummary } from "./DisclosureSummary";
 import React, { useEffect, useMemo, useState } from "react";
-import { Maximize2, X } from "lucide-react";
+import { Save, Maximize2, X } from "lucide-react";
 import { DesignLibraryDialog, DesignStart } from "./DesignLibraryDialog";
 import { DesignChangesDialog } from "./DesignChangesDialog";
 import { reviewDesignChanges } from "../../services/agsdl/designReview";
@@ -35,6 +36,7 @@ export const AgsdlEditor: React.FC<{
   const { t } = useAgsdlTranslation();
   const key = agsdlSessionKey(target);
   const session = useAgsdlStore((state) => state.sessions[key]);
+  const [saveOpen, setSaveOpen] = useState(false);
   const [error, setError] = useState("");
   const [library, setLibrary] = useState<"start" | "blueprint" | "system">();
   const [changesOpen, setChangesOpen] = useState(false);
@@ -258,6 +260,7 @@ export const AgsdlEditor: React.FC<{
       <header className="agsdl-viewer-header">
         <strong title={document?.title}>{document?.title || t("agsdl.editor")}</strong>
         <div className="agsdl-header-actions">
+          {source && <button className="agsdl-icon-button" title={t("agsdl.persistence.title")} aria-label={t("agsdl.persistence.title")} onClick={() => setSaveOpen(true)}><Save size={14} /></button>}
           {onExpand && <button className="agsdl-icon-button" onClick={onExpand}
             aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")}
             title={t(expanded ? "agsdl.shrink" : "agsdl.expand")}>
@@ -347,6 +350,7 @@ export const AgsdlEditor: React.FC<{
             </section>
           </ComponentDetailsDialog>}
         </>}
+      {saveOpen && session && <SaveSystemDialog target={target} title={document?.title || ""} onClose={() => setSaveOpen(false)} />}
       {library && session && <DesignLibraryDialog key={`${key}:${library}`} target={target} mode={library} onClose={() => setLibrary(undefined)} />}
       {changesOpen && review && <DesignChangesDialog review={review} onClose={() => setChangesOpen(false)} onSelect={path => {
         const index = document?.graphs.findIndex(graph => graph.cards.some(card => card.path === path)) ?? -1;

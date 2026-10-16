@@ -73,7 +73,7 @@ describe("AgSDL viewer", () => {
     expect(watch).not.toHaveBeenCalled();
     expect(container!.querySelector(".agsdl-native-dot, .agsdl-graph-caption")).toBeNull();
     const header = container!.querySelector(".agsdl-viewer-header")!;
-    expect([...header.querySelectorAll("button")]).toHaveLength(0);
+    expect([...header.querySelectorAll("button")]).toHaveLength(1);
     await inspectNode(container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!);
     expect(document.body.querySelector(".agsdl-prompt")?.textContent).toBe("Current draft prompt");
     expect(document.body.querySelector('[aria-label="Edit component"]')).not.toBeNull();
@@ -263,8 +263,9 @@ describe("AgSDL viewer", () => {
     act(() => expand.click());
     expect(expanded).toBe(true);
     const headerButtons = [...container.querySelectorAll<HTMLButtonElement>(".agsdl-viewer-header button")];
-    expect(headerButtons).toHaveLength(1);
-    expect(headerButtons[0]).toBe(expand);
+    expect(headerButtons).toHaveLength(2);
+    expect(headerButtons[0].getAttribute("aria-label")).toBe("Save and export");
+    expect(headerButtons[1]).toBe(expand);
     expect(container.querySelector('[aria-label="Executions"], [aria-label="System details"], [aria-label="Save as blueprint"]')).toBeNull();
     const firstCard = container.querySelector<HTMLButtonElement>(
       ".agsdl-graph-node:not(.is-boundary)",
