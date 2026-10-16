@@ -261,7 +261,8 @@
     "toggleLeftPanel": "Basculer le panneau gauche",
     "toggleRightPanel": "Basculer le panneau droit",
     "settings": "Paramètres",
-    "account": "Compte"
+    "account": "Compte",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Ouvrir l'onboarding",

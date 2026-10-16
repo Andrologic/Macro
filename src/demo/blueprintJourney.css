@@ -1,0 +1,54 @@
+.demo-journey-architect { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.demo-journey-graph { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.demo-journey-graph > aside { flex: 1; }
+.demo-journey-entry, .demo-operate-graph-title { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid rgb(var(--border)); }
+.demo-journey-entry > div { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.demo-journey-entry strong, .demo-operate-graph-title strong { font-size: 12px; font-weight: 500; }
+.demo-journey-entry > div > button { display: flex; gap: 5px; align-items: center; color: rgb(var(--muted-foreground)); font-size: 11px; align-self: flex-start; }
+.demo-journey-entry button:hover { color: rgb(var(--primary)); }
+.demo-journey-modal { width: min(620px, 100%); }
+.demo-journey-muted { color: rgb(var(--muted-foreground)); font-size: 12px; line-height: 1.6; }
+.demo-journey-rule { display: flex; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid rgb(var(--border)); }
+.demo-journey-rule > span { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.demo-journey-rule strong, .demo-journey-inputs strong, .demo-journey-specific strong { font-size: 12px; font-weight: 500; }
+.demo-journey-rule small { color: rgb(var(--muted-foreground)); font-size: 11px; }
+.demo-journey-rule select { max-width: 200px; font-size: 12px; padding: 7px; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--background)); }
+.demo-operate-nav { height: 100%; padding: 16px 10px; display: flex; flex-direction: column; gap: 8px; }
+.demo-operate-nav h2 { font-size: 14px; font-weight: 600; padding: 0 6px; margin: 0 0 12px; }
+.demo-operate-nav > small { font-size: 11px; color: rgb(var(--muted-foreground)); padding: 12px 6px 4px; }
+.demo-operate-nav > button { display: flex; gap: 10px; align-items: center; padding: 10px; border-radius: 6px; text-align: left; font-size: 12px; }
+.demo-operate-nav > button > span { flex: 1; }
+.demo-operate-nav button small { display: block; color: rgb(var(--muted-foreground)); font-size: 11px; margin-top: 4px; }
+.demo-operate-nav > button:hover, .demo-operate-nav > button[aria-pressed=true] { background: rgb(var(--muted)); }
+.demo-operate-blueprint { border: 1px solid rgb(var(--border)); }
+.demo-operate-center { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.demo-operate-center > header { display: flex; align-items: center; justify-content: space-between; padding: 15px 22px; border-bottom: 1px solid rgb(var(--border)); }
+.demo-operate-center header h1 { font-size: 15px; font-weight: 500; margin-top: 4px; }
+.demo-operate-center header small, .demo-journey-actions small, .demo-operate-graph-title small { color: rgb(var(--muted-foreground)); font-size: 11px; }
+.demo-operate-center .agsdl-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.demo-operate-body { flex: 1; min-height: 0; overflow: auto; padding: 25px; }
+.demo-operate-body > * { max-width: 720px; margin-left: auto; margin-right: auto; }
+.demo-journey-title { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin-bottom: 10px; }
+.demo-journey-title h2 { font-size: 17px; font-weight: 500; }
+.demo-journey-badge { border: 1px solid rgb(var(--border)); background: rgb(var(--muted) / .3); border-radius: 5px; padding: 4px 7px; color: rgb(var(--muted-foreground)); font-size: 11px; white-space: nowrap; }
+.demo-journey-inputs { margin-top: 24px; border: 1px solid rgb(var(--border)); border-radius: 8px; padding: 0 16px; }
+.demo-journey-inputs > label, .demo-journey-connection { display: flex; gap: 12px; align-items: flex-start; padding: 17px 0; border-bottom: 1px solid rgb(var(--border)); }
+.demo-journey-inputs > :last-child { border-bottom: 0; }
+.demo-journey-inputs > label > span, .demo-journey-connection > span { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.demo-journey-inputs svg { margin-top: 2px; flex: none; color: rgb(var(--muted-foreground)); }
+.demo-journey-inputs input, .demo-journey-inputs select, .demo-journey-specific textarea { width: 100%; padding: 8px 10px; background: rgb(var(--background)); border: 1px solid rgb(var(--border)); border-radius: 6px; font-size: 12px; color: inherit; }
+.demo-journey-connection small { font-size: 11px; color: rgb(var(--muted-foreground)); }
+.demo-journey-specific { display: flex; flex-direction: column; gap: 10px; margin-top: 22px; margin-bottom: 14px; }
+.demo-journey-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.demo-journey-instructions { padding: 12px; border: 1px solid rgb(var(--border)); border-radius: 6px; margin-top: 12px; font-size: 12px; line-height: 1.6; }
+.demo-journey-instructions p { margin: 6px 0 12px; }
+.demo-journey-values { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid rgb(var(--border)); border-radius: 8px; margin-top: 24px; padding: 14px; gap: 18px; }
+.demo-journey-values small { display: block; color: rgb(var(--muted-foreground)); font-size: 11px; margin-bottom: 5px; }
+.demo-journey-values span { font-size: 12px; }
+.demo-journey-timeline { margin-top: 26px; }
+.demo-journey-timeline section { display: flex; gap: 13px; padding: 15px 0; font-size: 12px; border-bottom: 1px solid rgb(var(--border)); }
+.demo-journey-timeline section > span { color: rgb(var(--primary)); }
+.demo-journey-timeline p { color: rgb(var(--muted-foreground)); margin-top: 8px; line-height: 1.6; }
+.demo-journey-empty { text-align: center; padding-top: 60px; }
+.demo-journey-empty h2 { margin: 18px 0; }
+.demo-journey-empty > svg { margin: auto; color: rgb(var(--muted-foreground)); }

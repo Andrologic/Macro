@@ -13,7 +13,9 @@ export function SaveSystemDialog({ target, title, onClose }: { target: AgsdlTarg
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
   const [version] = useState(session.version);
-  const [destination, setDestination] = useState<Destination>('project');
+  const demoJourney = import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1';
+  const titleKey = demoJourney ? 'agsdl.persistence.export' : 'agsdl.persistence.title';
+  const [destination, setDestination] = useState<Destination>(demoJourney ? 'export' : 'project');
   const [name, setName] = useState(title);
   const [format, setFormat] = useState<AgsdlExportFormat>('source');
   const [busy, setBusy] = useState(false);
@@ -35,11 +37,11 @@ export function SaveSystemDialog({ target, title, onClose }: { target: AgsdlTarg
     finally { setBusy(false); }
   };
   const choices = [{ id: 'project', Icon: Save }, { id: 'blueprint', Icon: LayoutTemplate }, { id: 'export', Icon: Download }] as const;
-  return <Dialog title={t('agsdl.persistence.title')} onClose={() => { if (!locked) onClose(); }} closeOnBackdropClick panelClassName="agsdl-detail-modal agsdl-save-modal">
-    <header><strong>{t('agsdl.persistence.title')}</strong><button className="agsdl-icon-button" disabled={locked} onClick={onClose} aria-label={t('agsdl.close')}><X size={16} /></button></header>
+  return <Dialog title={t(titleKey)} onClose={() => { if (!locked) onClose(); }} closeOnBackdropClick panelClassName="agsdl-detail-modal agsdl-save-modal">
+    <header><strong>{t(titleKey)}</strong><button className="agsdl-icon-button" disabled={locked} onClick={onClose} aria-label={t('agsdl.close')}><X size={16} /></button></header>
     <div className="agsdl-inspector-body">
       <div className="agsdl-save-destinations" role="group" aria-label={t('agsdl.persistence.destination')}>
-        {choices.map(({ id, Icon }) => <button key={id} disabled={locked} aria-pressed={destination === id} onClick={() => { setDestination(id); setDone(false); setError(''); }}><Icon size={18} /><span>{t(`agsdl.persistence.${id}`)}</span></button>)}
+        {choices.filter(choice => !demoJourney || choice.id !== 'project').map(({ id, Icon }) => <button key={id} disabled={locked} aria-pressed={destination === id} onClick={() => { setDestination(id); setDone(false); setError(''); }}><Icon size={18} /><span>{t(`agsdl.persistence.${id}`)}</span></button>)}
       </div>
       {destination === 'project' ? <div className="agsdl-save-status"><Check size={18} /><div><strong>{t(session.dirty ? 'agsdl.persistence.pending' : 'agsdl.persistence.saved')}</strong><p>{t('agsdl.persistence.projectHint')}</p></div></div> : <>
         <label className="agsdl-edit-field"><span>{t('agsdl.design.name')}</span><input value={name} maxLength={120} disabled={locked || (done && destination === 'blueprint')} onChange={event => setName(event.target.value)} /></label>

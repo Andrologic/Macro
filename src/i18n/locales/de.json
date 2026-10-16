@@ -261,7 +261,8 @@
     "toggleLeftPanel": "Linken Bereich umschalten",
     "toggleRightPanel": "Rechtes Feld umschalten",
     "settings": "Einstellungen",
-    "account": "Konto"
+    "account": "Konto",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Onboarding öffnen",

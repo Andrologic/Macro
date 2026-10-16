@@ -1,7 +1,7 @@
 import { SaveSystemDialog } from "./SaveSystemDialog";
 import { DisclosureSummary } from "./DisclosureSummary";
 import React, { useEffect, useMemo, useState } from "react";
-import { Save, Maximize2, X } from "lucide-react";
+import { Download, Save, Maximize2, X } from "lucide-react";
 import { DesignLibraryDialog, DesignStart } from "./DesignLibraryDialog";
 import { DesignChangesDialog } from "./DesignChangesDialog";
 import { reviewDesignChanges } from "../../services/agsdl/designReview";
@@ -34,6 +34,8 @@ export const AgsdlEditor: React.FC<{
   onExpand?: () => void;
 }> = ({ target, planStatus, expanded, onExpand }) => {
   const { t } = useAgsdlTranslation();
+  const demoJourney = import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1';
+  const persistenceTitle = t(demoJourney ? 'agsdl.persistence.export' : 'agsdl.persistence.title');
   const key = agsdlSessionKey(target);
   const session = useAgsdlStore((state) => state.sessions[key]);
   const [saveOpen, setSaveOpen] = useState(false);
@@ -260,7 +262,7 @@ export const AgsdlEditor: React.FC<{
       <header className="agsdl-viewer-header">
         <strong title={document?.title}>{document?.title || t("agsdl.editor")}</strong>
         <div className="agsdl-header-actions">
-          {source && <button className="agsdl-icon-button" title={t("agsdl.persistence.title")} aria-label={t("agsdl.persistence.title")} onClick={() => setSaveOpen(true)}><Save size={14} /></button>}
+          {source && <button className="agsdl-icon-button" title={persistenceTitle} aria-label={persistenceTitle} onClick={() => setSaveOpen(true)}>{demoJourney ? <Download size={14} /> : <Save size={14} />}</button>}
           {onExpand && <button className="agsdl-icon-button" onClick={onExpand}
             aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")}
             title={t(expanded ? "agsdl.shrink" : "agsdl.expand")}>

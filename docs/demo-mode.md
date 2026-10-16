@@ -89,3 +89,33 @@ bun run typecheck
 Pour une vérification visuelle, changer de projet, ouvrir un agent, modifier ses
 instructions et son modèle, enregistrer, envoyer un message, parcourir les tâches
 et les paramètres, puis recharger la page. Les données initiales doivent réapparaître.
+
+## Parcours blueprint → Operate
+
+Dans Luma Mobile, ouvrir **Release mobile**, puis **Préparer le blueprint** au-dessus
+du graphe. Pour chaque entrée, choisir une valeur par défaut ou **À fournir au
+lancement**. Le modèle Macro AI est prérempli par défaut ; il peut aussi être
+demandé à chaque utilisation. Ces attentes sont des métadonnées de conception
+conservées avec le plan fictif, sans ajouter de propriétés au document AgSDL.
+
+Chaque changement d’attente est conservé automatiquement dans les métadonnées
+fictives. **Utiliser dans Operate** ouvre ensuite la préparation. Le mode
+`Implement` est présenté comme **Operate** dans cette démo uniquement, avec une
+bibliothèque de blueprint, une préparation centrale et le graphe à droite. Les
+icônes Architect et Operate sont également adaptées uniquement dans ce mode.
+
+Renseigner la version, sélectionner les paquets fictifs, choisir le modèle si
+nécessaire et connecter le dépôt simulé. Une consigne peut être ajoutée pour cette
+utilisation, séparément des instructions permanentes. Le démarrage reste bloqué
+tant qu'une entrée obligatoire manque. La simulation capture source, annexes,
+métadonnées et choix de lancement ; une nouvelle utilisation ne les modifie pas.
+Les trois agents progressent, puis la simulation se termine. **Arrêter** empêche
+toute progression ultérieure de cette exécution. Les anciennes exécutions restent
+consultables à gauche. Le bouton **Architect** revient au blueprint source.
+
+Ce parcours est une proposition d'interface limitée à ce blueprint fictif. Les
+entrées ne sont pas encore un contrat générique de lancement relié au moteur.
+Aucun provider, dépôt, installateur ou contrôle de signature réel n'est sollicité.
+Les résultats affichés sont prédéfinis. Le parcours de référence est en français ;
+les autres langues utilisent les libellés anglais pour les nouveaux contrôles.
+Un rechargement remet la démo et les simulations à zéro.

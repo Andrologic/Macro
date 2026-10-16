@@ -261,7 +261,8 @@
     "toggleLeftPanel": "Alternar panel izquierdo",
     "toggleRightPanel": "Alternar panel derecho",
     "settings": "Configuración",
-    "account": "cuenta"
+    "account": "cuenta",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Abrir onboarding",

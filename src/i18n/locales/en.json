@@ -261,7 +261,8 @@
     "toggleLeftPanel": "Toggle left panel",
     "toggleRightPanel": "Toggle right panel",
     "settings": "Settings",
-    "account": "Account"
+    "account": "Account",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "Open onboarding",

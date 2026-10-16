@@ -261,7 +261,8 @@
     "toggleLeftPanel": "왼쪽 패널 전환",
     "toggleRightPanel": "오른쪽 패널 전환",
     "settings": "설정",
-    "account": "계정"
+    "account": "계정",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "온보딩 열기",

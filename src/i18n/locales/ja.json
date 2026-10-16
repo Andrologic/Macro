@@ -261,7 +261,8 @@
     "toggleLeftPanel": "左パネルを切り替えます",
     "toggleRightPanel": "右パネルを切り替えます",
     "settings": "設定",
-    "account": "アカウント"
+    "account": "アカウント",
+    "operate": "Operate"
   },
   "onboarding": {
     "open": "オンボーディングを開く",

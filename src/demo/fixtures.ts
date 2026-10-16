@@ -1,3 +1,4 @@
+import { defaultLaunchRequirements } from './blueprintInputs';
 import type { Project, Task } from '../types';
 import type { DbConversation, DbMessage, DbProviderConfig, DbAiModel } from '../services/tauriIpc';
 import { createExampleDocument } from '../services/agsdl/examples';
@@ -337,6 +338,9 @@ for (const plan of demoPlans.slice(2)) {
   plan.agsdl.source = JSON.stringify(source, null, 2);
 }
 
+const releaseBlueprint = demoPlans.find(plan => plan.id === 'demo-release')!;
+releaseBlueprint.agsdl.design = { ...releaseBlueprint.agsdl.design!, kind: 'blueprint', requirements: defaultLaunchRequirements() };
+
 const taskSeeds: Array<[string, string, string, string, Task['status'], string]> = [
   ['demo-transcript', 'demo-luma', 'demo-voice', 'Clarifier deux passages de la réunion', 'AwaitingResponse', 'Les noms de deux participants sont ambigus. Confirmer leur orthographe avant la synthèse.'],
   ['demo-summary', 'demo-luma', 'demo-voice', 'Préparer le résumé de la réunion', 'Blocked', 'En attente des précisions sur la transcription.'],
@@ -377,7 +381,7 @@ export function demoMessage(conversationId: string, role: string, content: strin
 }
 export const demoMessages = [
   demoMessage('demo-release-chat', 'user', 'Préparons la release de Luma. Je voudrais relire les changements et vérifier les installateurs.'),
-  demoMessage('demo-release-chat', 'assistant', 'Le système est prêt à être exploré.\n\nLes agents vérifient les prérequis, relisent les changements puis contrôlent les installateurs. Sélectionnez une étape pour voir ses échanges. Double-cliquez sur un bloc pour ouvrir ses instructions.\n\nDans ce mode démo, vous pouvez modifier les informations sans toucher à vos projets.'),
+  demoMessage('demo-release-chat', 'assistant', 'Le blueprint décrit les vérifications de la release. Les données propres à chaque utilisation seront fournies dans Operate.\n\nAu-dessus du graphe, « Préparer le blueprint » permet de choisir ce qui sera demandé au lancement. Les instructions des agents restent modifiables depuis les blocs ou le chat.'),
   demoMessage('demo-assistant-chat', 'user', 'Créons un assistant pour les demandes des clients du studio.'),
   demoMessage('demo-assistant-chat', 'assistant', 'L’assistant clarifie la demande, prépare une réponse et vérifie sa cohérence. Nous pouvons ajuster les instructions ensemble.'),
   demoMessage('demo-task-chat', 'user', 'La lecture audio doit reprendre à la dernière position.'),
