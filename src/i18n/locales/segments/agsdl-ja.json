@@ -524,6 +524,12 @@
     "incomplete": "You can complete this preparation later.",
     "ready": "Ready to launch · Simulation",
     "prepare": "Prepare",
-    "launch": "Launch"
+    "launch": "Launch",
+    "chooseProject": "プロジェクトを選択",
+    "searchProject": "プロジェクトを検索…",
+    "noProjects": "プロジェクトが見つかりません。",
+    "noBlueprints": "このプロジェクトに関連するブループリントはありません。",
+    "blueprintCount_one": "ブループリント {{count}} 件",
+    "blueprintCount_other": "ブループリント {{count}} 件"
   }
 }

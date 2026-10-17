@@ -524,6 +524,12 @@
     "incomplete": "You can complete this preparation later.",
     "ready": "Ready to launch · Simulation",
     "prepare": "Prepare",
-    "launch": "Launch"
+    "launch": "Launch",
+    "chooseProject": "Elegir un proyecto",
+    "searchProject": "Buscar un proyecto…",
+    "noProjects": "No se encontraron proyectos.",
+    "noBlueprints": "No hay blueprints vinculados a este proyecto.",
+    "blueprintCount_one": "{{count}} blueprint",
+    "blueprintCount_other": "{{count}} blueprints"
   }
 }

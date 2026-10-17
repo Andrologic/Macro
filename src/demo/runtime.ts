@@ -73,7 +73,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     switch (command) {
       case 'demo_blueprint_catalog': return plans.filter(plan => plan.agsdl.design?.kind === 'blueprint').map(plan => {
         const source = JSON.parse(plan.agsdl.source);
-        return { id: plan.id, title: plan.title, description: plan.description,
+        return { id: plan.id, projectIds: [...plan.projectIds], title: plan.title, description: plan.description,
           fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
           agents: Object.entries(source.agents).map(([id, agent]) => ({ title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
         } satisfies DemoBlueprint;
@@ -84,6 +84,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const catalog = await invoke('demo_blueprint_catalog') as DemoBlueprint[];
         const blueprint = catalog.find(item => item.id === args.blueprintId);
         if (!blueprint) throw new Error('Blueprint introuvable.');
+        if (!blueprint.projectIds.includes(string(args.projectId))) throw new Error('Ce blueprint n’est pas rattaché au projet choisi.');
         const previous = blueprintUses.get(string(args.id));
         if (previous && previous.state !== 'prepared') throw new Error('Cette utilisation a déjà été lancée.');
         const use: DemoBlueprintUse = { id: previous?.id ?? crypto.randomUUID(), blueprint: structuredClone(blueprint), projectId: string(args.projectId), objective: string(args.objective), values: Object.fromEntries(Object.entries(object(args.values)).map(([key, value]) => [key, string(value)])), taskIds: [], state: 'prepared' };

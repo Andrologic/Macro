@@ -524,6 +524,12 @@
     "incomplete": "You can complete this preparation later.",
     "ready": "Ready to launch · Simulation",
     "prepare": "Prepare",
-    "launch": "Launch"
+    "launch": "Launch",
+    "chooseProject": "프로젝트 선택",
+    "searchProject": "프로젝트 검색…",
+    "noProjects": "프로젝트가 없습니다.",
+    "noBlueprints": "이 프로젝트에 연결된 블루프린트가 없습니다.",
+    "blueprintCount_one": "블루프린트 {{count}}개",
+    "blueprintCount_other": "블루프린트 {{count}}개"
   }
 }

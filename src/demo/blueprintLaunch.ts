@@ -2,6 +2,7 @@ import type { Task } from '../types';
 
 export interface DemoBlueprint {
   id: string;
+  projectIds: string[];
   title: string;
   description: string;
   fields: { id: string; label: string; value: string }[];

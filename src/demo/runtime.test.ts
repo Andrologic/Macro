@@ -201,6 +201,22 @@ describe('populated demo scenarios', () => {
 
 
 describe('demo blueprint preparation and launch', () => {
+  test('only permits blueprints attached to the target project', async () => {
+    const runtime = createDemoRuntime();
+    const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
+    expect(catalog.filter(item => item.projectIds.includes('demo-luma')).map(item => item.id)).toEqual(['demo-release', 'demo-voice']);
+    expect(catalog.filter(item => item.projectIds.includes('demo-atlas')).map(item => item.id)).toEqual(['demo-quality']);
+    expect(catalog.filter(item => item.projectIds.includes('demo-helio')).map(item => item.id)).toEqual(['demo-ingestion']);
+    expect(catalog.filter(item => item.projectIds.includes('demo-meridian')).map(item => item.id)).toEqual(['demo-refund']);
+    await expect(runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'demo-release', objective: 'Cross-project test' })).rejects.toThrow('rattaché');
+    expect(await runtime.invoke('demo_blueprint_uses')).toEqual([]);
+    const atlas = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'demo-quality', objective: 'Review QA', values: { model: 'Macro AI · Démo' } }) as DemoBlueprintUse;
+    const started = await runtime.invoke('demo_blueprint_start', { id: atlas.id }) as DemoBlueprintUse;
+    const tasks = (await runtime.invoke('workspace_list_tasks') as { tasks: Task[] }).tasks.filter(task => started.taskIds.includes(task.id));
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.every(task => task.project_id === 'demo-atlas' && task.plan_id === 'demo-quality')).toBe(true);
+  });
+
   test('reads Architect defaults while keeping each prepared use independent', async () => {
     const runtime = createDemoRuntime();
     const path = 'branches/main/plans/demo-release/plan.json';

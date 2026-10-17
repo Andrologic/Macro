@@ -338,7 +338,7 @@ for (const plan of demoPlans.slice(2)) {
   plan.agsdl.source = JSON.stringify(source, null, 2);
 }
 
-for (const plan of demoPlans.filter(plan => ['demo-voice', 'demo-quality'].includes(plan.id))) {
+for (const plan of demoPlans.filter(plan => ['demo-voice', 'demo-quality', 'demo-ingestion', 'demo-refund'].includes(plan.id))) {
   plan.agsdl.design = { ...plan.agsdl.design!, kind: 'blueprint', requirements: [{ id: 'model', label: 'Modèle des agents', description: 'Choix pour cette utilisation simulée', value: 'Macro AI · Démo' }] };
 }
 const releaseBlueprint = demoPlans.find(plan => plan.id === 'demo-release')!;

@@ -45,3 +45,13 @@
 .demo-launch-prepared button { display: flex; align-items: center; text-align: left; gap: 10px; padding: 10px; border: 1px solid rgb(var(--border)); border-radius: 7px; }
 .demo-launch-prepared button span { display: grid; gap: 3px; flex: 1; font-size: 12px; }
 @media (max-width: 520px) { .demo-launch-inputs > label { grid-template-columns: 1fr; gap: 6px; } .demo-launch-hint { display: none; } }
+.demo-launch-projects { display: grid; gap: 14px; }
+.demo-launch-search { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid rgb(var(--border)); border-radius: 7px; color: rgb(var(--muted-foreground)); }
+.demo-launch-search input { border: 0; background: transparent; padding-left: 0; }
+.demo-launch-project-list { display: grid; gap: 6px; max-height: 340px; overflow-y: auto; }
+.demo-launch-project-list > button { display: flex; align-items: center; gap: 12px; padding: 14px 12px; text-align: left; border: 1px solid transparent; border-radius: 8px; }
+.demo-launch-project-list > button:hover, .demo-launch-project-list > button:focus-visible { border-color: rgb(var(--primary) / .3); background: rgb(var(--primary) / .07); }
+.demo-launch-project-list > button > span { display: grid; gap: 5px; flex: 1; }
+.demo-launch-project-selected { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgb(var(--border)); padding-bottom: 16px; }
+.demo-launch-project-selected strong { flex: 1; }
+.demo-launch-project-selected button { color: rgb(var(--primary)); font-size: 11px; }
