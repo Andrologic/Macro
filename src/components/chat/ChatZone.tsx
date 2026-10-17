@@ -2292,7 +2292,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Implement') {
       return {
         icon: 'check-square' as const,
-        title: `${t('header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
+        title: `${t(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'header.operate' : 'header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
     }

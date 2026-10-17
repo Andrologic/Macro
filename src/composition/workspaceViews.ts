@@ -29,7 +29,7 @@ const taskQueueLoader = createModePanelLoader({
   label: 'Task queue',
   mode: 'Implement',
   panel: 'left',
-  importComponent: async () => demoJourney ? (await import('../demo/BlueprintJourneyViews')).DemoOperateNavigator : (await import('../components/tasks/TaskQueue')).default,
+  importComponent: async () => (await import('../components/tasks/TaskQueue')).default,
 });
 
 const fileChangesPanelLoader = createModePanelLoader({
@@ -37,7 +37,7 @@ const fileChangesPanelLoader = createModePanelLoader({
   label: 'File changes',
   mode: 'Implement',
   panel: 'right',
-  importComponent: async () => demoJourney ? (await import('../demo/BlueprintJourneyViews')).DemoOperateGraph : (await import('../components/implement/FileChangesPanel')).default,
+  importComponent: async () => (await import('../components/implement/FileChangesPanel')).default,
 });
 
 const implementCenterLoader = createModePanelLoader({
@@ -45,7 +45,7 @@ const implementCenterLoader = createModePanelLoader({
   label: 'Implement workspace',
   mode: 'Implement',
   panel: 'center',
-  importComponent: async () => demoJourney ? (await import('../demo/BlueprintJourneyViews')).default : (await import('../components/implement/ImplementCenter')).default,
+  importComponent: async () => (await import('../components/implement/ImplementCenter')).default,
 });
 
 const conversationArchiveLoader = createModePanelLoader({

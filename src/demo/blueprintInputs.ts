@@ -1,3 +1,4 @@
+export const releaseTarget = { branchName: 'main', planId: 'demo-release' };
 import type { DesignMetadata } from '../types/agsdl';
 export const launchFields = [
   { id: 'releaseVersion', label: 'Version à vérifier', description: 'Exemple : 2.4.0', icon: 'tag' },
