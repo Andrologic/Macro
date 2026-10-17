@@ -102,28 +102,29 @@ document AgSDL.
 Dans cette démo, `Implement` porte le nom **Operate**. Il conserve l’interface
 existante : liste des tâches à gauche, espace de travail au centre et modifications
 de fichiers à droite. Les écrans expérimentaux de préparation et de simulation
-qui avaient remplacé ces panneaux ont été retirés. Le passage du blueprint à
-Operate reste à définir ; Architect ne propose donc plus de transfert vers ces
-écrans supprimés.
+qui avaient remplacé ces panneaux ont été retirés. La préparation d’un workflow
+se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 
 
-## Utiliser un blueprint dans Operate
+## Lancer un workflow dans Operate
 
-Le bouton d’ajout de la file ouvre « Utiliser un blueprint » dans la démo.
+Le bouton d’ajout de la file ouvre « Lancer un workflow » dans la démo.
 Le premier écran demande de choisir un projet, avec une recherche et le nombre
 de blueprints rattachés à chacun. Le catalogue affiche ensuite uniquement les
 blueprints de ce projet : Release mobile et Compte rendu vocal pour Luma Mobile,
 Revue avant livraison pour Atlas Studio, Import de catalogue pour Helio Data et
 Remboursement accompagné pour Meridian Commerce. Changer de projet efface la
-sélection du blueprint et les champs saisis. Les préparations en attente sont
-elles aussi limitées au projet choisi. Le backend simulé refuse une préparation
+sélection du blueprint et les champs saisis. Les workflows à lancer sont
+eux aussi limités au projet choisi. Le backend simulé refuse une préparation
 avec un blueprint d’un autre projet. Les champs de préparation viennent
 des métadonnées de leurs blueprints, dont les choix effectués dans Architect.
 
-« Préparer » conserve une utilisation même incomplète. Elle se retrouve dans
-« Préparations en attente » à la prochaine ouverture du dialogue. « Lancer »
-reste désactivé tant que l’objectif ou un champ obligatoire manque. Chaque
-utilisation possède une copie du blueprint et ses propres valeurs. Les
+Le blueprint est le modèle réutilisable ; le workflow est ce qu’on prépare
+puis lance à partir de ce modèle. « Préparer » conserve un workflow même
+incomplet. Il se retrouve dans « Workflows à lancer » à la prochaine ouverture
+du dialogue. « Lancer » reste désactivé tant que l’objectif ou un champ
+obligatoire manque. Chaque workflow possède une copie du blueprint et ses
+propres valeurs. Les
 instructions d’origine restent inchangées.
 
 Le lancement ajoute une tâche et une conversation pour chaque agent dans

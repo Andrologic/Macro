@@ -2461,7 +2461,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         'At least one editable repository is required to create a standalone feature.'
                       )
                     : import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1'
-                      ? t('implement.useBlueprint', 'Use a blueprint')
+                      ? t('implement.launchWorkflow', 'Launch a workflow')
                       : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           />

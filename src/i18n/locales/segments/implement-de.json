@@ -648,5 +648,5 @@
   "queueInProgress": "In Arbeit",
   "queueWaiting": "Wartend",
   "queueCompleted": "Abgeschlossen",
-  "useBlueprint": "Blueprint verwenden"
+  "launchWorkflow": "Workflow starten"
 }

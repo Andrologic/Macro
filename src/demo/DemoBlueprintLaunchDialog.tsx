@@ -55,7 +55,7 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
     finally { setBusy(false); }
   };
   return <Dialog title={t('agsdl.demoLaunch.title')} onClose={() => { if (!busy) onClose(); }} closeOnBackdropClick panelClassName="agsdl-detail-modal demo-launch-modal">
-    <header><div><LayoutTemplate size={17} /><strong>{t('agsdl.demoLaunch.title')}</strong></div><button className="agsdl-icon-button" disabled={busy} onClick={onClose} aria-label={t('agsdl.close')}><X size={17} /></button></header>
+    <header><div><Play size={17} /><strong>{t('agsdl.demoLaunch.title')}</strong></div><button className="agsdl-icon-button" disabled={busy} onClick={onClose} aria-label={t('agsdl.close')}><X size={17} /></button></header>
     <div className="demo-launch-body">
       {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
       {!loaded && !error && <p role="status">{t('agsdl.loading')}</p>}
