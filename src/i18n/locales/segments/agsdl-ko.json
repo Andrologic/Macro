@@ -518,6 +518,7 @@
     "chooseProject": "프로젝트 선택",
     "searchProject": "프로젝트 검색…",
     "noProjects": "프로젝트가 없습니다.",
-    "noBlueprints": "이 프로젝트에 연결된 블루프린트가 없습니다."
+    "noBlueprints": "이 프로젝트에 연결된 블루프린트가 없습니다.",
+    "commonBlueprints": "Macro 공통"
   }
 }

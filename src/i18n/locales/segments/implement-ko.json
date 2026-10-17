@@ -648,5 +648,8 @@
   "queueInProgress": "진행 중",
   "queueWaiting": "대기 중",
   "queueCompleted": "완료",
-  "launchWorkflow": "워크플로 시작"
+  "launchWorkflow": "워크플로 시작",
+  "workflowTasks": "워크플로 작업",
+  "workflowProgress": "작업 {{done}}/{{total}}",
+  "backToWorkflow": "워크플로로 돌아가기"
 }

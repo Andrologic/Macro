@@ -627,6 +627,24 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Blocked task');
   });
 
+  it('counts a workflow once, expands delegated tasks, and opens its main conversation independently', async () => {
+    seedTasks([
+      makeTask('workflow', 'InProgress', { title: 'Grouped delivery', workflow_id: 'workflow' }),
+      makeTask('child-a', 'Completed', { title: 'Inspect packages', workflow_id: 'workflow', parent_task_id: 'workflow' }),
+      makeTask('child-b', 'InProgress', { title: 'Review release', workflow_id: 'workflow', parent_task_id: 'workflow' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getSectionSummaries()).toEqual([{ title: 'In progress', count: '1' }]);
+    expect(document.body.textContent).toContain('1/2 tasks');
+    expect(document.querySelector('[data-workflow-child]')).toBeNull();
+    const expand = document.querySelector<HTMLButtonElement>('button[aria-label="Workflow tasks"]');
+    await act(async () => { expand?.click(); await flushRender(); });
+    expect(document.querySelectorAll('[data-workflow-child]')).toHaveLength(2);
+    expect(getSectionSummaries()).toEqual([{ title: 'In progress', count: '1' }]);
+    await act(async () => { expand?.click(); await flushRender(); });
+    expect(document.querySelector('[data-workflow-child]')).toBeNull();
+  });
+
   it('uses the same ready group for the summary, section and filter', async () => {
     seedTasks([
       makeTask('ready', 'Pending', { title: 'Ready item' }),

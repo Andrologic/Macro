@@ -201,6 +201,40 @@ describe('populated demo scenarios', () => {
 
 
 describe('demo blueprint preparation and launch', () => {
+  test('shared blueprints work across projects and user input starts the waiting workflow', async () => {
+    const runtime = createDemoRuntime();
+    const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
+    expect(catalog.filter(item => item.shared)).toHaveLength(2);
+    const draft = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'macro-assistant' }) as DemoBlueprintUse;
+    const use = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
+    const root = runtime.tasks.find(task => task.id === use.rootTaskId)!;
+    expect(root.status).toBe('AwaitingResponse');
+    expect(runtime.tasks.filter(task => task.parent_task_id === root.id)).toHaveLength(1);
+    await runtime.invoke('demo_blueprint_advance', { id: use.id });
+    expect(root.status).toBe('AwaitingResponse');
+    await runtime.invoke('db_create_message', { params: { conversationId: root.conversation_id, role: 'user', content: 'Prepare a summary' } });
+    expect(root.status).toBe('InProgress');
+    await runtime.invoke('demo_blueprint_advance', { id: use.id });
+    expect(root.status).toBe('Completed');
+    expect(await runtime.invoke('db_list_messages', { conversationId: root.conversation_id })).toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('Workflow terminé') })]));
+  });
+
+  test('a launched workflow owns a main conversation and delegated tasks without duplicate launches', async () => {
+    const runtime = createDemoRuntime();
+    const draft = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-luma', blueprintId: 'macro-chantier' }) as DemoBlueprintUse;
+    const started = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
+    await runtime.invoke('demo_blueprint_start', { id: draft.id });
+    const root = runtime.tasks.find(task => task.id === started.rootTaskId)!;
+    expect(root.workflow_id).toBe(root.id);
+    expect(runtime.tasks.filter(task => task.id === root.id)).toHaveLength(1);
+    expect(runtime.tasks.filter(task => task.parent_task_id === root.id).map(task => task.id)).toEqual(started.taskIds);
+    expect(root.conversation_id).not.toBe(runtime.tasks.find(task => task.id === started.taskIds[0])?.conversation_id);
+    await runtime.invoke('demo_blueprint_advance', { id: started.id });
+    expect(root.status).toBe('InProgress');
+    for (let index = 1; index < started.taskIds.length; index++) await runtime.invoke('demo_blueprint_advance', { id: started.id });
+    expect(root.status).toBe('Completed');
+  });
+
   test('a complete blueprint launches without an extra objective or model selection', async () => {
     const runtime = createDemoRuntime();
     const draft = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-luma', blueprintId: 'demo-voice' }) as DemoBlueprintUse;

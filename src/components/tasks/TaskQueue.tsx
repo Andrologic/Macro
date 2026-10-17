@@ -1,3 +1,5 @@
+import { taskHierarchy } from '../../services/taskHierarchy';
+import { WorkflowQueueCard, WorkflowChildRow } from './WorkflowQueueCard';
 import { groupTaskQueueLanes, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
@@ -798,6 +800,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     createMissingBaseBranch: state.createMissingBaseBranch,
     taskError: state.lastError,
   })));
+  const hierarchy = useMemo(() => taskHierarchy(tasks), [tasks]);
+  const [expandedWorkflows, setExpandedWorkflows] = useState<Set<string>>(() => new Set());
   const requestSignature = useChatStore(selectTaskQueueRequestSignature);
   const reviewRepositoryModes = useFileChangesStore(useShallow((state) => Object.fromEntries(state.repositories.map((repository) => [repository.id, repository.executionMode]))));
   const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
@@ -1442,7 +1446,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       name: project.name,
       path: project.path,
       groupName: getProjectGroupByProjectId(projectGroups, project.id)?.name ?? null,
-      taskCount: tasks.filter((task) =>
+      taskCount: hierarchy.roots.filter((task) =>
         !task.archived_at &&
         task.status !== 'Completed' &&
         taskMatchesProjectId(task, project.id)
@@ -1452,7 +1456,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       gitSetupState: project.gitSetupState,
       gitFlowSettings: project.gitFlowSettings,
     })),
-    [availableProjects, projectGroups, tasks]
+    [availableProjects, projectGroups, hierarchy.roots]
   );
   const editableProjectOptions = useMemo(
     () => projectFilterOptions.filter((project) => !project.isReadOnly),
@@ -1523,10 +1527,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const projectFilteredTasks = useMemo(() => {
     if (projectFilter === ALL_PROJECTS_FILTER) {
-      return [...new Map(tasks.map(task => [task.id, task])).values()];
+      return hierarchy.roots;
     }
-    return [...new Map(tasks.map(task => [task.id, task])).values()].filter((task) => taskMatchesProjectId(task, projectFilter));
-  }, [projectFilter, tasks]);
+    return hierarchy.roots.filter((task) => taskMatchesProjectId(task, projectFilter));
+  }, [projectFilter, hierarchy.roots]);
   const taskQueueStatusGroupById = useMemo(
     () => new Map(
       projectFilteredTasks.map((task) => [
@@ -1548,8 +1552,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [attentionByTaskId, resolvedWaitTaskIds, mergeWorkflowRuntimeByTaskId, projectFilteredTasks, runningTaskIds]
   );
   const totalActiveTaskCount = useMemo(
-    () => tasks.filter((task) => !task.archived_at && task.status !== 'Completed').length,
-    [tasks]
+    () => hierarchy.roots.filter((task) => !task.archived_at && task.status !== 'Completed').length,
+    [hierarchy.roots]
   );
 
   const taskLanes = useMemo(() => groupTaskQueueLanes(projectFilteredTasks, taskQueueStatusGroupById), [projectFilteredTasks, taskQueueStatusGroupById]);
@@ -2050,8 +2054,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [filteredTasks, showArchived]);
 
   const searchedTasks = useMemo(
-    () => filterTasksByQuery(visibleTasks, searchQuery),
-    [searchQuery, visibleTasks],
+    () => {
+      const matches = new Set(filterTasksByQuery(tasks, searchQuery).map(task => task.id));
+      return visibleTasks.filter(task => matches.has(task.id) || (hierarchy.children.get(task.id) ?? []).some(child => matches.has(child.id)));
+    },
+    [searchQuery, visibleTasks, tasks, hierarchy.children],
   );
 
   const draftTasks = useMemo(
@@ -2142,8 +2149,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       items.forEach(task => rows.push({ kind: 'task', id: `task:${task.id}`, task, multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null }));
     }
 
-    return rows;
+    const expandedRows: TaskListRow[] = [];
+    for (const row of rows) {
+      expandedRows.push(row);
+      if (row.kind === 'task' && (expandedWorkflows.has(row.task.id) || searchQuery.trim())) {
+        for (const child of hierarchy.children.get(row.task.id) ?? []) {
+          expandedRows.push({ kind: 'task', id: `task:${child.id}`, task: child, multiRepoPresentation: null });
+        }
+      }
+    }
+    return expandedRows;
   }, [
+    expandedWorkflows,
+    searchQuery,
+    hierarchy.children,
     archivedTasks,
     draftTasks,
     multiRepoPresentationByTaskId,
@@ -2590,6 +2609,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                           {row.count}
                         </span>
                       </div>
+                    ) : row.task.workflow_id === row.task.id ? (
+                      <WorkflowQueueCard
+                        task={row.task}
+                        childrenTasks={hierarchy.children.get(row.task.id) ?? []}
+                        projectName={getProjectById(row.task.project_id)?.name}
+                        selected={selectedTaskId === row.task.id || (hierarchy.children.get(row.task.id) ?? []).some(child => child.id === selectedTaskId)}
+                        expanded={expandedWorkflows.has(row.task.id) || Boolean(searchQuery.trim())}
+                        onSelect={() => void activateTask(row.task.id)}
+                        onToggle={() => setExpandedWorkflows(previous => { const next = new Set(previous); if (next.has(row.task.id)) next.delete(row.task.id); else next.add(row.task.id); return next; })}
+                      />
+                    ) : row.task.parent_task_id && hierarchy.children.has(row.task.parent_task_id) ? (
+                      <WorkflowChildRow task={row.task} selected={selectedTaskId === row.task.id} onSelect={() => void activateTask(row.task.id)} />
                     ) : (
                       <MemoizedTaskItem
                         task={row.task}

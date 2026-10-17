@@ -1,4 +1,6 @@
-import { blueprintAgentTasks, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
+import { workflowStatus } from '../services/taskHierarchy';
+import { sharedDemoBlueprints } from './sharedBlueprints';
+import { blueprintAgentTasks, blueprintWorkflowTask, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { macroNativeModelEdition } from '../services/agsdl/nativeModelEdition';
 import { demoSkill, demoProjects, demoTasks, demoPlans, demoConversations, demoMessages, demoProvider, demoModel, demoMessage, DEMO_DATE } from './fixtures';
 import type { ConfigDocumentKind, ConfigSnapshot, ConfigDocument, JsonPatchOperation } from '../types/generated/config';
@@ -71,20 +73,20 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     seen.set(command, (seen.get(command) ?? 0) + 1);
     const request = object(args.request);
     switch (command) {
-      case 'demo_blueprint_catalog': return plans.filter(plan => plan.agsdl.design?.kind === 'blueprint').map(plan => {
+      case 'demo_blueprint_catalog': return [...sharedDemoBlueprints, ...plans.filter(plan => plan.agsdl.design?.kind === 'blueprint').map(plan => {
         const source = JSON.parse(plan.agsdl.source);
         return { id: plan.id, projectIds: [...plan.projectIds], title: plan.title, description: plan.description,
           fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
           agents: Object.entries(source.agents).map(([id, agent]) => ({ title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
         } satisfies DemoBlueprint;
-      });
+      })];
       case 'demo_blueprint_uses': return structuredClone([...blueprintUses.values()]);
       case 'demo_blueprint_prepare': {
         if (!projects.some(project => project.id === args.projectId)) throw new Error('Choisissez un projet.');
         const catalog = await invoke('demo_blueprint_catalog') as DemoBlueprint[];
         const blueprint = catalog.find(item => item.id === args.blueprintId);
         if (!blueprint) throw new Error('Blueprint introuvable.');
-        if (!blueprint.projectIds.includes(string(args.projectId))) throw new Error('Ce blueprint n’est pas rattaché au projet choisi.');
+        if (!blueprint.shared && !blueprint.projectIds.includes(string(args.projectId))) throw new Error('Ce blueprint n’est pas rattaché au projet choisi.');
         const previous = blueprintUses.get(string(args.id));
         if (previous && previous.state !== 'prepared') throw new Error('Cette utilisation a déjà été lancée.');
         const use: DemoBlueprintUse = { id: previous?.id ?? (string(args.id) || crypto.randomUUID()), blueprint: structuredClone(blueprint), projectId: string(args.projectId), objective: string(args.objective), values: Object.fromEntries(Object.entries(object(args.values)).map(([key, value]) => [key, string(value)])), taskIds: [], state: 'prepared' };
@@ -96,11 +98,18 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         if (!use) throw new Error('Préparation introuvable.');
         if (use.state !== 'prepared') return structuredClone(use);
         if (missingBlueprintFields(use.blueprint, use.values).length) throw new Error('Complétez les champs nécessaires avant de lancer.');
+        const root = blueprintWorkflowTask(use);
+        tasks.push(root);
+        conversations.push({ ...structuredClone(demoConversations[3]), id: root.conversation_id!, title: root.title, scope_mode: 'Implement', project_id: use.projectId, task_id: root.id, message_count: 1 });
+        messages.push(demoMessage(root.conversation_id!, 'assistant', use.blueprint.awaitsInput ? 'Que souhaitez-vous réaliser ? Vous pouvez écrire votre demande ou joindre vos fichiers ici.' : `Le workflow « ${root.title} » démarre. Vous pouvez suivre les tâches et poser vos questions dans cette conversation. Les résultats sont simulés.`));
+        use.rootTaskId = root.id;
         const created = blueprintAgentTasks(use);
         for (const task of created) {
           tasks.push(task);
-          conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: 2 });
-          messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective || use.blueprint.title}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`), demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\nExécution simulée en cours.'));
+          conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: use.blueprint.awaitsInput ? 1 : 2 });
+          if (!use.blueprint.awaitsInput) messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective || use.blueprint.title}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`));
+          const stateMessage = task.status === 'AwaitingResponse' ? 'En attente de votre demande dans la conversation du workflow.' : task.status === 'Blocked' ? 'Cette tâche démarrera après la précédente.' : 'Exécution simulée en cours.';
+          messages.push(demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\n' + stateMessage));
         }
         use.taskIds = created.map(task => task.id); use.state = 'running';
         return structuredClone(use);
@@ -108,6 +117,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'demo_blueprint_advance': {
         const use = blueprintUses.get(string(args.id));
         if (!use || use.state !== 'running') return use ? structuredClone(use) : null;
+        if (tasks.some(task => use.taskIds.includes(task.id) && task.status === 'AwaitingResponse')) return structuredClone(use);
         const current = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'InProgress');
         if (current) {
           current.status = 'Completed';
@@ -116,6 +126,13 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const next = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'Blocked');
         if (next) { next.status = 'InProgress'; next.is_blocked = false; next.blocked_by_task_ids = []; }
         else use.state = 'completed';
+        const root = tasks.find(task => task.id === use.rootTaskId);
+        if (root) {
+          const children = tasks.filter(task => use.taskIds.includes(task.id));
+          root.status = workflowStatus(children);
+          const done = children.filter(task => task.status === 'Completed').length;
+          messages.push(demoMessage(root.conversation_id!, 'assistant', use.state === 'completed' ? `Workflow terminé. Les ${children.length} tâches sont terminées. Résultats fictifs disponibles dans les conversations des agents.` : `${done}/${children.length} tâches terminées. ${next ? `En cours : ${next.title}.` : ''}`));
+        }
         return structuredClone(use);
       }
       case 'execution_model_choices':return {revision:'demo-1',models:[{providerId:demoProvider.id,modelId:demoModel.model_id,providerName:demoProvider.name,modelName:demoModel.name,edition:macroNativeModelEdition(demoProvider.id,demoModel.model_id)}],unavailableProviders:[]};
@@ -365,6 +382,20 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         if (typeof a.id === 'string')
           m.id = a.id;
         messages.push(m);
+        if (m.role === 'user' && m.content.trim()) {
+          for (const use of blueprintUses.values()) {
+            if (use.state !== 'running') continue;
+            const root = tasks.find(task => task.id === use.rootTaskId);
+            const ownsConversation = root?.conversation_id === m.conversation_id || tasks.some(task => use.taskIds.includes(task.id) && task.conversation_id === m.conversation_id);
+            if (!ownsConversation) continue;
+            const waiting = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'AwaitingResponse');
+            if (waiting) {
+              waiting.status = 'InProgress';
+              if (root) root.status = 'InProgress';
+              if (waiting.conversation_id !== m.conversation_id) messages.push(demoMessage(waiting.conversation_id!, 'user', m.content));
+            }
+          }
+        }
         return m;
       }
       case 'db_import_messages': {
@@ -395,7 +426,14 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'ai_provision_macro_ai': return { status: 'ready', provider_id: 'demo-provider' };
       case 'ai_stream_chat': {
         const id = string(request.requestId ?? request.request_id);
-        const text = 'Dans cette démonstration, je peux vous aider à explorer le système et les écrans de Macro. Les réponses sont simulées localement. Aucun fichier réel ni fournisseur IA n’est utilisé.';
+        let text = 'Dans cette démonstration, je peux vous aider à explorer le système et les écrans de Macro. Les réponses sont simulées localement. Aucun fichier réel ni fournisseur IA n’est utilisé.';
+        const conversationId = string(request.conversationId ?? request.conversation_id) || messages.filter(message => message.role === 'user').at(-1)?.conversation_id;
+        const use = [...blueprintUses.values()].find(use => tasks.some(task => task.id === use.rootTaskId && task.conversation_id === conversationId));
+        if (use) {
+          const children = tasks.filter(task => use.taskIds.includes(task.id));
+          const current = children.find(task => task.status === 'InProgress');
+          text = use.state === 'completed' ? 'Le workflow est terminé. Vous pouvez consulter le résultat de chaque tâche en dépliant sa carte.' : `${children.filter(task => task.status === 'Completed').length}/${children.length} tâches terminées.${current ? ` En cours : ${current.title}.` : ''} Je rassemble les résultats ici. Cette exécution est simulée.`;
+        }
         activeStreams.set(id, setTimeout(() => { activeStreams.delete(id); emit('ai:stream', { request_id: id, delta: text }); emit('ai:done', { request_id: id, output_text: text, visible_text: text, tool_calls: [], completion_reason: 'completed' }); }, 600));
         return;
       }
@@ -413,6 +451,8 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'macro_branch_commit_if_dirty':
       case 'macro_branch_push':
       case 'macro_branch_pull': return { branch: '@macro', state: 'synced', worktree_path: '/demo/.macro', is_dirty: false, has_origin: true, has_upstream: true, ahead: 0, behind: 0, conflicted_files: [], committed: false, commit_hash: null, reason: null, next_action: null, output: null, error: null };
+      case 'git_merge_check': return { mergeable: true, conflictFiles: [], hasChanges: false, ahead: 0, behind: 0 };
+      case 'git_review_snapshot': return { branch: 'main', stagedPaths: [], changes: [], conflictedFiles: [], mergeInProgress: false, isClean: true };
       case 'git_status': return gitStatus();
       case 'git_branch_list': return { current: 'main', local: ['main', 'main', 'feature/audio-playback'].map(branch), remote: [] };
       case 'git_log': return [{ id: 'd3e0001', hash: 'd3e0001', short_hash: 'd3e0001', message: 'Améliorer la lecture audio', author: 'Équipe Luma', date: DEMO_DATE, parents: [] }];

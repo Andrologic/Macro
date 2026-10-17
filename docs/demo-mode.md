@@ -109,10 +109,11 @@ se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 ## Lancer un workflow dans Operate
 
 Le bouton d’ajout de la file ouvre « Lancer un workflow » dans la démo.
-Le premier écran demande de choisir un projet, avec une recherche. Le catalogue affiche ensuite uniquement les
+Le premier écran demande de choisir un projet, avec une recherche. Le catalogue affiche ensuite les
 blueprints de ce projet : Release mobile et Compte rendu vocal pour Luma Mobile,
 Revue avant livraison pour Atlas Studio, Import de catalogue pour Helio Data et
-Remboursement accompagné pour Meridian Commerce. Changer de projet efface la
+Remboursement accompagné pour Meridian Commerce. Une section « Communs à Macro »
+propose Assistant et Chantier coordonné dans tous les projets. Changer de projet efface la
 sélection du blueprint et les champs saisis. Les workflows à lancer sont
 eux aussi limités au projet choisi. Le backend simulé refuse une préparation
 avec un blueprint d’un autre projet. Les champs de préparation viennent
@@ -132,8 +133,15 @@ affichent les noms sans descriptions ni compteurs. Il attend la conservation des
 lancer la simulation. Chaque workflow possède une copie du blueprint et ses
 propres valeurs. Les instructions d’origine restent inchangées.
 
-Le lancement ajoute une tâche et une conversation pour chaque agent dans
-l’interface existante d’Operate. Une simulation fait progresser les agents
+Le lancement ajoute une entrée parent et une conversation principale dans
+l’interface existante d’Operate. Les tâches des agents restent repliées sous cette
+entrée. Les compteurs et le filtre projet comptent le workflow une seule fois.
+La recherche trouve aussi les tâches déléguées. Cliquer sur une tâche ouvre sa
+conversation ; un lien permet de revenir au workflow.
+
+Le blueprint Assistant démarre en attente. La consigne se donne dans la
+conversation, après le lancement. Les autres blueprints utilisent leurs valeurs
+héritées. La conversation principale reçoit les points d’avancement et le bilan. Une simulation fait progresser les agents
 successivement, à raison d’une étape toutes les sept secondes. Ce scénario
 permet de tester la navigation, les compteurs et les conversations ; il
 n’interprète pas les branches, les approbations ou le parallélisme AgSDL.

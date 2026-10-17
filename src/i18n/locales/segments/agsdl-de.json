@@ -518,6 +518,7 @@
     "chooseProject": "Projekt auswählen",
     "searchProject": "Projekte suchen…",
     "noProjects": "Keine Projekte gefunden.",
-    "noBlueprints": "Diesem Projekt sind keine Blueprints zugeordnet."
+    "noBlueprints": "Diesem Projekt sind keine Blueprints zugeordnet.",
+    "commonBlueprints": "In Macro geteilt"
   }
 }

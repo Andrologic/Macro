@@ -648,5 +648,8 @@
   "queueInProgress": "In Arbeit",
   "queueWaiting": "Wartend",
   "queueCompleted": "Abgeschlossen",
-  "launchWorkflow": "Workflow starten"
+  "launchWorkflow": "Workflow starten",
+  "workflowTasks": "Workflow-Aufgaben",
+  "workflowProgress": "{{done}}/{{total}} Aufgaben",
+  "backToWorkflow": "Zurück zum Workflow"
 }

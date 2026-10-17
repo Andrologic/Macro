@@ -32,9 +32,10 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
     return () => { active = false; };
   }, []);
   const project = projects.find(item => item.id === projectId);
-  const projectBlueprints = catalog.filter(item => item.projectIds.includes(projectId));
+  const projectBlueprints = catalog.filter(item => !item.shared && item.projectIds.includes(projectId));
+  const commonBlueprints = catalog.filter(item => item.shared);
   const projectPreparations = prepared.filter(use => use.projectId === projectId);
-  const blueprint = projectBlueprints.find(item => item.id === blueprintId);
+  const blueprint = catalog.find(item => item.id === blueprintId && (item.shared || item.projectIds.includes(projectId)));
   const visibleProjects = projects.filter(item => item.name.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().includes(projectQuery.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase()));
   const changeProject = () => {
     setProjectId(''); setBlueprintId(''); setObjective(''); setValues({});
@@ -125,6 +126,10 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
               <LayoutTemplate size={18} /><span><strong>{item.title}</strong></span><ChevronRight size={16} />
             </button>)}
             {loaded && projectBlueprints.length === 0 && <p className="demo-journey-muted">{t('agsdl.demoLaunch.noBlueprints')}</p>}
+            {commonBlueprints.length > 0 && <h3 className="mt-3">{t('agsdl.demoLaunch.commonBlueprints')}</h3>}
+            {commonBlueprints.map(item => <button key={item.id} onClick={() => choose(item)}>
+              <LayoutTemplate size={18} /><span><strong>{item.title}</strong></span><ChevronRight size={16} />
+            </button>)}
           </div>
         </section>}
       </>}

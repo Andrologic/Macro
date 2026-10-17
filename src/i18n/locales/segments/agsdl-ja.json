@@ -518,6 +518,7 @@
     "chooseProject": "プロジェクトを選択",
     "searchProject": "プロジェクトを検索…",
     "noProjects": "プロジェクトが見つかりません。",
-    "noBlueprints": "このプロジェクトに関連するブループリントはありません。"
+    "noBlueprints": "このプロジェクトに関連するブループリントはありません。",
+    "commonBlueprints": "Macro共通"
   }
 }

@@ -518,6 +518,7 @@
     "chooseProject": "Choisir un projet",
     "searchProject": "Rechercher un projet…",
     "noProjects": "Aucun projet trouvé.",
-    "noBlueprints": "Aucun blueprint rattaché à ce projet."
+    "noBlueprints": "Aucun blueprint rattaché à ce projet.",
+    "commonBlueprints": "Communs à Macro"
   }
 }

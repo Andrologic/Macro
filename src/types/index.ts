@@ -721,6 +721,8 @@ export interface FileChange {
 
 export interface Task {
   id: string;
+  parent_task_id?: string | null;
+  workflow_id?: string | null;
   plan_id: string;
   project_id: string;
   project_ids?: string[];
