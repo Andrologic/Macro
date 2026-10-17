@@ -16,7 +16,7 @@ export async function launchDemoBlueprint(id: string) {
   await useTaskStore.getState().refreshFromPlan();
   useViewFilterStore.getState().setImplementStatusFilter('all');
   useViewFilterStore.getState().setImplementProjectFilter(use.projectId);
-  if (use.rootTaskId ?? use.taskIds[0]) await useTaskStore.getState().activateTask((use.rootTaskId ?? use.taskIds[0])!);
+  if (use.taskIds[0]) await useTaskStore.getState().activateTask(use.taskIds[0]);
   useAppStore.getState().setMode('Implement');
   await useChatStore.getState().ensureConversationForCurrentMode();
   void advanceDemoBlueprint(use.id).catch(error => notify.error(String(error)));
@@ -33,7 +33,7 @@ async function advanceDemoBlueprint(id: string) {
       const use = await invoke<DemoBlueprintUse>('demo_blueprint_advance', { id });
       await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
       const selected = useChatStore.getState().selectedConversationId;
-      if (selected && [use.rootTaskId, ...use.taskIds].some(taskId => useTaskStore.getState().tasks.find(task => task.id === taskId)?.conversation_id === selected)) {
+      if (selected && use.taskIds.some(taskId => useTaskStore.getState().tasks.find(task => task.id === taskId)?.conversation_id === selected)) {
         const messages = await invoke<DbMessage[]>('db_list_messages', { conversationId: selected });
         for (const message of messages) {
           if (!useChatStore.getState().messages.some(existing => existing.id === message.id)) useChatStore.getState().addMessage(mapDbMessageToChatMessage(message, new Map(useChatStore.getState().conversations.map(conversation => [conversation.id, conversation]))));

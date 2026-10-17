@@ -3130,8 +3130,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const stopActiveStreamsForCompletedTasks = (
-    previousTasks: Pick<ImplementTask, "id" | "status" | "workflow_id">[],
-    nextTasks: Pick<ImplementTask, "id" | "status" | "workflow_id">[],
+    previousTasks: Pick<ImplementTask, "id" | "status">[],
+    nextTasks: Pick<ImplementTask, "id" | "status">[],
   ) => {
     const previousStatusByTaskId = new Map(
       previousTasks.map((task) => [task.id, task.status]),
@@ -3141,7 +3141,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .filter(
           (task) =>
             task.status === "Completed" &&
-            task.workflow_id !== task.id &&
             previousStatusByTaskId.get(task.id) !== "Completed",
         )
         .map((task) => task.id),
@@ -3263,8 +3262,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         stopActiveStreamsForCompletedTasks(
-          previousState.tasks as Pick<ImplementTask, "id" | "status" | "workflow_id">[],
-          nextState.tasks as Pick<ImplementTask, "id" | "status" | "workflow_id">[],
+          previousState.tasks as Pick<ImplementTask, "id" | "status">[],
+          nextState.tasks as Pick<ImplementTask, "id" | "status">[],
         );
         scheduleImplementAwaitingResponseReconciliation();
       },
@@ -3286,8 +3285,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       throw buildSendError(`Unknown task: ${taskId}`);
     }
 
-    // The workflow conversation outlives its delegated execution tasks.
-    if (task.workflow_id === task.id || task.draft) {
+    if (task.draft) {
       return task;
     }
 

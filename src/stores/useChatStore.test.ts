@@ -4567,21 +4567,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   }
 
-  it('keeps the parent workflow conversation usable after execution completes', async () => {
-    const { useChatStore: store } = await startImplementToolConversation();
-    store.getState().stopStreaming();
-    await flushAsyncWork();
-    taskStoreState.tasks = [createImplementTask({ status: 'Completed', workflow_id: 'task-1' })];
-    streamChatMock.mockClear();
-    taskStoreState.retryTask.mockClear();
-    const result = await store.getState().sendMessage({ conversationId: 'implement-conv', taskId: 'task-1', content: 'Résume le résultat du workflow.' });
-    expect(result.status).toBe('sent');
-    expect(streamChatMock).toHaveBeenCalledTimes(1);
-    expect(taskStoreState.retryTask).not.toHaveBeenCalled();
-    expect(taskStoreState.getTaskById('task-1')?.status).toBe('Completed');
-    store.getState().stopStreaming();
-  });
-
   registerChatDirectionRecoveryScenarios(useChatStoreScenarioContext);
   registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);

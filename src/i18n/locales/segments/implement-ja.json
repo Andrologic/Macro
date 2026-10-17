@@ -648,8 +648,5 @@
   "queueInProgress": "実行中",
   "queueWaiting": "待機中",
   "queueCompleted": "完了",
-  "launchWorkflow": "ワークフローを開始",
-  "workflowTasks": "ワークフローのタスク",
-  "workflowProgress": "タスク {{done}}/{{total}}",
-  "backToWorkflow": "ワークフローに戻る"
+  "launchWorkflow": "ワークフローを開始"
 }

@@ -1368,11 +1368,11 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(cancelStreamMock.mock.calls).toEqual([['session-task-1']]);
     });
 
-    it('keeps an active Implement stream running for non-completed tasks and completed workflow parents', async () => {
+    it('keeps an active Implement stream running for non-completed task transitions', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
 
-      for (const status of ['InReview', 'AwaitingResponse', 'Completed']) {
+      for (const status of ['InReview', 'AwaitingResponse']) {
         taskStoreSubscribers.clear();
         taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
 
@@ -1406,7 +1406,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
         });
 
         const previousTasks = taskStoreState.tasks;
-        taskStoreState.tasks = [createImplementTask({ status, ...(status === 'Completed' ? { workflow_id: 'task-1' } : {}) })];
+        taskStoreState.tasks = [createImplementTask({ status })];
         emitTaskStoreUpdate(previousTasks);
         await Promise.resolve();
 

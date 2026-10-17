@@ -45,7 +45,7 @@ const implementCenterLoader = createModePanelLoader({
   label: 'Implement workspace',
   mode: 'Implement',
   panel: 'center',
-  importComponent: async () => demoJourney ? (await import('../demo/DemoOperateCenter')).default : (await import('../components/implement/ImplementCenter')).default,
+  importComponent: async () => (await import('../components/implement/ImplementCenter')).default,
 });
 
 const conversationArchiveLoader = createModePanelLoader({

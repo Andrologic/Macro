@@ -17,7 +17,6 @@ export interface DemoBlueprintUse {
   objective: string;
   values: Record<string, string>;
   taskIds: string[];
-  rootTaskId?: string;
   state: 'prepared' | 'running' | 'completed';
 }
 export function missingBlueprintFields(blueprint: DemoBlueprint, values: Record<string, string>) {
@@ -25,7 +24,7 @@ export function missingBlueprintFields(blueprint: DemoBlueprint, values: Record<
 }
 export function blueprintAgentTasks(use: DemoBlueprintUse): Task[] {
   return use.blueprint.agents.map((agent, index) => ({
-    id: `${use.id}-${index}`, parent_task_id: use.id, workflow_id: use.id, plan_id: use.blueprint.id, project_id: use.projectId,
+    id: `${use.id}-${index}`, plan_id: use.blueprint.id, project_id: use.projectId,
     title: agent.title, description: use.objective && use.objective !== use.blueprint.title ? `${use.blueprint.title} · ${use.objective}` : use.blueprint.title,
     status: index === 0 ? (use.blueprint.awaitsInput ? 'AwaitingResponse' : 'InProgress') : 'Blocked',
     dependencies: index ? [`${use.id}-${index - 1}`] : [],
@@ -34,14 +33,4 @@ export function blueprintAgentTasks(use: DemoBlueprintUse): Task[] {
     task_source: 'standalone', task_kind: 'direct', standalone_kind: 'manual_feature',
     conversation_id: `${use.id}-chat-${index}`, sequence_index: index,
   }));
-}
-
-export function blueprintWorkflowTask(use: DemoBlueprintUse): Task {
-  return {
-    id: use.id, workflow_id: use.id, plan_id: use.blueprint.id, project_id: use.projectId,
-    title: use.objective || use.blueprint.title, description: use.blueprint.title,
-    status: use.blueprint.awaitsInput ? 'AwaitingResponse' : 'InProgress',
-    dependencies: [], estimated_changes: [], task_source: 'standalone', task_kind: 'direct',
-    standalone_kind: 'manual_feature', conversation_id: `${use.id}-chat`, sequence_index: -1,
-  };
 }

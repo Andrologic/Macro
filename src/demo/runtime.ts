@@ -1,6 +1,5 @@
-import { workflowStatus } from '../services/taskHierarchy';
 import { sharedDemoBlueprints } from './sharedBlueprints';
-import { blueprintAgentTasks, blueprintWorkflowTask, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
+import { blueprintAgentTasks, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { macroNativeModelEdition } from '../services/agsdl/nativeModelEdition';
 import { demoSkill, demoProjects, demoTasks, demoPlans, demoConversations, demoMessages, demoProvider, demoModel, demoMessage, DEMO_DATE } from './fixtures';
 import type { ConfigDocumentKind, ConfigSnapshot, ConfigDocument, JsonPatchOperation } from '../types/generated/config';
@@ -98,17 +97,12 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         if (!use) throw new Error('Préparation introuvable.');
         if (use.state !== 'prepared') return structuredClone(use);
         if (missingBlueprintFields(use.blueprint, use.values).length) throw new Error('Complétez les champs nécessaires avant de lancer.');
-        const root = blueprintWorkflowTask(use);
-        tasks.push(root);
-        conversations.push({ ...structuredClone(demoConversations[3]), id: root.conversation_id!, title: root.title, scope_mode: 'Implement', project_id: use.projectId, task_id: root.id, message_count: 1 });
-        messages.push(demoMessage(root.conversation_id!, 'assistant', use.blueprint.awaitsInput ? 'Que souhaitez-vous réaliser ? Vous pouvez écrire votre demande ou joindre vos fichiers ici.' : `Le workflow « ${root.title} » démarre. Vous pouvez suivre les tâches et poser vos questions dans cette conversation. Les résultats sont simulés.`));
-        use.rootTaskId = root.id;
         const created = blueprintAgentTasks(use);
         for (const task of created) {
           tasks.push(task);
           conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: use.blueprint.awaitsInput ? 1 : 2 });
           if (!use.blueprint.awaitsInput) messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective || use.blueprint.title}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`));
-          const stateMessage = task.status === 'AwaitingResponse' ? 'En attente de votre demande dans la conversation du workflow.' : task.status === 'Blocked' ? 'Cette tâche démarrera après la précédente.' : 'Exécution simulée en cours.';
+          const stateMessage = task.status === 'AwaitingResponse' ? 'Que souhaitez-vous réaliser ? Écrivez votre demande ou joignez vos fichiers ici.' : task.status === 'Blocked' ? 'Cette tâche démarrera après la précédente.' : 'Exécution simulée en cours.';
           messages.push(demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\n' + stateMessage));
         }
         use.taskIds = created.map(task => task.id); use.state = 'running';
@@ -126,13 +120,6 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const next = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'Blocked');
         if (next) { next.status = 'InProgress'; next.is_blocked = false; next.blocked_by_task_ids = []; }
         else use.state = 'completed';
-        const root = tasks.find(task => task.id === use.rootTaskId);
-        if (root) {
-          const children = tasks.filter(task => use.taskIds.includes(task.id));
-          root.status = workflowStatus(children);
-          const done = children.filter(task => task.status === 'Completed').length;
-          messages.push(demoMessage(root.conversation_id!, 'assistant', use.state === 'completed' ? `Workflow terminé. Les ${children.length} tâches sont terminées. Résultats fictifs disponibles dans les conversations des agents.` : `${done}/${children.length} tâches terminées. ${next ? `En cours : ${next.title}.` : ''}`));
-        }
         return structuredClone(use);
       }
       case 'execution_model_choices':return {revision:'demo-1',models:[{providerId:demoProvider.id,modelId:demoModel.model_id,providerName:demoProvider.name,modelName:demoModel.name,edition:macroNativeModelEdition(demoProvider.id,demoModel.model_id)}],unavailableProviders:[]};
@@ -385,15 +372,8 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         if (m.role === 'user' && m.content.trim()) {
           for (const use of blueprintUses.values()) {
             if (use.state !== 'running') continue;
-            const root = tasks.find(task => task.id === use.rootTaskId);
-            const ownsConversation = root?.conversation_id === m.conversation_id || tasks.some(task => use.taskIds.includes(task.id) && task.conversation_id === m.conversation_id);
-            if (!ownsConversation) continue;
-            const waiting = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'AwaitingResponse');
-            if (waiting) {
-              waiting.status = 'InProgress';
-              if (root) root.status = 'InProgress';
-              if (waiting.conversation_id !== m.conversation_id) messages.push(demoMessage(waiting.conversation_id!, 'user', m.content));
-            }
+            const waiting = tasks.find(task => use.taskIds.includes(task.id) && task.conversation_id === m.conversation_id && task.status === 'AwaitingResponse');
+            if (waiting) waiting.status = 'InProgress';
           }
         }
         return m;
@@ -426,14 +406,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'ai_provision_macro_ai': return { status: 'ready', provider_id: 'demo-provider' };
       case 'ai_stream_chat': {
         const id = string(request.requestId ?? request.request_id);
-        let text = 'Dans cette démonstration, je peux vous aider à explorer le système et les écrans de Macro. Les réponses sont simulées localement. Aucun fichier réel ni fournisseur IA n’est utilisé.';
-        const conversationId = string(request.conversationId ?? request.conversation_id) || messages.filter(message => message.role === 'user').at(-1)?.conversation_id;
-        const use = [...blueprintUses.values()].find(use => tasks.some(task => task.id === use.rootTaskId && task.conversation_id === conversationId));
-        if (use) {
-          const children = tasks.filter(task => use.taskIds.includes(task.id));
-          const current = children.find(task => task.status === 'InProgress');
-          text = use.state === 'completed' ? 'Le workflow est terminé. Vous pouvez consulter le résultat de chaque tâche en dépliant sa carte.' : `${children.filter(task => task.status === 'Completed').length}/${children.length} tâches terminées.${current ? ` En cours : ${current.title}.` : ''} Je rassemble les résultats ici. Cette exécution est simulée.`;
-        }
+        const text = 'Dans cette démonstration, je peux vous aider à explorer le système et les écrans de Macro. Les réponses sont simulées localement. Aucun fichier réel ni fournisseur IA n’est utilisé.';
         activeStreams.set(id, setTimeout(() => { activeStreams.delete(id); emit('ai:stream', { request_id: id, delta: text }); emit('ai:done', { request_id: id, output_text: text, visible_text: text, tool_calls: [], completion_reason: 'completed' }); }, 600));
         return;
       }

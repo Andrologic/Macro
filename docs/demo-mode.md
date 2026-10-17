@@ -133,15 +133,14 @@ affichent les noms sans descriptions ni compteurs. Il attend la conservation des
 lancer la simulation. Chaque workflow possède une copie du blueprint et ses
 propres valeurs. Les instructions d’origine restent inchangées.
 
-Le lancement ajoute une entrée parent et une conversation principale dans
-l’interface existante d’Operate. Les tâches des agents restent repliées sous cette
-entrée. Les compteurs et le filtre projet comptent le workflow une seule fois.
-La recherche trouve aussi les tâches déléguées. Cliquer sur une tâche ouvre sa
-conversation ; un lien permet de revenir au workflow.
+Le lancement ajoute une carte indépendante et une conversation par agent dans
+l’interface existante d’Operate. Les tâches restent affichées individuellement,
+avec leurs statuts et leurs dépendances. Les compteurs comptent chaque tâche,
+sans entrée parent ni regroupement par workflow.
 
-Le blueprint Assistant démarre en attente. La consigne se donne dans la
-conversation, après le lancement. Les autres blueprints utilisent leurs valeurs
-héritées. La conversation principale reçoit les points d’avancement et le bilan. Une simulation fait progresser les agents
+Le blueprint Assistant démarre en attente. La consigne se donne directement dans
+la tâche, après le lancement. Les autres blueprints utilisent leurs valeurs
+héritées. Une simulation fait progresser les agents
 successivement, à raison d’une étape toutes les sept secondes. Ce scénario
 permet de tester la navigation, les compteurs et les conversations ; il
 n’interprète pas les branches, les approbations ou le parallélisme AgSDL.
