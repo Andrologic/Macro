@@ -120,12 +120,15 @@ avec un blueprint d’un autre projet. Les champs de préparation viennent
 des métadonnées de leurs blueprints, dont les choix effectués dans Architect.
 
 Le blueprint est le modèle réutilisable ; le workflow est ce qu’on prépare
-puis lance à partir de ce modèle. « Préparer » conserve un workflow même
-incomplet. Il se retrouve dans « Workflows à lancer » à la prochaine ouverture
-du dialogue. « Lancer le workflow » reste désactivé tant que l’objectif ou un champ
-obligatoire manque. Chaque workflow possède une copie du blueprint et ses
-propres valeurs. Les
-instructions d’origine restent inchangées.
+puis lance à partir de ce modèle. La saisie est conservée automatiquement,
+même incomplète, dans un brouillon unique. Fermer le dialogue attend la dernière
+sauvegarde ; la prochaine ouverture permet de retrouver ce brouillon dans
+« Workflows à lancer », sous le même projet. Une erreur de sauvegarde reste
+visible et empêche la fermeture tant que la saisie n’est pas conservée.
+Le seul bouton d’action est « Lancer », désactivé tant que l’objectif ou un champ
+obligatoire manque. Il attend la conservation des dernières valeurs avant de
+lancer la simulation. Chaque workflow possède une copie du blueprint et ses
+propres valeurs. Les instructions d’origine restent inchangées.
 
 Le lancement ajoute une tâche et une conversation pour chaque agent dans
 l’interface existante d’Operate. Une simulation fait progresser les agents

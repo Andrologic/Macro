@@ -87,7 +87,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         if (!blueprint.projectIds.includes(string(args.projectId))) throw new Error('Ce blueprint n’est pas rattaché au projet choisi.');
         const previous = blueprintUses.get(string(args.id));
         if (previous && previous.state !== 'prepared') throw new Error('Cette utilisation a déjà été lancée.');
-        const use: DemoBlueprintUse = { id: previous?.id ?? crypto.randomUUID(), blueprint: structuredClone(blueprint), projectId: string(args.projectId), objective: string(args.objective), values: Object.fromEntries(Object.entries(object(args.values)).map(([key, value]) => [key, string(value)])), taskIds: [], state: 'prepared' };
+        const use: DemoBlueprintUse = { id: previous?.id ?? (string(args.id) || crypto.randomUUID()), blueprint: structuredClone(blueprint), projectId: string(args.projectId), objective: string(args.objective), values: Object.fromEntries(Object.entries(object(args.values)).map(([key, value]) => [key, string(value)])), taskIds: [], state: 'prepared' };
         blueprintUses.set(use.id, use);
         return structuredClone(use);
       }

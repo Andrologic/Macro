@@ -201,6 +201,16 @@ describe('populated demo scenarios', () => {
 
 
 describe('demo blueprint preparation and launch', () => {
+  test('autosave updates one stable draft without launching tasks', async () => {
+    const runtime = createDemoRuntime();
+    const id = 'demo-autosaved-draft';
+    const first = await runtime.invoke('demo_blueprint_prepare', { id, projectId: 'demo-luma', blueprintId: 'demo-release', objective: 'First input', values: { releaseVersion: '2' } }) as DemoBlueprintUse;
+    const last = await runtime.invoke('demo_blueprint_prepare', { id, projectId: 'demo-luma', blueprintId: 'demo-release', objective: 'Latest input', values: { releaseVersion: '2.4.0' } }) as DemoBlueprintUse;
+    expect(first.id).toBe(id);
+    expect(last.id).toBe(id);
+    expect(await runtime.invoke('demo_blueprint_uses')).toEqual([expect.objectContaining({ id, objective: 'Latest input', values: { releaseVersion: '2.4.0' }, state: 'prepared', taskIds: [] })]);
+  });
+
   test('only permits blueprints attached to the target project', async () => {
     const runtime = createDemoRuntime();
     const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];

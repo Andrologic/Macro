@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button';
 import type { TaskProjectFilterOption } from '../components/tasks/TaskProjectFilter';
 import { missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { launchDemoBlueprint } from './blueprintLaunchService';
+import { createDemoWorkflowDraftWriter } from './blueprintDraft';
 import './blueprintJourney.css';
 
 export default function DemoBlueprintLaunchDialog({ projects, onClose }: { projects: TaskProjectFilterOption[]; onClose: () => void }) {
@@ -19,6 +20,7 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
   const [objective, setObjective] = useState('');
   const [values, setValues] = useState<Record<string, string>>({});
   const [useId, setUseId] = useState<string>();
+  const [draftWriter] = useState(() => createDemoWorkflowDraftWriter());
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
@@ -41,21 +43,49 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
   };
   const missing = blueprint ? missingBlueprintFields(blueprint, objective, values) : [];
   const choose = (item: DemoBlueprint) => {
-    setBlueprintId(item.id); setValues(Object.fromEntries(item.fields.map(field => [field.id, field.value]))); setUseId(undefined); setError('');
+    setBlueprintId(item.id); setValues(Object.fromEntries(item.fields.map(field => [field.id, field.value]))); setUseId(crypto.randomUUID()); setError('');
   };
-  const save = async (launch: boolean) => {
+  useEffect(() => {
+    if (!useId || !blueprintId || !projectId || busy) return;
+    let current = true;
+    void draftWriter.save({ id: useId, blueprintId, projectId, objective, values }).then(saved => {
+      if (current) {
+        setPrepared(items => [...items.filter(item => item.id !== saved.id), saved]);
+        setError('');
+      }
+    }).catch(error => { if (current) setError(String(error)); });
+    return () => { current = false; };
+  }, [draftWriter, useId, blueprintId, projectId, objective, values, busy]);
+  useEffect(() => {
+    if (!projectId || blueprintId) return;
+    let current = true;
+    void draftWriter.flush().then(() => invoke<DemoBlueprintUse[]>('demo_blueprint_uses')).then(uses => {
+      if (current) setPrepared(uses.filter(use => use.state === 'prepared'));
+    }).catch(error => { if (current) setError(String(error)); });
+    return () => { current = false; };
+  }, [projectId, blueprintId, draftWriter]);
+  const persistDraft = () => useId && blueprint
+    ? draftWriter.save({ id: useId, blueprintId, projectId, objective, values })
+    : draftWriter.flush();
+  const close = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await persistDraft(); onClose(); }
+    catch (error) { setError(String(error)); setBusy(false); }
+  };
+  const launch = async () => {
     if (busy || !blueprint) return;
     setBusy(true); setError('');
     try {
-      const use = await invoke<DemoBlueprintUse>('demo_blueprint_prepare', { id: useId, blueprintId, projectId, objective, values });
-      setUseId(use.id);
-      if (launch) await launchDemoBlueprint(use.id);
+      const use = await persistDraft();
+      if (!use) return;
+      await launchDemoBlueprint(use.id);
       onClose();
     } catch (error) { setError(String(error)); }
     finally { setBusy(false); }
   };
-  return <Dialog title={t('agsdl.demoLaunch.title')} onClose={() => { if (!busy) onClose(); }} closeOnBackdropClick panelClassName="agsdl-detail-modal demo-launch-modal">
-    <header><div><Play size={17} /><strong>{t('agsdl.demoLaunch.title')}</strong></div><button className="agsdl-icon-button" disabled={busy} onClick={onClose} aria-label={t('agsdl.close')}><X size={17} /></button></header>
+  return <Dialog title={t('agsdl.demoLaunch.title')} onClose={() => void close()} closeOnBackdropClick panelClassName="agsdl-detail-modal demo-launch-modal">
+    <header><div><Play size={17} /><strong>{t('agsdl.demoLaunch.title')}</strong></div><button className="agsdl-icon-button" disabled={busy} onClick={() => void close()} aria-label={t('agsdl.close')}><X size={17} /></button></header>
     <div className="demo-launch-body">
       {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
       {!loaded && !error && <p role="status">{t('agsdl.loading')}</p>}
@@ -86,9 +116,8 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
     <footer>
       <span className="demo-launch-hint">{blueprint && t(missing.length ? 'agsdl.demoLaunch.incomplete' : 'agsdl.demoLaunch.ready')}</span>
       {blueprint ? <>
-        <Button variant="secondary" disabled={!projectId || busy} onClick={() => void save(false)}>{t('agsdl.demoLaunch.prepare')}</Button>
-        <Button disabled={!projectId || missing.length > 0 || busy} onClick={() => void save(true)}><Play size={14} />{t('agsdl.demoLaunch.launch')}</Button>
-      </> : <Button variant="secondary" onClick={onClose}>{t('agsdl.close')}</Button>}
+        <Button disabled={!projectId || missing.length > 0 || busy} onClick={() => void launch()}><Play size={14} />{t('agsdl.demoLaunch.launch')}</Button>
+      </> : <Button variant="secondary" disabled={busy} onClick={() => void close()}>{t('agsdl.close')}</Button>}
     </footer>
   </Dialog>;
 }
