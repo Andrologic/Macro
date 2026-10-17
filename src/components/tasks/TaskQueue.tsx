@@ -477,13 +477,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
       }}
       className={cn(
         'relative w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
-        isCompactDraftFeatureCard ? 'h-[96px]' : 'h-[112px]',
+        isCompactDraftFeatureCard ? 'h-[80px]' : 'h-[96px]',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
-      <div className="grid h-full grid-rows-[auto,1fr,auto] p-1.5">
+      <div className="grid h-full min-w-0 grid-cols-1 grid-rows-[auto,1fr,auto] p-1.5">
         {actions.length > 0 && (
           <button
             ref={menuButtonRef}
@@ -508,7 +508,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
         <div className="flex items-center gap-2.5">
           <div className="relative shrink-0 group/lock">
-            <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', resolvedStatus.bgColor)}>
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-lg', resolvedStatus.bgColor)}>
               <TaskStatusIndicator
                 state={indicatorState}
                 layout="card"
@@ -525,13 +525,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
 
           <div className="min-w-0 flex-1">
-            <h3 className="pr-3 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
+            <h3 title={getPlanFinalizationTaskDisplayTitle(task, t)} className="truncate pr-7 text-sm font-semibold leading-[1.1rem] text-foreground">
               {getPlanFinalizationTaskDisplayTitle(task, t)}
             </h3>
           </div>
         </div>
 
-        <div className="min-h-0 overflow-hidden space-y-1">
+        <div className="min-h-0 overflow-hidden space-y-0.5">
           {waitingReason && !pendingRequestLabel && !showMergeWorkflowPresentation && <p data-task-card-waiting-reason="true" className="truncate text-[11px] text-amber-500" title={waitingReason}>{waitingReason}</p>}
           {pendingRequestLabel ? (
             <p data-task-card-next-action="true" className="truncate text-[11px] leading-[1rem] text-amber-500" title={pendingRequestLabel}>
@@ -554,7 +554,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               </p>
             </>
           ) : !isCompactDraftFeatureCard && task.description ? (
-            <p title={task.description} className={cn(waitingReason ? 'line-clamp-1' : 'line-clamp-2', 'text-[13px] leading-[1.15rem] text-muted-foreground')}>
+            <p title={task.description} className="truncate text-[13px] leading-4 text-muted-foreground">
               {task.description}
             </p>
           ) : null}
@@ -2096,7 +2096,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   } = useVirtualList({
     items: taskListRows,
     getItemKey: getTaskListRowKey,
-    estimateSize: 112,
+    estimateSize: 96,
     overscan: 8,
     dynamicHeight: true,
     gap: 8,
