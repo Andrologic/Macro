@@ -201,6 +201,16 @@ describe('populated demo scenarios', () => {
 
 
 describe('demo blueprint preparation and launch', () => {
+  test('a complete blueprint launches without an extra objective or model selection', async () => {
+    const runtime = createDemoRuntime();
+    const draft = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-luma', blueprintId: 'demo-voice' }) as DemoBlueprintUse;
+    const started = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
+    expect(started.state).toBe('running');
+    expect(started.taskIds.length).toBeGreaterThan(0);
+    const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
+    expect(catalog.find(item => item.id === 'demo-voice')?.fields[0].value).toBe('Macro AI · Démo');
+  });
+
   test('autosave updates one stable draft without launching tasks', async () => {
     const runtime = createDemoRuntime();
     const id = 'demo-autosaved-draft';

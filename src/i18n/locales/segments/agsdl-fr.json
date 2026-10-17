@@ -510,25 +510,14 @@
   },
   "demoLaunch": {
     "title": "Lancer un workflow",
-    "project": "Projet",
     "prepared": "Workflows à lancer",
     "blueprint": "Blueprint",
     "change": "Changer",
-    "agents": "agents",
-    "objective": "Objectif",
-    "objectiveHint": "Que souhaitez-vous accomplir cette fois-ci ?",
-    "inputs": "Paramètres du workflow",
     "chooseModel": "Choisir un modèle",
-    "environment": "Environnement",
-    "simulation": "Simulation locale. Aucun dépôt, fichier ou provider réel ne sera utilisé. Les agents progresseront automatiquement dans la file de tâches.",
-    "incomplete": "Saisie conservée automatiquement.",
-    "ready": "Workflow prêt · Simulation",
     "launch": "Lancer",
     "chooseProject": "Choisir un projet",
     "searchProject": "Rechercher un projet…",
     "noProjects": "Aucun projet trouvé.",
-    "noBlueprints": "Aucun blueprint rattaché à ce projet.",
-    "blueprintCount_one": "{{count}} blueprint",
-    "blueprintCount_other": "{{count}} blueprints"
+    "noBlueprints": "Aucun blueprint rattaché à ce projet."
   }
 }

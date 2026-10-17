@@ -510,25 +510,14 @@
   },
   "demoLaunch": {
     "title": "워크플로 시작",
-    "project": "Project",
     "prepared": "시작 대기 중인 워크플로",
     "blueprint": "Blueprint",
     "change": "Change",
-    "agents": "agents",
-    "objective": "Objective",
-    "objectiveHint": "What would you like to accomplish this time?",
-    "inputs": "워크플로 설정",
     "chooseModel": "Choose a model",
-    "environment": "Environment",
-    "simulation": "Local simulation. No real repository, file or provider will be used. Agents will progress automatically in the task queue.",
-    "incomplete": "입력 내용이 자동으로 저장됩니다.",
-    "ready": "워크플로 준비 완료 · 시뮬레이션",
     "launch": "시작",
     "chooseProject": "프로젝트 선택",
     "searchProject": "프로젝트 검색…",
     "noProjects": "프로젝트가 없습니다.",
-    "noBlueprints": "이 프로젝트에 연결된 블루프린트가 없습니다.",
-    "blueprintCount_one": "블루프린트 {{count}}개",
-    "blueprintCount_other": "블루프린트 {{count}}개"
+    "noBlueprints": "이 프로젝트에 연결된 블루프린트가 없습니다."
   }
 }

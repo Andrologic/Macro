@@ -17,13 +17,13 @@ export interface DemoBlueprintUse {
   taskIds: string[];
   state: 'prepared' | 'running' | 'completed';
 }
-export function missingBlueprintFields(blueprint: DemoBlueprint, objective: string, values: Record<string, string>) {
-  return (!objective.trim() ? ['objective'] : []).concat(blueprint.fields.filter(field => !(values[field.id] ?? field.value).trim()).map(field => field.id));
+export function missingBlueprintFields(blueprint: DemoBlueprint, values: Record<string, string>) {
+  return blueprint.fields.filter(field => !(values[field.id] ?? field.value).trim()).map(field => field.id);
 }
 export function blueprintAgentTasks(use: DemoBlueprintUse): Task[] {
   return use.blueprint.agents.map((agent, index) => ({
     id: `${use.id}-${index}`, plan_id: use.blueprint.id, project_id: use.projectId,
-    title: agent.title, description: `${use.blueprint.title} · ${use.objective}`,
+    title: agent.title, description: use.objective && use.objective !== use.blueprint.title ? `${use.blueprint.title} · ${use.objective}` : use.blueprint.title,
     status: index === 0 ? 'InProgress' : 'Blocked',
     dependencies: index ? [`${use.id}-${index - 1}`] : [],
     blocked_by_task_ids: index ? [`${use.id}-${index - 1}`] : [],

@@ -109,8 +109,7 @@ se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 ## Lancer un workflow dans Operate
 
 Le bouton d’ajout de la file ouvre « Lancer un workflow » dans la démo.
-Le premier écran demande de choisir un projet, avec une recherche et le nombre
-de blueprints rattachés à chacun. Le catalogue affiche ensuite uniquement les
+Le premier écran demande de choisir un projet, avec une recherche. Le catalogue affiche ensuite uniquement les
 blueprints de ce projet : Release mobile et Compte rendu vocal pour Luma Mobile,
 Revue avant livraison pour Atlas Studio, Import de catalogue pour Helio Data et
 Remboursement accompagné pour Meridian Commerce. Changer de projet efface la
@@ -125,8 +124,11 @@ même incomplète, dans un brouillon unique. Fermer le dialogue attend la derni�
 sauvegarde ; la prochaine ouverture permet de retrouver ce brouillon dans
 « Workflows à lancer », sous le même projet. Une erreur de sauvegarde reste
 visible et empêche la fermeture tant que la saisie n’est pas conservée.
-Le seul bouton d’action est « Lancer », désactivé tant que l’objectif ou un champ
-obligatoire manque. Il attend la conservation des dernières valeurs avant de
+Le seul bouton d’action est « Lancer », désactivé tant qu’un champ demandé par
+le blueprint manque. Aucun objectif ou réglage supplémentaire n’est imposé par
+Macro. Les valeurs déjà définies dans le blueprint sont héritées sans afficher
+de contrôle ; seuls les champs restant à renseigner sont visibles. Les listes
+affichent les noms sans descriptions ni compteurs. Il attend la conservation des dernières valeurs avant de
 lancer la simulation. Chaque workflow possède une copie du blueprint et ses
 propres valeurs. Les instructions d’origine restent inchangées.
 

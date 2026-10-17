@@ -18,33 +18,22 @@
 .demo-launch-modal > header { flex-shrink: 0; }
 .demo-launch-modal > header > div { display: flex; align-items: center; gap: 10px; }
 .demo-launch-body { overflow-y: auto; min-height: 0; padding: 20px; display: flex; flex-direction: column; gap: 22px; }
-.demo-launch-field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 500; }
-.demo-launch-modal input, .demo-launch-modal select, .demo-launch-modal textarea { width: 100%; padding: 9px 10px; border: 1px solid rgb(var(--border)); border-radius: 7px; background: rgb(var(--background)); color: rgb(var(--foreground)); font-size: 12px; font-weight: 400; }
-.demo-launch-modal textarea { resize: vertical; min-height: 65px; }
 .demo-launch-modal :is(input, select, textarea):focus { outline: 2px solid rgb(var(--primary) / .5); outline-offset: 2px; }
 .demo-launch-section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 12px; }
 .demo-launch-modal h3 { font-size: 12px; font-weight: 500; }
 .demo-launch-section-title button { color: rgb(var(--primary)); font-size: 11px; }
 .demo-launch-catalog { display: grid; gap: 8px; }
-.demo-launch-catalog > button, .demo-launch-selected { display: flex; text-align: left; align-items: center; gap: 12px; border: 1px solid rgb(var(--border)); padding: 13px; border-radius: 9px; }
 .demo-launch-catalog > button:hover { border-color: rgb(var(--primary) / .5); background: rgb(var(--primary) / .05); }
-.demo-launch-catalog > button > span, .demo-launch-selected > span { flex: 1; display: grid; gap: 5px; }
+.demo-launch-catalog > button > span { flex: 1; display: grid; gap: 5px; }
 .demo-launch-modal strong { font-size: 13px; font-weight: 500; }
 .demo-launch-modal small { font-size: 11px; color: rgb(var(--muted-foreground)); line-height: 1.5; }
-.demo-launch-catalog em { display: flex; align-items: center; gap: 5px; font-size: 10px; color: rgb(var(--muted-foreground)); font-style: normal; }
-.demo-launch-selected { background: rgb(var(--primary) / .07); border-color: rgb(var(--primary) / .25); }
 .demo-launch-inputs { display: grid; gap: 12px; }
 .demo-launch-inputs > label { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(0, 1.5fr); align-items: center; gap: 14px; font-size: 12px; }
 .demo-launch-inputs > label > span { display: flex; align-items: center; gap: 8px; }
-.demo-launch-count, .demo-launch-hint { color: rgb(var(--muted-foreground)); font-size: 11px; }
 .demo-launch-modal > footer { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-.demo-launch-hint { margin-right: auto; }
-.demo-launch-environment > button { display: flex; align-items: center; gap: 6px; font-size: 11px; color: rgb(var(--muted-foreground)); }
-.demo-launch-environment p { margin-top: 10px; font-size: 11px; color: rgb(var(--muted-foreground)); line-height: 1.6; }
 .demo-launch-prepared { display: grid; gap: 8px; }
 .demo-launch-prepared button { display: flex; align-items: center; text-align: left; gap: 10px; padding: 10px; border: 1px solid rgb(var(--border)); border-radius: 7px; }
 .demo-launch-prepared button span { display: grid; gap: 3px; flex: 1; font-size: 12px; }
-@media (max-width: 520px) { .demo-launch-inputs > label { grid-template-columns: 1fr; gap: 6px; } .demo-launch-hint { display: none; } }
 .demo-launch-projects { display: grid; gap: 14px; }
 .demo-launch-search { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid rgb(var(--border)); border-radius: 7px; color: rgb(var(--muted-foreground)); }
 .demo-launch-search input { border: 0; background: transparent; padding-left: 0; }
@@ -55,3 +44,11 @@
 .demo-launch-project-selected { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgb(var(--border)); padding-bottom: 16px; }
 .demo-launch-project-selected strong { flex: 1; }
 .demo-launch-project-selected button { color: rgb(var(--primary)); font-size: 11px; }
+.demo-launch-blueprint-selected { display: flex; align-items: center; gap: 10px; }
+.demo-launch-blueprint-selected strong { flex: 1; }
+.demo-launch-blueprint-selected button { color: rgb(var(--primary)); font-size: 11px; }
+.demo-launch-modal > footer { justify-content: flex-end; }
+.demo-launch-modal input, .demo-launch-modal select { width: 100%; padding: 9px 10px; border: 1px solid rgb(var(--border)); border-radius: 7px; background: rgb(var(--background)); color: rgb(var(--foreground)); font-size: 12px; font-weight: 400; }
+.demo-launch-search input { border: 0; background: transparent; padding-left: 0; }
+.demo-launch-catalog > button { display: flex; text-align: left; align-items: center; gap: 12px; border: 1px solid rgb(var(--border)); padding: 13px; border-radius: 9px; }
+@media (max-width: 520px) { .demo-launch-inputs > label { grid-template-columns: 1fr; gap: 6px; } }

@@ -95,12 +95,12 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const use = blueprintUses.get(string(args.id));
         if (!use) throw new Error('Préparation introuvable.');
         if (use.state !== 'prepared') return structuredClone(use);
-        if (missingBlueprintFields(use.blueprint, use.objective, use.values).length) throw new Error('Complétez les champs nécessaires avant de lancer.');
+        if (missingBlueprintFields(use.blueprint, use.values).length) throw new Error('Complétez les champs nécessaires avant de lancer.');
         const created = blueprintAgentTasks(use);
         for (const task of created) {
           tasks.push(task);
           conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: 2 });
-          messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`), demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\nExécution simulée en cours.'));
+          messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective || use.blueprint.title}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`), demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\nExécution simulée en cours.'));
         }
         use.taskIds = created.map(task => task.id); use.state = 'running';
         return structuredClone(use);
