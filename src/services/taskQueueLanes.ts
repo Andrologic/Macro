@@ -1,6 +1,6 @@
 import type { TaskQueueStatusGroup } from './taskStatusPresentation';
 
-export const TASK_QUEUE_LANES = ['ready', 'in_progress', 'waiting', 'completed'] as const;
+export const TASK_QUEUE_LANES = ['ready', 'waiting', 'in_progress', 'completed'] as const;
 export type TaskQueueLane = typeof TASK_QUEUE_LANES[number];
 interface QueueTask { id: string; status: unknown; draft?: boolean; archived_at?: string | null }
 

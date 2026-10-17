@@ -591,7 +591,7 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
-    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
+    expect(document.body.querySelector('h2')).toBeNull();
   });
 
   it('lets users clear a status filter from the compact status controls', async () => {
@@ -627,31 +627,31 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Blocked task');
   });
 
-  it('uses the same ready group for the summary, section and filter', async () => {
+  it('uses the same ready group for the summary, order and filter', async () => {
     seedTasks([
       makeTask('ready', 'Pending', { title: 'Ready item' }),
       makeTask('working', 'InProgress', { title: 'Working item' }),
       makeTask('waiting', 'AwaitingResponse', { title: 'Waiting item' }),
       makeTask('reviewing', 'InReview', { title: 'Reviewing item' }),
+      makeTask('done', 'Completed', { title: 'Completed item' }),
     ]);
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    expect(getSectionSummaries()).toEqual([
-      { title: 'To launch', count: '1' },
-      { title: 'In progress', count: '2' },
-      { title: 'Waiting', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:waiting', 'task:working', 'task:reviewing', 'task:done']);
+    const statusControls = document.body.querySelector('[aria-label="Task status summary"]');
+    expect(Array.from(statusControls?.querySelectorAll('button') ?? []).map(button => button.title)).toEqual(['To launch', 'Waiting', 'In progress', 'Completed']);
     const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="To launch"]');
     expect(readyFilter?.textContent?.replace(/\s/g, '')).toBe('Tolaunch1');
     expect(document.body.textContent).toContain('Working item');
     expect(document.body.textContent).toContain('Waiting item');
     await act(async () => { readyFilter?.click(); await flushRender(); });
-    expect(getSectionSummaries()).toEqual([{ title: 'To launch', count: '1' }]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(document.body.textContent).not.toContain('Working item');
     expect(document.body.textContent).not.toContain('Waiting item');
     expect(document.body.textContent).not.toContain('Reviewing item');
   });
 
-  it('excludes drafts and archives from the ready counter, section and filter', async () => {
+  it('excludes drafts and archives from the ready counter and filter', async () => {
     seedTasks([
       makeTask('ready', 'Pending', { title: 'Ready item' }),
       makeTask('draft', 'Pending', { title: 'Draft item', draft: true, standalone_kind: 'manual_feature' }),
@@ -660,11 +660,9 @@ describe('TaskQueue', () => {
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
     const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="To launch"]');
     expect(readyFilter?.textContent).toBe('To launch1');
-    expect(getSectionSummaries()).toEqual([
-      { title: 'Draft features', count: '1' }, { title: 'To launch', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     await act(async () => { readyFilter?.click(); await flushRender(); });
-    expect(getSectionSummaries()).toEqual([{ title: 'To launch', count: '1' }]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(document.body.textContent).not.toContain('Draft item');
     expect(document.body.textContent).not.toContain('Archived item');
   });
@@ -698,7 +696,7 @@ describe('TaskQueue', () => {
     expect(useTaskStore.getState().tasks[0].archived_at).toBe('2026-01-01');
   });
 
-  it('groups reply-required, blocked and failed tasks under Waiting while preserving their reasons', async () => {
+  it('filters reply-required, blocked and failed tasks through Waiting while preserving their reasons', async () => {
     seedTasks([
       makeTask('waiting-task', 'AwaitingResponse', { title: 'Reply required task' }),
       makeTask('blocked-task', 'Blocked', { title: 'Actually blocked task', is_ready: false }),
@@ -776,8 +774,8 @@ describe('TaskQueue', () => {
     const summary = document.body.querySelector('[aria-label="Task status summary"]')!;
     const filters = [...summary.querySelectorAll<HTMLButtonElement>('button')];
     expect(filters).toHaveLength(4);
-    expect(filters.map(button => button.textContent)).toEqual(['To launch0', 'In progress1', 'Waiting8', 'Completed0']);
-    expect(getSectionSummaries()).toEqual([{ title: 'In progress', count: '1' }, { title: 'Waiting', count: '8' }]);
+    expect(filters.map(button => button.textContent)).toEqual(['To launch0', 'Waiting8', 'In progress1', 'Completed0']);
+    expect(getSectionSummaries()).toEqual([]);
     const waitingFilter = summary.querySelector<HTMLButtonElement>('[title="Waiting"]')!;
     await act(async () => { waitingFilter.click(); await flushRender(); });
     for (const title of ['Reply required task', 'Actually blocked task', 'Dependency blocked task', 'Failed task', 'Merge blocked task', 'Merge failed task', 'Legacy status task', 'Reblocked completed task']) {
@@ -816,7 +814,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).toBeNull();
     await act(async () => { attentionFilter?.click(); await flushRender(); });
     expect(attentionFilter?.getAttribute('aria-pressed')).toBe('true');
-    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:task-1', 'task:waiting', 'task:blocked']);
+    expect(getLastVirtualListKeys()).toEqual(['task:task-1', 'task:waiting', 'task:blocked']);
     expect(document.body.querySelectorAll('[role="button"][tabindex="0"]').length).toBe(3);
     expect(document.body.textContent).toContain('Next: open the approval request');
     await act(async () => { (getTaskCard() as HTMLElement)?.click(); await flushRender(); });
@@ -828,7 +826,7 @@ describe('TaskQueue', () => {
         task.id === 'review' ? { ...task, status: 'Completed' } : task) });
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:waiting', 'task:blocked']);
+    expect(getLastVirtualListKeys()).toEqual(['task:waiting', 'task:blocked']);
     expect(attentionFilter?.textContent).toBe('Waiting2');
     expect(useViewFilterStore.getState().implement.status).toBe('waiting');
     await act(async () => { attentionFilter?.click(); await flushRender(); });
@@ -878,16 +876,16 @@ describe('TaskQueue', () => {
       useViewFilterStore.getState().setImplementProjectFilter('project-2');
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:second']);
+    expect(getLastVirtualListKeys()).toEqual(['task:second']);
     expect(useViewFilterStore.getState().implement.status).toBe('waiting');
     await act(async () => {
       useViewFilterStore.getState().setImplementProjectFilter('__all_projects__');
       useViewFilterStore.getState().setImplementShowArchived(true);
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived']);
+    expect(getLastVirtualListKeys()).toEqual(['task:archived']);
     await act(async () => { useViewFilterStore.getState().setImplementShowArchived(false); await flushRender(); });
-    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:first', 'task:second']);
+    expect(getLastVirtualListKeys()).toEqual(['task:first', 'task:second']);
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-search-toggle"]')?.click();
       await flushRender();
@@ -898,7 +896,7 @@ describe('TaskQueue', () => {
       input?.dispatchEvent(new window.Event('input', { bubbles: true }));
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:second']);
+    expect(getLastVirtualListKeys()).toEqual(['task:second']);
     expect(useViewFilterStore.getState().implement.status).toBe('waiting');
   });
 
@@ -1365,8 +1363,8 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getLastVirtualListKeys()).toEqual(['section:ready', 'task:task-1']);
-    expect(getSectionSummaries()).toEqual([{ title: 'To launch', count: '1' }]);
+    expect(getLastVirtualListKeys()).toEqual(['task:task-1']);
+    expect(getSectionSummaries()).toEqual([]);
     expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Archived task');
 
@@ -1383,8 +1381,8 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived-task']);
-    expect(getSectionSummaries()).toEqual([{ title: 'Archive', count: '1' }]);
+    expect(getLastVirtualListKeys()).toEqual(['task:archived-task']);
+    expect(getSectionSummaries()).toEqual([]);
     expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
     expect(document.body.textContent).not.toContain('Active task');
     expect(document.body.textContent).toContain('Archived task');
@@ -2487,6 +2485,8 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
+    expect(document.body.querySelector('[data-task-status-indicator-state="running"]')?.className).toContain('text-sky-400');
+    expect(document.body.querySelector('[data-task-status-indicator-state="running"] [data-spinner-icon] .animate-spin')).not.toBeNull();
   });
 
   it('classifies a streamed task as in progress ahead of a stale waiting status', async () => {
@@ -3167,7 +3167,7 @@ describe('TaskQueue', () => {
     );
   });
 
-  it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {
+  it('keeps virtual row keys stable when draft and blocked cards are inserted', async () => {
     seedTasks([
       makeTask('ready-1', 'Pending', {
         title: 'Ready task',
@@ -3180,11 +3180,8 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getSectionSummaries()).toEqual([
-      { title: 'To launch', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(getLastVirtualListKeys()).toEqual([
-      'section:ready',
       'task:ready-1',
     ]);
 
@@ -3211,14 +3208,9 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getSectionSummaries()).toEqual([
-      { title: 'Draft features', count: '1' },
-      { title: 'To launch', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(getLastVirtualListKeys()).toEqual([
-      'section:drafts',
       'task:draft-1',
-      'section:ready',
       'task:ready-1',
     ]);
 
@@ -3251,17 +3243,10 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getSectionSummaries()).toEqual([
-      { title: 'Draft features', count: '1' },
-      { title: 'Waiting', count: '1' },
-      { title: 'Completed', count: '1' },
-    ]);
+    expect(getSectionSummaries()).toEqual([]);
     expect(getLastVirtualListKeys()).toEqual([
-      'section:drafts',
       'task:draft-1',
-      'section:waiting',
       'task:ready-1',
-      'section:completed',
       'task:done-1',
     ]);
   });

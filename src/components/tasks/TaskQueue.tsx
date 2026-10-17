@@ -1,4 +1,4 @@
-import { groupTaskQueueLanes, type TaskQueueLane } from '../../services/taskQueueLanes';
+import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -133,24 +133,15 @@ interface TaskQueueProps {
   className?: string;
 }
 
-type TaskListRow =
-  | {
-      kind: 'section';
-      id: string;
-      title: string;
-      count: number;
-      tone?: 'draft' | 'default' | 'success';
-    }
-  | {
-      kind: 'task';
-      id: string;
-      task: ImplementTask;
-      multiRepoPresentation: MultiRepoTaskPresentation | null;
-    };
+type TaskListRow = {
+  id: string;
+  task: ImplementTask;
+  multiRepoPresentation: MultiRepoTaskPresentation | null;
+};
 
 const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
   Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
-  InProgress: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
+  InProgress: { color: 'text-sky-400', bgColor: 'bg-sky-400/10' },
   AwaitingResponse: { color: 'text-amber-500', bgColor: 'bg-amber-500/10' },
   InReview: { color: 'text-sky-400', bgColor: 'bg-sky-500/10' },
   Completed: { color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
@@ -366,7 +357,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     task.standalone_kind === 'manual_feature' &&
     task.description.trim().length === 0;
   const status = isAssistantRunning
-    ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
+    ? { color: 'text-sky-400', bgColor: 'bg-sky-400/10' }
     : statusConfig[task.status] || statusConfig.Pending;
   const mergeWorkflowPresentation = useMemo(
     () =>
@@ -2087,70 +2078,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return map;
   }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, reviewLoadState, reviewIsLoading, searchedTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
-    const rows: TaskListRow[] = [];
-
-    if (showArchived) {
-      if (archivedTasks.length > 0) {
-        rows.push({
-          kind: 'section',
-          id: 'section:archived',
-          title: t('common.archive', 'Archive'),
-          count: archivedTasks.length,
-          tone: 'default',
-        });
-        archivedTasks.forEach((task) => {
-          rows.push({
-            kind: 'task',
-            id: `task:${task.id}`,
-            task,
-            multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-          });
-        });
-      }
-
-      return rows;
-    }
-
-    if (draftTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:drafts',
-        title: t('implement.manualFeatureDrafts', 'Draft features'),
-        count: draftTasks.length,
-        tone: 'draft',
-      });
-      draftTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: null,
-        });
-      });
-    }
-
-    const sections = [
-      { group: 'ready', title: t('implement.queueToLaunch', 'To launch') },
-      { group: 'in_progress', title: t('implement.queueInProgress', 'In progress') },
-      { group: 'waiting', title: t('implement.queueWaiting', 'Waiting') },
-      { group: 'completed', title: t('implement.queueCompleted', 'Completed') },
-    ] as const;
-    for (const { group, title } of sections) {
-      const items = tasksByStatusGroup[group];
-      if (!items.length) continue;
-      rows.push({ kind: 'section', id: `section:${group}`, title, count: items.length, tone: group === 'completed' ? 'success' : 'default' });
-      items.forEach(task => rows.push({ kind: 'task', id: `task:${task.id}`, task, multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null }));
-    }
-
-    return rows;
-  }, [
-    archivedTasks,
-    draftTasks,
-    multiRepoPresentationByTaskId,
-    tasksByStatusGroup,
-    showArchived,
-    t,
-  ]);
+    const orderedTasks = showArchived
+      ? archivedTasks
+      : [...draftTasks, ...TASK_QUEUE_LANES.flatMap(lane => tasksByStatusGroup[lane])];
+    return orderedTasks.map(task => ({
+      id: `task:${task.id}`,
+      task,
+      multiRepoPresentation: task.draft ? null : multiRepoPresentationByTaskId.get(task.id) ?? null,
+    }));
+  }, [archivedTasks, draftTasks, multiRepoPresentationByTaskId, tasksByStatusGroup, showArchived]);
   const getTaskListRowKey = useCallback((row: TaskListRow) => row.id, []);
   const {
     parentRef: taskListRef,
@@ -2492,9 +2428,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             aria-label={t('implement.taskStatusSummary', 'Task status summary')}
           >
             {([
-              ['ready', t('implement.queueToLaunch', 'To launch'), statusCounts.ready, 'bg-emerald-400'],
-              ['in_progress', t('implement.queueInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
+              ['ready', t('implement.queueToLaunch', 'To launch'), statusCounts.ready, 'bg-muted-foreground'],
               ['waiting', t('implement.queueWaiting', 'Waiting'), statusCounts.waiting, 'bg-amber-400'],
+              ['in_progress', t('implement.queueInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
               ['completed', t('implement.queueCompleted', 'Completed'), statusCounts.completed, 'bg-emerald-500'],
             ] as const).map(([filter, label, count, dotClassName]) => (
               <button
@@ -2572,56 +2508,36 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
-                    {row.kind === 'section' ? (
-                      <div className="flex h-7 items-center justify-between gap-3 px-1">
-                        <h2
-                          className={cn(
-                            'truncate whitespace-nowrap text-xs font-semibold uppercase tracking-wide',
-                            row.tone === 'draft'
-                              ? 'text-sky-400'
-                              : row.tone === 'success'
-                                ? 'text-emerald-500'
-                                : 'text-foreground/80'
-                          )}
-                        >
-                          {row.title}
-                        </h2>
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                          {row.count}
-                        </span>
-                      </div>
-                    ) : (
-                      <MemoizedTaskItem
-                        task={row.task}
-                        mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
-                        multiRepoPresentation={row.multiRepoPresentation}
-                        attention={attentionByTaskId.get(row.task.id)}
-                        hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
-                        isSelected={selectedTaskId === row.task.id}
-                        project={getProjectById(row.task.project_id) ?? null}
-                        planLabel={getTaskPlanLabel(row.task)}
-                        planKind={planKindsById.get(row.task.plan_id) ?? null}
-                        isAssistantRunning={runningTaskIds.has(row.task.id)}
-                        taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
-                        canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
-                        showRunTaskCommands={!isPlanFinalizationTask(row.task)}
-                        runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
-                        onSelect={() => {
-                          const attention = attentionByTaskId.get(row.task.id);
-                          void activateTask(row.task.id).then(async () => {
-                            if (attention?.conversationId &&
-                              useAppStore.getState().mode === 'Implement' &&
-                              useAppStore.getState().selectedTaskId === row.task.id) {
-                              await selectConversation(attention.conversationId);
-                            }
-                          });
-                        }}
-                        onRunTaskCommands={() => void handleRunTaskCommands(row.task)}
-                        onCancelTaskCommands={() => void cancelTaskCommands(row.task.id)}
-                        actions={buildTaskActions(row.task)}
-                        onAction={(action) => void handleTaskAction(row.task, action)}
-                      />
-                    )}
+                    <MemoizedTaskItem
+                      task={row.task}
+                      mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
+                      multiRepoPresentation={row.multiRepoPresentation}
+                      attention={attentionByTaskId.get(row.task.id)}
+                      hasResolvedUserRequest={resolvedWaitTaskIds.has(row.task.id)}
+                      isSelected={selectedTaskId === row.task.id}
+                      project={getProjectById(row.task.project_id) ?? null}
+                      planLabel={getTaskPlanLabel(row.task)}
+                      planKind={planKindsById.get(row.task.plan_id) ?? null}
+                      isAssistantRunning={runningTaskIds.has(row.task.id)}
+                      taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
+                      canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
+                      showRunTaskCommands={!isPlanFinalizationTask(row.task)}
+                      runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
+                      onSelect={() => {
+                        const attention = attentionByTaskId.get(row.task.id);
+                        void activateTask(row.task.id).then(async () => {
+                          if (attention?.conversationId &&
+                            useAppStore.getState().mode === 'Implement' &&
+                            useAppStore.getState().selectedTaskId === row.task.id) {
+                            await selectConversation(attention.conversationId);
+                          }
+                        });
+                      }}
+                      onRunTaskCommands={() => void handleRunTaskCommands(row.task)}
+                      onCancelTaskCommands={() => void cancelTaskCommands(row.task.id)}
+                      actions={buildTaskActions(row.task)}
+                      onAction={(action) => void handleTaskAction(row.task, action)}
+                    />
                   </div>
                 );
               })}

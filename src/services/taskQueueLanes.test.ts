@@ -20,7 +20,7 @@ test('detailed engine states resolve to one of four visible lanes, retaining liv
     expect(taskQueueLane({ id: 'task', status }, group)).toBe(expected);
   }
 });
-test('counts and sections partition unique non-draft unarchived tasks without overlapping attention totals', () => {
+test('counts partition unique non-draft unarchived tasks without overlapping attention totals', () => {
   const tasks = [
     { id: 'ready', status: 'Pending' }, { id: 'working', status: 'InProgress' },
     { id: 'reply', status: 'AwaitingResponse' }, { id: 'blocked', status: 'Blocked' },
@@ -31,7 +31,7 @@ test('counts and sections partition unique non-draft unarchived tasks without ov
   ];
   const detailed = new Map(tasks.map(task => [task.id, resolveTaskQueueStatusGroup(task.status)]));
   const lanes = groupTaskQueueLanes(tasks, detailed);
-  expect(TASK_QUEUE_LANES.map(lane => lanes[lane].length)).toEqual([1, 1, 3, 1]);
+  expect(TASK_QUEUE_LANES.map(lane => lanes[lane].length)).toEqual([1, 3, 1, 1]);
   const ids = Object.values(lanes).flat().map(task => task.id);
   expect(ids).toHaveLength(6);
   expect(new Set(ids).size).toBe(ids.length);

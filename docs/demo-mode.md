@@ -135,7 +135,9 @@ propres valeurs. Les instructions d’origine restent inchangées.
 
 Le lancement ajoute une carte indépendante et une conversation par agent dans
 l’interface existante d’Operate. Les tâches restent affichées individuellement,
-avec leurs statuts et leurs dépendances. Les compteurs comptent chaque tâche,
+avec leurs statuts et leurs dépendances. La liste ne comporte pas de titres de
+catégories : l’ordre est À lancer, En attente, En cours, puis Terminées, comme
+les filtres du haut. Les compteurs comptent chaque tâche,
 sans entrée parent ni regroupement par workflow.
 
 Le blueprint Assistant démarre en attente. La consigne se donne directement dans
