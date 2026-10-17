@@ -524,7 +524,7 @@
     "incomplete": "You can complete this preparation later.",
     "ready": "Workflow listo · Simulación",
     "prepare": "Prepare",
-    "launch": "Launch",
+    "launch": "Iniciar el workflow",
     "chooseProject": "Elegir un proyecto",
     "searchProject": "Buscar un proyecto…",
     "noProjects": "No se encontraron proyectos.",

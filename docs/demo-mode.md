@@ -122,7 +122,7 @@ des métadonnées de leurs blueprints, dont les choix effectués dans Architect.
 Le blueprint est le modèle réutilisable ; le workflow est ce qu’on prépare
 puis lance à partir de ce modèle. « Préparer » conserve un workflow même
 incomplet. Il se retrouve dans « Workflows à lancer » à la prochaine ouverture
-du dialogue. « Lancer » reste désactivé tant que l’objectif ou un champ
+du dialogue. « Lancer le workflow » reste désactivé tant que l’objectif ou un champ
 obligatoire manque. Chaque workflow possède une copie du blueprint et ses
 propres valeurs. Les
 instructions d’origine restent inchangées.

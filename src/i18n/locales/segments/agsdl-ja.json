@@ -524,7 +524,7 @@
     "incomplete": "You can complete this preparation later.",
     "ready": "ワークフローの準備完了 · シミュレーション",
     "prepare": "Prepare",
-    "launch": "Launch",
+    "launch": "ワークフローを開始",
     "chooseProject": "プロジェクトを選択",
     "searchProject": "プロジェクトを検索…",
     "noProjects": "プロジェクトが見つかりません。",
