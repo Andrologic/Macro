@@ -643,5 +643,9 @@
   "reviewProgress": "{{reviewed}} / {{total}} diferencias de archivos abiertas",
   "nextUnreviewedDiff": "Siguiente diferencia sin abrir",
   "resumeRemainingCommits": "Reanudar commits restantes",
-  "detachedReviewDraft": "Este archivo ya no está en la revisión. Copia el borrador sin guardar antes de cerrar; las acciones del archivo no están disponibles."
+  "detachedReviewDraft": "Este archivo ya no está en la revisión. Copia el borrador sin guardar antes de cerrar; las acciones del archivo no están disponibles.",
+  "queueToLaunch": "Por iniciar",
+  "queueInProgress": "En curso",
+  "queueWaiting": "En espera",
+  "queueCompleted": "Finalizadas"
 }

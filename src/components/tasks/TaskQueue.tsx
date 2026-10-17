@@ -1,3 +1,4 @@
+import { groupTaskQueueLanes, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -130,11 +131,6 @@ const CreateImplementTaskDialog = React.lazy(() =>
 interface TaskQueueProps {
   className?: string;
 }
-
-const isReadyQueueTask = (
-  task: Pick<ImplementTask, 'draft' | 'archived_at'>,
-  statusGroup: string | undefined,
-): boolean => !task.draft && !task.archived_at && statusGroup === 'ready';
 
 type TaskListRow =
   | {
@@ -418,6 +414,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
     !task.is_blocked && task.status !== 'Completed' && !task.archived_at
   );
   const lockTooltip = getDependencyBlockedMessage(task, t) ?? '';
+  const waitingReason = indicatorState === 'blocked' ? lockTooltip || t('implement.statusBlocked', 'Blocked')
+    : indicatorState === 'failed' ? t('implement.failed', 'Failed')
+    : indicatorState === 'awaiting_response' ? t('implement.statusWaiting', 'Needs reply') : null;
   useEffect(() => {
     if (!showMenu) return;
 
@@ -540,7 +539,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
         </div>
 
-        <div className="min-h-0 space-y-1">
+        <div className="min-h-0 overflow-hidden space-y-1">
+          {waitingReason && !pendingRequestLabel && !showMergeWorkflowPresentation && <p data-task-card-waiting-reason="true" className="truncate text-[11px] text-amber-500" title={waitingReason}>{waitingReason}</p>}
           {pendingRequestLabel ? (
             <p data-task-card-next-action="true" className="truncate text-[11px] leading-[1rem] text-amber-500" title={pendingRequestLabel}>
               {pendingRequestLabel}
@@ -562,7 +562,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               </p>
             </>
           ) : !isCompactDraftFeatureCard && task.description ? (
-            <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
+            <p title={task.description} className={cn(waitingReason ? 'line-clamp-1' : 'line-clamp-2', 'text-[13px] leading-[1.15rem] text-muted-foreground')}>
               {task.description}
             </p>
           ) : null}
@@ -1522,9 +1522,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const projectFilteredTasks = useMemo(() => {
     if (projectFilter === ALL_PROJECTS_FILTER) {
-      return tasks;
+      return [...new Map(tasks.map(task => [task.id, task])).values()];
     }
-    return tasks.filter((task) => taskMatchesProjectId(task, projectFilter));
+    return [...new Map(tasks.map(task => [task.id, task])).values()].filter((task) => taskMatchesProjectId(task, projectFilter));
   }, [projectFilter, tasks]);
   const taskQueueStatusGroupById = useMemo(
     () => new Map(
@@ -1551,36 +1551,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [tasks]
   );
 
-  const statusCounts = useMemo(() => {
-    const activeTasks = projectFilteredTasks.filter((task) => !task.archived_at && (!task.draft || attentionByTaskId.has(task.id)));
-    return {
-      attention: activeTasks.filter((task) => attentionByTaskId.has(task.id)).length,
-      ready: activeTasks.filter((task) =>
-        isReadyQueueTask(task, taskQueueStatusGroupById.get(task.id))
-      ).length,
-      in_progress: activeTasks.filter((task) =>
-        taskQueueStatusGroupById.get(task.id) === 'in_progress'
-      ).length,
-      waiting: activeTasks.filter(
-        (task) => taskQueueStatusGroupById.get(task.id) === 'waiting'
-      ).length,
-      blocked: activeTasks.filter(
-        (task) => taskQueueStatusGroupById.get(task.id) === 'blocked'
-      ).length,
-      failed: activeTasks.filter(
-        (task) => taskQueueStatusGroupById.get(task.id) === 'failed'
-      ).length,
-    };
-  }, [attentionByTaskId, projectFilteredTasks, taskQueueStatusGroupById]);
+  const taskLanes = useMemo(() => groupTaskQueueLanes(projectFilteredTasks, taskQueueStatusGroupById), [projectFilteredTasks, taskQueueStatusGroupById]);
+  const laneByTaskId = useMemo(() => new Map(Object.entries(taskLanes).flatMap(([lane, items]) => items.map(task => [task.id, lane as TaskQueueLane] as const))), [taskLanes]);
+  const statusCounts = useMemo(() => ({ ready: taskLanes.ready.length, in_progress: taskLanes.in_progress.length, waiting: taskLanes.waiting.length, completed: taskLanes.completed.length }), [taskLanes]);
 
   const filteredTasks = useMemo(() => {
     if (showArchived || statusFilter === 'all') return projectFilteredTasks;
-    return projectFilteredTasks.filter((task) => {
-      if (statusFilter === 'ready') return isReadyQueueTask(task, taskQueueStatusGroupById.get(task.id));
-      return statusFilter === 'attention' ? attentionByTaskId.has(task.id)
-        : taskQueueStatusGroupById.get(task.id) === statusFilter;
-    });
-  }, [attentionByTaskId, projectFilteredTasks, showArchived, statusFilter, taskQueueStatusGroupById]);
+    return projectFilteredTasks.filter(task => laneByTaskId.get(task.id) === statusFilter);
+  }, [projectFilteredTasks, showArchived, statusFilter, laneByTaskId]);
 
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
@@ -2081,53 +2059,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   );
 
   const tasksByStatusGroup = useMemo(() => {
-    const groups = { ready: [], in_progress: [], waiting: [], other: [] } as Record<
-      'ready' | 'in_progress' | 'waiting' | 'other', ImplementTask[]
-    >;
-    searchedTasks.forEach((task) => {
-      if (task.draft || task.archived_at || task.status === 'Completed') return;
-      const group = taskQueueStatusGroupById.get(task.id) ?? 'other';
-      if (isReadyQueueTask(task, group)) groups.ready.push(task);
-      else if (group === 'in_progress' || group === 'waiting' || group === 'other') groups[group].push(task);
-    });
-    Object.values(groups).forEach((group) => group.sort((a, b) => {
-      const byStatus = (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER)
-        - (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
+    const groups = groupTaskQueueLanes(searchedTasks, taskQueueStatusGroupById);
+    Object.values(groups).forEach(group => group.sort((a, b) => {
+      const byStatus = (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER) - (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
       return byStatus || a.sequence_index - b.sequence_index;
     }));
     return groups;
-  }, [searchedTasks, taskQueueStatusGroupById]);
-  const readyTasks = tasksByStatusGroup.ready;
-
-  const blockedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) =>
-        !task.draft &&
-        !task.archived_at &&
-        taskQueueStatusGroupById.get(task.id) === 'blocked'
-      )
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks, taskQueueStatusGroupById]);
-
-  const failedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) =>
-        !task.draft &&
-        !task.archived_at &&
-        taskQueueStatusGroupById.get(task.id) === 'failed'
-      )
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks, taskQueueStatusGroupById]);
-
-  const completedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) =>
-        !task.draft &&
-        !task.archived_at &&
-        task.status === 'Completed' &&
-        taskQueueStatusGroupById.get(task.id) === 'other'
-      )
-      .sort((a, b) => a.sequence_index - b.sequence_index);
   }, [searchedTasks, taskQueueStatusGroupById]);
 
   const archivedTasks = useMemo(() => {
@@ -2173,15 +2110,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return rows;
     }
 
-    if (statusFilter === 'attention') {
-      rows.push({ kind: 'section', id: 'section:attention', title: t('implement.statusAttention', 'Needs attention'), count: searchedTasks.length });
-      searchedTasks.forEach((task) => rows.push({
-        kind: 'task', id: `task:${task.id}`, task,
-        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-      }));
-      return rows;
-    }
-
     if (draftTasks.length > 0) {
       rows.push({
         kind: 'section',
@@ -2200,103 +2128,25 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       });
     }
 
-    rows.push({
-      kind: 'section',
-      id: 'section:ready',
-      title: t('implement.readyTasks', 'Ready tasks'),
-      count: readyTasks.length,
-      tone: 'default',
-    });
-    readyTasks.forEach((task) => {
-      rows.push({
-        kind: 'task',
-        id: `task:${task.id}`,
-        task,
-        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-      });
-    });
-
-    const activeSections = [
-      { group: 'in_progress', title: t('implement.statusInProgress', 'In progress') },
-      { group: 'waiting', title: t('implement.statusWaiting', 'Needs reply') },
-      { group: 'other', title: t('implement.otherTasks', 'Other tasks') },
+    const sections = [
+      { group: 'ready', title: t('implement.queueToLaunch', 'To launch') },
+      { group: 'in_progress', title: t('implement.queueInProgress', 'In progress') },
+      { group: 'waiting', title: t('implement.queueWaiting', 'Waiting') },
+      { group: 'completed', title: t('implement.queueCompleted', 'Completed') },
     ] as const;
-    activeSections.forEach(({ group, title }) => {
-      const groupTasks = tasksByStatusGroup[group];
-      if (groupTasks.length === 0) return;
-      rows.push({ kind: 'section', id: `section:${group}`, title, count: groupTasks.length });
-      groupTasks.forEach((task) => rows.push({
-        kind: 'task', id: `task:${task.id}`, task,
-        multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-      }));
-    });
-
-    if (blockedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:blocked',
-        title: t('implement.blockedTasks', 'Blocked tasks'),
-        count: blockedTasks.length,
-        tone: 'default',
-      });
-      blockedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
-    }
-
-    if (failedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:failed',
-        title: t('implement.failedTasks', 'Failed tasks'),
-        count: failedTasks.length,
-        tone: 'default',
-      });
-      failedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
-    }
-
-    if (completedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:completed',
-        title: t('implement.completedTasks', 'Completed tasks'),
-        count: completedTasks.length,
-        tone: 'success',
-      });
-      completedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
+    for (const { group, title } of sections) {
+      const items = tasksByStatusGroup[group];
+      if (!items.length) continue;
+      rows.push({ kind: 'section', id: `section:${group}`, title, count: items.length, tone: group === 'completed' ? 'success' : 'default' });
+      items.forEach(task => rows.push({ kind: 'task', id: `task:${task.id}`, task, multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null }));
     }
 
     return rows;
   }, [
     archivedTasks,
-    blockedTasks,
-    completedTasks,
     draftTasks,
-    failedTasks,
     multiRepoPresentationByTaskId,
-    readyTasks,
     tasksByStatusGroup,
-    searchedTasks,
-    statusFilter,
     showArchived,
     t,
   ]);
@@ -2639,12 +2489,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             aria-label={t('implement.taskStatusSummary', 'Task status summary')}
           >
             {([
-              ['attention', t('implement.statusAttention', 'Needs attention'), statusCounts.attention, 'bg-amber-400'],
-              ['ready', t('implement.statusReady', 'Ready'), statusCounts.ready, 'bg-emerald-400'],
-              ['in_progress', t('implement.statusInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
-              ['waiting', t('implement.statusWaiting', 'Needs reply'), statusCounts.waiting, 'bg-amber-400'],
-              ['blocked', t('implement.statusBlocked', 'Blocked'), statusCounts.blocked, 'bg-red-400'],
-              ['failed', t('implement.failed', 'Failed'), statusCounts.failed, 'bg-rose-500'],
+              ['ready', t('implement.queueToLaunch', 'To launch'), statusCounts.ready, 'bg-emerald-400'],
+              ['in_progress', t('implement.queueInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
+              ['waiting', t('implement.queueWaiting', 'Waiting'), statusCounts.waiting, 'bg-amber-400'],
+              ['completed', t('implement.queueCompleted', 'Completed'), statusCounts.completed, 'bg-emerald-500'],
             ] as const).map(([filter, label, count, dotClassName]) => (
               <button
                 key={filter}

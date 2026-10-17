@@ -643,5 +643,9 @@
   "reviewProgress": "{{reviewed}} / {{total}} file diffs opened",
   "nextUnreviewedDiff": "Next unopened diff",
   "resumeRemainingCommits": "Resume remaining commits",
-  "detachedReviewDraft": "This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable."
+  "detachedReviewDraft": "This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable.",
+  "queueToLaunch": "To launch",
+  "queueInProgress": "In progress",
+  "queueWaiting": "Waiting",
+  "queueCompleted": "Completed"
 }

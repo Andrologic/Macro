@@ -1,13 +1,6 @@
+import { TASK_QUEUE_LANES } from './taskQueueLanes';
 export const ALL_PROJECTS_FILTER = '__all_projects__';
-export const TASK_QUEUE_STATUS_FILTERS = [
-  'all',
-  'attention',
-  'ready',
-  'in_progress',
-  'waiting',
-  'blocked',
-  'failed',
-] as const;
+export const TASK_QUEUE_STATUS_FILTERS = ['all', ...TASK_QUEUE_LANES] as const;
 
 export type TaskQueueStatusFilter = (typeof TASK_QUEUE_STATUS_FILTERS)[number];
 
@@ -58,7 +51,7 @@ export const normalizeImplementViewFilters = (value: unknown): ImplementViewFilt
       typeof value.projectId === 'string' && value.projectId.trim().length > 0
         ? value.projectId
         : ALL_PROJECTS_FILTER,
-    status: isTaskQueueStatusFilter(value.status) ? value.status : 'all',
+    status: isTaskQueueStatusFilter(value.status) ? value.status : ['attention', 'blocked', 'failed', 'other'].includes(String(value.status)) ? 'waiting' : 'all',
     showArchived: typeof value.showArchived === 'boolean' ? value.showArchived : false,
   };
 };

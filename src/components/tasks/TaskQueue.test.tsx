@@ -606,7 +606,7 @@ describe('TaskQueue', () => {
     });
 
     const readyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Ready'));
+      .find((button) => button.textContent?.includes('To launch'));
 
     await act(async () => {
       readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
@@ -636,16 +636,16 @@ describe('TaskQueue', () => {
     ]);
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
     expect(getSectionSummaries()).toEqual([
-      { title: 'Ready tasks', count: '1' },
+      { title: 'To launch', count: '1' },
       { title: 'In progress', count: '2' },
-      { title: 'Needs reply', count: '1' },
+      { title: 'Waiting', count: '1' },
     ]);
-    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="Ready"]');
-    expect(readyFilter?.textContent?.replace(/\s/g, '')).toBe('Ready1');
+    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="To launch"]');
+    expect(readyFilter?.textContent?.replace(/\s/g, '')).toBe('Tolaunch1');
     expect(document.body.textContent).toContain('Working item');
     expect(document.body.textContent).toContain('Waiting item');
     await act(async () => { readyFilter?.click(); await flushRender(); });
-    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(getSectionSummaries()).toEqual([{ title: 'To launch', count: '1' }]);
     expect(document.body.textContent).not.toContain('Working item');
     expect(document.body.textContent).not.toContain('Waiting item');
     expect(document.body.textContent).not.toContain('Reviewing item');
@@ -658,13 +658,13 @@ describe('TaskQueue', () => {
       makeTask('archived', 'Pending', { title: 'Archived item', archived_at: '2026-01-01' }),
     ]);
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="Ready"]');
-    expect(readyFilter?.textContent).toBe('Ready1');
+    const readyFilter = document.body.querySelector<HTMLButtonElement>('button[title="To launch"]');
+    expect(readyFilter?.textContent).toBe('To launch1');
     expect(getSectionSummaries()).toEqual([
-      { title: 'Draft features', count: '1' }, { title: 'Ready tasks', count: '1' },
+      { title: 'Draft features', count: '1' }, { title: 'To launch', count: '1' },
     ]);
     await act(async () => { readyFilter?.click(); await flushRender(); });
-    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(getSectionSummaries()).toEqual([{ title: 'To launch', count: '1' }]);
     expect(document.body.textContent).not.toContain('Draft item');
     expect(document.body.textContent).not.toContain('Archived item');
   });
@@ -698,7 +698,7 @@ describe('TaskQueue', () => {
     expect(useTaskStore.getState().tasks[0].archived_at).toBe('2026-01-01');
   });
 
-  it('keeps reply-required, blocked and failed tasks in separate filter groups', async () => {
+  it('groups reply-required, blocked and failed tasks under Waiting while preserving their reasons', async () => {
     seedTasks([
       makeTask('waiting-task', 'AwaitingResponse', { title: 'Reply required task' }),
       makeTask('blocked-task', 'Blocked', { title: 'Actually blocked task', is_ready: false }),
@@ -773,50 +773,23 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    const needsReplyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Needs reply'));
-    const blockedFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Blocked'));
-    const inProgressFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('In progress'));
-    const failedFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Failed'));
-
-    expect(needsReplyFilter?.textContent).toContain('1');
-    expect(blockedFilter?.textContent).toContain('4');
-    expect(inProgressFilter?.textContent).toContain('1');
-    expect(failedFilter?.textContent).toContain('2');
-    expect(getSectionSummaries()).toContainEqual({ title: 'Blocked tasks', count: '4' });
-    expect(getSectionSummaries()).toContainEqual({ title: 'Failed tasks', count: '2' });
-    expect(getSectionSummaries().some((section) => section.title === 'Completed tasks')).toBe(false);
-    expect(document.body.textContent).toContain('Legacy status task');
-
-    await act(async () => {
-      blockedFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await flushRender();
-    });
-
-    expect(document.body.textContent).toContain('Actually blocked task');
-    expect(document.body.textContent).toContain('Dependency blocked task');
-    expect(document.body.textContent).toContain('Merge blocked task');
-    expect(document.body.textContent).toContain('Reblocked completed task');
-    expect(document.body.textContent).not.toContain('Reply required task');
+    const summary = document.body.querySelector('[aria-label="Task status summary"]')!;
+    const filters = [...summary.querySelectorAll<HTMLButtonElement>('button')];
+    expect(filters).toHaveLength(4);
+    expect(filters.map(button => button.textContent)).toEqual(['To launch0', 'In progress1', 'Waiting8', 'Completed0']);
+    expect(getSectionSummaries()).toEqual([{ title: 'In progress', count: '1' }, { title: 'Waiting', count: '8' }]);
+    const waitingFilter = summary.querySelector<HTMLButtonElement>('[title="Waiting"]')!;
+    await act(async () => { waitingFilter.click(); await flushRender(); });
+    for (const title of ['Reply required task', 'Actually blocked task', 'Dependency blocked task', 'Failed task', 'Merge blocked task', 'Merge failed task', 'Legacy status task', 'Reblocked completed task']) {
+      expect(document.body.textContent).toContain(title);
+    }
     expect(document.body.textContent).not.toContain('Active task');
+    const reasons = [...document.body.querySelectorAll('[data-task-card-waiting-reason]')].map(element => element.textContent);
+    expect(reasons).toContain('Failed');
+    expect(reasons).toContain('Blocked');
+    await act(async () => { summary.querySelector<HTMLButtonElement>('[title="In progress"]')!.click(); await flushRender(); });
+    expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Failed task');
-    expect(document.body.textContent).not.toContain('Merge failed task');
-    expect(document.body.textContent).not.toContain('Legacy status task');
-
-    await act(async () => {
-      failedFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await flushRender();
-    });
-
-    expect(document.body.textContent).toContain('Failed task');
-    expect(document.body.textContent).toContain('Merge failed task');
-    expect(document.body.textContent).not.toContain('Reply required task');
-    expect(document.body.textContent).not.toContain('Merge blocked task');
-    expect(document.body.textContent).not.toContain('Reblocked completed task');
-    expect(document.body.textContent).not.toContain('Legacy status task');
   });
 
   it('tracks mixed attention, pending approvals during streaming, resolution and navigation', async () => {
@@ -836,14 +809,14 @@ describe('TaskQueue', () => {
       pendingToolApprovalByConversationId: { 'conversation-1': { toolCallId: 'call', summary: 'Approval' } } as never,
     });
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
-    const attentionFilter = document.body.querySelector<HTMLButtonElement>('button[title="Needs attention"]');
-    expect(attentionFilter?.textContent).toBe('Needs attention3');
-    expect(document.body.querySelector('button[title="Needs reply"]')?.textContent).toBe('Needs reply2');
+    const attentionFilter = document.body.querySelector<HTMLButtonElement>('button[title="Waiting"]');
+    expect(attentionFilter?.textContent).toBe('Waiting3');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting3');
     expect(document.body.querySelector('button[title="In progress"]')?.textContent).toBe('In progress1');
     expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).toBeNull();
     await act(async () => { attentionFilter?.click(); await flushRender(); });
     expect(attentionFilter?.getAttribute('aria-pressed')).toBe('true');
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:task-1', 'task:review', 'task:waiting']);
+    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:task-1', 'task:waiting', 'task:blocked']);
     expect(document.body.querySelectorAll('[role="button"][tabindex="0"]').length).toBe(3);
     expect(document.body.textContent).toContain('Next: open the approval request');
     await act(async () => { (getTaskCard() as HTMLElement)?.click(); await flushRender(); });
@@ -855,9 +828,9 @@ describe('TaskQueue', () => {
         task.id === 'review' ? { ...task, status: 'Completed' } : task) });
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:waiting']);
-    expect(attentionFilter?.textContent).toBe('Needs attention1');
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:waiting', 'task:blocked']);
+    expect(attentionFilter?.textContent).toBe('Waiting2');
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
     await act(async () => { attentionFilter?.click(); await flushRender(); });
     expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).not.toBeNull();
   });
@@ -881,32 +854,32 @@ describe('TaskQueue', () => {
       useChatStore.setState({ messagesByConversationId: { 'conversation-1': [question] } });
       await flushRender();
     });
-    expect(document.body.querySelector('button[title="Needs attention"]')?.textContent).toBe('Needs attention1');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting1');
     await act(async () => {
       useChatStore.setState({ messagesByConversationId: { 'conversation-1': [question, { ...message, id: 'reply', role: 'user' }] } });
       await flushRender();
     });
-    expect(document.body.querySelector('button[title="Needs attention"]')?.textContent).toBe('Needs attention0');
-    expect(document.body.querySelector('button[title="Needs reply"]')?.textContent).toBe('Needs reply0');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting0');
+    expect(document.body.querySelector('button[title="Waiting"]')?.textContent).toBe('Waiting0');
     expect(document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')).toBeNull();
     expect(document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')).not.toBeNull();
   });
 
   it('keeps the attention filter combined with project, search and archive navigation', async () => {
     seedTasks([
-      makeTask('first', 'InReview', { title: 'Alpha review' }),
-      makeTask('second', 'InReview', { title: 'Beta review', project_id: 'project-2', project_ids: ['project-2'] }),
-      makeTask('archived', 'InReview', { title: 'Archived review', archived_at: 'today' }),
+      makeTask('first', 'AwaitingResponse', { title: 'Alpha review' }),
+      makeTask('second', 'AwaitingResponse', { title: 'Beta review', project_id: 'project-2', project_ids: ['project-2'] }),
+      makeTask('archived', 'AwaitingResponse', { title: 'Archived review', archived_at: 'today' }),
     ]);
     useAppStore.setState({ standaloneProjects: [makeProject('project-2', '/tmp/project-2', 'Project Two')] });
-    useViewFilterStore.getState().setImplementStatusFilter('attention');
+    useViewFilterStore.getState().setImplementStatusFilter('waiting');
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
     await act(async () => {
       useViewFilterStore.getState().setImplementProjectFilter('project-2');
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:second']);
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:second']);
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
     await act(async () => {
       useViewFilterStore.getState().setImplementProjectFilter('__all_projects__');
       useViewFilterStore.getState().setImplementShowArchived(true);
@@ -914,7 +887,7 @@ describe('TaskQueue', () => {
     });
     expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived']);
     await act(async () => { useViewFilterStore.getState().setImplementShowArchived(false); await flushRender(); });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:first', 'task:second']);
+    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:first', 'task:second']);
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-search-toggle"]')?.click();
       await flushRender();
@@ -925,8 +898,8 @@ describe('TaskQueue', () => {
       input?.dispatchEvent(new window.Event('input', { bubbles: true }));
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:second']);
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(getLastVirtualListKeys()).toEqual(['section:waiting', 'task:second']);
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
   });
 
   it('shows review next actions for one and multiple repositories without reusing another task summary', async () => {
@@ -1024,7 +997,7 @@ describe('TaskQueue', () => {
     });
 
     const readyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Ready'));
+      .find((button) => button.textContent?.includes('To launch'));
     await act(async () => {
       readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
@@ -1393,7 +1366,7 @@ describe('TaskQueue', () => {
     });
 
     expect(getLastVirtualListKeys()).toEqual(['section:ready', 'task:task-1']);
-    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(getSectionSummaries()).toEqual([{ title: 'To launch', count: '1' }]);
     expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Archived task');
 
@@ -2525,7 +2498,7 @@ describe('TaskQueue', () => {
     });
 
     const needsReplyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Needs reply'));
+      .find((button) => button.textContent?.includes('Waiting'));
     const inProgressFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.includes('In progress'));
 
@@ -3019,7 +2992,7 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).not.toContain('Plan ready for validation');
     expect(
       document.body.querySelector('[aria-label="Task status summary"]')?.textContent
-    ).toContain('Ready1');
+    ).toContain('To launch1');
     expect(document.body.querySelector('[data-task-context-badge="plan_finalization"]')?.textContent)
       .toContain('Plan finalization');
     expect(
@@ -3208,7 +3181,7 @@ describe('TaskQueue', () => {
     });
 
     expect(getSectionSummaries()).toEqual([
-      { title: 'Ready tasks', count: '1' },
+      { title: 'To launch', count: '1' },
     ]);
     expect(getLastVirtualListKeys()).toEqual([
       'section:ready',
@@ -3240,7 +3213,7 @@ describe('TaskQueue', () => {
 
     expect(getSectionSummaries()).toEqual([
       { title: 'Draft features', count: '1' },
-      { title: 'Ready tasks', count: '1' },
+      { title: 'To launch', count: '1' },
     ]);
     expect(getLastVirtualListKeys()).toEqual([
       'section:drafts',
@@ -3280,15 +3253,13 @@ describe('TaskQueue', () => {
 
     expect(getSectionSummaries()).toEqual([
       { title: 'Draft features', count: '1' },
-      { title: 'Ready tasks', count: '0' },
-      { title: 'Blocked tasks', count: '1' },
-      { title: 'Completed tasks', count: '1' },
+      { title: 'Waiting', count: '1' },
+      { title: 'Completed', count: '1' },
     ]);
     expect(getLastVirtualListKeys()).toEqual([
       'section:drafts',
       'task:draft-1',
-      'section:ready',
-      'section:blocked',
+      'section:waiting',
       'task:ready-1',
       'section:completed',
       'task:done-1',

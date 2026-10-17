@@ -490,18 +490,21 @@ Elle ne charge pas les transcriptions de toutes les conversations dans le fronte
 
 Les filtres structurants des listes principales survivent aux changements de
 mode et aux redémarrages. Implement conserve le projet, le statut et la vue
-archivée. Le filtre « À traiter » regroupe les questionnaires actifs, les demandes
-d'approbation d'outil actives ou restaurées et les tâches en review. Une tâche
-n'y apparaît qu'une fois. Les tâches terminées ou archivées et les simples
-blocages de dépendances n'y entrent pas. Une demande active reste accessible
-même si la tâche porte aussi un blocage. Avant le chargement de la conversation,
-une attente durable reste visible, sauf si une exécution ou un workflow de
-merge indique déjà une autre activité. Le filtre se combine au projet et à la
-recherche. Un second clic sur le filtre actif affiche tous les statuts. Changer
-de projet conserve le filtre choisi ; consulter les archives le suspend et le
-retour aux tâches actives le rétablit. Une approbation en attente remplace le
-spinner par l'indicateur d'attente utilisateur, même si le moteur est encore en
-streaming. Ouvrir cette tâche donne accès à la conversation de la demande.
+archivée. La file regroupe les tâches dans quatre catégories exclusives :
+« À lancer », « En cours », « En attente » et « Terminées ». Les compteurs,
+les filtres et les sections utilisent le même regroupement, sans compter deux
+fois une tâche. Les brouillons et les archives restent dans leurs vues dédiées.
+« En attente » regroupe les réponses et approbations attendues, les blocages
+et les échecs. La raison précise reste visible sur chaque carte. Une tâche en
+review reste « En cours » tant qu'aucune interaction utilisateur n'est attendue.
+Les états techniques du moteur sont conservés. Les anciens filtres « À traiter »,
+« Bloquées » et « Échec » sont repris sous « En attente ».
+Le filtre se combine au projet et à la recherche. Un second clic sur le filtre
+actif affiche tous les statuts. Changer de projet conserve le filtre choisi ;
+consulter les archives le suspend et le retour aux tâches actives le rétablit.
+Une approbation en attente remplace le spinner par l'indicateur d'attente
+utilisateur, même si le moteur est encore en streaming. Ouvrir cette tâche
+donne accès à la conversation de la demande.
 Architect et Chat conservent la vue active ou archivée. Les requêtes
 de recherche, la sélection multiple et les filtres propres aux boîtes de
 dialogue ou au terminal restent limités à la session d'interaction en cours.

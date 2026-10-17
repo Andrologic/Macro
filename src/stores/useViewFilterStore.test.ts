@@ -86,7 +86,7 @@ describe('useViewFilterStore', () => {
       implement: {
         version: 1,
         projectId: 'project-2',
-        status: 'blocked',
+        status: 'waiting',
         showArchived: true,
       },
       architect: { version: 1, showArchived: true },
@@ -95,19 +95,19 @@ describe('useViewFilterStore', () => {
     });
   });
 
-  it('persists attention with project and archive filters across restart', async () => {
+  it('persists waiting with project and archive filters across restart', async () => {
     await useViewFilterStore.getState().hydrate();
-    useViewFilterStore.getState().setImplementStatusFilter('attention');
+    useViewFilterStore.getState().setImplementStatusFilter('waiting');
     useViewFilterStore.getState().setImplementProjectFilter('project-2');
     useViewFilterStore.getState().setImplementShowArchived(true);
     await waitForViewFilterPersistence();
     resetInMemoryStore();
     await useViewFilterStore.getState().hydrate();
     expect(useViewFilterStore.getState().implement).toEqual({
-      version: 1, projectId: 'project-2', status: 'attention', showArchived: true,
+      version: 1, projectId: 'project-2', status: 'waiting', showArchived: true,
     });
     useViewFilterStore.getState().setImplementShowArchived(false);
-    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    expect(useViewFilterStore.getState().implement.status).toBe('waiting');
   });
 
   it('sanitizes invalid current values and safely rejects an old version', () => {
@@ -120,7 +120,7 @@ describe('useViewFilterStore', () => {
     expect(normalizeImplementViewFilters({
       version: 0,
       projectId: 'project-2',
-      status: 'blocked',
+      status: 'waiting',
       showArchived: true,
     })).toEqual(DEFAULT_IMPLEMENT_VIEW_FILTERS);
     expect(normalizeArchivedViewFilter(
@@ -193,7 +193,7 @@ describe('useViewFilterStore', () => {
         [PREF_KEYS.IMPLEMENT_VIEW_FILTERS]: {
           version: 1,
           projectId: 'project-2',
-          status: 'blocked',
+          status: 'waiting',
           showArchived: true,
         },
       },
@@ -232,7 +232,7 @@ describe('useViewFilterStore', () => {
             [PREF_KEYS.IMPLEMENT_VIEW_FILTERS]: {
               version: 1,
               projectId: 'project-2',
-              status: 'blocked',
+              status: 'waiting',
               showArchived: true,
             },
           },
@@ -244,7 +244,7 @@ describe('useViewFilterStore', () => {
       implement: {
         version: 1,
         projectId: 'project-2',
-        status: 'blocked',
+        status: 'waiting',
         showArchived: true,
       },
       isHydrated: true,
@@ -275,7 +275,7 @@ describe('useViewFilterStore', () => {
       if (command === 'state_get_snapshot') {
         if (failRead) throw new Error('temporary read failure');
         return { schemaVersion: 1, values: {
-          [PREF_KEYS.IMPLEMENT_VIEW_FILTERS]: { version: 1, projectId: 'project-persisted', status: 'blocked', showArchived: true },
+          [PREF_KEYS.IMPLEMENT_VIEW_FILTERS]: { version: 1, projectId: 'project-persisted', status: 'waiting', showArchived: true },
           [PREF_KEYS.ARCHITECT_VIEW_FILTERS]: { version: 1, showArchived: true },
           [PREF_KEYS.CHAT_VIEW_FILTERS]: { version: 1, showArchived: true },
         } };
@@ -332,7 +332,7 @@ describe('useViewFilterStore', () => {
 
   it('serializes rapid writes and leaves the latest value durable', async () => {
     useViewFilterStore.getState().setImplementStatusFilter('ready');
-    useViewFilterStore.getState().setImplementStatusFilter('blocked');
+    useViewFilterStore.getState().setImplementStatusFilter('waiting');
     useViewFilterStore.getState().setImplementStatusFilter('in_progress');
     await waitForViewFilterPersistence();
 

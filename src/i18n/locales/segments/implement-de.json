@@ -643,5 +643,9 @@
   "reviewProgress": "{{reviewed}} / {{total}} Datei-Diffs geöffnet",
   "nextUnreviewedDiff": "Nächster ungeöffneter Diff",
   "resumeRemainingCommits": "Verbleibende Commits fortsetzen",
-  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar."
+  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar.",
+  "queueToLaunch": "Zu starten",
+  "queueInProgress": "In Arbeit",
+  "queueWaiting": "Wartend",
+  "queueCompleted": "Abgeschlossen"
 }

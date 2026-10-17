@@ -643,5 +643,9 @@
   "reviewProgress": "{{reviewed}} / {{total}} 件のファイル差分を表示済み",
   "nextUnreviewedDiff": "次の未表示の差分",
   "resumeRemainingCommits": "残りのコミットを再開",
-  "detachedReviewDraft": "このファイルはレビューに含まれていません。閉じる前に未保存の下書きをコピーしてください。ファイル操作は利用できません。"
+  "detachedReviewDraft": "このファイルはレビューに含まれていません。閉じる前に未保存の下書きをコピーしてください。ファイル操作は利用できません。",
+  "queueToLaunch": "開始待ち",
+  "queueInProgress": "実行中",
+  "queueWaiting": "待機中",
+  "queueCompleted": "完了"
 }
