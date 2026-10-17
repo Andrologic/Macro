@@ -45,7 +45,7 @@ lancement natif devra isoler le profil avant le démarrage du backend.
   résultats contraints, la sélection de configuration et les effets externes déclarés.
   Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
-- Quatorze tâches couvrant les sept états du produit, avec dépendances et
+- Quatorze tâches regroupées dans les quatre états de la file, avec dépendances et
   conversations contextualisées. Fichiers virtuels propres à chaque projet.
 - Consultation et modification des instructions et du modèle d'un agent.
 - Tâches avec états et conversations, navigation entre les modes.
@@ -105,3 +105,27 @@ de fichiers à droite. Les écrans expérimentaux de préparation et de simulati
 qui avaient remplacé ces panneaux ont été retirés. Le passage du blueprint à
 Operate reste à définir ; Architect ne propose donc plus de transfert vers ces
 écrans supprimés.
+
+
+## Utiliser un blueprint dans Operate
+
+Le bouton d’ajout de la file ouvre « Utiliser un blueprint » dans la démo.
+Le projet courant est présélectionné. Le catalogue propose Release mobile,
+Compte rendu vocal et Revue avant livraison. Les champs de préparation viennent
+des métadonnées de leurs blueprints, dont les choix effectués dans Architect.
+
+« Préparer » conserve une utilisation même incomplète. Elle se retrouve dans
+« Préparations en attente » à la prochaine ouverture du dialogue. « Lancer »
+reste désactivé tant que l’objectif ou un champ obligatoire manque. Chaque
+utilisation possède une copie du blueprint et ses propres valeurs. Les
+instructions d’origine restent inchangées.
+
+Le lancement ajoute une tâche et une conversation pour chaque agent dans
+l’interface existante d’Operate. Une simulation fait progresser les agents
+successivement, à raison d’une étape toutes les sept secondes. Ce scénario
+permet de tester la navigation, les compteurs et les conversations ; il
+n’interprète pas les branches, les approbations ou le parallélisme AgSDL.
+Les nouveaux résultats sont fictifs. Aucune connexion ou opération Git réelle
+n’est effectuée. Le rechargement de la page réinitialise les préparations et
+les exécutions comme le reste de la démo. Le dialogue de production n’est pas
+remplacé.

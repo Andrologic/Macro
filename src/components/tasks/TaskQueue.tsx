@@ -122,6 +122,7 @@ const TaskProjectCommandsModal = React.lazy(() =>
     default: module.TaskProjectCommandsModal,
   })),
 );
+const DemoBlueprintLaunchDialog = React.lazy(() => import('../../demo/DemoBlueprintLaunchDialog'));
 const CreateImplementTaskDialog = React.lazy(() =>
   import('./CreateImplementTaskDialog').then((module) => ({
     default: module.CreateImplementTaskDialog,
@@ -2459,7 +2460,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         'implement.readOnlyOnlyAction',
                         'At least one editable repository is required to create a standalone feature.'
                       )
-                    : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
+                    : import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1'
+                      ? t('implement.useBlueprint', 'Use a blueprint')
+                      : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           />
           <PanelHeaderIconButton
@@ -2518,16 +2521,23 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
       {showCreateTaskDialog && (
         <React.Suspense fallback={null}>
-          <CreateImplementTaskDialog
-            projects={projectFilterOptions}
-            initialProjectId={null}
-            isCreating={Boolean(pendingTaskId)}
-            creationError={createTaskError}
-            onClose={() => {
-              if (!pendingTaskId) setShowCreateTaskDialog(false);
-            }}
-            onCreate={(input) => void handleCreateManualFeature(input)}
-          />
+          {import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? (
+            <DemoBlueprintLaunchDialog
+              projects={projectFilterOptions}
+              onClose={() => setShowCreateTaskDialog(false)}
+            />
+          ) : (
+            <CreateImplementTaskDialog
+              projects={projectFilterOptions}
+              initialProjectId={null}
+              isCreating={Boolean(pendingTaskId)}
+              creationError={createTaskError}
+              onClose={() => {
+                if (!pendingTaskId) setShowCreateTaskDialog(false);
+              }}
+              onCreate={(input) => void handleCreateManualFeature(input)}
+            />
+          )}
         </React.Suspense>
       )}
 

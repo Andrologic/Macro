@@ -507,5 +507,23 @@
     "useRelease": "Use Release mobile",
     "captured": "Captured version",
     "notExecuted": "Not executed"
+  },
+  "demoLaunch": {
+    "title": "Use a blueprint",
+    "project": "Project",
+    "prepared": "Saved preparations",
+    "blueprint": "Blueprint",
+    "change": "Change",
+    "agents": "agents",
+    "objective": "Objective",
+    "objectiveHint": "What would you like to accomplish this time?",
+    "inputs": "For this use",
+    "chooseModel": "Choose a model",
+    "environment": "Environment",
+    "simulation": "Local simulation. No real repository, file or provider will be used. Agents will progress automatically in the task queue.",
+    "incomplete": "You can complete this preparation later.",
+    "ready": "Ready to launch · Simulation",
+    "prepare": "Prepare",
+    "launch": "Launch"
   }
 }

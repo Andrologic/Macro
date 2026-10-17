@@ -1,3 +1,5 @@
+import type { DemoBlueprint, DemoBlueprintUse } from './blueprintLaunch';
+import type { Task } from '../types';
 import { describe, expect, test } from 'bun:test';
 import { demoPlans, demoProjects, demoTasks, demoConversations, demoMessages } from './fixtures';
 import { validateDocument } from '../services/agsdl/document';
@@ -194,5 +196,51 @@ describe('populated demo scenarios', () => {
       if (task.conversation_id) expect(demoConversations.find(chat => chat.id === task.conversation_id)?.task_id).toBe(task.id);
     }
     for (const chat of demoConversations) expect(chat.message_count).toBe(demoMessages.filter(message => message.conversation_id === chat.id).length);
+  });
+});
+
+
+describe('demo blueprint preparation and launch', () => {
+  test('reads Architect defaults while keeping each prepared use independent', async () => {
+    const runtime = createDemoRuntime();
+    const path = 'branches/main/plans/demo-release/plan.json';
+    const file = await runtime.invoke('fs_read_file', { path, workspaceScope: 'metadata', workspacePath: '/demo/luma' }) as { content: string };
+    const plan = JSON.parse(file.content);
+    plan.agsdl.design.requirements[0].value = '2.4.0';
+    await runtime.invoke('fs_write_file', { path, workspaceScope: 'metadata', workspacePath: '/demo/luma', content: JSON.stringify(plan) });
+    const prepared = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-luma', blueprintId: plan.id, objective: 'Release QA' }) as DemoBlueprintUse;
+    expect(prepared.blueprint.fields[0].value).toBe('2.4.0');
+    plan.agsdl.design.requirements[0].value = '3.0.0';
+    await runtime.invoke('fs_write_file', { path, workspaceScope: 'metadata', workspacePath: '/demo/luma', content: JSON.stringify(plan) });
+    expect((await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[]).find(item => item.id === plan.id)?.fields[0].value).toBe('3.0.0');
+    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[])[0].blueprint.fields[0].value).toBe('2.4.0');
+    await expect(runtime.invoke('demo_blueprint_prepare', { projectId: 'unknown', blueprintId: plan.id })).rejects.toThrow('projet');
+  });
+
+  test('saves incomplete inputs, resumes the same preparation and rejects an incomplete launch', async () => {
+    const runtime = createDemoRuntime();
+    const draft = await runtime.invoke('demo_blueprint_prepare', { blueprintId: 'demo-release', projectId: 'demo-luma', objective: 'Release QA', values: { releaseVersion: '2.4' } }) as DemoBlueprintUse;
+    expect(draft.state).toBe('prepared');
+    expect(draft.taskIds).toEqual([]);
+    await expect(runtime.invoke('demo_blueprint_start', { id: draft.id })).rejects.toThrow('Complétez');
+    const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
+    const release = catalog.find(item => item.id === 'demo-release')!;
+    const values = Object.fromEntries(release.fields.map(field => [field.id, field.value || 'Exemple QA']));
+    const resumed = await runtime.invoke('demo_blueprint_prepare', { id: draft.id, blueprintId: release.id, projectId: 'demo-luma', objective: 'Release QA', values }) as DemoBlueprintUse;
+    expect(resumed.id).toBe(draft.id);
+    expect(await runtime.invoke('demo_blueprint_uses')).toHaveLength(1);
+    const started = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
+    const repeat = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
+    expect(repeat.taskIds).toEqual(started.taskIds);
+    const tasks = (await runtime.invoke('workspace_list_tasks') as { tasks: Task[] }).tasks.filter(task => started.taskIds.includes(task.id));
+    expect(tasks).toHaveLength(release.agents.length);
+    expect(tasks.filter(task => task.status === 'InProgress')).toHaveLength(1);
+    expect(tasks.filter(task => task.status === 'Blocked')).toHaveLength(release.agents.length - 1);
+    expect(await runtime.invoke('db_list_messages', { conversationId: tasks[0].conversation_id })).toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('Release QA') })]));
+    for (let index = 0; index < release.agents.length; index++) await runtime.invoke('demo_blueprint_advance', { id: started.id });
+    expect(tasks.every(task => task.status === 'Completed')).toBe(true);
+    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[])[0].state).toBe('completed');
+    await expect(runtime.invoke('demo_blueprint_prepare', { id: draft.id, blueprintId: release.id, projectId: 'demo-luma' })).rejects.toThrow('déjà été lancée');
+    expect(await createDemoRuntime().invoke('demo_blueprint_uses')).toEqual([]);
   });
 });

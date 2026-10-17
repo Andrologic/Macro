@@ -1,3 +1,4 @@
+import { blueprintAgentTasks, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { macroNativeModelEdition } from '../services/agsdl/nativeModelEdition';
 import { demoSkill, demoProjects, demoTasks, demoPlans, demoConversations, demoMessages, demoProvider, demoModel, demoMessage, DEMO_DATE } from './fixtures';
 import type { ConfigDocumentKind, ConfigSnapshot, ConfigDocument, JsonPatchOperation } from '../types/generated/config';
@@ -18,6 +19,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const messages = structuredClone(demoMessages);
   const values: Args = { leftPanelWidth: 300, architectLeftPanelWidth: 300, rightPanelWidth: 420, lastActiveMode: 'Architect', lastSelectedProjectId: 'demo-luma', lastOpenProjectPath: '/demo/luma', isLeftPanelOpen: true, isRightPanelOpen: true, onboardingState: { completed: true }, architectNavigatorExpandedScopeIds: ['project:demo-luma', 'demo-luma'], aiContextSelections: {} };
   const settings = new Map<string, string>();
+  const blueprintUses = new Map<string, DemoBlueprintUse>();
   let sessionContext: Args = { mode: 'Architect', selected_project_id: 'demo-luma', selected_group_id: null, selected_task_id: null, active_plan_id: 'demo-release' };
   const projectContexts = new Map<string, Args>(projects.map(project => {
     const plan = plans.find(plan => plan.projectId === project.id);
@@ -69,6 +71,52 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     seen.set(command, (seen.get(command) ?? 0) + 1);
     const request = object(args.request);
     switch (command) {
+      case 'demo_blueprint_catalog': return plans.filter(plan => plan.agsdl.design?.kind === 'blueprint').map(plan => {
+        const source = JSON.parse(plan.agsdl.source);
+        return { id: plan.id, title: plan.title, description: plan.description,
+          fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
+          agents: Object.entries(source.agents).map(([id, agent]) => ({ title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
+        } satisfies DemoBlueprint;
+      });
+      case 'demo_blueprint_uses': return structuredClone([...blueprintUses.values()]);
+      case 'demo_blueprint_prepare': {
+        if (!projects.some(project => project.id === args.projectId)) throw new Error('Choisissez un projet.');
+        const catalog = await invoke('demo_blueprint_catalog') as DemoBlueprint[];
+        const blueprint = catalog.find(item => item.id === args.blueprintId);
+        if (!blueprint) throw new Error('Blueprint introuvable.');
+        const previous = blueprintUses.get(string(args.id));
+        if (previous && previous.state !== 'prepared') throw new Error('Cette utilisation a déjà été lancée.');
+        const use: DemoBlueprintUse = { id: previous?.id ?? crypto.randomUUID(), blueprint: structuredClone(blueprint), projectId: string(args.projectId), objective: string(args.objective), values: Object.fromEntries(Object.entries(object(args.values)).map(([key, value]) => [key, string(value)])), taskIds: [], state: 'prepared' };
+        blueprintUses.set(use.id, use);
+        return structuredClone(use);
+      }
+      case 'demo_blueprint_start': {
+        const use = blueprintUses.get(string(args.id));
+        if (!use) throw new Error('Préparation introuvable.');
+        if (use.state !== 'prepared') return structuredClone(use);
+        if (missingBlueprintFields(use.blueprint, use.objective, use.values).length) throw new Error('Complétez les champs nécessaires avant de lancer.');
+        const created = blueprintAgentTasks(use);
+        for (const task of created) {
+          tasks.push(task);
+          conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: 2 });
+          messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`), demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\nExécution simulée en cours.'));
+        }
+        use.taskIds = created.map(task => task.id); use.state = 'running';
+        return structuredClone(use);
+      }
+      case 'demo_blueprint_advance': {
+        const use = blueprintUses.get(string(args.id));
+        if (!use || use.state !== 'running') return use ? structuredClone(use) : null;
+        const current = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'InProgress');
+        if (current) {
+          current.status = 'Completed';
+          messages.push(demoMessage(current.conversation_id!, 'assistant', `Contrôle terminé. Résultat fictif transmis à l’étape suivante. Aucun outil externe n’a été exécuté.`));
+        }
+        const next = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'Blocked');
+        if (next) { next.status = 'InProgress'; next.is_blocked = false; next.blocked_by_task_ids = []; }
+        else use.state = 'completed';
+        return structuredClone(use);
+      }
       case 'execution_model_choices':return {revision:'demo-1',models:[{providerId:demoProvider.id,modelId:demoModel.model_id,providerName:demoProvider.name,modelName:demoModel.name,edition:macroNativeModelEdition(demoProvider.id,demoModel.model_id)}],unavailableProviders:[]};
       case 'execution_read_intents': return [];
       case 'execution_list_runs': return { runs: [], nextCursor: null };

@@ -647,5 +647,6 @@
   "queueToLaunch": "시작 대기",
   "queueInProgress": "진행 중",
   "queueWaiting": "대기 중",
-  "queueCompleted": "완료"
+  "queueCompleted": "완료",
+  "useBlueprint": "블루프린트 사용"
 }

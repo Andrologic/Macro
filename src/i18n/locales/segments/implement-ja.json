@@ -647,5 +647,6 @@
   "queueToLaunch": "開始待ち",
   "queueInProgress": "実行中",
   "queueWaiting": "待機中",
-  "queueCompleted": "完了"
+  "queueCompleted": "完了",
+  "useBlueprint": "ブループリントを使用"
 }

@@ -647,5 +647,6 @@
   "queueToLaunch": "To launch",
   "queueInProgress": "In progress",
   "queueWaiting": "Waiting",
-  "queueCompleted": "Completed"
+  "queueCompleted": "Completed",
+  "useBlueprint": "Use a blueprint"
 }
