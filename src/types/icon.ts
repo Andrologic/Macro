@@ -90,6 +90,8 @@ export type IconName =
   | 'link'
   | 'clipboard'
   | 'camera'
+  | 'pencil-ruler'
+  | 'workflow'
   | 'layout-grid'
   | 'refresh-cw'
   | 'share'

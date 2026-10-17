@@ -107,8 +107,8 @@ export interface WorkspaceViewContribution extends Contribution<WorkspaceSession
 export const workspaceViews = new ContributionRegistry<WorkspaceViewContribution, WorkspaceSession>();
 
 const presentation: Record<AppMode, { icon: IconName; labelKey: string }> = {
-  Architect: { icon: demoJourney ? 'layout-grid' : 'compass', labelKey: 'header.architect' },
-  Implement: { icon: demoJourney ? 'play' : 'code', labelKey: demoJourney ? 'header.operate' : 'header.implement' },
+  Architect: { icon: demoJourney ? 'pencil-ruler' : 'compass', labelKey: 'header.architect' },
+  Implement: { icon: demoJourney ? 'workflow' : 'code', labelKey: demoJourney ? 'header.operate' : 'header.implement' },
   Chat: { icon: 'message-circle', labelKey: 'header.chat' },
 };
 Object.values(workspaceDefinitions).forEach((definition, order) => {

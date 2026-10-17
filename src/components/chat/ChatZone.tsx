@@ -2275,7 +2275,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const modeHeader = useMemo(() => {
     if (mode === 'Architect') {
       return {
-        icon: 'compass' as const,
+        icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'pencil-ruler' as const : 'compass' as const,
         title: `${t('header.architect', 'Architect')} - ${projectScopeLabel || t('header.selectProject', 'Select Project')}`,
         subtitle:
           isModeProjectWorkspaceMissing
@@ -2291,7 +2291,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     if (mode === 'Implement') {
       return {
-        icon: 'check-square' as const,
+        icon: import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'workflow' as const : 'check-square' as const,
         title: `${t(import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'header.operate' : 'header.implement', 'Implement')} - ${(selectedTask ? getPlanFinalizationTaskDisplayTitle(selectedTask, t) : null) || (hasVerifiedConflictContext ? currentConversation?.title : null) || t('implement.selectTaskShort', 'Select a task')}`,
         subtitle: null,
       };
@@ -3992,7 +3992,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
                 <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
-                  <Icon name="compass" size={24} className="text-muted-foreground" />
+                  <Icon name={import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? 'pencil-ruler' : 'compass'} size={24} className="text-muted-foreground" />
                 </div>
                 <p className="text-muted-foreground text-sm">
                   {missingArchitectPlanMessage}
