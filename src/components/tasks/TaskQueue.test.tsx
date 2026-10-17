@@ -785,6 +785,9 @@ describe('TaskQueue', () => {
     const reasons = [...document.body.querySelectorAll('[data-task-card-waiting-reason]')].map(element => element.textContent);
     expect(reasons).toContain('Failed');
     expect(reasons).toContain('Blocked');
+    for (const card of document.body.querySelectorAll('[data-tour-id="implement-task-card"]')) {
+      expect(card.querySelectorAll('p')).toHaveLength(1);
+    }
     await act(async () => { summary.querySelector<HTMLButtonElement>('[title="In progress"]')!.click(); await flushRender(); });
     expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Failed task');
@@ -2472,6 +2475,9 @@ describe('TaskQueue', () => {
     expect(indicator?.className).toContain('text-amber-500');
     expect(taskCard?.className).not.toContain('bg-blue-500/5');
     expect(taskCard?.className).not.toContain('bg-amber-500/5');
+    expect(taskCard?.querySelectorAll('p')).toHaveLength(1);
+    expect(taskCard?.querySelector('p')?.className).toContain('text-amber-500');
+    expect(taskCard?.querySelector('p')?.getAttribute('title')).toBe(taskCard?.querySelector('p')?.textContent?.trim());
   });
 
   it('renders a spinner only for the streamed task', async () => {
@@ -3022,7 +3028,7 @@ describe('TaskQueue', () => {
 
     expect(taskCard?.querySelector('p')).toBeNull();
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('compact-draft');
-    expect(taskCard?.className).toContain('h-[80px]');
+    expect(taskCard?.className).toContain('h-[64px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Project One' },
@@ -3053,7 +3059,7 @@ describe('TaskQueue', () => {
     const description = taskCard?.querySelector('p');
 
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('default');
-    expect(taskCard?.className).toContain('h-[96px]');
+    expect(taskCard?.className).toContain('h-[80px]');
     expect(description?.textContent).toBe('Describe the feature before kickoff');
     expect(description?.title).toBe('Describe the feature before kickoff');
     expect(taskCard?.querySelector('h3')?.title).toBe('Draft standalone task');
@@ -3131,7 +3137,8 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
     ).not.toBeNull();
-    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardProgressLabel()).toBeNull();
+    expect(getTaskCard()?.querySelectorAll('p')).toHaveLength(1);
     expect(getTaskCardNextAction()?.textContent).toBe(
       'Next: resolve remaining merge blockers'
     );
@@ -3163,7 +3170,8 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
     ).not.toBeNull();
-    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardProgressLabel()).toBeNull();
+    expect(getTaskCard()?.querySelectorAll('p')).toHaveLength(1);
     expect(getTaskCardNextAction()?.textContent).toBe(
       'Next: continue merge for remaining repositories'
     );

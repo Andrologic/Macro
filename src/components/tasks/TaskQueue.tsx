@@ -409,6 +409,12 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const waitingReason = indicatorState === 'blocked' ? lockTooltip || t('implement.statusBlocked', 'Blocked')
     : indicatorState === 'failed' ? t('implement.failed', 'Failed')
     : indicatorState === 'awaiting_response' ? t('implement.statusWaiting', 'Needs reply') : null;
+  const reviewNextAction = showMergeWorkflowPresentation || showReviewPresentation
+    ? multiRepoPresentation?.nextActionLabel
+    : null;
+  const nextAction = pendingRequestLabel || reviewNextAction;
+  const instruction = nextAction || waitingReason;
+  const secondaryText = instruction || task.description;
   useEffect(() => {
     if (!showMenu) return;
 
@@ -477,7 +483,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
       }}
       className={cn(
         'relative w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
-        isCompactDraftFeatureCard ? 'h-[80px]' : 'h-[96px]',
+        isCompactDraftFeatureCard ? 'h-[64px]' : 'h-[80px]',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
@@ -531,33 +537,17 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
         </div>
 
-        <div className="min-h-0 overflow-hidden space-y-0.5">
-          {waitingReason && !pendingRequestLabel && !showMergeWorkflowPresentation && <p data-task-card-waiting-reason="true" className="truncate text-[11px] text-amber-500" title={waitingReason}>{waitingReason}</p>}
-          {pendingRequestLabel ? (
-            <p data-task-card-next-action="true" className="truncate text-[11px] leading-[1rem] text-amber-500" title={pendingRequestLabel}>
-              {pendingRequestLabel}
+        <div className="min-h-0 overflow-hidden">
+          {secondaryText && (
+            <p
+              data-task-card-next-action={nextAction ? 'true' : undefined}
+              data-task-card-waiting-reason={!nextAction && waitingReason ? 'true' : undefined}
+              title={secondaryText}
+              className={cn('truncate text-xs leading-4', instruction ? 'text-amber-500' : 'text-muted-foreground')}
+            >
+              {secondaryText}
             </p>
-          ) : showMergeWorkflowPresentation || showReviewPresentation ? (
-            <>
-              <p
-                data-task-card-progress-label="true"
-                className="truncate text-[12px] font-medium leading-[1.05rem] text-foreground/85"
-              >
-                {multiRepoPresentation?.progressLabel}
-              </p>
-              <p
-                data-task-card-next-action="true"
-                title={multiRepoPresentation?.nextActionLabel}
-                className="truncate text-[11px] leading-[1rem] text-muted-foreground"
-              >
-                {multiRepoPresentation?.nextActionLabel}
-              </p>
-            </>
-          ) : !isCompactDraftFeatureCard && task.description ? (
-            <p title={task.description} className="truncate text-[13px] leading-4 text-muted-foreground">
-              {task.description}
-            </p>
-          ) : null}
+          )}
         </div>
 
         <div className="min-w-0 self-end pr-3">
@@ -2096,7 +2086,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   } = useVirtualList({
     items: taskListRows,
     getItemKey: getTaskListRowKey,
-    estimateSize: 96,
+    estimateSize: 80,
     overscan: 8,
     dynamicHeight: true,
     gap: 8,
