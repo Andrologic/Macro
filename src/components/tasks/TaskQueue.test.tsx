@@ -3028,7 +3028,7 @@ describe('TaskQueue', () => {
 
     expect(taskCard?.querySelector('p')).toBeNull();
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('compact-draft');
-    expect(taskCard?.className).toContain('h-[64px]');
+    expect(taskCard?.className).toContain('h-[76px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Project One' },
@@ -3059,7 +3059,7 @@ describe('TaskQueue', () => {
     const description = taskCard?.querySelector('p');
 
     expect(taskCard?.getAttribute('data-task-card-variant')).toBe('default');
-    expect(taskCard?.className).toContain('h-[80px]');
+    expect(taskCard?.className).toContain('h-[96px]');
     expect(description?.textContent).toBe('Describe the feature before kickoff');
     expect(description?.title).toBe('Describe the feature before kickoff');
     expect(taskCard?.querySelector('h3')?.title).toBe('Draft standalone task');

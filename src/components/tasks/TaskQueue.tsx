@@ -483,13 +483,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
       }}
       className={cn(
         'relative w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
-        isCompactDraftFeatureCard ? 'h-[64px]' : 'h-[80px]',
+        isCompactDraftFeatureCard ? 'h-[76px]' : 'h-[96px]',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
-      <div className="grid h-full min-w-0 grid-cols-1 grid-rows-[auto,1fr,auto] p-1.5">
+      <div className={cn('grid h-full min-w-0 grid-cols-1 gap-y-1 p-1.5', isCompactDraftFeatureCard ? 'grid-rows-[auto,auto]' : 'grid-rows-[auto,1fr,auto]')}>
         {actions.length > 0 && (
           <button
             ref={menuButtonRef}
@@ -537,94 +537,93 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
         </div>
 
-        <div className="min-h-0 overflow-hidden">
-          {secondaryText && (
-            <p
-              data-task-card-next-action={nextAction ? 'true' : undefined}
-              data-task-card-waiting-reason={!nextAction && waitingReason ? 'true' : undefined}
-              title={secondaryText}
-              className={cn('truncate text-xs leading-4', instruction ? 'text-amber-500' : 'text-muted-foreground')}
-            >
-              {secondaryText}
-            </p>
-          )}
-        </div>
+        {!isCompactDraftFeatureCard && (
+          <div className="flex min-h-0 items-center overflow-hidden">
+            {secondaryText && (
+              <p
+                data-task-card-next-action={nextAction ? 'true' : undefined}
+                data-task-card-waiting-reason={!nextAction && waitingReason ? 'true' : undefined}
+                title={secondaryText}
+                className={cn('min-w-0 flex-1 truncate text-xs leading-4', instruction ? 'text-amber-500' : 'text-muted-foreground')}
+              >
+                {secondaryText}
+              </p>
+            )}
+          </div>
+        )}
 
-        <div className="min-w-0 self-end pr-3">
-          {contextBadges.length > 0 && (
-            <div
-              data-task-card-footer="true"
-              className="flex min-w-0 items-center gap-1.5 overflow-hidden"
-            >
-              {contextBadges.map((badge) => (
-                <span
-                  key={badge.key}
-                  data-task-context-badge={badge.key}
-                  title={badge.title}
-                  className={cn(
-                    'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
-                    taskContextBadgeToneClassName[badge.tone ?? 'default']
-                  )}
-                >
-                  {badge.project ? (
-                    <ProjectIcon project={badge.project} size={10} className="text-current" />
-                  ) : badge.icon ? (
-                    <Icon name={badge.icon} size={10} className="shrink-0 text-current" />
-                  ) : null}
-                  <span className="truncate">{badge.label}</span>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+        <div data-task-card-footer="true" className="flex h-7 min-w-0 items-center gap-1.5">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
+          >
+            {contextBadges.map((badge) => (
+              <span
+                key={badge.key}
+                data-task-context-badge={badge.key}
+                title={badge.title}
+                className={cn(
+                  'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
+                  taskContextBadgeToneClassName[badge.tone ?? 'default']
+                )}
+              >
+                {badge.project ? (
+                  <ProjectIcon project={badge.project} size={10} className="text-current" />
+                ) : badge.icon ? (
+                  <Icon name={badge.icon} size={10} className="shrink-0 text-current" />
+                ) : null}
+                <span className="truncate">{badge.label}</span>
+              </span>
+            ))}
+          </div>
 
-        {taskCommandRunStatus ? (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCancelTaskCommands();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-            disabled={taskCommandRunStatus === 'cancelling'}
-            className={cn(
-              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              taskCommandRunStatus === 'cancelling'
-                ? 'cursor-not-allowed text-muted-foreground'
-                : 'text-amber-500 hover:bg-accent/70'
-            )}
-            title={
-              taskCommandRunStatus === 'cancelling'
-                ? t('implement.taskCommandCancelling', 'Cancelling...')
-                : t('implement.cancelTaskCommands', 'Cancel run')
-            }
-          >
-            {taskCommandRunStatus === 'cancelling' ? (
-              <SpinnerIcon size={13} />
-            ) : (
-              <Icon name="x" size={13} />
-            )}
-          </button>
-        ) : showRunTaskCommands ? (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRunTaskCommands();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-            disabled={!canRunTaskCommands}
-            className={cn(
-              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-              canRunTaskCommands
-                ? 'text-emerald-500 hover:bg-accent/70'
-                : 'cursor-not-allowed text-muted-foreground/50'
-            )}
-            title={runTaskCommandsTitle || t('implement.runTaskCommands', 'Run commands')}
-          >
-            <Icon name="play" size={13} />
-          </button>
-        ) : null}
+          {taskCommandRunStatus ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onCancelTaskCommands();
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              disabled={taskCommandRunStatus === 'cancelling'}
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
+                taskCommandRunStatus === 'cancelling'
+                  ? 'cursor-not-allowed text-muted-foreground'
+                  : 'text-amber-500 hover:bg-accent/70'
+              )}
+              title={
+                taskCommandRunStatus === 'cancelling'
+                  ? t('implement.taskCommandCancelling', 'Cancelling...')
+                  : t('implement.cancelTaskCommands', 'Cancel run')
+              }
+            >
+              {taskCommandRunStatus === 'cancelling' ? (
+                <SpinnerIcon size={13} />
+              ) : (
+                <Icon name="x" size={13} />
+              )}
+            </button>
+          ) : showRunTaskCommands ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRunTaskCommands();
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              disabled={!canRunTaskCommands}
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
+                canRunTaskCommands
+                  ? 'text-emerald-500 hover:bg-accent/70'
+                  : 'cursor-not-allowed text-muted-foreground/50'
+              )}
+              title={runTaskCommandsTitle || t('implement.runTaskCommands', 'Run commands')}
+            >
+              <Icon name="play" size={13} />
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {showMenu && menuPosition && typeof document !== 'undefined'
@@ -2086,7 +2085,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   } = useVirtualList({
     items: taskListRows,
     getItemKey: getTaskListRowKey,
-    estimateSize: 80,
+    estimateSize: 96,
     overscan: 8,
     dynamicHeight: true,
     gap: 8,
