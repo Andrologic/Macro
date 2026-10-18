@@ -71,6 +71,8 @@ import {
   type ArchitectMenuPosition,
 } from './architectProjectNavigatorMenu';
 
+type NavigatorSection = 'macro' | 'projects';
+const NAVIGATOR_SECTION_IDS = new Set(['macro', 'projects']);
 const MAX_VISIBLE_PLANS_PER_SCOPE = 7;
 const SCOPE_CREATE_MENU_WIDTH = 240;
 const SCOPE_CONTEXT_MENU_WIDTH = 208;
@@ -107,10 +109,12 @@ interface ArchitectProjectNavigatorProps {
   preferenceLoader?: {
     loadPinnedPlanIds: () => Promise<unknown>;
     loadExpandedScopeIds: () => Promise<unknown>;
+    loadCollapsedSections?: () => Promise<unknown>;
   };
 }
 
 const defaultPreferenceLoader: NonNullable<ArchitectProjectNavigatorProps['preferenceLoader']> = {
+  loadCollapsedSections: () => loadPreference<unknown>(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS),
   loadPinnedPlanIds: () => loadPreference<unknown>(PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS),
   loadExpandedScopeIds: () => loadPersistedPreference<unknown>(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS),
 };
@@ -141,6 +145,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const renameProjectGroup = useAppStore((state) => state.renameProjectGroup);
 
   const [entries, setEntries] = useState<ArchitectNavigatorPlanEntry[]>([]);
+  const [collapsedSections, setCollapsedSections] = useState<string[]>([]);
   const [expandedScopeIds, setExpandedScopeIds] = useState<string[]>([]);
   const [pinnedPlanIds, setPinnedPlanIds] = useState<string[]>([]);
   const [expandedPlanLists, setExpandedPlanLists] = useState<string[]>([]);
@@ -169,6 +174,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const expandedScopesInteractionRef = useRef(false);
+  const sectionsInteractionRef = useRef(false);
+  const collapsedSectionsRef = useRef<string[]>([]);
   const pendingPrimaryRequestRef = useRef<ArchitectPlanSelectorRequestDetail | null>(null);
   const scopeCreateButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -312,7 +319,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     void Promise.allSettled([
       preferenceLoader.loadPinnedPlanIds(),
       preferenceLoader.loadExpandedScopeIds(),
-    ]).then(([pinnedResult, expandedResult]) => {
+      preferenceLoader.loadCollapsedSections?.() ?? Promise.resolve([]),
+    ]).then(([pinnedResult, expandedResult, sectionsResult]) => {
       if (cancelled) return;
       const validScopeIds = new Set(scopes.map((scope) => scope.id));
       let didFail = false;
@@ -337,6 +345,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     ? [scopes[0].id]
                     : [],
           );
+        }
+      } else {
+        didFail = true;
+      }
+
+      if (sectionsResult.status === 'fulfilled') {
+        if (!sectionsInteractionRef.current) {
+          const sections = sanitizeArchitectNavigatorIds(sectionsResult.value, NAVIGATOR_SECTION_IDS);
+          collapsedSectionsRef.current = sections;
+          setCollapsedSections(sections);
         }
       } else {
         didFail = true;
@@ -374,6 +392,22 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     setExpandedScopeIds(next);
     void savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS, next);
   }, []);
+
+  const setSectionExpanded = useCallback((section: NavigatorSection, expanded: boolean) => {
+    sectionsInteractionRef.current = true;
+    setOpenPlanMenuKey(null);
+    setScopeCreateMenu(null);
+    setScopeContextMenu(null);
+    const current = collapsedSectionsRef.current;
+    const next = expanded
+      ? current.filter((id) => id !== section)
+      : [...new Set([...current, section])];
+    collapsedSectionsRef.current = next;
+    setCollapsedSections(next);
+    void savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS, next);
+  }, []);
+  const macroExpanded = hasSearchQuery || !collapsedSections.includes('macro');
+  const projectsExpanded = hasSearchQuery || !collapsedSections.includes('projects');
 
   const toggleScope = (scopeId: string) => {
     setScopeCreateMenu(null);
@@ -602,6 +636,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     setCreatingPlanKind(planKind);
     setError(null);
     try {
+      setSectionExpanded(macroBlueprintProjectId && scope.projectId === macroBlueprintProjectId ? 'macro' : 'projects', true);
       selectScope(scope);
       const result = await ensureScopedBlankPlan({
         branchName: getGitFlowBaseBranch(),
@@ -629,7 +664,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       setCreatingScopeId(null);
       setCreatingPlanKind(null);
     }
-  }, [activateArchitectPlan, creatingScopeId, error, isBusy, isLoading, refreshPlans, selectScope, t]);
+  }, [activateArchitectPlan, creatingScopeId, error, isBusy, isLoading, macroBlueprintProjectId, refreshPlans, selectScope, setSectionExpanded, t]);
 
   const confirmScopeRename = useCallback(async (value: string) => {
     if (!scopeToRename || isRenamingScope) return;
@@ -1089,28 +1124,46 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
         {!showArchived && macroScope && (!hasSearchQuery || macroEntries.length > 0) && (
           <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')} className="mb-4">
-            <div className="flex h-7 items-center gap-2 px-1.5">
-              <Icon name="workflow" size={12} className="text-primary" />
-              <h3 className="min-w-0 flex-1 text-[11px] font-medium text-muted-foreground">{t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')}</h3>
+            <div className="flex h-7 items-center gap-1 px-1.5">
+              <h3 className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  aria-expanded={macroExpanded}
+                  aria-controls="architect-macro-blueprints-content"
+                  onClick={() => setSectionExpanded('macro', !macroExpanded)}
+                  className="flex h-7 w-full items-center gap-1.5 rounded text-left text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70"
+                >
+                  <Icon name={macroExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+                  <Icon name="workflow" size={12} className="text-primary" />
+                  <span className="truncate">{t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')}</span>
+                </button>
+              </h3>
               <button type="button" disabled={isBusy || isLoading || !!creatingScopeId} onClick={() => void createPlan(macroScope, 'feature')} aria-label={t('architect.projectNavigator.newMacroBlueprint', 'New Macro blueprint')} className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"><Icon name={creatingScopeId === macroScope.id ? 'loader' : 'plus'} size={12} className={cn(creatingScopeId === macroScope.id && 'animate-spin')} /></button>
             </div>
-            <div className="space-y-0.5">{macroEntries.map(entry => renderPlanRow(entry))}</div>
+            <div id="architect-macro-blueprints-content" hidden={!macroExpanded} className="space-y-0.5">{macroEntries.map(entry => renderPlanRow(entry))}</div>
           </section>
         )}
 
         {!showArchived ? (!hasSearchQuery || searchedActiveEntries.length > 0) && (
           <section aria-labelledby="architect-projects-title">
-          <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
-            <div className="flex items-center gap-1.5">
-              <h3 id="architect-projects-title" className="text-[11px] font-medium text-muted-foreground">
-                {t('architect.projectNavigator.projects', 'Tous les projets')}
-              </h3>
-              {displayedScopes.length > 0 && (
-                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/70 px-1 text-[9px] tabular-nums text-muted-foreground">
-                  {displayedScopes.length}
-                </span>
-              )}
-            </div>
+          <div className="flex h-7 items-center gap-1 px-1.5">
+            <h3 id="architect-projects-title" className="min-w-0 flex-1">
+              <button
+                type="button"
+                aria-expanded={projectsExpanded}
+                aria-controls="architect-projects-content"
+                onClick={() => setSectionExpanded('projects', !projectsExpanded)}
+                className="flex h-7 w-full items-center gap-1.5 rounded text-left text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70"
+              >
+                <Icon name={projectsExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
+                <span>{t('architect.projectNavigator.projects', 'Tous les projets')}</span>
+                {displayedScopes.length > 0 && (
+                  <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/70 px-1 text-[9px] tabular-nums text-muted-foreground">
+                    {displayedScopes.length}
+                  </span>
+                )}
+              </button>
+            </h3>
             <button
               type="button"
               onClick={() => void refreshPlans()}
@@ -1122,6 +1175,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </button>
           </div>
 
+          <div id="architect-projects-content" hidden={!projectsExpanded}>
           {!isLoading && projectScopes.length === 0 && (
             <div className="mx-2 mt-6 text-center">
               <Icon name="folder" size={22} className="mx-auto mb-2 text-muted-foreground/50" />
@@ -1265,6 +1319,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 </div>
               );
             })}
+          </div>
           </div>
           </section>
         ) : (

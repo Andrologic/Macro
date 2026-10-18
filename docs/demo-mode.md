@@ -109,6 +109,10 @@ se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 ## Blueprints communs à Macro
 
 Dans Architect, la section « Blueprints Macro » apparaît au-dessus des projets.
+Son titre et celui de « Tous les projets » permettent de replier chaque section
+indépendamment. Le choix est conservé pendant la session de démonstration ; une
+recherche révèle temporairement les
+résultats des sections repliées.
 Elle contient Assistant et Chantier coordonné, avec leur propre graphe et leur
 conversation. Les menus de plan existants permettent de renommer ces blueprints,
 de choisir leur icône et de les archiver. Le bouton + ouvre un nouveau plan dans

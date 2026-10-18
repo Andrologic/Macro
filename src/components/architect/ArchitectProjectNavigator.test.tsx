@@ -10,7 +10,7 @@ import {
 } from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
-import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { PREF_KEYS, savePreference, loadPreference } from '../../services/preferences';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -38,12 +38,13 @@ describe('ArchitectProjectNavigator search', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     useViewFilterStore.setState({
       architect: { ...DEFAULT_ARCHITECT_VIEW_FILTERS },
       isHydrated: true,
     });
     window.localStorage.clear();
+    await savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS, []);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -60,7 +61,7 @@ describe('ArchitectProjectNavigator search', () => {
     useAppStore.setState(initialAppState, true);
   });
 
-  it('shows the shared library separately and activates its blueprints with the correct scope', async () => {
+  it('separates the shared library, activates its blueprints and remembers independent section folds', async () => {
     const shared = { ...plan('common', 'Common assistant'), projectId: 'macro-library' };
     const local = plan('local', 'Project blueprint');
     const activate = mock(async () => true);
@@ -83,6 +84,46 @@ describe('ArchitectProjectNavigator search', () => {
     const button = [...library.querySelectorAll('button')].find(button => button.textContent === 'Common assistant')!;
     await act(async () => { button.click(); await flushRender(); });
     expect(activate).toHaveBeenCalledWith('common', expect.objectContaining({ scopedProjectIdsHint: ['macro-library'] }));
+
+    const macroToggle = () => container!.querySelector<HTMLButtonElement>('[aria-controls="architect-macro-blueprints-content"]')!;
+    const projectsToggle = () => container!.querySelector<HTMLButtonElement>('[aria-controls="architect-projects-content"]')!;
+    const macroContent = () => container!.querySelector<HTMLElement>('#architect-macro-blueprints-content')!;
+    const projectsContent = () => container!.querySelector<HTMLElement>('#architect-projects-content')!;
+    await act(async () => { macroToggle().click(); await flushRender(); });
+    expect(macroToggle().getAttribute('aria-expanded')).toBe('false');
+    expect(macroContent().hidden).toBe(true);
+    expect(projectsContent().hidden).toBe(false);
+    await act(async () => { projectsToggle().click(); macroToggle().click(); await flushRender(); });
+    expect(macroContent().hidden).toBe(false);
+    expect(projectsContent().hidden).toBe(true);
+    await act(async () => { macroToggle().click(); await flushRender(); });
+    expect(await loadPreference<string[]>(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS)).toEqual(['projects', 'macro']);
+
+    // A remount restores both choices; search only reveals results temporarily.
+    await act(async () => { root?.render(<div />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId="macro-library" catalogLoader={catalogLoader} />); await flushRender(); });
+    expect(macroContent().hidden).toBe(true);
+    expect(projectsContent().hidden).toBe(true);
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[data-tour-id="architect-search-toggle"]')!.click();
+      await flushRender();
+    });
+    const searchInput = container!.querySelector<HTMLInputElement>('[data-tour-id="architect-plan-search"] input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(searchInput, 'Common');
+      searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await flushRender();
+    });
+    expect(macroContent().hidden).toBe(false);
+    expect(macroContent().textContent).toContain('Common assistant');
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[data-tour-id="architect-search-toggle"]')!.click();
+      await flushRender();
+    });
+    expect(macroContent().hidden).toBe(true);
+    expect(projectsContent().hidden).toBe(true);
+    expect(await loadPreference<string[]>(PREF_KEYS.ARCHITECT_NAVIGATOR_COLLAPSED_SECTIONS)).toEqual(['projects', 'macro']);
+
   });
 
   it('searches only plans and activates the selected result', async () => {
