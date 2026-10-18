@@ -1780,6 +1780,16 @@
       }
     },
     "projectNavigator": {
+      "newFolder": "新しいフォルダー",
+      "renameFolder": "フォルダー名を変更",
+      "folderActions": "{{name}} の操作",
+      "removeFolder": "フォルダーを削除",
+      "removeFolderHelp": "ブループリントはプロジェクトに残ります。",
+      "emptyFolder": "ここにブループリントをドロップ",
+      "moveToFolder": "移動先…",
+      "projectRoot": "プロジェクト直下",
+      "folderNameError": "別のフォルダー名を選んでください。",
+      "folderSaveError": "フォルダーの整理状態を保存できませんでした。",
       "macroBlueprints": "Macro ライブラリ",
       "newMacroBlueprint": "新しい Macro ブループリント",
       "title": "プロジェクト",

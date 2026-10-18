@@ -1780,6 +1780,16 @@
       }
     },
     "projectNavigator": {
+      "newFolder": "Neuer Ordner",
+      "renameFolder": "Ordner umbenennen",
+      "folderActions": "Aktionen für {{name}}",
+      "removeFolder": "Ordner entfernen",
+      "removeFolderHelp": "Blueprints bleiben im Projekt.",
+      "emptyFolder": "Blueprint hier ablegen",
+      "moveToFolder": "Verschieben nach…",
+      "projectRoot": "Projektebene",
+      "folderNameError": "Wähle einen anderen Ordnernamen.",
+      "folderSaveError": "Die Ordnerorganisation konnte nicht gespeichert werden.",
       "macroBlueprints": "Macro-Bibliothek",
       "newMacroBlueprint": "Neuer Macro-Blueprint",
       "title": "Projekte",

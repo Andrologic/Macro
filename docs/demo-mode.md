@@ -170,3 +170,21 @@ Les nouveaux résultats sont fictifs. Aucune connexion ou opération Git réelle
 n’est effectuée. Le rechargement de la page réinitialise les préparations et
 les exécutions comme le reste de la démo. Le dialogue de production n’est pas
 remplacé.
+
+## Organiser les blueprints par projet
+
+Les projets du navigateur Architect utilisent une icône de couches par défaut.
+Leur bouton + et leur menu contextuel proposent « Nouveau dossier ». Les dossiers
+visuels, sur un seul niveau, peuvent être renommés, repliés ou retirés. Retirer un
+dossier replace ses blueprints à la racine sans supprimer de plan.
+
+Un blueprint se déplace sur un dossier par glisser-déposer, et revient à la racine
+en le déposant sur la ligne du projet. Son menu propose aussi « Déplacer vers… ».
+Un déplacement reste dans le même projet. Les identités incluent la branche pour
+ne pas confondre deux plans portant le même identifiant. La recherche révèle les
+plans correspondants dans les dossiers repliés. Les épingles restent des raccourcis.
+
+Cette organisation est une préférence locale du navigateur, conservée lors des
+changements de mode. Elle ne modifie ni les fichiers Git ni les documents AgSDL
+et n’est pas synchronisée entre machines. Comme les autres données de la démo,
+elle est réinitialisée au rechargement complet.

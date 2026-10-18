@@ -1780,6 +1780,16 @@
       }
     },
     "projectNavigator": {
+      "newFolder": "New folder",
+      "renameFolder": "Rename folder",
+      "folderActions": "Actions for {{name}}",
+      "removeFolder": "Remove folder",
+      "removeFolderHelp": "Blueprints remain in the project.",
+      "emptyFolder": "Drop a blueprint here",
+      "moveToFolder": "Move to…",
+      "projectRoot": "Project root",
+      "folderNameError": "Choose a different folder name.",
+      "folderSaveError": "Could not save folder organization.",
       "macroBlueprints": "Macro library",
       "newMacroBlueprint": "New Macro blueprint",
       "title": "Projects",

@@ -1780,6 +1780,16 @@
       }
     },
     "projectNavigator": {
+      "newFolder": "Nouveau dossier",
+      "renameFolder": "Renommer le dossier",
+      "folderActions": "Actions du dossier {{name}}",
+      "removeFolder": "Retirer le dossier",
+      "removeFolderHelp": "Les blueprints restent dans le projet.",
+      "emptyFolder": "Glissez un blueprint ici",
+      "moveToFolder": "Déplacer vers…",
+      "projectRoot": "Racine du projet",
+      "folderNameError": "Choisissez un nom de dossier différent.",
+      "folderSaveError": "Impossible de conserver l’organisation des dossiers.",
       "macroBlueprints": "Bibliothèque Macro",
       "newMacroBlueprint": "Nouveau blueprint Macro",
       "title": "Projets",
