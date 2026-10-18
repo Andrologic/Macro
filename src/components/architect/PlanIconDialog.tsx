@@ -16,12 +16,12 @@ export function PlanIconDialog({ value, isLoading, error, onSelect, onClose }: P
   const { t } = useTranslation();
   const title = t('architect.planIcon.title', 'Choose an icon');
   return <Dialog title={title} onClose={isLoading ? () => undefined : onClose} closeOnBackdropClick={!isLoading}
-    panelClassName="w-full max-w-[320px] overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
-    <header className="flex h-12 items-center gap-2 border-b border-border px-4">
+    panelClassName="flex max-h-[calc(100dvh-2rem)] w-full max-w-[320px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
       <h2 className="flex-1 text-sm font-semibold">{title}</h2>
       <button type="button" disabled={isLoading} aria-label={t('common.close', 'Close')} onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><Icon name="x" size={14} /></button>
     </header>
-    <div className="grid grid-cols-6 gap-2 p-4" aria-busy={isLoading}>
+    <div className="grid max-h-[min(60vh,24rem)] min-h-0 grid-cols-6 gap-2 overflow-y-auto p-4" aria-busy={isLoading}>
       {PLAN_ICONS.map(icon => {
         const label = t(`architect.planIcon.options.${icon}`);
         return <button key={icon} type="button" title={label} aria-label={label} aria-pressed={value === icon} disabled={isLoading} onClick={() => onSelect(icon)}
@@ -31,7 +31,7 @@ export function PlanIconDialog({ value, isLoading, error, onSelect, onClose }: P
       })}
     </div>
     {error && <p role="alert" className="px-4 pb-3 text-xs text-red-400">{error}</p>}
-    <footer className="border-t border-border px-4 py-2">
+    <footer className="shrink-0 border-t border-border px-4 py-2">
       <button type="button" disabled={isLoading || !value} onClick={() => onSelect(null)} className="inline-flex items-center gap-2 rounded px-1 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"><Icon name="rotate-ccw" size={12} />{t('architect.planIcon.reset', 'Default icon')}</button>
     </footer>
   </Dialog>;

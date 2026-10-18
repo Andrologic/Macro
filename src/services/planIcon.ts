@@ -2,7 +2,16 @@ import type { IconName } from '../components/ui/Icon';
 import { getArchitectPlanKind, type ArchitectPlanKindRef } from './architectPlanKinds';
 import { getPlanKindIconName } from './planKindPresentation';
 
-export const PLAN_ICONS = ['sparkles', 'workflow', 'network', 'layers', 'pencil-ruler', 'code', 'terminal', 'flag', 'target', 'zap', 'shield', 'tool', 'cpu', 'database', 'globe', 'cloud', 'message-square', 'book-open'] as const satisfies readonly IconName[];
+export const PLAN_ICONS = [
+  'sparkles', 'workflow', 'network', 'layers', 'pencil-ruler', 'code',
+  'terminal', 'flag', 'target', 'zap', 'shield', 'tool',
+  'cpu', 'database', 'globe', 'cloud', 'message-square', 'book-open',
+  'folder', 'folder-open', 'file', 'file-code', 'file-text', 'git-branch',
+  'git-commit', 'git-merge', 'git-compare', 'history', 'list-todo', 'check-square',
+  'clipboard', 'clock', 'milestone', 'compass', 'map', 'folder-tree',
+  'server', 'hard-drive', 'user', 'lock', 'eye', 'palette',
+  'image', 'camera', 'mic', 'bell', 'settings', 'layout-grid',
+] as const satisfies readonly IconName[];
 export type PlanIcon = typeof PLAN_ICONS[number];
 export const normalizePlanIcon = (value: unknown): PlanIcon | undefined =>
   typeof value === 'string' && (PLAN_ICONS as readonly string[]).includes(value) ? value as PlanIcon : undefined;
