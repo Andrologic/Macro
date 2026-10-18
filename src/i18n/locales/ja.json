@@ -1780,7 +1780,7 @@
       }
     },
     "projectNavigator": {
-      "macroBlueprints": "Macro のブループリント",
+      "macroBlueprints": "Macro ライブラリ",
       "newMacroBlueprint": "新しい Macro ブループリント",
       "title": "プロジェクト",
       "searchPlans": "プランを検索...",

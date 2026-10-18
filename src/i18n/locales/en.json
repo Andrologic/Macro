@@ -1780,7 +1780,7 @@
       }
     },
     "projectNavigator": {
-      "macroBlueprints": "Macro blueprints",
+      "macroBlueprints": "Macro library",
       "newMacroBlueprint": "New Macro blueprint",
       "title": "Projects",
       "searchPlans": "Search plans...",

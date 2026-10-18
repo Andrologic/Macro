@@ -108,7 +108,7 @@ se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 
 ## Blueprints communs à Macro
 
-Dans Architect, la section « Blueprints Macro » apparaît au-dessus des projets.
+Dans Architect, la section « Bibliothèque Macro » apparaît au-dessus des projets.
 Son titre et celui de « Tous les projets » permettent de replier chaque section
 indépendamment. Le choix est conservé pendant la session de démonstration ; une
 recherche révèle temporairement les

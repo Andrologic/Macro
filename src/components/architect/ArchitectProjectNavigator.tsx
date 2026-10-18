@@ -1123,7 +1123,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         )}
 
         {!showArchived && macroScope && (!hasSearchQuery || macroEntries.length > 0) && (
-          <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')} className="mb-4">
+          <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro library')} className="mb-4">
             <div className="flex h-7 items-center gap-1 px-1.5">
               <h3 className="min-w-0 flex-1">
                 <button
@@ -1135,7 +1135,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 >
                   <Icon name={macroExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
                   <Icon name="workflow" size={12} className="text-primary" />
-                  <span className="truncate">{t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')}</span>
+                  <span className="truncate">{t('architect.projectNavigator.macroBlueprints', 'Macro library')}</span>
                 </button>
               </h3>
               <button type="button" disabled={isBusy || isLoading || !!creatingScopeId} onClick={() => void createPlan(macroScope, 'feature')} aria-label={t('architect.projectNavigator.newMacroBlueprint', 'New Macro blueprint')} className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"><Icon name={creatingScopeId === macroScope.id ? 'loader' : 'plus'} size={12} className={cn(creatingScopeId === macroScope.id && 'animate-spin')} /></button>

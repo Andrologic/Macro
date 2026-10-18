@@ -1780,7 +1780,7 @@
       }
     },
     "projectNavigator": {
-      "macroBlueprints": "Macro 블루프린트",
+      "macroBlueprints": "Macro 라이브러리",
       "newMacroBlueprint": "새 Macro 블루프린트",
       "title": "프로젝트",
       "searchPlans": "계획 검색...",
