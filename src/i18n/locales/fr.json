@@ -1780,6 +1780,8 @@
       }
     },
     "projectNavigator": {
+      "macroBlueprints": "Blueprints Macro",
+      "newMacroBlueprint": "Nouveau blueprint Macro",
       "title": "Projets",
       "searchPlans": "Rechercher des plans...",
       "noSearchResults": "Aucun plan ne correspond à cette recherche.",

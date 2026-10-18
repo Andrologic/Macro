@@ -1,3 +1,5 @@
+import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
+import { sharedDemoBlueprints } from './sharedBlueprints';
 import { defaultLaunchRequirements } from './blueprintInputs';
 import type { Project, Task } from '../types';
 import type { DbConversation, DbMessage, DbProviderConfig, DbAiModel } from '../services/tauriIpc';
@@ -343,6 +345,17 @@ for (const plan of demoPlans.filter(plan => ['demo-voice', 'demo-quality', 'demo
 }
 const releaseBlueprint = demoPlans.find(plan => plan.id === 'demo-release')!;
 releaseBlueprint.agsdl.design = { ...releaseBlueprint.agsdl.design!, kind: 'blueprint', requirements: defaultLaunchRequirements() };
+
+// Common blueprints use normal plan persistence, graphs and conversations.
+// Their synthetic workspace is presented separately from user projects.
+demoProjects.push({ id: DEMO_MACRO_LIBRARY_ID, name: 'Macro', mountName: 'macro', path: '/demo/macro', created_at: DEMO_DATE, status: 'active', gitSetupState: 'ready', metadata: { description: 'Blueprints communs à tous les projets.', tags: [], team_members: [], api_contracts: [], dependencies: [] } });
+for (const blueprint of sharedDemoBlueprints) {
+  const agents = Object.fromEntries(blueprint.agents.map((agent, index) => [`agent${index + 1}`, agent]));
+  const steps = Object.fromEntries(blueprint.agents.map((_, index) => [`agent${index + 1}`, agentStep(`agent${index + 1}`, ...(index + 1 < blueprint.agents.length ? [`agent${index + 2}`] : []))]));
+  const plan = scenario(blueprint.id, blueprint.title, DEMO_MACRO_LIBRARY_ID, blueprint.description || (blueprint.awaitsInput ? 'Un assistant qui attend votre demande.' : 'Préparer, réaliser et vérifier un chantier.'), agents, 'agent1', steps);
+  plan.agsdl.design = { ...plan.agsdl.design!, kind: 'blueprint', requirements: [] };
+  demoPlans.push(plan);
+}
 
 const taskSeeds: Array<[string, string, string, string, Task['status'], string]> = [
   ['demo-transcript', 'demo-luma', 'demo-voice', 'Clarifier deux passages de la réunion', 'AwaitingResponse', 'Les noms de deux participants sont ambigus. Confirmer leur orthographe avant la synthèse.'],

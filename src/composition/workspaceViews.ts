@@ -21,7 +21,7 @@ const architectProjectNavigatorLoader = createModePanelLoader({
   mode: 'Architect',
   panel: 'left',
   importComponent: async () =>
-    (await import('../components/architect/ArchitectProjectNavigator')).default,
+    demoJourney ? (await import('../demo/DemoArchitectNavigator')).default : (await import('../components/architect/ArchitectProjectNavigator')).default,
 });
 
 const taskQueueLoader = createModePanelLoader({
@@ -29,7 +29,7 @@ const taskQueueLoader = createModePanelLoader({
   label: 'Task queue',
   mode: 'Implement',
   panel: 'left',
-  importComponent: async () => (await import('../components/tasks/TaskQueue')).default,
+  importComponent: async () => demoJourney ? (await import('../demo/DemoTaskQueue')).default : (await import('../components/tasks/TaskQueue')).default,
 });
 
 const fileChangesPanelLoader = createModePanelLoader({

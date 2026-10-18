@@ -1,3 +1,4 @@
+import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import type { DemoBlueprint, DemoBlueprintUse } from './blueprintLaunch';
 import type { Task } from '../types';
 import { describe, expect, test } from 'bun:test';
@@ -13,7 +14,8 @@ describe('isolated Macro demo runtime', () => {
   test('provides projects, real AgSDL source and task conversations', async () => {
     const demo = createDemoRuntime();
     const bootstrap = await demo.invoke('workspace_get_bootstrap') as { standaloneProjects: unknown[] };
-    expect(bootstrap.standaloneProjects).toHaveLength(4);
+    expect((bootstrap.standaloneProjects as { id: string }[]).filter(project => project.id !== DEMO_MACRO_LIBRARY_ID)).toHaveLength(4);
+    expect((bootstrap.standaloneProjects as { id: string }[]).some(project => project.id === DEMO_MACRO_LIBRARY_ID)).toBe(true);
     const file = await demo.invoke('fs_read_file', {
       path: 'branches/main/plans/demo-release/plan.json',
       workspaceScope: 'metadata', workspacePath: '/demo/luma',
@@ -98,7 +100,7 @@ describe('populated demo scenarios', () => {
       }
       const viewer = projectViewer(plan.agsdl.source, plan.agsdl);
       if (viewer.graphs.length) {
-        expect(viewer.graphs[0].cards.length).toBeGreaterThanOrEqual(5);
+        expect(viewer.graphs[0].cards.length).toBeGreaterThanOrEqual(plan.projectId === DEMO_MACRO_LIBRARY_ID ? 1 : 5);
         for (const graph of viewer.graphs) for (const card of graph.cards) kinds.add(card.kind);
       } else expect(viewer.declarations.filter(card => card.kind === 'Agent')).toHaveLength(3);
     }
@@ -242,6 +244,26 @@ describe('demo blueprint preparation and launch', () => {
     expect(created).toHaveLength(3);
     expect(created.every(task => !('parent_task_id' in task))).toBe(true);
     expect(new Set(created.map(task => task.conversation_id)).size).toBe(3);
+  });
+
+  test('common blueprints use the editable Architect documents and reject the library as a launch project', async () => {
+    const runtime = createDemoRuntime();
+    const args = { path: 'branches/main/plans/macro-assistant/plan.json', workspaceScope: 'metadata', workspacePath: '/demo/macro' };
+    const file = await runtime.invoke('fs_read_file', args) as { content: string };
+    const plan = JSON.parse(file.content);
+    const source = JSON.parse(plan.agsdl.source);
+    source.agents.agent1.prompt = [{ value: 'Updated shared instructions' }];
+    plan.agsdl.source = JSON.stringify(source);
+    await runtime.invoke('fs_write_file', { ...args, content: JSON.stringify(plan) });
+    const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
+    const shared = catalog.find(item => item.id === 'macro-assistant')!;
+    expect(shared).toMatchObject({ shared: true, projectIds: [] });
+    expect(shared.agents[0].prompt).toBe('Updated shared instructions');
+    for (const projectId of ['demo-luma', 'demo-atlas']) {
+      const use = await runtime.invoke('demo_blueprint_prepare', { projectId, blueprintId: shared.id }) as DemoBlueprintUse;
+      expect(use.blueprint.agents[0].prompt).toBe('Updated shared instructions');
+    }
+    await expect(runtime.invoke('demo_blueprint_prepare', { projectId: plan.projectId, blueprintId: shared.id })).rejects.toThrow('Choisissez un projet');
   });
 
   test('a complete blueprint launches without an extra objective or model selection', async () => {

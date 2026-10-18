@@ -60,6 +60,31 @@ describe('ArchitectProjectNavigator search', () => {
     useAppStore.setState(initialAppState, true);
   });
 
+  it('shows the shared library separately and activates its blueprints with the correct scope', async () => {
+    const shared = { ...plan('common', 'Common assistant'), projectId: 'macro-library' };
+    const local = plan('local', 'Project blueprint');
+    const activate = mock(async () => true);
+    useAppStore.setState({ standaloneProjects: [
+      { id: 'project-1', name: 'Sample project', path: '/demo/project', gitSetupState: 'ready' },
+      { id: 'macro-library', name: 'Macro', path: '/demo/macro', gitSetupState: 'ready' },
+    ] as never, projectGroups: [], selectedProjectId: 'project-1', selectedGroupId: null, activeArchitectPlanId: null, activePlanContext: null, activateArchitectPlan: activate as never });
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: { branchCatalogByBranch: {}, branches: [{ branchName: 'develop', activePlanId: null, plans: [shared, local], error: null }], scannedBranchNames: ['develop'], scopedProjectIds: ['project-1', 'macro-library'], visiblePlans: [shared, local], modernPlanCount: 2, selectedPlan: null, selectedBranchName: null, selectionReason: 'none', errors: [] },
+      selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
+    }));
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId="macro-library" catalogLoader={catalogLoader} />); await flushRender(); });
+    const library = document.querySelector('section[aria-label="Macro blueprints"]')!;
+    expect(library.textContent).toContain('Common assistant');
+    expect(library.textContent).not.toContain('Project blueprint');
+    const projects = document.querySelector('section[aria-labelledby="architect-projects-title"]')!;
+    expect(projects.textContent).toContain('Sample project');
+    expect(projects.textContent).not.toContain('Common assistant');
+    expect(projects.textContent).not.toContain('Macro');
+    const button = [...library.querySelectorAll('button')].find(button => button.textContent === 'Common assistant')!;
+    await act(async () => { button.click(); await flushRender(); });
+    expect(activate).toHaveBeenCalledWith('common', expect.objectContaining({ scopedProjectIdsHint: ['macro-library'] }));
+  });
+
   it('searches only plans and activates the selected result', async () => {
     const matchingPlan = plan('deployment', 'Préparer le déploiement');
     const otherPlan = plan('navigation', 'Réparer la navigation');

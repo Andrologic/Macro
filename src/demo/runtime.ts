@@ -1,3 +1,4 @@
+import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import { sharedDemoBlueprints } from './sharedBlueprints';
 import { blueprintAgentTasks, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { macroNativeModelEdition } from '../services/agsdl/nativeModelEdition';
@@ -29,6 +30,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   }));
   const transcriptSync = new Map<string, Args>(demoPlans.map(p=>[p.conversationId,{conversation_id:p.conversationId,plan_id:p.id,target_branch:'main',transcript_revision:null,message_count:2,updated_at:DEMO_DATE}]));
   const files = new Map<string, string>([
+    ['/demo/macro/README.md', '# Macro\n\nBibliothèque synthétique de blueprints communs.'],
     ['/demo/luma/README.md', '# Luma Mobile\n\nApplication de notes vocales. Projet fictif du mode démo.'],
     ['/demo/luma/package.json', JSON.stringify({ name: 'luma-mobile', version: '1.8.0', scripts: { test: 'vitest', build: 'vite build' } }, null, 2)],
     ['/demo/luma/src/audio/player.ts', 'export async function resumeAudio(position: number) {\n  await player.prepare();\n  await player.seek(position);\n  await player.play();\n}\n'],
@@ -52,7 +54,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const activeStreams = new Map<string, ReturnType<typeof setTimeout>>();
   const seen = new Map<string, number>();
   const unsupported = new Set<string>();
-  const summary = (p: typeof plans[number]) => ({ ...p, hasAgsdl: !!p.agsdl, nodeCount: Object.keys(JSON.parse(p.agsdl.source).flow?.steps ?? {}).length, chatMessageCount: messages.filter(m => m.conversation_id === p.conversationId).length });
+  const summary = (p: typeof plans[number]) => ({ ...p, hasAgsdl: !!p.agsdl, nodeCount: p.agsdl?.source?.trim() ? Object.keys(JSON.parse(p.agsdl.source).flow?.steps ?? {}).length : 0, chatMessageCount: messages.filter(m => m.conversation_id === p.conversationId).length });
   const state = () => ({ schemaVersion: 1, values: structuredClone(values) });
   const gitStatus = () => ({ branch: 'main', head_commit: null, staged_files: [], unstaged_files: [{ path: 'src/audio/player.ts', status: 'modified', staged: false }], untracked_files: [], conflicted_files: [], merge_in_progress: false, is_clean: false, has_origin: true, has_upstream: true, ahead: 0, behind: 0 });
   const branch = (name: string) => ({ name, is_current: name === 'main', is_remote: false, upstream: `origin/${name}`, ahead: 0, behind: 0 });
@@ -72,16 +74,17 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     seen.set(command, (seen.get(command) ?? 0) + 1);
     const request = object(args.request);
     switch (command) {
-      case 'demo_blueprint_catalog': return [...sharedDemoBlueprints, ...plans.filter(plan => plan.agsdl.design?.kind === 'blueprint').map(plan => {
+      case 'demo_blueprint_catalog': return plans.filter(plan => plan.status !== 'archived' && plan.status !== 'deleted' && plan.agsdl?.source?.trim() && (plan.agsdl.design?.kind === 'blueprint' || plan.projectId === DEMO_MACRO_LIBRARY_ID)).map(plan => {
         const source = JSON.parse(plan.agsdl.source);
-        return { id: plan.id, projectIds: [...plan.projectIds], title: plan.title, description: plan.description,
+        const shared = plan.projectId === DEMO_MACRO_LIBRARY_ID;
+        return { id: plan.id, projectIds: shared ? [] : [...plan.projectIds], shared, awaitsInput: sharedDemoBlueprints.find(item => item.id === plan.id)?.awaitsInput, title: plan.label || plan.title, description: plan.description,
           fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
           agents: Object.entries(source.agents).map(([id, agent]) => ({ title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
         } satisfies DemoBlueprint;
-      })];
+      });
       case 'demo_blueprint_uses': return structuredClone([...blueprintUses.values()]);
       case 'demo_blueprint_prepare': {
-        if (!projects.some(project => project.id === args.projectId)) throw new Error('Choisissez un projet.');
+        if (args.projectId === DEMO_MACRO_LIBRARY_ID || !projects.some(project => project.id === args.projectId)) throw new Error('Choisissez un projet.');
         const catalog = await invoke('demo_blueprint_catalog') as DemoBlueprint[];
         const blueprint = catalog.find(item => item.id === args.blueprintId);
         if (!blueprint) throw new Error('Blueprint introuvable.');

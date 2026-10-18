@@ -102,6 +102,7 @@ const scopeIsSelected = (
     : !selectedGroupId && scope.projectId === selectedProjectId;
 
 interface ArchitectProjectNavigatorProps {
+  macroBlueprintProjectId?: string;
   catalogLoader?: typeof loadMacroProjectMetadataForSelection;
   preferenceLoader?: {
     loadPinnedPlanIds: () => Promise<unknown>;
@@ -115,6 +116,7 @@ const defaultPreferenceLoader: NonNullable<ArchitectProjectNavigatorProps['prefe
 };
 
 export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps> = ({
+  macroBlueprintProjectId,
   catalogLoader = loadMacroProjectMetadataForSelection,
   preferenceLoader = defaultPreferenceLoader,
 }) => {
@@ -217,11 +219,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
     return result;
   }, [searchedActiveEntries]);
+  const macroScope = useMemo(() => scopes.find(scope => scope.projectId === macroBlueprintProjectId), [scopes, macroBlueprintProjectId]);
+  const projectScopes = useMemo(() => scopes.filter(scope => scope !== macroScope), [scopes, macroScope]);
+  const macroEntries = macroScope ? entriesByScope.get(macroScope.id) ?? [] : [];
   const displayedScopes = useMemo(
     () => hasSearchQuery
-      ? scopes.filter((scope) => (entriesByScope.get(scope.id)?.length ?? 0) > 0)
-      : scopes,
-    [entriesByScope, hasSearchQuery, scopes],
+      ? projectScopes.filter((scope) => (entriesByScope.get(scope.id)?.length ?? 0) > 0)
+      : projectScopes,
+    [entriesByScope, hasSearchQuery, projectScopes],
   );
   const pinnedEntries = useMemo(() => {
     const pinned = new Set(pinnedPlanIds);
@@ -776,7 +781,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </span>
             {showScope && <span className="block truncate text-[10px] text-muted-foreground/75">{entry.scopeLabel}</span>}
           </span>
-          {!entry.plan.hasAgsdl && <span
+          {!entry.plan.hasAgsdl && entry.scopeId !== macroScope?.id && <span
             className="max-w-14 shrink-0 truncate rounded bg-muted/65 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
             title={planKindHelp(kind)}
           >
@@ -1082,6 +1087,17 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </section>
         )}
 
+        {!showArchived && macroScope && (!hasSearchQuery || macroEntries.length > 0) && (
+          <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')} className="mb-4">
+            <div className="flex h-7 items-center gap-2 px-1.5">
+              <Icon name="workflow" size={12} className="text-primary" />
+              <h3 className="min-w-0 flex-1 text-[11px] font-medium text-muted-foreground">{t('architect.projectNavigator.macroBlueprints', 'Macro blueprints')}</h3>
+              <button type="button" disabled={isBusy || isLoading || !!creatingScopeId} onClick={() => void createPlan(macroScope, 'feature')} aria-label={t('architect.projectNavigator.newMacroBlueprint', 'New Macro blueprint')} className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"><Icon name={creatingScopeId === macroScope.id ? 'loader' : 'plus'} size={12} className={cn(creatingScopeId === macroScope.id && 'animate-spin')} /></button>
+            </div>
+            <div className="space-y-0.5">{macroEntries.map(entry => renderPlanRow(entry))}</div>
+          </section>
+        )}
+
         {!showArchived ? (!hasSearchQuery || searchedActiveEntries.length > 0) && (
           <section aria-labelledby="architect-projects-title">
           <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
@@ -1106,7 +1122,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </button>
           </div>
 
-          {!isLoading && scopes.length === 0 && (
+          {!isLoading && projectScopes.length === 0 && (
             <div className="mx-2 mt-6 text-center">
               <Icon name="folder" size={22} className="mx-auto mb-2 text-muted-foreground/50" />
               <p className="text-xs text-muted-foreground">{t('architect.projectNavigator.noProjects', 'Aucun projet pour l’instant.')}</p>

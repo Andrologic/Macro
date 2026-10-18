@@ -131,6 +131,7 @@ const CreateImplementTaskDialog = React.lazy(() =>
 
 interface TaskQueueProps {
   className?: string;
+  excludedProjectIds?: readonly string[];
 }
 
 type TaskListRow = {
@@ -678,7 +679,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
 
 const MemoizedTaskItem = React.memo(TaskItem);
 
-const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
+const EMPTY_PROJECT_IDS: readonly string[] = [];
+const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds = EMPTY_PROJECT_IDS }) => {
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
@@ -1322,8 +1324,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [getProjectById, mergeWorkflowRuntimeByTaskId, reviewRepositoryModes, t]);
 
   const availableProjects = useMemo(
-    () => getAllProjects(projectGroups, standaloneProjects),
-    [projectGroups, standaloneProjects]
+    () => getAllProjects(projectGroups, standaloneProjects).filter(project => !excludedProjectIds.includes(project.id)),
+    [projectGroups, standaloneProjects, excludedProjectIds]
   );
 
   const retargetTaskForCurrentScope = useCallback(

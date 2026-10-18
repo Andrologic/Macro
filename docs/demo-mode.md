@@ -106,6 +106,22 @@ qui avaient remplacé ces panneaux ont été retirés. La préparation d’un wo
 se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 
 
+## Blueprints communs à Macro
+
+Dans Architect, la section « Blueprints Macro » apparaît au-dessus des projets.
+Elle contient Assistant et Chantier coordonné, avec leur propre graphe et leur
+conversation. Les menus de plan existants permettent de renommer ces blueprints,
+de choisir leur icône et de les archiver. Le bouton + ouvre un nouveau plan dans
+cette bibliothèque. Les plans vides ne sont pas proposés au lancement.
+
+Dans cette démo, la bibliothèque utilise un workspace synthétique isolé
+`/demo/macro` et le même stockage de plans que les projets. Elle est exclue des
+projets proposés dans Operate. Le catalogue « Communs à Macro » est construit à
+partir des documents édités dans Architect, sans copie indépendante des prompts.
+Un nouveau lancement reprend la dernière version enregistrée ; les préparations
+existantes conservent leur snapshot. Cette bibliothèque de démonstration ne crée
+pas de stockage global ni de projet dans le runtime de production.
+
 ## Lancer un workflow dans Operate
 
 Le bouton d’ajout de la file ouvre « Lancer un workflow » dans la démo.

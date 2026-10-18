@@ -1,3 +1,4 @@
+import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAgsdlTranslation } from '../components/agsdl/useAgsdlTranslation';
@@ -36,7 +37,7 @@ export default function DemoBlueprintLaunchDialog({ projects, onClose }: { proje
   const commonBlueprints = catalog.filter(item => item.shared);
   const projectPreparations = prepared.filter(use => use.projectId === projectId);
   const blueprint = catalog.find(item => item.id === blueprintId && (item.shared || item.projectIds.includes(projectId)));
-  const visibleProjects = projects.filter(item => item.name.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().includes(projectQuery.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase()));
+  const visibleProjects = projects.filter(item => item.id !== DEMO_MACRO_LIBRARY_ID).filter(item => item.name.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().includes(projectQuery.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase()));
   const changeProject = () => {
     setProjectId(''); setBlueprintId(''); setObjective(''); setValues({});
     setUseId(undefined); setError(''); setProjectQuery('');
