@@ -1134,7 +1134,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   className="flex h-7 w-full items-center gap-1.5 rounded text-left text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/70"
                 >
                   <Icon name={macroExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
-                  <Icon name="workflow" size={12} className="text-primary" />
                   <span className="truncate">{t('architect.projectNavigator.macroBlueprints', 'Macro library')}</span>
                 </button>
               </h3>
@@ -1157,11 +1156,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               >
                 <Icon name={projectsExpanded ? 'chevron-down' : 'chevron-right'} size={12} />
                 <span>{t('architect.projectNavigator.projects', 'Tous les projets')}</span>
-                {displayedScopes.length > 0 && (
-                  <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/70 px-1 text-[9px] tabular-nums text-muted-foreground">
-                    {displayedScopes.length}
-                  </span>
-                )}
               </button>
             </h3>
             <button
