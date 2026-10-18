@@ -10,6 +10,7 @@ import {
 } from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
+import { nameBlueprintFolder, moveBlueprintToFolder, emptyBlueprintFolders } from '../../services/blueprintFolders';
 import { PREF_KEYS, savePreference, loadPreference } from '../../services/preferences';
 
 const flushRender = async () => {
@@ -156,7 +157,7 @@ describe('ArchitectProjectNavigator search', () => {
       const event = new window.Event(type, { bubbles: true, cancelable: true });
       Object.defineProperty(event, 'dataTransfer', { value: transfer }); target.dispatchEvent(event);
     };
-    await act(async () => { drag(project.querySelector<HTMLElement>('[draggable="true"]')!, 'dragstart'); await flushRender(); });
+    await act(async () => { drag(project.querySelector<HTMLElement>('[data-blueprint-locator]')!, 'dragstart'); await flushRender(); });
     await act(async () => { drag(folder, 'dragover'); drag(folder, 'drop'); await flushRender(); });
     expect(folder.querySelector('[data-blueprint-locator]')?.textContent).toContain('Project blueprint');
     expect(project.querySelectorAll('[data-blueprint-locator]')).toHaveLength(1);
@@ -164,10 +165,55 @@ describe('ArchitectProjectNavigator search', () => {
     await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
     expect(container!.querySelector('[data-blueprint-folder] [data-blueprint-locator]')?.textContent).toContain('Project blueprint');
     const projectAfter = container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"]')!;
-    await act(async () => { drag(projectAfter.querySelector<HTMLElement>('[draggable="true"]')!, 'dragstart'); await flushRender(); });
+    await act(async () => { drag(projectAfter.querySelector<HTMLElement>('[data-blueprint-locator]')!, 'dragstart'); await flushRender(); });
     await act(async () => { drag(projectAfter.querySelector<HTMLElement>('[data-architect-scope-menu]')!, 'drop'); await flushRender(); });
     expect(projectAfter.querySelector('[data-blueprint-folder] [data-blueprint-locator]')).toBeNull();
     expect(projectAfter.querySelectorAll('[data-blueprint-locator]')).toHaveLength(1);
+  });
+
+  it('moves a nested folder with its blueprints, rejects cycles and preserves its ancestry on remount', async () => {
+    const local = plan('nested', 'Nested blueprint');
+    let organization = nameBlueprintFolder(emptyBlueprintFolders(), 'project:project-1', 'delivery', 'Delivery');
+    organization = nameBlueprintFolder(organization, 'project:project-1', 'mobile', 'Mobile', 'delivery');
+    organization = nameBlueprintFolder(organization, 'project:project-1', 'product', 'Product');
+    const { toPlanLocatorKey } = await import('../../services/durableIdentity');
+    organization = moveBlueprintToFolder(organization, 'project:project-1', toPlanLocatorKey({ branchName: 'develop', planId: local.id }), 'mobile');
+    await savePreference(PREF_KEYS.ARCHITECT_BLUEPRINT_FOLDERS, organization);
+    useAppStore.setState({ standaloneProjects: [{ id: 'project-1', name: 'Sample project', path: '/demo/project', gitSetupState: 'ready' }] as never, projectGroups: [], selectedProjectId: 'project-1', selectedGroupId: null, activeArchitectPlanId: null, activePlanContext: null });
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: { branchCatalogByBranch: {}, branches: [{ branchName: 'develop', activePlanId: null, plans: [local], error: null }], scannedBranchNames: ['develop'], scopedProjectIds: ['project-1'], visiblePlans: [local], modernPlanCount: 1, selectedPlan: null, selectedBranchName: null, selectionReason: 'none', errors: [] },
+      selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
+    }));
+    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    const folder = (id: string) => container!.querySelector<HTMLElement>(`[data-blueprint-folder="${id}"]`)!;
+    expect(folder('delivery').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
+    const values = new Map<string, string>();
+    const transfer = { effectAllowed: 'none', dropEffect: 'none', setData: (key: string, value: string) => values.set(key, value), getData: (key: string) => values.get(key) ?? '' };
+    const drag = (target: HTMLElement, type: string) => {
+      const event = new window.Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: transfer }); target.dispatchEvent(event);
+    };
+    await act(async () => { drag(folder('delivery').querySelector<HTMLElement>('[data-blueprint-folder-header]')!, 'dragstart'); await flushRender(); });
+    await act(async () => { drag(folder('mobile'), 'drop'); await flushRender(); });
+    expect(folder('delivery').querySelector('[data-blueprint-folder="mobile"]')).not.toBeNull();
+    expect(folder('mobile').querySelector('[data-blueprint-folder="delivery"]')).toBeNull();
+    await act(async () => { drag(folder('mobile').querySelector<HTMLElement>('[data-blueprint-folder-header]')!, 'dragstart'); await flushRender(); });
+    await act(async () => { drag(folder('product'), 'drop'); await flushRender(); });
+    expect(folder('delivery').querySelector('[data-blueprint-folder="mobile"]')).toBeNull();
+    expect(folder('product').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
+    expect(container!.querySelectorAll('[data-blueprint-locator]')).toHaveLength(1);
+    await act(async () => { root?.render(<div />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    expect(folder('product').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
+    await act(async () => { drag(folder('mobile').querySelector<HTMLElement>('[data-blueprint-folder-header]')!, 'dragstart'); await flushRender(); });
+    const projectHeader = container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"] [data-architect-scope-menu]')!;
+    const enter = new window.Event('dragenter', { bubbles: true, cancelable: true });
+    Object.defineProperty(enter, 'dataTransfer', { value: transfer });
+    await act(async () => { projectHeader.dispatchEvent(enter); await flushRender(); });
+    expect(enter.defaultPrevented).toBe(true);
+    await act(async () => { drag(projectHeader, 'drop'); await flushRender(); });
+    expect(folder('product').querySelector('[data-blueprint-folder="mobile"]')).toBeNull();
+    expect(folder('mobile').querySelector('[data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
   });
 
   it('searches only plans and activates the selected result', async () => {

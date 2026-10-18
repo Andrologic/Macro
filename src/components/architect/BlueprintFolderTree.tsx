@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { blueprintFolderId, removeBlueprintFolder, type BlueprintFolder, type BlueprintFolderOrganization } from '../../services/blueprintFolders';
+import { blueprintFolderId, blueprintFolderAncestors, canMoveBlueprintFolder, removeBlueprintFolder, type BlueprintFolder, type BlueprintFolderOrganization, type BlueprintNavigatorDrag } from '../../services/blueprintFolders';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import type { ArchitectNavigatorPlanEntry } from './architectProjectNavigatorModel';
@@ -12,21 +12,24 @@ interface Props {
   organization: BlueprintFolderOrganization;
   disabled: boolean;
   searching: boolean;
-  draggedPlan: ArchitectNavigatorPlanEntry | null;
-  onDragChange: (entry: ArchitectNavigatorPlanEntry | null) => void;
+  draggedItem: BlueprintNavigatorDrag | null;
+  onDragChange: (entry: BlueprintNavigatorDrag | null) => void;
   onDropPlan: (scopeId: string, folderId: string | null, event: React.DragEvent) => void;
   onUpdate: (next: BlueprintFolderOrganization) => Promise<boolean>;
   onRename: (folder: BlueprintFolder) => void;
+  onCreate: (parent: BlueprintFolder) => void;
+  onMove: (folder: BlueprintFolder) => void;
   renderPlan: (entry: ArchitectNavigatorPlanEntry) => React.ReactNode;
   children?: React.ReactNode;
 }
-export function BlueprintFolderTree({ scopeId, entries, organization, disabled, searching, draggedPlan, onDragChange, onDropPlan, onUpdate, onRename, renderPlan, children }: Props) {
+export function BlueprintFolderTree({ scopeId, entries, organization, disabled, searching, draggedItem, onDragChange, onDropPlan, onUpdate, onRename, onCreate, onMove, renderPlan, children }: Props) {
   const { t } = useTranslation();
   const contentId = useId();
   const [menuId, setMenuId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const folders = organization.folders.filter(f => f.scopeId === scopeId);
-  const canDrop = !disabled && draggedPlan?.scopeId === scopeId;
+  const canDrop = (folderId: string) => !disabled && draggedItem?.scopeId === scopeId && (draggedItem.kind === 'blueprint' || canMoveBlueprintFolder(organization, draggedItem.folderId, folderId));
+  const visibleFolderIds = searching ? new Set(entries.flatMap(entry => blueprintFolderAncestors(organization, blueprintFolderId(organization, scopeId, entry.locatorKey)).map(folder => folder.id))) : null;
   useEffect(() => {
     if (!menuId) return;
     const close = (event: Event) => {
@@ -41,30 +44,38 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
   const row = (entry: ArchitectNavigatorPlanEntry) => (
     <div key={entry.locatorKey} data-blueprint-locator={entry.locatorKey}
       draggable={!disabled}
-      className={cn(draggedPlan?.locatorKey === entry.locatorKey && 'opacity-40')}
+      className={cn(draggedItem?.kind === 'blueprint' && draggedItem.locatorKey === entry.locatorKey && draggedItem.scopeId === scopeId && 'opacity-40')}
       onDragStart={event => {
         // Buttons retain their click behavior. Only the plan row initiates a move.
         if (disabled) { event.preventDefault(); return; }
         event.stopPropagation();
         event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData(BLUEPRINT_DRAG_TYPE, JSON.stringify({ scopeId, locatorKey: entry.locatorKey }));
-        onDragChange(entry);
+        event.dataTransfer.setData(BLUEPRINT_DRAG_TYPE, JSON.stringify({ kind: 'blueprint', scopeId, locatorKey: entry.locatorKey }));
+        onDragChange({ kind: 'blueprint', scopeId, locatorKey: entry.locatorKey });
       }}
       onDragEnd={() => { onDragChange(null); setHoveredId(null); }}
     >{renderPlan(entry)}</div>
   );
-  return <>
-    {folders.map(folder => {
+  const renderFolder = (folder: BlueprintFolder): React.ReactNode => {
       const plans = entries.filter(entry => blueprintFolderId(organization, scopeId, entry.locatorKey) === folder.id);
-      if (searching && plans.length === 0) return null;
+      const childFolders = folders.filter(child => child.parentId === folder.id);
+      if (visibleFolderIds && !visibleFolderIds.has(folder.id)) return null;
       const expanded = searching || !organization.collapsedIds.includes(folder.id);
       const id = `${contentId}-${folder.id}`;
       return <div key={folder.id} data-blueprint-folder={folder.id}
-          onDragOver={event => { if (canDrop) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setHoveredId(folder.id); } }}
+          onDragEnter={event => { event.stopPropagation(); if (canDrop(folder.id)) { event.preventDefault(); setHoveredId(folder.id); } }}
+          onDragOver={event => { event.stopPropagation(); if (canDrop(folder.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setHoveredId(folder.id); } else { event.dataTransfer.dropEffect = 'none'; } }}
           onDragLeave={() => setHoveredId(null)}
           onDrop={event => { setHoveredId(null); onDropPlan(scopeId, folder.id, event); }}
         >
-        <div className={cn('group/folder relative flex min-h-8 items-center rounded-md text-muted-foreground hover:bg-accent/45', canDrop && hoveredId === folder.id && 'bg-primary/10 ring-1 ring-inset ring-primary/60')}
+        <div data-blueprint-folder-header draggable={!disabled} onDragStart={event => {
+          event.stopPropagation();
+          if (disabled) { event.preventDefault(); return; }
+          const item: BlueprintNavigatorDrag = { kind: 'folder', scopeId, folderId: folder.id };
+          event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData(BLUEPRINT_DRAG_TYPE, JSON.stringify(item));
+          setMenuId(null); onDragChange(item);
+        }} onDragEnd={() => { onDragChange(null); setHoveredId(null); }}
+        className={cn('group/folder relative flex min-h-8 items-center rounded-md text-muted-foreground hover:bg-accent/45', canDrop(folder.id) && hoveredId === folder.id && 'bg-primary/10 ring-1 ring-inset ring-primary/60', draggedItem?.kind === 'folder' && draggedItem.folderId === folder.id && 'opacity-40')}
         >
           <button type="button" aria-expanded={expanded} aria-controls={id}
             onClick={() => { void onUpdate({ ...organization, collapsedIds: expanded ? [...organization.collapsedIds, folder.id] : organization.collapsedIds.filter(value => value !== folder.id) }); }}
@@ -81,17 +92,22 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
               <Icon name="more-horizontal" size={12} />
             </button>
             {menuId === folder.id && <div role="menu" className="absolute right-0 top-7 z-30 w-44 rounded-lg border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl">
+              <button type="button" role="menuitem" onClick={() => { setMenuId(null); onCreate(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="folder" size={11} />{t('architect.projectNavigator.newSubfolder', 'New subfolder')}</button>
+              <button type="button" role="menuitem" onClick={() => { setMenuId(null); onMove(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="layers" size={11} />{t('architect.projectNavigator.moveToFolder', 'Move to…')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onRename(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="edit" size={11} />{t('common.rename')}</button>
-              <button type="button" role="menuitem" onClick={() => { setMenuId(null); void onUpdate(removeBlueprintFolder(organization, folder.id)); }} title={t('architect.projectNavigator.removeFolderHelp', 'Blueprints remain in the project.')} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="trash" size={11} />{t('architect.projectNavigator.removeFolder', 'Remove folder')}</button>
+              <button type="button" role="menuitem" onClick={() => { setMenuId(null); void onUpdate(removeBlueprintFolder(organization, folder.id)); }} title={t('architect.projectNavigator.removeFolderHelp', 'Contents remain in the parent folder.')} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="trash" size={11} />{t('architect.projectNavigator.removeFolder', 'Remove folder')}</button>
             </div>}
           </div>
         </div>
-        {expanded && <div id={id} className="ml-5 space-y-0.5 border-l border-border/50 pl-1">
+        {expanded && <div id={id} className="ml-3 space-y-0.5 border-l border-border/50 pl-1">
+          {childFolders.map(renderFolder)}
           {plans.map(row)}
-          {plans.length === 0 && <p className="px-2 py-2 text-[10px] text-muted-foreground/65">{t('architect.projectNavigator.emptyFolder', 'Drop a blueprint here')}</p>}
+          {plans.length === 0 && childFolders.length === 0 && <p className="px-2 py-2 text-[10px] text-muted-foreground/65">{t('architect.projectNavigator.emptyFolder', 'Drop a blueprint here')}</p>}
         </div>}
       </div>;
-    })}
+  };
+  return <>
+    {folders.filter(folder => !folder.parentId).map(renderFolder)}
     {entries.filter(entry => !blueprintFolderId(organization, scopeId, entry.locatorKey)).map(row)}
     {folders.length === 0 && entries.length === 0 && children}
   </>;

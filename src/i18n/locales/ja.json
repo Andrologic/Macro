@@ -1780,11 +1780,12 @@
       }
     },
     "projectNavigator": {
+      "newSubfolder": "新しいサブフォルダー",
       "newFolder": "新しいフォルダー",
       "renameFolder": "フォルダー名を変更",
       "folderActions": "{{name}} の操作",
       "removeFolder": "フォルダーを削除",
-      "removeFolderHelp": "ブループリントはプロジェクトに残ります。",
+      "removeFolderHelp": "内容は親フォルダーに残ります。",
       "emptyFolder": "ここにブループリントをドロップ",
       "moveToFolder": "移動先…",
       "projectRoot": "プロジェクト直下",

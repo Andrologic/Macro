@@ -1780,11 +1780,12 @@
       }
     },
     "projectNavigator": {
+      "newSubfolder": "Nueva subcarpeta",
       "newFolder": "Nueva carpeta",
       "renameFolder": "Renombrar carpeta",
       "folderActions": "Acciones de {{name}}",
       "removeFolder": "Quitar carpeta",
-      "removeFolderHelp": "Los blueprints permanecen en el proyecto.",
+      "removeFolderHelp": "El contenido se conserva en la carpeta superior.",
       "emptyFolder": "Arrastra un blueprint aquí",
       "moveToFolder": "Mover a…",
       "projectRoot": "Raíz del proyecto",

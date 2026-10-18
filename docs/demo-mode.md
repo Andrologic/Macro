@@ -175,12 +175,15 @@ remplacé.
 
 Les projets du navigateur Architect utilisent une icône de couches par défaut.
 Leur bouton + et leur menu contextuel proposent « Nouveau dossier ». Les dossiers
-visuels, sur un seul niveau, peuvent être renommés, repliés ou retirés. Retirer un
-dossier replace ses blueprints à la racine sans supprimer de plan.
+visuels peuvent contenir des sous-dossiers, être renommés, repliés ou déplacés.
+Le menu d’un dossier propose « Nouveau sous-dossier ». Retirer un dossier
+remonte ses blueprints et ses sous-dossiers dans son parent, sans les supprimer.
 
-Un blueprint se déplace sur un dossier par glisser-déposer, et revient à la racine
+Un blueprint ou un dossier se déplace sur un autre dossier par glisser-déposer, et revient à la racine
 en le déposant sur la ligne du projet. Son menu propose aussi « Déplacer vers… ».
-Un déplacement reste dans le même projet. Les identités incluent la branche pour
+Un déplacement reste dans le même projet. Un dossier ne peut pas être déplacé
+dans lui-même ni dans l’un de ses descendants. Les anciens dossiers sans parent
+restent à la racine. Les identités incluent la branche pour
 ne pas confondre deux plans portant le même identifiant. La recherche révèle les
 plans correspondants dans les dossiers repliés. Les épingles restent des raccourcis.
 

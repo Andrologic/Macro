@@ -1780,11 +1780,12 @@
       }
     },
     "projectNavigator": {
+      "newSubfolder": "새 하위 폴더",
       "newFolder": "새 폴더",
       "renameFolder": "폴더 이름 변경",
       "folderActions": "{{name}} 작업",
       "removeFolder": "폴더 제거",
-      "removeFolderHelp": "블루프린트는 프로젝트에 남습니다.",
+      "removeFolderHelp": "내용은 상위 폴더에 유지됩니다.",
       "emptyFolder": "여기에 블루프린트를 놓으세요",
       "moveToFolder": "이동 위치…",
       "projectRoot": "프로젝트 최상위",

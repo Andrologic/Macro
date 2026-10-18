@@ -1780,11 +1780,12 @@
       }
     },
     "projectNavigator": {
+      "newSubfolder": "New subfolder",
       "newFolder": "New folder",
       "renameFolder": "Rename folder",
       "folderActions": "Actions for {{name}}",
       "removeFolder": "Remove folder",
-      "removeFolderHelp": "Blueprints remain in the project.",
+      "removeFolderHelp": "Contents remain in the parent folder.",
       "emptyFolder": "Drop a blueprint here",
       "moveToFolder": "Move to…",
       "projectRoot": "Project root",

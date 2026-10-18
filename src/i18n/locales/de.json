@@ -1780,11 +1780,12 @@
       }
     },
     "projectNavigator": {
+      "newSubfolder": "Neuer Unterordner",
       "newFolder": "Neuer Ordner",
       "renameFolder": "Ordner umbenennen",
       "folderActions": "Aktionen für {{name}}",
       "removeFolder": "Ordner entfernen",
-      "removeFolderHelp": "Blueprints bleiben im Projekt.",
+      "removeFolderHelp": "Der Inhalt bleibt im übergeordneten Ordner.",
       "emptyFolder": "Blueprint hier ablegen",
       "moveToFolder": "Verschieben nach…",
       "projectRoot": "Projektebene",

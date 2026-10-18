@@ -72,7 +72,7 @@ import {
 } from './architectProjectNavigatorMenu';
 
 import { useBlueprintFolders } from '../../hooks/useBlueprintFolders';
-import { blueprintFolderId, moveBlueprintToFolder, nameBlueprintFolder, type BlueprintFolder } from '../../services/blueprintFolders';
+import { blueprintFolderId, blueprintFolderAncestors, blueprintFolderTree, canMoveBlueprintFolder, moveBlueprintFolder, moveBlueprintToFolder, nameBlueprintFolder, type BlueprintFolder, type BlueprintNavigatorDrag } from '../../services/blueprintFolders';
 import { BlueprintFolderTree, BLUEPRINT_DRAG_TYPE } from './BlueprintFolderTree';
 
 type NavigatorSection = 'macro' | 'projects';
@@ -149,10 +149,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const renameProjectGroup = useAppStore((state) => state.renameProjectGroup);
 
   const folders = useBlueprintFolders(() => notify.error(t('architect.projectNavigator.folderSaveError', 'Could not save folder organization.')));
-  const [folderForm, setFolderForm] = useState<{ scopeId: string; folder?: BlueprintFolder } | null>(null);
+  const [folderForm, setFolderForm] = useState<{ scopeId: string; folder?: BlueprintFolder; parentId?: string | null } | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
   const [blueprintToMove, setBlueprintToMove] = useState<ArchitectNavigatorPlanEntry | null>(null);
-  const [draggedBlueprint, setDraggedBlueprint] = useState<ArchitectNavigatorPlanEntry | null>(null);
+  const [folderToMove, setFolderToMove] = useState<BlueprintFolder | null>(null);
+  const [draggedItem, setDraggedItem] = useState<BlueprintNavigatorDrag | null>(null);
   const [rootDropScopeId, setRootDropScopeId] = useState<string | null>(null);
   const [entries, setEntries] = useState<ArchitectNavigatorPlanEntry[]>([]);
   const [collapsedSections, setCollapsedSections] = useState<string[]>([]);
@@ -779,16 +780,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     };
   }, [openPlanMenuKey, scopeContextMenu, scopeCreateMenu]);
 
-  const openFolderForm = (scopeId: string, folder?: BlueprintFolder) => {
+  const openFolderForm = (scopeId: string, folder?: BlueprintFolder, parentId?: string | null) => {
     setScopeCreateMenu(null);
     setScopeContextMenu(null);
     setFolderError(null);
-    setFolderForm({ scopeId, folder });
+    setFolderForm({ scopeId, folder, parentId });
   };
   const confirmFolder = async (name: string) => {
     if (!folderForm) return;
     try {
-      const next = nameBlueprintFolder(folders.organization, folderForm.scopeId, folderForm.folder?.id ?? crypto.randomUUID(), name);
+      const next = nameBlueprintFolder(folders.organization, folderForm.scopeId, folderForm.folder?.id ?? crypto.randomUUID(), name, folderForm.parentId);
       if (await folders.update(next)) {
         persistExpandedScopes([...new Set([...expandedScopeIds, folderForm.scopeId])]);
         setFolderForm(null);
@@ -801,14 +802,31 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     event.preventDefault();
     event.stopPropagation();
     setRootDropScopeId(null);
-    if (isBusy || !folders.ready || folders.busy || draggedBlueprint?.scopeId !== scopeId) return;
+    if (isBusy || !folders.ready || folders.busy || draggedItem?.scopeId !== scopeId) return;
     try {
       const payload = JSON.parse(event.dataTransfer.getData(BLUEPRINT_DRAG_TYPE));
-      const entry = entries.find(entry => entry.scopeId === scopeId && entry.locatorKey === payload.locatorKey && entry.plan.status !== 'archived');
-      if (!entry || payload.scopeId !== scopeId || entry.locatorKey !== draggedBlueprint.locatorKey) return;
-      void folders.update(moveBlueprintToFolder(folders.organization, scopeId, entry.locatorKey, folderId));
-    } catch { /* External files and foreign drags cannot move a blueprint. */ }
-    setDraggedBlueprint(null);
+      if (payload.scopeId !== scopeId || payload.kind !== draggedItem.kind) return;
+      if (draggedItem.kind === 'folder') {
+        const folder = folders.organization.folders.find(folder => folder.id === payload.folderId && folder.scopeId === scopeId);
+        if (!folder || folder.id !== draggedItem.folderId || !canMoveBlueprintFolder(folders.organization, folder.id, folderId)) return;
+        void folders.update(moveBlueprintFolder(folders.organization, folder.id, folderId));
+      } else {
+        const entry = entries.find(entry => entry.scopeId === scopeId && entry.locatorKey === payload.locatorKey && entry.plan.status !== 'archived');
+        if (!entry || entry.locatorKey !== draggedItem.locatorKey) return;
+        void folders.update(moveBlueprintToFolder(folders.organization, scopeId, entry.locatorKey, folderId));
+      }
+    } catch { /* External files and foreign drags cannot move a navigator item. */ }
+    setDraggedItem(null);
+  };
+  const moveScopeId = blueprintToMove?.scopeId ?? folderToMove?.scopeId;
+  const moveDestinations = moveScopeId ? blueprintFolderTree(folders.organization, moveScopeId).filter(({ folder }) =>
+    !folderToMove || !blueprintFolderAncestors(folders.organization, folder.id).some(ancestor => ancestor.id === folderToMove.id)
+  ) : [];
+  const confirmMove = async (destinationId: string | null) => {
+    const next = blueprintToMove
+      ? moveBlueprintToFolder(folders.organization, blueprintToMove.scopeId, blueprintToMove.locatorKey, destinationId)
+      : folderToMove ? moveBlueprintFolder(folders.organization, folderToMove.id, destinationId) : null;
+    if (next && await folders.update(next)) { setBlueprintToMove(null); setFolderToMove(null); }
   };
 
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
@@ -1281,8 +1299,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       ? 'bg-accent/80'
                       : 'hover:bg-accent/45',
                   )} data-architect-scope-menu
+                    onDragEnter={event => {
+                      if (!isBusy && folders.ready && !folders.busy && draggedItem?.scopeId === scope.id && (draggedItem.kind === 'blueprint' || canMoveBlueprintFolder(folders.organization, draggedItem.folderId, null))) {
+                        event.preventDefault(); event.stopPropagation(); setRootDropScopeId(scope.id);
+                      }
+                    }}
                     onDragOver={(event) => {
-                      if (!isBusy && folders.ready && !folders.busy && draggedBlueprint?.scopeId === scope.id) {
+                      if (!isBusy && folders.ready && !folders.busy && draggedItem?.scopeId === scope.id && (draggedItem.kind === 'blueprint' || canMoveBlueprintFolder(folders.organization, draggedItem.folderId, null))) {
                         event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move'; setRootDropScopeId(scope.id);
                       }
                     }}
@@ -1343,8 +1366,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     <div className="ml-7 space-y-0.5 pb-0.5 pt-0.5">
                       <BlueprintFolderTree scopeId={scope.id} entries={visibleEntries} organization={folders.organization}
                         disabled={isBusy || !folders.ready || folders.busy} searching={hasSearchQuery}
-                        draggedPlan={draggedBlueprint} onDragChange={entry => { setDraggedBlueprint(entry); setRootDropScopeId(null); }}
-                        onDropPlan={dropBlueprint} onUpdate={folders.update} onRename={folder => openFolderForm(scope.id, folder)} renderPlan={renderPlanRow}>
+                        draggedItem={draggedItem} onDragChange={item => { setDraggedItem(item); setRootDropScopeId(null); }}
+                        onDropPlan={dropBlueprint} onUpdate={folders.update} onRename={folder => openFolderForm(scope.id, folder)} onCreate={folder => openFolderForm(scope.id, undefined, folder.id)} onMove={folder => setFolderToMove(folder)} renderPlan={renderPlanRow}>
 
                         <button
                           type="button"
@@ -1422,22 +1445,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
       <ConfirmPromptModal
         isOpen={Boolean(folderForm)}
-        title={folderForm?.folder ? t('architect.projectNavigator.renameFolder', 'Rename folder') : t('architect.projectNavigator.newFolder', 'New folder')}
+        title={folderForm?.folder ? t('architect.projectNavigator.renameFolder', 'Rename folder') : folderForm?.parentId ? t('architect.projectNavigator.newSubfolder', 'New subfolder') : t('architect.projectNavigator.newFolder', 'New folder')}
         initialValue={folderForm?.folder?.name ?? ''} inputPlaceholder={t('common.name', 'Name')} requireInput
         confirmLabel={folderForm?.folder ? t('common.rename', 'Rename') : t('architect.planSelector.create', 'Create')}
         cancelLabel={t('common.cancel', 'Cancel')} isSubmitting={folders.busy}
         onCancel={() => { if (!folders.busy) setFolderForm(null); }} onConfirm={value => void confirmFolder(value ?? '')}>
         {folderError && <p role="alert" className="text-xs text-red-400">{folderError}</p>}
       </ConfirmPromptModal>
-      <ConfirmPromptModal isOpen={Boolean(blueprintToMove)} title={t('architect.projectNavigator.moveToFolder', 'Move to…')}
+      <ConfirmPromptModal isOpen={Boolean(blueprintToMove || folderToMove)} title={t('architect.projectNavigator.moveToFolder', 'Move to…')}
         showConfirmButton={false} cancelLabel={t('common.cancel', 'Cancel')} isSubmitting={folders.busy}
-        onCancel={() => { if (!folders.busy) setBlueprintToMove(null); }} onConfirm={() => undefined}>
-        {blueprintToMove && [null, ...folders.organization.folders.filter(folder => folder.scopeId === blueprintToMove.scopeId)].map(folder => {
-          const selected = blueprintFolderId(folders.organization, blueprintToMove.scopeId, blueprintToMove.locatorKey) === (folder?.id ?? null);
-          return <button key={folder?.id ?? 'root'} type="button" disabled={folders.busy || selected}
-            onClick={() => { void folders.update(moveBlueprintToFolder(folders.organization, blueprintToMove.scopeId, blueprintToMove.locatorKey, folder?.id ?? null)).then(saved => { if (saved) setBlueprintToMove(null); }); }}
-            className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-xs hover:bg-accent disabled:opacity-60">
-            <Icon name={folder ? 'folder' : 'layers'} size={14} /><span className="min-w-0 flex-1 truncate">{folder?.name ?? t('architect.projectNavigator.projectRoot', 'Project root')}</span>{selected && <Icon name="check" size={12} />}
+        onCancel={() => { if (!folders.busy) { setBlueprintToMove(null); setFolderToMove(null); } }} onConfirm={() => undefined}>
+        {moveScopeId && [{ folder: null, depth: 0, path: t('architect.projectNavigator.projectRoot', 'Project root') }, ...moveDestinations].map(({ folder, depth, path }) => {
+          const currentId = blueprintToMove ? blueprintFolderId(folders.organization, moveScopeId, blueprintToMove.locatorKey) : folderToMove?.parentId ?? null;
+          const selected = currentId === (folder?.id ?? null);
+          const invalid = Boolean(folderToMove && !canMoveBlueprintFolder(folders.organization, folderToMove.id, folder?.id ?? null));
+          return <button key={folder?.id ?? 'root'} type="button" disabled={folders.busy || selected || invalid} title={path}
+            onClick={() => void confirmMove(folder?.id ?? null)}
+            style={{ paddingLeft: 8 + (folder ? depth + 1 : 0) * 12 }}
+            className="flex min-h-9 w-full items-center gap-2 rounded pr-2 text-left text-xs hover:bg-accent disabled:opacity-60">
+            <Icon name={folder ? 'folder' : 'layers'} size={14} /><span className="min-w-0 flex-1 truncate">{folder?.name ?? path}</span>{selected && <Icon name="check" size={12} />}
           </button>;
         })}
       </ConfirmPromptModal>
