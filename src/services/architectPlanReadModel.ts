@@ -1,3 +1,4 @@
+import { normalizePlanIcon } from './planIcon';
 import type { PlanNode, PredictedBranch, ProjectGitFlowSettings } from '../types';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
@@ -125,6 +126,7 @@ export interface ArchitectPlanRecord {
   slug: string;
   title: string;
   label?: string;
+  icon?: string;
   description: string;
   planKind?: ArchitectPlanKind;
   gitFlowPlan?: ArchitectPlanGitFlowMetadata;
@@ -158,6 +160,7 @@ export interface ArchitectPlanSummary {
   slug: string;
   title: string;
   label?: string;
+  icon?: string;
   description: string;
   planKind?: ArchitectPlanKind;
   gitFlowPlan?: ArchitectPlanGitFlowMetadata;
@@ -378,6 +381,7 @@ export const planRecordFromActivationSummary = (
     slug: summary.slug,
     title: summary.title,
     label: summary.label,
+    icon: normalizePlanIcon(summary.icon),
     description: summary.description,
     planKind: summary.planKind,
     gitFlowPlan: summary.gitFlowPlan,
@@ -1672,6 +1676,7 @@ export const sanitizeArchitectPlanRecord = (
     slug: normalizedSlug,
     title: normalizedTitle,
     label: normalizePlanLabel(plan.label),
+    icon: normalizePlanIcon(plan.icon),
     planKind: normalizedPlanKind,
     gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
       planKind: normalizedPlanKind,
@@ -1837,6 +1842,7 @@ export const sanitizeArchitectPlanSummary = (
     slug: normalizedSlug,
     title: normalizedTitle,
     label: normalizePlanLabel(summary.label),
+    icon: normalizePlanIcon(summary.icon),
     planKind: normalizedPlanKind,
     gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
       planKind: normalizedPlanKind,
@@ -2020,6 +2026,7 @@ export const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): un
   slug: summary.slug,
   title: summary.title,
   label: summary.label,
+  icon: normalizePlanIcon(summary.icon),
   description: summary.description,
   planKind: summary.planKind,
   gitFlowPlan: summary.gitFlowPlan,
@@ -2082,6 +2089,7 @@ export const toSummary = (
     slug: plan.slug,
     title: plan.title,
     label: plan.label,
+    icon: normalizePlanIcon(plan.icon),
     description: plan.description,
     planKind: getArchitectPlanKind(plan),
     gitFlowPlan: plan.gitFlowPlan,

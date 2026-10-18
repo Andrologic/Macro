@@ -48,6 +48,17 @@ describe('isolated Macro demo runtime', () => {
     ]));
   });
 
+  test('refreshes the demo plan catalog when a custom icon is removed from persisted metadata', async () => {
+    const demo = createDemoRuntime();
+    const args = { path: 'branches/main/plans/demo-release/plan.json', workspaceScope: 'metadata', workspacePath: '/demo/luma' };
+    const file = await demo.invoke('fs_read_file', args) as { content: string };
+    const plan = JSON.parse(file.content);
+    await demo.invoke('fs_write_file', { ...args, content: JSON.stringify({ ...plan, icon: 'shield' }) });
+    expect((demo.plans.find(item => item.id === plan.id) as { icon?: string })?.icon).toBe('shield');
+    await demo.invoke('fs_write_file', { ...args, content: JSON.stringify(plan) });
+    expect((demo.plans.find(item => item.id === plan.id) as { icon?: string })?.icon).toBeUndefined();
+  });
+
   test('stores settings and supports conditional updates without a database', async () => {
     const demo = createDemoRuntime();
     expect(await demo.invoke('db_compare_and_swap_app_setting', { key: 'draft', expectedValueJson: null, valueJson: 'first' })).toEqual({ applied: true });

@@ -1725,6 +1725,30 @@
       "hotfixEmptyHint": "本番環境のバグを説明してください。Macro がリポジトリを推定し、hotfix slug とパッチバージョンを提案してから確認を求めます。",
       "bugfixEmptyHint": "バグを説明してください。Macro がリポジトリを推定し、確認前に bugfix slug を提案します。"
     },
+    "planIcon": {
+      "title": "アイコンを選択",
+      "reset": "デフォルトのアイコン",
+      "options": {
+        "sparkles": "きらめき",
+        "workflow": "ワークフロー",
+        "network": "ネットワーク",
+        "layers": "レイヤー",
+        "pencil-ruler": "設計",
+        "code": "コード",
+        "terminal": "ターミナル",
+        "flag": "旗",
+        "target": "ターゲット",
+        "zap": "稲妻",
+        "shield": "盾",
+        "tool": "ツール",
+        "cpu": "プロセッサー",
+        "database": "データベース",
+        "globe": "地球",
+        "cloud": "クラウド",
+        "message-square": "会話",
+        "book-open": "本"
+      }
+    },
     "projectNavigator": {
       "title": "プロジェクト",
       "searchPlans": "プランを検索...",

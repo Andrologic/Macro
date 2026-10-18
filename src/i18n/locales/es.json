@@ -1725,6 +1725,30 @@
       "hotfixEmptyHint": "Describe el bug de producción. Macro inferirá los repositorios, propondrá un slug de hotfix y versiones de parche, y luego te pedirá confirmación.",
       "bugfixEmptyHint": "Describe el bug. Macro inferirá los repositorios y propondrá un slug de bugfix antes de pedirte confirmación."
     },
+    "planIcon": {
+      "title": "Elegir un icono",
+      "reset": "Icono predeterminado",
+      "options": {
+        "sparkles": "Destellos",
+        "workflow": "Workflow",
+        "network": "Red",
+        "layers": "Capas",
+        "pencil-ruler": "Diseño",
+        "code": "Código",
+        "terminal": "Terminal",
+        "flag": "Bandera",
+        "target": "Objetivo",
+        "zap": "Rayo",
+        "shield": "Escudo",
+        "tool": "Herramientas",
+        "cpu": "Procesador",
+        "database": "Base de datos",
+        "globe": "Globo",
+        "cloud": "Nube",
+        "message-square": "Conversación",
+        "book-open": "Libro"
+      }
+    },
     "projectNavigator": {
       "title": "Proyectos",
       "searchPlans": "Buscar planes...",

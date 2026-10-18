@@ -455,7 +455,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
           const incoming = JSON.parse(string(args.content));
           const p = plans.find(p => p.id === incoming.id);
           if (p)
-            Object.assign(p, incoming);
+            Object.assign(p, { icon: undefined }, incoming);
           else
             plans.push(incoming);
         }

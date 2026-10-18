@@ -1,3 +1,4 @@
+import { normalizePlanIcon } from './planIcon';
 import type { ArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import type { PlanNode, PredictedBranch } from '../types';
 import { updateDesignMetadata, validDisplayMetadata } from './agsdl/design';
@@ -308,6 +309,7 @@ export interface UpdateArchitectPlanInput {
   expectedRevision?: number;
   title?: string;
   label?: string;
+  icon?: string | null;
   slug?: string;
   description?: string;
   planKind?: ArchitectPlanKind;
@@ -579,6 +581,7 @@ export const updateArchitectPlanWithDerivedUpdate = async (
     label: isCanonicalPlan
       ? (input.label !== undefined || input.title !== undefined ? requestedLabel : existing.label)
       : normalizePlanLabel(input.label) ?? existing.label,
+    icon: input.icon !== undefined ? normalizePlanIcon(input.icon) : existing.icon,
     description: input.description !== undefined ? input.description.trim() : existing.description,
     planKind,
     gitFlowPlan: normalizedGitFlowPlan,

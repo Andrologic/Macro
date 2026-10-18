@@ -1725,6 +1725,30 @@
       "hotfixEmptyHint": "Beschreibe den Produktionsfehler. Macro ermittelt die Repositories, schlägt einen Hotfix-Slug und Patch-Versionen vor und bittet dich dann um Bestätigung.",
       "bugfixEmptyHint": "Beschreibe den Fehler. Macro ermittelt die Repositories und schlägt einen Bugfix-Slug vor, bevor es dich um Bestätigung bittet."
     },
+    "planIcon": {
+      "title": "Symbol auswählen",
+      "reset": "Standardsymbol",
+      "options": {
+        "sparkles": "Funken",
+        "workflow": "Workflow",
+        "network": "Netzwerk",
+        "layers": "Ebenen",
+        "pencil-ruler": "Entwurf",
+        "code": "Code",
+        "terminal": "Terminal",
+        "flag": "Flagge",
+        "target": "Ziel",
+        "zap": "Blitz",
+        "shield": "Schild",
+        "tool": "Werkzeuge",
+        "cpu": "Prozessor",
+        "database": "Datenbank",
+        "globe": "Globus",
+        "cloud": "Wolke",
+        "message-square": "Gespräch",
+        "book-open": "Buch"
+      }
+    },
     "projectNavigator": {
       "title": "Projekte",
       "searchPlans": "Pläne suchen...",

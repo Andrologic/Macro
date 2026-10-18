@@ -1725,6 +1725,30 @@
       "hotfixEmptyHint": "Décrivez le bug de production. Macro déduira les projets, proposera un slug de hotfix et des versions de patch, puis vous demandera de confirmer.",
       "bugfixEmptyHint": "Décrivez le bug. Macro déduira les projets et proposera un slug de bugfix avant de vous demander de confirmer."
     },
+    "planIcon": {
+      "title": "Choisir une icône",
+      "reset": "Icône par défaut",
+      "options": {
+        "sparkles": "Étincelles",
+        "workflow": "Workflow",
+        "network": "Réseau",
+        "layers": "Calques",
+        "pencil-ruler": "Conception",
+        "code": "Code",
+        "terminal": "Terminal",
+        "flag": "Drapeau",
+        "target": "Cible",
+        "zap": "Éclair",
+        "shield": "Bouclier",
+        "tool": "Outils",
+        "cpu": "Processeur",
+        "database": "Base de données",
+        "globe": "Globe",
+        "cloud": "Nuage",
+        "message-square": "Conversation",
+        "book-open": "Livre"
+      }
+    },
     "projectNavigator": {
       "title": "Projets",
       "searchPlans": "Rechercher des plans...",

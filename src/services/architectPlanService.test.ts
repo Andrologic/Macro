@@ -489,6 +489,18 @@ describe('architectPlanService', () => {
     ).toHaveLength(1);
   });
 
+  it('persists a plan icon in the record and catalog, preserves it on edits and resets it', async () => {
+    const created = await service.createArchitectPlan({ branchName, planId: 'custom-icon-plan', title: 'Synthetic plan' });
+    await service.updateArchitectPlan({ branchName, planId: created.id, icon: 'shield' });
+    expect((await service.getArchitectPlan(branchName, created.id))?.icon).toBe('shield');
+    expect((await service.listArchitectPlans(branchName, true, true)).plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.icon).toBe('shield');
+    await service.updateArchitectPlan({ branchName, planId: created.id, description: 'Updated description' });
+    expect((await service.getArchitectPlan(branchName, created.id))?.icon).toBe('shield');
+    await service.updateArchitectPlan({ branchName, planId: created.id, icon: null });
+    expect((await service.getArchitectPlan(branchName, created.id))?.icon).toBeUndefined();
+    expect((await service.listArchitectPlans(branchName, true, true)).plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.icon).toBeUndefined();
+  });
+
   it('treats title updates as label updates for canonical plans', async () => {
     const created = await service.createArchitectPlan({
       branchName,

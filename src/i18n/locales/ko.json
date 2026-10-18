@@ -1725,6 +1725,30 @@
       "hotfixEmptyHint": "프로덕션 버그를 설명하세요. Macro가 저장소를 추론하고 hotfix slug와 패치 버전을 제안한 뒤 확인을 요청합니다.",
       "bugfixEmptyHint": "버그를 설명하세요. Macro가 저장소를 추론하고 확인 전에 bugfix slug를 제안합니다."
     },
+    "planIcon": {
+      "title": "아이콘 선택",
+      "reset": "기본 아이콘",
+      "options": {
+        "sparkles": "반짝임",
+        "workflow": "워크플로",
+        "network": "네트워크",
+        "layers": "레이어",
+        "pencil-ruler": "설계",
+        "code": "코드",
+        "terminal": "터미널",
+        "flag": "깃발",
+        "target": "목표",
+        "zap": "번개",
+        "shield": "방패",
+        "tool": "도구",
+        "cpu": "프로세서",
+        "database": "데이터베이스",
+        "globe": "지구",
+        "cloud": "클라우드",
+        "message-square": "대화",
+        "book-open": "책"
+      }
+    },
     "projectNavigator": {
       "title": "프로젝트",
       "searchPlans": "계획 검색...",

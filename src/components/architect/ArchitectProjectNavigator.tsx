@@ -46,6 +46,8 @@ import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
+import { PlanIconDialog } from './PlanIconDialog';
+import { getPlanIcon, type PlanIcon } from '../../services/planIcon';
 import { PlanFormModal } from './PlanFormModal';
 import {
   registerArchitectPlanSelectorRequestHandler,
@@ -156,6 +158,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [scopeToRename, setScopeToRename] = useState<ArchitectNavigatorScope | null>(null);
   const [isRenamingScope, setIsRenamingScope] = useState(false);
   const [planToEdit, setPlanToEdit] = useState<ArchitectNavigatorPlanEntry | null>(null);
+  const [planToChooseIcon, setPlanToChooseIcon] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [planToDelete, setPlanToDelete] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [formLoading, setFormLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -481,6 +484,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
   };
 
+  const choosePlanIcon = async (icon: PlanIcon | null) => {
+    if (!planToChooseIcon || formLoading) return;
+    setFormLoading(true);
+    setFormError(null);
+    try {
+      const current = await getArchitectPlan(planToChooseIcon.branchName, planToChooseIcon.plan.id);
+      if (!current || !getArchitectPlanCrudCapabilities(current).canEditDetails) {
+        throw new Error(t('architect.projectNavigator.editUnavailable', 'Ce plan ne peut plus être modifié.'));
+      }
+      await updateArchitectPlan({ branchName: planToChooseIcon.branchName, planId: current.id, expectedRevision: current.revision, icon });
+      await refreshAfterMutation();
+      setPlanToChooseIcon(null);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : t('architect.projectNavigator.editError', 'Impossible de modifier le plan.'));
+    } finally {
+      setFormLoading(false);
+    }
+  };
+
   const archivePlan = async (entry: ArchitectNavigatorPlanEntry) => {
     if (mutatingPlanId) return;
     setOpenPlanMenuKey(null);
@@ -746,7 +768,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           {isActivating || isMutating ? (
             <Icon name="loader" size={12} className="shrink-0 animate-spin text-primary" />
           ) : (
-            <Icon name={getPlanKindIconName(kind)} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
+            <Icon name={getPlanIcon(entry.plan)} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
           )}
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
@@ -824,6 +846,12 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 >
                   <Icon name="edit" size={11} />
                   {t('architect.projectNavigator.rename', 'Renommer')}
+                </button>
+              )}
+              {capabilities.canEditDetails && (
+                <button type="button" onClick={() => { setOpenPlanMenuKey(null); setFormError(null); setPlanToChooseIcon(entry); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent">
+                  <Icon name="palette" size={11} />
+                  {t('architect.planIcon.title', 'Choose an icon')}
                 </button>
               )}
               {(capabilities.canArchive || capabilities.canRestore) && (
@@ -1241,6 +1269,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </section>
         )}
       </div>
+      {planToChooseIcon && <PlanIconDialog value={planToChooseIcon.plan.icon} isLoading={formLoading} error={formError} onSelect={icon => void choosePlanIcon(icon)} onClose={() => { if (!formLoading) setPlanToChooseIcon(null); }} />}
       {planToEdit && (
         <PlanFormModal
           initialValue={getArchitectPlanEditableName(planToEdit.plan)}
