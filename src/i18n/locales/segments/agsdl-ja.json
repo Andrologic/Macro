@@ -520,5 +520,12 @@
     "noProjects": "プロジェクトが見つかりません。",
     "noBlueprints": "このプロジェクトに関連するブループリントはありません。",
     "commonBlueprints": "Macro共通"
+  },
+  "graphInteraction": {
+    "from": "入力元",
+    "to": "次の処理",
+    "expand": "グループを展開",
+    "openTask": "タスクを開く",
+    "canvasMenu": "グラフの操作"
   }
 }

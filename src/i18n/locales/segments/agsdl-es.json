@@ -520,5 +520,12 @@
     "noProjects": "No se encontraron proyectos.",
     "noBlueprints": "No hay blueprints vinculados a este proyecto.",
     "commonBlueprints": "Compartidos en Macro"
+  },
+  "graphInteraction": {
+    "from": "Desde",
+    "to": "Siguiente",
+    "expand": "Expandir el grupo",
+    "openTask": "Abrir tarea",
+    "canvasMenu": "Acciones del grafo"
   }
 }

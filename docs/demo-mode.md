@@ -240,3 +240,13 @@ Les conversations utilisent aussi les questionnaires structurés du chat réel.
 Le backend de démo conserve leur contexte caché et les références de contexte lors
 de l’enregistrement des messages. Les captures déjà présentes restent des
 situations à examiner ; les nouveaux lancements suivent les parcours simulés.
+
+## Interactions des graphes
+
+Le survol d’un bloc affiche un aperçu bref de ses instructions, de son état et
+des blocs voisins. Le même aperçu est accessible au focus clavier. Le clic droit
+propose les détails du bloc et, dans Architect, son ajout au chat. Dans le graphe
+d’exécution, il propose l’ouverture de la tâche liée. Les détails d’une exécution
+consultent la source capturée et ne modifient pas le blueprint. Le clic droit sur
+le fond permet de recentrer le graphe. Échap ferme d’abord l’aperçu ou le menu,
+puis le modal du graphe.

@@ -1,7 +1,7 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Background, BaseEdge, getSmoothStepPath, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange, type Edge, type EdgeProps } from "@xyflow/react";
-import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, LocateFixed, Minus, Plus, Plug, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
+import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Plug, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, routeViewerEdge, outsideViewerEdgePath, type ViewerEdgeRoute, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
@@ -9,6 +9,8 @@ import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
+import { WorkflowBlockOverlay } from "./WorkflowBlockOverlay";
+import { WorkflowGraphPopup } from "./WorkflowGraphPopup";
 import { WorkflowStatusBadge } from "./WorkflowStatusBadge";
 import { groupTaskState, type TrackedTask } from "../../services/agsdl/taskTracking";
 
@@ -27,6 +29,11 @@ type GraphNode = Node<{
   pending: boolean;
   task?: TrackedTask;
   native?: NativeCardActivation;
+  incoming: string[];
+  outgoing: string[];
+  attach?: () => void;
+  openTask?: () => void;
+  dismissSignal: number;
 }, "workflow">;
 
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
@@ -38,7 +45,14 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
+      <WorkflowBlockOverlay card={card} title={data.title} kindLabel={data.kindLabel} task={data.task} native={data.native}
+        incoming={data.incoming} outgoing={data.outgoing} dismissSignal={data.dismissSignal} actions={[
+          { label: data.members ? t("agsdl.graphInteraction.expand") : t("agsdl.viewer.componentDetails"), icon: data.members ? <Layers size={14} /> : <Info size={14} />, run: () => data.expand ? data.expand() : data.inspect(card.path) },
+          ...(data.attach ? [{ label: t("agsdl.attachToChat"), icon: <MessageSquarePlus size={14} />, run: data.attach }] : []),
+          ...(data.openTask ? [{ label: t("agsdl.graphInteraction.openTask"), icon: <MessageSquare size={14} />, run: data.openTask }] : []),
+        ]}>
       <button
+        type="button"
         className={`agsdl-graph-node nodrag nopan${data.active ? " is-selected" : ""}${card.kind === "approval" ? " is-interaction" : ""}`}
         onClick={event => {
           event.stopPropagation();
@@ -50,7 +64,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         onFocus={() => data.focus(card.path)} onBlur={() => data.focus("")}
         aria-pressed={data.members ? undefined : data.active}
         aria-expanded={data.members ? false : undefined}
-        title={data.members ? `${data.title} · ${data.members.join(", ")}` : label}
+        aria-label={data.task || data.native ? undefined : label}
       >
         {data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} />
           : <span className="agsdl-node-icon"><Icon size={15} aria-hidden="true" /></span>}
@@ -70,6 +84,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         {data.pending && <span className="agsdl-graph-pending" title={t("agsdl.designGraph.instructionsMissing", { defaultValue: "Instructions to complete" })}><CircleHelp size={12} aria-hidden="true" /></span>}
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
       </button>
+      </WorkflowBlockOverlay>
       <Handle type="source" position={Position.Bottom} id="out" />
     </>
   );
@@ -86,7 +101,7 @@ function WorkflowEdge(props: EdgeProps<GraphEdge>) {
 const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect" }: {
+function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect", onAttach, onOpenTask, onInspect }: {
   cards: ViewerCard[];
   edges: ViewerEdge[];
   selected: string;
@@ -97,11 +112,17 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   trackedTasks?: Record<string, TrackedTask>;
   nativeActivations?: Record<string, NativeCardActivation>;
   selectionMode?: "inspect" | "select";
+  onAttach?: (path: string) => void;
+  onOpenTask?: (path: string) => void;
+  onInspect?: (path: string) => void;
 }) {
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const flow = useReactFlow<GraphNode>();
   const backgroundId = useId();
+  const [canvasAnchor, setCanvasAnchor] = useState<HTMLDivElement | null>(null);
+  const [paneMenu, setPaneMenu] = useState<{ left: number; top: number }>();
+  const [dismissSignal, setDismissSignal] = useState(0);
   const [highlighted, setHighlighted] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [hovered, setHovered] = useState("");
@@ -138,7 +159,12 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       style: { width: 210, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.65 : 1, transition: "opacity 140ms" },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && card.details.delivery === "steering" ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
-        select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); select(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
+        select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
+        incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
+        outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
+        attach: !group && onAttach ? () => onAttach(card.path) : undefined,
+        openTask: !group && trackedTasks[card.path] && onOpenTask ? () => onOpenTask(card.path) : undefined,
+        dismissSignal,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),
         pending: card.details.contract !== "agsdl-0.2.0" && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
@@ -190,6 +216,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };
   return (
     <div ref={ref} className="agsdl-canvas" onKeyDown={event => { if (event.key === "Escape") clearSelection(); }}>
+      <div ref={setCanvasAnchor} className="agsdl-canvas-content">
       <ReactFlow<GraphNode, GraphEdge>
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={measureNodes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false}
@@ -197,7 +224,9 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         deleteKeyCode={null} selectionKeyCode={null} multiSelectionKeyCode={null}
         onEdgeClick={(_, edge) => activateEdge(edge.id)}
         onEdgeMouseEnter={(_, edge) => setHovered(edge.id)} onEdgeMouseLeave={() => setHovered("")}
-        onPaneClick={clearSelection} fitView fitViewOptions={fitOptions}
+        onPaneContextMenu={event => { event.preventDefault(); setDismissSignal(value => value + 1); setPaneMenu({ left: event.clientX, top: event.clientY }); }}
+        onMoveStart={() => { setDismissSignal(value => value + 1); setPaneMenu(undefined); }}
+        onPaneClick={() => { setPaneMenu(undefined); clearSelection(); }} fitView fitViewOptions={fitOptions}
         minZoom={0.3} maxZoom={1.8} zoomOnDoubleClick={false}
       >
         <Panel position="top-left" className="agsdl-reading-tools">
@@ -216,6 +245,11 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
           <button onClick={() => void flow.fitView(fitOptions)} aria-label={t("agsdl.viewer.fit")} title={t("agsdl.viewer.fit")}><LocateFixed size={14} /></button>
         </Panel>
       </ReactFlow>
+      </div>
+      {paneMenu && canvasAnchor && <WorkflowGraphPopup anchor={canvasAnchor} position={paneMenu}
+        label={t("agsdl.graphInteraction.canvasMenu")} onClose={() => setPaneMenu(undefined)} actions={[
+          { label: t("agsdl.viewer.fit"), icon: <LocateFixed size={14} />, run: () => { void flow.fitView(fitOptions); } },
+        ]} />}
     </div>
   );
 }

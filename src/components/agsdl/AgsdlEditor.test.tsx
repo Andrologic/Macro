@@ -55,6 +55,21 @@ describe("AgSDL viewer", () => {
     expect(useAgsdlStore.getState().sessions[key].source).toBe(source);
   });
 
+  it("opens details and attaches the exact block from its context menu", async () => {
+    await mount(createExample("feature"));
+    const first = container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!;
+    await act(async () => first.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === "Component details")!.click());
+    expect(document.querySelector(".agsdl-agent-details")).not.toBeNull();
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click());
+    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockResolvedValueOnce(undefined);
+    await act(async () => first.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === "Attach to chat")!.click());
+    expect(attach).toHaveBeenCalledWith(target, expect.objectContaining({ path: "/flow/steps/specify" }));
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+
   it("keeps Architect on the authored document even when an execution capture is selected", async () => {
     const authoredSource = createExample("feature");
     const currentDocument = JSON.parse(authoredSource);

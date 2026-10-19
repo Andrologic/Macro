@@ -12,6 +12,8 @@ import { resolveTaskMergeWorkflowPresentationState } from '../../services/taskMe
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useAppStore } from '../../stores/useAppStore';
+import { AgentDetails } from '../agsdl/AgentDetails';
+import { WorkflowBlockSummary } from '../agsdl/WorkflowBlockOverlay';
 import { WorkflowGraph } from '../agsdl/WorkflowGraph';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
@@ -31,6 +33,7 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [selected, setSelected] = useState('');
+  const [inspected, setInspected] = useState('');
   const [graphIndex, setGraphIndex] = useState<number | null>(null);
   useEffect(() => {
     let active = true;
@@ -70,6 +73,13 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
     return [[path, { taskId: task.id, title: task.title, state: resolveTaskStatusIndicatorState(task.status, running.has(task.id), task.task_source, resolveTaskMergeWorkflowPresentationState(mergeRuntime[task.id], task.merge_workflow_summary, task.status), task.is_blocked, Boolean(supervision.attentionByTaskId.get(task.id) && supervision.attentionByTaskId.get(task.id)?.kind !== 'review'), supervision.resolvedWaitTaskIds.has(task.id)) } satisfies TrackedTask]];
   })), [view, tasks, running, mergeRuntime, supervision]);
   const native = useMemo(() => view?.projection ? nativeCardActivations(system.cards, view.projection, view.approvals ?? []) : view?.activity ?? {}, [system, view]);
+  const openTask = (path: string) => {
+    if (!tracked[path]) return;
+    void useTaskStore.getState().activateTask(tracked[path].taskId).then(() => {
+      useAppStore.getState().setMode('Implement'); onClose();
+    }).catch(() => setError(true));
+  };
+  const inspectedCard = system.cards.find(card => card.path === inspected);
   const title = t('implement.executionGraph', 'Workflow execution');
   return <Dialog title={title} onClose={onClose} closeOnBackdropClick panelClassName="flex h-[min(85vh,900px)] w-[min(94vw,1200px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -81,8 +91,19 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
       {error || (view && !document) ? <div role="alert" className="m-auto flex items-center gap-2 text-sm text-muted-foreground"><Icon name="alert-circle" size={16} />{t('implement.executionGraphError', 'The workflow could not be loaded.')}<button className="text-primary" onClick={() => setAttempt(value => value + 1)}>{t('common.retry', 'Retry')}</button></div>
         : view === undefined ? <div role="status" className="m-auto"><SpinnerIcon size={20} /></div>
         : !view ? <p className="m-auto px-6 text-center text-sm text-muted-foreground">{t('implement.executionGraphEmpty', 'No AgSDL execution is linked to this task.')}</p>
-        : <WorkflowGraph selectionMode="select" cards={system.cards} edges={system.edges} selected={selected} select={setSelected} title={card => tracked[card.path]?.title || card.title} trackedTasks={tracked} nativeActivations={native} />}
-      {selected && tracked[selected] && <button type="button" className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-primary shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" onClick={() => { void useTaskStore.getState().activateTask(tracked[selected].taskId).then(() => { useAppStore.getState().setMode('Implement'); onClose(); }).catch(() => setError(true)); }}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button>}
+        : <WorkflowGraph onInspect={setInspected} onOpenTask={openTask} selectionMode="select" cards={system.cards} edges={system.edges} selected={selected} select={setSelected} title={card => tracked[card.path]?.title || card.title} trackedTasks={tracked} nativeActivations={native} />}
+      {selected && tracked[selected] && <button type="button" className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-primary shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" onClick={() => openTask(selected)}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button>}
     </div>
+    {inspectedCard && <Dialog title={tracked[inspected]?.title || inspectedCard.title} onClose={() => setInspected('')} closeOnBackdropClick panelClassName="agsdl-detail-modal">
+      <header><strong>{tracked[inspected]?.title || inspectedCard.title}</strong><button type="button" className="agsdl-icon-button" aria-label={t('common.close', 'Close')} onClick={() => setInspected('')}><Icon name="x" size={16} /></button></header>
+      <section className="agsdl-inspector-body agsdl-execution-block-details">
+        {['agent', 'Agent', 'invoke'].includes(inspectedCard.kind) && view
+          ? <AgentDetails card={inspectedCard} cards={system.cards} source={view.source} captured onSelect={setInspected} />
+          : <WorkflowBlockSummary card={inspectedCard}
+            incoming={system.edges.filter(edge => edge.target === inspected).map(edge => system.cards.find(card => card.path === edge.source)?.title || '')}
+            outgoing={system.edges.filter(edge => edge.source === inspected).map(edge => system.cards.find(card => card.path === edge.target)?.title || '')} />}
+      </section>
+      {tracked[inspected] && <footer><button className="agsdl-action-button" onClick={() => openTask(inspected)}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button></footer>}
+    </Dialog>}
   </Dialog>;
 }

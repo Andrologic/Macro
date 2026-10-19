@@ -520,5 +520,12 @@
     "noProjects": "프로젝트가 없습니다.",
     "noBlueprints": "이 프로젝트에 연결된 블루프린트가 없습니다.",
     "commonBlueprints": "Macro 공통"
+  },
+  "graphInteraction": {
+    "from": "이전 단계",
+    "to": "다음 단계",
+    "expand": "그룹 펼치기",
+    "openTask": "작업 열기",
+    "canvasMenu": "그래프 작업"
   }
 }

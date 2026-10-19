@@ -322,6 +322,14 @@ export const AgsdlEditor: React.FC<{
             key={`${key}:${graph?.path ?? "declarations"}`}
             cards={cards} edges={system.edges} selected={selected}
             select={select} title={nodeTitle} source={source}
+            onAttach={!attaching ? path => {
+              const card = cards.find(item => item.path === path);
+              if (!card) return;
+              setAttaching(true);
+              void attachContext({ path, title: nodeTitle(card) }).catch((error: unknown) => {
+                select(path); setDiagnosticError(agsdlErrorText(error, t));
+              }).finally(() => setAttaching(false));
+            } : undefined}
             changedPaths={showChanges ? review?.changes.flatMap(change => change.path ? [change.path] : []) : []}
           /> : <div className="agsdl-start"><h3>{document.title}</h3><p>{t("agsdl.design.emptySystem")}</p></div>}
           {(document.migrated || !graph) && <div className="agsdl-graph-caption">

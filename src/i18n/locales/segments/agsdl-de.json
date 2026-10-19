@@ -520,5 +520,12 @@
     "noProjects": "Keine Projekte gefunden.",
     "noBlueprints": "Diesem Projekt sind keine Blueprints zugeordnet.",
     "commonBlueprints": "In Macro geteilt"
+  },
+  "graphInteraction": {
+    "from": "Von",
+    "to": "Weiter",
+    "expand": "Gruppe aufklappen",
+    "openTask": "Aufgabe öffnen",
+    "canvasMenu": "Graphaktionen"
   }
 }
