@@ -2916,10 +2916,11 @@ describe('TaskQueue', () => {
     expect(`${icon.dataIcon} ${icon.className}`).toContain('sparkles');
   });
 
-  it('renders the standalone badge without a plan badge for independent tasks', async () => {
+  it.each(['direct', 'feature', 'bugfix', 'hotfix', null])('omits the inherited task classification %s from cards', async (taskKind) => {
     seedTasks([
       makeTask('standalone-1', 'Pending', {
         title: 'Standalone task',
+        task_kind: taskKind,
       }),
     ]);
 
@@ -2931,7 +2932,6 @@ describe('TaskQueue', () => {
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Project One' },
-      { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
   });
@@ -2951,9 +2951,7 @@ describe('TaskQueue', () => {
     });
 
     expect(document.body.querySelector('[data-task-context-badge="project"]')).toBeNull();
-    expect(getTaskContextBadges()).toEqual([
-      { key: 'standalone', text: 'Standalone' },
-    ]);
+    expect(getTaskContextBadges()).toEqual([]);
   });
 
   it('shows only the primary project badge for a multi-project task', async () => {
@@ -2997,7 +2995,6 @@ describe('TaskQueue', () => {
 
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Primary Project' },
-      { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.textContent).not.toContain('Secondary Project');
   });
@@ -3161,7 +3158,6 @@ describe('TaskQueue', () => {
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
       { key: 'project', text: 'Project One' },
-      { key: 'standalone', text: 'Agent classification' },
       { key: 'draft', text: 'Draft' },
     ]);
   });

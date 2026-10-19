@@ -340,8 +340,6 @@
   "clearStatusFilter": "Alle Status anzeigen",
   "allStatuses": "Alle Status",
   "planFilterStandalone": "Kein Plan / Standalone",
-  "standaloneBadge": "Eigenständig",
-  "taskKindPending": "Agentenklassifizierung",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "Direkte Bearbeitung",
   "taskKindDirectEditHelp": "Bearbeitet den Quellordner ohne Git-Branches, Worktrees oder Commits. Es kann jeweils nur eine Aufgabe ausgeführt werden.",

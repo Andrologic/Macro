@@ -329,26 +329,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
       icon: 'git-merge',
     });
   }
-  if (task.task_source === 'standalone') {
-    const taskKindLabel = task.task_kind === 'bugfix'
-      ? t('implement.taskKindBugfix', 'Bugfix')
-      : task.task_kind === 'hotfix'
-        ? t('implement.taskKindHotfix', 'Hotfix')
-        : task.task_kind === 'feature'
-          ? t('implement.taskKindFeature', 'Feature')
-          : task.task_kind === 'direct'
-            ? t('implement.taskKindDirect', 'Direct')
-          : task.draft
-            ? t('implement.taskKindPending', 'Agent classification')
-            : t('implement.standaloneBadge', 'Standalone');
-    contextBadges.push({
-      key: 'standalone',
-      label: taskKindLabel,
-      icon: task.task_kind === 'direct'
-        ? 'git-commit'
-        : task.task_kind ? getPlanKindIconName(task.task_kind) : 'sparkles',
-    });
-  }
   if (task.archived_at) {
     contextBadges.push({ key: 'archived', label: t('implement.archives', 'Archives'), icon: 'archive' });
   }

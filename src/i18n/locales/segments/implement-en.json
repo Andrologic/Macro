@@ -340,8 +340,6 @@
   "clearStatusFilter": "Show all statuses",
   "allStatuses": "All statuses",
   "planFilterStandalone": "No plan / standalone",
-  "standaloneBadge": "Standalone",
-  "taskKindPending": "Agent classification",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "Direct edit",
   "taskKindDirectEditHelp": "Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.",

@@ -102,8 +102,10 @@ conservées dans les métadonnées du blueprint.
 
 Dans cette démo, `Implement` porte le nom **Operate**. Il conserve l’interface
 existante : liste des tâches à gauche, espace de travail au centre et modifications
-de fichiers à droite. Les écrans expérimentaux de préparation et de simulation
-qui avaient remplacé ces panneaux ont été retirés. La préparation d’un workflow
+de fichiers à droite. Les cartes ne présentent plus la classification historique
+Direct, Feature, Bugfix ou Hotfix. Les tâches des scénarios et des nouveaux
+workflows ne reçoivent plus ces types de tâche Git. Les écrans expérimentaux de
+préparation et de simulation qui avaient remplacé ces panneaux ont été retirés. La préparation d’un workflow
 se fait depuis le bouton d’ajout d’Operate, sans quitter cette disposition.
 
 

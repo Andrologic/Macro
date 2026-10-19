@@ -340,8 +340,6 @@
   "clearStatusFilter": "すべての状態を表示",
   "allStatuses": "すべての状態",
   "planFilterStandalone": "プランなし / スタンドアロン",
-  "standaloneBadge": "独立",
-  "taskKindPending": "エージェントが分類中",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "ダイレクト編集",
   "taskKindDirectEditHelp": "Git ブランチ、worktree、コミットを使わずにソースフォルダーを編集します。同時に実行できるタスクは 1 つだけです。",

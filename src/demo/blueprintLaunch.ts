@@ -57,7 +57,7 @@ export function blueprintAgentTasks(use: DemoBlueprintUse): Task[] {
       title: step.title, description: use.objective && use.objective !== use.blueprint.title ? `${use.blueprint.title} · ${use.objective}` : use.blueprint.title,
       status: dependencies.length ? 'Blocked' : step.interaction ? 'AwaitingResponse' : 'InProgress',
       dependencies, blocked_by_task_ids: dependencies, is_blocked: dependencies.length > 0, is_ready: false, estimated_changes: [],
-      task_source: 'standalone', task_kind: 'direct', standalone_kind: 'manual_feature',
+      task_source: 'standalone',
       conversation_id: `${use.id}-chat-${index}`, sequence_index: index,
     };
   });

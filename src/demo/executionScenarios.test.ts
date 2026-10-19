@@ -25,6 +25,13 @@ describe('authored demo execution scenes', () => {
     expect(Object.values(current.taskPaths).some(id => Object.values(archived.taskPaths).includes(id))).toBe(false);
   });
 
+  test('does not classify workflow tasks as inherited Git task kinds', () => {
+    for (const task of demoTasks) {
+      expect(task.task_kind).toBeUndefined();
+      expect(task.standalone_kind).toBeUndefined();
+    }
+  });
+
   test('declares writes as external effects with distinct approval and documentation bindings', () => {
     for (const [id, step, approval] of [['demo-quality', 'deliver', 'approval'], ['demo-refund', 'refund', 'approval'], ['demo-delivery', 'publish', 'approval'], ['demo-approvals', 'publish', 'legal'], ['demo-crisis', 'deploy', 'securityApproval']]) {
       const source = JSON.parse(demoPlans.find(plan => plan.id === id)!.agsdl.source);
@@ -78,6 +85,10 @@ describe('scripted demo progression', () => {
     for (const blueprint of catalog.filter(item => item.id !== 'demo-release')) {
       const use = await runtime.invoke('demo_blueprint_prepare', { blueprintId: blueprint.id, projectId: blueprint.projectIds[0] ?? 'demo-atlas' }) as DemoBlueprintUse;
       expect((await runtime.invoke('demo_blueprint_start', { id: use.id }) as DemoBlueprintUse).taskIds).toHaveLength(blueprint.steps!.length);
+      for (const task of runtime.tasks.filter(task => task.plan_id === blueprint.id)) {
+        expect(task.task_kind).toBeUndefined();
+        expect(task.standalone_kind).toBeUndefined();
+      }
     }
     const draft = await runtime.invoke('demo_blueprint_prepare', { blueprintId: 'demo-quality', projectId: 'demo-atlas' }) as DemoBlueprintUse;
     const before = draft.blueprint.document!.source;

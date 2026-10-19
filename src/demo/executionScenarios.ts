@@ -204,8 +204,8 @@ export function buildDemoExecutions(plans: Plan[], date: string) {
       taskPaths[entry.path] = entry.id;
       tasks.push({ id: entry.id, plan_id: plan.id, project_id: scene.projectId ?? plan.projectId, title: card.title, description: entry.description,
         status: entry.status, dependencies: entry.after, blocked_by_task_ids: entry.status === 'Blocked' ? entry.after.filter(id => scene.tasks.find(task => task.id === id)?.status !== 'Completed') : [],
-        is_blocked: entry.status === 'Blocked', is_ready: entry.status === 'Pending', estimated_changes: [], task_kind: 'direct', standalone_kind: 'manual_feature', task_source: 'standalone',
-        ...(entry.id === 'demo-audio' ? { branch_name: 'feature/audio-playback', assigned_branch: 'feature/audio-playback', task_kind: 'feature' as const } : {}),
+        is_blocked: entry.status === 'Blocked', is_ready: entry.status === 'Pending', estimated_changes: [], task_source: 'standalone',
+        ...(entry.id === 'demo-audio' ? { branch_name: 'feature/audio-playback', assigned_branch: 'feature/audio-playback' } : {}),
         conversation_id: entry.id === 'demo-audio' ? 'demo-task-chat' : `${entry.id}-chat`, sequence_index: index, archived_at: scene.archived ? date : null,
       });
       replies.set(entry.id, entry.reply);

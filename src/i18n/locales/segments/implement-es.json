@@ -340,8 +340,6 @@
   "clearStatusFilter": "Mostrar todos los estados",
   "allStatuses": "Todos los estados",
   "planFilterStandalone": "Sin plan / independiente",
-  "standaloneBadge": "Independiente",
-  "taskKindPending": "Clasificación del agente",
   "taskKindFeature": "Feature",
   "taskKindDirectEdit": "Edición directa",
   "taskKindDirectEditHelp": "Edita la carpeta de origen sin ramas, worktrees ni commits de Git. Solo puede ejecutarse una tarea a la vez.",
