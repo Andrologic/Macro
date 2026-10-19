@@ -99,7 +99,7 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
             </div>}
           </div>
         </div>
-        {expanded && <div id={id} className="ml-3 space-y-0.5 border-l border-border/50 pl-1">
+        {expanded && <div id={id} className="ml-3 space-y-0.5 pl-1">
           {childFolders.map(renderFolder)}
           {plans.map(row)}
           {plans.length === 0 && childFolders.length === 0 && <p className="px-2 py-2 text-[10px] text-muted-foreground/65">{t('architect.projectNavigator.emptyFolder', 'Drop a blueprint here')}</p>}
