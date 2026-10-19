@@ -18,11 +18,13 @@ interface Props {
   onUpdate: (next: BlueprintFolderOrganization) => Promise<boolean>;
   onRename: (folder: BlueprintFolder) => void;
   onCreate: (parent: BlueprintFolder) => void;
+  canCreateBlueprint: boolean;
+  onCreateBlueprint: (folder: BlueprintFolder) => void;
   onMove: (folder: BlueprintFolder) => void;
   renderPlan: (entry: ArchitectNavigatorPlanEntry) => React.ReactNode;
   children?: React.ReactNode;
 }
-export function BlueprintFolderTree({ scopeId, entries, organization, disabled, searching, draggedItem, onDragChange, onDropPlan, onUpdate, onRename, onCreate, onMove, renderPlan, children }: Props) {
+export function BlueprintFolderTree({ scopeId, entries, organization, disabled, searching, draggedItem, onDragChange, onDropPlan, onUpdate, onRename, onCreate, canCreateBlueprint, onCreateBlueprint, onMove, renderPlan, children }: Props) {
   const { t } = useTranslation();
   const contentId = useId();
   const [menuId, setMenuId] = useState<string | null>(null);
@@ -97,6 +99,7 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
               <Icon name="more-horizontal" size={12} />
             </button>
             {menuId === folder.id && <div role="menu" className="absolute right-0 top-7 z-30 w-44 rounded-lg border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl">
+              <button type="button" role="menuitem" disabled={disabled || !canCreateBlueprint} onClick={() => { setMenuId(null); onCreateBlueprint(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"><Icon name="workflow" size={11} />{t('architect.projectNavigator.newBlueprint', 'New blueprint')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onCreate(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="folder" size={11} />{t('architect.projectNavigator.newSubfolder', 'New subfolder')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onMove(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="layers" size={11} />{t('architect.projectNavigator.moveToFolder', 'Move to…')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onRename(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="edit" size={11} />{t('common.rename')}</button>

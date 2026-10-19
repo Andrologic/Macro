@@ -19,7 +19,7 @@ export function useBlueprintFolders(onError: () => void) {
     }).catch(() => { if (active) errorHandler.current(); });
     return () => { active = false; };
   }, []);
-  const update = useCallback(async (next: BlueprintFolderOrganization): Promise<boolean> => {
+  const update = useCallback(async (next: BlueprintFolderOrganization, onSaveError?: () => void): Promise<boolean> => {
     if (!ready || writing.current) return false;
     writing.current = true;
     setBusy(true);
@@ -28,7 +28,8 @@ export function useBlueprintFolders(onError: () => void) {
       setOrganization(next);
       return true;
     } catch {
-      errorHandler.current();
+      if (onSaveError) onSaveError();
+      else errorHandler.current();
       return false;
     } finally {
       writing.current = false;

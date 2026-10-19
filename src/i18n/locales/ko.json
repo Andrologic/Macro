@@ -1780,6 +1780,8 @@
       }
     },
     "projectNavigator": {
+      "newBlueprint": "새 블루프린트",
+      "blueprintCreatedAtRoot": "프로젝트 최상위에 블루프린트를 생성했습니다. 폴더 배치를 저장하지 못했습니다.",
       "newSubfolder": "새 하위 폴더",
       "newFolder": "새 폴더",
       "renameFolder": "폴더 이름 변경",

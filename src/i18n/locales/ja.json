@@ -1780,6 +1780,8 @@
       }
     },
     "projectNavigator": {
+      "newBlueprint": "新しいブループリント",
+      "blueprintCreatedAtRoot": "ブループリントをプロジェクト直下に作成しました。フォルダーへの配置は保存できませんでした。",
       "newSubfolder": "新しいサブフォルダー",
       "newFolder": "新しいフォルダー",
       "renameFolder": "フォルダー名を変更",

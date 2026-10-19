@@ -1780,6 +1780,8 @@
       }
     },
     "projectNavigator": {
+      "newBlueprint": "New blueprint",
+      "blueprintCreatedAtRoot": "Blueprint created at the project root. Its folder placement could not be saved.",
       "newSubfolder": "New subfolder",
       "newFolder": "New folder",
       "renameFolder": "Rename folder",

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useAppStore } from '../../stores/useAppStore';
-import type { ArchitectPlanSummary } from '../../services/architectPlanService';
+import { toPlanLocatorKey } from '../../services/durableIdentity';
+import type { ArchitectPlanRecord, ArchitectPlanSummary } from '../../services/architectPlanService';
 import type { MacroProjectMetadataLoadResult } from '../../services/macroProjectMetadataLoader';
 import { ArchitectProjectNavigator } from './ArchitectProjectNavigator';
 import {
@@ -239,6 +240,52 @@ describe('ArchitectProjectNavigator search', () => {
     await act(async () => { drag(projectHeader, 'drop'); await flushRender(); });
     expect(folder('product').querySelector('[data-blueprint-folder="mobile"]')).toBeNull();
     expect(folder('mobile').querySelector('[data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
+  });
+
+  it('creates independent blueprints directly inside the folder selected by right click', async () => {
+    const existing = plan('existing', 'Existing empty plan');
+    let organization = nameBlueprintFolder(emptyBlueprintFolders(), 'project:project-1', 'delivery', 'Delivery');
+    organization = nameBlueprintFolder(organization, 'project:project-1', 'mobile', 'Mobile', 'delivery');
+    organization = moveBlueprintToFolder(organization, 'project:project-1', toPlanLocatorKey({ branchName: 'develop', planId: existing.id }), 'delivery');
+    await savePreference(PREF_KEYS.ARCHITECT_BLUEPRINT_FOLDERS, organization);
+    const activate = mock(async () => true);
+    useAppStore.setState({ standaloneProjects: [{ id: 'project-1', name: 'Sample project', path: '/demo/project', gitSetupState: 'ready' }] as never, projectGroups: [], selectedProjectId: 'project-1', selectedGroupId: null, activeArchitectPlanId: null, activePlanContext: null, activateArchitectPlan: activate as never });
+    const catalog = [existing];
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: { branchCatalogByBranch: {}, branches: [{ branchName: 'develop', activePlanId: null, plans: catalog, error: null }], scannedBranchNames: ['develop'], scopedProjectIds: ['project-1'], visiblePlans: catalog, modernPlanCount: catalog.length, selectedPlan: null, selectedBranchName: null, selectionReason: 'none', errors: [] },
+      selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
+    }));
+    let nextId = 0;
+    const planCreator = mock(async (input: Parameters<NonNullable<Parameters<typeof ArchitectProjectNavigator>[0]['planCreator']>>[0]) => {
+      const id = `fresh-${++nextId}`;
+      const record: ArchitectPlanRecord = { ...plan(id, id), label: input.label, nodes: [], predictedBranches: [], agsdl: { ...input.agsdl!, revision: 1 } };
+      catalog.push({ ...record, nodeCount: 0, hasAgsdl: true });
+      return record;
+    });
+    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} planCreator={planCreator} />); await flushRender(); });
+    for (let count = 1; count <= 2; count++) {
+      await act(async () => {
+        container!.querySelector<HTMLElement>('[data-blueprint-folder="mobile"] [data-blueprint-folder-header]')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender();
+      });
+      const create = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.includes('New blueprint'))!;
+      expect(create.disabled).toBe(false);
+      await act(async () => { create.click(); await flushRender(); });
+      expect(planCreator).toHaveBeenCalledTimes(count);
+      expect(container!.querySelectorAll('[data-blueprint-folder="mobile"] [data-blueprint-locator]')).toHaveLength(count);
+      expect(activate).toHaveBeenLastCalledWith(`fresh-${count}`, expect.objectContaining({ targetBranch: 'develop', scopedProjectIdsHint: ['project-1'] }));
+    }
+    expect(planCreator).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', projectIds: ['project-1'], planKind: 'feature', agsdl: expect.objectContaining({ source: expect.any(String) }) }));
+    const saved = await loadPreference<typeof organization>(PREF_KEYS.ARCHITECT_BLUEPRINT_FOLDERS);
+    expect(saved.placements[JSON.stringify(['project:project-1', toPlanLocatorKey({ branchName: 'develop', planId: existing.id })])]).toBe('delivery');
+    expect(container!.querySelectorAll('[data-blueprint-locator]')).toHaveLength(3);
+    await act(async () => {
+      useAppStore.setState({ standaloneProjects: [{ id: 'project-1', name: 'Sample project', path: '/demo/project', gitSetupState: 'ready', isReadOnly: true }] as never }); await flushRender();
+      container!.querySelector<HTMLElement>('[data-blueprint-folder="mobile"] [data-blueprint-folder-header]')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender();
+    });
+    const readOnlyCreate = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.includes('New blueprint'))!;
+    expect(readOnlyCreate.disabled).toBe(true);
+    await act(async () => { readOnlyCreate.click(); await flushRender(); });
+    expect(planCreator).toHaveBeenCalledTimes(2);
   });
 
   it('searches only plans and activates the selected result', async () => {

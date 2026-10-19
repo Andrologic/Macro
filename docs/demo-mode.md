@@ -176,7 +176,9 @@ remplacé.
 Les projets du navigateur Architect utilisent une icône de couches par défaut.
 Leur bouton + et leur menu contextuel proposent « Nouveau dossier ». Les dossiers
 visuels peuvent contenir des sous-dossiers, être renommés, repliés ou déplacés.
-Le menu d’un dossier propose « Nouveau sous-dossier ». Retirer un dossier
+Le clic droit sur un dossier propose « Nouveau blueprint » et « Nouveau sous-dossier ».
+Un nouveau blueprint ouvre un brouillon AgSDL distinct dans ce dossier, sans
+réutiliser ni déplacer un brouillon vide déjà présent ailleurs. Retirer un dossier
 remonte ses blueprints et ses sous-dossiers dans son parent, sans les supprimer.
 
 Un blueprint ou un dossier se déplace sur un autre dossier par glisser-déposer, et revient à la racine

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
 import {
+  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
   getGitFlowBaseBranch,
@@ -24,6 +25,7 @@ import {
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
+  getNextDefaultNewPlanLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { isProjectPlanActionable } from '../../services/globalProjects';
@@ -71,6 +73,8 @@ import {
   type ArchitectMenuPosition,
 } from './architectProjectNavigatorMenu';
 
+import { createEmptySystemDocument } from '../../services/agsdl/design';
+import { toPlanLocatorKey } from '../../services/durableIdentity';
 import { useBlueprintFolders } from '../../hooks/useBlueprintFolders';
 import { blueprintFolderId, blueprintFolderAncestors, blueprintFolderTree, canMoveBlueprintFolder, moveBlueprintFolder, moveBlueprintToFolder, nameBlueprintFolder, type BlueprintFolder, type BlueprintNavigatorDrag } from '../../services/blueprintFolders';
 import { BlueprintFolderTree, BLUEPRINT_DRAG_TYPE } from './BlueprintFolderTree';
@@ -110,6 +114,7 @@ const scopeIsSelected = (
 interface ArchitectProjectNavigatorProps {
   macroBlueprintProjectId?: string;
   catalogLoader?: typeof loadMacroProjectMetadataForSelection;
+  planCreator?: typeof createArchitectPlan;
   preferenceLoader?: {
     loadPinnedPlanIds: () => Promise<unknown>;
     loadExpandedScopeIds: () => Promise<unknown>;
@@ -126,6 +131,7 @@ const defaultPreferenceLoader: NonNullable<ArchitectProjectNavigatorProps['prefe
 export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps> = ({
   macroBlueprintProjectId,
   catalogLoader = loadMacroProjectMetadataForSelection,
+  planCreator = createArchitectPlan,
   preferenceLoader = defaultPreferenceLoader,
 }) => {
   const { t } = useTranslation();
@@ -634,8 +640,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const createPlan = useCallback(async (
     scope: ArchitectNavigatorScope,
     planKind: ArchitectPlanKind,
+    folderId?: string,
   ) => {
     if (creatingScopeId || isBusy || isLoading || error) return;
+    if (folderId && (!folders.ready || folders.busy || !folders.organization.folders.some(folder => folder.id === folderId && folder.scopeId === scope.id))) return;
     const editableProjectIds = scope.projects.filter(isProjectPlanActionable).map((project) => project.id);
     const contextProjectIds = scope.projectIds.filter((projectId) => !editableProjectIds.includes(projectId));
     if (editableProjectIds.length === 0) {
@@ -649,7 +657,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     try {
       setSectionExpanded(macroBlueprintProjectId && scope.projectId === macroBlueprintProjectId ? 'macro' : 'projects', true);
       selectScope(scope);
-      const result = await ensureScopedBlankPlan({
+      const label = getNextDefaultNewPlanLabel(entries.filter(entry => entry.scopeId === scope.id).map(entry => entry.plan));
+      // Explicit folder creation must not reuse or move another folder's empty draft.
+      const result = folderId ? { plan: await planCreator({
+        branchName: getGitFlowBaseBranch(), label, planKind,
+        projectId: editableProjectIds[0], projectIds: editableProjectIds, contextProjectIds,
+        agsdl: createEmptySystemDocument(t('architect.projectNavigator.newBlueprint', 'New blueprint')), status: 'draft', setActive: true,
+      }) } : await ensureScopedBlankPlan({
         branchName: getGitFlowBaseBranch(),
         scopedProjectIds: editableProjectIds,
         contextProjectIds,
@@ -657,6 +671,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         trigger: 'explicit_create',
       });
       if (!result) throw new Error(t('architect.projectNavigator.createError', 'Impossible de créer le plan.'));
+      const folderPlaced = !folderId || await folders.update(
+        moveBlueprintToFolder(folders.organization, scope.id, toPlanLocatorKey({ branchName: result.plan.targetBranch, planId: result.plan.id }), folderId),
+        () => notify.warning(t('architect.projectNavigator.blueprintCreatedAtRoot', 'Blueprint created at the project root. Its folder placement could not be saved.')),
+      );
       const activated = await activateArchitectPlan(result.plan.id, {
         targetBranch: result.plan.targetBranch,
         planSummaryHint: summarizePlanRecord(result.plan),
@@ -664,7 +682,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       });
       if (!activated) throw new Error(t('architect.projectNavigator.createError', 'Impossible de créer le plan.'));
       await refreshPlans();
-      notify.success(t('architect.projectNavigator.planReady', 'Nouveau plan prêt.'));
+      if (folderPlaced) notify.success(t('architect.projectNavigator.planReady', 'Nouveau plan prêt.'));
     } catch (creationError) {
       const message = creationError instanceof Error
         ? creationError.message
@@ -675,7 +693,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       setCreatingScopeId(null);
       setCreatingPlanKind(null);
     }
-  }, [activateArchitectPlan, creatingScopeId, error, isBusy, isLoading, macroBlueprintProjectId, refreshPlans, selectScope, setSectionExpanded, t]);
+  }, [activateArchitectPlan, creatingScopeId, entries, error, folders, isBusy, isLoading, macroBlueprintProjectId, planCreator, refreshPlans, selectScope, setSectionExpanded, t]);
 
   const confirmScopeRename = useCallback(async (value: string) => {
     if (!scopeToRename || isRenamingScope) return;
@@ -1365,8 +1383,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   {isExpanded && (
                     <div className="ml-7 space-y-0.5 pb-0.5 pt-0.5">
                       <BlueprintFolderTree scopeId={scope.id} entries={visibleEntries} organization={folders.organization}
-                        disabled={isBusy || !folders.ready || folders.busy} searching={hasSearchQuery}
+                        disabled={isBusy || !folders.ready || folders.busy || Boolean(creatingScopeId)} searching={hasSearchQuery}
                         draggedItem={draggedItem} onDragChange={item => { setDraggedItem(item); setRootDropScopeId(null); }}
+                        canCreateBlueprint={canCreatePlan && !creatingScopeId} onCreateBlueprint={folder => void createPlan(scope, 'feature', folder.id)}
                         onDropPlan={dropBlueprint} onUpdate={folders.update} onRename={folder => openFolderForm(scope.id, folder)} onCreate={folder => openFolderForm(scope.id, undefined, folder.id)} onMove={folder => setFolderToMove(folder)} renderPlan={renderPlanRow}>
 
                         <button

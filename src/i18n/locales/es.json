@@ -1780,6 +1780,8 @@
       }
     },
     "projectNavigator": {
+      "newBlueprint": "Nuevo blueprint",
+      "blueprintCreatedAtRoot": "Blueprint creado en la raíz del proyecto. No se pudo guardar su ubicación en la carpeta.",
       "newSubfolder": "Nueva subcarpeta",
       "newFolder": "Nueva carpeta",
       "renameFolder": "Renombrar carpeta",
