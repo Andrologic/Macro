@@ -136,12 +136,12 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-detail-modal > footer button[type="submit"]:not(:disabled):hover { background: rgb(var(--primary) / 0.9); }
 @media (prefers-reduced-motion: reduce) { .agsdl-disclosure-chevron { transition: none; } }
 
-.agsdl-node-task { display: grid; place-items: center; width: 25px; height: 25px; flex-shrink: 0; color: rgb(var(--muted-foreground)); }
-.agsdl-task-running, .agsdl-task-merging, .agsdl-task-awaiting_response { color: #f59e0b; }
-.agsdl-task-completed { color: #10b981; }
-.agsdl-task-in_review { color: #0ea5e9; }
-.agsdl-task-blocked, .agsdl-task-merge_blocked, .agsdl-task-merge_partial { color: #f97316; }
-.agsdl-task-failed, .agsdl-task-merge_failed { color: #ef4444; }
+.agsdl-node-task { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; color: rgb(var(--muted-foreground)); background: rgb(var(--muted)); }
+.agsdl-task-running, .agsdl-task-merging, .agsdl-task-plan_finalization, .agsdl-task-in_review { color: #38bdf8; background: #38bdf81a; }
+.agsdl-task-awaiting_response, .agsdl-native-status-uncertain, .agsdl-native-status-stopRequested, .agsdl-native-status-partial { color: #f59e0b; background: #f59e0b1a; }
+.agsdl-task-completed { color: #10b981; background: #10b9811a; }
+.agsdl-task-blocked, .agsdl-task-merge_blocked, .agsdl-task-merge_partial { color: #fb923c; background: #f973161a; }
+.agsdl-task-failed, .agsdl-task-merge_failed { color: #f87171; background: #ef44441a; }
 
 .agsdl-runtime-empty { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding: 8px 0; font-size: 12px; color: rgb(var(--muted-foreground)); }
 
@@ -160,11 +160,6 @@ details[open] > .agsdl-disclosure-summary > .agsdl-disclosure-chevron { transfor
 .agsdl-source-structured > summary { padding: 4px 0; font-size: 12px; }
 .agsdl-engine-reference { margin: 6px 0; }
 
-.agsdl-native-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; background: rgb(var(--muted-foreground)); }
-.agsdl-native-active { background: rgb(var(--primary)); }
-.agsdl-native-completed { background: #22c55e; }
-.agsdl-native-failed { background: #ef4444; }
-.agsdl-native-uncertain, .agsdl-native-approval, .agsdl-native-stopRequested { background: #f59e0b; }
 
 .agsdl-action-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 10px; border: 1px solid rgb(var(--border)); border-radius: 6px; font-size: 12px; color: rgb(var(--foreground)); background: rgb(var(--background)); }
 .agsdl-action-button:hover:not(:disabled) { background: rgb(var(--muted)); }

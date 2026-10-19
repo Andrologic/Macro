@@ -9,7 +9,7 @@ import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
-import { TaskStatusIndicator } from "../tasks/TaskStatusIndicator";
+import { WorkflowStatusBadge } from "./WorkflowStatusBadge";
 import { groupTaskState, type TrackedTask } from "../../services/agsdl/taskTracking";
 
 type GraphNode = Node<{
@@ -52,9 +52,8 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         aria-expanded={data.members ? false : undefined}
         title={data.members ? `${data.title} · ${data.members.join(", ")}` : label}
       >
-        {data.native ? <span className={`agsdl-native-dot agsdl-native-${data.native.partial ? "partial" : data.native.state}`} role="img" aria-label={t(data.native.partial ? "agsdl.execution.partial" : `agsdl.execution.state.${data.native.state}`)} title={t(data.native.partial ? "agsdl.execution.partial" : `agsdl.execution.state.${data.native.state}`)} /> : data.task ? <span className={`agsdl-node-task agsdl-task-${data.task.state}`} role="img" aria-label={t(`agsdl.taskState.${data.task.state}`)} title={`${data.task.title} · ${t(`agsdl.taskState.${data.task.state}`)}`}>
-          <TaskStatusIndicator state={data.task.state} layout="graph" size={15} />
-        </span> : <span className="agsdl-node-icon"><Icon size={15} aria-hidden="true" /></span>}
+        {data.task || data.native ? <WorkflowStatusBadge task={data.task} native={data.native} />
+          : <span className="agsdl-node-icon"><Icon size={15} aria-hidden="true" /></span>}
         <span className="agsdl-node-text">
           <span className="agsdl-node-title">{data.title}</span>
           {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
