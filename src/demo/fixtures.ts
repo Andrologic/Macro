@@ -2,7 +2,9 @@ import { buildDemoExecutions, demoDesignNotes } from './executionScenarios';
 import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import { sharedDemoBlueprints } from './sharedBlueprints';
 import { defaultLaunchRequirements } from './blueprintInputs';
-import type { Project, Task } from '../types';
+import { buildQuestionnaireHiddenContextBlock } from '../services/chatQuestionnaires';
+import type { PlanIcon } from '../services/planIcon';
+import type { Project, Task, QuestionStep } from '../types';
 import type { DbConversation, DbMessage, DbProviderConfig, DbAiModel } from '../services/tauriIpc';
 import { createExampleDocument } from '../services/agsdl/examples';
 export const DEMO_ROOT = '/demo';
@@ -12,6 +14,7 @@ const projectSeeds = [
   { id: 'demo-atlas', name: 'Atlas Studio', mount: 'atlas', description: 'Portail client et production éditoriale d’un studio créatif.', tags: ['React', 'Accessibilité', 'Contenu'] },
   { id: 'demo-helio', name: 'Helio Data', mount: 'helio', description: 'Import de données, contrôle de qualité et traitement des incidents.', tags: ['Python', 'Données', 'API'] },
   { id: 'demo-meridian', name: 'Meridian Commerce', mount: 'meridian', description: 'Commandes, service client et remboursements.', tags: ['TypeScript', 'Commerce', 'Support'] },
+  { id: 'demo-empty', name: 'Nouveau projet', mount: 'new-project', description: 'Un projet sans blueprint local pour essayer la bibliothèque commune.', tags: [] },
 ];
 export const demoProjects: Project[] = projectSeeds.map(seed => ({
   id: seed.id, name: seed.name, mountName: seed.mount, path: `/demo/${seed.mount}`,
@@ -33,7 +36,7 @@ export function demoPlan(id: string, title: string, projectId: string, kind: 're
     if (step.type === 'prepare') document.display!.cards![`/flow/steps/${stepId}`] = {title: 'Transmettre le rapport'};
   }
   parsed.content.projectGuidance.value = 'Projet fictif. Les actions et résultats sont simulés dans le mode démo.';
-  return { id, slug: id, title, label: title, description: kind === 'release' ? 'Préparer une publication de Luma sans oublier les vérifications.' : 'Concevoir un assistant pour le studio.', planKind: kind, status: 'draft', targetBranch: 'main', projectId, projectIds: [projectId], contextProjectIds: [], conversationId: `${id}-chat`, createdAt: DEMO_DATE, updatedAt: DEMO_DATE, nodes: [], predictedBranches: [], expectedProjectIds: [projectId], availableProjectIds: [projectId], missingProjectIds: [], replicationState: 'complete', revision: 1, replicas: [], hasReplicaDivergence: false, agsdl: { ...document, source: JSON.stringify(parsed, null, 2), revision: 1, updatedAt: DEMO_DATE, display: { ...document.display, title } } };
+  return { icon: undefined as PlanIcon | undefined, id, slug: id, title, label: title, description: kind === 'release' ? 'Préparer une publication de Luma sans oublier les vérifications.' : 'Concevoir un assistant pour le studio.', planKind: kind, status: 'draft', targetBranch: 'main', projectId, projectIds: [projectId], contextProjectIds: [], conversationId: `${id}-chat`, createdAt: DEMO_DATE, updatedAt: DEMO_DATE, nodes: [], predictedBranches: [], expectedProjectIds: [projectId], availableProjectIds: [projectId], missingProjectIds: [], replicationState: 'complete', revision: 1, replicas: [], hasReplicaDivergence: false, agsdl: { ...document, source: JSON.stringify(parsed, null, 2), revision: 1, updatedAt: DEMO_DATE, display: { ...document.display, title } } };
 }
 type DemoAgent = { title: string; prompt: string; group?: string };
 function scenario(id: string, title: string, projectId: string, description: string, agents: Record<string, DemoAgent>, entry: string, steps: Record<string, Record<string, unknown>>, labels: Record<string, string> = {}) {
@@ -395,6 +398,26 @@ for (const blueprint of sharedDemoBlueprints) {
   demoPlans.push(plan);
 }
 
+const planIcons: Record<string, PlanIcon> = {
+  'demo-release': 'flag', 'demo-assistant': 'message-square', 'demo-voice': 'mic',
+  'demo-quality': 'shield', 'demo-ingestion': 'database', 'demo-incident': 'zap',
+  'demo-refund': 'lock', 'demo-editorial': 'book-open', 'demo-delivery': 'layers',
+  'demo-persistent': 'pencil-ruler', 'demo-resident': 'network', 'demo-competition': 'target',
+  'demo-structured': 'file-code', 'demo-approvals': 'check-square', 'demo-crisis': 'server',
+  'demo-audio-feature': 'tool', 'macro-assistant': 'sparkles', 'macro-chantier': 'workflow',
+};
+for (const plan of demoPlans) plan.icon = planIcons[plan.id];
+// Same display name in two scopes tests that selection uses identity, not labels.
+const localAssistant = demoPlans.find(plan => plan.id === 'demo-assistant')!;
+localAssistant.label = localAssistant.title = 'Assistant';
+localAssistant.agsdl.display!.title = 'Assistant';
+localAssistant.agsdl.display!.cards!['/flow'] = { title: 'Assistant' };
+const longName = demoPlans.find(plan => plan.id === 'demo-persistent')!;
+longName.label = longName.title = 'Rédaction supervisée avec validation éditoriale et révision du même agent';
+longName.agsdl.display!.title = longName.title;
+longName.agsdl.display!.cards!['/flow'] = { title: longName.title };
+for (const path of ['/agents/writer', '/flow/steps/write']) longName.agsdl.display!.cards![path] = { title: 'Rédiger un dossier technique étayé sans perdre les consignes reçues en cours de travail' };
+
 const executionFixtures = buildDemoExecutions(demoPlans, DEMO_DATE);
 demoTasks.push(...executionFixtures.tasks);
 export const demoExecutionGraphs = executionFixtures.executions;
@@ -438,6 +461,21 @@ for (const task of demoTasks.filter(task => task.conversation_id && task.id !== 
   demoMessages.push(demoMessage(task.conversation_id!, 'user', task.description),
     demoMessage(task.conversation_id!, 'assistant', demoTaskReplies.get(task.id) ?? task.description));
 }
+const questionnaires: Array<{ taskId: string; questions: QuestionStep[] }> = [
+  { taskId: 'demo-transcript', questions: [
+    { id: 'first-name', prompt: 'Quel nom faut-il retenir à 04:12 ?', choices: ['Ana', 'Anna', 'Anah'], free_text_placeholder: 'Écrire le nom exact…' },
+    { id: 'second-name', prompt: 'Quel nom faut-il retenir à 11:38 ?', choices: ['Maël', 'Gaël', 'Manuel'], free_text_placeholder: 'Écrire le nom exact…' },
+  ] },
+  { taskId: 'demo-writer-direction', questions: [
+    { id: 'angle', prompt: 'Quel angle donner au dossier ?', choices: ['Exemples techniques', 'Usages métier', 'Les deux à parts égales'], free_text_placeholder: 'Préciser l’angle…' },
+  ] },
+];
+for (const entry of questionnaires) {
+  const task = demoTasks.find(task => task.id === entry.taskId)!;
+  const message = demoMessages.slice().reverse().find(message => message.conversation_id === task.conversation_id && message.role === 'assistant')!;
+  message.hidden_context = buildQuestionnaireHiddenContextBlock({ source: 'tool', questions: entry.questions });
+}
+
 const projectChats: Array<[string, string, string]> = [
   ['demo-atlas-chat', 'Quels points devons-nous vérifier avant de livrer le portail ?', 'La revue avant livraison répartit les contrôles entre sécurité, accessibilité et contenu. Une synthèse précède la validation du responsable. Le dossier éditorial illustre une autre forme de travail parallèle.'],
   ['demo-helio-chat', 'Pourquoi l’import du catalogue est-il bloqué ?', 'Douze lignes du fichier fournisseur manquent de références SKU. La normalisation est terminée, mais la correction ne peut pas inventer ces références. Le scénario Import de catalogue montre le chemin de contrôle et le traitement des anomalies.'],

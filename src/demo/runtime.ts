@@ -1,3 +1,4 @@
+import { demoNavigationPreferences } from './navigationExamples';
 import { demoBlueprintSteps } from './executionScenarios';
 import { initialDemoTaskGraphs, launchedDemoTaskGraph } from './taskExecutionGraph';
 import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
@@ -22,9 +23,20 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const taskGraphs = initialDemoTaskGraphs(demoExecutionGraphs);
   const conversations = structuredClone(demoConversations);
   const messages = structuredClone(demoMessages);
-  const values: Args = { leftPanelWidth: 300, architectLeftPanelWidth: 300, rightPanelWidth: 420, lastActiveMode: 'Architect', lastSelectedProjectId: 'demo-luma', lastOpenProjectPath: '/demo/luma', isLeftPanelOpen: true, isRightPanelOpen: true, onboardingState: { completed: true }, architectNavigatorExpandedScopeIds: ['project:demo-luma', 'demo-luma'], aiContextSelections: {} };
+  const values: Args = { leftPanelWidth: 300, architectLeftPanelWidth: 300, rightPanelWidth: 420, lastActiveMode: 'Architect', lastSelectedProjectId: 'demo-luma', lastOpenProjectPath: '/demo/luma', isLeftPanelOpen: true, isRightPanelOpen: true, onboardingState: { completed: true }, aiContextSelections: {}, ...demoNavigationPreferences() };
   const settings = new Map<string, string>();
+  const catalog = (): DemoBlueprint[] => plans.filter(plan => plan.status !== 'archived' && plan.status !== 'deleted' && plan.agsdl?.source?.trim() && (plan.agsdl.design?.kind === 'blueprint' || plan.projectId === DEMO_MACRO_LIBRARY_ID)).map(plan => {
+    const source = JSON.parse(plan.agsdl.source);
+    const shared = plan.projectId === DEMO_MACRO_LIBRARY_ID;
+    return { id: plan.id, projectIds: shared ? [] : [...plan.projectIds], shared, awaitsInput: sharedDemoBlueprints.find(item => item.id === plan.id)?.awaitsInput, title: plan.label || plan.title, description: plan.description,
+      fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
+      steps: demoBlueprintSteps(plan), document: structuredClone(plan.agsdl),
+      agents: Object.entries(source.agents).map(([id, agent]) => ({ id, title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
+    } satisfies DemoBlueprint;
+  }).filter(blueprint => blueprint.agents.length > 0);
   const blueprintUses = new Map<string, DemoBlueprintUse>();
+  const release = catalog().find(blueprint => blueprint.id === 'demo-release')!;
+  blueprintUses.set('demo-prepared-release', { id: 'demo-prepared-release', blueprint: structuredClone(release), projectId: 'demo-luma', objective: 'Release mobile', values: { releaseVersion: '1.8.0' }, taskIds: [], state: 'prepared' });
   let sessionContext: Args = { mode: 'Architect', selected_project_id: 'demo-luma', selected_group_id: null, selected_task_id: null, active_plan_id: 'demo-release' };
   const projectContexts = new Map<string, Args>(projects.map(project => {
     const plan = plans.find(plan => plan.projectId === project.id);
@@ -33,6 +45,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   }));
   const transcriptSync = new Map<string, Args>(demoPlans.map(p=>[p.conversationId,{conversation_id:p.conversationId,plan_id:p.id,target_branch:'main',transcript_revision:null,message_count:2,updated_at:DEMO_DATE}]));
   const files = new Map<string, string>([
+    ['/demo/new-project/README.md', '# Nouveau projet\n\nAucun blueprint local. La bibliothèque commune reste disponible.'],
     ['/demo/macro/README.md', '# Macro\n\nBibliothèque synthétique de blueprints communs.'],
     ['/demo/luma/README.md', '# Luma Mobile\n\nApplication de notes vocales. Projet fictif du mode démo.'],
     ['/demo/luma/package.json', JSON.stringify({ name: 'luma-mobile', version: '1.8.0', scripts: { test: 'vitest', build: 'vite build' } }, null, 2)],
@@ -77,15 +90,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     seen.set(command, (seen.get(command) ?? 0) + 1);
     const request = object(args.request);
     switch (command) {
-      case 'demo_blueprint_catalog': return plans.filter(plan => plan.status !== 'archived' && plan.status !== 'deleted' && plan.agsdl?.source?.trim() && (plan.agsdl.design?.kind === 'blueprint' || plan.projectId === DEMO_MACRO_LIBRARY_ID)).map(plan => {
-        const source = JSON.parse(plan.agsdl.source);
-        const shared = plan.projectId === DEMO_MACRO_LIBRARY_ID;
-        return { id: plan.id, projectIds: shared ? [] : [...plan.projectIds], shared, awaitsInput: sharedDemoBlueprints.find(item => item.id === plan.id)?.awaitsInput, title: plan.label || plan.title, description: plan.description,
-          fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
-          steps: demoBlueprintSteps(plan), document: structuredClone(plan.agsdl),
-          agents: Object.entries(source.agents).map(([id, agent]) => ({ id, title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
-        } satisfies DemoBlueprint;
-      });
+      case 'demo_blueprint_catalog': return catalog();
       case 'demo_task_execution_graph': return structuredClone(taskGraphs.get(string(args.taskId)) ?? null);
       case 'demo_blueprint_uses': return structuredClone([...blueprintUses.values()]);
       case 'demo_blueprint_prepare': {
@@ -392,6 +397,8 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const m = demoMessage(string(a.conversationId ?? a.conversation_id), string(a.role), string(a.content));
         if (typeof a.id === 'string')
           m.id = a.id;
+        m.hidden_context = typeof (a.hiddenContext ?? a.hidden_context) === 'string' ? String(a.hiddenContext ?? a.hidden_context) : null;
+        m.context_refs_json = typeof (a.contextRefsJson ?? a.context_refs_json) === 'string' ? String(a.contextRefsJson ?? a.context_refs_json) : null;
         messages.push(m);
         if (m.role === 'user' && m.content.trim()) {
           for (const use of blueprintUses.values()) {

@@ -17,7 +17,7 @@ interface SceneTask {
   reviewAfter?: boolean;
   finishAfter?: string[];
 }
-interface Scene { id: string; planId: string; projectId?: string; archived?: boolean; tasks: SceneTask[]; completedSteps?: string[] }
+interface Scene { label?: string; failedSteps?: string[]; id: string; planId: string; projectId?: string; archived?: boolean; tasks: SceneTask[]; completedSteps?: string[] }
 const step = (id: string, path: string, status: TaskStatus, description: string, reply: string, after: string[] = [], extra: Pick<SceneTask, 'interaction' | 'reviewAfter' | 'finishAfter'> = {}): SceneTask => ({ id, path: path.startsWith('/') ? path : `/flow/steps/${path}`, status, description, reply, after, ...extra });
 
 /** Chosen, authored demo routes. These scenes are examples, not an AgSDL interpreter. */
@@ -131,6 +131,22 @@ export const demoExecutionScenes: Scene[] = [
   ] },
 ];
 
+demoExecutionScenes.push(
+  { id: 'refund-denied', label: 'Remboursement accompagné · Commande 1049', planId: 'demo-refund', tasks: [
+    step('demo-refund-denied-brief', 'understand', 'Completed', 'La commande 1049 concerne un article ouvert.', 'Le client demande un remboursement de 129 € pour un article déjà utilisé.'),
+    step('demo-refund-denied-eligibility', 'eligibility', 'Completed', 'Le dossier nécessite une décision commerciale.', 'Le délai est respecté, mais l’état de l’article exige une décision du responsable.', ['demo-refund-denied-brief']),
+    step('demo-refund-denied-decision', 'approval', 'Completed', 'Le remboursement a été refusé.', 'Le responsable refuse le remboursement et propose un échange. Aucun remboursement n’a été effectué.', ['demo-refund-denied-eligibility'], { interaction: 'approval' }),
+    step('demo-refund-alternative', 'alternative', 'InReview', 'Relire la proposition d’échange avant de répondre.', 'Un échange sans frais est proposé. Vérifiez le délai et les conditions avant l’envoi au client.', ['demo-refund-denied-decision'], { reviewAfter: true }),
+    step('demo-refund-denied-notify', 'notify', 'Blocked', 'Informer le client après relecture de l’alternative.', 'La réponse attend votre relecture de la proposition d’échange.', ['demo-refund-alternative']),
+  ], completedSteps: ['lookup', 'eligible'] },
+  { id: 'publication-failed', label: 'Publication à double accord · Service indisponible', planId: 'demo-approvals', tasks: [
+    step('demo-publication-failed-prepare', 'prepare', 'Completed', 'Le dossier de février est prêt.', 'Les deux équipes examinent la même version du dossier de février.'),
+    step('demo-publication-failed-editorial', 'editorial', 'Completed', 'L’équipe éditoriale a donné son accord.', 'L’accord porte sur le dossier de février.', ['demo-publication-failed-prepare'], { interaction: 'approval' }),
+    step('demo-publication-failed-legal', 'legal', 'Completed', 'L’équipe juridique a donné son accord.', 'Le second accord est obtenu pour la même publication.', ['demo-publication-failed-editorial'], { interaction: 'approval' }),
+    step('demo-publication-recovery', 'recover', 'AwaitingResponse', 'Choisir la suite après le refus du service de publication.', 'Le service a refusé la requête avant publication. Le dossier n’est pas publié. Souhaitez-vous différer la livraison ou préparer une nouvelle tentative ?', ['demo-publication-failed-legal'], { interaction: 'question' }),
+  ], failedSteps: ['publish'] },
+);
+
 export const demoDesignNotes: Record<string, string> = {
   'demo-voice': 'Le contrôle de confiance dirige les passages incertains vers une clarification humaine. Le compte rendu et sa vérification attendent cette réponse.',
   'demo-quality': 'Trois spécialistes contrôlent le même périmètre en parallèle. Leurs rapports sont réunis avant la synthèse et l’accord de livraison.',
@@ -194,8 +210,8 @@ export function buildDemoExecutions(plans: Plan[], date: string) {
       });
       replies.set(entry.id, entry.reply);
     }
-    executions.push({ title: scene.archived ? `${plan.title} · Édition précédente` : plan.title, source: plan.agsdl.source, display: structuredClone(plan.agsdl.display), migration: structuredClone(plan.agsdl.migration), taskPaths, selectedPath: '', simulated: true,
-      activity: Object.fromEntries((scene.completedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'completed' as const, activations: [] }])) });
+    executions.push({ title: scene.label ?? (scene.archived ? `${plan.title} · Édition précédente` : plan.title), source: plan.agsdl.source, display: structuredClone(plan.agsdl.display), migration: structuredClone(plan.agsdl.migration), taskPaths, selectedPath: '', simulated: true,
+      activity: Object.fromEntries([...(scene.completedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'completed' as const, activations: [] }]), ...(scene.failedSteps ?? []).map(name => [`/flow/steps/${name}`, { state: 'failed' as const, activations: [] }])]) });
   }
   return { tasks, executions, replies };
 }

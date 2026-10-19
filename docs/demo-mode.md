@@ -21,7 +21,8 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 
 ## Scénario et interactions
 
-- Quatre projets fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
+- Quatre projets métier fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
+  Un cinquième, Nouveau projet, ne possède aucun blueprint local.
 - Seize blueprints de projet AgSDL 0.2, avec graphes et conversations : release, assistant client,
   compte rendu vocal, revue avant livraison, import de catalogue, diagnostic
   d’incident, remboursement accompagné, dossier éditorial, livraison multi-plateforme, rédaction
@@ -46,7 +47,7 @@ lancement natif devra isoler le profil avant le démarrage du backend.
   résultats contraints, la sélection de configuration et les effets externes déclarés.
   Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
-- Soixante-quinze tâches réparties entre dix-neuf exécutions fictives, dont une
+- Quatre-vingt-quatre tâches réparties entre vingt et une exécutions fictives, dont une
   édition archivée. Elles restent individuelles dans les quatre états de la file,
   avec des dépendances et des conversations propres à chaque situation. Fichiers virtuels propres à chaque projet.
 - Consultation et modification des instructions et du modèle d'un agent.
@@ -214,3 +215,28 @@ Les champs de recherche gardent le menu d’édition de texte du navigateur.
 Les menus sont affichés hors des listes défilantes pour rester visibles, même en
 bas de liste. Un seul s’ouvre à la fois ; Échap, le clic extérieur ou le défilement
 le referment. Les flèches permettent de parcourir les actions disponibles.
+
+
+## Cas qui éprouvent l’interface
+
+Ces données passent par les composants et les préférences du produit. Aucun arbre
+ou menu alternatif n’est réservé à la démo.
+
+| Parcours | Exemple | Ce qu’il permet de vérifier |
+| --- | --- | --- |
+| Dossiers et clic droit | Produit → Livraison → Contrôles dans Luma | Trois niveaux, création dans le bon dossier, déplacement et suppression sans perte de contenu. |
+| Bibliothèque commune | Développement → Patterns réutilisables, dossier À explorer vide | Même organisation que les projets, déplacement, création contextuelle et état vide. |
+| Recherche et repli | Cellule de crise dans Incidents, replié au départ | La recherche révèle un blueprint dans un projet et un dossier repliés, puis conserve le choix de repli. |
+| Identité et épingles | Assistant dans Atlas et dans la Bibliothèque Macro | Même nom, documents distincts, épingles et actions correctement rattachées. |
+| Noms longs | Rédaction supervisée avec validation éditoriale et révision du même agent | Troncature dans le navigateur, les cartes et le catalogue, instructions complètes dans le détail. |
+| Saisie différée | Release mobile dans Workflows à lancer | Version déjà renseignée, deux champs manquants, lancement interdit avant complément, reprise du même brouillon. |
+| Projet vide | Nouveau projet dans le lancement | Absence de blueprint local et accès maintenu aux blueprints communs. |
+| Questions | Clarifier les passages ambigus | Deux questions, choix proposés, réponse libre, navigation et conservation du récapitulatif après rechargement des messages. |
+| Deux usages d’un blueprint | Remboursement accompagné, commandes 1042 et 1049 | Accord encore attendu dans l’un ; refus et proposition d’échange à relire dans l’autre. Les graphes ne mélangent pas leurs tâches. |
+| Erreur d’un outil externe | Publication à double accord · Service indisponible | Deux accords terminés, publication échouée, tâche de reprise visible et aucune fausse confirmation de publication. |
+| Filtres combinés | Archives, Sans interaction et Tâches bloquées | Accès aux étapes secondaires et à l’édition archivée, sans créer de catégories ni de doublons dans la liste. |
+
+Les conversations utilisent aussi les questionnaires structurés du chat réel.
+Le backend de démo conserve leur contexte caché et les références de contexte lors
+de l’enregistrement des messages. Les captures déjà présentes restent des
+situations à examiner ; les nouveaux lancements suivent les parcours simulés.

@@ -14,7 +14,7 @@ describe('isolated Macro demo runtime', () => {
   test('provides projects, real AgSDL source and task conversations', async () => {
     const demo = createDemoRuntime();
     const bootstrap = await demo.invoke('workspace_get_bootstrap') as { standaloneProjects: unknown[] };
-    expect((bootstrap.standaloneProjects as { id: string }[]).filter(project => project.id !== DEMO_MACRO_LIBRARY_ID)).toHaveLength(4);
+    expect((bootstrap.standaloneProjects as { id: string }[]).filter(project => project.id !== DEMO_MACRO_LIBRARY_ID)).toHaveLength(5);
     expect((bootstrap.standaloneProjects as { id: string }[]).some(project => project.id === DEMO_MACRO_LIBRARY_ID)).toBe(true);
     const file = await demo.invoke('fs_read_file', {
       path: 'branches/main/plans/demo-release/plan.json',
@@ -72,6 +72,7 @@ describe('isolated Macro demo runtime', () => {
     const plan = JSON.parse(file.content);
     await demo.invoke('fs_write_file', { ...args, content: JSON.stringify({ ...plan, icon: 'shield' }) });
     expect((demo.plans.find(item => item.id === plan.id) as { icon?: string })?.icon).toBe('shield');
+    delete plan.icon;
     await demo.invoke('fs_write_file', { ...args, content: JSON.stringify(plan) });
     expect((demo.plans.find(item => item.id === plan.id) as { icon?: string })?.icon).toBeUndefined();
   });
@@ -199,6 +200,11 @@ describe('populated demo scenarios', () => {
     const demo = createDemoRuntime();
     for (const project of demoProjects) {
       const context = await demo.invoke('db_get_project_context_state', { projectId: project.id }) as { last_plan_id: string; architect_conversation_id: string };
+      if (project.id === 'demo-empty') {
+        expect(context).toMatchObject({ last_plan_id: null, architect_conversation_id: null });
+        expect(await demo.invoke('fs_read_file', { path: `${project.path}/README.md` })).toHaveProperty('content');
+        continue;
+      }
       expect(demoPlans.find(plan => plan.id === context.last_plan_id)?.projectId).toBe(project.id);
       expect(demoConversations.find(chat => chat.id === context.architect_conversation_id)?.project_id).toBe(project.id);
       expect(await demo.invoke('fs_read_file', { path: `${project.path}/README.md` })).toHaveProperty('content');
@@ -316,7 +322,7 @@ describe('demo blueprint preparation and launch', () => {
     const last = await runtime.invoke('demo_blueprint_prepare', { id, projectId: 'demo-luma', blueprintId: 'demo-release', objective: 'Latest input', values: { releaseVersion: '2.4.0' } }) as DemoBlueprintUse;
     expect(first.id).toBe(id);
     expect(last.id).toBe(id);
-    expect(await runtime.invoke('demo_blueprint_uses')).toEqual([expect.objectContaining({ id, objective: 'Latest input', values: { releaseVersion: '2.4.0' }, state: 'prepared', taskIds: [] })]);
+    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[]).filter(use => use.id === id)).toEqual([expect.objectContaining({ id, objective: 'Latest input', values: { releaseVersion: '2.4.0' }, state: 'prepared', taskIds: [] })]);
   });
 
   test('only permits blueprints attached to the target project', async () => {
@@ -326,7 +332,7 @@ describe('demo blueprint preparation and launch', () => {
       expect(catalog.filter(item => item.projectIds.includes(project.id)).map(item => item.id)).toEqual(demoPlans.filter(plan => plan.projectId === project.id).map(plan => plan.id));
     }
     await expect(runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'demo-release', objective: 'Cross-project test' })).rejects.toThrow('rattaché');
-    expect(await runtime.invoke('demo_blueprint_uses')).toEqual([]);
+    expect(await runtime.invoke('demo_blueprint_uses')).toEqual([expect.objectContaining({ id: 'demo-prepared-release', state: 'prepared', taskIds: [] })]);
     const atlas = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'demo-quality', objective: 'Review QA', values: { model: 'Macro AI · Démo' } }) as DemoBlueprintUse;
     const started = await runtime.invoke('demo_blueprint_start', { id: atlas.id }) as DemoBlueprintUse;
     const tasks = (await runtime.invoke('workspace_list_tasks') as { tasks: Task[] }).tasks.filter(task => started.taskIds.includes(task.id));
@@ -346,7 +352,7 @@ describe('demo blueprint preparation and launch', () => {
     plan.agsdl.design.requirements[0].value = '3.0.0';
     await runtime.invoke('fs_write_file', { path, workspaceScope: 'metadata', workspacePath: '/demo/luma', content: JSON.stringify(plan) });
     expect((await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[]).find(item => item.id === plan.id)?.fields[0].value).toBe('3.0.0');
-    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[])[0].blueprint.fields[0].value).toBe('2.4.0');
+    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[]).find(use => use.id === prepared.id)!.blueprint.fields[0].value).toBe('2.4.0');
     await expect(runtime.invoke('demo_blueprint_prepare', { projectId: 'unknown', blueprintId: plan.id })).rejects.toThrow('projet');
   });
 
@@ -361,7 +367,7 @@ describe('demo blueprint preparation and launch', () => {
     const values = Object.fromEntries(release.fields.map(field => [field.id, field.value || 'Exemple QA']));
     const resumed = await runtime.invoke('demo_blueprint_prepare', { id: draft.id, blueprintId: release.id, projectId: 'demo-luma', objective: 'Release QA', values }) as DemoBlueprintUse;
     expect(resumed.id).toBe(draft.id);
-    expect(await runtime.invoke('demo_blueprint_uses')).toHaveLength(1);
+    expect(await runtime.invoke('demo_blueprint_uses')).toHaveLength(2);
     const started = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
     const repeat = await runtime.invoke('demo_blueprint_start', { id: draft.id }) as DemoBlueprintUse;
     expect(repeat.taskIds).toEqual(started.taskIds);
@@ -372,8 +378,8 @@ describe('demo blueprint preparation and launch', () => {
     expect(await runtime.invoke('db_list_messages', { conversationId: tasks[0].conversation_id })).toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('Release QA') })]));
     for (let index = 0; index < release.agents.length; index++) await runtime.invoke('demo_blueprint_advance', { id: started.id });
     expect(tasks.map(task => task.status)).toEqual(['Completed', 'Completed', 'InReview']);
-    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[])[0].state).toBe('running');
+    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[]).find(use => use.id === started.id)!.state).toBe('running');
     await expect(runtime.invoke('demo_blueprint_prepare', { id: draft.id, blueprintId: release.id, projectId: 'demo-luma' })).rejects.toThrow('déjà été lancée');
-    expect(await createDemoRuntime().invoke('demo_blueprint_uses')).toEqual([]);
+    expect(await createDemoRuntime().invoke('demo_blueprint_uses')).toEqual([expect.objectContaining({ id: 'demo-prepared-release', state: 'prepared', taskIds: [] })]);
   });
 });
