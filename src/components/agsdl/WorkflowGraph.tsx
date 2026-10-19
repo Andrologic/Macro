@@ -87,7 +87,7 @@ function WorkflowEdge(props: EdgeProps<GraphEdge>) {
 const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {} }: {
+function Canvas({ cards, edges: connections, selected, select, title, changedPaths = [], trackedTasks = {}, nativeActivations = {}, selectionMode = "inspect" }: {
   cards: ViewerCard[];
   edges: ViewerEdge[];
   selected: string;
@@ -97,6 +97,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   changedPaths?: string[];
   trackedTasks?: Record<string, TrackedTask>;
   nativeActivations?: Record<string, NativeCardActivation>;
+  selectionMode?: "inspect" | "select";
 }) {
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
@@ -138,7 +139,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       style: { width: 210, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.65 : 1, transition: "opacity 140ms" },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && card.details.delivery === "steering" ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
-        select: setHighlighted, inspect: path => { setHighlighted(path); select(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
+        select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); select(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         members: group?.members.map(title),
         changed: changedPaths.some(path => path === card.path || (group?.members.some(member => member.path === path))),
         pending: card.details.contract !== "agsdl-0.2.0" && (card.kind === "Agent" || card.kind === "invoke") && !card.mission.trim(),
@@ -206,7 +207,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
             <div>{presentation.groups.map(group => <button key={group.id} onClick={() => { toggleGroup(group.id); if (groupMenu.current) groupMenu.current.open = false; }} aria-expanded={!collapsed.has(group.id)}>{group.title}<span>{collapsed.has(group.id) ? <Plus size={12} /> : <Minus size={12} />}</span></button>)}</div>
           </details>}
         </Panel>
-        {presentation.cards.some(card => card.path === active) && <Panel position="top-right" className="agsdl-graph-controls">
+        {selectionMode === "inspect" && presentation.cards.some(card => card.path === active) && <Panel position="top-right" className="agsdl-graph-controls">
           <button onClick={() => select(active)} aria-label={t("agsdl.viewer.componentDetails")} title={t("agsdl.viewer.componentDetails")}><Info size={14} /></button>
         </Panel>}
         <Background id={backgroundId} color="rgb(var(--muted-foreground) / 0.3)" gap={20} size={1.5} />

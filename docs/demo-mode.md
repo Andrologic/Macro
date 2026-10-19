@@ -166,6 +166,8 @@ approbations, erreurs et actions de lancement restent visibles. Les archives
 peuvent s’ajouter à la liste avec une pastille dédiée. Les compteurs de statuts
 suivent les filtres sans doublons ; ceux des projets dénombrent les tâches actives.
 
+Le clic droit d’une tâche, ou son menu à trois points, propose « Voir le workflow ». Le graphe s’ouvre en modal avec le bloc concerné sélectionné et les états des tâches visibles. Les associations des exemples sont explicites. Pour un workflow lancé, le graphe est capturé au lancement : modifier ensuite le blueprint dans Architect ne change pas cette capture. Les tâches indépendantes de démonstration disposent d’un graphe à un agent.
+
 Le blueprint Assistant démarre en attente. La consigne se donne directement dans
 la tâche, après le lancement. Les autres blueprints utilisent leurs valeurs
 héritées. Une simulation fait progresser les agents

@@ -8,7 +8,7 @@ export interface DemoBlueprint {
   title: string;
   description: string;
   fields: { id: string; label: string; value: string }[];
-  agents: { title: string; prompt: string }[];
+  agents: { id?: string; title: string; prompt: string }[];
 }
 export interface DemoBlueprintUse {
   id: string;

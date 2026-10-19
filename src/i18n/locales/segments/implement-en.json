@@ -1,4 +1,10 @@
 {
+  "viewExecutionGraph": "View workflow",
+  "executionGraph": "Workflow execution",
+  "workflowGraph": "Workflow graph",
+  "executionGraphError": "The workflow could not be loaded.",
+  "executionGraphEmpty": "No AgSDL execution is linked to this task.",
+  "openGraphTask": "Open task",
   "taskFilters": "Task filters",
   "tasksWithoutInteraction": "Without interaction",
   "blockedTasks": "Blocked tasks",

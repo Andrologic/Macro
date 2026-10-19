@@ -539,6 +539,22 @@ describe('TaskQueue', () => {
     expect(document.querySelector('[role="menu"]')?.textContent).not.toBe(contextActions);
   });
 
+  it('opens a task workflow from its context menu without activating the task or changing mode', async () => {
+    seedTasks([makeTask('task-1', 'Pending'), makeTask('task-2', 'Pending', { title: 'Another task' })]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const card = [...document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]')].find(card => card.textContent?.includes('Another task'))!;
+    await act(async () => { card.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
+    const action = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'View workflow')!;
+    expect(action).toBeDefined();
+    await act(async () => { action.click(); await import('./TaskExecutionGraphDialog'); await flushRender(); });
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Workflow execution');
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Another task');
+    expect(useAppStore.getState().selectedTaskId).toBe('task-1');
+    expect(useAppStore.getState().mode).toBe('Implement');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click(); await flushRender(); });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it.each(['InProgress', 'AwaitingResponse'] as const)('enters review from %s without sending a message', async (status) => {
     seedTasks([makeTask('task-1', status, { conversation_id: 'conversation-1' })]);
     const setTaskStatus = mock(async (taskId: string, nextStatus: TaskStatus) => {

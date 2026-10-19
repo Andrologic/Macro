@@ -1,3 +1,4 @@
+import { initialDemoTaskGraphs, launchedDemoTaskGraph } from './taskExecutionGraph';
 import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import { sharedDemoBlueprints } from './sharedBlueprints';
 import { blueprintAgentTasks, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
@@ -17,6 +18,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const projects = structuredClone(demoProjects);
   const tasks = structuredClone(demoTasks);
   const plans = structuredClone(demoPlans);
+  const taskGraphs = initialDemoTaskGraphs(plans, tasks);
   const conversations = structuredClone(demoConversations);
   const messages = structuredClone(demoMessages);
   const values: Args = { leftPanelWidth: 300, architectLeftPanelWidth: 300, rightPanelWidth: 420, lastActiveMode: 'Architect', lastSelectedProjectId: 'demo-luma', lastOpenProjectPath: '/demo/luma', isLeftPanelOpen: true, isRightPanelOpen: true, onboardingState: { completed: true }, architectNavigatorExpandedScopeIds: ['project:demo-luma', 'demo-luma'], aiContextSelections: {} };
@@ -79,9 +81,10 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const shared = plan.projectId === DEMO_MACRO_LIBRARY_ID;
         return { id: plan.id, projectIds: shared ? [] : [...plan.projectIds], shared, awaitsInput: sharedDemoBlueprints.find(item => item.id === plan.id)?.awaitsInput, title: plan.label || plan.title, description: plan.description,
           fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
-          agents: Object.entries(source.agents).map(([id, agent]) => ({ title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
+          agents: Object.entries(source.agents).map(([id, agent]) => ({ id, title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
         } satisfies DemoBlueprint;
       });
+      case 'demo_task_execution_graph': return structuredClone(taskGraphs.get(string(args.taskId)) ?? null);
       case 'demo_blueprint_uses': return structuredClone([...blueprintUses.values()]);
       case 'demo_blueprint_prepare': {
         if (args.projectId === DEMO_MACRO_LIBRARY_ID || !projects.some(project => project.id === args.projectId)) throw new Error('Choisissez un projet.');
@@ -101,6 +104,13 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         if (use.state !== 'prepared') return structuredClone(use);
         if (missingBlueprintFields(use.blueprint, use.values).length) throw new Error('Complétez les champs nécessaires avant de lancer.');
         const created = blueprintAgentTasks(use);
+        const plan = plans.find(plan => plan.id === use.blueprint.id);
+        if (!plan) throw new Error('Blueprint introuvable.');
+        const graph = launchedDemoTaskGraph(plan, use.blueprint.agents, created.map(task => task.id));
+        for (const task of created) {
+          const selectedPath = Object.keys(graph.taskPaths).find(path => graph.taskPaths[path] === task.id);
+          if (selectedPath) taskGraphs.set(task.id, { ...graph, selectedPath });
+        }
         for (const task of created) {
           tasks.push(task);
           conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: use.blueprint.awaitsInput ? 1 : 2 });

@@ -32,6 +32,21 @@ describe('isolated Macro demo runtime', () => {
     await expect(demo.invoke('fs_read_file', { path, workspaceScope: 'metadata', workspacePath: '/demo/atlas' })).rejects.toThrow('introuvable');
   });
 
+  test('every fixture task opens its explicitly linked graph without activating another task', async () => {
+    const demo = createDemoRuntime();
+    for (const task of demo.tasks) {
+      const graph = await demo.invoke('demo_task_execution_graph', { taskId: task.id }) as import('../services/taskExecutionGraph').TaskExecutionGraph;
+      expect(graph.taskPaths[graph.selectedPath]).toBe(task.id);
+      for (const report of await validateDocument(graph.source)) {
+        if (typeof report.documentReportJson !== 'string') throw new Error('Missing AgSDL reader report');
+        expect(JSON.parse(report.documentReportJson).valid).toBe(true);
+      }
+      const document = projectViewer(graph.source, { display: graph.display, migration: graph.migration });
+      expect([...document.graphs.flatMap(graph => graph.cards), ...document.declarations].some(card => card.path === graph.selectedPath)).toBe(true);
+    }
+    expect(await demo.invoke('demo_task_execution_graph', { taskId: 'missing' })).toBeNull();
+  });
+
   test('writes only to memory and a new runtime resets the scenario', async () => {
     const demo = createDemoRuntime();
     const path = '/demo/luma/README.md';
@@ -232,6 +247,20 @@ describe('demo blueprint preparation and launch', () => {
     expect(messages.filter(message => message.role === 'user')).toHaveLength(1);
     await runtime.invoke('demo_blueprint_advance', { id: use.id });
     expect(task.status).toBe('Completed');
+  });
+
+  test('launched tasks retain the captured graph after the blueprint changes', async () => {
+    const demo = createDemoRuntime();
+    const catalog = await demo.invoke('demo_blueprint_catalog') as DemoBlueprint[];
+    const blueprint = catalog.find(item => item.id === 'demo-quality')!;
+    const use = await demo.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: blueprint.id, values: Object.fromEntries(blueprint.fields.map(field => [field.id, field.value || 'Example'])) }) as DemoBlueprintUse;
+    const started = await demo.invoke('demo_blueprint_start', { id: use.id }) as DemoBlueprintUse;
+    const graph = await demo.invoke('demo_task_execution_graph', { taskId: started.taskIds[0] }) as import('../services/taskExecutionGraph').TaskExecutionGraph;
+    demo.plans.find(plan => plan.id === blueprint.id)!.agsdl.source = '{}';
+    const reopened = await demo.invoke('demo_task_execution_graph', { taskId: started.taskIds[0] }) as import('../services/taskExecutionGraph').TaskExecutionGraph;
+    expect(reopened.source).toBe(graph.source);
+    expect(new Set(Object.values(reopened.taskPaths))).toEqual(new Set(started.taskIds));
+    expect(reopened.taskPaths[reopened.selectedPath]).toBe(started.taskIds[0]);
   });
 
   test('a workflow creates one independent task per agent without a parent or duplicate launch', async () => {

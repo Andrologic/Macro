@@ -1,4 +1,10 @@
 {
+  "viewExecutionGraph": "워크플로 보기",
+  "executionGraph": "워크플로 실행",
+  "workflowGraph": "워크플로 그래프",
+  "executionGraphError": "워크플로를 불러올 수 없습니다.",
+  "executionGraphEmpty": "이 작업에 연결된 AgSDL 실행이 없습니다.",
+  "openGraphTask": "작업 열기",
   "taskFilters": "작업 필터",
   "tasksWithoutInteraction": "상호작용 없음",
   "blockedTasks": "차단된 작업",

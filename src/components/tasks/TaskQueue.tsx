@@ -218,7 +218,10 @@ interface MultiRepoTaskPresentation {
   nextActionLabel: string;
 }
 
+const TaskExecutionGraphDialog = React.lazy(() => import('./TaskExecutionGraphDialog'));
+
 type TaskActionKey =
+  | 'execution_graph'
   | 'start_review'
   | 'worktree_diagnostic'
   | 'project_settings'
@@ -626,6 +629,7 @@ const MemoizedTaskItem = React.memo(TaskItem);
 
 const EMPTY_PROJECT_IDS: readonly string[] = [];
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds = EMPTY_PROJECT_IDS }) => {
+  const [executionGraphTask, setExecutionGraphTask] = useState<ImplementTask | null>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const [filterMenuPosition, setFilterMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
@@ -1707,7 +1711,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
 
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
     if (isPlanFinalizationTask(task)) {
-      return [];
+      return [{ key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' }];
     }
 
     const capabilities = getTaskLifecycleCapabilities(
@@ -1716,6 +1720,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     );
     const archived = Boolean(task.archived_at);
     const actions: TaskActionDescriptor[] = [
+      { key: 'execution_graph', label: t('implement.viewExecutionGraph', 'View workflow'), icon: 'workflow' },
       {
         key: 'rename',
         label: t('common.rename', 'Rename'),
@@ -1800,6 +1805,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   };
 
   const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'execution_graph') { setExecutionGraphTask(task); return; }
     if (action === 'start_review') {
       if (startingReviewsRef.current.has(task.id)) return;
       const chat = useChatStore.getState();
@@ -2411,6 +2417,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
             ))}
           </div>
       </div>
+
+      {executionGraphTask && (
+        <React.Suspense fallback={null}>
+          <TaskExecutionGraphDialog
+            task={executionGraphTask}
+            onClose={() => setExecutionGraphTask(null)}
+          />
+        </React.Suspense>
+      )}
 
       {showCreateTaskDialog && (
         <React.Suspense fallback={null}>

@@ -1,4 +1,10 @@
 {
+  "viewExecutionGraph": "ワークフローを表示",
+  "executionGraph": "ワークフローの実行",
+  "workflowGraph": "ワークフローグラフ",
+  "executionGraphError": "ワークフローを読み込めませんでした。",
+  "executionGraphEmpty": "このタスクに関連付けられた AgSDL の実行はありません。",
+  "openGraphTask": "タスクを開く",
   "taskFilters": "タスクのフィルター",
   "tasksWithoutInteraction": "操作不要",
   "blockedTasks": "ブロックされたタスク",
