@@ -128,6 +128,32 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     );
   });
 
+  it('opens the active task workflow from the header icon without changing the task', async () => {
+    context.appState = { ...context.appState, mode: 'Implement', selectedTaskId: 'workflow-task' };
+    context.taskState = { ...context.taskState, tasks: [{
+      id: 'workflow-task', title: 'Review the dossier', task_source: 'architect',
+      status: 'Pending', project_ids: ['project-1'], project_id: 'project-1',
+      dependencies: [], estimated_changes: [], description: '',
+    }] };
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    const icon = requireContainer().querySelector<HTMLButtonElement>(
+      '[data-chat-conversation-header] button[aria-label="View workflow"]'
+    );
+    expect(icon).not.toBeNull();
+    await act(async () => { icon!.click(); await import('../../tasks/TaskExecutionGraphDialog'); });
+    const dialog = requireContainer().querySelector('[role="dialog"][data-task-id="workflow-task"]');
+    expect(dialog?.textContent).toContain('Review the dossier');
+    expect(context.appState.selectedTaskId).toBe('workflow-task');
+    expect(context.appState.mode).toBe('Implement');
+    await clickButtonWithText('Close workflow');
+    expect(requireContainer().querySelector('[role="dialog"][data-task-id]')).toBeNull();
+    await act(async () => {
+      context.appState = { ...context.appState, selectedTaskId: null };
+      context.emitAppStore();
+    });
+    expect(requireContainer().querySelector('button[aria-label="View workflow"]')).toBeNull();
+  });
+
   it('omits unavailable task context fields and hides the row without an active task', async () => {
     context.appState = {
       ...context.appState,

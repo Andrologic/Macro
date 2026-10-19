@@ -48,6 +48,7 @@ import { useSpeechToTextStore } from '../../stores/useSpeechToTextStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { formatBindingForDisplay } from '../../shortcuts/utils';
 import { useTaskStore } from '../../stores/useTaskStore';
+import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
 import { Icon, type IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
@@ -156,6 +157,8 @@ const QuestionnaireResponseSummary = React.lazy(() =>
     default: module.QuestionnaireResponseSummary,
   })),
 );
+const TaskExecutionGraphDialog = React.lazy(() => import('../tasks/TaskExecutionGraphDialog'));
+
 const ImplementTaskTodoDropdown = React.lazy(() =>
   import('./ImplementTaskTodoDropdown').then((module) => ({
     default: module.ImplementTaskTodoDropdown,
@@ -1393,6 +1396,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
 
+  const [executionGraphTask, setExecutionGraphTask] = useState<CatalogedImplementTask | null>(null);
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState<ComposerDraftSnapshot>(
@@ -3859,7 +3863,23 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           data-chat-conversation-header
         >
           <div className="flex items-center gap-3 min-w-0">
-            {canShowImplementTaskTodoDropdown ? (
+            {mode === 'Implement' && selectedTask ? (
+              <button
+                type="button"
+                onClick={() => setExecutionGraphTask(selectedTask)}
+                aria-label={t('implement.viewExecutionGraph', 'View workflow')}
+                title={t('implement.viewExecutionGraph', 'View workflow')}
+                aria-haspopup="dialog"
+                className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+              >
+                <Icon name={modeHeader.icon} size={14} className="text-primary" />
+              </button>
+            ) : (
+              <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                <Icon name={modeHeader.icon} size={14} className="text-primary" />
+              </div>
+            )}
+            {canShowImplementTaskTodoDropdown && (
               <Suspense fallback={null}>
                 <ImplementTaskTodoDropdown
                   taskTitle={modeHeader.title}
@@ -3869,10 +3889,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   rootRef={taskTodoDropdownRef}
                 />
               </Suspense>
-            ) : (
-              <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                <Icon name={modeHeader.icon} size={14} className="text-primary" />
-              </div>
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
@@ -4663,6 +4679,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             onConfirm={() => {
               void confirmReplayConfirmation();
             }}
+          />
+        </Suspense>
+      )}
+
+      {executionGraphTask && (
+        <Suspense fallback={null}>
+          <TaskExecutionGraphDialog
+            task={executionGraphTask}
+            onClose={() => setExecutionGraphTask(null)}
           />
         </Suspense>
       )}

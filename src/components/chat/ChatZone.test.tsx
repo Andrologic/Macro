@@ -581,6 +581,15 @@ const loadChatZoneModule = async (
     ScrollSeparator: () => <div data-testid="scroll-separator" />,
   }));
 
+  mock.module('../tasks/TaskExecutionGraphDialog', () => ({
+    default: ({ task, onClose }: { task: { id: string; title: string }; onClose: () => void }) => (
+      <div role="dialog" data-task-id={task.id}>
+        {task.title}
+        <button onClick={onClose}>Close workflow</button>
+      </div>
+    ),
+  }));
+
   mock.module('../modals/ImagePreviewModal', () => ({
     ImagePreviewModal: () => null,
   }));
@@ -715,6 +724,7 @@ const preloadChatZoneLazyComponents = async () => {
     import('./ToolApprovalFooter'),
     import('./QuestionnaireResponseSummary'),
     import('./ImplementTaskTodoDropdown'),
+    import('../tasks/TaskExecutionGraphDialog'),
     import('./ContextWindowIndicator'),
     import('./AgentCodeReplayConfirmModal'),
     import('../modals/ImagePreviewModal'),
