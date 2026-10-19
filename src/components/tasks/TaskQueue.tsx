@@ -2,7 +2,6 @@ import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../..
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { openPath } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
@@ -69,6 +68,7 @@ import {
   resolveTaskMergeWorkflowPresentationState,
   resolveTaskMergeWorkflowProgressLabel,
 } from '../../services/taskMergeWorkflowPresentation';
+import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon, IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
@@ -165,7 +165,7 @@ interface TaskMenuPosition {
   left: number;
 }
 
-const TASK_MENU_WIDTH = 176;
+const TASK_MENU_WIDTH = 208;
 const TASK_MENU_GAP = 6;
 const TASK_MENU_VIEWPORT_PADDING = 12;
 const TASK_MENU_ITEM_HEIGHT = 34;
@@ -300,7 +300,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [showMenu, setShowMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
-  const taskMenuRef = useRef<HTMLDivElement>(null);
   const trimmedPlanLabel = planLabel.trim();
   const contextBadges: TaskContextBadgeDescriptor[] = [];
   const trimmedProjectName = project?.name.trim() ?? '';
@@ -416,58 +415,6 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const nextAction = pendingRequestLabel || reviewNextAction;
   const instruction = nextAction || waitingReason;
   const secondaryText = instruction || task.description;
-  useEffect(() => {
-    if (!showMenu) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setShowMenu(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showMenu]);
-
-  useEffect(() => {
-    if (!showMenu) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-
-      if (
-        taskMenuRef.current?.contains(target) ||
-        menuButtonRef.current?.contains(target)
-      ) {
-        return;
-      }
-
-      setShowMenu(false);
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [showMenu]);
-
-  useEffect(() => {
-    if (!showMenu) {
-      setMenuPosition(null);
-      return;
-    }
-
-    const updatePosition = () => {
-      setMenuPosition(getTaskMenuPosition(menuButtonRef.current, actions.length));
-    };
-
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [actions.length, showMenu]);
 
   return (
     <div
@@ -476,7 +423,13 @@ const TaskItem: React.FC<TaskItemProps> = ({
       data-task-card-variant={isCompactDraftFeatureCard ? 'compact-draft' : 'default'}
       data-tour-id="implement-task-card"
       onClick={onSelect}
+      onContextMenu={event => {
+        if (!actions.length) return;
+        event.preventDefault(); event.stopPropagation();
+        setMenuPosition(sidebarMenuPosition(event)); setShowMenu(true);
+      }}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           onSelect();
@@ -508,6 +461,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
             className="absolute right-1.5 top-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title={t('implement.taskActions', 'Task actions')}
+            aria-label={t('implement.taskActions', 'Task actions')} aria-haspopup="menu" aria-expanded={showMenu}
           >
             <Icon name="more-vertical" size={13} />
           </button>
@@ -627,21 +581,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
       </div>
 
-      {showMenu && menuPosition && typeof document !== 'undefined'
-        ? createPortal(
-          <div
-            ref={taskMenuRef}
-            role="menu"
-            aria-label={t('implement.taskActions', 'Task actions')}
-            style={{
-              position: 'fixed',
-              top: `${menuPosition.top}px`,
-              left: `${menuPosition.left}px`,
-              width: `${TASK_MENU_WIDTH}px`,
-            }}
-            className="z-[12010] overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
+      {showMenu && menuPosition && (
+          <SidebarMenu position={menuPosition} onClose={() => setShowMenu(false)} triggerRef={menuButtonRef}
+            aria-label={t('implement.taskActions', 'Task actions')} className="w-52">
+
             {actions.map((action) => (
               <button
                 key={action.key}
@@ -658,7 +601,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 disabled={action.disabled}
                 title={action.title}
                 className={cn(
-                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm',
+                  'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs',
                   action.destructive
                     ? 'text-red-500 hover:bg-red-500/10'
                     : 'text-popover-foreground hover:bg-accent',
@@ -669,10 +612,8 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 <span>{action.label}</span>
               </button>
             ))}
-          </div>,
-          document.body
-        )
-        : null}
+          </SidebarMenu>
+        )}
     </div>
   );
 };
@@ -681,6 +622,7 @@ const MemoizedTaskItem = React.memo(TaskItem);
 
 const EMPTY_PROJECT_IDS: readonly string[] = [];
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds = EMPTY_PROJECT_IDS }) => {
+  const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
@@ -1761,13 +1703,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     const archived = Boolean(task.archived_at);
     const actions: TaskActionDescriptor[] = [
       {
-        key: 'project_settings',
-        label: t('project.projectSettings', 'Paramètres du projet'),
-        icon: 'settings',
-        disabled: taskCommandsDisabled,
-        title: taskCommandsDisabled ? taskCommandsDisabledTitle : undefined,
-      },
-      {
         key: 'rename',
         label: t('common.rename', 'Rename'),
         icon: 'edit',
@@ -1779,10 +1714,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     if (!archived && !task.draft && ['InProgress', 'AwaitingResponse'].includes(task.status)) {
       const reason = getStartReviewDisabledReason(task);
       actions.push({ key: 'start_review', label: t('implement.startReview', 'Start review'), icon: 'eye', disabled: Boolean(reason), title: reason });
-    }
-
-    if (getWorktreeDiagnosticTargets(task, getProjectById).length > 0) {
-      actions.push({ key: 'worktree_diagnostic', label: t('implement.worktreeDiagnostic.title'), icon: 'folder-git-2' });
     }
 
     if (capabilities.canReopen) {
@@ -1813,6 +1744,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
         disabled: taskMutationDisabled,
         title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
       });
+    }
+
+    actions.push({
+      key: 'project_settings',
+      label: t('project.projectSettings', 'Paramètres du projet'),
+      icon: 'settings',
+      disabled: taskCommandsDisabled,
+      title: taskCommandsDisabled ? taskCommandsDisabledTitle : undefined,
+    });
+
+    if (getWorktreeDiagnosticTargets(task, getProjectById).length > 0) {
+      actions.push({ key: 'worktree_diagnostic', label: t('implement.worktreeDiagnostic.title'), icon: 'folder-git-2' });
     }
 
     if (!archived && capabilities.canArchive) {
@@ -2304,12 +2247,25 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     taskErrorMatchesSelection,
   ]);
 
+  const openPanelMenu = (event: React.MouseEvent<HTMLElement>) => {
+    if (isSidebarTextInput(event.target)) return;
+    event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));
+  };
+  const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
+        <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
+          onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); setImplementShowArchived(!showArchived); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showArchived ? 'list-todo' : 'archive'} size={12} />{showArchived ? t('implement.tasks', 'Tasks') : t('implement.archives', 'Archives')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('architect.projectNavigator.manageProjects', 'Gérer les projets')}</button>
+      </SidebarMenu>;
+
   if (isWorkspaceMissing) {
     return (
       <aside
         className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}
         data-tour-id="implement-task-panel"
+        onContextMenu={openPanelMenu}
       >
+        {panelMenu}
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
           variant="secondary"
@@ -2323,7 +2279,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     <aside
       className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
       data-tour-id="implement-task-panel"
+      onContextMenu={openPanelMenu}
     >
+      {panelMenu}
       <div className="h-12 border-b border-border flex items-center justify-between gap-2 px-4">
         {isSearchOpen ? (
           <SearchBar

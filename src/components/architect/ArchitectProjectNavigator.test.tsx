@@ -288,6 +288,43 @@ describe('ArchitectProjectNavigator search', () => {
     expect(planCreator).toHaveBeenCalledTimes(2);
   });
 
+  it('targets right-click actions without changing selection and keeps background and text-field menus distinct', async () => {
+    const local = plan('local', 'Local blueprint');
+    await savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS, ['project:project-1']);
+    const activate = mock(async () => true);
+    useAppStore.setState({ standaloneProjects: [
+      { id: 'project-1', name: 'First project', path: '/demo/first', gitSetupState: 'ready' },
+      { id: 'project-2', name: 'Second project', path: '/demo/second', gitSetupState: 'ready' },
+    ] as never, projectGroups: [], selectedProjectId: 'project-1', selectedGroupId: null, activeArchitectPlanId: null, activePlanContext: null, activateArchitectPlan: activate as never });
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: { branchCatalogByBranch: {}, branches: [{ branchName: 'develop', activePlanId: null, plans: [local], error: null }], scannedBranchNames: ['develop'], scopedProjectIds: ['project-1', 'project-2'], visiblePlans: [local], modernPlanCount: 1, selectedPlan: null, selectedBranchName: null, selectionReason: 'none', errors: [] },
+      selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
+    }));
+    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    const rightClick = async (target: HTMLElement) => {
+      const event = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 170 });
+      await act(async () => { target.dispatchEvent(event); await flushRender(); });
+      return event;
+    };
+    const second = container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-2"]')!;
+    await rightClick(second);
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('New blueprint');
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('New folder');
+    expect(useAppStore.getState().selectedProjectId).toBe('project-1');
+    const localButton = [...container!.querySelectorAll('button')].find(item => item.textContent?.includes('Local blueprint'))!;
+    await rightClick(localButton);
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('Move to');
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain('New folder');
+    expect(activate).not.toHaveBeenCalled();
+    await rightClick(container!.querySelector('aside')!);
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('Ajouter un projet');
+    await act(async () => { container!.querySelector<HTMLButtonElement>('[data-tour-id="architect-search-toggle"]')!.click(); await flushRender(); });
+    const input = container!.querySelector<HTMLInputElement>('input')!;
+    expect((await rightClick(input)).defaultPrevented).toBe(false);
+  });
+
   it('searches only plans and activates the selected result', async () => {
     const matchingPlan = plan('deployment', 'Préparer le déploiement');
     const otherPlan = plan('navigation', 'Réparer la navigation');

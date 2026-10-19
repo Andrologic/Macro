@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
@@ -42,6 +41,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { cn } from '../../utils/cn';
+import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
@@ -177,6 +177,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const [activatingPlanId, setActivatingPlanId] = useState<string | null>(null);
   const [openPlanMenuKey, setOpenPlanMenuKey] = useState<string | null>(null);
+  const [planMenuPosition, setPlanMenuPosition] = useState<SidebarMenuPosition>({ left: 0, top: 0 });
+  const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const [scopeCreateMenu, setScopeCreateMenu] = useState<ScopeCreateMenuState | null>(null);
   const [scopeContextMenu, setScopeContextMenu] = useState<ScopeContextMenuState | null>(null);
   const [scopeToRename, setScopeToRename] = useState<ArchitectNavigatorScope | null>(null);
@@ -874,6 +876,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           if (isBusy) return;
           setScopeCreateMenu(null);
           setScopeContextMenu(null);
+          setPlanMenuPosition(sidebarMenuPosition(event));
           setOpenPlanMenuKey(planMenuKey);
         }}
       >
@@ -921,7 +924,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         <div className="relative" data-architect-plan-menu>
           <button
             type="button"
-            onClick={() => {
+            onClick={event => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setPlanMenuPosition({ left: rect.right - 208, top: rect.bottom + 4 });
               setScopeCreateMenu(null);
               setScopeContextMenu(null);
               setOpenPlanMenuKey((current) => current === planMenuKey ? null : planMenuKey);
@@ -932,14 +937,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             )}
             title={t('architect.projectNavigator.planActions', 'Actions du plan')}
             aria-label={t('architect.projectNavigator.planActions', 'Actions du plan')}
-            aria-expanded={openPlanMenuKey === planMenuKey}
+            aria-expanded={openPlanMenuKey === planMenuKey} aria-haspopup="menu"
           >
             <Icon name="more-horizontal" size={12} />
           </button>
           {openPlanMenuKey === planMenuKey && (
-            <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-xl">
+            <SidebarMenu position={planMenuPosition} onClose={() => setOpenPlanMenuKey(null)} aria-label={getArchitectPlanPrimaryName(entry.plan)} data-architect-plan-menu className="w-52">
               {entry.plan.status !== 'archived' && (
-                <button type="button" disabled={isBusy || !folders.ready || folders.busy}
+                <button role="menuitem" type="button" disabled={isBusy || !folders.ready || folders.busy}
                   onClick={() => { setOpenPlanMenuKey(null); setBlueprintToMove(entry); }}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50">
                   <Icon name="folder" size={11} />{t('architect.projectNavigator.moveToFolder', 'Move to…')}
@@ -947,6 +952,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               )}
               {entry.plan.status !== 'archived' && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
@@ -962,6 +968,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               )}
               {capabilities.canEditDetails && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
@@ -975,13 +982,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 </button>
               )}
               {capabilities.canEditDetails && (
-                <button type="button" onClick={() => { setOpenPlanMenuKey(null); setFormError(null); setPlanToChooseIcon(entry); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent">
+                <button role="menuitem" type="button" onClick={() => { setOpenPlanMenuKey(null); setFormError(null); setPlanToChooseIcon(entry); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent">
                   <Icon name="palette" size={11} />
                   {t('architect.planIcon.title', 'Choose an icon')}
                 </button>
               )}
               {(capabilities.canArchive || capabilities.canRestore) && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => void archivePlan(entry)}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"
@@ -994,6 +1002,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               )}
               {capabilities.canDelete && (
                 <button
+                  role="menuitem"
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
@@ -1005,7 +1014,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   {t('architect.projectNavigator.delete', 'Supprimer')}
                 </button>
               )}
-            </div>
+            </SidebarMenu>
           )}
         </div>
       </div>
@@ -1057,13 +1066,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         onClick={() => void createPlan(createMenuScope, planKind)}
         className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
       >
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
-          <Icon
-            name={isCreatingKind ? 'loader' : createMenuScope.id === macroScope?.id ? 'layout-template' : getPlanKindIconName(planKind)}
-            size={12}
-            className={cn(isCreatingKind && 'animate-spin text-primary')}
-          />
-        </span>
+        <Icon
+          name={isCreatingKind ? 'loader' : createMenuScope.id === macroScope?.id ? 'layout-template' : getPlanKindIconName(planKind)}
+          size={12}
+          className={cn('shrink-0 text-muted-foreground', isCreatingKind && 'animate-spin text-primary')}
+        />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-medium text-foreground">
             {createMenuScope.id === macroScope?.id ? t('architect.projectNavigator.newBlueprint', 'New blueprint') : planKind === 'feature' ? agsdlT('agsdl.design.createSystem', { defaultValue: 'Create a system' }) : planKindLabel(planKind)}
@@ -1076,43 +1083,43 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     );
   }) : [];
   const scopeCreateMenuPortal = scopeCreateMenu && createMenuScope && createMenuPosition && typeof document !== 'undefined'
-    ? createPortal(
-        <div
-          role="menu"
+    ? (
+        <SidebarMenu position={createMenuPosition} onClose={() => setScopeCreateMenu(null)}
           aria-label={t('architect.projectNavigator.newPlan', 'Nouveau plan')}
-          className="fixed z-[90] w-60 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl"
-          style={{ top: createMenuPosition.top, left: createMenuPosition.left, maxHeight: `calc(100vh - ${createMenuPosition.top + 12}px)`, overflowY: 'auto' }}
+          className={createMenuScope.id === macroScope?.id ? 'w-52' : 'w-60'}
           data-architect-scope-menu
           data-architect-scope-create-menu
         >
           {createActions.filter((_, index) => createMenuPlanKinds[index] === 'feature')}
           <button type="button" role="menuitem" disabled={!folders.ready || folders.busy || isBusy || Boolean(creatingScopeId)}
             onClick={() => openFolderForm(createMenuScope.id)}
-            className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
-            <span className="flex h-6 w-6 items-center justify-center"><Icon name="folder" size={12} /></span>
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+            <Icon name="folder" size={12} />
             {t('architect.projectNavigator.newFolder', 'New folder')}
           </button>
           {createMenuPlanKinds.some(kind => kind !== 'feature') && <details className="mt-1 border-t border-border pt-1">
-            <summary className="cursor-pointer rounded-md px-2 py-2 text-[11px] text-muted-foreground hover:bg-accent">
+            <summary role="menuitem" className="cursor-pointer rounded-md px-2 py-2 text-[11px] text-muted-foreground hover:bg-accent">
               {agsdlT('agsdl.design.otherPlanTypes', { defaultValue: 'Other plan types' })}
             </summary>
             {createActions.filter((_, index) => createMenuPlanKinds[index] !== 'feature')}
           </details>}
-        </div>,
-        document.body,
+        </SidebarMenu>
       )
     : null;
 
   const scopeContextMenuPortal = scopeContextMenu && contextMenuScope && typeof document !== 'undefined'
-    ? createPortal(
-        <div
-          role="menu"
-          aria-label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
-          className="fixed z-[90] w-52 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-2xl"
-          style={{ top: scopeContextMenu.position.top, left: scopeContextMenu.position.left }}
+    ? (
+        <SidebarMenu position={scopeContextMenu.position} onClose={() => setScopeContextMenu(null)}
+          aria-label={contextMenuScope.label}
+          className="w-52"
           data-architect-scope-menu
           data-architect-scope-context-menu
         >
+          <button type="button" role="menuitem" disabled={isBusy || isLoading || Boolean(creatingScopeId) || !contextMenuScope.projects.some(isProjectPlanActionable)}
+            onClick={() => { setScopeContextMenu(null); void createPlan(contextMenuScope, 'feature'); }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50">
+            <Icon name="layout-template" size={11} />{t('architect.projectNavigator.newBlueprint', 'New blueprint')}
+          </button>
           <button type="button" role="menuitem" disabled={!folders.ready || folders.busy || isBusy} onClick={() => openFolderForm(contextMenuScope.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
             <Icon name="folder" size={11} />{t('architect.projectNavigator.newFolder', 'New folder')}
           </button>
@@ -1140,13 +1147,22 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             <Icon name="settings" size={11} />
             {t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
           </button>
-        </div>,
-        document.body,
+        </SidebarMenu>
       )
     : null;
 
   return (
-    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}>
+    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}
+      onContextMenu={event => {
+        if (isSidebarTextInput(event.target)) return;
+        event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));
+      }}>
+      {panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('architect.projectNavigator.title', 'Projets')} className="w-52">
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectModal(null); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="plus" size={12} />{t('architect.projectNavigator.addProject', 'Ajouter un projet')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('architect.projectNavigator.manageProjects', 'Gérer les projets')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); setArchitectShowArchived(!showArchived); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showArchived ? 'layers' : 'archive'} size={12} />{showArchived ? t('architect.projectNavigator.projects', 'Tous les projets') : t('architect.projectNavigator.archives', 'Archives')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); void refreshPlans(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="refresh-cw" size={12} />{t('architect.projectNavigator.refresh', 'Actualiser')}</button>
+      </SidebarMenu>}
       {scopeCreateMenuPortal}
       {scopeContextMenuPortal}
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
@@ -1235,7 +1251,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         )}
 
         {!showArchived && macroScope && (!hasSearchQuery || macroEntries.length > 0) && (
-          <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro library')} data-architect-scope-id={macroScope.id} className="mb-4">
+          <section aria-label={t('architect.projectNavigator.macroBlueprints', 'Macro library')} data-architect-scope-id={macroScope.id} className="mb-4"
+            onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (!isBusy) openScopeCreateMenu(macroScope.id, 'header', event.currentTarget.getBoundingClientRect()); }}>
             <div data-architect-scope-menu
               onContextMenu={event => {
                 event.preventDefault(); event.stopPropagation();
@@ -1321,15 +1338,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   data-architect-scope-id={scope.id}
                   onContextMenu={(event) => {
                     event.preventDefault();
+                    event.stopPropagation();
                     if (isBusy) return;
-                    applyScopeSelection(scope);
                     setOpenPlanMenuKey(null);
                     setScopeCreateMenu(null);
                     setScopeContextMenu({
                       scopeId: scope.id,
                       position: getPointerArchitectMenuPosition(
                         { x: event.clientX, y: event.clientY },
-                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 110 },
+                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 144 },
                         { width: window.innerWidth, height: window.innerHeight },
                       ),
                     });

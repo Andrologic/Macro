@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -7,6 +6,7 @@ import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { SidebarMenu, sidebarMenuPosition, isSidebarTextInput, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -124,6 +124,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showMenu, setShowMenu] = useState(false);
+  const [menuPointerPosition, setMenuPointerPosition] = useState<SidebarMenuPosition | null>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
@@ -291,6 +292,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
         role="button"
         tabIndex={0}
         onClick={onActivate}
+        onContextMenu={event => {
+          if (isMultiSelectMode) return;
+          event.preventDefault(); event.stopPropagation();
+          if (isDeleting) return;
+          setMenuPointerPosition(sidebarMenuPosition(event)); setShowMenu(true);
+        }}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
           if (event.key === 'Enter' || event.key === ' ') {
@@ -352,11 +359,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
               onClick={(event) => {
                 if (isDeleting) return;
                 event.stopPropagation();
+                setMenuPointerPosition(null);
                 setShowMenu((current) => !current);
               }}
               ref={menuTriggerRef}
               disabled={isDeleting}
-              aria-expanded={showMenu}
+              aria-expanded={showMenu} aria-haspopup="menu"
               className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
               aria-label={t('chat.conversationActions', 'Conversation actions')}
             >
@@ -365,17 +373,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
           )}
         </div>
       </div>
-      {showMenu && !isMultiSelectMode && createPortal(
-        <>
-          <div className="fixed inset-0 z-[79]" onClick={() => setShowMenu(false)} />
-          <div
-            ref={menuRef}
-            data-conversation-actions-menu
-            style={{ ...menuPosition, maxHeight: 'calc(100vh - 16px)', maxWidth: 'calc(100vw - 16px)' }}
-            className="fixed z-[80] w-40 overflow-y-auto bg-card border border-border rounded-lg shadow-lg py-1"
-            onClick={(event) => event.stopPropagation()}
-          >
+      {showMenu && !isMultiSelectMode && (
+          <SidebarMenu menuRef={menuRef} position={menuPointerPosition ?? menuPosition} triggerRef={menuTriggerRef}
+            onClose={() => setShowMenu(false)} aria-label={t('chat.conversationActions', 'Conversation actions')}
+            data-conversation-actions-menu className="w-52">
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -383,12 +386,13 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 setShowMenu(false);
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="pin" size={12} />
               {isPinned ? t('chat.unpinConversation', 'Unpin') : t('chat.pinConversation', 'Pin')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -396,30 +400,33 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 setIsRenameOpen(true);
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="edit" size={12} />
               {t('common.rename', 'Rename')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => void handleExport('json')}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="download" size={12} />
               {t('chat.exportJson', 'Export JSON')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => void handleExport('markdown')}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="file-text" size={12} />
               {t('chat.exportMarkdown', 'Export Markdown')}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -427,12 +434,13 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 void onArchiveToggle();
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name={archiveActionIcon} size={12} />
               {archiveActionLabel}
             </button>
             <button
+              role="menuitem"
               type="button"
               onClick={() => {
                 if (isDeleting) return;
@@ -441,14 +449,12 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
                 setIsDeleteOpen(true);
               }}
               disabled={isDeleting}
-              className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-red-500 hover:bg-red-500/10 flex items-center gap-2"
             >
               <Icon name="trash" size={12} />
               {t('common.delete', 'Delete')}
             </button>
-          </div>
-        </>,
-        document.body,
+          </SidebarMenu>
       )}
 
       <ConfirmPromptModal
@@ -485,6 +491,7 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
 };
 
 export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ className }) => {
+  const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const { t } = useTranslation();
   const {
     conversations,
@@ -1125,7 +1132,16 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       <aside
         className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
         data-tour-id="chat-conversations-panel"
+        onContextMenu={event => {
+          if (isSidebarTextInput(event.target)) return;
+          event.preventDefault(); event.stopPropagation(); setPanelMenuPosition(sidebarMenuPosition(event));
+        }}
       >
+        {panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('chat.conversations', 'Conversations')} className="w-52">
+          <button role="menuitem" type="button" disabled={isBulkDeleting} onClick={() => { setPanelMenuPosition(null); handleNewChat(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{t('chat.newChat', 'New Chat')}</button>
+          <button role="menuitem" type="button" disabled={isArchiveViewSwitching || isBulkDeleting} onClick={() => { setPanelMenuPosition(null); void handleToggleArchivedView(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name={showArchived ? 'message-circle' : 'archive'} size={12} />{showArchived ? t('chat.conversations', 'Conversations') : t('chat.archives', 'Archives')}</button>
+          <button role="menuitem" type="button" disabled={filteredConversations.length === 0 || isBulkDeleting} onClick={() => { setPanelMenuPosition(null); setSelectedIds(new Set()); setIsMultiSelectMode(!isMultiSelectMode); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name={isMultiSelectMode ? 'x' : 'list-todo'} size={12} />{isMultiSelectMode ? t('common.cancel', 'Cancel') : t('chat.multiSelect', 'Multi-select')}</button>
+        </SidebarMenu>}
         <div className="h-12 border-b border-border flex items-center justify-between gap-2 px-4">
           {isSearchOpen ? (
             <SearchBar

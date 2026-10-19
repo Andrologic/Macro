@@ -1,8 +1,9 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { blueprintFolderId, blueprintFolderAncestors, canMoveBlueprintFolder, removeBlueprintFolder, type BlueprintFolder, type BlueprintFolderOrganization, type BlueprintNavigatorDrag } from '../../services/blueprintFolders';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { SidebarMenu, sidebarMenuPosition, type SidebarMenuPosition } from '../ui/SidebarMenu';
 import type { ArchitectNavigatorPlanEntry } from './architectProjectNavigatorModel';
 
 export const BLUEPRINT_DRAG_TYPE = 'application/x-macro-blueprint';
@@ -28,21 +29,11 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
   const { t } = useTranslation();
   const contentId = useId();
   const [menuId, setMenuId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<SidebarMenuPosition>({ left: 0, top: 0 });
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const folders = organization.folders.filter(f => f.scopeId === scopeId);
   const canDrop = (folderId: string) => !disabled && draggedItem?.scopeId === scopeId && (draggedItem.kind === 'blueprint' || canMoveBlueprintFolder(organization, draggedItem.folderId, folderId));
   const visibleFolderIds = searching ? new Set(entries.flatMap(entry => blueprintFolderAncestors(organization, blueprintFolderId(organization, scopeId, entry.locatorKey)).map(folder => folder.id))) : null;
-  useEffect(() => {
-    if (!menuId) return;
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent && event.key !== 'Escape') return;
-      if (event.type !== 'keydown' && event.target instanceof Element && event.target.closest('[data-blueprint-folder-menu]')) return;
-      setMenuId(null);
-    };
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', close);
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); };
-  }, [menuId]);
   const row = (entry: ArchitectNavigatorPlanEntry) => (
     <div key={entry.locatorKey} data-blueprint-locator={entry.locatorKey}
       draggable={!disabled}
@@ -68,7 +59,7 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
           onContextMenu={event => {
             event.preventDefault();
             event.stopPropagation();
-            if (!disabled) setMenuId(folder.id);
+            if (!disabled) { setMenuPosition(sidebarMenuPosition(event)); setMenuId(folder.id); }
           }}
           onDragEnter={event => { event.stopPropagation(); if (canDrop(folder.id)) { event.preventDefault(); setHoveredId(folder.id); } }}
           onDragOver={event => { event.stopPropagation(); if (canDrop(folder.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setHoveredId(folder.id); } else { event.dataTransfer.dropEffect = 'none'; } }}
@@ -93,18 +84,18 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
             <span className="truncate">{folder.name}</span>
           </button>
           <div className="relative" data-blueprint-folder-menu>
-            <button type="button" aria-label={t('architect.projectNavigator.folderActions', { name: folder.name, defaultValue: 'Actions for {{name}}' })} aria-expanded={menuId === folder.id} disabled={disabled}
-              onClick={() => setMenuId(menuId === folder.id ? null : folder.id)}
+            <button type="button" aria-label={t('architect.projectNavigator.folderActions', { name: folder.name, defaultValue: 'Actions for {{name}}' })} aria-expanded={menuId === folder.id} aria-haspopup="menu" disabled={disabled}
+              onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setMenuPosition({ left: rect.right - 208, top: rect.bottom + 4 }); setMenuId(menuId === folder.id ? null : folder.id); }}
               className="mr-1 flex h-6 w-6 items-center justify-center rounded opacity-0 hover:bg-background focus-visible:opacity-100 group-hover/folder:opacity-100 group-focus-within/folder:opacity-100">
               <Icon name="more-horizontal" size={12} />
             </button>
-            {menuId === folder.id && <div role="menu" className="absolute right-0 top-7 z-30 w-44 rounded-lg border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl">
+            {menuId === folder.id && <SidebarMenu position={menuPosition} onClose={() => setMenuId(null)} aria-label={folder.name} data-blueprint-folder-menu className="w-52">
               <button type="button" role="menuitem" disabled={disabled || !canCreateBlueprint} onClick={() => { setMenuId(null); onCreateBlueprint(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"><Icon name="layout-template" size={11} />{t('architect.projectNavigator.newBlueprint', 'New blueprint')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onCreate(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="folder" size={11} />{t('architect.projectNavigator.newSubfolder', 'New subfolder')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onMove(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="layers" size={11} />{t('architect.projectNavigator.moveToFolder', 'Move to…')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); onRename(folder); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="edit" size={11} />{t('common.rename')}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuId(null); void onUpdate(removeBlueprintFolder(organization, folder.id)); }} title={t('architect.projectNavigator.removeFolderHelp', 'Contents remain in the parent folder.')} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="trash" size={11} />{t('architect.projectNavigator.removeFolder', 'Remove folder')}</button>
-            </div>}
+            </SidebarMenu>}
           </div>
         </div>
         {expanded && <div id={id} className="ml-3 space-y-0.5 pl-1">

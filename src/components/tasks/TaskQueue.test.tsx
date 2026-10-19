@@ -516,6 +516,28 @@ describe('TaskQueue', () => {
       .find((button) => button.textContent === 'Start review');
   };
 
+  it('opens the clicked task actions without activating it and offers panel actions on the background', async () => {
+    seedTasks([makeTask('task-1', 'InProgress'), makeTask('task-2', 'Pending', { title: 'Other task' })]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const card = [...document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]')].find(item => item.textContent?.includes('Other task'))!;
+    const event = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 140 });
+    await act(async () => { card.dispatchEvent(event); await flushRender(); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(useAppStore.getState().selectedTaskId).toBe('task-1');
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    const contextActions = document.querySelector('[role="menu"]')!.textContent;
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(useAppStore.getState().selectedTaskId).toBe('task-1');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    await act(async () => { card.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click(); await flushRender(); });
+    expect(document.querySelector('[role="menu"]')!.textContent).toBe(contextActions);
+    await act(async () => { container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('Archives');
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toBe(contextActions);
+  });
+
   it.each(['InProgress', 'AwaitingResponse'] as const)('enters review from %s without sending a message', async (status) => {
     seedTasks([makeTask('task-1', status, { conversation_id: 'conversation-1' })]);
     const setTaskStatus = mock(async (taskId: string, nextStatus: TaskStatus) => {

@@ -668,7 +668,7 @@
     "deselectConversation": "Désélectionner la conversation",
     "selectConversation": "Sélectionnez une conversation",
     "unpinConversation": "Désépingler",
-    "pinConversation": "Épingle",
+    "pinConversation": "Épingler",
     "exportConversationFailed": "Impossible d’exporter la conversation.",
     "exportJson": "Exporter en JSON",
     "exportMarkdown": "Exporter en Markdown",

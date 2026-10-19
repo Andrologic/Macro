@@ -400,6 +400,26 @@ describe('ConversationArchive', () => {
     expect(stateValues[PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS]).toEqual([]);
   });
 
+  it('opens actions on the right-clicked conversation without selecting it', async () => {
+    const active = useChatStore.getState().conversations[0];
+    const pin = mock(async () => true);
+    const select = mock(async () => true);
+    useChatStore.setState({ conversations: [active, { ...active, id: 'other', title: 'Other conversation' }], selectedConversationId: active.id, togglePinConversation: pin, selectConversation: select as never });
+    await act(async () => { root?.render(<ConversationArchive />); await flushRender(); });
+    const row = [...container!.querySelectorAll<HTMLElement>('[role="button"]')].find(item => item.textContent?.includes('Other conversation'))!;
+    const event = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 160 });
+    await act(async () => { row.dispatchEvent(event); await flushRender(); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(select).not.toHaveBeenCalled();
+    expect(useChatStore.getState().selectedConversationId).toBe(active.id);
+    const pinButton = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === 'Pin')!;
+    await act(async () => { pinButton.click(); await flushRender(); });
+    expect(pin).toHaveBeenCalledWith('other');
+    await act(async () => { container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('New Chat');
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain('Export JSON');
+  });
+
   it('renders conversation actions outside virtual rows and invokes Pin with a mouse click', async () => {
     const active = useChatStore.getState().conversations[0];
     const togglePinConversation = mock(async () => true);
@@ -443,7 +463,6 @@ describe('ConversationArchive', () => {
     const trigger = container!.querySelector<HTMLButtonElement>('[aria-label="Conversation actions"]')!;
     await act(async () => { trigger.focus(); trigger.click(); await flushRender(); });
     const menu = document.body.querySelector<HTMLElement>('[data-conversation-actions-menu]')!;
-    const backdrop = menu.previousElementSibling!;
     expect(menu.parentElement).toBe(document.body);
     expect(menu.className).toContain('z-[80]');
     if (focusMenu) menu.querySelector<HTMLButtonElement>('button')!.focus();
@@ -459,7 +478,7 @@ describe('ConversationArchive', () => {
     expect(useAppStore.getState().settingsOpen).toBe(true);
     expect(dialog).not.toBeNull();
     expect(menu.isConnected).toBe(false);
-    expect(backdrop.isConnected).toBe(false);
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(dialog.contains(document.activeElement)).toBe(true);
     await act(async () => {

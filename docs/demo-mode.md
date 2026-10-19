@@ -195,3 +195,15 @@ Cette organisation est une préférence locale du navigateur, conservée lors de
 changements de mode. Elle ne modifie ni les fichiers Git ni les documents AgSDL
 et n’est pas synchronisée entre machines. Comme les autres données de la démo,
 elle est réinitialisée au rechargement complet.
+
+
+## Menus du panneau gauche
+
+Le clic droit est disponible sur les projets, la Bibliothèque Macro, les dossiers,
+les blueprints, les tâches d’Operate et les conversations de Chat. Il ne change
+pas l’élément actif. Les actions sont les mêmes que dans le menu de l’élément.
+Le fond du panneau et les en-têtes généraux proposent les actions du mode courant.
+Les champs de recherche gardent le menu d’édition de texte du navigateur.
+Les menus sont affichés hors des listes défilantes pour rester visibles, même en
+bas de liste. Un seul s’ouvre à la fois ; Échap, le clic extérieur ou le défilement
+le referment. Les flèches permettent de parcourir les actions disponibles.
