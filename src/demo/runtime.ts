@@ -1,9 +1,10 @@
+import { demoBlueprintSteps } from './executionScenarios';
 import { initialDemoTaskGraphs, launchedDemoTaskGraph } from './taskExecutionGraph';
 import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import { sharedDemoBlueprints } from './sharedBlueprints';
-import { blueprintAgentTasks, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
+import { blueprintAgentTasks, blueprintWorkflowSteps, missingBlueprintFields, type DemoBlueprint, type DemoBlueprintUse } from './blueprintLaunch';
 import { macroNativeModelEdition } from '../services/agsdl/nativeModelEdition';
-import { demoSkill, demoProjects, demoTasks, demoPlans, demoConversations, demoMessages, demoProvider, demoModel, demoMessage, DEMO_DATE } from './fixtures';
+import { demoSkill, demoProjects, demoTasks, demoPlans, demoExecutionGraphs, demoConversations, demoMessages, demoProvider, demoModel, demoMessage, DEMO_DATE } from './fixtures';
 import type { ConfigDocumentKind, ConfigSnapshot, ConfigDocument, JsonPatchOperation } from '../types/generated/config';
 import type { TerminalTabDto } from '../types/generated/ipc/TerminalTabDto';
 import type { DbConversation } from '../services/tauriIpc';
@@ -18,7 +19,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const projects = structuredClone(demoProjects);
   const tasks = structuredClone(demoTasks);
   const plans = structuredClone(demoPlans);
-  const taskGraphs = initialDemoTaskGraphs(plans, tasks);
+  const taskGraphs = initialDemoTaskGraphs(demoExecutionGraphs);
   const conversations = structuredClone(demoConversations);
   const messages = structuredClone(demoMessages);
   const values: Args = { leftPanelWidth: 300, architectLeftPanelWidth: 300, rightPanelWidth: 420, lastActiveMode: 'Architect', lastSelectedProjectId: 'demo-luma', lastOpenProjectPath: '/demo/luma', isLeftPanelOpen: true, isRightPanelOpen: true, onboardingState: { completed: true }, architectNavigatorExpandedScopeIds: ['project:demo-luma', 'demo-luma'], aiContextSelections: {} };
@@ -28,7 +29,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
   const projectContexts = new Map<string, Args>(projects.map(project => {
     const plan = plans.find(plan => plan.projectId === project.id);
     return [project.id, { project_id: project.id, last_plan_id: plan?.id ?? null, architect_conversation_id: plan?.conversationId ?? null,
-      implement_conversation_id: tasks.find(task => task.project_id === project.id && task.conversation_id)?.conversation_id ?? null }];
+      implement_conversation_id: tasks.find(task => task.project_id === project.id && task.conversation_id && ['Pending', 'AwaitingResponse', 'InReview', 'Failed'].includes(task.status))?.conversation_id ?? null }];
   }));
   const transcriptSync = new Map<string, Args>(demoPlans.map(p=>[p.conversationId,{conversation_id:p.conversationId,plan_id:p.id,target_branch:'main',transcript_revision:null,message_count:2,updated_at:DEMO_DATE}]));
   const files = new Map<string, string>([
@@ -41,7 +42,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
     ['/demo/atlas/src/components/ClientForm.tsx', 'export function ClientForm() { return <form aria-label="Demande client"><input aria-label="Votre demande" /></form>; }'],
     ['/demo/atlas/docs/delivery.md', '# Livraison\n\n- Revue de sécurité\n- Navigation clavier\n- Validation des contenus'],
     ['/demo/helio/README.md', '# Helio Data\n\nImport et contrôle de qualité des catalogues fournisseurs.'],
-    ['/demo/helio/fixtures/catalog.csv', 'name,price,unit\nLampe,49.90,EUR\nSupport,12.00,EUR\n'],
+    ['/demo/helio/fixtures/catalog.csv', 'sku,name,price,unit\n' + Array.from({ length: 240 }, (_, index) => `${index < 12 ? '' : `SKU-${index + 1}`},Article ${index + 1},${index % 2 ? '12.00' : '49.90'},EUR`).join('\n') + '\n'],
     ['/demo/helio/src/validate.py', 'def validate(row):\n    return bool(row.get("sku")) and float(row["price"]) >= 0\n'],
     ['/demo/helio/docs/incident.md', '# Incident synthétique\n\nLatence p95 : 840 ms. Hypothèse à vérifier : expiration simultanée des entrées de cache.'],
     ['/demo/meridian/README.md', '# Meridian Commerce\n\nService client et suivi des commandes.'],
@@ -81,6 +82,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const shared = plan.projectId === DEMO_MACRO_LIBRARY_ID;
         return { id: plan.id, projectIds: shared ? [] : [...plan.projectIds], shared, awaitsInput: sharedDemoBlueprints.find(item => item.id === plan.id)?.awaitsInput, title: plan.label || plan.title, description: plan.description,
           fields: plan.agsdl.design?.requirements?.map(field => ({ id: field.id, label: field.label, value: field.value ?? '' })) ?? [{ id: 'model', label: 'Modèle des agents', value: 'Macro AI · Démo' }],
+          steps: demoBlueprintSteps(plan), document: structuredClone(plan.agsdl),
           agents: Object.entries(source.agents).map(([id, agent]) => ({ id, title: plan.agsdl.display?.cards?.[`/agents/${id}`]?.title ?? id, prompt: (agent as { prompt?: { value?: string }[] }).prompt?.map(part => part.value ?? '').join('\n') ?? '' })),
         } satisfies DemoBlueprint;
       });
@@ -106,7 +108,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
         const created = blueprintAgentTasks(use);
         const plan = plans.find(plan => plan.id === use.blueprint.id);
         if (!plan) throw new Error('Blueprint introuvable.');
-        const graph = launchedDemoTaskGraph(plan, use.blueprint.agents, created.map(task => task.id));
+        const graph = launchedDemoTaskGraph({ title: use.blueprint.title, agsdl: use.blueprint.document ?? plan.agsdl }, blueprintWorkflowSteps(use.blueprint), created.map(task => task.id));
         for (const task of created) {
           const selectedPath = Object.keys(graph.taskPaths).find(path => graph.taskPaths[path] === task.id);
           if (selectedPath) taskGraphs.set(task.id, { ...graph, selectedPath });
@@ -115,8 +117,9 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
           tasks.push(task);
           conversations.push({ ...structuredClone(demoConversations[3]), id: task.conversation_id!, title: task.title, scope_mode: 'Implement', project_id: use.projectId, task_id: task.id, message_count: use.blueprint.awaitsInput ? 1 : 2 });
           if (!use.blueprint.awaitsInput) messages.push(demoMessage(task.conversation_id!, 'user', `${use.objective || use.blueprint.title}\n\n${use.blueprint.fields.map(field => `${field.label} : ${use.values[field.id] ?? field.value}`).join('\n')}`));
-          const stateMessage = task.status === 'AwaitingResponse' ? 'Que souhaitez-vous réaliser ? Écrivez votre demande ou joignez vos fichiers ici.' : task.status === 'Blocked' ? 'Cette tâche démarrera après la précédente.' : 'Exécution simulée en cours.';
-          messages.push(demoMessage(task.conversation_id!, 'assistant', use.blueprint.agents[created.indexOf(task)].prompt + '\n\n' + stateMessage));
+          const spec = blueprintWorkflowSteps(use.blueprint)[created.indexOf(task)];
+          const stateMessage = task.status === 'AwaitingResponse' ? spec.interaction === 'approval' ? 'Votre accord est requis avant la suite. Aucun effet externe n’a été exécuté.' : 'Écrivez votre réponse ou joignez vos fichiers ici.' : task.status === 'Blocked' ? 'Cette tâche attend ses prérequis.' : 'Exécution simulée en cours.';
+          messages.push(demoMessage(task.conversation_id!, 'assistant', spec.prompt + '\n\n' + stateMessage));
         }
         use.taskIds = created.map(task => task.id); use.state = 'running';
         return structuredClone(use);
@@ -124,15 +127,23 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
       case 'demo_blueprint_advance': {
         const use = blueprintUses.get(string(args.id));
         if (!use || use.state !== 'running') return use ? structuredClone(use) : null;
-        if (tasks.some(task => use.taskIds.includes(task.id) && task.status === 'AwaitingResponse')) return structuredClone(use);
-        const current = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'InProgress');
-        if (current) {
-          current.status = 'Completed';
-          messages.push(demoMessage(current.conversation_id!, 'assistant', `Contrôle terminé. Résultat fictif transmis à l’étape suivante. Aucun outil externe n’a été exécuté.`));
+        const steps = blueprintWorkflowSteps(use.blueprint);
+        const currentTasks = tasks.filter(task => use.taskIds.includes(task.id));
+        for (const current of currentTasks.filter(task => task.status === 'InProgress')) {
+          const spec = steps[use.taskIds.indexOf(current.id)];
+          if (spec.finishAfter?.some(key => currentTasks[steps.findIndex(step => step.key === key)]?.status !== 'Completed')) continue;
+          current.status = spec.reviewAfter ? 'InReview' : 'Completed';
+          messages.push(demoMessage(current.conversation_id!, 'assistant', spec.reviewAfter ? 'Le résultat simulé est prêt pour votre relecture.' : 'Étape simulée terminée. Le résultat est disponible pour les étapes qui en dépendent.'));
         }
-        const next = tasks.find(task => use.taskIds.includes(task.id) && task.status === 'Blocked');
-        if (next) { next.status = 'InProgress'; next.is_blocked = false; next.blocked_by_task_ids = []; }
-        else use.state = 'completed';
+        for (const next of currentTasks.filter(task => task.status === 'Blocked')) {
+          const remaining = next.dependencies.filter(id => currentTasks.find(task => task.id === id)?.status !== 'Completed');
+          next.blocked_by_task_ids = remaining;
+          if (remaining.length) continue;
+          const spec = steps[use.taskIds.indexOf(next.id)];
+          next.status = spec.interaction ? 'AwaitingResponse' : 'InProgress'; next.is_blocked = false;
+          if (spec.interaction) messages.push(demoMessage(next.conversation_id!, 'assistant', spec.interaction === 'approval' ? 'Votre accord est requis avant la suite. Aucun effet externe n’a été exécuté.' : 'Votre réponse est attendue avant de poursuivre.'));
+        }
+        if (currentTasks.every(task => task.status === 'Completed')) use.state = 'completed';
         return structuredClone(use);
       }
       case 'execution_model_choices':return {revision:'demo-1',models:[{providerId:demoProvider.id,modelId:demoModel.model_id,providerName:demoProvider.name,modelName:demoModel.name,edition:macroNativeModelEdition(demoProvider.id,demoModel.model_id)}],unavailableProviders:[]};
@@ -386,7 +397,7 @@ export function createDemoRuntime(emit: (name: string, payload: unknown) => void
           for (const use of blueprintUses.values()) {
             if (use.state !== 'running') continue;
             const waiting = tasks.find(task => use.taskIds.includes(task.id) && task.conversation_id === m.conversation_id && task.status === 'AwaitingResponse');
-            if (waiting) waiting.status = 'InProgress';
+            if (waiting && blueprintWorkflowSteps(use.blueprint)[use.taskIds.indexOf(waiting.id)].interaction === 'question') waiting.status = 'InProgress';
           }
         }
         return m;

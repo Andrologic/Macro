@@ -22,11 +22,12 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 ## Scénario et interactions
 
 - Quatre projets fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
-- Quinze systèmes AgSDL 0.2, avec graphes et conversations : release, assistant client,
+- Seize blueprints de projet AgSDL 0.2, avec graphes et conversations : release, assistant client,
   compte rendu vocal, revue avant livraison, import de catalogue, diagnostic
   d’incident, remboursement accompagné, dossier éditorial, livraison multi-plateforme, rédaction
   supervisée, équipe support permanente, recherche en compétition, extraction avec
-  correction, publication à double accord et cellule de crise.
+  correction, publication à double accord, cellule de crise et reprise audio. Deux
+  blueprints communs, Assistant et Chantier coordonné, complètent ces exemples.
 - Graphes avec branches conditionnelles, contrôles parallèles et regroupement,
   points de validation humaine, traitement des erreurs et boucle de diagnostic.
 - Compositions paramétrées réutilisées pour plusieurs agents, avec des sorties
@@ -45,8 +46,9 @@ lancement natif devra isoler le profil avant le démarrage du backend.
   résultats contraints, la sélection de configuration et les effets externes déclarés.
   Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
-- Quatorze tâches regroupées dans les quatre états de la file, avec dépendances et
-  conversations contextualisées. Fichiers virtuels propres à chaque projet.
+- Soixante-quinze tâches réparties entre dix-neuf exécutions fictives, dont une
+  édition archivée. Elles restent individuelles dans les quatre états de la file,
+  avec des dépendances et des conversations propres à chaque situation. Fichiers virtuels propres à chaque projet.
 - Consultation et modification des instructions et du modèle d'un agent.
 - Tâches avec états et conversations, navigation entre les modes.
 - Composeur normal et réponses locales simulées, sans appel à un fournisseur.
@@ -60,11 +62,11 @@ Architect, Operate et les parcours d'export dans l'application elle-même.
 ## Limites actuelles
 
 Toutes les commandes de Macro ne sont pas encore simulées. Les opérations
-inconnues échouent explicitement, sans transfert vers le backend réel. Architecte
-reste consacré à la conception : son en-tête regroupe l’enregistrement et l’export
-dans un modal unique, à gauche de l’agrandissement. Les blueprints sont créés dans
-les données fictives ; les exports téléchargent réellement un fichier local. Les
-dialogues d’exécution et de fiche système restent retirés. Une exécution AgSDL complète, les approbations,
+inconnues échouent explicitement, sans transfert vers le backend réel. Architect
+reste consacré à la conception. Son en-tête propose l’export à gauche de
+l’agrandissement. Les blueprints sont créés dans les données fictives ; les exports
+téléchargent réellement un fichier local. Le graphe d’exécution est accessible
+depuis le menu d’une tâche dans Operate. Une exécution AgSDL complète, les approbations,
 les intégrations externes, la dictée, la sauvegarde et la mise à jour de
 l'application ne sont pas reproduites. Les réponses du chat sont prédéfinies.
 
@@ -153,7 +155,7 @@ affichent les noms sans descriptions ni compteurs. Il attend la conservation des
 lancer la simulation. Chaque workflow possède une copie du blueprint et ses
 propres valeurs. Les instructions d’origine restent inchangées.
 
-Le lancement ajoute une carte indépendante et une conversation par agent dans
+Le lancement ajoute une carte indépendante et une conversation par étape de travail ou point d’accord dans
 l’interface existante d’Operate. Les tâches restent affichées individuellement,
 avec leurs statuts et leurs dépendances. La liste ne comporte pas de titres de
 catégories : l’ordre est À lancer, En attente, En cours, puis Terminées, comme
@@ -161,19 +163,16 @@ les filtres du haut. Le bouton filtre propose « Archives », « Sans interactio
 et « Tâches bloquées ». Ces cases se combinent et restent mémorisées entre les
 modes. Les tâches bloquées sont masquées par défaut, sans entrée parent ni
 regroupement par workflow. Elles réapparaissent lorsqu’elles peuvent démarrer.
-Les tâches sans interaction sont masquées par défaut. Les questions,
+Les tâches sans interaction sont masquées par défaut. Les exécutions déjà présentes sont des captures de situations, sans fournisseur actif. Les nouveaux lancements suivent leur simulation écrite. Les questions,
 approbations, erreurs et actions de lancement restent visibles. Les archives
 peuvent s’ajouter à la liste avec une pastille dédiée. Les compteurs de statuts
 suivent les filtres sans doublons ; ceux des projets dénombrent les tâches actives.
 
-Le clic droit d’une tâche, ou son menu à trois points, propose « Voir le workflow ». Le graphe s’ouvre en modal avec le bloc concerné sélectionné et les états des tâches visibles. Les associations des exemples sont explicites. Pour un workflow lancé, le graphe est capturé au lancement : modifier ensuite le blueprint dans Architect ne change pas cette capture. Les tâches indépendantes de démonstration disposent d’un graphe à un agent.
+Le clic droit d’une tâche, ou son menu à trois points, propose « Voir le workflow ». Le graphe s’ouvre en modal avec le bloc concerné sélectionné et les états des tâches visibles. Les associations des exemples sont explicites. Pour un workflow lancé, le graphe est capturé au lancement : modifier ensuite le blueprint dans Architect ne change pas cette capture. Chaque tâche appartient au vrai graphe de son blueprint, y compris les exemples de la Bibliothèque Macro exécutés dans un projet. Une ancienne édition conserve ses propres associations et ne renvoie pas aux tâches de l’édition actuelle. Les appels de composition sont liés aux blocs du graphe principal, sans inventer un état unique pour leur modèle partagé. Les étapes techniques déjà parcourues ont un indicateur dans le graphe et ne créent pas de tâche dans la liste.
 
 Le blueprint Assistant démarre en attente. La consigne se donne directement dans
 la tâche, après le lancement. Les autres blueprints utilisent leurs valeurs
-héritées. Une simulation fait progresser les agents
-successivement, à raison d’une étape toutes les sept secondes. Ce scénario
-permet de tester la navigation, les compteurs et les conversations ; il
-n’interprète pas les branches, les approbations ou le parallélisme AgSDL.
+héritées. Une simulation avance toutes les sept secondes sur un parcours écrit pour chaque exemple. Les contrôles parallèles démarrent ensemble, la synthèse attend leurs résultats et les questions restent en attente de réponse. Le rédacteur persistant reste actif jusqu’à la transmission de la consigne. Une relecture ou une approbation ne se termine pas automatiquement ; écrire un message ordinaire ne vaut pas accord. Ces parcours servent à tester la navigation, les compteurs et les conversations. Ils ne constituent pas un interpréteur AgSDL : les autres branches restent visibles dans le graphe, et aucune approbation ni aucun effet externe réel ne sont exécutés.
 Les nouveaux résultats sont fictifs. Aucune connexion ou opération Git réelle
 n’est effectuée. Le rechargement de la page réinitialise les préparations et
 les exécutions comme le reste de la démo. Le dialogue de production n’est pas

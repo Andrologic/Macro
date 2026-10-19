@@ -1,3 +1,4 @@
+import { buildDemoExecutions, demoDesignNotes } from './executionScenarios';
 import { DEMO_MACRO_LIBRARY_ID } from './macroBlueprintLibrary';
 import { sharedDemoBlueprints } from './sharedBlueprints';
 import { defaultLaunchRequirements } from './blueprintInputs';
@@ -17,10 +18,7 @@ export const demoProjects: Project[] = projectSeeds.map(seed => ({
   created_at: DEMO_DATE, status: 'active', gitSetupState: 'ready',
   metadata: { description: seed.description, tags: seed.tags, team_members: [], api_contracts: [], dependencies: [] },
 }));
-export const demoTasks: Task[] = [
-  { id: 'demo-audio', plan_id: 'demo-release', project_id: 'demo-luma', title: 'Améliorer la lecture audio', description: 'Conserver la position de lecture et afficher un état de chargement clair.', status: 'Pending', dependencies: [], estimated_changes: [{ path: 'src/audio/player.ts', operation: 'Modify', diff_preview: 'Lecture asynchrone et reprise de position.' }], task_kind: 'feature', standalone_kind: 'manual_feature', conversation_id: 'demo-task-chat', assigned_branch: 'feature/audio-playback', branch_name: 'feature/audio-playback', task_source: 'standalone', is_ready: true },
-  { id: 'demo-accessibility', plan_id: 'demo-release', project_id: 'demo-luma', title: 'Vérifier l’accessibilité', description: 'Contrôler le contraste et la navigation clavier.', status: 'Completed', dependencies: [], estimated_changes: [], task_kind: 'bugfix', standalone_kind: 'manual_feature', assigned_branch: 'bugfix/accessibility', branch_name: 'bugfix/accessibility', task_source: 'standalone' },
-];
+export const demoTasks: Task[] = [];
 export function demoPlan(id: string, title: string, projectId: string, kind: 'release' | 'feature') {
   const document = createExampleDocument(kind);
   const labels = kind === 'release' ? ['Vérifier les prérequis', 'Relire les changements', 'Vérifier les installateurs'] : ['Comprendre la demande', 'Préparer la réponse', 'Vérifier le résultat'];
@@ -120,7 +118,7 @@ export const demoPlans = [
     eligibility: agentStep('eligibility', 'eligible'), eligible: condition('Éligible', ['approval'], ['alternative']),
     approval: { type: 'approval', call: 'refund', binding: 'knowledge', timeoutMs: 3600000, validForMs: 3600000, next: { approved: ['refund'], denied: ['alternative'] } },
     refund: { type: 'call', binding: 'knowledge', scope: { action: 'refund', resources: ['demo:order-1042'], context: { value: 'Commande fictive de 89 €' } }, next: ['notify'] }, alternative: agentStep('alternative', 'notify'), notify: agentStep('notify'),
-  }, { lookup: 'Consulter la commande', eligible: 'Remboursement possible ?', approval: 'Accord du responsable', refund: 'Préparer le remboursement' }),
+  }, { lookup: 'Consulter la commande', eligible: 'Remboursement possible ?', approval: 'Accord du responsable', refund: 'Effectuer le remboursement' }),
   scenario('demo-editorial', 'Dossier éditorial', 'demo-atlas', 'Préparer un dossier avec une recherche documentaire et deux angles de rédaction en parallèle.', {
     research: { title: 'Rechercher les sources', prompt: 'Rassembler des sources vérifiables et distinguer les faits des interprétations.' },
     technical: { title: 'Rédiger l’angle technique', prompt: 'Expliquer le sujet avec des exemples précis et les limites de la solution.' },
@@ -287,12 +285,52 @@ const crisis = scenario('demo-crisis', 'Cellule de crise', 'demo-helio', 'Croise
 }
 demoPlans.push(crisis);
 
+demoPlans.push(scenario('demo-audio-feature', 'Améliorer la lecture audio', 'demo-luma', 'Préciser le besoin, réaliser la reprise de lecture puis vérifier les cas de pause et de chargement.', {
+  scope: { title: 'Préciser la reprise audio', prompt: 'Définir les situations de pause, de navigation et de chargement à couvrir.' },
+  implement: { title: 'Améliorer la lecture audio', prompt: 'Conserver la dernière position de lecture et rendre l’état de chargement compréhensible.' },
+  verify: { title: 'Vérifier la reprise audio', prompt: 'Vérifier la reprise après une pause, un changement d’écran et un chargement lent.' },
+}, 'scope', { scope: agentStep('scope', 'implement'), implement: agentStep('implement', 'verify'), verify: agentStep('verify') }));
+
+// Distinct contracts keep documentation access, human decisions and writes separate.
+const demoServiceBindings: Record<string, Record<string, { name: string; title: string; effects: 'none' | 'external' }>> = {
+  'demo-quality': {
+    approval: { name: 'deliveryApproval', title: 'Responsable de livraison', effects: 'none' },
+    deliver: { name: 'delivery', title: 'Livraison du dossier', effects: 'external' },
+  },
+  'demo-ingestion': {
+    validate: { name: 'catalogValidation', title: 'Contrôle du catalogue', effects: 'none' },
+    store: { name: 'catalogStorage', title: 'Catalogue fournisseur', effects: 'external' },
+  },
+  'demo-incident': { collect: { name: 'telemetry', title: 'Métriques du catalogue', effects: 'none' } },
+  'demo-refund': {
+    lookup: { name: 'orders', title: 'Consultation des commandes', effects: 'none' },
+    approval: { name: 'refundApproval', title: 'Responsable commercial', effects: 'none' },
+    refund: { name: 'refunds', title: 'Remboursement', effects: 'external' },
+  },
+  'demo-delivery': {
+    approval: { name: 'releaseApproval', title: 'Responsable de publication', effects: 'none' },
+    publish: { name: 'releases', title: 'Publication de la version', effects: 'external' },
+  },
+};
+
 // Shared content and capability declarations remain part of the real AgSDL documents.
 for (const plan of demoPlans.slice(2)) {
   const source = JSON.parse(plan.agsdl.source);
+  for (const [stepId, binding] of Object.entries(demoServiceBindings[plan.id] ?? {})) {
+    source.bindings[binding.name] = { contract: { identity: `demo/${binding.name}`, version: '1' }, implementation: { identity: 'demo/local-fixtures', version: '1' }, effects: binding.effects };
+    source.flow.steps[stepId].binding = binding.name;
+    if (binding.effects === 'external' && !source.flow.steps[stepId].scope) source.flow.steps[stepId].scope = { action: stepId, resources: [`demo:${plan.id}`], context: { value: 'Données fictives uniquement' } };
+    plan.agsdl.display!.cards![`/bindings/${binding.name}`] = { title: binding.title };
+  }
+  if (plan.id === 'demo-delivery') source.flow.steps.publish.scope = { action: 'publish', resources: ['demo:luma-1.8.0'], context: { value: { release: '1.8.0', targets: ['web', 'mobile'] } } };
+  if (plan.id === 'demo-approvals') {
+    plan.agsdl.display!.cards!['/bindings/editorialApproval'] = { title: 'Équipe éditoriale' };
+    plan.agsdl.display!.cards!['/bindings/legalApproval'] = { title: 'Équipe juridique' };
+  }
   source.content.policy = { value: 'Conserver les preuves et signaler les informations manquantes avant de conclure.' };
   source.content.reference = { uri: 'demo://documents/reference.pdf', mediaType: 'application/pdf' };
   source.content.mode = { value: 'thorough', mediaType: 'text/plain' };
+  plan.agsdl.display!.cards!['/skills/evidence'] = { title: 'Preuves' };
   source.skills = { evidence: { prompt: [{ ref: 'policy' }], resources: { reference: { ref: 'reference' } } } };
   source.configurations.fast = { engine: 'engine', tools: { documentation: 'knowledge' }, settings: { temperature: 0.2 } };
   source.configurations.thorough = { engine: 'engine', tools: { documentation: 'knowledge' }, settings: { temperature: 0 } };
@@ -340,7 +378,7 @@ for (const plan of demoPlans.slice(2)) {
   plan.agsdl.source = JSON.stringify(source, null, 2);
 }
 
-for (const plan of demoPlans.filter(plan => ['demo-voice', 'demo-quality', 'demo-ingestion', 'demo-refund'].includes(plan.id))) {
+for (const plan of demoPlans) {
   plan.agsdl.design = { ...plan.agsdl.design!, kind: 'blueprint', requirements: [{ id: 'model', label: 'Modèle des agents', description: 'Choix pour cette utilisation simulée', value: 'Macro AI · Démo' }] };
 }
 const releaseBlueprint = demoPlans.find(plan => plan.id === 'demo-release')!;
@@ -357,33 +395,11 @@ for (const blueprint of sharedDemoBlueprints) {
   demoPlans.push(plan);
 }
 
-const taskSeeds: Array<[string, string, string, string, Task['status'], string]> = [
-  ['demo-transcript', 'demo-luma', 'demo-voice', 'Clarifier deux passages de la réunion', 'AwaitingResponse', 'Les noms de deux participants sont ambigus. Confirmer leur orthographe avant la synthèse.'],
-  ['demo-summary', 'demo-luma', 'demo-voice', 'Préparer le résumé de la réunion', 'Blocked', 'En attente des précisions sur la transcription.'],
-  ['demo-installers', 'demo-luma', 'demo-release', 'Comparer les paquets de la release', 'InReview', 'Les paquets iOS et Android ont été contrôlés. Relire le bilan avant publication.'],
-  ['demo-security', 'demo-atlas', 'demo-quality', 'Vérifier les accès au portail', 'Completed', 'Les routes privées refusent les sessions expirées. Aucun blocage dans ce scénario.'],
-  ['demo-keyboard', 'demo-atlas', 'demo-quality', 'Corriger le focus du formulaire', 'InProgress', 'Le focus doit revenir sur le premier champ invalide après une erreur.'],
-  ['demo-copy', 'demo-atlas', 'demo-editorial', 'Relire le guide de démarrage', 'Pending', 'Harmoniser les titres et vérifier les exemples.'],
-  ['demo-catalog', 'demo-helio', 'demo-ingestion', 'Contrôler les données fournisseur', 'Failed', 'Le fichier ne contient pas la colonne SKU. Une reprise avec un fichier corrigé est nécessaire.'],
-  ['demo-deduplicate', 'demo-helio', 'demo-ingestion', 'Examiner les doublons du catalogue', 'InReview', 'Douze références ont des variantes proches. Choisir les enregistrements à conserver.'],
-  ['demo-latency', 'demo-helio', 'demo-incident', 'Analyser la hausse de latence', 'InProgress', 'L’analyse compare le cache, les accès base de données et les requêtes lentes.'],
-  ['demo-postmortem', 'demo-helio', 'demo-incident', 'Préparer le compte rendu d’incident', 'Blocked', 'La cause doit être confirmée avant de rédiger les mesures préventives.'],
-  ['demo-refund-review', 'demo-meridian', 'demo-refund', 'Valider la demande de remboursement', 'AwaitingResponse', 'Le montant est de 89 €. Le dossier attend la décision du responsable.'],
-  ['demo-order-mail', 'demo-meridian', 'demo-refund', 'Préparer la réponse au client', 'Completed', 'Le brouillon précise le délai de traitement et les prochaines étapes.'],
-];
-demoTasks.push(...taskSeeds.map(([id, project_id, plan_id, title, status, description]): Task => ({
-  id, project_id, plan_id, title, status, description, dependencies: id === 'demo-summary' ? ['demo-transcript'] : id === 'demo-postmortem' ? ['demo-latency'] : [],
-  estimated_changes: [], task_kind: 'feature', standalone_kind: 'manual_feature', task_source: 'standalone',
-  conversation_id: `${id}-chat`, assigned_branch: `feature/${id.replace('demo-', '')}`, branch_name: `feature/${id.replace('demo-', '')}`,
-  is_blocked: status === 'Blocked', is_ready: status === 'Pending',
-})));
-demoTasks.push({
-  id: 'demo-archived-guide', project_id: 'demo-atlas', plan_id: 'demo-editorial',
-  title: 'Relire l’ancien guide', description: 'Relecture terminée. Cette tâche est conservée dans les archives.',
-  status: 'Completed', dependencies: [], estimated_changes: [], task_kind: 'feature',
-  standalone_kind: 'manual_feature', task_source: 'standalone', conversation_id: 'demo-archived-guide-chat',
-  archived_at: DEMO_DATE,
-});
+const executionFixtures = buildDemoExecutions(demoPlans, DEMO_DATE);
+demoTasks.push(...executionFixtures.tasks);
+export const demoExecutionGraphs = executionFixtures.executions;
+export const demoTaskReplies = executionFixtures.replies;
+
 export const demoProvider: DbProviderConfig = { id: 'demo-provider', name: 'Macro AI · Démo', provider_type: 'openai', base_url: 'https://demo.invalid', api_key: null, has_stored_api_key: true, is_enabled: true, is_local: true, auth_status: 'authenticated', auth_source: null, plan_type: null, account_label: null, token_expires_at: null, created_at: DEMO_DATE, updated_at: DEMO_DATE };
 export const demoModel: DbAiModel = { id: 'demo-model', provider_id: demoProvider.id, model_id: 'demo-model', name: 'Assistant simulé', description: 'Réponses locales de démonstration', owned_by: null, pricing_prompt: null, pricing_completion: null, pricing_request: null, reasoning_efforts: null, default_reasoning_effort: null, context_window_tokens: 128000, input_limit_tokens: 120000, output_limit_tokens: 8000, context_window_source: 'manual', context_limits_updated_at: DEMO_DATE, is_enabled: true, is_manual: true, first_seen_at: DEMO_DATE, last_seen_at: DEMO_DATE };
 const conversationSeeds: Array<[string, string, DbConversation['scope_mode'], string, string | null]> = [
@@ -408,41 +424,23 @@ export const demoMessages = [
   demoMessage('demo-assistant-chat', 'user', 'Créons un assistant pour les demandes des clients du studio.'),
   demoMessage('demo-assistant-chat', 'assistant', 'L’assistant clarifie la demande, prépare une réponse et vérifie sa cohérence. Nous pouvons ajuster les instructions ensemble.'),
   demoMessage('demo-task-chat', 'user', 'La lecture audio doit reprendre à la dernière position.'),
-  demoMessage('demo-task-chat', 'assistant', 'J’ai préparé une modification de `src/audio/player.ts`. Vous pouvez consulter les changements dans le panneau de droite. Les fichiers et les résultats présentés ici sont fictifs.'),
+  demoMessage('demo-task-chat', 'assistant', 'La reprise est ajoutée dans `src/audio/player.ts`. Le contrôle final attend votre relecture de cette modification fictive.'),
   demoMessage('demo-chat', 'user', 'Quelles améliorations seraient utiles pour Luma ?'),
   demoMessage('demo-chat', 'assistant', 'Nous pouvons améliorer la reprise audio, simplifier les réglages et ajouter un assistant vocal. Par quoi souhaitez-vous commencer ?'),
 ];
 for (const plan of demoPlans.slice(2)) {
   demoMessages.push(
     demoMessage(plan.conversationId, 'user', plan.description),
-    demoMessage(plan.conversationId, 'assistant', `Le graphe est prêt à être exploré.
-
-${plan.description}
-
-Sélectionnez un bloc pour suivre ses échanges. Ouvrez ses détails pour lire les instructions et voir les outils déclarés.`),
+    demoMessage(plan.conversationId, 'assistant', demoDesignNotes[plan.id] ?? plan.description),
   );
 }
 for (const task of demoTasks.filter(task => task.conversation_id && task.id !== 'demo-audio')) {
-  const waiting = task.status === 'AwaitingResponse';
-  demoMessages.push(demoMessage(task.conversation_id!, 'user', task.description), demoMessage(task.conversation_id!, 'assistant',
-    waiting ? `${task.description}
-
-J’attends votre réponse pour poursuivre. Les informations de ce dossier sont fictives.`
-      : task.status === 'Failed' ? `Le contrôle a détecté un problème.
-
-${task.description}
-
-Aucune modification n’a été appliquée. On peut examiner le fichier puis préparer une reprise.`
-      : task.status === 'Blocked' ? `Cette étape attend la tâche précédente.
-
-${task.description}`
-      : `${task.description}
-
-Le résultat de cette étape est disponible pour relecture dans ce scénario de démonstration.`));
+  demoMessages.push(demoMessage(task.conversation_id!, 'user', task.description),
+    demoMessage(task.conversation_id!, 'assistant', demoTaskReplies.get(task.id) ?? task.description));
 }
 const projectChats: Array<[string, string, string]> = [
   ['demo-atlas-chat', 'Quels points devons-nous vérifier avant de livrer le portail ?', 'La revue avant livraison répartit les contrôles entre sécurité, accessibilité et contenu. Une synthèse précède la validation du responsable. Le dossier éditorial illustre une autre forme de travail parallèle.'],
-  ['demo-helio-chat', 'Pourquoi l’import du catalogue est-il bloqué ?', 'Le fichier fournisseur manque de références SKU. Douze autres lignes présentent des doublons. Le scénario Import de catalogue montre le chemin de contrôle et le traitement des anomalies.'],
+  ['demo-helio-chat', 'Pourquoi l’import du catalogue est-il bloqué ?', 'Douze lignes du fichier fournisseur manquent de références SKU. La normalisation est terminée, mais la correction ne peut pas inventer ces références. Le scénario Import de catalogue montre le chemin de contrôle et le traitement des anomalies.'],
   ['demo-meridian-chat', 'Dans quels cas demander une validation humaine ?', 'Une validation du responsable intervient avant le remboursement. Le client reçoit ensuite une réponse adaptée à la décision. La branche alternative permet de proposer un échange.'],
 ];
 for (const [id, question, answer] of projectChats) demoMessages.push(demoMessage(id, 'user', question), demoMessage(id, 'assistant', answer));

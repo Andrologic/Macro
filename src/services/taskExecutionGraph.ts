@@ -3,7 +3,7 @@ import type { AgsdlDisplayMetadata, AgsdlMigrationMetadata } from '../types/agsd
 import type { PublicApproval } from '../types/generated/ipc';
 import type { PublicProjection, PublicSnapshot, SystemStartId } from './agsdlExecution/contracts';
 import { projectViewer } from './agsdl/viewer';
-import { appendProjection, assertProjection } from './agsdl/executionView';
+import { appendProjection, assertProjection, type NativeCardActivation } from './agsdl/executionView';
 import { sameSource } from './agsdl/runtimeSelection';
 import { resolveTaskReference } from './durableIdentity';
 import * as ipc from './tauriIpc';
@@ -16,6 +16,7 @@ export interface TaskExecutionGraph {
   taskPaths: Record<string, string>;
   selectedPath: string;
   simulated?: boolean;
+  activity?: Record<string, NativeCardActivation>;
   snapshot?: PublicSnapshot;
   projection?: PublicProjection;
   approvals?: PublicApproval[];

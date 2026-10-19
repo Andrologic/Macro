@@ -115,7 +115,7 @@ describe('populated demo scenarios', () => {
       }
       const viewer = projectViewer(plan.agsdl.source, plan.agsdl);
       if (viewer.graphs.length) {
-        expect(viewer.graphs[0].cards.length).toBeGreaterThanOrEqual(plan.projectId === DEMO_MACRO_LIBRARY_ID ? 1 : 5);
+        expect(viewer.graphs[0].cards.length).toBeGreaterThanOrEqual(plan.projectId === DEMO_MACRO_LIBRARY_ID ? 1 : plan.id === 'demo-audio-feature' ? 3 : 5);
         for (const graph of viewer.graphs) for (const card of graph.cards) kinds.add(card.kind);
       } else expect(viewer.declarations.filter(card => card.kind === 'Agent')).toHaveLength(3);
     }
@@ -220,7 +220,10 @@ describe('populated demo scenarios', () => {
     expect(new Set(demoTasks.map(task => task.status)).size).toBe(7);
     expect(demoTasks.some(task => task.archived_at && task.status === 'Completed')).toBe(true);
     for (const task of demoTasks) {
-      expect(demoPlans.some(plan => plan.id === task.plan_id && plan.projectId === task.project_id)).toBe(true);
+      const plan = demoPlans.find(plan => plan.id === task.plan_id)!;
+      expect(plan).toBeDefined();
+      expect(plan.projectId === task.project_id || plan.projectId === DEMO_MACRO_LIBRARY_ID).toBe(true);
+      expect(demoProjects.some(project => project.id === task.project_id && project.id !== DEMO_MACRO_LIBRARY_ID)).toBe(true);
       for (const dependency of task.dependencies) expect(demoTasks.some(other => other.id === dependency && other.project_id === task.project_id)).toBe(true);
       if (task.conversation_id) expect(demoConversations.find(chat => chat.id === task.conversation_id)?.task_id).toBe(task.id);
     }
@@ -319,10 +322,9 @@ describe('demo blueprint preparation and launch', () => {
   test('only permits blueprints attached to the target project', async () => {
     const runtime = createDemoRuntime();
     const catalog = await runtime.invoke('demo_blueprint_catalog') as DemoBlueprint[];
-    expect(catalog.filter(item => item.projectIds.includes('demo-luma')).map(item => item.id)).toEqual(['demo-release', 'demo-voice']);
-    expect(catalog.filter(item => item.projectIds.includes('demo-atlas')).map(item => item.id)).toEqual(['demo-quality']);
-    expect(catalog.filter(item => item.projectIds.includes('demo-helio')).map(item => item.id)).toEqual(['demo-ingestion']);
-    expect(catalog.filter(item => item.projectIds.includes('demo-meridian')).map(item => item.id)).toEqual(['demo-refund']);
+    for (const project of demoProjects.filter(project => project.id !== DEMO_MACRO_LIBRARY_ID)) {
+      expect(catalog.filter(item => item.projectIds.includes(project.id)).map(item => item.id)).toEqual(demoPlans.filter(plan => plan.projectId === project.id).map(plan => plan.id));
+    }
     await expect(runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'demo-release', objective: 'Cross-project test' })).rejects.toThrow('rattaché');
     expect(await runtime.invoke('demo_blueprint_uses')).toEqual([]);
     const atlas = await runtime.invoke('demo_blueprint_prepare', { projectId: 'demo-atlas', blueprintId: 'demo-quality', objective: 'Review QA', values: { model: 'Macro AI · Démo' } }) as DemoBlueprintUse;
@@ -369,8 +371,8 @@ describe('demo blueprint preparation and launch', () => {
     expect(tasks.filter(task => task.status === 'Blocked')).toHaveLength(release.agents.length - 1);
     expect(await runtime.invoke('db_list_messages', { conversationId: tasks[0].conversation_id })).toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('Release QA') })]));
     for (let index = 0; index < release.agents.length; index++) await runtime.invoke('demo_blueprint_advance', { id: started.id });
-    expect(tasks.every(task => task.status === 'Completed')).toBe(true);
-    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[])[0].state).toBe('completed');
+    expect(tasks.map(task => task.status)).toEqual(['Completed', 'Completed', 'InReview']);
+    expect((await runtime.invoke('demo_blueprint_uses') as DemoBlueprintUse[])[0].state).toBe('running');
     await expect(runtime.invoke('demo_blueprint_prepare', { id: draft.id, blueprintId: release.id, projectId: 'demo-luma' })).rejects.toThrow('déjà été lancée');
     expect(await createDemoRuntime().invoke('demo_blueprint_uses')).toEqual([]);
   });

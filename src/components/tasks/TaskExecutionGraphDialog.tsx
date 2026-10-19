@@ -69,7 +69,7 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
     if (!task) return [];
     return [[path, { taskId: task.id, title: task.title, state: resolveTaskStatusIndicatorState(task.status, running.has(task.id), task.task_source, resolveTaskMergeWorkflowPresentationState(mergeRuntime[task.id], task.merge_workflow_summary, task.status), task.is_blocked, Boolean(supervision.attentionByTaskId.get(task.id) && supervision.attentionByTaskId.get(task.id)?.kind !== 'review'), supervision.resolvedWaitTaskIds.has(task.id)) } satisfies TrackedTask]];
   })), [view, tasks, running, mergeRuntime, supervision]);
-  const native = useMemo(() => view?.projection ? nativeCardActivations(system.cards, view.projection, view.approvals ?? []) : {}, [system, view]);
+  const native = useMemo(() => view?.projection ? nativeCardActivations(system.cards, view.projection, view.approvals ?? []) : view?.activity ?? {}, [system, view]);
   const title = t('implement.executionGraph', 'Workflow execution');
   return <Dialog title={title} onClose={onClose} closeOnBackdropClick panelClassName="flex h-[min(85vh,900px)] w-[min(94vw,1200px)] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
