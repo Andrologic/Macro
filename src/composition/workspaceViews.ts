@@ -12,7 +12,7 @@ const strategyGraphLoader = createModePanelLoader({
   label: 'Strategy graph',
   mode: 'Architect',
   panel: 'right',
-  importComponent: async () => demoJourney ? (await import('../demo/BlueprintJourneyViews')).DemoArchitectPanel : (await import('../components/architect/ArchitectStrategyPanel')).default,
+  importComponent: async () => (await import('../components/architect/ArchitectStrategyPanel')).default,
 });
 
 const architectProjectNavigatorLoader = createModePanelLoader({

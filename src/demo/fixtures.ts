@@ -443,7 +443,7 @@ export function demoMessage(conversationId: string, role: string, content: strin
 }
 export const demoMessages = [
   demoMessage('demo-release-chat', 'user', 'Préparons la release de Luma. Je voudrais relire les changements et vérifier les installateurs.'),
-  demoMessage('demo-release-chat', 'assistant', 'Le blueprint décrit les vérifications de la release. Les données propres à chaque utilisation seront fournies dans Operate.\n\nAu-dessus du graphe, « Préparer le blueprint » permet de choisir ce qui sera demandé au lancement. Les instructions des agents restent modifiables depuis les blocs ou le chat.'),
+  demoMessage('demo-release-chat', 'assistant', 'Le blueprint décrit les vérifications de la release. Les données propres à chaque utilisation seront fournies dans Operate.\n\nLes instructions des agents sont modifiables depuis les blocs ou le chat.'),
   demoMessage('demo-assistant-chat', 'user', 'Créons un assistant pour les demandes des clients du studio.'),
   demoMessage('demo-assistant-chat', 'assistant', 'L’assistant clarifie la demande, prépare une réponse et vérifie sa cohérence. Nous pouvons ajuster les instructions ensemble.'),
   demoMessage('demo-task-chat', 'user', 'La lecture audio doit reprendre à la dernière position.'),

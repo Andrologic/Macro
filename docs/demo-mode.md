@@ -93,14 +93,12 @@ Pour une vérification visuelle, changer de projet, ouvrir un agent, modifier se
 instructions et son modèle, enregistrer, envoyer un message, parcourir les tâches
 et les paramètres, puis recharger la page. Les données initiales doivent réapparaître.
 
-## Préparation du blueprint dans Architect
+## Architect et Operate
 
-Dans Luma Mobile, ouvrir **Release mobile**, puis **Préparer le blueprint** au-dessus
-du graphe. Pour chaque entrée, choisir une valeur par défaut ou **À fournir au
-lancement**. Le modèle Macro AI est prérempli par défaut ; il peut aussi être
-demandé à chaque utilisation. Ces attentes sont des métadonnées de conception
-conservées automatiquement avec le plan fictif, sans ajouter de propriétés au
-document AgSDL.
+Dans Architect, le panneau droit commence directement par le visualiseur AgSDL,
+sans bloc de préparation au-dessus. Les instructions des agents se modifient
+à partir des blocs ou dans le chat. Les attentes de lancement des exemples restent
+conservées dans les métadonnées du blueprint.
 
 Dans cette démo, `Implement` porte le nom **Operate**. Il conserve l’interface
 existante : liste des tâches à gauche, espace de travail au centre et modifications
