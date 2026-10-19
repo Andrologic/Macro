@@ -445,7 +445,8 @@ describe('TaskQueue', () => {
     frenchFinalization = false;
     frenchTaskErrors = false;
     useViewFilterStore.setState({
-      implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS },
+      // Existing status and activity cases explicitly include background tasks.
+      implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS, showWithoutInteraction: true },
       isHydrated: true,
     });
     taskQueueAppSettings = new Map<string, string>();
@@ -712,6 +713,26 @@ describe('TaskQueue', () => {
     });
     expect(getLastVirtualListKeys()).toContain('task:later');
     expect(document.querySelector<HTMLButtonElement>('button[title="To launch"]')!.textContent).toBe('To launch1');
+  });
+
+  it('defaults to actionable tasks while leaving background activity available in the filter', async () => {
+    useViewFilterStore.setState({ implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS } });
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready action' }),
+      makeTask('working', 'InProgress', { title: 'Background task' }),
+      makeTask('question', 'AwaitingResponse', { title: 'Needs reply' }),
+      makeTask('failed', 'Failed', { title: 'Needs repair' }),
+      makeTask('done', 'Completed', { title: 'Done task' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:question', 'task:failed']);
+    expect(document.querySelector('button[title="In progress"]')!.textContent).toBe('In progress0');
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!.click(); await flushRender(); });
+    const background = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === 'Without interaction')!;
+    expect(background.getAttribute('aria-checked')).toBe('false');
+    await act(async () => { background.click(); await flushRender(); });
+    expect(getLastVirtualListKeys()).toContain('task:working');
+    expect(getLastVirtualListKeys()).toContain('task:done');
   });
 
   it('combines the three filter checkboxes without closing the menu or double-counting tasks', async () => {

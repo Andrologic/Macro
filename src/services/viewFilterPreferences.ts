@@ -24,7 +24,7 @@ export const DEFAULT_IMPLEMENT_VIEW_FILTERS: ImplementViewFilters = {
   status: 'all',
   showArchived: false,
   showBlockedTasks: false,
-  showWithoutInteraction: true,
+  showWithoutInteraction: false,
 };
 
 export const DEFAULT_ARCHITECT_VIEW_FILTERS: ArchivedViewFilter = {
@@ -58,7 +58,7 @@ export const normalizeImplementViewFilters = (value: unknown): ImplementViewFilt
     status: isTaskQueueStatusFilter(value.status) ? value.status : ['attention', 'blocked', 'failed', 'other'].includes(String(value.status)) ? 'waiting' : 'all',
     showArchived: typeof value.showArchived === 'boolean' ? value.showArchived : false,
     showBlockedTasks: typeof value.showBlockedTasks === 'boolean' ? value.showBlockedTasks : value.showAllTasks === true,
-    showWithoutInteraction: typeof value.showWithoutInteraction === 'boolean' ? value.showWithoutInteraction : true,
+    showWithoutInteraction: typeof value.showWithoutInteraction === 'boolean' ? value.showWithoutInteraction : DEFAULT_IMPLEMENT_VIEW_FILTERS.showWithoutInteraction,
   };
 };
 

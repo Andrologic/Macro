@@ -161,7 +161,7 @@ les filtres du haut. Le bouton filtre propose « Archives », « Sans interactio
 et « Tâches bloquées ». Ces cases se combinent et restent mémorisées entre les
 modes. Les tâches bloquées sont masquées par défaut, sans entrée parent ni
 regroupement par workflow. Elles réapparaissent lorsqu’elles peuvent démarrer.
-Les tâches sans interaction restent affichées par défaut. Les questions,
+Les tâches sans interaction sont masquées par défaut. Les questions,
 approbations, erreurs et actions de lancement restent visibles. Les archives
 peuvent s’ajouter à la liste avec une pastille dédiée. Les compteurs de statuts
 suivent les filtres sans doublons ; ceux des projets dénombrent les tâches actives.
