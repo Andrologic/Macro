@@ -92,6 +92,7 @@ export type IconName =
   | 'camera'
   | 'pencil-ruler'
   | 'workflow'
+  | 'layout-template'
   | 'layout-grid'
   | 'refresh-cw'
   | 'share'
