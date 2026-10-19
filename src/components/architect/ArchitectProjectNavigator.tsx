@@ -908,10 +908,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         <button
           type="button"
           onClick={() => togglePin(entry.locatorKey)}
-          className={cn(
-            'flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
-            isPinned ? 'opacity-100 text-primary' : 'opacity-0 group-hover/plan:opacity-100 group-focus-within/plan:opacity-100',
-          )}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 group-hover/plan:opacity-100 hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
           title={isPinned
             ? t('architect.projectNavigator.unpin', 'Désépingler')
             : t('architect.projectNavigator.pin', 'Épingler')}
