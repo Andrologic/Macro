@@ -29,6 +29,8 @@ describe('authored demo execution scenes', () => {
     for (const task of demoTasks) {
       expect(task.task_kind).toBeUndefined();
       expect(task.standalone_kind).toBeUndefined();
+      expect(task.execution_targets).toHaveLength(1);
+      expect(task.execution_targets![0].executionMode).toBe(task.id === 'demo-audio' ? 'git' : 'direct');
     }
   });
 
@@ -84,10 +86,12 @@ describe('scripted demo progression', () => {
     expect(catalog.map(item => item.id)).toEqual(demoPlans.map(plan => plan.id));
     for (const blueprint of catalog.filter(item => item.id !== 'demo-release')) {
       const use = await runtime.invoke('demo_blueprint_prepare', { blueprintId: blueprint.id, projectId: blueprint.projectIds[0] ?? 'demo-atlas' }) as DemoBlueprintUse;
-      expect((await runtime.invoke('demo_blueprint_start', { id: use.id }) as DemoBlueprintUse).taskIds).toHaveLength(blueprint.steps!.length);
-      for (const task of runtime.tasks.filter(task => task.plan_id === blueprint.id)) {
+      const started = await runtime.invoke('demo_blueprint_start', { id: use.id }) as DemoBlueprintUse;
+      expect(started.taskIds).toHaveLength(blueprint.steps!.length);
+      for (const task of runtime.tasks.filter(task => started.taskIds.includes(task.id))) {
         expect(task.task_kind).toBeUndefined();
         expect(task.standalone_kind).toBeUndefined();
+        expect(task.execution_targets?.[0]).toMatchObject({ projectId: use.projectId, branchName: '', executionMode: 'direct', executionKind: 'repository_root' });
       }
     }
     const draft = await runtime.invoke('demo_blueprint_prepare', { blueprintId: 'demo-quality', projectId: 'demo-atlas' }) as DemoBlueprintUse;

@@ -58,6 +58,7 @@ export function blueprintAgentTasks(use: DemoBlueprintUse): Task[] {
       status: dependencies.length ? 'Blocked' : step.interaction ? 'AwaitingResponse' : 'InProgress',
       dependencies, blocked_by_task_ids: dependencies, is_blocked: dependencies.length > 0, is_ready: false, estimated_changes: [],
       task_source: 'standalone',
+      execution_targets: [{ projectId: use.projectId, branchName: '', executionMode: 'direct', executionKind: 'repository_root', worktreeKey: `${use.projectId}:${use.id}` }],
       conversation_id: `${use.id}-chat-${index}`, sequence_index: index,
     };
   });
