@@ -171,10 +171,11 @@ n’est effectuée. Le rechargement de la page réinitialise les préparations e
 les exécutions comme le reste de la démo. Le dialogue de production n’est pas
 remplacé.
 
-## Organiser les blueprints par projet
+## Organiser les blueprints dans les projets et la bibliothèque
 
 Les projets du navigateur Architect utilisent une icône de couches par défaut.
-Leur bouton + et leur menu contextuel proposent « Nouveau dossier ». Les dossiers
+Leur bouton + et leur menu contextuel proposent « Nouveau dossier ». La Bibliothèque
+Macro propose la même organisation, avec ses propres dossiers et sous-dossiers. Les dossiers
 visuels peuvent contenir des sous-dossiers, être renommés, repliés ou déplacés.
 Le clic droit sur un dossier propose « Nouveau blueprint » et « Nouveau sous-dossier ».
 Un nouveau blueprint ouvre un brouillon AgSDL distinct dans ce dossier, sans
@@ -182,8 +183,9 @@ réutiliser ni déplacer un brouillon vide déjà présent ailleurs. Retirer un 
 remonte ses blueprints et ses sous-dossiers dans son parent, sans les supprimer.
 
 Un blueprint ou un dossier se déplace sur un autre dossier par glisser-déposer, et revient à la racine
-en le déposant sur la ligne du projet. Son menu propose aussi « Déplacer vers… ».
-Un déplacement reste dans le même projet. Un dossier ne peut pas être déplacé
+en le déposant sur la ligne du projet ou l’en-tête de la Bibliothèque Macro. Son menu
+propose aussi « Déplacer vers… ». Un déplacement reste dans le même projet ou dans
+la Bibliothèque Macro, sans transfert entre ces espaces. Un dossier ne peut pas être déplacé
 dans lui-même ni dans l’un de ses descendants. Les anciens dossiers sans parent
 restent à la racine. Les identités incluent la branche pour
 ne pas confondre deux plans portant le même identifiant. La recherche révèle les

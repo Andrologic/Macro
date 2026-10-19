@@ -129,14 +129,14 @@ describe('ArchitectProjectNavigator search', () => {
 
   });
 
-  it('creates folders, moves blueprints by drag and drop, and restores organization after remount', async () => {
+  it.each(['project', 'library'] as const)('creates folders, moves blueprints by drag and drop, and restores organization after remount in %s', async (scopeKind) => {
     const local = plan('local', 'Project blueprint');
     useAppStore.setState({ standaloneProjects: [{ id: 'project-1', name: 'Sample project', path: '/demo/project', gitSetupState: 'ready' }] as never, projectGroups: [], selectedProjectId: 'project-1', selectedGroupId: null, activeArchitectPlanId: null, activePlanContext: null });
     const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
       snapshot: { branchCatalogByBranch: {}, branches: [{ branchName: 'develop', activePlanId: null, plans: [local], error: null }], scannedBranchNames: ['develop'], scopedProjectIds: ['project-1'], visiblePlans: [local], modernPlanCount: 1, selectedPlan: null, selectedBranchName: null, selectionReason: 'none', errors: [] },
       selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
     }));
-    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={scopeKind === 'library' ? 'project-1' : undefined} catalogLoader={catalogLoader} />); await flushRender(); });
     const project = container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"]')!;
     await act(async () => {
       project.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click(); await flushRender();
@@ -163,7 +163,7 @@ describe('ArchitectProjectNavigator search', () => {
     expect(folder.querySelector('[data-blueprint-locator]')?.textContent).toContain('Project blueprint');
     expect(project.querySelectorAll('[data-blueprint-locator]')).toHaveLength(1);
     await act(async () => { root?.render(<div />); await flushRender(); });
-    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={scopeKind === 'library' ? 'project-1' : undefined} catalogLoader={catalogLoader} />); await flushRender(); });
     expect(container!.querySelector('[data-blueprint-folder] [data-blueprint-locator]')?.textContent).toContain('Project blueprint');
     const projectAfter = container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"]')!;
     await act(async () => { drag(projectAfter.querySelector<HTMLElement>('[data-blueprint-locator]')!, 'dragstart'); await flushRender(); });
@@ -172,7 +172,7 @@ describe('ArchitectProjectNavigator search', () => {
     expect(projectAfter.querySelectorAll('[data-blueprint-locator]')).toHaveLength(1);
   });
 
-  it('moves a nested folder with its blueprints, rejects cycles and preserves its ancestry on remount', async () => {
+  it.each(['project', 'library'] as const)('moves a nested folder with its blueprints, rejects cycles and preserves its ancestry on remount in %s', async (scopeKind) => {
     const local = plan('nested', 'Nested blueprint');
     let organization = nameBlueprintFolder(emptyBlueprintFolders(), 'project:project-1', 'delivery', 'Delivery');
     organization = nameBlueprintFolder(organization, 'project:project-1', 'mobile', 'Mobile', 'delivery');
@@ -185,7 +185,7 @@ describe('ArchitectProjectNavigator search', () => {
       snapshot: { branchCatalogByBranch: {}, branches: [{ branchName: 'develop', activePlanId: null, plans: [local], error: null }], scannedBranchNames: ['develop'], scopedProjectIds: ['project-1'], visiblePlans: [local], modernPlanCount: 1, selectedPlan: null, selectedBranchName: null, selectionReason: 'none', errors: [] },
       selectedPlan: null, selectedBranchName: null, selectionReason: 'none',
     }));
-    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={scopeKind === 'library' ? 'project-1' : undefined} catalogLoader={catalogLoader} />); await flushRender(); });
     const folder = (id: string) => container!.querySelector<HTMLElement>(`[data-blueprint-folder="${id}"]`)!;
     expect(folder('delivery').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
     const values = new Map<string, string>();
@@ -229,7 +229,7 @@ describe('ArchitectProjectNavigator search', () => {
     });
     expect([...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].some(button => button.textContent?.includes('New subfolder'))).toBe(false);
     await act(async () => { root?.render(<div />); await flushRender(); });
-    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={scopeKind === 'library' ? 'project-1' : undefined} catalogLoader={catalogLoader} />); await flushRender(); });
     expect(folder('product').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
     await act(async () => { drag(folder('mobile').querySelector<HTMLElement>('[data-blueprint-folder-header]')!, 'dragstart'); await flushRender(); });
     const projectHeader = container!.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"] [data-architect-scope-menu]')!;
@@ -242,7 +242,7 @@ describe('ArchitectProjectNavigator search', () => {
     expect(folder('mobile').querySelector('[data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
   });
 
-  it('creates independent blueprints directly inside the folder selected by right click', async () => {
+  it.each(['project', 'library'] as const)('creates independent blueprints directly inside the folder selected by right click in %s', async (scopeKind) => {
     const existing = plan('existing', 'Existing empty plan');
     let organization = nameBlueprintFolder(emptyBlueprintFolders(), 'project:project-1', 'delivery', 'Delivery');
     organization = nameBlueprintFolder(organization, 'project:project-1', 'mobile', 'Mobile', 'delivery');
@@ -262,7 +262,7 @@ describe('ArchitectProjectNavigator search', () => {
       catalog.push({ ...record, nodeCount: 0, hasAgsdl: true });
       return record;
     });
-    await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} planCreator={planCreator} />); await flushRender(); });
+    await act(async () => { root?.render(<ArchitectProjectNavigator macroBlueprintProjectId={scopeKind === 'library' ? 'project-1' : undefined} catalogLoader={catalogLoader} planCreator={planCreator} />); await flushRender(); });
     for (let count = 1; count <= 2; count++) {
       await act(async () => {
         container!.querySelector<HTMLElement>('[data-blueprint-folder="mobile"] [data-blueprint-folder-header]')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender();
