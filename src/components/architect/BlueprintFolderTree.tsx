@@ -63,6 +63,11 @@ export function BlueprintFolderTree({ scopeId, entries, organization, disabled, 
       const expanded = searching || !organization.collapsedIds.includes(folder.id);
       const id = `${contentId}-${folder.id}`;
       return <div key={folder.id} data-blueprint-folder={folder.id}
+          onContextMenu={event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!disabled) setMenuId(folder.id);
+          }}
           onDragEnter={event => { event.stopPropagation(); if (canDrop(folder.id)) { event.preventDefault(); setHoveredId(folder.id); } }}
           onDragOver={event => { event.stopPropagation(); if (canDrop(folder.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setHoveredId(folder.id); } else { event.dataTransfer.dropEffect = 'none'; } }}
           onDragLeave={() => setHoveredId(null)}

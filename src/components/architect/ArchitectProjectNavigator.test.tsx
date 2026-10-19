@@ -202,6 +202,31 @@ describe('ArchitectProjectNavigator search', () => {
     expect(folder('delivery').querySelector('[data-blueprint-folder="mobile"]')).toBeNull();
     expect(folder('product').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
     expect(container!.querySelectorAll('[data-blueprint-locator]')).toHaveLength(1);
+    const contextMenu = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 200 });
+    await act(async () => { folder('mobile').querySelector<HTMLElement>('[data-blueprint-folder-header]')!.dispatchEvent(contextMenu); await flushRender(); });
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(document.querySelector('[data-architect-scope-context-menu]')).toBeNull();
+    expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    await act(async () => {
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.includes('New subfolder'))!.click(); await flushRender();
+    });
+    const input = document.querySelector<HTMLInputElement>('[role="dialog"] input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(input, 'Reviews');
+      input.dispatchEvent(new window.Event('input', { bubbles: true })); await flushRender();
+    });
+    await act(async () => {
+      [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === 'Create')!.click(); await flushRender();
+    });
+    const saved = await loadPreference<{ folders: { id: string; name: string; parentId?: string | null }[] }>(PREF_KEYS.ARCHITECT_BLUEPRINT_FOLDERS);
+    const child = saved.folders.find(folder => folder.name === 'Reviews')!;
+    expect(child.parentId).toBe('mobile');
+    expect(folder('product').contains(folder(child.id))).toBe(true);
+    expect(folder('mobile').contains(folder(child.id))).toBe(true);
+    await act(async () => {
+      folder('mobile').querySelector<HTMLElement>('[data-blueprint-locator] button')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender();
+    });
+    expect([...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].some(button => button.textContent?.includes('New subfolder'))).toBe(false);
     await act(async () => { root?.render(<div />); await flushRender(); });
     await act(async () => { root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />); await flushRender(); });
     expect(folder('product').querySelector('[data-blueprint-folder="mobile"] [data-blueprint-locator]')?.textContent).toContain('Nested blueprint');
