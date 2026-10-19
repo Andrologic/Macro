@@ -77,12 +77,12 @@ export default function TaskExecutionGraphDialog({ task, onClose }: { task: Cata
       <button type="button" onClick={onClose} aria-label={t('common.close', 'Close')} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent"><Icon name="x" size={16} /></button>
     </header>
     {graphs.length > 1 && <div className="px-4 pt-3"><select aria-label={t('implement.workflowGraph', 'Workflow graph')} value={graph?.path} onChange={event => { setGraphIndex(graphs.findIndex(graph => graph.path === event.target.value)); setSelected(''); }} className="rounded-md border border-border bg-card px-2 py-1 text-xs">{graphs.map(graph => <option key={graph.path} value={graph.path}>{graph.title}</option>)}</select></div>}
-    <div className="agsdl-viewer flex min-h-0 flex-1 flex-col">
+    <div className="agsdl-viewer relative flex min-h-0 flex-1 flex-col">
       {error || (view && !document) ? <div role="alert" className="m-auto flex items-center gap-2 text-sm text-muted-foreground"><Icon name="alert-circle" size={16} />{t('implement.executionGraphError', 'The workflow could not be loaded.')}<button className="text-primary" onClick={() => setAttempt(value => value + 1)}>{t('common.retry', 'Retry')}</button></div>
         : view === undefined ? <div role="status" className="m-auto"><SpinnerIcon size={20} /></div>
         : !view ? <p className="m-auto px-6 text-center text-sm text-muted-foreground">{t('implement.executionGraphEmpty', 'No AgSDL execution is linked to this task.')}</p>
         : <WorkflowGraph selectionMode="select" cards={system.cards} edges={system.edges} selected={selected} select={setSelected} title={card => tracked[card.path]?.title || card.title} trackedTasks={tracked} nativeActivations={native} />}
+      {selected && tracked[selected] && <button type="button" className="absolute bottom-4 right-4 z-10 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-primary shadow-lg transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" onClick={() => { void useTaskStore.getState().activateTask(tracked[selected].taskId).then(() => { useAppStore.getState().setMode('Implement'); onClose(); }).catch(() => setError(true)); }}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button>}
     </div>
-    {selected && tracked[selected] && <footer className="flex justify-end border-t border-border px-5 py-3"><button className="flex items-center gap-2 text-xs text-primary" onClick={() => { void useTaskStore.getState().activateTask(tracked[selected].taskId).then(() => { useAppStore.getState().setMode('Implement'); onClose(); }).catch(() => setError(true)); }}><Icon name="message-square" size={14} />{t('implement.openGraphTask', 'Open task')}</button></footer>}
   </Dialog>;
 }
