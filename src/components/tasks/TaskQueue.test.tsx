@@ -673,6 +673,45 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).not.toContain('Reviewing item');
   });
 
+  it('hides passive dependency waits, keeps attention visible, and shares the same visibility with counters', async () => {
+    const dependent = makeTask('later', 'Blocked', { title: 'Later task', is_blocked: true, blocked_by_task_ids: ['task-1'], dependencies: ['task-1'] });
+    seedTasks([
+      makeTask('task-1', 'InProgress', { title: 'Active task' }), dependent, dependent,
+      makeTask('question', 'AwaitingResponse', { title: 'Needs answer' }),
+      makeTask('config', 'Blocked', { title: 'Needs setup', blocked_by_task_ids: [] }),
+      makeTask('failed', 'Failed', { title: 'Failed task' }),
+      makeTask('done', 'Completed', { title: 'Done task' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getLastVirtualListKeys()).not.toContain('task:later');
+    expect(getLastVirtualListKeys()).toContain('task:question');
+    expect(getLastVirtualListKeys()).toContain('task:failed');
+    expect(getLastVirtualListKeys()).toContain('task:config');
+    const waiting = () => document.querySelector<HTMLButtonElement>('button[title="Waiting"]')!;
+    expect(waiting().textContent).toBe('Waiting3');
+    const toggleAll = async () => {
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-tour-id="implement-list-options"]')!.click(); await flushRender(); });
+      const toggle = document.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')!;
+      await act(async () => { toggle.click(); await flushRender(); });
+    };
+    await toggleAll();
+    expect(getLastVirtualListKeys().filter(key => key === 'task:later')).toHaveLength(1);
+    expect(waiting().textContent).toBe('Waiting4');
+    expect(useTaskStore.getState().tasks.find(task => task.id === 'later')?.status).toBe('Blocked');
+    await act(async () => { waiting().click(); await flushRender(); });
+    await toggleAll();
+    expect(getLastVirtualListKeys()).not.toContain('task:later');
+    expect(getLastVirtualListKeys()).toContain('task:question');
+    expect(waiting().textContent).toBe('Waiting3');
+    await act(async () => {
+      waiting().click();
+      useTaskStore.setState({ tasks: useTaskStore.getState().tasks.map(task => task.id === 'later' ? { ...task, status: 'Pending', is_blocked: false, blocked_by_task_ids: [] } : task) });
+      await flushRender();
+    });
+    expect(getLastVirtualListKeys()).toContain('task:later');
+    expect(document.querySelector<HTMLButtonElement>('button[title="To launch"]')!.textContent).toBe('To launch1');
+  });
+
   it('excludes drafts and archives from the ready counter and filter', async () => {
     seedTasks([
       makeTask('ready', 'Pending', { title: 'Ready item' }),
@@ -1562,7 +1601,7 @@ describe('TaskQueue', () => {
     expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
   });
 
-  it('opens project management from an accessible compact header action', async () => {
+  it('opens project management from the compact list options', async () => {
     seedStores('Pending');
 
     await act(async () => {
@@ -1571,14 +1610,14 @@ describe('TaskQueue', () => {
     });
 
     const manageProjectsButton = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-manage-projects"]'
+      '[data-tour-id="implement-list-options"]'
     );
     expect(manageProjectsButton).not.toBeNull();
     expect(manageProjectsButton?.tagName).toBe('BUTTON');
     expect(manageProjectsButton?.type).toBe('button');
     expect(manageProjectsButton?.tabIndex).toBe(0);
-    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('Manage projects');
-    expect(manageProjectsButton?.getAttribute('title')).toBe('Manage projects');
+    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('List options');
+    expect(manageProjectsButton?.getAttribute('title')).toBe('List options');
 
     const searchToggle = document.body.querySelector<HTMLButtonElement>(
       '[data-tour-id="implement-search-toggle"]'
@@ -1587,7 +1626,7 @@ describe('TaskQueue', () => {
       searchToggle?.click();
       await flushRender();
     });
-    expect(document.body.querySelector('[data-tour-id="implement-manage-projects"]')).toBeNull();
+    expect(document.body.querySelector('[data-tour-id="implement-list-options"]')).toBeNull();
 
     await act(async () => {
       searchToggle?.click();
@@ -1595,10 +1634,12 @@ describe('TaskQueue', () => {
     });
 
     const restoredManageProjectsButton = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-manage-projects"]'
+      '[data-tour-id="implement-list-options"]'
     );
     await act(async () => {
       restoredManageProjectsButton?.click();
+      await flushRender();
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.trim() === 'Manage projects')!.click();
       await flushRender();
     });
 

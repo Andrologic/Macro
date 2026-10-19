@@ -88,6 +88,7 @@ describe('useViewFilterStore', () => {
         projectId: 'project-2',
         status: 'waiting',
         showArchived: true,
+        showAllTasks: false,
       },
       architect: { version: 1, showArchived: true },
       chat: { version: 1, showArchived: true },
@@ -104,10 +105,24 @@ describe('useViewFilterStore', () => {
     resetInMemoryStore();
     await useViewFilterStore.getState().hydrate();
     expect(useViewFilterStore.getState().implement).toEqual({
-      version: 1, projectId: 'project-2', status: 'waiting', showArchived: true,
+      version: 1, projectId: 'project-2', status: 'waiting', showArchived: true, showAllTasks: false,
     });
     useViewFilterStore.getState().setImplementShowArchived(false);
     expect(useViewFilterStore.getState().implement.status).toBe('waiting');
+  });
+
+  it('remembers the all-tasks display choice and resets it with the other filters', async () => {
+    await useViewFilterStore.getState().hydrate();
+    expect(useViewFilterStore.getState().implement.showAllTasks).toBe(false);
+    useViewFilterStore.getState().setImplementShowAllTasks(true);
+    useViewFilterStore.getState().setImplementStatusFilter('waiting');
+    await waitForViewFilterPersistence();
+    resetInMemoryStore();
+    await useViewFilterStore.getState().hydrate();
+    expect(useViewFilterStore.getState().implement).toMatchObject({ showAllTasks: true, status: 'waiting' });
+    useViewFilterStore.getState().resetImplementFilters();
+    await waitForViewFilterPersistence();
+    expect(useViewFilterStore.getState().implement).toEqual(DEFAULT_IMPLEMENT_VIEW_FILTERS);
   });
 
   it('sanitizes invalid current values and safely rejects an old version', () => {
@@ -122,6 +137,7 @@ describe('useViewFilterStore', () => {
       projectId: 'project-2',
       status: 'waiting',
       showArchived: true,
+      showAllTasks: false,
     })).toEqual(DEFAULT_IMPLEMENT_VIEW_FILTERS);
     expect(normalizeArchivedViewFilter(
       { version: 0, showArchived: true },
@@ -187,6 +203,7 @@ describe('useViewFilterStore', () => {
     const hydration = useViewFilterStore.getState().hydrate();
     await Promise.resolve();
     useViewFilterStore.getState().setImplementStatusFilter('waiting');
+    useViewFilterStore.getState().setImplementShowAllTasks(true);
     resolveSnapshot({
       schemaVersion: 1,
       values: {
@@ -206,6 +223,7 @@ describe('useViewFilterStore', () => {
       projectId: 'project-2',
       status: 'waiting',
       showArchived: true,
+      showAllTasks: true,
     });
     expect(writes.at(-1)).toEqual({
       key: PREF_KEYS.IMPLEMENT_VIEW_FILTERS,
@@ -214,6 +232,7 @@ describe('useViewFilterStore', () => {
         projectId: 'project-2',
         status: 'waiting',
         showArchived: true,
+        showAllTasks: true,
       },
     });
   });
@@ -246,6 +265,7 @@ describe('useViewFilterStore', () => {
         projectId: 'project-2',
         status: 'waiting',
         showArchived: true,
+        showAllTasks: false,
       },
       isHydrated: true,
     });
@@ -258,6 +278,7 @@ describe('useViewFilterStore', () => {
       projectId: 'project-2',
       status: 'ready',
       showArchived: true,
+      showAllTasks: false,
     });
     resolveWrite({
       schemaVersion: 1,
@@ -342,6 +363,7 @@ describe('useViewFilterStore', () => {
         projectId: DEFAULT_IMPLEMENT_VIEW_FILTERS.projectId,
         status: 'in_progress',
         showArchived: false,
+        showAllTasks: false,
       });
   });
 });

@@ -24,6 +24,7 @@ type FilterField =
   | 'implementProjectId'
   | 'implementStatus'
   | 'implementShowArchived'
+  | 'implementShowAllTasks'
   | 'architectShowArchived'
   | 'chatShowArchived';
 
@@ -31,6 +32,7 @@ const mutationVersions: Record<FilterField, number> = {
   implementProjectId: 0,
   implementStatus: 0,
   implementShowArchived: 0,
+  implementShowAllTasks: 0,
   architectShowArchived: 0,
   chatShowArchived: 0,
 };
@@ -47,6 +49,7 @@ interface ViewFilterStore {
   setImplementProjectFilter: (projectId: string) => void;
   setImplementStatusFilter: (status: TaskQueueStatusFilter) => void;
   setImplementShowArchived: (showArchived: boolean) => void;
+  setImplementShowAllTasks: (showAllTasks: boolean) => void;
   resetImplementFilters: () => void;
   setArchitectShowArchived: (showArchived: boolean) => void;
   resetArchitectFilters: () => void;
@@ -163,6 +166,10 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
                 mutationVersions.implementShowArchived === versions.implementShowArchived
                   ? implement.showArchived
                   : state.implement.showArchived,
+              showAllTasks:
+                mutationVersions.implementShowAllTasks === versions.implementShowAllTasks
+                  ? implement.showAllTasks
+                  : state.implement.showAllTasks,
             },
             architect: mutationVersions.architectShowArchived === versions.architectShowArchived
               ? architect
@@ -177,6 +184,7 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
             mutationVersions.implementProjectId !== versions.implementProjectId ||
             mutationVersions.implementStatus !== versions.implementStatus ||
             mutationVersions.implementShowArchived !== versions.implementShowArchived ||
+            mutationVersions.implementShowAllTasks !== versions.implementShowAllTasks ||
             (persistedImplement !== undefined && !jsonEqual(persistedImplement, implement))
           ) {
             persist(PREF_KEYS.IMPLEMENT_VIEW_FILTERS, get().implement);
@@ -219,8 +227,12 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
         (current) => ({ ...current, showArchived }),
       );
     },
+    setImplementShowAllTasks: (showAllTasks) => updateImplement(
+      ['implementShowAllTasks'],
+      (current) => ({ ...current, showAllTasks }),
+    ),
     resetImplementFilters: () => updateImplement(
-      ['implementProjectId', 'implementStatus', 'implementShowArchived'],
+      ['implementProjectId', 'implementStatus', 'implementShowArchived', 'implementShowAllTasks'],
       () => ({ ...DEFAULT_IMPLEMENT_VIEW_FILTERS }),
     ),
     setArchitectShowArchived: (showArchived) => {

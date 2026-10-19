@@ -22,7 +22,7 @@ function Scene() {
       <button role="menuitem">Rename</button><button role="menuitem" disabled>Unavailable</button><button role="menuitem">Move</button>
       <details><summary role="menuitem">Other actions</summary><button role="menuitem">Extra action</button></details>
     </SidebarMenu>}
-    {second && <SidebarMenu position={{ left: 20, top: 20 }} onClose={() => setSecond(false)} aria-label="Second menu"><button role="menuitem">New item</button></SidebarMenu>}
+    {second && <SidebarMenu position={{ left: 20, top: 20 }} onClose={() => setSecond(false)} aria-label="Second menu"><button role="menuitemcheckbox" aria-checked={false}>New item</button></SidebarMenu>}
   </>;
 }
 async function renderScene() {
@@ -67,6 +67,7 @@ describe('SidebarMenu', () => {
     await act(async () => button('Second').click());
     expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
     expect(document.querySelector('[role="menu"]')?.getAttribute('aria-label')).toBe('Second menu');
+    expect(document.activeElement?.textContent).toBe('New item');
     await act(async () => button('Outside').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });

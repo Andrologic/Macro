@@ -9,6 +9,7 @@ export interface ImplementViewFilters {
   projectId: string;
   status: TaskQueueStatusFilter;
   showArchived: boolean;
+  showAllTasks: boolean;
 }
 
 export interface ArchivedViewFilter {
@@ -21,6 +22,7 @@ export const DEFAULT_IMPLEMENT_VIEW_FILTERS: ImplementViewFilters = {
   projectId: ALL_PROJECTS_FILTER,
   status: 'all',
   showArchived: false,
+  showAllTasks: false,
 };
 
 export const DEFAULT_ARCHITECT_VIEW_FILTERS: ArchivedViewFilter = {
@@ -53,6 +55,7 @@ export const normalizeImplementViewFilters = (value: unknown): ImplementViewFilt
         : ALL_PROJECTS_FILTER,
     status: isTaskQueueStatusFilter(value.status) ? value.status : ['attention', 'blocked', 'failed', 'other'].includes(String(value.status)) ? 'waiting' : 'all',
     showArchived: typeof value.showArchived === 'boolean' ? value.showArchived : false,
+    showAllTasks: typeof value.showAllTasks === 'boolean' ? value.showAllTasks : false,
   };
 };
 

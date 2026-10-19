@@ -18,7 +18,7 @@ export function isSidebarTextInput(target: EventTarget | null): boolean {
 
 function availableItems(menu: HTMLElement): HTMLElement[] {
   const closedGroups = [...menu.querySelectorAll('details:not([open])')];
-  return [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])')]
+  return [...menu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled):not([aria-disabled="true"])')]
     .filter(item => !item.closest('[hidden], [inert]') && !closedGroups.some(group => group.contains(item) && item.tagName !== 'SUMMARY'));
 }
 
@@ -134,7 +134,7 @@ export function SidebarMenu({ position, onClose, triggerRef, menuRef, children, 
 
   if (typeof document === 'undefined') return null;
   return createPortal(<div {...props} ref={ref} role="menu"
-    className={cn('fixed z-[80] w-52 max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl [&_[role=menuitem]]:focus-visible:bg-accent [&_[role=menuitem]]:focus-visible:outline-none', className)}
+    className={cn('fixed z-[80] w-52 max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-xs text-popover-foreground shadow-xl [&_[role^=menuitem]]:focus-visible:bg-accent [&_[role^=menuitem]]:focus-visible:outline-none', className)}
     style={{ ...style, left: placed.left, top: placed.top }}
     onClickCapture={() => { const target = returnFocusRef.current; if (target instanceof HTMLElement && target.isConnected) target.focus(); }}
     onClick={event => event.stopPropagation()}

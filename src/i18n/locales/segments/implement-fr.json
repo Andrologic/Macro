@@ -1,4 +1,6 @@
 {
+  "showAllTasks": "Afficher toutes les tâches",
+  "listOptions": "Options de la liste",
   "startReview": "Passer en revue",
   "startReviewBusy": "Terminez le tour en cours ou résolvez la demande d’approbation avant de passer en revue.",
   "startReviewUnavailable": "Cette tâche ne peut pas passer en revue dans son état actuel.",

@@ -1,3 +1,4 @@
+import { visibleTaskQueueTasks } from '../../services/taskQueueVisibility';
 import { groupTaskQueueLanes, TASK_QUEUE_LANES, type TaskQueueLane } from '../../services/taskQueueLanes';
 import { getPlanFinalizationTaskDisplayTitle } from '../../services/planFinalization';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
@@ -734,16 +735,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const startingReviewsRef = useRef(new Set<string>());
   const {
-    implement: { projectId: projectFilter, status: statusFilter, showArchived },
+    implement: { projectId: projectFilter, status: statusFilter, showArchived, showAllTasks },
     setImplementProjectFilter,
     setImplementStatusFilter,
     setImplementShowArchived,
+    setImplementShowAllTasks,
     filtersHydrated,
   } = useViewFilterStore(useShallow((state) => ({
     implement: state.implement,
     setImplementProjectFilter: state.setImplementProjectFilter,
     setImplementStatusFilter: state.setImplementStatusFilter,
     setImplementShowArchived: state.setImplementShowArchived,
+    setImplementShowAllTasks: state.setImplementShowAllTasks,
     filtersHydrated: state.isHydrated,
   })));
   const [searchQuery, setSearchQuery] = useState('');
@@ -1360,13 +1363,42 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     t,
   ]);
 
+  const runningTaskIds = useMemo(
+    () =>
+      resolveRunningTaskIds({
+        conversations,
+        tasks,
+        selectedConversationId,
+        selectedTaskId,
+        conversationRuntimeById,
+        conversationCompactionStatusById,
+      }),
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      selectedConversationId,
+      selectedTaskId,
+      tasks,
+    ]
+  );
+
+  const { attentionByTaskId, resolvedWaitTaskIds } = useMemo(() => resolveTaskQueueSupervision({
+    tasks, conversations, requestStateByConversationId: Object.fromEntries(JSON.parse(requestSignature)),
+    questionnaireDraftsByConversationId: {}, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId,
+  }), [tasks, conversations, requestSignature, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId]);
+
+  const queueVisibleTasks = useMemo(() => visibleTaskQueueTasks(tasks, {
+    showAllTasks, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId,
+  }), [tasks, showAllTasks, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId]);
+
   const projectFilterOptions = useMemo<TaskProjectFilterOption[]>(
     () => availableProjects.map((project) => ({
       id: project.id,
       name: project.name,
       path: project.path,
       groupName: getProjectGroupByProjectId(projectGroups, project.id)?.name ?? null,
-      taskCount: tasks.filter((task) =>
+      taskCount: queueVisibleTasks.filter((task) =>
         !task.archived_at &&
         task.status !== 'Completed' &&
         taskMatchesProjectId(task, project.id)
@@ -1376,7 +1408,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       gitSetupState: project.gitSetupState,
       gitFlowSettings: project.gitFlowSettings,
     })),
-    [availableProjects, projectGroups, tasks]
+    [availableProjects, projectGroups, queueVisibleTasks]
   );
   const editableProjectOptions = useMemo(
     () => projectFilterOptions.filter((project) => !project.isReadOnly),
@@ -1420,37 +1452,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     setImplementProjectFilter,
   ]);
 
-  const runningTaskIds = useMemo(
-    () =>
-      resolveRunningTaskIds({
-        conversations,
-        tasks,
-        selectedConversationId,
-        selectedTaskId,
-        conversationRuntimeById,
-        conversationCompactionStatusById,
-      }),
-    [
-      conversationCompactionStatusById,
-      conversationRuntimeById,
-      conversations,
-      selectedConversationId,
-      selectedTaskId,
-      tasks,
-    ]
-  );
-
-  const { attentionByTaskId, resolvedWaitTaskIds } = useMemo(() => resolveTaskQueueSupervision({
-    tasks, conversations, requestStateByConversationId: Object.fromEntries(JSON.parse(requestSignature)),
-    questionnaireDraftsByConversationId: {}, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId,
-  }), [tasks, conversations, requestSignature, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId]);
-
   const projectFilteredTasks = useMemo(() => {
     if (projectFilter === ALL_PROJECTS_FILTER) {
-      return [...new Map(tasks.map(task => [task.id, task])).values()];
+      return queueVisibleTasks;
     }
-    return [...new Map(tasks.map(task => [task.id, task])).values()].filter((task) => taskMatchesProjectId(task, projectFilter));
-  }, [projectFilter, tasks]);
+    return queueVisibleTasks.filter((task) => taskMatchesProjectId(task, projectFilter));
+  }, [projectFilter, queueVisibleTasks]);
   const taskQueueStatusGroupById = useMemo(
     () => new Map(
       projectFilteredTasks.map((task) => [
@@ -1472,8 +1479,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     [attentionByTaskId, resolvedWaitTaskIds, mergeWorkflowRuntimeByTaskId, projectFilteredTasks, runningTaskIds]
   );
   const totalActiveTaskCount = useMemo(
-    () => tasks.filter((task) => !task.archived_at && task.status !== 'Completed').length,
-    [tasks]
+    () => queueVisibleTasks.filter((task) => !task.archived_at && task.status !== 'Completed').length,
+    [queueVisibleTasks]
   );
 
   const taskLanes = useMemo(() => groupTaskQueueLanes(projectFilteredTasks, taskQueueStatusGroupById), [projectFilteredTasks, taskQueueStatusGroupById]);
@@ -2254,8 +2261,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
         <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
           onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
+        {!showArchived && <button role="menuitemcheckbox" aria-checked={showAllTasks} type="button" onClick={() => { setPanelMenuPosition(null); setImplementShowAllTasks(!showAllTasks); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showAllTasks ? 'check-square' : 'square'} size={12} />{t('implement.showAllTasks', 'Show all tasks')}</button>}
         <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); setImplementShowArchived(!showArchived); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showArchived ? 'list-todo' : 'archive'} size={12} />{showArchived ? t('implement.tasks', 'Tasks') : t('implement.archives', 'Archives')}</button>
-        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('architect.projectNavigator.manageProjects', 'Gérer les projets')}</button>
+        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('implement.manageProjects', 'Manage projects')}</button>
       </SidebarMenu>;
 
   if (isWorkspaceMissing) {
@@ -2351,10 +2359,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
             }
           />
           <PanelHeaderIconButton
-            icon="settings"
-            label={t('implement.manageProjects', 'Manage projects')}
-            onClick={openProjectNavigator}
-            data-tour-id="implement-manage-projects"
+            icon="more-horizontal"
+            label={t('implement.listOptions', 'List options')}
+            onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setPanelMenuPosition({ left: rect.right - 208, top: rect.bottom + 4 }); }}
+            aria-haspopup="menu" aria-expanded={Boolean(panelMenuPosition)}
+            data-tour-id="implement-list-options"
           />
             </>
           )}

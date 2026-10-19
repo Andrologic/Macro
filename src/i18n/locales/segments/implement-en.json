@@ -1,4 +1,6 @@
 {
+  "showAllTasks": "Show all tasks",
+  "listOptions": "List options",
   "startReview": "Start review",
   "startReviewBusy": "Finish the current turn or resolve the tool approval before starting review.",
   "startReviewUnavailable": "This task cannot enter review in its current state.",

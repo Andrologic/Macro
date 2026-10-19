@@ -1,4 +1,6 @@
 {
+  "showAllTasks": "すべてのタスクを表示",
+  "listOptions": "リストのオプション",
   "startReview": "レビューを開始",
   "startReviewBusy": "レビューを開始する前に、現在のターンを終了するか、ツールの承認要求を解決してください。",
   "startReviewUnavailable": "このタスクは現在の状態ではレビューに移行できません。",

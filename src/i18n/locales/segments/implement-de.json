@@ -1,4 +1,6 @@
 {
+  "showAllTasks": "Alle Aufgaben anzeigen",
+  "listOptions": "Listenoptionen",
   "startReview": "Review starten",
   "startReviewBusy": "Beenden Sie den aktuellen Durchlauf oder klären Sie die Werkzeugfreigabe, bevor Sie das Review starten.",
   "startReviewUnavailable": "Diese Aufgabe kann im aktuellen Zustand nicht ins Review wechseln.",

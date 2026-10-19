@@ -1,4 +1,6 @@
 {
+  "showAllTasks": "Mostrar todas las tareas",
+  "listOptions": "Opciones de la lista",
   "startReview": "Iniciar revisión",
   "startReviewBusy": "Finaliza el turno actual o resuelve la aprobación de la herramienta antes de iniciar la revisión.",
   "startReviewUnavailable": "Esta tarea no puede pasar a revisión en su estado actual.",

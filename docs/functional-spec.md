@@ -489,14 +489,16 @@ dans la zone visible. La recherche du contenu reste locale, indexée et paginée
 Elle ne charge pas les transcriptions de toutes les conversations dans le frontend.
 
 Les filtres structurants des listes principales survivent aux changements de
-mode et aux redémarrages. Implement conserve le projet, le statut et la vue
-archivée. La file regroupe les tâches dans quatre catégories exclusives :
+mode et aux redémarrages. Implement conserve le projet, le statut, la vue
+archivée et le choix d’afficher toutes les tâches. La file regroupe les tâches dans quatre catégories exclusives :
 « À lancer », « En cours », « En attente » et « Terminées ». Les compteurs,
 les filtres et les sections utilisent le même regroupement, sans compter deux
 fois une tâche. Les brouillons et les archives restent dans leurs vues dédiées.
 « En attente » regroupe les réponses et approbations attendues, les blocages
 et les échecs. La raison précise reste visible sur chaque carte. Une tâche en
 review reste « En cours » tant qu'aucune interaction utilisateur n'est attendue.
+Par défaut, une tâche qui n’a pas démarré et attend uniquement des tâches prérequises connues et inachevées est masquée. Les tâches en cours, les demandes de réponse ou d’approbation, les erreurs, les besoins de revalidation et les blocages non résolus restent visibles. Les tâches masquées restent dans le système et réapparaissent dès qu’elles deviennent exécutables. Le menu « Options de la liste », accessible par les trois points de l’en-tête ou par clic droit sur le fond du panneau, propose « Afficher toutes les tâches ». Ce choix est mémorisé. La liste, les compteurs de statuts et les compteurs des projets utilisent la même visibilité et des identités uniques. Le filtre ne masque pas les archives.
+
 Les états techniques du moteur sont conservés. Les anciens filtres « À traiter »,
 « Bloquées » et « Échec » sont repris sous « En attente ».
 Le filtre se combine au projet et à la recherche. Un second clic sur le filtre

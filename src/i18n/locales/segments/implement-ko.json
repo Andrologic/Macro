@@ -1,4 +1,6 @@
 {
+  "showAllTasks": "모든 작업 표시",
+  "listOptions": "목록 옵션",
   "startReview": "검토 시작",
   "startReviewBusy": "검토를 시작하기 전에 현재 턴을 완료하거나 도구 승인 요청을 처리하세요.",
   "startReviewUnavailable": "현재 상태에서는 이 작업을 검토로 전환할 수 없습니다.",
