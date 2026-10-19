@@ -14,6 +14,7 @@ export type IconName =
   | 'file'
   | 'plus'
   | 'search'
+  | 'list-filter'
   | 'settings'
   | 'git-branch'
   | 'git-commit'

@@ -489,21 +489,22 @@ dans la zone visible. La recherche du contenu reste locale, indexée et paginée
 Elle ne charge pas les transcriptions de toutes les conversations dans le frontend.
 
 Les filtres structurants des listes principales survivent aux changements de
-mode et aux redémarrages. Implement conserve le projet, le statut, la vue
-archivée et le choix d’afficher toutes les tâches. La file regroupe les tâches dans quatre catégories exclusives :
+mode et aux redémarrages. Implement conserve le projet, le statut, la visibilité
+des archives et les choix d’afficher les tâches bloquées ou sans interaction. La file regroupe les tâches dans quatre catégories exclusives :
 « À lancer », « En cours », « En attente » et « Terminées ». Les compteurs,
 les filtres et les sections utilisent le même regroupement, sans compter deux
-fois une tâche. Les brouillons et les archives restent dans leurs vues dédiées.
+fois une tâche. Les brouillons restent séparés des compteurs ; les archives peuvent être incluses dans la liste.
 « En attente » regroupe les réponses et approbations attendues, les blocages
 et les échecs. La raison précise reste visible sur chaque carte. Une tâche en
 review reste « En cours » tant qu'aucune interaction utilisateur n'est attendue.
-Par défaut, une tâche qui n’a pas démarré et attend uniquement des tâches prérequises connues et inachevées est masquée. Les tâches en cours, les demandes de réponse ou d’approbation, les erreurs, les besoins de revalidation et les blocages non résolus restent visibles. Les tâches masquées restent dans le système et réapparaissent dès qu’elles deviennent exécutables. Le menu « Options de la liste », accessible par les trois points de l’en-tête ou par clic droit sur le fond du panneau, propose « Afficher toutes les tâches ». Ce choix est mémorisé. La liste, les compteurs de statuts et les compteurs des projets utilisent la même visibilité et des identités uniques. Le filtre ne masque pas les archives.
+Le bouton filtre dans l’en-tête propose trois cases indépendantes : « Archives », « Sans interaction » et « Tâches bloquées ». Les archives s’ajoutent à la liste avec une pastille dédiée, sans remplacer les tâches actives. Les tâches en cours ou terminées sans demande d’action suivent « Sans interaction », activé par défaut. Les tâches bloquées sans demande d’action suivent « Tâches bloquées », désactivé par défaut. Les tâches à lancer, brouillons, demandes de réponse ou d’approbation, erreurs et besoins de revalidation restent visibles. Les trois choix sont mémorisés ; le filtre reste ouvert pour permettre plusieurs réglages. Le clic droit du panneau conserve les actions de création et de gestion des projets.
+Les filtres ne modifient aucun état moteur. Une tâche bloquée masquée réapparaît dès qu’elle devient exécutable. La liste et les compteurs de statuts partagent la même visibilité, y compris les archives affichées, et ne comptent chaque tâche qu’une fois. Les compteurs des projets comptent les tâches actives visibles, sans les archives ni les tâches terminées.
 
 Les états techniques du moteur sont conservés. Les anciens filtres « À traiter »,
 « Bloquées » et « Échec » sont repris sous « En attente ».
 Le filtre se combine au projet et à la recherche. Un second clic sur le filtre
 actif affiche tous les statuts. Changer de projet conserve le filtre choisi ;
-consulter les archives le suspend et le retour aux tâches actives le rétablit.
+inclure les archives conserve le filtre de statut actif.
 Une approbation en attente remplace le spinner par l'indicateur d'attente
 utilisateur, même si le moteur est encore en streaming. Ouvrir cette tâche
 donne accès à la conversation de la demande.
@@ -520,7 +521,7 @@ En mode Chat, la sélection multiple reste compacte tant qu'elle n'est pas utili
 
 Le clic droit reprend les actions déjà disponibles sans créer une voie parallèle : sur un projet, il ouvre le choix du type de plan, l'action de développement ou de réduction et la gestion des projets ; sur un plan, il ouvre les actions d'épinglage, de renommage, d'archivage, de restauration ou de suppression selon ses capacités. Chaque ligne de plan affiche explicitement son type à la place d'un indicateur de statut non légendé.
 
-Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, de façon cohérente avec le mode Implement et sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent le même bouton carré dans les deux modes ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
+Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent les boutons carrés de l’en-tête ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
 
 Le navigateur complet des projets sépare lui aussi les projets actifs des
 archives. Archiver un groupe archive chacun de ses projets sans retirer le

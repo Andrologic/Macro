@@ -36,6 +36,9 @@ test('counts partition unique non-draft unarchived tasks without overlapping att
   expect(ids).toHaveLength(6);
   expect(new Set(ids).size).toBe(ids.length);
   expect(tasks.find(task => task.id === 'failed')?.status).toBe('Failed');
+  const includingArchives = groupTaskQueueLanes(tasks, detailed, true);
+  expect(includingArchives.completed.map(task => task.id)).toEqual(['done', 'archive']);
+  expect(Object.values(includingArchives).flat()).toHaveLength(7);
 });
 test('legacy persisted filters converge onto Waiting and the completed filter survives hydration', () => {
   for (const status of ['attention', 'blocked', 'failed', 'other']) {

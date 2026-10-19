@@ -1,6 +1,7 @@
 {
-  "showAllTasks": "Show all tasks",
-  "listOptions": "List options",
+  "taskFilters": "Task filters",
+  "tasksWithoutInteraction": "Without interaction",
+  "blockedTasks": "Blocked tasks",
   "startReview": "Start review",
   "startReviewBusy": "Finish the current turn or resolve the tool approval before starting review.",
   "startReviewUnavailable": "This task cannot enter review in its current state.",
@@ -25,7 +26,6 @@
   "otherTasks": "Other tasks",
   "readyTasks": "Ready tasks",
   "noReadyTasks": "No task is currently runnable.",
-  "blockedTasks": "Blocked tasks",
   "failedTasks": "Failed tasks",
   "noBlockedTasks": "No dependency-blocked task.",
   "blockedBy": "Blocked by: {{tasks}}",

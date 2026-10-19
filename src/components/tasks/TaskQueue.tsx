@@ -241,7 +241,7 @@ interface TaskActionDescriptor {
 type TaskContextBadgeTone = 'default' | 'draft';
 
 interface TaskContextBadgeDescriptor {
-  key: 'project' | 'plan' | 'plan_finalization' | 'standalone' | 'draft';
+  key: 'project' | 'plan' | 'plan_finalization' | 'standalone' | 'draft' | 'archived';
   label: string;
   icon?: IconName;
   project?: Pick<Project, 'id' | 'path'>;
@@ -345,6 +345,9 @@ const TaskItem: React.FC<TaskItemProps> = ({
         ? 'git-commit'
         : task.task_kind ? getPlanKindIconName(task.task_kind) : 'sparkles',
     });
+  }
+  if (task.archived_at) {
+    contextBadges.push({ key: 'archived', label: t('implement.archives', 'Archives'), icon: 'archive' });
   }
   if (task.draft) {
     contextBadges.push({
@@ -623,6 +626,8 @@ const MemoizedTaskItem = React.memo(TaskItem);
 
 const EMPTY_PROJECT_IDS: readonly string[] = [];
 const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds = EMPTY_PROJECT_IDS }) => {
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const [filterMenuPosition, setFilterMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const [panelMenuPosition, setPanelMenuPosition] = useState<SidebarMenuPosition | null>(null);
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();
@@ -735,18 +740,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const startingReviewsRef = useRef(new Set<string>());
   const {
-    implement: { projectId: projectFilter, status: statusFilter, showArchived, showAllTasks },
+    implement: { projectId: projectFilter, status: statusFilter, showArchived, showBlockedTasks, showWithoutInteraction },
     setImplementProjectFilter,
     setImplementStatusFilter,
     setImplementShowArchived,
-    setImplementShowAllTasks,
+    setImplementShowBlockedTasks,
+    setImplementShowWithoutInteraction,
     filtersHydrated,
   } = useViewFilterStore(useShallow((state) => ({
     implement: state.implement,
     setImplementProjectFilter: state.setImplementProjectFilter,
     setImplementStatusFilter: state.setImplementStatusFilter,
     setImplementShowArchived: state.setImplementShowArchived,
-    setImplementShowAllTasks: state.setImplementShowAllTasks,
+    setImplementShowBlockedTasks: state.setImplementShowBlockedTasks,
+    setImplementShowWithoutInteraction: state.setImplementShowWithoutInteraction,
     filtersHydrated: state.isHydrated,
   })));
   const [searchQuery, setSearchQuery] = useState('');
@@ -1389,8 +1396,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   }), [tasks, conversations, requestSignature, pendingToolApprovalByConversationId, runningTaskIds, mergeWorkflowRuntimeByTaskId]);
 
   const queueVisibleTasks = useMemo(() => visibleTaskQueueTasks(tasks, {
-    showAllTasks, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId,
-  }), [tasks, showAllTasks, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId]);
+    showBlockedTasks, showWithoutInteraction, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId,
+  }), [tasks, showBlockedTasks, showWithoutInteraction, showArchived, runningTaskIds, attentionByTaskId, mergeWorkflowRuntimeByTaskId]);
 
   const projectFilterOptions = useMemo<TaskProjectFilterOption[]>(
     () => availableProjects.map((project) => ({
@@ -1483,14 +1490,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     [queueVisibleTasks]
   );
 
-  const taskLanes = useMemo(() => groupTaskQueueLanes(projectFilteredTasks, taskQueueStatusGroupById), [projectFilteredTasks, taskQueueStatusGroupById]);
+  const taskLanes = useMemo(() => groupTaskQueueLanes(projectFilteredTasks, taskQueueStatusGroupById, true), [projectFilteredTasks, taskQueueStatusGroupById]);
   const laneByTaskId = useMemo(() => new Map(Object.entries(taskLanes).flatMap(([lane, items]) => items.map(task => [task.id, lane as TaskQueueLane] as const))), [taskLanes]);
   const statusCounts = useMemo(() => ({ ready: taskLanes.ready.length, in_progress: taskLanes.in_progress.length, waiting: taskLanes.waiting.length, completed: taskLanes.completed.length }), [taskLanes]);
 
   const filteredTasks = useMemo(() => {
-    if (showArchived || statusFilter === 'all') return projectFilteredTasks;
+    if (statusFilter === 'all') return projectFilteredTasks;
     return projectFilteredTasks.filter(task => laneByTaskId.get(task.id) === statusFilter);
-  }, [projectFilteredTasks, showArchived, statusFilter, laneByTaskId]);
+  }, [projectFilteredTasks, statusFilter, laneByTaskId]);
 
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
@@ -1974,16 +1981,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     );
   }
 
-  const visibleTasks = useMemo(() => {
-    if (showArchived) {
-      return filteredTasks.filter((task) => Boolean(task.archived_at));
-    }
-    return filteredTasks.filter((task) => !task.archived_at);
-  }, [filteredTasks, showArchived]);
-
   const searchedTasks = useMemo(
-    () => filterTasksByQuery(visibleTasks, searchQuery),
-    [searchQuery, visibleTasks],
+    () => filterTasksByQuery(filteredTasks, searchQuery),
+    [searchQuery, filteredTasks],
   );
 
   const draftTasks = useMemo(
@@ -1992,7 +1992,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   );
 
   const tasksByStatusGroup = useMemo(() => {
-    const groups = groupTaskQueueLanes(searchedTasks, taskQueueStatusGroupById);
+    const groups = groupTaskQueueLanes(searchedTasks, taskQueueStatusGroupById, true);
     Object.values(groups).forEach(group => group.sort((a, b) => {
       const byStatus = (readyStatusOrder[a.status] ?? Number.MAX_SAFE_INTEGER) - (readyStatusOrder[b.status] ?? Number.MAX_SAFE_INTEGER);
       return byStatus || a.sequence_index - b.sequence_index;
@@ -2000,11 +2000,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     return groups;
   }, [searchedTasks, taskQueueStatusGroupById]);
 
-  const archivedTasks = useMemo(() => {
-    return [...searchedTasks]
-      .filter((task) => Boolean(task.archived_at))
-      .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [searchedTasks]);
   const multiRepoPresentationByTaskId = useMemo(() => {
     const map = new Map<string, MultiRepoTaskPresentation | null>();
     searchedTasks.forEach((task) => {
@@ -2019,15 +2014,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
     return map;
   }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, reviewLoadState, reviewIsLoading, searchedTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
-    const orderedTasks = showArchived
-      ? archivedTasks
-      : [...draftTasks, ...TASK_QUEUE_LANES.flatMap(lane => tasksByStatusGroup[lane])];
+    const orderedTasks = [...draftTasks, ...TASK_QUEUE_LANES.flatMap(lane => tasksByStatusGroup[lane])];
     return orderedTasks.map(task => ({
       id: `task:${task.id}`,
       task,
       multiRepoPresentation: task.draft ? null : multiRepoPresentationByTaskId.get(task.id) ?? null,
     }));
-  }, [archivedTasks, draftTasks, multiRepoPresentationByTaskId, tasksByStatusGroup, showArchived]);
+  }, [draftTasks, multiRepoPresentationByTaskId, tasksByStatusGroup]);
   const getTaskListRowKey = useCallback((row: TaskListRow) => row.id, []);
   const {
     parentRef: taskListRef,
@@ -2261,10 +2254,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
   const panelMenu = panelMenuPosition && <SidebarMenu position={panelMenuPosition} onClose={() => setPanelMenuPosition(null)} aria-label={t('implement.tasks', 'Tasks')} className="w-52">
         <button role="menuitem" type="button" disabled={Boolean(pendingTaskId) || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled}
           onClick={() => { setPanelMenuPosition(null); setCreateTaskError(null); setShowCreateTaskDialog(true); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"><Icon name="plus" size={12} />{import.meta.env.DEV && import.meta.env.VITE_MACRO_DEMO === '1' ? t('implement.launchWorkflow', 'Launch a workflow') : t('implement.createStandaloneTask', 'Créer une tâche indépendante')}</button>
-        {!showArchived && <button role="menuitemcheckbox" aria-checked={showAllTasks} type="button" onClick={() => { setPanelMenuPosition(null); setImplementShowAllTasks(!showAllTasks); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showAllTasks ? 'check-square' : 'square'} size={12} />{t('implement.showAllTasks', 'Show all tasks')}</button>}
-        <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); setImplementShowArchived(!showArchived); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name={showArchived ? 'list-todo' : 'archive'} size={12} />{showArchived ? t('implement.tasks', 'Tasks') : t('implement.archives', 'Archives')}</button>
         <button role="menuitem" type="button" onClick={() => { setPanelMenuPosition(null); openProjectNavigator(); }} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"><Icon name="settings" size={12} />{t('implement.manageProjects', 'Manage projects')}</button>
       </SidebarMenu>;
+
+  const filterMenu = filterMenuPosition && <SidebarMenu position={filterMenuPosition} triggerRef={filterTriggerRef}
+    onClose={() => setFilterMenuPosition(null)} aria-label={t('implement.taskFilters', 'Task filters')} className="w-64">
+    {([
+      ['archive', t('implement.archives', 'Archives'), showArchived, setImplementShowArchived],
+      ['cpu', t('implement.tasksWithoutInteraction', 'Without interaction'), showWithoutInteraction, setImplementShowWithoutInteraction],
+      ['lock', t('implement.blockedTasks', 'Blocked tasks'), showBlockedTasks, setImplementShowBlockedTasks],
+    ] as const).map(([icon, label, checked, onChange]) => <button key={icon} role="menuitemcheckbox" aria-checked={checked} type="button"
+      onClick={event => { onChange(!checked); event.currentTarget.focus(); }}
+      className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-accent">
+      <Icon name={icon} size={14} className="text-muted-foreground" /><span className="flex-1">{label}</span>
+      <Icon name={checked ? 'check-square' : 'square'} size={14} className={checked ? 'text-primary' : 'text-muted-foreground'} />
+    </button>)}
+  </SidebarMenu>;
 
   if (isWorkspaceMissing) {
     return (
@@ -2290,6 +2295,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
       onContextMenu={openPanelMenu}
     >
       {panelMenu}
+      {filterMenu}
       <div className="h-12 border-b border-border flex items-center justify-between gap-2 px-4">
         {isSearchOpen ? (
           <SearchBar
@@ -2326,13 +2332,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
           {!isSearchOpen && (
             <>
           <PanelHeaderIconButton
-            icon="archive"
-            label={t('implement.archives', 'Archives')}
-            pressed={showArchived}
-            onClick={() => setImplementShowArchived(!showArchived)}
-            data-tour-id="implement-archive-toggle"
-          />
-          <PanelHeaderIconButton
             icon="plus"
             onClick={() => { setCreateTaskError(null); setShowCreateTaskDialog(true); }}
             data-tour-id="implement-create-task"
@@ -2359,11 +2358,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
             }
           />
           <PanelHeaderIconButton
-            icon="more-horizontal"
-            label={t('implement.listOptions', 'List options')}
-            onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setPanelMenuPosition({ left: rect.right - 208, top: rect.bottom + 4 }); }}
-            aria-haspopup="menu" aria-expanded={Boolean(panelMenuPosition)}
-            data-tour-id="implement-list-options"
+            ref={filterTriggerRef}
+            icon="list-filter"
+            label={t('implement.taskFilters', 'Task filters')}
+            pressed={showArchived || showBlockedTasks || !showWithoutInteraction}
+            onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setFilterMenuPosition(current => current ? null : { left: rect.right - 256, top: rect.bottom + 4 }); }}
+            aria-haspopup="menu" aria-expanded={Boolean(filterMenuPosition)}
+            data-tour-id="implement-task-filters"
           />
             </>
           )}
@@ -2380,8 +2381,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
           }}
         />
 
-        {!showArchived && (
-          <div
+        <div
             className="mt-2.5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,6.5rem),1fr))] gap-1.5"
             aria-label={t('implement.taskStatusSummary', 'Task status summary')}
           >
@@ -2410,7 +2410,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className, excludedProjectIds
               </button>
             ))}
           </div>
-        )}
       </div>
 
       {showCreateTaskDialog && (

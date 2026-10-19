@@ -534,7 +534,7 @@ describe('TaskQueue', () => {
     expect(document.querySelector('[role="menu"]')!.textContent).toBe(contextActions);
     await act(async () => { container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await flushRender(); });
     expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain('Archives');
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain('Manage projects');
     expect(document.querySelector('[role="menu"]')?.textContent).not.toBe(contextActions);
   });
 
@@ -591,6 +591,7 @@ describe('TaskQueue', () => {
   });
 
   it.each(['archived', 'draft', 'blocked', 'no-capability'] as const)('respects review availability for %s', async (condition) => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([makeTask('task-1', 'InProgress', {
       archived_at: condition === 'archived' ? '2026-09-06' : null,
       draft: condition === 'draft', is_blocked: condition === 'blocked',
@@ -617,6 +618,7 @@ describe('TaskQueue', () => {
   });
 
   it('lets users clear a status filter from the compact status controls', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('ready-task', 'Pending', { title: 'Ready task' }),
       makeTask('blocked-task', 'Blocked', { title: 'Blocked task', is_ready: false }),
@@ -673,7 +675,7 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).not.toContain('Reviewing item');
   });
 
-  it('hides passive dependency waits, keeps attention visible, and shares the same visibility with counters', async () => {
+  it('filters blocked tasks, preserves requests and failures, and updates counters without duplicates', async () => {
     const dependent = makeTask('later', 'Blocked', { title: 'Later task', is_blocked: true, blocked_by_task_ids: ['task-1'], dependencies: ['task-1'] });
     seedTasks([
       makeTask('task-1', 'InProgress', { title: 'Active task' }), dependent, dependent,
@@ -686,13 +688,13 @@ describe('TaskQueue', () => {
     expect(getLastVirtualListKeys()).not.toContain('task:later');
     expect(getLastVirtualListKeys()).toContain('task:question');
     expect(getLastVirtualListKeys()).toContain('task:failed');
-    expect(getLastVirtualListKeys()).toContain('task:config');
+    expect(getLastVirtualListKeys()).not.toContain('task:config');
     const waiting = () => document.querySelector<HTMLButtonElement>('button[title="Waiting"]')!;
-    expect(waiting().textContent).toBe('Waiting3');
+    expect(waiting().textContent).toBe('Waiting2');
     const toggleAll = async () => {
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-tour-id="implement-list-options"]')!.click(); await flushRender(); });
-      const toggle = document.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')!;
-      await act(async () => { toggle.click(); await flushRender(); });
+      await act(async () => { document.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!.click(); await flushRender(); });
+      const toggle = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === 'Blocked tasks')!;
+      await act(async () => { toggle.click(); await flushRender(); document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
     };
     await toggleAll();
     expect(getLastVirtualListKeys().filter(key => key === 'task:later')).toHaveLength(1);
@@ -702,7 +704,7 @@ describe('TaskQueue', () => {
     await toggleAll();
     expect(getLastVirtualListKeys()).not.toContain('task:later');
     expect(getLastVirtualListKeys()).toContain('task:question');
-    expect(waiting().textContent).toBe('Waiting3');
+    expect(waiting().textContent).toBe('Waiting2');
     await act(async () => {
       waiting().click();
       useTaskStore.setState({ tasks: useTaskStore.getState().tasks.map(task => task.id === 'later' ? { ...task, status: 'Pending', is_blocked: false, blocked_by_task_ids: [] } : task) });
@@ -710,6 +712,35 @@ describe('TaskQueue', () => {
     });
     expect(getLastVirtualListKeys()).toContain('task:later');
     expect(document.querySelector<HTMLButtonElement>('button[title="To launch"]')!.textContent).toBe('To launch1');
+  });
+
+  it('combines the three filter checkboxes without closing the menu or double-counting tasks', async () => {
+    seedTasks([
+      makeTask('ready', 'Pending', { title: 'Ready action' }),
+      makeTask('working', 'InProgress', { title: 'Automatic task' }),
+      makeTask('question', 'AwaitingResponse', { title: 'Needs reply' }),
+      makeTask('blocked', 'Blocked', { title: 'Blocked task', is_blocked: true }),
+      makeTask('archive', 'Completed', { title: 'Old task', archived_at: '2026-01-01' }),
+    ]);
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const trigger = document.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!;
+    await act(async () => { trigger.click(); await flushRender(); });
+    const option = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === label)!;
+    await act(async () => { option('Without interaction').click(); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:question']);
+    expect(document.activeElement).toBe(option('Without interaction'));
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { option('Blocked tasks').click(); option('Archives').click(); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['task:ready', 'task:question', 'task:blocked', 'task:archive']);
+    expect(document.querySelector('button[title="Waiting"]')!.textContent).toBe('Waiting2');
+    expect(document.querySelector('button[title="Completed"]')!.textContent).toBe('Completed1');
+    expect(document.querySelector('[data-task-context-badge="archived"]')).not.toBeNull();
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => { trigger.click(); await flushRender(); });
+    expect(option('Without interaction').getAttribute('aria-checked')).toBe('false');
+    expect(option('Blocked tasks').getAttribute('aria-checked')).toBe('true');
+    expect(option('Archives').getAttribute('aria-checked')).toBe('true');
   });
 
   it('excludes drafts and archives from the ready counter and filter', async () => {
@@ -738,7 +769,7 @@ describe('TaskQueue', () => {
     useTaskStore.setState({ restoreTask: restoreTask as never });
     await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
     await act(async () => {
-      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-archive-toggle"]')?.click();
+      useViewFilterStore.getState().setImplementShowArchived(true);
       await flushRender();
     });
     await act(async () => {
@@ -758,6 +789,7 @@ describe('TaskQueue', () => {
   });
 
   it('filters reply-required, blocked and failed tasks through Waiting while preserving their reasons', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('waiting-task', 'AwaitingResponse', { title: 'Reply required task' }),
       makeTask('blocked-task', 'Blocked', { title: 'Actually blocked task', is_ready: false }),
@@ -855,6 +887,7 @@ describe('TaskQueue', () => {
   });
 
   it('tracks mixed attention, pending approvals during streaming, resolution and navigation', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('task-1', 'InProgress', { conversation_id: 'conversation-1', title: 'Approval task' }),
       makeTask('review', 'InReview', { title: 'Review task' }),
@@ -947,7 +980,7 @@ describe('TaskQueue', () => {
       useViewFilterStore.getState().setImplementShowArchived(true);
       await flushRender();
     });
-    expect(getLastVirtualListKeys()).toEqual(['task:archived']);
+    expect(getLastVirtualListKeys()).toEqual(['task:first', 'task:second', 'task:archived']);
     await act(async () => { useViewFilterStore.getState().setImplementShowArchived(false); await flushRender(); });
     expect(getLastVirtualListKeys()).toEqual(['task:first', 'task:second']);
     await act(async () => {
@@ -1387,7 +1420,7 @@ describe('TaskQueue', () => {
     expect(openProjectGitFlowModal).toHaveBeenCalledWith('project-1');
   });
 
-  it('toggles between active-only and archived-only task lists', async () => {
+  it('adds archives to the active list and retains their cleanup actions', async () => {
     seedTasks([
       makeTask('task-1', 'Pending', {
         title: 'Active task',
@@ -1432,28 +1465,21 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).not.toContain('Archived task');
 
-    const archiveToggle = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-archive-toggle"]'
-    );
-    expect(archiveToggle).not.toBeNull();
-    expect(archiveToggle?.textContent).toBe('');
-    expect(archiveToggle?.getAttribute('aria-label')).toBe('Archives');
-    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('false');
-
-    await act(async () => {
-      archiveToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await flushRender();
-    });
-
-    expect(getLastVirtualListKeys()).toEqual(['task:archived-task']);
+    const filterToggle = document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-task-filters"]')!;
+    expect(document.querySelector('[data-tour-id="implement-archive-toggle"]')).toBeNull();
+    await act(async () => { filterToggle.click(); await flushRender(); });
+    const archives = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find(button => button.textContent === 'Archives')!;
+    expect(archives.getAttribute('aria-checked')).toBe('false');
+    await act(async () => { archives.click(); await flushRender(); });
+    expect(archives.getAttribute('aria-checked')).toBe('true');
+    expect(getLastVirtualListKeys()).toEqual(['task:task-1', 'task:archived-task']);
     expect(getSectionSummaries()).toEqual([]);
-    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
-    expect(document.body.textContent).not.toContain('Active task');
+    expect(document.body.textContent).toContain('Active task');
     expect(document.body.textContent).toContain('Archived task');
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flushRender(); });
 
-    const taskActions = document.body.querySelector<HTMLButtonElement>(
-      'button[title="Task actions"]'
-    );
+    const archivedCard = [...document.querySelectorAll<HTMLElement>('[data-tour-id="implement-task-card"]')].find(card => card.textContent?.includes('Archived task'))!;
+    const taskActions = archivedCard.querySelector<HTMLButtonElement>('button[title="Task actions"]');
     await act(async () => {
       taskActions?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
@@ -1601,7 +1627,7 @@ describe('TaskQueue', () => {
     expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
   });
 
-  it('opens project management from the compact list options', async () => {
+  it('provides three display filters and keeps project management in the context menu', async () => {
     seedStores('Pending');
 
     await act(async () => {
@@ -1610,14 +1636,14 @@ describe('TaskQueue', () => {
     });
 
     const manageProjectsButton = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-list-options"]'
+      '[data-tour-id="implement-task-filters"]'
     );
     expect(manageProjectsButton).not.toBeNull();
     expect(manageProjectsButton?.tagName).toBe('BUTTON');
     expect(manageProjectsButton?.type).toBe('button');
     expect(manageProjectsButton?.tabIndex).toBe(0);
-    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('List options');
-    expect(manageProjectsButton?.getAttribute('title')).toBe('List options');
+    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('Task filters');
+    expect(manageProjectsButton?.getAttribute('title')).toBe('Task filters');
 
     const searchToggle = document.body.querySelector<HTMLButtonElement>(
       '[data-tour-id="implement-search-toggle"]'
@@ -1626,7 +1652,7 @@ describe('TaskQueue', () => {
       searchToggle?.click();
       await flushRender();
     });
-    expect(document.body.querySelector('[data-tour-id="implement-list-options"]')).toBeNull();
+    expect(document.body.querySelector('[data-tour-id="implement-task-filters"]')).toBeNull();
 
     await act(async () => {
       searchToggle?.click();
@@ -1634,10 +1660,13 @@ describe('TaskQueue', () => {
     });
 
     const restoredManageProjectsButton = document.body.querySelector<HTMLButtonElement>(
-      '[data-tour-id="implement-list-options"]'
+      '[data-tour-id="implement-task-filters"]'
     );
     await act(async () => {
       restoredManageProjectsButton?.click();
+      await flushRender();
+      expect(document.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(3);
+      container!.querySelector('aside')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
       await flushRender();
       [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent?.trim() === 'Manage projects')!.click();
       await flushRender();
@@ -3241,6 +3270,7 @@ describe('TaskQueue', () => {
   });
 
   it('keeps virtual row keys stable when draft and blocked cards are inserted', async () => {
+    useViewFilterStore.getState().setImplementShowBlockedTasks(true);
     seedTasks([
       makeTask('ready-1', 'Pending', {
         title: 'Ready task',

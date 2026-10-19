@@ -1,6 +1,7 @@
 {
-  "showAllTasks": "すべてのタスクを表示",
-  "listOptions": "リストのオプション",
+  "taskFilters": "タスクのフィルター",
+  "tasksWithoutInteraction": "操作不要",
+  "blockedTasks": "ブロックされたタスク",
   "startReview": "レビューを開始",
   "startReviewBusy": "レビューを開始する前に、現在のターンを終了するか、ツールの承認要求を解決してください。",
   "startReviewUnavailable": "このタスクは現在の状態ではレビューに移行できません。",
@@ -29,7 +30,6 @@
   "otherTasks": "その他のタスク",
   "readyTasks": "準備ができたタスク",
   "noReadyTasks": "現在実行可能なタスクはありません。",
-  "blockedTasks": "ブロックされたタスク",
   "failedTasks": "失敗したタスク",
   "noBlockedTasks": "依存関係でブロックされたタスクはありません。",
   "blockedBy": "ブロックされた人:{{tasks}}",

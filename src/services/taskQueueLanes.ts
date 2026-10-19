@@ -12,11 +12,11 @@ export function taskQueueLane(task: QueueTask, group: TaskQueueStatusGroup | und
   return group === 'ready' ? 'ready' : 'waiting';
 }
 
-export function groupTaskQueueLanes<T extends QueueTask>(tasks: readonly T[], groups: ReadonlyMap<string, TaskQueueStatusGroup>) {
+export function groupTaskQueueLanes<T extends QueueTask>(tasks: readonly T[], groups: ReadonlyMap<string, TaskQueueStatusGroup>, includeArchived = false) {
   const lanes: Record<TaskQueueLane, T[]> = { ready: [], in_progress: [], waiting: [], completed: [] };
   const seen = new Set<string>();
   for (const task of tasks) {
-    if (task.draft || task.archived_at || seen.has(task.id)) continue;
+    if (task.draft || (!includeArchived && task.archived_at) || seen.has(task.id)) continue;
     seen.add(task.id);
     lanes[taskQueueLane(task, groups.get(task.id))].push(task);
   }

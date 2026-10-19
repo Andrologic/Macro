@@ -377,6 +377,13 @@ demoTasks.push(...taskSeeds.map(([id, project_id, plan_id, title, status, descri
   conversation_id: `${id}-chat`, assigned_branch: `feature/${id.replace('demo-', '')}`, branch_name: `feature/${id.replace('demo-', '')}`,
   is_blocked: status === 'Blocked', is_ready: status === 'Pending',
 })));
+demoTasks.push({
+  id: 'demo-archived-guide', project_id: 'demo-atlas', plan_id: 'demo-editorial',
+  title: 'Relire l’ancien guide', description: 'Relecture terminée. Cette tâche est conservée dans les archives.',
+  status: 'Completed', dependencies: [], estimated_changes: [], task_kind: 'feature',
+  standalone_kind: 'manual_feature', task_source: 'standalone', conversation_id: 'demo-archived-guide-chat',
+  archived_at: DEMO_DATE,
+});
 export const demoProvider: DbProviderConfig = { id: 'demo-provider', name: 'Macro AI · Démo', provider_type: 'openai', base_url: 'https://demo.invalid', api_key: null, has_stored_api_key: true, is_enabled: true, is_local: true, auth_status: 'authenticated', auth_source: null, plan_type: null, account_label: null, token_expires_at: null, created_at: DEMO_DATE, updated_at: DEMO_DATE };
 export const demoModel: DbAiModel = { id: 'demo-model', provider_id: demoProvider.id, model_id: 'demo-model', name: 'Assistant simulé', description: 'Réponses locales de démonstration', owned_by: null, pricing_prompt: null, pricing_completion: null, pricing_request: null, reasoning_efforts: null, default_reasoning_effort: null, context_window_tokens: 128000, input_limit_tokens: 120000, output_limit_tokens: 8000, context_window_source: 'manual', context_limits_updated_at: DEMO_DATE, is_enabled: true, is_manual: true, first_seen_at: DEMO_DATE, last_seen_at: DEMO_DATE };
 const conversationSeeds: Array<[string, string, DbConversation['scope_mode'], string, string | null]> = [

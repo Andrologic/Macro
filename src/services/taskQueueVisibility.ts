@@ -1,5 +1,4 @@
 import type { TaskStatus } from '../types';
-import { resolveTaskReference } from './durableIdentity';
 import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
 import type { MergeWorkflowSummary } from './mergeWorkflowPersistence';
 import { resolveTaskMergeWorkflowPresentationState } from './taskMergeWorkflowPresentation';
@@ -16,27 +15,24 @@ interface QueueTask {
   merge_workflow_summary?: MergeWorkflowSummary | null;
 }
 interface VisibilityOptions {
-  showAllTasks: boolean;
+  showBlockedTasks: boolean;
+  showWithoutInteraction: boolean;
   showArchived: boolean;
   runningTaskIds: ReadonlySet<string>;
   attentionByTaskId: ReadonlyMap<string, unknown>;
   mergeWorkflowRuntimeByTaskId: Readonly<Record<string, MergeWorkflowRuntimeState | undefined>>;
 }
 
-/** Hide only passive dependency waits. Keep unresolved or actionable blockers visible. */
+/** Display filters never change task execution state. Action requests take precedence. */
 export function visibleTaskQueueTasks<T extends QueueTask>(tasks: readonly T[], options: VisibilityOptions): T[] {
   const uniqueTasks = [...new Map(tasks.map(task => [task.id, task])).values()];
-  if (options.showAllTasks || options.showArchived) return uniqueTasks;
   return uniqueTasks.filter(task => {
-    if (task.draft || task.archived_at || !task.is_blocked || task.needs_revalidation ||
-      !['Pending', 'Blocked'].includes(task.status) || options.runningTaskIds.has(task.id) || options.attentionByTaskId.has(task.id)) return true;
+    if (task.archived_at) return options.showArchived;
+    if (task.draft || task.needs_revalidation || task.status === 'Failed' || options.attentionByTaskId.has(task.id)) return true;
     const merge = resolveTaskMergeWorkflowPresentationState(options.mergeWorkflowRuntimeByTaskId[task.id], task.merge_workflow_summary, task.status);
-    if (merge && merge.phase !== 'ready') return true;
-    const blockers = task.blocked_by_task_ids ?? [];
-    // An unknown, stale or missing prerequisite needs inspection, not concealment.
-    return !blockers.length || !blockers.every(reference => {
-      const prerequisite = resolveTaskReference(uniqueTasks, reference);
-      return prerequisite && prerequisite.id !== task.id && !prerequisite.archived_at && prerequisite.status !== 'Completed';
-    });
+    if (merge && ['blocked', 'failed', 'partial'].includes(merge.phase)) return true;
+    if (!options.runningTaskIds.has(task.id) && (task.is_blocked || task.status === 'Blocked')) return options.showBlockedTasks;
+    if (!options.runningTaskIds.has(task.id) && ['Pending', 'AwaitingResponse'].includes(task.status)) return true;
+    return options.showWithoutInteraction;
   });
 }

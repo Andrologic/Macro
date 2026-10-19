@@ -1,6 +1,7 @@
 {
-  "showAllTasks": "모든 작업 표시",
-  "listOptions": "목록 옵션",
+  "taskFilters": "작업 필터",
+  "tasksWithoutInteraction": "상호작용 없음",
+  "blockedTasks": "차단된 작업",
   "startReview": "검토 시작",
   "startReviewBusy": "검토를 시작하기 전에 현재 턴을 완료하거나 도구 승인 요청을 처리하세요.",
   "startReviewUnavailable": "현재 상태에서는 이 작업을 검토로 전환할 수 없습니다.",
@@ -29,7 +30,6 @@
   "otherTasks": "기타 작업",
   "readyTasks": "준비된 작업",
   "noReadyTasks": "현재 실행 가능한 작업이 없습니다.",
-  "blockedTasks": "차단된 작업",
   "failedTasks": "실패한 작업",
   "noBlockedTasks": "종속성 차단 작업이 없습니다.",
   "blockedBy": "차단한 사람:{{tasks}}",

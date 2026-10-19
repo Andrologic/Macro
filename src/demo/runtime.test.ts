@@ -203,6 +203,7 @@ describe('populated demo scenarios', () => {
   });
   test('task and conversation references remain consistent across waiting, failed and completed examples', () => {
     expect(new Set(demoTasks.map(task => task.status)).size).toBe(7);
+    expect(demoTasks.some(task => task.archived_at && task.status === 'Completed')).toBe(true);
     for (const task of demoTasks) {
       expect(demoPlans.some(plan => plan.id === task.plan_id && plan.projectId === task.project_id)).toBe(true);
       for (const dependency of task.dependencies) expect(demoTasks.some(other => other.id === dependency && other.project_id === task.project_id)).toBe(true);

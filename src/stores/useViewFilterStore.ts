@@ -24,7 +24,8 @@ type FilterField =
   | 'implementProjectId'
   | 'implementStatus'
   | 'implementShowArchived'
-  | 'implementShowAllTasks'
+  | 'implementShowBlockedTasks'
+  | 'implementShowWithoutInteraction'
   | 'architectShowArchived'
   | 'chatShowArchived';
 
@@ -32,7 +33,8 @@ const mutationVersions: Record<FilterField, number> = {
   implementProjectId: 0,
   implementStatus: 0,
   implementShowArchived: 0,
-  implementShowAllTasks: 0,
+  implementShowBlockedTasks: 0,
+  implementShowWithoutInteraction: 0,
   architectShowArchived: 0,
   chatShowArchived: 0,
 };
@@ -49,7 +51,8 @@ interface ViewFilterStore {
   setImplementProjectFilter: (projectId: string) => void;
   setImplementStatusFilter: (status: TaskQueueStatusFilter) => void;
   setImplementShowArchived: (showArchived: boolean) => void;
-  setImplementShowAllTasks: (showAllTasks: boolean) => void;
+  setImplementShowBlockedTasks: (showBlockedTasks: boolean) => void;
+  setImplementShowWithoutInteraction: (showWithoutInteraction: boolean) => void;
   resetImplementFilters: () => void;
   setArchitectShowArchived: (showArchived: boolean) => void;
   resetArchitectFilters: () => void;
@@ -166,10 +169,14 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
                 mutationVersions.implementShowArchived === versions.implementShowArchived
                   ? implement.showArchived
                   : state.implement.showArchived,
-              showAllTasks:
-                mutationVersions.implementShowAllTasks === versions.implementShowAllTasks
-                  ? implement.showAllTasks
-                  : state.implement.showAllTasks,
+              showWithoutInteraction:
+                mutationVersions.implementShowWithoutInteraction === versions.implementShowWithoutInteraction
+                  ? implement.showWithoutInteraction
+                  : state.implement.showWithoutInteraction,
+              showBlockedTasks:
+                mutationVersions.implementShowBlockedTasks === versions.implementShowBlockedTasks
+                  ? implement.showBlockedTasks
+                  : state.implement.showBlockedTasks,
             },
             architect: mutationVersions.architectShowArchived === versions.architectShowArchived
               ? architect
@@ -184,7 +191,8 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
             mutationVersions.implementProjectId !== versions.implementProjectId ||
             mutationVersions.implementStatus !== versions.implementStatus ||
             mutationVersions.implementShowArchived !== versions.implementShowArchived ||
-            mutationVersions.implementShowAllTasks !== versions.implementShowAllTasks ||
+            mutationVersions.implementShowBlockedTasks !== versions.implementShowBlockedTasks ||
+            mutationVersions.implementShowWithoutInteraction !== versions.implementShowWithoutInteraction ||
             (persistedImplement !== undefined && !jsonEqual(persistedImplement, implement))
           ) {
             persist(PREF_KEYS.IMPLEMENT_VIEW_FILTERS, get().implement);
@@ -227,12 +235,16 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
         (current) => ({ ...current, showArchived }),
       );
     },
-    setImplementShowAllTasks: (showAllTasks) => updateImplement(
-      ['implementShowAllTasks'],
-      (current) => ({ ...current, showAllTasks }),
+    setImplementShowBlockedTasks: (showBlockedTasks) => updateImplement(
+      ['implementShowBlockedTasks'],
+      (current) => ({ ...current, showBlockedTasks }),
+    ),
+    setImplementShowWithoutInteraction: (showWithoutInteraction) => updateImplement(
+      ['implementShowWithoutInteraction'],
+      (current) => ({ ...current, showWithoutInteraction }),
     ),
     resetImplementFilters: () => updateImplement(
-      ['implementProjectId', 'implementStatus', 'implementShowArchived', 'implementShowAllTasks'],
+      ['implementProjectId', 'implementStatus', 'implementShowArchived', 'implementShowBlockedTasks', 'implementShowWithoutInteraction'],
       () => ({ ...DEFAULT_IMPLEMENT_VIEW_FILTERS }),
     ),
     setArchitectShowArchived: (showArchived) => {

@@ -1,6 +1,7 @@
 {
-  "showAllTasks": "Alle Aufgaben anzeigen",
-  "listOptions": "Listenoptionen",
+  "taskFilters": "Aufgaben filtern",
+  "tasksWithoutInteraction": "Ohne Interaktion",
+  "blockedTasks": "Blockierte Aufgaben",
   "startReview": "Review starten",
   "startReviewBusy": "Beenden Sie den aktuellen Durchlauf oder klären Sie die Werkzeugfreigabe, bevor Sie das Review starten.",
   "startReviewUnavailable": "Diese Aufgabe kann im aktuellen Zustand nicht ins Review wechseln.",
@@ -29,7 +30,6 @@
   "otherTasks": "Andere Aufgaben",
   "readyTasks": "Bereite Aufgaben",
   "noReadyTasks": "Derzeit ist keine Aufgabe ausführbar.",
-  "blockedTasks": "Blockierte Aufgaben",
   "failedTasks": "Fehlgeschlagene Aufgaben",
   "noBlockedTasks": "Keine abhängigkeitsblockierte Aufgabe.",
   "blockedBy": "Gesperrt durch: {{tasks}}",

@@ -157,12 +157,14 @@ Le lancement ajoute une carte indépendante et une conversation par agent dans
 l’interface existante d’Operate. Les tâches restent affichées individuellement,
 avec leurs statuts et leurs dépendances. La liste ne comporte pas de titres de
 catégories : l’ordre est À lancer, En attente, En cours, puis Terminées, comme
-les filtres du haut. Les tâches attendant uniquement une autre tâche sont masquées
-par défaut, sans entrée parent ni regroupement par workflow. Elles réapparaissent
-lorsqu’elles peuvent démarrer. Les questions, approbations et erreurs restent visibles.
-Le menu à trois points propose « Afficher toutes les tâches », également accessible
-par clic droit sur le fond du panneau. Le choix est conservé entre les modes.
-Les compteurs suivent ce filtre et ne comptent chaque tâche qu’une seule fois.
+les filtres du haut. Le bouton filtre propose « Archives », « Sans interaction »
+et « Tâches bloquées ». Ces cases se combinent et restent mémorisées entre les
+modes. Les tâches bloquées sont masquées par défaut, sans entrée parent ni
+regroupement par workflow. Elles réapparaissent lorsqu’elles peuvent démarrer.
+Les tâches sans interaction restent affichées par défaut. Les questions,
+approbations, erreurs et actions de lancement restent visibles. Les archives
+peuvent s’ajouter à la liste avec une pastille dédiée. Les compteurs de statuts
+suivent les filtres sans doublons ; ceux des projets dénombrent les tâches actives.
 
 Le blueprint Assistant démarre en attente. La consigne se donne directement dans
 la tâche, après le lancement. Les autres blueprints utilisent leurs valeurs

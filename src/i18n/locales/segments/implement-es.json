@@ -1,6 +1,7 @@
 {
-  "showAllTasks": "Mostrar todas las tareas",
-  "listOptions": "Opciones de la lista",
+  "taskFilters": "Filtrar tareas",
+  "tasksWithoutInteraction": "Sin interacción",
+  "blockedTasks": "Tareas bloqueadas",
   "startReview": "Iniciar revisión",
   "startReviewBusy": "Finaliza el turno actual o resuelve la aprobación de la herramienta antes de iniciar la revisión.",
   "startReviewUnavailable": "Esta tarea no puede pasar a revisión en su estado actual.",
@@ -29,7 +30,6 @@
   "otherTasks": "Otras tareas",
   "readyTasks": "Tareas listas",
   "noReadyTasks": "Ninguna tarea se puede ejecutar actualmente.",
-  "blockedTasks": "Tareas bloqueadas",
   "failedTasks": "Tareas fallidas",
   "noBlockedTasks": "Ninguna tarea bloqueada por dependencia.",
   "blockedBy": "Bloqueado por: {{tasks}}",
