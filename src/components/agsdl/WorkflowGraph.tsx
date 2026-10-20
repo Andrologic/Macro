@@ -154,7 +154,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       id: card.path, type: "workflow", position,
       // Preserve measured dimensions on focus updates without fixing CSS height.
       measured: heights[card.path] === undefined ? undefined : { width: 210, height: heights[card.path] },
-      style: { width: 210, opacity: hasFocus && !neighborhood.nodes.has(card.path) ? 0.65 : 1, transition: "opacity 140ms" },
+      style: { width: 210 },
       data: { card, title: displayTitle(card), kindLabel: group ? t("agsdl.designGraph.group", { defaultValue: "Group" }) : t(`agsdl.kind.${card.kind === "agent" ? "Agent" : card.kind}`, { defaultValue: card.kind }), active: active === card.path,
         subtitle: group ? t("agsdl.designGraph.members", { count: group.members.length, defaultValue: "{{count}} components" }) : card.kind === "join" ? t(card.details.mode === "first" ? "agsdl.graphHints.first" : "agsdl.graphHints.all") : card.kind === "compose" ? card.composition?.label ?? "" : card.kind === "agent" && card.details.delivery === "steering" ? t("agsdl.graphHints.steering") : card.kind === "approval" ? card.approvalBinding ? card.approvalBinding.label : card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
@@ -198,7 +198,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       ...edge, type: "workflow", data: { route: routeViewerEdge(layout.nodes, edge), connection: edge,
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
         targetTitle: displayTitle(presentation.cards.find(card => card.path === edge.target)!),
-        focused: neighborhood.edges.has(edge.id) && hasFocus, dismissSignal, focusEdge,
+        dismissSignal, focusEdge,
         inspect: selectionMode === "inspect" ? () => activateEdge(edge.id) : undefined,
         inspectSource: () => presentation.groups.some(group => group.id === edge.source) ? expandGroup(edge.source) : (onInspect ?? select)(edge.source),
         inspectTarget: () => presentation.groups.some(group => group.id === edge.target) ? expandGroup(edge.target) : (onInspect ?? select)(edge.target),
@@ -206,7 +206,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       ariaRole: "group" as const,
       ariaLabel: `${displayTitle(presentation.cards.find(card => card.path === edge.source)!)} → ${displayTitle(presentation.cards.find(card => card.path === edge.target)!)}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
-      style: { stroke: color, strokeWidth: hasFocus && neighborhood.edges.has(edge.id) ? 2.5 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined, opacity: hasFocus && !neighborhood.edges.has(edge.id) ? 0.3 : 0.85 },
+      style: { stroke: color, strokeWidth: hasFocus && neighborhood.edges.has(edge.id) ? 2.5 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined, opacity: 0.85 },
     };
   });
   const clearSelection = () => { setHighlighted(""); setHovered(""); select(""); };

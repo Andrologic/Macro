@@ -11,7 +11,7 @@ afterEach(() => { act(() => root?.unmount()); host?.remove(); });
 const data = (extra: Partial<WorkflowEdgeData> = {}): WorkflowEdgeData => ({
   connection: { id: 'a-b', source: 'a', target: 'b', label: 'true', dependency: false,
     transfers: ['resources.result ← text · text/plain', 'report'] },
-  sourceTitle: 'Check quality', targetTitle: 'Publish', focused: false, dismissSignal: 0,
+  sourceTitle: 'Check quality', targetTitle: 'Publish', dismissSignal: 0,
   inspectSource: () => {}, inspectTarget: () => {}, ...extra,
 });
 async function mount(value = data(), insideDialog = false) {

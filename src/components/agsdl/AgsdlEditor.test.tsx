@@ -137,7 +137,7 @@ describe("AgSDL viewer", () => {
     await mount();
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
     expect(nodes).toHaveLength(3);
-    expect(container!.querySelector(".is-boundary, .react-flow__edge-text")).toBeNull();
+    expect(container!.querySelector(".is-boundary, .react-flow__edge-text, .agsdl-edge-marker")).toBeNull();
     expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
     await inspectNode(nodes[0]);
     const agentDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;

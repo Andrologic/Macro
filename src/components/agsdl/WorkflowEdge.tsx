@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
+import { BaseEdge, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
 import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBranch, Info, Link2, X } from 'lucide-react';
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
 import { outsideViewerEdgePath } from '../../services/agsdl/graphLayout';
@@ -11,7 +11,6 @@ export type WorkflowEdgeData = {
   connection: ViewerEdge;
   sourceTitle: string;
   targetTitle: string;
-  focused: boolean;
   dismissSignal: number;
   focusEdge?: (id: string, open: boolean) => void;
   inspect?: () => void;
@@ -63,12 +62,10 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const { t } = useAgsdlTranslation();
   const data = props.data!;
   const route = data.route;
-  const [smoothPath, smoothX, smoothY] = getSmoothStepPath({ ...props, centerY: route?.kind === 'channel' ? route.centerY : undefined });
+  const [smoothPath] = getSmoothStepPath({ ...props, centerY: route?.kind === 'channel' ? route.centerY : undefined });
   const path = route?.kind === 'outside' ? outsideViewerEdgePath(route, props) : smoothPath;
-  const x = route?.kind === 'outside' ? route.outsideX : smoothX;
-  const y = route?.kind === 'outside' ? (route.exitY + route.entryY) / 2 : smoothY;
   const [anchor, setAnchor] = useState<SVGGElement | null>(null);
-  const [badge, setBadge] = useState<HTMLSpanElement | null>(null);
+  const pointerPosition = useRef<{ left: number; top: number } | undefined>(undefined);
   const [preview, setPreview] = useState(false);
   const [menu, setMenu] = useState<{ left: number; top: number }>();
   const [position, setPosition] = useState<{ left: number; top: number }>();
@@ -76,11 +73,10 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const pinned = useRef(false);
   const suppressed = useRef(false);
   const id = useId();
-  const visible = Boolean(routeKey(data.connection) || data.connection.transfers?.length || data.connection.dependency || data.focused || preview);
   const close = () => { suppressed.current = true; clearTimeout(timer.current); pinned.current = false; setPreview(false); setMenu(undefined); };
   const place = () => {
-    const rect = badge?.getBoundingClientRect();
-    if (rect) setPosition({ left: rect.right + 10, top: rect.top });
+    const rect = anchor?.getBoundingClientRect();
+    setPosition(pointerPosition.current ?? (rect ? { left: rect.left + rect.width / 2 + 12, top: rect.top + rect.height / 2 } : undefined));
   };
   const show = () => { clearTimeout(timer.current); if (!menu && !suppressed.current) timer.current = setTimeout(() => { place(); setPreview(true); }, 400); };
   const leave = () => { suppressed.current = false; clearTimeout(timer.current); if (!pinned.current) timer.current = setTimeout(() => setPreview(false), 140); };
@@ -94,7 +90,8 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   useEffect(() => { clearTimeout(timer.current); pinned.current = false; setPreview(false); setMenu(undefined); }, [data.dismissSignal]);
   return <>
     <g ref={setAnchor} className="agsdl-edge-hit" role="button" tabIndex={0} aria-label={`${routeKey(data.connection) ? t(namedRouteKey(routeKey(data.connection)!), { name: data.connection.label }) : t(`agsdl.link.${data.connection.exchangeOnly ? "exchange" : data.connection.dependency ? "dependency" : "sequence"}`)} · ${data.sourceTitle} → ${data.targetTitle}`} aria-describedby={preview ? id : undefined}
-      onMouseEnter={show} onMouseLeave={leave} onFocus={show} onBlur={() => { suppressed.current = false; if (!menu) { clearTimeout(timer.current); if (!pinned.current) setPreview(false); } }}
+      onMouseEnter={event => { pointerPosition.current = { left: event.clientX + 12, top: event.clientY + 12 }; show(); }} onMouseLeave={leave}
+      onFocus={() => { pointerPosition.current = undefined; show(); }} onBlur={() => { suppressed.current = false; if (!menu) { clearTimeout(timer.current); if (!pinned.current) setPreview(false); } }}
       onClick={event => { event.stopPropagation(); pin(); }}
       onDoubleClick={event => { event.stopPropagation(); if (data.inspect) { close(); data.inspect(); } }}
       onContextMenu={event => { event.preventDefault(); event.stopPropagation(); close(); setMenu({ left: event.clientX, top: event.clientY }); }}
@@ -102,17 +99,11 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); pin(); }
         if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
           event.preventDefault(); event.stopPropagation(); close();
-          const rect = badge?.getBoundingClientRect(); setMenu({ left: rect?.right ?? 0, top: rect?.top ?? 0 });
+          const rect = anchor?.getBoundingClientRect(); setMenu({ left: rect ? rect.left + rect.width / 2 : 0, top: rect ? rect.top + rect.height / 2 : 0 });
         }
       }}>
-      <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd} style={props.style} interactionWidth={26} />
+      <BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd} style={props.style} interactionWidth={18} />
     </g>
-    <EdgeLabelRenderer><span ref={setBadge} aria-hidden="true" onMouseEnter={show} onMouseLeave={leave}
-      onClick={event => { event.stopPropagation(); pin(); }}
-      onContextMenu={event => { event.preventDefault(); event.stopPropagation(); close(); setMenu({ left: event.clientX, top: event.clientY }); }}
-      onDoubleClick={event => { event.stopPropagation(); if (data.inspect) { close(); data.inspect(); } }}
-      className={`nodrag nopan agsdl-edge-marker${visible ? ' is-visible' : ''}${preview || data.focused ? ' is-active' : ''}`}
-      style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`, opacity: props.style?.opacity }}>{edgeSymbol(data.connection, 12)}</span></EdgeLabelRenderer>
     {preview && !menu && anchor && <WorkflowGraphPopup anchor={anchor} position={position} id={id} label={t('agsdl.viewer.connection')} onClose={close}
       onMouseEnter={() => clearTimeout(timer.current)} onMouseLeave={leave}>
       <WorkflowEdgeSummary {...data} />
