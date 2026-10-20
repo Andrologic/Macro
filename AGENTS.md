@@ -14,6 +14,9 @@ source code and linked docs when a task needs detail.
 - Frontend service and orchestration code lives under `src/services/`.
 - Shared types live under `src/types/`.
 - Static assets and themes live under `public/`.
+- User onboarding and task execution: read `docs/user-guide/getting-started.md`
+  for UI steps or `docs/agents/getting-started.md` for preconditions and evidence.
+  Use `docs/agents/README.md` to find configuration, workflow, and tool contracts.
 - Product behavior source of truth: `docs/functional-spec.md`.
 - Technical architecture source of truth: `docs/technical-architecture.md`.
 - Setup, release, and script overview: `README.md`.
