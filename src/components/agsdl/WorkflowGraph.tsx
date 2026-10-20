@@ -1,14 +1,15 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Background, BaseEdge, getSmoothStepPath, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange, type Edge, type EdgeProps } from "@xyflow/react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
 import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Plug, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer, routeViewerEdge, outsideViewerEdgePath, type ViewerEdgeRoute, type ViewerEdge } from "../../services/agsdl/graphLayout";
+import { layoutViewer, routeViewerEdge, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
 import "./graphPresentation.css";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
+import { WorkflowEdge, type GraphEdge } from "./WorkflowEdge";
 import { WorkflowBlockOverlay } from "./WorkflowBlockOverlay";
 import { WorkflowGraphPopup } from "./WorkflowGraphPopup";
 import { WorkflowStatusBadge } from "./WorkflowStatusBadge";
@@ -90,14 +91,6 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   );
 }
 const nodeTypes = { workflow: WorkflowNode };
-type GraphEdge = Edge<{ route?: ViewerEdgeRoute; description?: string }, "workflow">;
-function WorkflowEdge(props: EdgeProps<GraphEdge>) {
-  const route = props.data?.route;
-  const path = route?.kind === "outside" ? outsideViewerEdgePath(route, props)
-    : getSmoothStepPath({ ...props, centerY: route?.centerY })[0];
-  return <g><title>{props.data?.description}</title><BaseEdge id={props.id} path={path} markerStart={props.markerStart} markerEnd={props.markerEnd}
-    style={props.style} interactionWidth={props.interactionWidth} /></g>;
-}
 const edgeTypes = { workflow: WorkflowEdge };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
@@ -123,6 +116,10 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   const [canvasAnchor, setCanvasAnchor] = useState<HTMLDivElement | null>(null);
   const [paneMenu, setPaneMenu] = useState<{ left: number; top: number }>();
   const [dismissSignal, setDismissSignal] = useState(0);
+  const [inspectedEdge, setInspectedEdge] = useState("");
+  const focusEdge = useCallback((id: string, open: boolean) => {
+    setInspectedEdge(current => open ? id : current === id ? "" : current);
+  }, []);
   const [highlighted, setHighlighted] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [hovered, setHovered] = useState("");
@@ -132,8 +129,9 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   // Revealing exchanges must not move the process cards.
   const overview = useMemo(() => presentGraph(cards, connections, collapsed, "overview"), [cards, connections, collapsed]);
   const layout = useMemo(() => layoutViewer(overview.cards, overview.edges, heights), [overview.cards, overview.edges, heights]);
-  const neighborhood = graphNeighborhood(active || hovered, presentation.edges);
-  const hasFocus = Boolean(active || hovered) && (presentation.cards.some(card => card.path === (active || hovered)) || presentation.edges.some(edge => edge.id === (active || hovered)));
+  const focus = inspectedEdge || active || hovered;
+  const neighborhood = graphNeighborhood(focus, presentation.edges);
+  const hasFocus = Boolean(focus) && (presentation.cards.some(card => card.path === focus) || presentation.edges.some(edge => edge.id === focus));
   const fitted = useRef(false);
   useEffect(() => {
     if (!width || !height || !layout.nodes.length || fitted.current || layout.nodes.some(node => heights[node.card.path] === undefined)) return;
@@ -195,20 +193,18 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
     select(selected === edge.originals[0].id ? "" : edge.originals[0].id);
   };
   const edges: GraphEdge[] = presentation.edges.map(edge => {
-    const transfer = edge.transfers?.join(", ");
-    const condition = edge.label === "true" ? t("agsdl.edge.true") : edge.label === "false" ? t("agsdl.edge.false") : !["success", "next", "exchange", "dependency"].includes(edge.label) ? t(`agsdl.edge.${edge.label}`, { defaultValue: edge.label }) : undefined;
     const color = edge.transfers?.length && neighborhood.edges.has(edge.id) ? "rgb(var(--primary))" : edge.dependency ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
-    const semantic = edge.transfers?.length ? t("agsdl.designGraph.transfer", { defaultValue: "Data exchange" }) : edge.dependency ? t("agsdl.designGraph.dependency", { defaultValue: "Dependency" }) : t("agsdl.designGraph.sequence", { defaultValue: "Process sequence" });
     return {
-      ...edge, type: "workflow", data: { route: routeViewerEdge(layout.nodes, edge), description: transfer }, sourceHandle: "out", targetHandle: "in", label: undefined,
-      ariaRole: "button" as const,
-      domAttributes: {
-        onFocus: () => setHovered(edge.id), onBlur: () => setHovered(""),
-        onKeyDown: (event: KeyboardEvent<SVGGElement>) => {
-          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activateEdge(edge.id); }
-        },
-      },
-      ariaLabel: `${semantic} · ${displayTitle(presentation.cards.find(card => card.path === edge.source)!)} → ${displayTitle(presentation.cards.find(card => card.path === edge.target)!)}${transfer ? ` · ${transfer}` : ""}${condition ? ` · ${condition}` : ""}`,
+      ...edge, type: "workflow", data: { route: routeViewerEdge(layout.nodes, edge), connection: edge,
+        sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
+        targetTitle: displayTitle(presentation.cards.find(card => card.path === edge.target)!),
+        focused: neighborhood.edges.has(edge.id) && hasFocus, dismissSignal, focusEdge,
+        inspect: selectionMode === "inspect" ? () => activateEdge(edge.id) : undefined,
+        inspectSource: () => presentation.groups.some(group => group.id === edge.source) ? expandGroup(edge.source) : (onInspect ?? select)(edge.source),
+        inspectTarget: () => presentation.groups.some(group => group.id === edge.target) ? expandGroup(edge.target) : (onInspect ?? select)(edge.target),
+      }, sourceHandle: "out", targetHandle: "in", label: undefined,
+      ariaRole: "group" as const,
+      ariaLabel: `${displayTitle(presentation.cards.find(card => card.path === edge.source)!)} → ${displayTitle(presentation.cards.find(card => card.path === edge.target)!)}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
       style: { stroke: color, strokeWidth: hasFocus && neighborhood.edges.has(edge.id) ? 2.5 : 1.3, strokeDasharray: edge.exchangeOnly ? "3 4" : edge.dependency ? "7 4" : undefined, opacity: hasFocus && !neighborhood.edges.has(edge.id) ? 0.3 : 0.85 },
     };
@@ -220,9 +216,8 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
       <ReactFlow<GraphNode, GraphEdge>
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={measureNodes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false}
-        edgesFocusable={true} edgesReconnectable={false} elementsSelectable={false}
+        edgesFocusable={false} edgesReconnectable={false} elementsSelectable={false}
         deleteKeyCode={null} selectionKeyCode={null} multiSelectionKeyCode={null}
-        onEdgeClick={(_, edge) => activateEdge(edge.id)}
         onEdgeMouseEnter={(_, edge) => setHovered(edge.id)} onEdgeMouseLeave={() => setHovered("")}
         onPaneContextMenu={event => { event.preventDefault(); setDismissSignal(value => value + 1); setPaneMenu({ left: event.clientX, top: event.clientY }); }}
         onMoveStart={() => { setDismissSignal(value => value + 1); setPaneMenu(undefined); }}

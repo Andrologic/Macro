@@ -31,3 +31,21 @@
 .agsdl-block-relation svg { flex-shrink: 0; color: rgb(var(--muted-foreground)); }
 .agsdl-block-relation > span { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .agsdl-execution-block-details .agsdl-block-prompt { display: block; overflow: visible; }
+
+.agsdl-edge-hit { pointer-events: all; cursor: pointer; outline: none; }
+.agsdl-edge-hit:focus-visible .react-flow__edge-path { stroke-width: 3; }
+.agsdl-edge-marker { position: absolute; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 1px solid rgb(var(--border)); border-radius: 50%; background: rgb(var(--background)); color: rgb(var(--muted-foreground)); pointer-events: all; cursor: pointer; visibility: hidden; }
+.agsdl-edge-marker.is-visible { visibility: visible; }
+.agsdl-edge-marker.is-active { border-color: rgb(var(--primary) / .65); color: rgb(var(--primary)); }
+.agsdl-edge-summary header { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.agsdl-edge-summary header svg { flex: none; color: rgb(var(--muted-foreground)); }
+.agsdl-edge-endpoints { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin: 12px 0; padding: 10px; border-radius: 6px; background: rgb(var(--muted) / .45); line-height: 1.4; overflow-wrap: anywhere; }
+.agsdl-edge-endpoints svg, .agsdl-edge-endpoints > span { color: rgb(var(--muted-foreground)); }
+.agsdl-edge-summary small { display: block; font-size: 10px; color: rgb(var(--muted-foreground)); }
+.agsdl-edge-payloads { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.agsdl-edge-payloads > span { border: 1px solid rgb(var(--border)); border-radius: 5px; padding: 3px 7px; font-size: 11px; overflow-wrap: anywhere; }
+.agsdl-edge-note { margin-top: 10px; font-size: 11px; line-height: 1.5; color: rgb(var(--muted-foreground)); }
+
+.agsdl-edge-endpoints button { color: rgb(var(--primary)); text-align: left; }
+.agsdl-edge-endpoints button:hover { text-decoration: underline; }
+.agsdl-edge-endpoints button:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }

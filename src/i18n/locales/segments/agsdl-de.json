@@ -527,5 +527,29 @@
     "expand": "Gruppe aufklappen",
     "openTask": "Aufgabe öffnen",
     "canvasMenu": "Graphaktionen"
+  },
+  "link": {
+    "true": "Wenn ja",
+    "false": "Wenn nein",
+    "approved": "Nach Freigabe",
+    "denied": "Bei Ablehnung",
+    "onError": "Bei einem Fehler",
+    "branch": "Wenn „{{name}}“",
+    "sequence": "Nächster Schritt",
+    "exchange": "Datenaustausch",
+    "dependency": "Abhängigkeit",
+    "payloadTitle": "Übertragene Daten",
+    "exchangeHint": "Dieser Austausch überträgt Daten, ohne den Block auszulösen.",
+    "dependencyHint": "Dieser Block hängt vom vorherigen ab. Es ist keine Datenübertragung deklariert.",
+    "source": "Quellblock anzeigen",
+    "target": "Zielblock anzeigen",
+    "payload": {
+      "message": "Nachricht",
+      "response": "Agentenantwort",
+      "result": "Werkzeugergebnis",
+      "results": "Gesammelte Ergebnisse",
+      "error": "Fehler",
+      "value": "Aktueller Wert"
+    }
   }
 }

@@ -527,5 +527,29 @@
     "expand": "Expandir el grupo",
     "openTask": "Abrir tarea",
     "canvasMenu": "Acciones del grafo"
+  },
+  "link": {
+    "true": "Si se cumple",
+    "false": "Si no se cumple",
+    "approved": "Tras la aprobación",
+    "denied": "Si se rechaza",
+    "onError": "En caso de error",
+    "branch": "Si «{{name}}»",
+    "sequence": "Paso siguiente",
+    "exchange": "Intercambio de datos",
+    "dependency": "Dependencia",
+    "payloadTitle": "Datos transmitidos",
+    "exchangeHint": "Este intercambio transmite datos sin activar el bloque.",
+    "dependencyHint": "Este bloque depende del anterior. No se declara transferencia de datos.",
+    "source": "Ver bloque de origen",
+    "target": "Ver bloque de destino",
+    "payload": {
+      "message": "Mensaje",
+      "response": "Respuesta del agente",
+      "result": "Resultado de la herramienta",
+      "results": "Resultados agrupados",
+      "error": "Error",
+      "value": "Valor actual"
+    }
   }
 }

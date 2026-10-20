@@ -1,4 +1,4 @@
-import { useContext, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { DialogContext } from '../ui/Dialog';
 
@@ -6,7 +6,7 @@ export interface GraphPopupAction { label: string; icon: ReactNode; run: () => v
 
 /** Registered with the owning dialog so menus also work in an expanded graph. */
 export function WorkflowGraphPopup({ anchor, position, actions, label, children, onClose, id, onMouseEnter, onMouseLeave }: {
-  anchor: HTMLElement; position?: { left: number; top: number }; actions?: GraphPopupAction[];
+  anchor: Element; position?: { left: number; top: number }; actions?: GraphPopupAction[];
   label: string; children?: ReactNode; onClose: () => void; id?: string; onMouseEnter?: () => void; onMouseLeave?: () => void;
 }) {
   const dialog = useContext(DialogContext);
@@ -15,6 +15,10 @@ export function WorkflowGraphPopup({ anchor, position, actions, label, children,
   useLayoutEffect(() => { close.current = onClose; }, [onClose]);
   const [placed, setPlaced] = useState({ left: 0, top: 0 });
   const isMenu = Boolean(actions);
+  const restoreFocus = useCallback(() => {
+    const target = anchor.matches('button, [tabindex]') ? anchor : anchor.querySelector('button, [tabindex]');
+    if (target instanceof HTMLElement || target instanceof SVGElement) target.focus();
+  }, [anchor]);
   useLayoutEffect(() => {
     const element = popup.current;
     if (!element) return;
@@ -27,7 +31,7 @@ export function WorkflowGraphPopup({ anchor, position, actions, label, children,
       top: Math.max(8, Math.min(top, window.innerHeight - size.height - 8)),
     });
     const unregisterPortal = dialog?.registerPortal(element);
-    const dismiss = (restore = false) => { close.current(); if (restore && anchor.isConnected) anchor.querySelector<HTMLButtonElement>('button')?.focus(); };
+    const dismiss = (restore = false) => { close.current(); if (restore && anchor.isConnected) restoreFocus(); };
     const unregisterEscape = dialog?.registerEscapeHandler(() => dismiss(true));
     const pointer = (event: PointerEvent) => { if (!element.contains(event.target as Node) && (isMenu || !anchor.contains(event.target as Node))) dismiss(); };
     const scroll = (event: Event) => { if (!element.contains(event.target as Node)) dismiss(); };
@@ -64,7 +68,7 @@ export function WorkflowGraphPopup({ anchor, position, actions, label, children,
       window.removeEventListener('scroll', scroll, true);
       window.removeEventListener('resize', resize);
     };
-  }, [anchor, position, isMenu, dialog]); // Actions stay current through React handlers.
+  }, [anchor, position, isMenu, dialog, restoreFocus]); // Actions stay current through React handlers.
   return createPortal(<div ref={popup} id={id} role={actions ? 'menu' : 'tooltip'} aria-label={label}
     className={actions ? 'agsdl-graph-menu' : 'agsdl-block-preview'}
     style={{ ...placed, zIndex: Math.max(80, (dialog?.zIndex ?? 0) + 1) }}
@@ -72,7 +76,7 @@ export function WorkflowGraphPopup({ anchor, position, actions, label, children,
     onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
     onPointerDown={event => event.stopPropagation()}>
     {actions ? actions.map(action => <button key={action.label} type="button" role="menuitem" onClick={event => {
-      event.stopPropagation(); close.current(); anchor.querySelector<HTMLButtonElement>('button')?.focus(); action.run();
+      event.stopPropagation(); close.current(); restoreFocus(); action.run();
     }}>{action.icon}<span>{action.label}</span></button>) : children}
   </div>, document.body);
 }

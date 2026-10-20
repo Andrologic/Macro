@@ -527,5 +527,29 @@
     "expand": "그룹 펼치기",
     "openTask": "작업 열기",
     "canvasMenu": "그래프 작업"
+  },
+  "link": {
+    "true": "조건 충족 시",
+    "false": "조건 미충족 시",
+    "approved": "승인 후",
+    "denied": "거부 시",
+    "onError": "오류 발생 시",
+    "branch": "“{{name}}”인 경우",
+    "sequence": "다음 단계",
+    "exchange": "데이터 교환",
+    "dependency": "의존 관계",
+    "payloadTitle": "전달 데이터",
+    "exchangeHint": "이 교환은 블록을 실행하지 않고 데이터를 전달합니다.",
+    "dependencyHint": "이 블록은 이전 블록에 의존합니다. 데이터 전송은 선언되지 않았습니다.",
+    "source": "원본 블록 보기",
+    "target": "대상 블록 보기",
+    "payload": {
+      "message": "메시지",
+      "response": "에이전트 응답",
+      "result": "도구 결과",
+      "results": "수집된 결과",
+      "error": "오류",
+      "value": "현재 값"
+    }
   }
 }

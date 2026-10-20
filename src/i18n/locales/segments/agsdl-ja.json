@@ -527,5 +527,29 @@
     "expand": "グループを展開",
     "openTask": "タスクを開く",
     "canvasMenu": "グラフの操作"
+  },
+  "link": {
+    "true": "条件を満たす場合",
+    "false": "条件を満たさない場合",
+    "approved": "承認後",
+    "denied": "拒否された場合",
+    "onError": "エラー時",
+    "branch": "「{{name}}」の場合",
+    "sequence": "次のステップ",
+    "exchange": "データ交換",
+    "dependency": "依存関係",
+    "payloadTitle": "渡されるデータ",
+    "exchangeHint": "この交換はブロックを起動せずにデータを渡します。",
+    "dependencyHint": "このブロックは前のブロックに依存します。データ転送は宣言されていません。",
+    "source": "送信元のブロックを表示",
+    "target": "送信先のブロックを表示",
+    "payload": {
+      "message": "メッセージ",
+      "response": "エージェントの応答",
+      "result": "ツールの結果",
+      "results": "集約された結果",
+      "error": "エラー",
+      "value": "現在の値"
+    }
   }
 }

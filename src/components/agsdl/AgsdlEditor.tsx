@@ -7,6 +7,7 @@ import { DesignChangesDialog } from "./DesignChangesDialog";
 import { reviewDesignChanges } from "../../services/agsdl/designReview";
 import { AgentDetails } from "./AgentDetails";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
+import { WorkflowEdgeSummary } from "./WorkflowEdge";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import {
@@ -347,16 +348,10 @@ export const AgsdlEditor: React.FC<{
             onClose={() => { setSelection(undefined); setDiagnosticError(""); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {diagnosticError && <p role="alert" className="agsdl-unresolved">{diagnosticError}</p>}
-              {selectedCard ? inspect(selectedCard) : selectedEdge ? <>
-                <p>{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.source)!), target: selectedEdge.source })}
-                  {" → "}{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.target)!), target: selectedEdge.target })}</p>
-                <p>{t(selectedEdge.exchangeOnly ? "agsdl.designGraph.transfer" : selectedEdge.dependency ? "agsdl.designGraph.dependency" : "agsdl.designGraph.sequence")}</p>
-                {["true", "false"].includes(selectedEdge.label) && <p>{t(`agsdl.edge.${selectedEdge.label}`)}</p>}
-                {selectedEdge.transfers?.length ? <section className="agsdl-ports">
-                  <h4>{t("agsdl.viewer.transfers")}</h4>
-                  {selectedEdge.transfers.map(name => <div key={name}>{name}</div>)}
-                </section> : <p className="agsdl-muted">{t("agsdl.viewer.noTransfer")}</p>}
-              </> : null}
+              {selectedCard ? inspect(selectedCard) : selectedEdge ? <WorkflowEdgeSummary connection={selectedEdge}
+                sourceTitle={nodeTitle(cards.find(card => card.path === selectedEdge.source)!)}
+                targetTitle={nodeTitle(cards.find(card => card.path === selectedEdge.target)!)}
+                onSource={() => select(selectedEdge.source)} onTarget={() => select(selectedEdge.target)} /> : null}
             </section>
           </ComponentDetailsDialog>}
         </>}

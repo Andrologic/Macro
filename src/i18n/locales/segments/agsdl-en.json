@@ -527,5 +527,29 @@
     "expand": "Expand group",
     "openTask": "Open task",
     "canvasMenu": "Graph actions"
+  },
+  "link": {
+    "true": "If yes",
+    "false": "If no",
+    "approved": "After approval",
+    "denied": "If denied",
+    "onError": "On error",
+    "branch": "If “{{name}}”",
+    "sequence": "Next step",
+    "exchange": "Data exchange",
+    "dependency": "Dependency",
+    "payloadTitle": "Data passed",
+    "exchangeHint": "This exchange passes data without triggering the block.",
+    "dependencyHint": "This block depends on the previous one. No data transfer is declared.",
+    "source": "View source block",
+    "target": "View destination block",
+    "payload": {
+      "message": "Message",
+      "response": "Agent response",
+      "result": "Tool result",
+      "results": "Collected results",
+      "error": "Error",
+      "value": "Current value"
+    }
   }
 }
