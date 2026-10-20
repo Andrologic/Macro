@@ -108,6 +108,16 @@ commands, read [INSTALL.md](INSTALL.md).
 
 ## Documentation
 
+Start with the [documentation hub](docs/README.md):
+
+- [User guide](docs/user-guide/README.md), including a
+  [first-change walkthrough](docs/user-guide/getting-started.md).
+- [Agent documentation](docs/agents/README.md), including the
+  [execution and verification protocol](docs/agents/getting-started.md).
+
+These practical guides are currently written in French. Installation,
+contribution, and technical references remain available below.
+
 - [INSTALL.md](INSTALL.md) - install Macro or build it from source.
 - [DEVELOPMENT.md](DEVELOPMENT.md) - local development, scripts, environment
   variables, and validation commands.
