@@ -175,7 +175,10 @@
     "installNow": "Install now"
   },
   "markdown": {
-    "video": "Video"
+    "video": "Video",
+    "loadRemoteImage": "Load image from {{host}}",
+    "loadRemoteVideo": "Load video from {{host}}",
+    "unknownSource": "an unknown source"
   },
   "common": {
     "save": "Save",

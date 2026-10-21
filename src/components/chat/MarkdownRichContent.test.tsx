@@ -119,6 +119,54 @@ describe('MarkdownRichContent media rendering', () => {
     expect(markup).toContain('<video');
     expect(markup).toContain('aria-label="Feature demo"');
   });
+
+  it('waits for an explicit click before loading a remote image', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MarkdownRichContent content={'![Tracking pixel](https://images.example/pixel.png)'} />);
+      });
+
+      expect(container.querySelector('img')).toBeNull();
+      const loadButton = container.querySelector('button');
+      expect(loadButton?.textContent).toContain('images.example');
+
+      await act(async () => { loadButton?.click(); });
+      expect(container.querySelector('img')?.getAttribute('src')).toBe('https://images.example/pixel.png');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
+
+  it('blocks protocol-relative images and remote videos until clicked', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<MarkdownRichContent content={
+          '![Pixel](//images.example/pixel.png)\n\n![video: Demo](https://videos.example/demo.mp4)'
+        } />);
+      });
+
+      expect(container.querySelector('img, video')).toBeNull();
+      const buttons = Array.from(container.querySelectorAll('button'));
+      expect(buttons.map((button) => button.textContent)).toEqual([
+        expect.stringContaining('images.example'),
+        expect.stringContaining('videos.example'),
+      ]);
+
+      await act(async () => { buttons[1]?.click(); });
+      expect(container.querySelector('img')).toBeNull();
+      expect(container.querySelector('video')?.getAttribute('src')).toBe('https://videos.example/demo.mp4');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
 });
 
 describe('MarkdownRichContent code block rendering', () => {

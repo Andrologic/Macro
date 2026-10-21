@@ -6,7 +6,7 @@ import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
-import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
+import { extractDomain, fetchWebPage } from '../../services/webSearch';
 import { getWebSearchSettings } from '../../services/webSearchSettings';
 import { compareLocalized, formatRelativeTimeShort } from '../../i18n/format';
 import { cn } from '../../utils/cn';
@@ -50,6 +50,9 @@ const formatByteSize = (value?: number): string | null => {
   }
   return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
 };
+
+const isInlineFavicon = (value?: string): value is string =>
+  Boolean(value && /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon);base64,/i.test(value));
 
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
@@ -626,7 +629,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       citation.url ? extractDomain(citation.url) : citation.source,
                       formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
                     ].filter(Boolean);
-                    const faviconSrc = citation.favicon || (citation.url ? getFaviconUrl(citation.url) : '');
+                    const faviconSrc = isInlineFavicon(citation.favicon) ? citation.favicon : '';
                     const showFavicon = faviconSrc && !failedFaviconUrls.has(faviconSrc);
                     return (
                       <div

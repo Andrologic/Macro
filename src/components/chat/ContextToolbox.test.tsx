@@ -424,7 +424,6 @@ const loadContextToolbox = async () => {
   mock.module('../../services/webSearch', () => ({
     extractDomain: (url: string) => new URL(url).hostname,
     fetchWebPage: fetchWebPageMock,
-    getFaviconUrl: (url: string) => `${url}/favicon.ico`,
   }));
 
   mock.module('../../services/webSearchSettings', () => ({
@@ -1041,6 +1040,36 @@ describe('ContextToolbox', () => {
     await clickActionForText(container!, 'Clipboard text', 'x');
     expect(removeCitationMock).toHaveBeenCalledWith('citation-new-4');
     expect(container?.textContent).toContain('No pasted text added');
+  });
+
+  it('renders only inline favicons without contacting a third-party image host', async () => {
+    contextCitations = [
+      {
+        id: 'web-no-icon', type: 'web', scope: 'context', source: 'https://first.example',
+        title: 'No icon', url: 'https://first.example/article',
+        messageId: 'manual-no-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+      {
+        id: 'web-remote-icon', type: 'web', scope: 'context', source: 'https://second.example',
+        title: 'Remote icon', url: 'https://second.example/article',
+        favicon: 'https://images.example/favicon.ico',
+        messageId: 'manual-remote-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+      {
+        id: 'web-inline-icon', type: 'web', scope: 'context', source: 'https://third.example',
+        title: 'Inline icon', url: 'https://third.example/article',
+        favicon: 'data:image/png;base64,AQIDBA==',
+        messageId: 'manual-inline-icon', conversationId: 'chat-conv', timestamp: '2026-03-19T00:00:00.000Z',
+      },
+    ];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => { root?.render(<ContextToolbox />); });
+
+    expect(findCardForText(container!, 'No icon').querySelector('[data-icon="globe"]')).toBeTruthy();
+    expect(findCardForText(container!, 'Remote icon').querySelector('[data-icon="globe"]')).toBeTruthy();
+    expect(findImageBySrc(container!, 'data:image/png;base64,AQIDBA==')).toBeTruthy();
+    expect(container?.querySelector('img[src^="https://"]')).toBeNull();
   });
 
   it('shows a visible URL fallback when preview fetching fails', async () => {
