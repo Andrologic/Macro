@@ -91,6 +91,43 @@ async function harness(shared = false) {
 }
 
 describe('production blueprint workflow launch', () => {
+  it('rejects normalized destination IDs before writes and accepts canonical dotted blueprint IDs', async () => {
+    const h = await harness();
+    h.request.scope = { ...h.request.scope, owner: { ...h.request.scope.owner, planId: 'WORKFLOW_ONE' } };
+    await expect(h.service.prepare(h.request)).rejects.toMatchObject({ code: 'SCOPE_INVALID' });
+    expect(h.calls).toEqual([]);
+    const dotted = await harness();
+    const original = dotted.plans.get(JSON.stringify(['develop', 'template']))!;
+    original.id = 'template.v1';
+    dotted.plans.set(JSON.stringify(['develop', 'template.v1']), original);
+    dotted.request.blueprint.planId = 'template.v1';
+    expect((await dotted.service.launch(dotted.request)).snapshot).toBeDefined();
+  });
+
+  it('retains successful admission when concurrent native Close is still reserved', async () => {
+    const h = await harness();
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const reserved = new Promise<void>(resolve => { entered = resolve; });
+    const close = h.ports.close;
+    let busy = false;
+    h.ports.close = async input => {
+      if (busy) throw { code: 'SUBMISSION_IN_PROGRESS' };
+      busy = true; entered();
+      await held;
+      return close(input);
+    };
+    const first = h.service.launch(h.request);
+    await reserved;
+    const second = await h.service.launch(h.request);
+    expect(second.intent.state.kind).toBe('admitted');
+    expect(second.snapshot!.systemStartId).toBe(id('native-run'));
+    release();
+    expect((await first).intent.state.kind).toBe('closed');
+    expect(h.admissions()).toBe(1);
+  });
+
   it('copies exact source into project metadata and admits through the existing native protocol', async () => {
     const h = await harness();
     const result = await h.service.launch(h.request);

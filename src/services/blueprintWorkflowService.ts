@@ -6,6 +6,7 @@ import { readDesign, withDocumentDesign } from './agsdl/design';
 import { assertProjection, executionInput, executionPrompt } from './agsdl/executionView';
 import { sameSource } from './agsdl/runtimeSelection';
 import { sourceDigest } from './agsdlExecution/compiler';
+import { sanitizeId } from './architectPlanReadModel';
 import type { ExecutionPreflight } from '../types/generated/ipc';
 import type {
   DeliveryId, IntentId, ExecutionIntentKey, ExecutionIntentScope, PublicExecutionIntent,
@@ -68,7 +69,7 @@ function validateScope(scope: ExecutionIntentScope): void {
   const { owner } = scope;
   if (![owner.projectId, owner.planId, owner.branch, scope.conversationId].every(value =>
     typeof value === 'string' && value.length > 0 && value.length <= 400 && value.trim() === value && !/\p{Cc}/u.test(value)) ||
-    !/^[a-zA-Z0-9_-]+$/.test(owner.planId) || owner.branch.includes('\\') ||
+    owner.planId !== sanitizeId(owner.planId) || ['.', '..'].includes(owner.planId) || owner.branch.includes('\\') ||
     owner.branch.split('/').some(part => !part || part === '.' || part === '..')) fail('SCOPE_INVALID');
 }
 function assertPlanScope(plan: ArchitectPlanRecord, scope: ExecutionIntentScope): void {
@@ -171,7 +172,21 @@ export function createBlueprintWorkflowService(overrides: Partial<BlueprintWorkf
     const projection = await ports.projection(snapshot.systemStartId);
     assertProjection(projection, snapshot);
     if (intent.state.kind === 'admitted') {
-      const closed = await ports.close({ key, expectedRevision: intent.revision, disposition: 'acknowledged' });
+      let closed: PublicExecutionIntent;
+      try {
+        closed = await ports.close({ key, expectedRevision: intent.revision, disposition: 'acknowledged' });
+      } catch (error) {
+        if ((error as { code?: string })?.code !== 'SUBMISSION_IN_PROGRESS') throw error;
+        // Another client may still own Close. Its admitted row is already a
+        // successful Start; leave the acknowledgement recoverable on contention.
+        const retained = await ports.readIntent(key);
+        if (!retained) fail('RECEIPT_INVALID');
+        assertIntent(retained, key);
+        if (JSON.stringify(retained.payload) !== JSON.stringify(intent.payload) ||
+          (retained.state.kind !== 'admitted' && retained.state.kind !== 'closed') ||
+          JSON.stringify(retained.state.admission) !== JSON.stringify(admission)) fail('RECEIPT_INVALID');
+        return { plan, intent: retained, snapshot, projection };
+      }
       assertIntent(closed, key);
       if (closed.state.kind !== 'closed' || closed.state.disposition !== 'acknowledged' ||
         JSON.stringify(closed.payload) !== JSON.stringify(intent.payload) ||
