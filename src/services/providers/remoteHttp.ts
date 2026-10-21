@@ -1,6 +1,7 @@
 import { createRemoteUnsupportedInRemoteModeError } from '../serviceRuntime';
 import { createCombinedAbortSignal } from '../../utils/abortSignals';
 import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
+import { getRemoteAuthToken } from './remoteAuthToken';
 
 export { resolveRemoteConfig } from './remoteConfig';
 
@@ -146,8 +147,15 @@ export const remoteRequest = async <T>(
     ...(requestOptions.headers as Record<string, string> | undefined),
   };
 
-  if (config.authToken) {
-    headers.Authorization = `Bearer ${config.authToken}`;
+  const authToken = getRemoteAuthToken();
+  if (!authToken && typeof window !== 'undefined') {
+    throw {
+      code: 'REMOTE_AUTH_REQUIRED',
+      message: 'A headless bearer token is required for remote requests',
+    };
+  }
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
   }
 
   const controller = timeoutMs === null ? null : new AbortController();

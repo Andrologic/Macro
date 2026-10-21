@@ -140,6 +140,16 @@ async function main() {
       assert.equal(invalidBearer.status, 401, 'Health must reject an invalid bearer token.');
 
       const headers = { Authorization: `Bearer ${bearerToken}` };
+      const reboundHost = await fetch(`${baseUrl}/health`, {
+        headers: { ...headers, Host: `attacker.example:${port}` },
+      });
+      assert.equal(reboundHost.status, 421, 'Authenticated DNS rebinding must be rejected.');
+
+      const hostileOrigin = await fetch(`${baseUrl}/health`, {
+        headers: { ...headers, Origin: 'http://attacker.example' },
+      });
+      assert.equal(hostileOrigin.status, 403, 'Authenticated cross-origin requests must be rejected.');
+
       const health = await fetch(`${baseUrl}/health`, { headers });
       assert.equal(health.status, 200, 'Authorized health request must succeed.');
       assert.deepEqual(await health.json(), { status: 'ok', service: 'macro-headless' });

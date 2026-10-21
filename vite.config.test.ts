@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { loadEnv } from 'vite';
 import viteConfig, { isPathInside, validatePublicSecretFiles } from './vite.config';
 
 it('keeps startup CSS and the shared preload helper out of deferred vendor chunks', async () => {
@@ -15,6 +16,23 @@ it('keeps startup CSS and the shared preload helper out of deferred vendor chunk
   expect(output.manualChunks('/fixture/node_modules/xterm/lib/xterm.js', graph)).toBe('terminal-vendor');
   expect(output.manualChunks('/fixture/node_modules/xterm/css/xterm.css', graph)).toBeUndefined();
   expect(output.manualChunks('\0vite/preload-helper.js', graph)).toBe('utils-vendor');
+});
+
+it('excludes the obsolete remote bearer from Vite environment exposure', async () => {
+  if (typeof viteConfig !== 'function') throw new Error('Expected Vite config factory');
+  const config = await viteConfig({ command: 'build', mode: 'production' });
+  const prefixes = config.envPrefix;
+  if (!Array.isArray(prefixes)) throw new Error('Expected explicit public environment prefixes');
+  const previous = process.env.VITE_REMOTE_AUTH_TOKEN;
+  process.env.VITE_REMOTE_AUTH_TOKEN = 'bundle-secret-sentinel';
+  try {
+    const exposed = loadEnv('production', process.cwd(), prefixes);
+    expect(exposed.VITE_REMOTE_AUTH_TOKEN).toBeUndefined();
+    expect(prefixes.some((prefix) => 'VITE_REMOTE_API_BASE_URL'.startsWith(prefix))).toBe(true);
+  } finally {
+    if (previous === undefined) delete process.env.VITE_REMOTE_AUTH_TOKEN;
+    else process.env.VITE_REMOTE_AUTH_TOKEN = previous;
+  }
 });
 
 const tempDirs: string[] = [];

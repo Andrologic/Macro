@@ -430,6 +430,14 @@ export default defineConfig(({ command }) => {
 
   return {
     base: command === "build" ? "./" : "/",
+    // Only expose the known public settings. A stale VITE_REMOTE_AUTH_TOKEN in
+    // a local .env must never become part of import.meta.env or a built asset.
+    envPrefix: [
+      'VITE_APP_', 'VITE_BACKEND_', 'VITE_CLEAN_', 'VITE_EXTENSIONS',
+      'VITE_OPTIMIZE_', 'VITE_REMOTE_API_', 'VITE_REMOTE_BACKEND_',
+      'VITE_REMOTE_TIMEOUT_', 'VITE_REMOTE_WORKSPACE_', 'VITE_SYNTHETIC',
+      'VITE_TAURI_',
+    ],
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     },

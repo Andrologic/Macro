@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { setRemoteAuthToken } from './providers/remoteAuthToken';
 import {
   __remoteKernelApiTestables,
   canUseRemoteKernel,
@@ -44,6 +45,7 @@ const jsonResponse = (payload: unknown, status = 200): Response => {
 
 describe('remoteKernelApi', () => {
   beforeEach(() => {
+    setRemoteAuthToken('test-token');
     fetchCalls = [];
     __remoteKernelApiTestables.resetDurableMutationIntents();
     ENV_KEYS.forEach((key) => {
@@ -58,6 +60,7 @@ describe('remoteKernelApi', () => {
   });
 
   afterEach(() => {
+    setRemoteAuthToken(null);
     ENV_KEYS.forEach((key) => {
       setEnv(key, originalEnv[key]);
     });
@@ -74,7 +77,7 @@ describe('remoteKernelApi', () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
     setEnv('VITE_REMOTE_API_PREFIX', '/custom');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+    setRemoteAuthToken('token');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
@@ -858,7 +861,7 @@ describe('remoteKernelApi', () => {
   it('sends an independent authenticated cancel request carrying the execution_id on abort', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+    setRemoteAuthToken('token');
 
     let resolveExecuteStarted: (() => void) | undefined;
     const executeStarted = new Promise<void>((resolve) => {
@@ -916,7 +919,7 @@ describe('remoteKernelApi', () => {
   it('does not send a cancellation request when the execution completes normally', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+    setRemoteAuthToken('token');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });

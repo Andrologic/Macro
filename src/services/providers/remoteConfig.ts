@@ -2,7 +2,6 @@ export interface RemoteConfig {
   baseUrl: string;
   apiPrefix: string;
   workspaceId?: string;
-  authToken?: string;
   timeoutMs: number;
 }
 
@@ -44,7 +43,6 @@ export const resolveRemoteConfig = (): RemoteConfig | null => {
     baseUrl: normalizeBaseUrl(baseUrl),
     apiPrefix: apiPrefix.startsWith('/') ? apiPrefix : `/${apiPrefix}`,
     workspaceId: readEnv('VITE_REMOTE_WORKSPACE_ID'),
-    authToken: readEnv('VITE_REMOTE_AUTH_TOKEN'),
     timeoutMs,
   };
 };

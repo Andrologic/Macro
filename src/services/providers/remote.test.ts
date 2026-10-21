@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { setRemoteAuthToken } from './remoteAuthToken';
 import {
   getAppBootstrap,
   getGitTreeForProject,
@@ -92,6 +93,7 @@ const jsonResponse = (payload: unknown, status = 200): Response => {
 
 describe('remote provider', () => {
   beforeEach(() => {
+    setRemoteAuthToken('test-token');
     fetchCalls = [];
     localStorageMock = createLocalStorageMock();
     Object.defineProperty(globalThis, 'localStorage', {
@@ -111,6 +113,7 @@ describe('remote provider', () => {
   });
 
   afterEach(() => {
+    setRemoteAuthToken(null);
     ENV_KEYS.forEach((key) => {
       setEnv(key, originalEnv[key]);
     });
@@ -130,11 +133,40 @@ describe('remote provider', () => {
     expect(resolveRemoteConfig()).toBeNull();
   });
 
+  it('does not read an obsolete Vite bearer variable', async () => {
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_AUTH_TOKEN', 'obsolete-token');
+
+    await listTasks();
+    expect(resolveRemoteConfig()).not.toHaveProperty('authToken');
+    expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+  });
+
+  it('does not send a browser request when the runtime bearer is missing', async () => {
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setRemoteAuthToken(null);
+    const originalWindow = globalThis.window;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { prompt: () => null },
+    });
+    try {
+      await expect(listTasks()).rejects.toMatchObject({ code: 'REMOTE_AUTH_REQUIRED' });
+      expect(fetchCalls).toHaveLength(0);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: originalWindow,
+      });
+    }
+  });
+
   it('calls workspace bootstrap endpoint with auth header', async () => {
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://localhost:3000/');
     setEnv('VITE_REMOTE_API_PREFIX', '/api/v1');
     setEnv('VITE_REMOTE_WORKSPACE_ID', 'ws_main');
-    setEnv('VITE_REMOTE_AUTH_TOKEN', 'secret-token');
+    setEnv('VITE_REMOTE_AUTH_TOKEN', 'obsolete-token');
+    setRemoteAuthToken('secret-token');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
