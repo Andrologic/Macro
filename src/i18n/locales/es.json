@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Token de acceso del servidor headless de Macro",
+    "approvalPrompt": "Token de aprobación del servidor headless de Macro"
+  },
   "mcpForm": {
     "title": "Solicitud de formulario MCP",
     "server": "Servidor",

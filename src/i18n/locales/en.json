@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Macro headless bearer token",
+    "approvalPrompt": "Macro headless approval bearer token"
+  },
   "mcpForm": {
     "title": "MCP form request",
     "server": "Server",

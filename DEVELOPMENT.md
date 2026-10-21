@@ -57,10 +57,9 @@ Create a local `.env` file only when you need to override defaults.
 VITE_BACKEND_TRANSPORT=desktop
 
 # Remote backend, used when VITE_BACKEND_TRANSPORT=remote
-VITE_REMOTE_API_BASE_URL=http://localhost:8787
+VITE_REMOTE_API_BASE_URL=http://localhost:43117
 VITE_REMOTE_API_PREFIX=/api/v1
 VITE_REMOTE_WORKSPACE_ID=
-VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
@@ -69,6 +68,10 @@ Transport notes:
 - `desktop` is the default and requires the Tauri IPC runtime.
 - `remote` switches the frontend service layer to the remote provider.
 - Remote mode is intentionally minimal in the 0.1 line.
+- The remote bearer is entered at runtime on the first request and held only in
+  memory for that session. Do not put it in a `VITE_` variable: Vite exposes
+  those variables to the frontend. Remove any old `VITE_REMOTE_AUTH_TOKEN`
+  value from local `.env` files and rotate that token before reuse.
 
 ## Browser UI with the Tauri runtime
 

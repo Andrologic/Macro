@@ -161,8 +161,9 @@ const readEnv = (
     return directValue.trim();
   }
 
-  const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  const viteValue = viteEnv?.[key];
+  const viteValue = key === 'VITE_BACKEND_TRANSPORT'
+    ? import.meta.env.VITE_BACKEND_TRANSPORT
+    : undefined;
   if (typeof viteValue === 'string' && viteValue.trim().length > 0) {
     return viteValue.trim();
   }

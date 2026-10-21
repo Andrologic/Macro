@@ -23,29 +23,39 @@ Three separate surfaces coexist in the repository:
 From the repository root:
 
 ```bash
+read -rsp 'Headless bearer token: ' MACRO_HEADLESS_BEARER_TOKEN
+echo
+export MACRO_HEADLESS_BEARER_TOKEN
 bun run tauri:headless
 ```
 
 By default, the kernel listens on:
 
 ```text
-127.0.0.1:8787
+127.0.0.1:43117
 ```
 
 ## Environment Variables
 
 - `MACRO_HEADLESS_HOST` - bind host, default `127.0.0.1`.
-- `MACRO_HEADLESS_PORT` - bind port, default `8787`.
-- `MACRO_HEADLESS_BEARER_TOKEN` - bearer token. It is optional for the default
-  loopback listener, but required for any non-loopback listener. Requests must
-  include `Authorization: Bearer <token>` when authentication is enabled.
+- `MACRO_HEADLESS_PORT` - bind port, default `43117`.
+- `MACRO_HEADLESS_BEARER_TOKEN` - required for every listener, including
+  loopback. Requests must include `Authorization: Bearer <token>`.
+- `MACRO_HEADLESS_APPROVAL_TOKEN` - optional distinct user approval bearer for
+  accepting or rejecting pending sensitive configuration changes. The agent
+  bearer cannot authorize those decisions.
+- `MACRO_HEADLESS_ALLOWED_HOSTS` - optional comma-separated exact `host:port`
+  authorities accepted in the `Host` header. The bound IP and, for loopback,
+  `localhost` are accepted automatically. A wildcard bind requires this setting.
 - `MACRO_HEADLESS_ALLOWED_ROOTS` - optional path-list of additional directory
   roots that headless project mounts may use. The configured Macro workspace
   directory is always allowed; mount paths must resolve to existing directories
   below one of these roots.
 - `MACRO_HEADLESS_CORS_ORIGINS` - optional comma-separated list of additional
-  exact browser origins allowed by CORS. Wildcard origins are rejected. Common
-  local Vite and Tauri origins are allowed by default.
+  exact browser origins allowed by CORS and by the request gate. Wildcard
+  origins are rejected. Common local Vite and Tauri origins are allowed by
+  default. Requests with any other `Origin` are rejected before routing.
+  The local Tauri browser bridge at `http://127.0.0.1:1422` is included.
 - `MACRO_CONFIG_DIR` - absolute path to the JSON configuration directory. It is
   intended for headless, portable, and test installations. `MACRO_CONFIG`
   remains a deprecated bootstrap alias for the legacy headless settings file.
@@ -85,10 +95,11 @@ Current endpoints include:
 - `GET /api/v1/config/orphan-secrets`
 - `POST /api/v1/config/orphan-secrets/delete`
 
-When `MACRO_HEADLESS_BEARER_TOKEN` is set, authentication applies to `/health`
-as well as every API endpoint. On the default loopback listener without a token,
-`/health` is intentionally public because the whole experimental server is
-local and unauthenticated in that configuration.
+Authentication applies to `/health` and every API endpoint. Set a unique agent
+bearer before starting the kernel. The same gate checks `Host` and `Origin`
+before HTTP, streaming, or WebSocket handlers can run. Browser CORS preflight
+requests do not carry a bearer; accepted origins still need a bearer on the
+actual request. Keep the bearer out of shell history, logs, and tracked files.
 
 The separate desktop tool host also leaves its non-sensitive `/health` response
 unauthenticated. This is intentional and acceptable only because that server is
@@ -102,12 +113,24 @@ selected explicitly with:
 
 ```env
 VITE_BACKEND_TRANSPORT=remote
-VITE_REMOTE_API_BASE_URL=http://localhost:8787
+VITE_REMOTE_API_BASE_URL=http://localhost:43117
 VITE_REMOTE_API_PREFIX=/api/v1
 VITE_REMOTE_WORKSPACE_ID=
-VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
+
+The adapter prompts for the headless bearer on its first request and keeps it
+only in memory. Host applications can supply or clear it with
+`setRemoteAuthToken` from `src/services/providers/remoteAuthToken.ts`. Sensitive
+configuration decisions prompt separately for `MACRO_HEADLESS_APPROVAL_TOKEN`
+on every decision. A host application can supply the next decision's token
+with `setRemoteApprovalToken`; the adapter consumes it once. Never
+place it in `VITE_` configuration, a built asset, or browser storage. Existing
+`VITE_REMOTE_AUTH_TOKEN` values must be removed from local configuration and
+rotated, because earlier builds may have exposed them.
+The adapter accepts HTTP only for `localhost` and loopback IP addresses. Remote
+servers must use HTTPS. It refuses redirects so the bearer cannot be forwarded
+to another origin.
 
 The adapter currently implements workspace bootstrap, task catalog, Architect
 plan listing and activation, Git tree and history, remote tool policy, remote

@@ -8,9 +8,10 @@ use std::time::Instant;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{extract::Request, Json, Router};
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
     resolve_standalone_config_root, ConfigApiError, ConfigChangeSource, ConfigDocumentKind,
@@ -63,6 +64,14 @@ struct HeadlessState {
     execution_journal_root: PathBuf,
     execution_journal_lock: Arc<AsyncMutex<()>>,
     execution_registry: Arc<AsyncMutex<BTreeMap<String, Arc<ExecutionSlot>>>>,
+}
+
+#[derive(Clone)]
+struct RequestSecurity {
+    allowed_hosts: Vec<HeaderValue>,
+    allowed_origins: Vec<HeaderValue>,
+    bearer_token: BearerTokenDigest,
+    approval_token: Option<BearerTokenDigest>,
 }
 
 const MAX_TRACKED_TOOL_EXECUTIONS: usize = 1_024;
@@ -216,11 +225,12 @@ struct ConfigPendingDecisionRequest {
     restore_approved: bool,
 }
 
-const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 6] = [
+const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 7] = [
     "http://localhost:4173",
     "http://localhost:5173",
     "http://127.0.0.1:4173",
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:1422",
     "http://tauri.localhost",
     "tauri://localhost",
 ];
@@ -269,14 +279,53 @@ fn parse_listen_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
 }
 
 fn validate_listen_security(addr: SocketAddr, bearer_token: Option<&str>) -> Result<(), String> {
-    if addr.ip().is_loopback() || bearer_token.is_some_and(|token| !token.is_empty()) {
+    if bearer_token.is_some_and(|token| !token.is_empty()) {
         return Ok(());
     }
 
     Err(format!(
-        "Refusing non-loopback headless listener {} without MACRO_HEADLESS_BEARER_TOKEN",
+        "Refusing headless listener {} without MACRO_HEADLESS_BEARER_TOKEN",
         addr
     ))
+}
+
+fn configured_headless_hosts(addr: SocketAddr) -> Result<Vec<HeaderValue>, String> {
+    let mut hosts = Vec::new();
+    if !addr.ip().is_unspecified() {
+        hosts.push(addr.to_string());
+    }
+    if addr.ip().is_loopback() {
+        hosts.push(format!("localhost:{}", addr.port()));
+    }
+    if let Ok(raw) = std::env::var("MACRO_HEADLESS_ALLOWED_HOSTS") {
+        for host in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+        {
+            let authority = host
+                .parse::<axum::http::uri::Authority>()
+                .map_err(|_| "MACRO_HEADLESS_ALLOWED_HOSTS contains an invalid authority")?;
+            if authority.as_str() != host
+                || authority.port_u16() != Some(addr.port())
+                || host.contains('@')
+                || host.contains('*')
+            {
+                return Err(
+                    "MACRO_HEADLESS_ALLOWED_HOSTS requires exact host:listener-port authorities"
+                        .to_string(),
+                );
+            }
+            hosts.push(host.to_string());
+        }
+    }
+    if hosts.is_empty() {
+        return Err("MACRO_HEADLESS_ALLOWED_HOSTS is required for a wildcard listener".to_string());
+    }
+    hosts
+        .into_iter()
+        .map(|host| HeaderValue::from_str(&host).map_err(|_| "Invalid headless host".to_string()))
+        .collect()
 }
 
 fn configured_headless_allowed_roots(
@@ -345,17 +394,75 @@ fn configured_cors_origins() -> Result<Vec<HeaderValue>, String> {
     origins
         .into_iter()
         .map(|origin| {
+            let parsed = url::Url::parse(&origin)
+                .map_err(|_| format!("Invalid headless CORS origin: {origin}"))?;
+            if !matches!(parsed.scheme(), "http" | "https" | "tauri")
+                || parsed.host_str().is_none()
+                || parsed.username() != ""
+                || parsed.password().is_some()
+                || !matches!(parsed.path(), "" | "/")
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || parsed.as_str().trim_end_matches('/') != origin
+            {
+                return Err(format!("Invalid headless CORS origin: {origin}"));
+            }
             HeaderValue::from_str(&origin)
                 .map_err(|error| format!("Invalid headless CORS origin '{}': {}", origin, error))
         })
         .collect()
 }
 
-fn headless_cors_layer() -> Result<CorsLayer, String> {
-    Ok(CorsLayer::new()
-        .allow_origin(AllowOrigin::list(configured_cors_origins()?))
+fn headless_cors_layer(origins: Vec<HeaderValue>) -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]))
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+}
+
+async fn enforce_request_security(
+    State(security): State<RequestSecurity>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(status) = request_security_error(&security, &request) {
+        return status.into_response();
+    }
+    next.run(request).await
+}
+
+fn request_security_error(security: &RequestSecurity, request: &Request) -> Option<StatusCode> {
+    let headers = request.headers();
+    let one_header = |name| {
+        let mut values = headers.get_all(name).iter();
+        let first = values.next();
+        first.filter(|_| values.next().is_none())
+    };
+    if !one_header(header::HOST).is_some_and(|host| security.allowed_hosts.contains(host)) {
+        return Some(StatusCode::MISDIRECTED_REQUEST);
+    }
+    if headers.contains_key(header::ORIGIN)
+        && !one_header(header::ORIGIN)
+            .is_some_and(|origin| security.allowed_origins.contains(origin))
+    {
+        return Some(StatusCode::FORBIDDEN);
+    }
+    // A browser preflight cannot carry Authorization. CORS only answers it for
+    // an allowed Origin; all actual requests still require a bearer.
+    if request.method() != Method::OPTIONS {
+        let expected = if matches!(
+            request.uri().path(),
+            "/api/v1/config/pending/accept" | "/api/v1/config/pending/reject"
+        ) {
+            security.approval_token.as_ref()
+        } else {
+            Some(&security.bearer_token)
+        };
+        if !bearer_token_authorizes(headers, expected) {
+            return Some(StatusCode::UNAUTHORIZED);
+        }
+    }
+    None
 }
 
 fn backend_error_to_status(error: &BackendError) -> StatusCode {
@@ -759,7 +866,7 @@ async fn collect_registered_projects(
 
 fn bearer_token_authorizes(headers: &HeaderMap, expected: Option<&BearerTokenDigest>) -> bool {
     let Some(expected) = expected else {
-        return true;
+        return false;
     };
 
     headers
@@ -2409,6 +2516,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         normalize_bearer_token(std::env::var("MACRO_HEADLESS_APPROVAL_TOKEN").ok());
     validate_approval_authority(bearer_token.as_deref(), approval_token.as_deref())?;
     validate_listen_security(addr, bearer_token.as_deref())?;
+    let bearer_digest = BearerTokenDigest::new(bearer_token.as_deref().expect("validated bearer"));
+    let approval_digest = approval_token.as_deref().map(BearerTokenDigest::new);
+    let allowed_origins = configured_cors_origins()?;
+    let request_security = RequestSecurity {
+        allowed_hosts: configured_headless_hosts(addr)?,
+        allowed_origins: allowed_origins.clone(),
+        bearer_token: bearer_digest.clone(),
+        approval_token: approval_digest.clone(),
+    };
     let mut config = load_config()?;
     apply_runtime_workspace(&mut config, &runtime)?;
     let workspace_path = config
@@ -2426,8 +2542,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allowed_roots = configured_headless_allowed_roots(&workspace_path, &runtime_roots)?;
 
     let state = HeadlessState {
-        bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
-        approval_token: approval_token.as_deref().map(BearerTokenDigest::new),
+        bearer_token: Some(bearer_digest),
+        approval_token: approval_digest,
         allowed_roots,
         registered_projects: BTreeMap::new(),
         workspace_path,
@@ -2524,7 +2640,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(project_git_commits),
         )
         .with_state(state)
-        .layer(headless_cors_layer()?);
+        .layer(headless_cors_layer(allowed_origins))
+        .layer(middleware::from_fn_with_state(
+            request_security,
+            enforce_request_security,
+        ));
 
     tracing::info!("macro-headless listening on {}", addr);
 
@@ -2561,7 +2681,7 @@ mod tests {
         }
         let workspace_path = root.path().canonicalize().expect("canonical test root");
         HeadlessState {
-            bearer_token: None,
+            bearer_token: Some(BearerTokenDigest::new("agent-secret")),
             approval_token: None,
             allowed_roots: vec![workspace_path.clone()],
             registered_projects,
@@ -2697,7 +2817,7 @@ mod tests {
         let load = |workspace_id: &'static str| {
             workspace_bootstrap_scoped(
                 State(state.clone()),
-                HeaderMap::new(),
+                bearer_headers("agent-secret"),
                 Path(workspace_id.to_string()),
             )
         };
@@ -2724,7 +2844,7 @@ mod tests {
         assert_eq!(beta["standaloneProjects"][0]["name"], "beta");
         let missing = workspace_bootstrap_scoped(
             State(state.clone()),
-            HeaderMap::new(),
+            bearer_headers("agent-secret"),
             Path("missing-workspace".to_string()),
         )
         .await
@@ -3160,6 +3280,144 @@ mod tests {
             &bearer_headers("intruder"),
             Some(&digest)
         ));
-        assert!(bearer_token_authorizes(&HeaderMap::new(), None));
+        assert!(!bearer_token_authorizes(&HeaderMap::new(), None));
+    }
+
+    #[test]
+    fn headless_listener_requires_a_bearer_even_on_loopback() {
+        let loopback = "127.0.0.1:8787".parse().unwrap();
+        assert!(validate_listen_security(loopback, None).is_err());
+        assert!(validate_listen_security(loopback, Some("agent-secret")).is_ok());
+    }
+
+    #[test]
+    fn request_gate_rejects_rebinding_cross_origin_and_missing_tokens() {
+        let security = RequestSecurity {
+            allowed_hosts: vec![HeaderValue::from_static("127.0.0.1:8787")],
+            allowed_origins: vec![HeaderValue::from_static("http://127.0.0.1:5173")],
+            bearer_token: BearerTokenDigest::new("agent-secret"),
+            approval_token: Some(BearerTokenDigest::new("approval-secret")),
+        };
+        let request = |path: &str, host: &str, origin: Option<&str>, bearer: Option<&str>| {
+            let mut builder = Request::builder().uri(path).header(header::HOST, host);
+            if let Some(origin) = origin {
+                builder = builder.header(header::ORIGIN, origin);
+            }
+            if let Some(bearer) = bearer {
+                builder = builder.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/health",
+                    "attacker.example:8787",
+                    None,
+                    Some("agent-secret")
+                )
+            ),
+            Some(StatusCode::MISDIRECTED_REQUEST)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/tools/execute",
+                    "127.0.0.1:8787",
+                    Some("http://attacker.example"),
+                    Some("agent-secret")
+                )
+            ),
+            Some(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request("/api/v1/tools/execute", "127.0.0.1:8787", None, None)
+            ),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/tools/execute",
+                    "127.0.0.1:8787",
+                    Some("http://127.0.0.1:5173"),
+                    Some("agent-secret")
+                )
+            ),
+            None
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/config/pending/accept",
+                    "127.0.0.1:8787",
+                    None,
+                    Some("agent-secret")
+                )
+            ),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            request_security_error(
+                &security,
+                &request(
+                    "/api/v1/config/pending/accept",
+                    "127.0.0.1:8787",
+                    None,
+                    Some("approval-secret")
+                )
+            ),
+            None
+        );
+
+        let mut websocket = request(
+            "/api/v1/events",
+            "127.0.0.1:8787",
+            Some("http://attacker.example"),
+            Some("agent-secret"),
+        );
+        websocket
+            .headers_mut()
+            .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        assert_eq!(
+            request_security_error(&security, &websocket),
+            Some(StatusCode::FORBIDDEN)
+        );
+
+        let mut websocket_without_token = request(
+            "/api/v1/events",
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:5173"),
+            None,
+        );
+        websocket_without_token
+            .headers_mut()
+            .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        assert_eq!(
+            request_security_error(&security, &websocket_without_token),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+
+        let mut stream = request(
+            "/api/v1/events",
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:5173"),
+            None,
+        );
+        stream.headers_mut().insert(
+            header::ACCEPT,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        assert_eq!(
+            request_security_error(&security, &stream),
+            Some(StatusCode::UNAUTHORIZED)
+        );
     }
 }
