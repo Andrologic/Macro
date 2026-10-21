@@ -1830,6 +1830,18 @@ de suppression et de réplication créés par Pilot conservent cette origine pou
 empêcher une reprise automatique après perte de l'autorisation. Une suppression
 avec restauration de code en attente exige une intervention desktop.
 
+### 15.7 Proposition d'évolution entre appareils
+
+Pour ajouter un rôle de consommateur desktop, optimiser les connexions par
+instance ou transférer une conversation entre PC, consulter la
+[proposition Macro Connect entre appareils](macro-connect-peer-architecture.md).
+Elle distingue l'existant des extensions à construire, notamment l'import
+portable, la cession d'exécution et la coordination sans historique sur le relais.
+Le [plan de réalisation](macro-connect-implementation-plan.md) place les mesures
+avant les optimisations. La [conception du transfert](macro-connect-transfer-design.md)
+fixe les réservations, les décisions et les cas de récupération à implémenter.
+Ces documents ne modifient pas les contrats v1 et v2 en vigueur.
+
 ## 16. Fondation expérimentale : backend distant et kernel headless
 
 Cette section documente du code exploratoire interne. Ce code n'est pas exposé comme mode produit, n'est pas supporté en 0.1 et ne constitue pas un engagement de compatibilité.
