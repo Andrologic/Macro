@@ -88,7 +88,7 @@ test('multi-target recipe observes both canonical appends, slow error and health
     { target: 'pc-slow', phase: 'append-2000', atMs: 2000 },
     { target: 'pc-slow', phase: 'error-4000', atMs: 4000 },
   ]);
-  expect(sample.events.map(({ sha256: _hash, ...event }) => event)).toEqual(expectedProducerTrace('multiple-targets'));
+  expect(() => assertProducerTrace(sample.events, expectedProducerTrace('multiple-targets'), sample.eventStreams)).not.toThrow();
   expect(sample.events).toHaveLength(6);
   expect(sample.results.unavailable).toBe(1);
   expect(sample.checks).toContain('canonical-mutations-and-observations');
@@ -98,14 +98,14 @@ test('exhaustive event oracle rejects every missing event, duplication, reorderi
   const sample = await runProducerRecipe('visible-unrelated-update', 100);
   expect(sample.events).toHaveLength(10);
   for (let index = 0; index < sample.events.length; index++) {
-    expect(() => assertProducerTrace(sample.events.filter((_, i) => i !== index), sample.expectedEvents)).toThrow();
+    expect(() => assertProducerTrace(sample.events.filter((_, i) => i !== index), sample.expectedEvents, sample.eventStreams)).toThrow();
   }
-  expect(() => assertProducerTrace([...sample.events, sample.events[9]], sample.expectedEvents)).toThrow();
+  expect(() => assertProducerTrace([...sample.events, sample.events[9]], sample.expectedEvents, sample.eventStreams)).toThrow();
   const reordered = [...sample.events]; [reordered[0], reordered[1]] = [reordered[1], reordered[0]];
-  expect(() => assertProducerTrace(reordered, sample.expectedEvents)).toThrow();
+  expect(() => assertProducerTrace(reordered, sample.expectedEvents, sample.eventStreams)).toThrow();
   for (const mutation of [{ phase: 'wrong' }, { target: 'pc-b' }, { revision: 999 }, { kind: 'wrong' }, { resource: 'synthetic-other' }, { atMs: 999 }]) {
     const altered = sample.events.map(event => ({ ...event })); Object.assign(altered[3], mutation);
-    expect(() => assertProducerTrace(altered, sample.expectedEvents)).toThrow();
+    expect(() => assertProducerTrace(altered, sample.expectedEvents, sample.eventStreams)).toThrow();
   }
 });
 
@@ -178,5 +178,103 @@ test('explicit process indices survive projection and CLI rejects absent or inva
   }
   for (const args of [[], ['b'.repeat(40), 'c'.repeat(40)], ...['0', '4', '1.5', '01', '1x', 'NaN'].map(index => ['b'.repeat(40), 'c'.repeat(40), index])]) {
     expect(() => parseProducerArguments(args)).toThrow(/Usage/);
+  }
+});
+
+
+test('initial and continuation snapshot metadata reject valid-shaped revision/time/policy drift', async () => {
+  const original = ConversationCaptures.prototype.conversationRead;
+  for (const continuationOnly of [false, true]) {
+    for (const field of ['revision', 'observed_at', 'expires_at', 'export_policy_revision']) {
+      let mutated = false;
+      const altered = spyOn(ConversationCaptures.prototype, 'conversationRead').mockImplementation(async function (this: ConversationCaptures, ...args) {
+        const value = await original.apply(this, args);
+        if (continuationOnly && !args[2]) return value;
+        mutated = true; const page = { ...value.page };
+        if (field === 'revision') page.revision = 999;
+        if (field === 'observed_at') page.observed_at = '2026-01-01T00:00:01.000Z';
+        if (field === 'expires_at') page.expires_at = '2026-01-01T00:04:59.000Z';
+        if (field === 'export_policy_revision') page.export_policy_revision = 'wrong-policy';
+        return { ...value, page };
+      });
+      try {
+        const recipe = expect(runProducerRecipe('history-pagination', 1000));
+        if (field === 'revision') await recipe.rejects.toThrow(/snapshot metadata/);
+        else await recipe.rejects.toThrow();
+        expect(mutated).toBe(true);
+      }
+      finally { altered.mockRestore(); }
+    }
+  }
+});
+
+test('snapshot metadata remain immutable on replay and resource stamps follow independent fixture mutations', async () => {
+  const h = createProducerFixture(1000);
+  try {
+    await h.prepare();
+    const first = (await h.read()).response.result;
+    await h.read('other');
+    expect(first.page.revision).toBe(1);
+    const nextCursor = { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor };
+    h.setTime(2000);
+    const next = (await h.read('active', nextCursor)).response.result;
+    const replay = (await h.read('active', nextCursor)).response.result;
+    expect(replay.page).toEqual(next.page);
+    expect(next.page.observed_at).toBe('2026-01-01T00:00:00.000Z');
+    h.setTime(3000); h.append('other'); await h.observe();
+    const unchanged = (await h.read('active', nextCursor)).response.result;
+    expect(unchanged.page).toEqual(next.page);
+    const other = (await h.read('other')).response.result;
+    expect(other.page.revision).toBe(2);
+    h.setTime(4000); h.append(); await h.observe();
+    expect((await h.read('active', nextCursor)).response.code).toBe('stale_revision');
+    const updated = (await h.read()).response.result;
+    expect(updated.page.revision).toBe(3);
+    expect(updated.page.snapshot_id).not.toBe(first.page.snapshot_id);
+    expect(updated.page.observed_at).toBe('2026-01-01T00:00:04.000Z');
+    expect(updated.page.expires_at).toBe('2026-01-01T00:05:04.000Z');
+    h.setTime(5000); h.activity({ activity: 'error', generatingMessageId: null }); await h.observe();
+    expect((await h.read()).response.result.page.revision).toBe(4);
+  } finally { await h.host.dispose(); }
+});
+
+test('callback events must retain fixture account, complete audience and initialized real stream', async () => {
+  const original = ContentHost.prototype.flush;
+  for (const mutation of ['account', 'instance', 'stream-each-event', 'stream-stable-wrong', 'scope-kind', 'timestamp']) {
+    const altered = spyOn(ContentHost.prototype, 'flush').mockImplementation(function (this: ContentHost, send) {
+      return original.call(this, async event => {
+        const changed = structuredClone(event);
+        if (mutation === 'account') changed.account_id = 'account:wrong';
+        if (mutation === 'instance' && 'instance_id' in changed.change.scope) changed.change.scope.instance_id = 'pc-b';
+        if (mutation === 'stream-each-event') changed.stream_id = `wrong-stream-${changed.sequence}`;
+        if (mutation === 'stream-stable-wrong') changed.stream_id = 'wrong-stable-stream';
+        if (mutation === 'scope-kind' && 'kind' in changed.change.scope) Object.assign(changed.change.scope, { kind: 'implement', workspace_id: 'workspace:wrong', task_id: 'task:wrong' });
+        if (mutation === 'timestamp') changed.occurred_at = '2026-01-01T00:00:00.000Z';
+        await send(changed);
+      });
+    });
+    try { await expect(runProducerRecipe('visible-unrelated-update', 100)).rejects.toThrow(); }
+    finally { altered.mockRestore(); }
+  }
+  const sample = await runProducerRecipe('visible-unrelated-update', 100);
+  expect(new Set(sample.events.map(event => event.stream_id))).toEqual(new Set([sample.eventStreams['pc-a']]));
+  expect(sample.events.every(event => event.account_id === 'account:synthetic' && event.audience.instance_id === event.target)).toBe(true);
+});
+
+test('returned delivery envelope and response exchange identities are checked before observation', async () => {
+  const original = ContentHost.prototype.handle;
+  for (const mutation of ['outer-instance', 'outer-request', 'inner-account', 'inner-request', 'inner-operation', 'version']) {
+    const altered = spyOn(ContentHost.prototype, 'handle').mockImplementation(async function (this: ContentHost, ...args) {
+      const result = structuredClone(await original.apply(this, args)) as any;
+      if (mutation === 'outer-instance') result.instance_id = 'pc-b';
+      if (mutation === 'outer-request') result.request_id = 'request:wrong';
+      if (mutation === 'inner-account') result.response.account_id = 'account:wrong';
+      if (mutation === 'inner-request') result.response.request_id = 'request:wrong';
+      if (mutation === 'inner-operation') result.response.operation = 'projects.list';
+      if (mutation === 'version') result.transport_version = '1.0';
+      return result;
+    });
+    try { await expect(runProducerRecipe('history-pagination', 100)).rejects.toThrow(/producer/); }
+    finally { altered.mockRestore(); }
   }
 });

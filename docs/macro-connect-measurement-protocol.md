@@ -203,3 +203,37 @@ slow barrier. For capture API timing retain the A1 p95 ratio 1.0 at the same
 boundary and configuration, with process dispersion and investigation of
 variance. Numeric ceilings are populated only from executed measurements.
 Refusals and quotas are kept; no gain or end-to-end baseline is established.
+
+
+### Public correlation checked by the producer runner
+
+The runner uses the product validators and a fixture oracle at different
+boundaries. Passing a schema or a cached-emission guard does not establish that
+a returned revision matches the synthetic source. The following checks apply
+to the operations executed by these six recipes, not every content protocol API.
+
+| Boundary | Product guarantee used | Fixture correlation added |
+| --- | --- | --- |
+| Request and delivery | validateContentMessage checks schema, versions, bounded fields and within-envelope relationships. | The harness constructs a fixed synthetic account/session and the selected instance; no authority or real transport is inferred. |
+| Returned delivery.result | validateContentMessage checks outer shape and outer/inner request correlation; validateContentResponse checks request ID, account, operation, requested snapshot, initial offset and operation-specific references. | The returned outer instance and request ID must match the outstanding delivery, including errors. Validation precedes byte/result recording. |
+| New public page | Product validation checks page shape, maximum lifetime, total/cursor relationship, positions and duplicate IDs; the emission guard checks the internal cached capture against the current source. | The initial revision follows the independent fixture mutation stamps. observed_at equals the injected capture time, expires_at equals that time plus the existing 300000 ms TTL, export_policy_revision equals visible-1, and total matches the exact source. An initial snapshot ID must be new in this fixture. |
+| Snapshot audience and continuation | validateContentPageContinuation checks adjacent immutable metadata, account/operation, contiguous offsets, requested cursor ownership and repeated IDs. | Metadata are retained per snapshot with account, session, instance, operation and conversation binding. Continuations and replays must preserve all immutable page fields. Exact window rows/IDs/content/positions and cursor-to-offset ownership are checked separately. Replayed opaque next cursors remain identical. |
+| Resource transitions | Product revisions come from actual library observations. | A changed, already-open resource takes the next global catalog stamp; an unrelated resource retains its stamp. Source mutations and observations are separate prescribed steps. Page/catalog revisions and content revisions must agree with those independent expectations. |
+| Callback event identity | validateContentMessage checks event shape, complete scopes and within-envelope account consistency. It does not bind an event to this fixture. | account_id and received scope.instance_id must match the fixture. stream_id must equal the real stream saved through this host's owned in-memory CAS journal at initialize, before callbacks. The received account, entire scope/audience, stream, contract/type and occurred_at are retained in the raw trace. |
+| Event order and meaning | Individual event validation does not establish stream continuity. | Each real stream has consecutive successful sequences starting at 1. Distinct hosts have distinct initialized streams. The exhaustive expected trace compares audience, kind, resource, revision, phase and exact injected occurred_at. Lost-ACK attempts retain the original payload hash/stream and are separate from successfully acknowledged events. |
+
+Snapshots, cursors and stream IDs remain opaque product-generated identities;
+no random value is predicted or replaced. The cached-emission guard establishes
+that a returned snapshot exists for its request audience. The continuation
+checks establish the ownership of each cursor actually consumed. An unconsumed
+next cursor has presence/position and replay checks only; the runner does not
+claim to traverse the entire 1000/10000-message capture. Raw pageTrace and
+eventStreams preserve the checked identities and metadata across the action
+window without changing product responses or adding source calls.
+
+The host journal is accessed through the fixture's injected storage port, not
+private host fields. Its stream ID is a measurement identity, not a product
+quota or a substitute stream. These checks add assertion/trace overhead to raw
+scenario elapsed time; the four wrapped capture API durations keep their
+previous boundary. No performance comparison with an older runner definition
+is inferred from these correctness probes.

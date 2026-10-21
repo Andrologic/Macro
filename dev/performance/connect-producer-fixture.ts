@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { ConversationCaptures, type ConversationActivity, type ConversationRef } from '../../src/services/macroPilot/conversationCaptures';
+import { ConversationCaptures, type ConversationActivity, type ConversationRef, type PageMetadata } from '../../src/services/macroPilot/conversationCaptures';
 import { ContentHost } from '../../src/services/macroPilot/contentHost';
 import { createReviewCaptureService } from '../../src/services/macroPilot/reviewCapture';
-import { validateContentMessage, validateContentResponse, CONVERSATION_READ_OPERATIONS, type ContentDelivery, type ContentRequest } from '../../src/services/macroPilot/contentProtocol';
+import { validateContentMessage, validateContentResponse, validateContentPageContinuation, CONVERSATION_READ_OPERATIONS, type ContentDelivery, type ContentRequest } from '../../src/services/macroPilot/contentProtocol';
 import type { InteractionState } from '../../src/services/macroPilot/conversationInteractions';
 import type { DbConversation, DbMessage } from '../../src/services/tauriIpc';
 import { fixtureMessages, profiles } from '../../contracts/macro-connect/metrics/v1/fixtures.mjs';
 
 const date = profiles.fixture.seed_timestamp as string;
 const epoch = Date.parse(date);
+const account = 'account:synthetic';
+const session = 'session:synthetic';
 const forbidden = async (): Promise<never> => { throw new Error('Forbidden producer-fixture side effect'); };
 const memory = () => {
   let value: string | null = null;
@@ -18,10 +20,13 @@ const memory = () => {
     value = next; return true;
   } };
 };
-export type ProducerEvent = {
-  target: string; phase: string; kind: string; sequence: number; resource: string; revision: number; atMs: number; sha256: string;
+export type ExpectedProducerEvent = {
+  target: string; phase: string; kind: string; sequence: number; resource: string; revision: number; atMs: number;
 };
-export type ExpectedProducerEvent = Omit<ProducerEvent, 'sha256'>;
+export type ProducerEvent = ExpectedProducerEvent & {
+  contract_version: '2.0'; type: 'event'; account_id: string; stream_id: string;
+  occurred_at: string; audience: { instance_id: string; kind?: string; conversation_id?: string }; sha256: string;
+};
 /** Explicit baseline oracle, independent of the events observed from the host.
  * Streams have independent sequences. There is no cross-target total order. */
 export function expectedProducerTrace(scenario: string): ExpectedProducerEvent[] {
@@ -49,13 +54,24 @@ export function expectedProducerTrace(scenario: string): ExpectedProducerEvent[]
   assert(Object.hasOwn(profiles.scenarios, scenario), 'unknown trace recipe');
   return [];
 }
-export function assertProducerTrace(events: ProducerEvent[], expected: ExpectedProducerEvent[]) {
+export function assertProducerTrace(events: ProducerEvent[], expected: ExpectedProducerEvent[], streams: Record<string, string>) {
+  // Stream IDs come from this fixture's owned host CAS journal after initialize,
+  // not from the first callback, a closure label or a substituted random UUID.
+  assert.equal(new Set(Object.values(streams)).size, Object.keys(streams).length, 'producer streams must be distinct');
+  for (const streamId of new Set(events.map(event => event.stream_id))) {
+    const stream = events.filter(event => event.stream_id === streamId);
+    assert(stream.every((event, index) => event.sequence === index + 1), 'producer event sequence gap or duplicate');
+  }
   const targets = [...new Set([...events, ...expected].map(event => event.target))].sort();
   for (const target of targets) {
-    const stream = events.filter(event => event.target === target);
-    assert(stream.every((event, index) => event.sequence === index + 1), 'producer event sequence gap or duplicate');
-    const actual = stream.map(({ sha256: _hash, ...event }) => event);
-    assert.deepEqual(actual, expected.filter(event => event.target === target), `producer event trace mismatch: ${target}`);
+    assert(streams[target], 'producer target has no initialized stream');
+    const actual = events.filter(event => event.target === target).map(({ sha256: _hash, ...event }) => event);
+    const wanted = expected.filter(event => event.target === target).map(event => ({ ...event,
+      contract_version: '2.0', type: 'event', account_id: account, stream_id: streams[target],
+      occurred_at: new Date(epoch + event.atMs).toISOString(),
+      audience: event.resource === 'instance' ? { instance_id: target } : { instance_id: target, kind: 'conversation', conversation_id: event.resource },
+    }));
+    assert.deepEqual(actual, wanted, `producer event trace mismatch: ${target}`);
   }
 }
 /** Fixture user rows all fit 100 items in the existing byte bound. Exact
@@ -81,6 +97,8 @@ export type ProducerSample = {
   usefulBytes: number; serializedBytes: number; observations: number; deliveries: number;
   results: Record<string, number>; events: ProducerEvent[]; expectedEvents: ExpectedProducerEvent[];
   observationTrace: Array<{ target: string; phase: string; atMs: number }>;
+  eventStreams: Record<string, string>;
+  pageTrace: Array<{ target: string; account_id: string; source_session_id: string; request_id: string; operation: string; conversation?: string; phase: string; atMs: number; page: PageMetadata }>;
   eventAttempts: ProducerSample['events']; elapsedMs: number; checks: string[]; pageOffsets: number[];
 };
 export function createProducerFixture(size: number, target = 'pc-a') {
@@ -92,6 +110,15 @@ export function createProducerFixture(size: number, target = 'pc-a') {
   const knownCaptures = new Set<string>();
   const cursorOffsets = new Map<string, number>(); const cursorsByOffset = new Map<string, string>();
   const observationTrace: ProducerSample['observationTrace'] = [];
+  const pageTrace: ProducerSample['pageTrace'] = [];
+  const snapshotMetadata = new Map<string, { binding: string; page: Omit<PageMetadata, 'offset' | 'next_cursor'> }>();
+  const cursorPages = new Map<string, any>();
+  const resourceRevisions: Record<string, number> = { 'synthetic-active': 1, 'synthetic-other': 1 };
+  let catalogRevision = 1; let expectedStream = '';
+  const hostStorage = memory();
+  // Recipe changes are observed separately after the affected history opens.
+  // A resource takes the global catalog stamp when changed, not a local +1.
+  const changed = (conversation: string) => { catalogRevision++; resourceRevisions[`synthetic-${conversation}`] = catalogRevision; };
   const allMessages: DbMessage[] = ['active', 'other'].flatMap(conversation => fixtureMessages(size, conversation).map((message: any) => ({
     ...message, token_count: null, hidden_context: null, tool_traces_json: null, provider_input_items_json: null, provider_turn_state_json: null,
   })));
@@ -130,8 +157,8 @@ export function createProducerFixture(size: number, target = 'pc-a') {
       finally { captureApiMs += performance.now() - start; }
     };
   }
-  const host = new ContentHost({ accountId: 'account:synthetic', instanceId: target, now: () => now, signal: new AbortController().signal,
-    conversations: captures, storage: memory(), policy: async () => ({ revision: 'visible-1', secrets: [] }),
+  const host = new ContentHost({ accountId: account, instanceId: target, now: () => now, signal: new AbortController().signal,
+    conversations: captures, storage: hostStorage, policy: async () => ({ revision: 'visible-1', secrets: [] }),
     reviews: createReviewCaptureService({ capture: forbidden, files: forbidden, read: forbidden, fresh: forbidden, release: forbidden }),
     resolveReview: forbidden, commitReview: forbidden, reviewRefs: async () => [],
     interactions: { storage: memory(), source: {
@@ -144,18 +171,61 @@ export function createProducerFixture(size: number, target = 'pc-a') {
     : Array.isArray(value) ? value.reduce((sum, entry) => sum + dataBytes(entry), 0)
     : value && typeof value === 'object' ? Object.entries(value).reduce((sum, [name, entry]) => sum + dataBytes(entry, name), 0) : 0;
   const record = (value: unknown) => { serializedBytes += Buffer.byteLength(JSON.stringify(value)); usefulBytes += dataBytes(value); };
-  const prepare = async () => { await host.initialize(); await host.prepare(); };
+  const prepare = async () => {
+    await host.initialize();
+    // Public storage port owned by this fixture, no host private fields.
+    expectedStream = JSON.parse((await hostStorage.load())!).stream;
+    assert(typeof expectedStream === 'string' && expectedStream.length > 0, 'host journal stream missing');
+    await host.prepare();
+  };
   const deliver = async (operation: string, body: object): Promise<any> => {
     const enhancedBody = ['projects.list', 'conversations.list', 'conversation.read'].includes(operation) ? { ...body, consistency: 'network-reliability-1' } : body;
-    const request = { contract_version: '2.0', type: 'request', account_id: 'account:synthetic', request_id: `request:${++requestSequence}`, operation, body: enhancedBody } as ContentRequest;
-    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', account_id: 'account:synthetic', instance_id: target,
-      request_id: request.request_id, source_session_id: 'session:synthetic', expires_at: new Date(now + 60000).toISOString(), request,
+    const request = { contract_version: '2.0', type: 'request', account_id: account, request_id: `request:${++requestSequence}`, operation, body: enhancedBody } as ContentRequest;
+    const delivery: ContentDelivery = { transport_version: '2.0', type: 'delivery', account_id: account, instance_id: target,
+      request_id: request.request_id, source_session_id: session, expires_at: new Date(now + 60000).toISOString(), request,
       capabilities: ['network-reliability-1', 'conversations-1', 'conversation-interactions-1'] };
     assert(validateContentMessage(delivery), `invalid synthetic request: ${operation}`);
     deliveries++; record(delivery);
     const result = await host.handle(delivery, async () => new Date(now + 9000).toISOString());
+    assert(validateContentMessage(result), 'invalid producer result envelope');
+    assert.equal(result.instance_id, target, 'producer result target mismatch');
+    assert.equal(result.request_id, delivery.request_id, 'producer result request mismatch');
     assert(validateContentResponse(request, result.response), 'invalid producer response');
     if (CONVERSATION_READ_OPERATIONS.has(request.operation)) await host.validateConversationEmission(delivery, result);
+    if (result.response.type === 'response' && 'page' in result.response.result) {
+      const value = result.response.result as any; const page = value.page as PageMetadata;
+      const conversation = operation === 'conversation.read' ? (request.body as any).ref.conversation_id : undefined;
+      const continuation = (request.body as any).continuation;
+      const binding = JSON.stringify([account, session, target, operation, conversation ?? null]);
+      const { offset: _offset, next_cursor: _cursor, ...metadata } = page;
+      const prior = snapshotMetadata.get(page.snapshot_id);
+      if (continuation) {
+        assert(prior && prior.binding === binding, 'producer snapshot audience mismatch');
+        assert.deepEqual(metadata, prior.page, 'producer snapshot metadata changed');
+      } else {
+        assert(!prior, 'producer initial snapshot reused');
+        const expected = { snapshot_id: page.snapshot_id,
+          revision: conversation ? resourceRevisions[conversation] : operation === 'projects.list' ? 1 : catalogRevision,
+          observed_at: new Date(now).toISOString(), expires_at: new Date(now + 300000).toISOString(),
+          export_policy_revision: 'visible-1', total: conversation ? allMessages.filter(row => row.conversation_id === conversation).length : operation === 'projects.list' ? 1 : conversations.length };
+        assert.deepEqual(metadata, expected, 'producer initial snapshot metadata mismatch');
+        snapshotMetadata.set(page.snapshot_id, { binding, page: expected });
+      }
+      if (conversation) assert.equal(page.revision, resourceRevisions[conversation], 'producer source revision mismatch');
+      if (operation === 'conversations.list') {
+        assert.deepEqual(value.items.map((item: any) => item.ref).sort((a: ConversationRef, b: ConversationRef) => a.conversation_id.localeCompare(b.conversation_id)), ['active', 'other'].map(name => ref(name)), 'producer catalog audience mismatch');
+        for (const item of value.items) {
+          assert.equal(item.revision, catalogRevision, 'producer catalog revision mismatch');
+          assert.equal(item.content_revision, resourceRevisions[item.ref.conversation_id], 'producer catalog content revision mismatch');
+        }
+      }
+      pageTrace.push({ target: result.instance_id, account_id: result.response.account_id, source_session_id: delivery.source_session_id, request_id: result.request_id, operation, ...(conversation ? { conversation } : {}), phase, atMs: now - epoch, page: structuredClone(page) });
+    }
+    if (result.response.type === 'response' && operation === 'conversation.interactions') {
+      const value = result.response.result as any;
+      assert.equal(value.revision, 1, 'producer initial interaction revision mismatch');
+      assert.equal(value.expires_at, new Date(now + 300000).toISOString(), 'producer interaction expiry mismatch');
+    }
     record(result); const status = result.response.type === 'error' ? result.response.code : 'response';
     results[status] = (results[status] ?? 0) + 1;
     return { delivery, result, response: result.response };
@@ -168,6 +238,10 @@ export function createProducerFixture(size: number, target = 'pc-a') {
       const key = (cursor: string) => JSON.stringify([conversation, page.snapshot_id, cursor]);
       const expectedOffset = continuation ? cursorOffsets.get(JSON.stringify([conversation, continuation.snapshot_id, continuation.cursor])) : 0;
       assert.notEqual(expectedOffset, undefined, 'producer returned success for unknown continuation');
+      if (continuation) {
+        const previous = cursorPages.get(JSON.stringify([conversation, continuation.snapshot_id, continuation.cursor]));
+        assert(previous && validateContentPageContinuation(previous, reply.response, { request: reply.delivery.request }), 'invalid producer page continuation');
+      }
       const nextOffset = assertProducerPage(reply.response.result, source, expectedOffset!, continuation?.snapshot_id);
       if (page.next_cursor) {
         const position = JSON.stringify([conversation, page.snapshot_id, nextOffset]);
@@ -177,6 +251,7 @@ export function createProducerFixture(size: number, target = 'pc-a') {
         const oldOffset = cursorOffsets.get(key(page.next_cursor));
         if (oldOffset !== undefined) assert.equal(oldOffset, nextOffset, 'producer cursor reused at another offset');
         cursorOffsets.set(key(page.next_cursor), nextOffset);
+        cursorPages.set(key(page.next_cursor), structuredClone(reply.response));
       }
     }
     return reply;
@@ -184,9 +259,14 @@ export function createProducerFixture(size: number, target = 'pc-a') {
   const flush = async (loseAck = false) => {
     let lose = loseAck;
     await host.flush(async event => {
-      assert(validateContentMessage(event), 'invalid producer event'); record(event);
+      assert(validateContentMessage(event), 'invalid producer event');
+      assert.equal(event.account_id, account, 'producer event account mismatch');
+      assert('instance_id' in event.change.scope, 'producer event instance missing');
+      assert.equal(event.change.scope.instance_id, target, 'producer event instance mismatch');
+      assert.equal(event.stream_id, expectedStream, 'producer event stream mismatch');
+      record(event);
       const scope = event.change.scope;
-      const item = { target, phase, kind: event.change.kind, sequence: event.sequence, revision: event.change.revision, atMs: Date.parse(event.occurred_at) - epoch, sha256: createHash('sha256').update(JSON.stringify(event)).digest('hex'), resource: 'conversation_id' in scope ? String(scope.conversation_id) : 'instance' };
+      const item: ProducerEvent = { contract_version: event.contract_version, type: event.type, account_id: event.account_id, stream_id: event.stream_id, occurred_at: event.occurred_at, audience: structuredClone(event.change.scope), target: event.change.scope.instance_id, phase, kind: event.change.kind, sequence: event.sequence, revision: event.change.revision, atMs: Date.parse(event.occurred_at) - epoch, sha256: createHash('sha256').update(JSON.stringify(event)).digest('hex'), resource: 'conversation_id' in scope ? String(scope.conversation_id) : 'instance' };
       attempts.push(item);
       if (lose) { lose = false; throw new Error('Injected lost fixture acknowledgement'); }
       events.push(item);
@@ -197,18 +277,18 @@ export function createProducerFixture(size: number, target = 'pc-a') {
   const reset = () => {
     for (const key of Object.keys(calls)) delete calls[key]; for (const key of Object.keys(results)) delete results[key];
     sourceRows = newCaptures = captureApiCalls = captureApiMs = captureApiFailures = usefulBytes = serializedBytes = observations = deliveries = 0;
-    events.length = 0; attempts.length = 0; observationTrace.length = 0;
+    events.length = 0; attempts.length = 0; observationTrace.length = 0; pageTrace.length = 0;
   };
   const sample = (scenario: string, elapsedMs: number, checks: string[], pageOffsets: number[] = []): ProducerSample => ({
     scenario, size, sourceCalls: { ...calls }, sourceRows, newCaptures, captureApiCalls, captureApiMs, captureApiFailures,
-    usefulBytes, serializedBytes, observations, deliveries, results: { ...results }, events: [...events], expectedEvents: expectedProducerTrace(scenario), observationTrace: [...observationTrace], eventAttempts: [...attempts], elapsedMs, checks, pageOffsets,
+    usefulBytes, serializedBytes, observations, deliveries, results: { ...results }, events: [...events], expectedEvents: expectedProducerTrace(scenario), observationTrace: [...observationTrace], eventStreams: { [target]: expectedStream }, pageTrace: structuredClone(pageTrace), eventAttempts: [...attempts], elapsedMs, checks, pageOffsets,
   });
   return { host, captures, prepare, deliver, read, observe, observeOnly, flush, reset, ref, events, attempts, sample, allMessages,
     setPhase: (value: string) => { phase = value; }, setTime: (offset: number) => { now = epoch + offset; },
     append: (conversation = 'active') => { const row = allMessages.find(message => message.conversation_id === `synthetic-${conversation}`)!;
-      allMessages.push({ ...row, id: `append-${conversation}-${++appendSequence}`, content: 'synthetic appended content', created_at: date }); },
-    edit: (conversation = 'active') => { allMessages.find(message => message.conversation_id === `synthetic-${conversation}`)!.content = 'synthetic edited content'; },
-    activity: (value: ConversationActivity) => { activities.set('synthetic-active', value); },
+      allMessages.push({ ...row, id: `append-${conversation}-${++appendSequence}`, content: 'synthetic appended content', created_at: date }); changed(conversation); },
+    edit: (conversation = 'active') => { allMessages.find(message => message.conversation_id === `synthetic-${conversation}`)!.content = 'synthetic edited content'; changed(conversation); },
+    activity: (value: ConversationActivity) => { if (JSON.stringify(activities.get('synthetic-active')) !== JSON.stringify(value)) changed('active'); activities.set('synthetic-active', value); },
     question: (pending: boolean) => { interaction = pending ? { question: { assistant_message_id: 'message:question', steps: [{ step_id: 'choice', prompt: 'Synthetic?', choices: ['Yes'], free_text_allowed: false }] }, generation_id: null, actions: ['answer'] } : { question: null, generation_id: null, actions: [] }; },
     failSource: () => { sourceFailure = true; },
     block: () => { assert(!gate, 'source already blocked'); gate = new Promise<void>(resolve => { gateRelease = resolve; }); },
@@ -327,11 +407,12 @@ export async function runProducerRecipe(scenario: string, size: number): Promise
     for (const host of extra) {
       const value = host.sample(scenario, elapsed, [], []);
       sample.events.push(...value.events); sample.eventAttempts.push(...value.eventAttempts); sample.observationTrace.push(...value.observationTrace);
+      Object.assign(sample.eventStreams, value.eventStreams); sample.pageTrace.push(...value.pageTrace);
       for (const [method, count] of Object.entries(value.sourceCalls)) sample.sourceCalls[`${host.ref().instance_id}/${method}`] = count;
       for (const key of ['sourceRows', 'newCaptures', 'captureApiCalls', 'captureApiMs', 'captureApiFailures', 'usefulBytes', 'serializedBytes', 'observations', 'deliveries'] as const) sample[key] += value[key];
       for (const [status, count] of Object.entries(value.results)) sample.results[status] = (sample.results[status] ?? 0) + count;
     }
-    assertProducerTrace(sample.events, sample.expectedEvents);
+    assertProducerTrace(sample.events, sample.expectedEvents, sample.eventStreams);
     if (scenario === 'multiple-targets') assert.deepEqual(sample.observationTrace, [
       { target: 'pc-a', phase: 'append-2000', atMs: 2000 }, { target: 'pc-a', phase: 'observe-6000', atMs: 6000 },
       { target: 'pc-slow', phase: 'append-2000', atMs: 2000 }, { target: 'pc-slow', phase: 'error-4000', atMs: 4000 },
