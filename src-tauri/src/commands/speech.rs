@@ -323,7 +323,7 @@ mod tests {
         )
         .expect_err("remote HTTP endpoint must fail");
 
-        assert!(error.message.contains("HTTPS"));
+        assert!(error.message.contains("local provider on a loopback host"));
     }
 
     #[test]
