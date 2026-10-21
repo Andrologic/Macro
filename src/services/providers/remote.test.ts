@@ -161,6 +161,30 @@ describe('remote provider', () => {
     }
   });
 
+  it('refuses plaintext remote origins before reading or sending the bearer', async () => {
+    setRemoteAuthToken('agent-secret');
+    for (const origin of [
+      'http://remote.example.test',
+      'http://127.0.0.1.evil.test',
+      'http://user:password@127.0.0.1:8787',
+    ]) {
+      setEnv('VITE_REMOTE_API_BASE_URL', origin);
+      await expect(listTasks()).rejects.toMatchObject({ code: 'REMOTE_INSECURE_ORIGIN' });
+    }
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('disables redirects when sending a bearer to an HTTPS origin', async () => {
+    setEnv('VITE_REMOTE_API_BASE_URL', 'https://remote.example.test');
+    setRemoteAuthToken('agent-secret');
+
+    await listTasks();
+    expect(fetchCalls[0].init?.redirect).toBe('error');
+    expect(fetchCalls[0].init?.credentials).toBe('omit');
+    expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization)
+      .toBe('Bearer agent-secret');
+  });
+
   it('calls workspace bootstrap endpoint with auth header', async () => {
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://localhost:3000/');
     setEnv('VITE_REMOTE_API_PREFIX', '/api/v1');

@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Jeton d’accès au serveur sans interface de Macro",
+    "approvalPrompt": "Jeton d’approbation du serveur sans interface de Macro"
+  },
   "mcpForm": {
     "title": "Demande de formulaire MCP",
     "server": "Serveur",

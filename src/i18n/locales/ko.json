@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Macro 헤드리스 인증 토큰",
+    "approvalPrompt": "Macro 헤드리스 승인 토큰"
+  },
   "mcpForm": {
     "title": "MCP 양식 요청",
     "server": "서버",

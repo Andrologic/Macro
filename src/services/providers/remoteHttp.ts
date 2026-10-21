@@ -1,7 +1,7 @@
 import { createRemoteUnsupportedInRemoteModeError } from '../serviceRuntime';
 import { createCombinedAbortSignal } from '../../utils/abortSignals';
 import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
-import { getRemoteAuthToken } from './remoteAuthToken';
+import { getRemoteAuthToken, takeRemoteApprovalToken } from './remoteAuthToken';
 
 export { resolveRemoteConfig } from './remoteConfig';
 
@@ -32,6 +32,28 @@ export const getWorkspaceBasePath = (config: RemoteConfig): string => {
 export const toAbsoluteApiUrl = (config: RemoteConfig, path: string): string => {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   return `${config.baseUrl}${config.apiPrefix}${normalizedPath}`;
+};
+
+const assertSecureRemoteOrigin = (baseUrl: string): void => {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw { code: 'REMOTE_INVALID_ORIGIN', message: 'Remote API URL is invalid' };
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const loopback = hostname === 'localhost'
+    || hostname === '[::1]'
+    || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(hostname);
+  if (
+    parsed.username || parsed.password || parsed.search || parsed.hash
+    || (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback))
+  ) {
+    throw {
+      code: 'REMOTE_INSECURE_ORIGIN',
+      message: 'Remote API must use HTTPS, except for a loopback development server',
+    };
+  }
 };
 
 const MAX_REMOTE_RESPONSE_BYTES = 1_048_576;
@@ -135,23 +157,37 @@ export const remoteRequest = async <T>(
   path: string,
   options: RequestInit & {
     payloadKey?: string;
+    /** Sensitive configuration decisions require the separate user approval bearer. */
+    authKind?: 'agent' | 'approval';
     /** Per-request transport deadline. `null` disables the automatic timeout. */
     timeoutMs?: number | null;
   } = {}
 ): Promise<T> => {
   const config = ensureRemoteConfig();
-  const { payloadKey, timeoutMs = config.timeoutMs, ...requestOptions } = options;
+  assertSecureRemoteOrigin(config.baseUrl);
+  const { payloadKey, authKind = 'agent', timeoutMs = config.timeoutMs, ...requestOptions } = options;
+  if (authKind === 'approval' && ![
+    '/config/pending/accept',
+    '/config/pending/reject',
+  ].includes(path)) {
+    throw {
+      code: 'REMOTE_APPROVAL_SCOPE',
+      message: 'The approval bearer is only valid for pending configuration decisions',
+    };
+  }
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...(requestOptions.body ? { 'Content-Type': 'application/json' } : {}),
     ...(requestOptions.headers as Record<string, string> | undefined),
   };
 
-  const authToken = getRemoteAuthToken();
-  if (!authToken && typeof window !== 'undefined') {
+  const authToken = authKind === 'approval' ? takeRemoteApprovalToken() : getRemoteAuthToken();
+  if (!authToken && (authKind === 'approval' || typeof window !== 'undefined')) {
     throw {
-      code: 'REMOTE_AUTH_REQUIRED',
-      message: 'A headless bearer token is required for remote requests',
+      code: authKind === 'approval' ? 'REMOTE_APPROVAL_REQUIRED' : 'REMOTE_AUTH_REQUIRED',
+      message: authKind === 'approval'
+        ? 'A distinct approval bearer token is required for this decision'
+        : 'A headless bearer token is required for remote requests',
     };
   }
   if (authToken) {
@@ -173,6 +209,8 @@ export const remoteRequest = async <T>(
       ...requestOptions,
       headers,
       signal: combinedSignal.signal,
+      redirect: 'error',
+      credentials: 'omit',
     });
 
     const contentType = response.headers.get('content-type') ?? '';

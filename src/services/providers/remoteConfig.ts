@@ -7,10 +7,16 @@ export interface RemoteConfig {
 
 const DEFAULT_API_PREFIX = '/api/v1';
 const DEFAULT_TIMEOUT_MS = 15000;
+const publicViteEnv: Record<string, string | undefined> = {
+  VITE_REMOTE_API_BASE_URL: import.meta.env.VITE_REMOTE_API_BASE_URL,
+  VITE_REMOTE_API_PREFIX: import.meta.env.VITE_REMOTE_API_PREFIX,
+  VITE_REMOTE_BACKEND_URL: import.meta.env.VITE_REMOTE_BACKEND_URL,
+  VITE_REMOTE_TIMEOUT_MS: import.meta.env.VITE_REMOTE_TIMEOUT_MS,
+  VITE_REMOTE_WORKSPACE_ID: import.meta.env.VITE_REMOTE_WORKSPACE_ID,
+};
 
 const readEnv = (key: string): string | undefined => {
-  const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  const viteValue = viteEnv?.[key];
+  const viteValue = publicViteEnv[key];
   if (typeof viteValue === 'string' && viteValue.trim().length > 0) {
     return viteValue.trim();
   }

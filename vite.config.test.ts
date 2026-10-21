@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadEnv } from 'vite';
 import viteConfig, { isPathInside, validatePublicSecretFiles } from './vite.config';
 
 it('keeps startup CSS and the shared preload helper out of deferred vendor chunks', async () => {
@@ -18,20 +17,44 @@ it('keeps startup CSS and the shared preload helper out of deferred vendor chunk
   expect(output.manualChunks('\0vite/preload-helper.js', graph)).toBe('utils-vendor');
 });
 
-it('excludes the obsolete remote bearer from Vite environment exposure', async () => {
+it('publishes only explicit public Vite values and excludes bridge tokens from builds', async () => {
   if (typeof viteConfig !== 'function') throw new Error('Expected Vite config factory');
-  const config = await viteConfig({ command: 'build', mode: 'production' });
-  const prefixes = config.envPrefix;
-  if (!Array.isArray(prefixes)) throw new Error('Expected explicit public environment prefixes');
-  const previous = process.env.VITE_REMOTE_AUTH_TOKEN;
+  const previous = {
+    auth: process.env.VITE_REMOTE_AUTH_TOKEN,
+    apiSecret: process.env.VITE_REMOTE_API_SECRET,
+    backendToken: process.env.VITE_REMOTE_BACKEND_TOKEN,
+    bridge: process.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN,
+    base: process.env.VITE_REMOTE_API_BASE_URL,
+  };
   process.env.VITE_REMOTE_AUTH_TOKEN = 'bundle-secret-sentinel';
+  process.env.VITE_REMOTE_API_SECRET = 'api-secret-sentinel';
+  process.env.VITE_REMOTE_BACKEND_TOKEN = 'backend-secret-sentinel';
+  process.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN = 'bridge-secret-sentinel';
+  process.env.VITE_REMOTE_API_BASE_URL = 'http://127.0.0.1:8787';
   try {
-    const exposed = loadEnv('production', process.cwd(), prefixes);
-    expect(exposed.VITE_REMOTE_AUTH_TOKEN).toBeUndefined();
-    expect(prefixes.some((prefix) => 'VITE_REMOTE_API_BASE_URL'.startsWith(prefix))).toBe(true);
+    const config = await viteConfig({ command: 'build', mode: 'production' });
+    expect(config.envPrefix).toBe('__MACRO_NO_PUBLIC_ENV__');
+    const defines = config.define ?? {};
+    expect(defines['import.meta.env.VITE_REMOTE_API_BASE_URL']).toBe('"http://127.0.0.1:8787"');
+    expect(defines['import.meta.env.VITE_REMOTE_AUTH_TOKEN']).toBeUndefined();
+    expect(defines['import.meta.env.VITE_REMOTE_API_SECRET']).toBeUndefined();
+    expect(defines['import.meta.env.VITE_REMOTE_BACKEND_TOKEN']).toBeUndefined();
+    expect(defines['import.meta.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN']).toBe('""');
+
+    const devConfig = await viteConfig({ command: 'serve', mode: 'development' });
+    expect(devConfig.define?.['import.meta.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN'])
+      .toBe('"bridge-secret-sentinel"');
   } finally {
-    if (previous === undefined) delete process.env.VITE_REMOTE_AUTH_TOKEN;
-    else process.env.VITE_REMOTE_AUTH_TOKEN = previous;
+    for (const [key, value] of Object.entries({
+      VITE_REMOTE_AUTH_TOKEN: previous.auth,
+      VITE_REMOTE_API_SECRET: previous.apiSecret,
+      VITE_REMOTE_BACKEND_TOKEN: previous.backendToken,
+      VITE_TAURI_BROWSER_BRIDGE_TOKEN: previous.bridge,
+      VITE_REMOTE_API_BASE_URL: previous.base,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

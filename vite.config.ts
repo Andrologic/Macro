@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, transformWithEsbuild } from "vite";
+import { defineConfig, loadEnv, transformWithEsbuild } from "vite";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
@@ -421,8 +421,22 @@ export const validatePublicSecretFiles = (rootDir: string = projectRoot): void =
 
 // https://vitejs.dev/config/
 // Optimized for Bun runtime - Maximum Performance Configuration
-export default defineConfig(({ command }) => {
+const PUBLIC_VITE_ENV_KEYS = [
+  'VITE_BACKEND_TRANSPORT',
+  'VITE_REMOTE_API_BASE_URL',
+  'VITE_REMOTE_API_PREFIX',
+  'VITE_REMOTE_BACKEND_URL',
+  'VITE_REMOTE_TIMEOUT_MS',
+  'VITE_REMOTE_WORKSPACE_ID',
+] as const;
+
+export default defineConfig(({ command, mode }) => {
   const appVersion = readPackageVersion(projectRoot);
+  const loadedEnv = loadEnv(mode, projectRoot, '');
+  const publicDefines = Object.fromEntries(PUBLIC_VITE_ENV_KEYS.map((key) => [
+    `import.meta.env.${key}`,
+    JSON.stringify(loadedEnv[key] ?? ''),
+  ]));
 
   if (command === "build") {
     validatePublicSecretFiles(projectRoot);
@@ -430,16 +444,18 @@ export default defineConfig(({ command }) => {
 
   return {
     base: command === "build" ? "./" : "/",
-    // Only expose the known public settings. A stale VITE_REMOTE_AUTH_TOKEN in
-    // a local .env must never become part of import.meta.env or a built asset.
-    envPrefix: [
-      'VITE_APP_', 'VITE_BACKEND_', 'VITE_CLEAN_', 'VITE_EXTENSIONS',
-      'VITE_OPTIMIZE_', 'VITE_REMOTE_API_', 'VITE_REMOTE_BACKEND_',
-      'VITE_REMOTE_TIMEOUT_', 'VITE_REMOTE_WORKSPACE_', 'VITE_SYNTHETIC',
-      'VITE_TAURI_',
-    ],
+    // Vite's prefix matching would expose arbitrary VITE_* secrets. Publish
+    // exact non-secret keys below instead of opening a broad prefix.
+    envPrefix: '__MACRO_NO_PUBLIC_ENV__',
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
+      ...publicDefines,
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE ?? '',
+      ),
+      'import.meta.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN': JSON.stringify(
+        command === 'build' ? '' : loadedEnv.VITE_TAURI_BROWSER_BRIDGE_TOKEN ?? '',
+      ),
     },
     // Local JSON is consumed through default exports; emit object literals so
     // large locale objects do not gain an escaped JSON.parse string wrapper.

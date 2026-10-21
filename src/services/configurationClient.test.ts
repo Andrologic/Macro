@@ -1,13 +1,79 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import type { ConfigSnapshot } from '../types/generated/config';
+import { setRemoteApprovalToken, setRemoteAuthToken } from './providers/remoteAuthToken';
+import { remoteRequest } from './providers/remoteHttp';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import {
   applyScopedToolRestrictions,
   configurationApplyPatch,
+  configurationAcceptPendingChange,
+  configurationRejectPendingChange,
   loadScopedTurnConfiguration,
   resolveScopedModelSelection,
   resolveScopedTurnConfiguration,
 } from './configurationClient';
+
+describe('remote sensitive configuration decisions', () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.VITE_REMOTE_API_BASE_URL;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.VITE_REMOTE_API_BASE_URL;
+    else process.env.VITE_REMOTE_API_BASE_URL = originalBaseUrl;
+    setRemoteAuthToken(null);
+    setRemoteApprovalToken(null);
+    removeTauriRuntimeMock();
+  });
+
+  it('sends the approval bearer for accept and reject, never the agent bearer', async () => {
+    process.env.VITE_REMOTE_API_BASE_URL = 'http://127.0.0.1:8787';
+    setRemoteAuthToken('agent-secret');
+    setRemoteApprovalToken('approval-secret');
+    const calls: RequestInit[] = [];
+    globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push(init ?? {});
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    await configurationAcceptPendingChange('pending-1');
+    await expect(configurationRejectPendingChange({
+      id: 'pending-2',
+      restoreApproved: false,
+    })).rejects.toMatchObject({ code: 'REMOTE_APPROVAL_REQUIRED' });
+    setRemoteApprovalToken('approval-secret');
+    await configurationRejectPendingChange({ id: 'pending-2', restoreApproved: false });
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect((call.headers as Record<string, string>).Authorization).toBe('Bearer approval-secret');
+    }
+  });
+
+  it('never substitutes the agent bearer when approval is missing', async () => {
+    process.env.VITE_REMOTE_API_BASE_URL = 'http://127.0.0.1:8787';
+    setRemoteAuthToken('agent-secret');
+    const fetchMock = mock(async () => new Response('{}'));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(configurationAcceptPendingChange('pending-1')).rejects.toMatchObject({
+      code: 'REMOTE_APPROVAL_REQUIRED',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not attach the approval bearer to an ordinary route', async () => {
+    process.env.VITE_REMOTE_API_BASE_URL = 'http://127.0.0.1:8787';
+    setRemoteApprovalToken('approval-secret');
+    const fetchMock = mock(async () => new Response('{}'));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(remoteRequest('/health', { authKind: 'approval' })).rejects.toMatchObject({
+      code: 'REMOTE_APPROVAL_SCOPE',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
 
 const snapshot = (effective: ConfigSnapshot['effective']): ConfigSnapshot => ({
   schemaVersion: 1,

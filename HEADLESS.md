@@ -41,6 +41,9 @@ By default, the kernel listens on:
 - `MACRO_HEADLESS_PORT` - bind port, default `43117`.
 - `MACRO_HEADLESS_BEARER_TOKEN` - required for every listener, including
   loopback. Requests must include `Authorization: Bearer <token>`.
+- `MACRO_HEADLESS_APPROVAL_TOKEN` - optional distinct user approval bearer for
+  accepting or rejecting pending sensitive configuration changes. The agent
+  bearer cannot authorize those decisions.
 - `MACRO_HEADLESS_ALLOWED_HOSTS` - optional comma-separated exact `host:port`
   authorities accepted in the `Host` header. The bound IP and, for loopback,
   `localhost` are accepted automatically. A wildcard bind requires this setting.
@@ -52,6 +55,7 @@ By default, the kernel listens on:
   exact browser origins allowed by CORS and by the request gate. Wildcard
   origins are rejected. Common local Vite and Tauri origins are allowed by
   default. Requests with any other `Origin` are rejected before routing.
+  The local Tauri browser bridge at `http://127.0.0.1:1422` is included.
 - `MACRO_CONFIG_DIR` - absolute path to the JSON configuration directory. It is
   intended for headless, portable, and test installations. `MACRO_CONFIG`
   remains a deprecated bootstrap alias for the legacy headless settings file.
@@ -117,10 +121,16 @@ VITE_REMOTE_TIMEOUT_MS=15000
 
 The adapter prompts for the headless bearer on its first request and keeps it
 only in memory. Host applications can supply or clear it with
-`setRemoteAuthToken` from `src/services/providers/remoteAuthToken.ts`. Never
+`setRemoteAuthToken` from `src/services/providers/remoteAuthToken.ts`. Sensitive
+configuration decisions prompt separately for `MACRO_HEADLESS_APPROVAL_TOKEN`
+on every decision. A host application can supply the next decision's token
+with `setRemoteApprovalToken`; the adapter consumes it once. Never
 place it in `VITE_` configuration, a built asset, or browser storage. Existing
 `VITE_REMOTE_AUTH_TOKEN` values must be removed from local configuration and
 rotated, because earlier builds may have exposed them.
+The adapter accepts HTTP only for `localhost` and loopback IP addresses. Remote
+servers must use HTTPS. It refuses redirects so the bearer cannot be forwarded
+to another origin.
 
 The adapter currently implements workspace bootstrap, task catalog, Architect
 plan listing and activation, Git tree and history, remote tool policy, remote

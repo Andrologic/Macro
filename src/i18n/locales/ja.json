@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Macro ヘッドレスの認証トークン",
+    "approvalPrompt": "Macro ヘッドレスの承認トークン"
+  },
   "mcpForm": {
     "title": "MCP フォームの依頼",
     "server": "サーバー",

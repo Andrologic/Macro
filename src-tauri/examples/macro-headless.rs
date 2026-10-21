@@ -225,11 +225,12 @@ struct ConfigPendingDecisionRequest {
     restore_approved: bool,
 }
 
-const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 6] = [
+const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 7] = [
     "http://localhost:4173",
     "http://localhost:5173",
     "http://127.0.0.1:4173",
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:1422",
     "http://tauri.localhost",
     "tauri://localhost",
 ];

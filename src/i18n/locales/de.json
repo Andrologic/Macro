@@ -1,4 +1,8 @@
 {
+  "remoteAuth": {
+    "agentPrompt": "Macro-Headless-Zugriffstoken",
+    "approvalPrompt": "Macro-Headless-Bestätigungstoken"
+  },
   "mcpForm": {
     "title": "MCP-Formularanfrage",
     "server": "Server",

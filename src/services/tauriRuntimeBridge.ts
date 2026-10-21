@@ -12,10 +12,7 @@ import {
 } from '@tauri-apps/api/event';
 
 const readBridgeFlag = (): string | undefined => {
-  const env = (import.meta as ImportMeta & {
-    env?: Record<string, string | undefined>;
-  }).env;
-  return env?.VITE_TAURI_BROWSER_BRIDGE;
+  return import.meta.env.VITE_TAURI_BROWSER_BRIDGE;
 };
 
 const hasNativeTauriRuntime = (): boolean => {
