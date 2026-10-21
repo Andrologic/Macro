@@ -147,7 +147,10 @@
     "installNow": "Jetzt installieren"
   },
   "markdown": {
-    "video": "Video"
+    "video": "Video",
+    "loadRemoteImage": "Bild von {{host}} laden",
+    "loadRemoteVideo": "Video von {{host}} laden",
+    "unknownSource": "einer unbekannten Quelle"
   },
   "common": {
     "save": "Speichern",
@@ -548,6 +551,8 @@
     "stop": "Stopp",
     "saveRegenerate": "Speichern und neu generieren",
     "mermaidDiagram": "Meerjungfrau-Diagramm",
+    "renderMermaidDiagram": "Diagramm anzeigen",
+    "mermaidExternalResourceWarning": "Beim Anzeigen dieses Diagramms können externe Websites kontaktiert werden.",
     "copyCode": "Code kopieren",
     "copied": "Kopiert",
     "showCode": "Code anzeigen",

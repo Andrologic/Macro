@@ -175,7 +175,10 @@
     "installNow": "Installer maintenant"
   },
   "markdown": {
-    "video": "Vidéo"
+    "video": "Vidéo",
+    "loadRemoteImage": "Charger l’image depuis {{host}}",
+    "loadRemoteVideo": "Charger la vidéo depuis {{host}}",
+    "unknownSource": "une source inconnue"
   },
   "common": {
     "save": "Enregistrer",
@@ -575,6 +578,8 @@
     "activeTurnSendFailed": "Message non envoyé",
     "saveRegenerate": "Enregistrer et régénérer",
     "mermaidDiagram": "Diagramme de sirène",
+    "renderMermaidDiagram": "Afficher le diagramme",
+    "mermaidExternalResourceWarning": "L’affichage de ce diagramme peut contacter des sites externes.",
     "copyCode": "Copier le code",
     "copied": "Copié",
     "showCode": "Afficher le code",

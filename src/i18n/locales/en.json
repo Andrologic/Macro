@@ -175,7 +175,10 @@
     "installNow": "Install now"
   },
   "markdown": {
-    "video": "Video"
+    "video": "Video",
+    "loadRemoteImage": "Load image from {{host}}",
+    "loadRemoteVideo": "Load video from {{host}}",
+    "unknownSource": "an unknown source"
   },
   "common": {
     "save": "Save",
@@ -576,6 +579,8 @@
     "activeTurnSendFailed": "Message not sent",
     "saveRegenerate": "Save & Regenerate",
     "mermaidDiagram": "Mermaid diagram",
+    "renderMermaidDiagram": "Render diagram",
+    "mermaidExternalResourceWarning": "Rendering this diagram may contact external sites.",
     "copyCode": "Copy code",
     "copied": "Copied",
     "showCode": "Show code",

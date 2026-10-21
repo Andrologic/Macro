@@ -310,6 +310,8 @@ Le frontend utilise principalement :
 - Mermaid et React Markdown pour le rendu enrichi
 - Tailwind CSS pour la couche UI
 
+Les médias Markdown distants ne reçoivent leur URL de chargement qu'après un clic explicite. Les diagrammes Mermaid, y compris ceux des conversations enregistrées, attendent aussi un clic avant tout appel au moteur et avant toute réutilisation du cache SVG : Mermaid peut lancer des requêtes pendant le rendu, avant la sanitisation du SVG. Le bouton prévient que l'affichage peut contacter des sites externes. Les favicons de citations s'affichent uniquement sous forme de données d'image intégrées ; sinon l'interface affiche une icône générique.
+
 ### 4.2 Backend desktop
 
 Le backend desktop utilise principalement :

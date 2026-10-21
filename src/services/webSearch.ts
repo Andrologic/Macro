@@ -376,18 +376,6 @@ export function extractDomain(url: string): string {
   }
 }
 
-/**
- * Get favicon URL for a website
- */
-export function getFaviconUrl(url: string): string {
-  try {
-    const urlObj = new URL(url);
-    return `https://www.google.com/s2/favicons?domain=${urlObj.hostname}&sz=16`;
-  } catch {
-    return '';
-  }
-}
-
 const FALLBACK_FAVICON_PATH = '/favicon.ico';
 const MAX_FAVICON_BYTES = 512 * 1024;
 
@@ -598,5 +586,4 @@ export default {
   fetchWebPage,
   formatSearchResultsAsContext,
   extractDomain,
-  getFaviconUrl,
 };

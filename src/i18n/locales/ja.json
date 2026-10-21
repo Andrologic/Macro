@@ -146,7 +146,10 @@
     "installNow": "今すぐインストール"
   },
   "markdown": {
-    "video": "動画"
+    "video": "動画",
+    "loadRemoteImage": "{{host}} から画像を読み込む",
+    "loadRemoteVideo": "{{host}} から動画を読み込む",
+    "unknownSource": "不明な場所"
   },
   "common": {
     "save": "保存",
@@ -547,6 +550,8 @@
     "stop": "停止",
     "saveRegenerate": "保存と再生成",
     "mermaidDiagram": "人魚の図",
+    "renderMermaidDiagram": "図を表示",
+    "mermaidExternalResourceWarning": "この図を表示すると、外部サイトに接続する場合があります。",
     "copyCode": "コードをコピーする",
     "copied": "コピーされました",
     "showCode": "コードを表示",
