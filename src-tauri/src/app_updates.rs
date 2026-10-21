@@ -821,6 +821,23 @@ fn native_downgrade_approved(
     !cached_update_is_downgrade(current_version, candidate_version) || confirm()
 }
 
+fn confirm_without_update_locks(
+    file_guard: fs::File,
+    state_guard: std::sync::MutexGuard<'static, ()>,
+    confirm: impl FnOnce() -> bool,
+) -> bool {
+    drop(file_guard);
+    drop(state_guard);
+    confirm()
+}
+
+fn confirmed_manifest_matches(
+    expected: Option<&StagedUpdateManifest>,
+    current: &StagedUpdateManifest,
+) -> bool {
+    expected.is_none_or(|before| before == current)
+}
+
 pub fn staged_update_requires_native_confirmation(app: &AppHandle) -> Result<bool, String> {
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(app)?)?;
@@ -1092,29 +1109,80 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
     if cfg!(debug_assertions) && !force {
         return Ok(false);
     }
+    let state_guard = lock_update_state();
+    let file_guard = lock_update_directory(&update_dir(app)?)?;
+    let Some((manifest, bytes)) = load_staged_update_for_activation(app, force, true, None)? else {
+        return Ok(false);
+    };
+    if !cached_update_is_downgrade(&app.package_info().version, &manifest.version) {
+        return install_verified_staged_update(app, manifest, &bytes);
+    }
+
+    let current_version = app.package_info().version.to_string();
+    let approved = confirm_without_update_locks(file_guard, state_guard, || {
+        native_downgrade_approved(&app.package_info().version, &manifest.version, || {
+            app.dialog()
+                .message(format!(
+                    "This will replace Macro {} with the older Stable release {}. Continue?",
+                    current_version, manifest.version
+                ))
+                .title("Install older Macro release")
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Install older release".to_string(),
+                    "Cancel".to_string(),
+                ))
+                .blocking_show()
+        })
+    });
+    if !approved {
+        return Ok(false);
+    }
+
+    // The cache and persisted channel can change while the native dialog is open.
+    // Reacquire both locks and repeat policy, signature and package verification.
     let _state_guard = lock_update_state();
     let _file_guard = lock_update_directory(&update_dir(app)?)?;
-    let Some(mut manifest) = read_manifest_recovering_unlocked(app)? else {
+    let Some((manifest, bytes)) =
+        load_staged_update_for_activation(app, force, false, Some(&manifest))?
+    else {
         return Ok(false);
+    };
+    install_verified_staged_update(app, manifest, &bytes)
+}
+
+fn load_staged_update_for_activation(
+    app: &AppHandle,
+    force: bool,
+    consume_clean_shutdown: bool,
+    expected: Option<&StagedUpdateManifest>,
+) -> Result<Option<(StagedUpdateManifest, Vec<u8>)>, String> {
+    let Some(mut manifest) = read_manifest_recovering_unlocked(app)? else {
+        return Ok(None);
     };
     // A failed discard must not reactivate a package from the previous channel,
     // including startup activation before the frontend store exists.
     if !update_target_matches_channel(app, &manifest.target)? {
-        return Ok(false);
+        return Ok(None);
     }
     let current_version = app.package_info().version.to_string();
     if !staged_update_belongs_to_current_install(&manifest, &current_version) {
         clear_staged_update(app)?;
-        return Ok(false);
+        return Ok(None);
     }
-    if !force && !consume_matching_clean_shutdown(app, &manifest, &current_version)? {
-        return Ok(false);
+    if !confirmed_manifest_matches(expected, &manifest) {
+        return Ok(None);
+    }
+    if consume_clean_shutdown
+        && !force
+        && !consume_matching_clean_shutdown(app, &manifest, &current_version)?
+    {
+        return Ok(None);
     }
     if manifest.activation_attempts >= MAX_ACTIVATION_ATTEMPTS && !force {
         manifest.phase = StagedUpdatePhase::Failed;
         manifest.error = Some("L'installation a échoué à deux reprises.".to_string());
         write_manifest(app, &manifest)?;
-        return Ok(false);
+        return Ok(None);
     }
 
     let bytes = match verified_package(app, &manifest) {
@@ -1126,27 +1194,20 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
             return Err(error);
         }
     };
-    if !native_downgrade_approved(&app.package_info().version, &manifest.version, || {
-        app.dialog()
-            .message(format!(
-                "This will replace Macro {} with the older Stable release {}. Continue?",
-                current_version, manifest.version
-            ))
-            .title("Install older Macro release")
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "Install older release".to_string(),
-                "Cancel".to_string(),
-            ))
-            .blocking_show()
-    }) {
-        return Ok(false);
-    }
+    Ok(Some((manifest, bytes)))
+}
+
+fn install_verified_staged_update(
+    app: &AppHandle,
+    mut manifest: StagedUpdateManifest,
+    bytes: &[u8],
+) -> Result<bool, String> {
     manifest.phase = StagedUpdatePhase::Activating;
     manifest.activation_attempts = manifest.activation_attempts.saturating_add(1);
     manifest.error = None;
     write_manifest(app, &manifest)?;
 
-    match install_package(app, &manifest, &bytes) {
+    match install_package(app, &manifest, bytes) {
         Ok(()) => Ok(true),
         Err(error) => {
             manifest.phase = StagedUpdatePhase::Failed;
@@ -1526,16 +1587,17 @@ mod tests {
     use super::{
         atomic_write, atomic_write_with, cached_manifest_has_signed_version,
         cached_update_is_downgrade, cached_update_version_allowed, clean_shutdown_matches,
-        clear_staged_update_directory, install_fail_after_manifest_publication,
-        install_fail_after_package_publication, install_publication_after_manifest_hook,
-        invalidate_and_clear_staged_update_directory, lock_update_directory,
-        native_downgrade_approved, package_digest, package_file_name, persist_temporary_file,
-        publish_staged_update_directory, publish_staged_update_directory_with_generation,
-        read_manifest_directory_recovering, read_manifest_file, read_update_generation_directory,
-        should_allow_stable_transition, should_offer_stable_release,
-        staged_update_belongs_to_current_install, sync_parent_directory, verify_signed_version,
-        verify_update_signature, write_update_generation_directory, CleanShutdownMarker,
-        DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
+        clear_staged_update_directory, confirm_without_update_locks, confirmed_manifest_matches,
+        install_fail_after_manifest_publication, install_fail_after_package_publication,
+        install_publication_after_manifest_hook, invalidate_and_clear_staged_update_directory,
+        lock_update_directory, lock_update_state, native_downgrade_approved, package_digest,
+        package_file_name, persist_temporary_file, publish_staged_update_directory,
+        publish_staged_update_directory_with_generation, read_manifest_directory_recovering,
+        read_manifest_file, read_update_generation_directory, should_allow_stable_transition,
+        should_offer_stable_release, staged_update_belongs_to_current_install,
+        sync_parent_directory, verify_signed_version, verify_update_signature,
+        write_update_generation_directory, CleanShutdownMarker, DownloadProgressEvent,
+        StagedUpdateManifest, StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key: EFCDAB9078563412\nRWQSNFZ4kKvN7wOhB7/zzhC+HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4";
@@ -1780,6 +1842,37 @@ mod tests {
             false
         }));
         assert_eq!(prompts.get(), 1);
+    }
+
+    #[test]
+    fn native_confirmation_releases_update_locks_and_detects_a_replaced_manifest() {
+        use fs2::FileExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let before = manifest("0.3.0-nightly.1", "0.2.0");
+        let state_guard = lock_update_state();
+        let file_guard = lock_update_directory(directory.path()).unwrap();
+        let mut replacement = before.clone();
+
+        let approved = confirm_without_update_locks(file_guard, state_guard, || {
+            let _unlocked_state = super::UPDATE_STATE_LOCK
+                .try_lock()
+                .expect("state lock must be released before dialog");
+            let second_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(directory.path().join(super::UPDATE_LOCK_FILE))
+                .unwrap();
+            second_file
+                .try_lock_exclusive()
+                .expect("directory lock must be released before dialog");
+            replacement.generation = "replacement-generation".to_string();
+            true
+        });
+
+        assert!(approved);
+        assert!(!confirmed_manifest_matches(Some(&before), &replacement));
+        assert!(confirmed_manifest_matches(Some(&before), &before));
     }
 
     #[test]

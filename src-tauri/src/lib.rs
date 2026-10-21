@@ -128,7 +128,10 @@ use core::{
 use fs::watcher::init_watcher;
 use git::GitState;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 #[cfg(all(feature = "browser-runtime-debug", not(debug_assertions)))]
@@ -468,6 +471,8 @@ pub fn run() {
 
     tracing::info!("Starting Macro application");
 
+    let pending_downgrade_activation = Arc::new(AtomicBool::new(false));
+    let setup_pending_downgrade_activation = pending_downgrade_activation.clone();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -499,14 +504,8 @@ pub fn run() {
         .setup(move |app| {
             match app_updates::staged_update_requires_native_confirmation(app.handle()) {
                 Ok(true) => {
-                    // The dialog's blocking API must not run on Tauri's main thread.
-                    let update_app = app.handle().clone();
-                    std::thread::spawn(move || {
-                        if let Err(error) = app_updates::activate_staged_update(&update_app, false)
-                        {
-                            tracing::error!(%error, "Failed to activate staged application update");
-                        }
-                    });
+                    // Wait for RunEvent::Ready, after setup has finished its migrations.
+                    setup_pending_downgrade_activation.store(true, Ordering::Release);
                 }
                 Ok(false) => {
                     if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
@@ -1045,7 +1044,18 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| match event {
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::Ready => {
+            if pending_downgrade_activation.swap(false, Ordering::AcqRel) {
+                // The native dialog's blocking API must run off Tauri's main thread.
+                let update_app = app_handle.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = app_updates::activate_staged_update(&update_app, false) {
+                        tracing::error!(%error, "Failed to activate staged application update");
+                    }
+                });
+            }
+        }
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
             api.prevent_exit();
             if let Some(window) = app_handle.get_webview_window("main") {
