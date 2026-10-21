@@ -1,4 +1,7 @@
-use super::{read_provider_response, SpeechError, TranscriptionRequest, TranscriptionResult};
+use super::{
+    bounded_provider_error, read_provider_response, SpeechError, TranscriptionRequest,
+    TranscriptionResult,
+};
 use crate::ai::macro_ai;
 use crate::db::models::SpeechProviderConfig;
 use reqwest::multipart::{Form, Part};
@@ -75,7 +78,7 @@ pub(super) async fn transcribe(
             .and_then(|value| value.to_str().ok())
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_string);
+            .map(|value| bounded_provider_error(value));
         let retry_seconds = retry_after
             .as_deref()
             .and_then(|value| value.parse::<u64>().ok())
@@ -106,7 +109,7 @@ pub(super) async fn transcribe(
                 .and_then(|value| value.error)
                 .and_then(|value| value.message)
                 .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
-            return Err(SpeechError::Request(message));
+            return Err(SpeechError::Request(bounded_provider_error(&message)));
         }
 
         let parsed = serde_json::from_slice::<ProviderResponse>(&body)

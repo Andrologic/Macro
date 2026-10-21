@@ -4,9 +4,13 @@ mod openai_compatible;
 use crate::db::models::SpeechProviderConfig;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_PROVIDER_ERROR_BYTES: usize = 16 * 1024;
+const MAX_PROVIDER_ERROR_CHARS: usize = 2_048;
+const PROVIDER_ERROR_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionRequest {
@@ -85,29 +89,69 @@ async fn read_provider_response(
     response: reqwest::Response,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), SpeechError> {
     let status = response.status();
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_PROVIDER_RESPONSE_BYTES as u64)
+    let is_error = !status.is_success();
+    let max_bytes = if is_error {
+        MAX_PROVIDER_ERROR_BYTES
+    } else {
+        MAX_PROVIDER_RESPONSE_BYTES
+    };
+    if !is_error
+        && response
+            .content_length()
+            .is_some_and(|length| length > max_bytes as u64)
     {
         return Err(SpeechError::ResponseTooLarge);
     }
 
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| SpeechError::Request(error.to_string()))?;
-        if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
-            return Err(SpeechError::ResponseTooLarge);
+    let read = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| SpeechError::Request(error.to_string()))?;
+            let remaining = max_bytes.saturating_sub(body.len());
+            if !is_error && chunk.len() > remaining {
+                return Err(SpeechError::ResponseTooLarge);
+            }
+            body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            if is_error && chunk.len() >= remaining {
+                break;
+            }
         }
-        body.extend_from_slice(&chunk);
+        Ok::<(), SpeechError>(())
+    };
+    if is_error {
+        tokio::time::timeout(PROVIDER_ERROR_TIMEOUT, read)
+            .await
+            .map_err(|_| {
+                SpeechError::Request("Speech provider error response timed out.".to_string())
+            })??;
+    } else {
+        read.await?;
     }
     Ok((status, body))
+}
+
+fn bounded_provider_error(message: &str) -> String {
+    let mut chars = message.chars();
+    let prefix: String = chars.by_ref().take(MAX_PROVIDER_ERROR_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix} [truncated]")
+    } else {
+        prefix
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{routing::get, Router};
+
+    #[test]
+    fn bounds_speech_provider_errors_before_display() {
+        let displayed = bounded_provider_error(&"x".repeat(MAX_PROVIDER_RESPONSE_BYTES));
+        assert!(displayed.len() <= MAX_PROVIDER_ERROR_CHARS + 12);
+        assert!(displayed.ends_with("[truncated]"));
+    }
 
     fn provider() -> SpeechProviderConfig {
         SpeechProviderConfig {
