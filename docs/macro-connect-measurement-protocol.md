@@ -133,3 +133,107 @@ UI latency have no measured numeric ceiling yet. They remain pending until
 adapters produce their own references. Do not replace them with the capture
 quota, allocate a fictional optimum, or announce gains in those costs. This
 partial desktop delivery does not close point 6 for the three-runtime project.
+
+
+## TypeScript producer library reference, A4a
+
+From clean committed sources, run three sequential fresh processes:
+
+```sh
+bun --no-install test dev/performance/connect-producer.test.ts dev/performance/connect-metrics.test.ts
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> 1 > /tmp/connect-producer-1.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> 2 > /tmp/connect-producer-2.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> 3 > /tmp/connect-producer-3.json
+```
+
+The final CLI argument is the explicit fresh-process index (1, 2 or 3); the
+projection rejects any other value and preserves it in every canonical run.
+Each process runs six recipes at 100/1,000/10,000 messages, 10 warmups and 100
+retained samples per cell. Classes are the actual ConversationCaptures,
+ContentHost and ConversationInteractions; source and CAS ports are synthetic
+memory. No native IPC, SQLite, HTTP, UI, credentials or provider is used.
+The source fingerprint covers tracked frontend sources, contracts, tooling and
+lockfiles, with clean HEAD checks before and after. Every public response/event
+uses actual product validation. The producer guard is called before recording
+a conversation response. Unexpected failures abort with cell/sample context;
+expected stale/expiry/source-failure refusals are retained in raw samples.
+Each completed cell is checkpointed with its samples to stderr outside timed
+windows, so a later failure preserves partial evidence without emitting a
+completed full report.
+
+The business clock follows the recipe schedule without waiting ten real
+seconds. Idle uses ten manual observations, not runtime wakeups. History also
+checks stale continuations and TTL expiry at 300001 ms. The 100-message history
+fits one page and explicitly reports that condition. Slow-target isolation uses
+a promise barrier and an explicit memory source failure, not a claimed network
+RTT. The multi-target schedule appends to both pc-slow and pc-a at 2000 ms,
+observes the slow public error at 4000 ms, and re-observes pc-a at 6000 ms.
+Its four observations and six invalidations are required, with the healthy
+capture revision preserved after the slow failure. Healthy continuations remain
+usable after that failure. Cold-open-return includes host initialization in
+source-port counts and scenario wall time; fixture construction is always
+excluded. This preparation flag does not include all initialization in the
+capture timer. That timer wraps exactly projectsList, projectsConditional,
+conversationsList and conversationRead, including failures, source cloning and
+queueing inside those calls. initialize/prepare, refreshProjects, refreshCatalog
+and validateCached are not timed by this counter, although their source-port
+calls are counted. It is not pure capture assembly time. Output JSON observation
+after the API return is excluded from this timer. Scenario wall time includes
+the action checks and byte observers; final trace comparison and sample
+aggregation occur after that timer. Do not subtract their percentiles.
+
+Source calls, new returned captures, bytes of properties named text only, and
+serialized JSON sizes are measured/estimated under their declared boundaries. The serialized sum
+includes request, result and event observations and repeated attempts; it is
+not transport framing or allocated memory. Useful bytes exclude titles and
+interaction prompts; repeated deliveries are counted. Each successful history
+window is compared to the exact expected source rows, IDs, positions, offset,
+total and continuation boundary. Replays must preserve opaque cursor identity.
+Empty/truncated windows or premature termination fail the recipe. The expected
+invalidation trace is exhaustive by target, phase, kind, resource, revision and
+virtual occurrence time, with consecutive sequences and no duplicates within
+each target stream. There is no cross-target total-order claim. It does
+not claim to observe dedicated run terminal events; terminal_events remains
+not-measured until A4b. No synthetic metric substitutes for A2 SQLite timings.
+
+Proposed pre-C policy: zero increase in source calls or public snapshot creation
+for an identical recipe, stable content/revisions, zero missing or reordered
+observed invalidations, zero progress failure for healthy targets under the
+slow barrier. For capture API timing retain the A1 p95 ratio 1.0 at the same
+boundary and configuration, with process dispersion and investigation of
+variance. Numeric ceilings are populated only from executed measurements.
+Refusals and quotas are kept; no gain or end-to-end baseline is established.
+
+
+### Public correlation checked by the producer runner
+
+The runner uses the product validators and a fixture oracle at different
+boundaries. Passing a schema or a cached-emission guard does not establish that
+a returned revision matches the synthetic source. The following checks apply
+to the operations executed by these six recipes, not every content protocol API.
+
+| Boundary | Product guarantee used | Fixture correlation added |
+| --- | --- | --- |
+| Request and delivery | validateContentMessage checks schema, versions, bounded fields and within-envelope relationships. | The harness constructs a fixed synthetic account/session and the selected instance; no authority or real transport is inferred. |
+| Returned delivery.result | validateContentMessage checks outer shape and outer/inner request correlation; validateContentResponse checks request ID, account, operation, requested snapshot, initial offset and operation-specific references. | The returned outer instance and request ID must match the outstanding delivery, including errors. Validation precedes byte/result recording. |
+| New public page | Product validation checks page shape, maximum lifetime, total/cursor relationship, positions and duplicate IDs; the emission guard checks the internal cached capture against the current source. | The initial revision follows the independent fixture mutation stamps. observed_at equals the injected capture time, expires_at equals that time plus the existing 300000 ms TTL, export_policy_revision equals visible-1, and total matches the exact source. An initial snapshot ID must be new in this fixture. |
+| Snapshot audience and continuation | validateContentPageContinuation checks adjacent immutable metadata, account/operation, contiguous offsets, requested cursor ownership and repeated IDs. | Metadata are retained per snapshot with account, session, instance, operation and conversation binding. Continuations and replays must preserve all immutable page fields. Exact window rows/IDs/content/positions and cursor-to-offset ownership are checked separately. Replayed opaque next cursors remain identical. |
+| Resource transitions | Product revisions come from actual library observations. | A changed, already-open resource takes the next global catalog stamp; an unrelated resource retains its stamp. Source mutations and observations are separate prescribed steps. Page/catalog revisions and content revisions must agree with those independent expectations. |
+| Callback event identity | validateContentMessage checks event shape, complete scopes and within-envelope account consistency. It does not bind an event to this fixture. | account_id and received scope.instance_id must match the fixture. stream_id must equal the real stream saved through this host's owned in-memory CAS journal at initialize, before callbacks. The received account, entire scope/audience, stream, contract/type and occurred_at are retained in the raw trace. |
+| Event order and meaning | Individual event validation does not establish stream continuity. | Each real stream has consecutive successful sequences starting at 1. Distinct hosts have distinct initialized streams. The exhaustive expected trace compares audience, kind, resource, revision, phase and exact injected occurred_at. Lost-ACK attempts retain the original payload hash/stream and are separate from successfully acknowledged events. |
+
+Snapshots, cursors and stream IDs remain opaque product-generated identities;
+no random value is predicted or replaced. The cached-emission guard establishes
+that a returned snapshot exists for its request audience. The continuation
+checks establish the ownership of each cursor actually consumed. An unconsumed
+next cursor has presence/position and replay checks only; the runner does not
+claim to traverse the entire 1000/10000-message capture. Raw pageTrace and
+eventStreams preserve the checked identities and metadata across the action
+window without changing product responses or adding source calls.
+
+The host journal is accessed through the fixture's injected storage port, not
+private host fields. Its stream ID is a measurement identity, not a product
+quota or a substitute stream. These checks add assertion/trace overhead to raw
+scenario elapsed time; the four wrapped capture API durations keep their
+previous boundary. No performance comparison with an older runner definition
+is inferred from these correctness probes.

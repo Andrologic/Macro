@@ -87,3 +87,21 @@ benchmark has one conversation with IDs `seed-NNNNNN`. It retains its own
 fixture definition hash and operation boundary; its identifiers are not claimed
 to equal the two-conversation shared fixture. Text size, content and timestamps
 match, while identity differs explicitly.
+
+
+The `in-process-producer` profile executes the actual TypeScript capture/host
+classes against typed in-memory source and CAS ports. It performs no loopback,
+SQLite, native IPC or UI operation. `sources_read` counts calls at those source
+ports. For this adapter `states_rebuilt` counts distinct capture snapshot IDs
+first returned in the sample window, excluding failed/internal observations.
+`capture_build_ms` sums wall durations of exactly `projectsList`,
+`projectsConditional`, `conversationsList` and `conversationRead`, including
+failures, queueing and the injected memory source. It is not pure assembly time
+and can overlap across independent hosts. It excludes initialize/prepare,
+refresh and validation APIs, including in cold-open-return. That recipe's
+preparation flag includes initialization in source-port counts and scenario
+wall time only. `useful_content_bytes` selects string properties named `text`
+only; titles and interaction prompts are excluded. The raw campaign keeps
+its exact API counts, failures, observer costs and definition hash. Other
+adapters retain their own documented metric boundaries. A4a does not measure
+PilotRuntime scheduling or dedicated terminal run events.
