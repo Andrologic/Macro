@@ -4,6 +4,7 @@ import type { FrozenToolCallContext } from './chatStreamContracts';
 import type { ToolInvocation } from '../types/generated/ipc';
 import { chatToolInvocationJournal } from './chatToolInvocationJournal';
 import { __remoteKernelApiTestables, executeRemoteWorkspaceTool } from './remoteKernelApi';
+import { setRemoteAuthToken } from './providers/remoteAuthToken';
 
 const invocation = {} as ToolInvocation;
 
@@ -168,9 +169,11 @@ describe('durable Chat tool dispatch', () => {
     const previousFetch = globalThis.fetch;
     const sent: Array<{ tool_id: string; execution_id: string }> = [];
     try {
+      setRemoteAuthToken('synthetic-agent-token');
       process.env.VITE_BACKEND_TRANSPORT = 'remote';
       process.env.VITE_REMOTE_API_BASE_URL = 'http://127.0.0.1:8787';
       globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+        expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer synthetic-agent-token');
         if (String(url).includes('/mode-policy')) {
           return new Response(JSON.stringify({ allowed_tool_ids: ['read', 'write'], enforce_macro_only_writes: false,
             capabilities: ['bounded_tool_output_v1', 'content_revisions_v1', 'idempotent_tool_execution_v1'] }),
@@ -199,6 +202,7 @@ describe('durable Chat tool dispatch', () => {
       expect(await dispatch('write', { path: 'sample.txt', content: 'next' }, '')).toMatchObject({ isError: true });
       expect(sent).toHaveLength(2);
     } finally {
+      setRemoteAuthToken(null);
       if (previousTransport === undefined) delete process.env.VITE_BACKEND_TRANSPORT;
       else process.env.VITE_BACKEND_TRANSPORT = previousTransport;
       if (previousUrl === undefined) delete process.env.VITE_REMOTE_API_BASE_URL;
