@@ -192,7 +192,8 @@
             "native-sqlite",
             "loopback",
             "simulated-rtt",
-            "deterministic-interruption"
+            "deterministic-interruption",
+            "in-process-producer"
           ]
         },
         "fixture": {

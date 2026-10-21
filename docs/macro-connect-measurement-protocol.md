@@ -133,3 +133,55 @@ UI latency have no measured numeric ceiling yet. They remain pending until
 adapters produce their own references. Do not replace them with the capture
 quota, allocate a fictional optimum, or announce gains in those costs. This
 partial desktop delivery does not close point 6 for the three-runtime project.
+
+
+## TypeScript producer library reference, A4a
+
+From clean committed sources, run three sequential fresh processes:
+
+```sh
+bun --no-install test dev/performance/connect-producer.test.ts dev/performance/connect-metrics.test.ts
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> > /tmp/connect-producer-1.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> > /tmp/connect-producer-2.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> > /tmp/connect-producer-3.json
+```
+
+Each process runs six recipes at 100/1,000/10,000 messages, 10 warmups and 100
+retained samples per cell. Classes are the actual ConversationCaptures,
+ContentHost and ConversationInteractions; source and CAS ports are synthetic
+memory. No native IPC, SQLite, HTTP, UI, credentials or provider is used.
+The source fingerprint covers tracked frontend sources, contracts, tooling and
+lockfiles, with clean HEAD checks before and after. Every public response/event
+uses actual product validation. The producer guard is called before recording
+a conversation response. Unexpected failures abort with cell/sample context;
+expected stale/expiry/source-failure refusals are retained in raw samples.
+Each completed cell is checkpointed with its samples to stderr outside timed
+windows, so a later failure preserves partial evidence without emitting a
+completed full report.
+
+The business clock follows the recipe schedule without waiting ten real
+seconds. Idle uses ten manual observations, not runtime wakeups. History also
+checks stale continuations and TTL expiry at 300001 ms. The 100-message history
+fits one page and explicitly reports that condition. Slow-target isolation uses
+a promise barrier and an explicit memory source failure, not a claimed network
+RTT. Healthy continuations remain usable after that failure. Cold-open-return includes host
+initialization, while fixture construction is always excluded. The measured
+capture API timer includes source clone/observation and public API overhead,
+but not output JSON observation after its return. Scenario wall time includes
+the harness checks and byte observers. Do not subtract their percentiles.
+
+Source calls, new returned captures, public text bytes and serialized JSON sizes
+are measured/estimated under their declared boundaries. The serialized sum
+includes request, result and event observations and repeated attempts; it is
+not transport framing or allocated memory. The invalidation trace preserves
+phase/kind/sequence and the error/interaction/final state assertions. It does
+not claim to observe dedicated run terminal events; terminal_events remains
+not-measured until A4b. No synthetic metric substitutes for A2 SQLite timings.
+
+Proposed pre-C policy: zero increase in source calls or public snapshot creation
+for an identical recipe, stable content/revisions, zero missing or reordered
+observed invalidations, zero progress failure for healthy targets under the
+slow barrier. For capture API timing retain the A1 p95 ratio 1.0 at the same
+boundary and configuration, with process dispersion and investigation of
+variance. Numeric ceilings are populated only from executed measurements.
+Refusals and quotas are kept; no gain or end-to-end baseline is established.
