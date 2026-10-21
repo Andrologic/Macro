@@ -658,6 +658,11 @@ async fn fetch_remote_models(
     secret: &ChatGptSecret,
     client_version: &str,
 ) -> Result<Vec<ModelsCacheEntry>, String> {
+    crate::core::provider_endpoint::validate_provider_endpoint(
+        &provider.base_url,
+        provider.is_local,
+    )
+    .map_err(str::to_string)?;
     let account_id = secret
         .account_id
         .clone()
@@ -692,7 +697,9 @@ async fn fetch_remote_models(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = super::types::read_error_response(response)
+            .await
+            .unwrap_or_default();
         warn!(
             provider_id = %provider.id,
             status = status.as_u16(),

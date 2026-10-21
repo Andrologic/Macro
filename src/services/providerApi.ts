@@ -5,6 +5,7 @@
  */
 
 import { tauriFetch } from './tauriHttp';
+import { assertSecureProviderEndpoint, readBoundedProviderError } from './providerEndpoint';
 import { getPageLifecycleSignal, isPageShuttingDown } from '../utils/pageLifecycle';
 import { createCombinedAbortSignal } from '../utils/abortSignals';
 import { devLogger } from '../utils/devLogger';
@@ -398,8 +399,8 @@ const readProbeBody = async <T>(
 
 const readResponseErrorText = async (response: Response, signal: AbortSignal): Promise<string> => {
   try {
-    const text = await readProbeBody(response, signal, () => response.text());
-    return text || response.statusText || 'Unknown error';
+    const text = await readProbeBody(response, signal, () => readBoundedProviderError(response));
+    return text.slice(0, 2048) || response.statusText || 'Unknown error';
   } catch (error) {
     if (signal.aborted) throw error;
     return response.statusText || 'Unknown error';
@@ -417,11 +418,13 @@ const requestModelsJson = async (params: {
   timeout: number;
   signal: AbortSignal;
 }): Promise<{ response: Response; data?: unknown; errorText?: string }> => {
+  assertSecureProviderEndpoint(params.url);
   const response = await tauriFetch(params.url, {
     method: 'GET',
     headers: params.headers,
     connectTimeout: params.timeout,
     signal: params.signal,
+    maxRedirections: 0,
   });
 
   if (!response.ok) {
@@ -679,11 +682,13 @@ export async function probeModelsEndpoint(
         }
       }
 
+      assertSecureProviderEndpoint(`${baseUrl}/models`);
       const response = await tauriFetch(`${baseUrl}/models`, {
         method: 'GET',
         headers,
         connectTimeout: effectiveTimeout,
         signal,
+        maxRedirections: 0,
       });
 
       if (!response.ok) {
@@ -794,6 +799,7 @@ export async function probeChatCompletionsEndpoint(
     }, effectiveTimeout);
 
     try {
+      assertSecureProviderEndpoint(`${baseUrl}/chat/completions`);
       const response = await tauriFetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers,
@@ -805,6 +811,7 @@ export async function probeChatCompletionsEndpoint(
         }),
         connectTimeout: effectiveTimeout,
         signal,
+        maxRedirections: 0,
       });
 
       if (!response.ok) {

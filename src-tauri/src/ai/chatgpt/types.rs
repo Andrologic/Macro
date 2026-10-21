@@ -20,12 +20,16 @@ pub(super) const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.112.0";
 pub(super) const TOKEN_REFRESH_LEEWAY_SECONDS: i64 = 300;
 pub(super) const AUTH_TIMEOUT_SECONDS: u64 = 180;
 pub(super) const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
+const ERROR_BODY_TIMEOUT_SECONDS: u64 = 10;
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+const MAX_ERROR_MESSAGE_CHARS: usize = 2_048;
 pub(super) const CALLBACK_BIND_RETRY_ATTEMPTS: u32 = 10;
 pub(super) const CALLBACK_BIND_RETRY_DELAY_MS: u64 = 200;
 
 pub(super) fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("Failed to build ChatGPT HTTP client: {error}"))
 }
@@ -331,17 +335,61 @@ pub(super) fn extract_response_error(status: u16, body: &str) -> String {
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
         {
-            return message.to_string();
+            return bounded_error_message(message);
         }
 
         if let Some(message) = value.get("message").and_then(Value::as_str) {
-            return message.to_string();
+            return bounded_error_message(message);
         }
     }
 
-    format!("ChatGPT request failed with status {}: {}", status, body)
+    format!(
+        "ChatGPT request failed with status {}: {}",
+        status,
+        bounded_error_message(body)
+    )
+}
+
+pub(super) async fn read_error_response(mut response: reqwest::Response) -> Result<String, String> {
+    let read = async {
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+            let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+            body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            if chunk.len() >= remaining {
+                break;
+            }
+        }
+        Ok::<_, String>(String::from_utf8_lossy(&body).into_owned())
+    };
+    tokio::time::timeout(Duration::from_secs(ERROR_BODY_TIMEOUT_SECONDS), read)
+        .await
+        .map_err(|_| "ChatGPT error response body timed out.".to_string())?
+}
+
+fn bounded_error_message(message: &str) -> String {
+    let mut chars = message.chars();
+    let prefix: String = chars.by_ref().take(MAX_ERROR_MESSAGE_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix} [truncated]")
+    } else {
+        prefix
+    }
 }
 
 pub(super) fn db_error_to_string(error: DbError) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::extract_response_error;
+
+    #[test]
+    fn bounds_chatgpt_error_messages_before_display() {
+        let body = serde_json::json!({"error": {"message": "x".repeat(32_768)}}).to_string();
+        let displayed = extract_response_error(500, &body);
+        assert!(displayed.len() <= 2_064);
+        assert!(displayed.ends_with("[truncated]"));
+    }
 }

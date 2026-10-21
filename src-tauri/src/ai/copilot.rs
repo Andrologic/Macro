@@ -1354,6 +1354,18 @@ fn restore_previous_runtime(final_dir: &Path, backup_dir: &Path) -> Result<(), S
     Ok(())
 }
 
+fn checked_archive_size(downloaded: u64, chunk_size: usize, expected: u64) -> Result<u64, String> {
+    let chunk_size = u64::try_from(chunk_size)
+        .map_err(|_| "GitHub Copilot runtime archive exceeds the manifest size.".to_string())?;
+    let next = downloaded
+        .checked_add(chunk_size)
+        .ok_or_else(|| "GitHub Copilot runtime archive exceeds the manifest size.".to_string())?;
+    if next > expected {
+        return Err("GitHub Copilot runtime archive exceeds the manifest size.".to_string());
+    }
+    Ok(next)
+}
+
 async fn install_runtime_archive(
     app_handle: &AppHandle,
     pool: &SqlitePool,
@@ -1399,10 +1411,13 @@ async fn install_runtime_archive(
         ));
     }
 
-    let total_bytes = response
+    if response
         .content_length()
-        .or(Some(asset.archive_size))
-        .filter(|value| *value > 0);
+        .is_some_and(|length| length > asset.archive_size)
+    {
+        return Err("GitHub Copilot runtime archive exceeds the manifest size.".to_string());
+    }
+    let total_bytes = Some(asset.archive_size);
     let mut file = tokio::fs::File::create(&archive_path)
         .await
         .map_err(|error| format!("Failed to create archive file: {}", error))?;
@@ -1419,11 +1434,12 @@ async fn install_runtime_archive(
         let chunk = chunk_result.map_err(|error| {
             format!("Failed while downloading GitHub Copilot runtime: {}", error)
         })?;
+        let next_size = checked_archive_size(downloaded_bytes, chunk.len(), asset.archive_size)?;
         archive_hash.update(&chunk);
         file.write_all(&chunk)
             .await
             .map_err(|error| format!("Failed to write GitHub Copilot archive: {}", error))?;
-        downloaded_bytes += chunk.len() as u64;
+        downloaded_bytes = next_size;
 
         if downloaded_bytes.saturating_sub(last_reported) >= DOWNLOAD_PROGRESS_GRANULARITY_BYTES
             || total_bytes
@@ -1447,7 +1463,7 @@ async fn install_runtime_archive(
         .await
         .map_err(|error| format!("Failed to flush GitHub Copilot archive: {}", error))?;
 
-    let expected_size = total_bytes.unwrap_or(asset.archive_size);
+    let expected_size = asset.archive_size;
     if downloaded_bytes != expected_size {
         return Err(format!(
             "Downloaded GitHub Copilot archive size mismatch (expected {}, got {}).",
@@ -2326,6 +2342,13 @@ async fn stream_chat_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_archive_chunks_beyond_manifest_size_before_write() {
+        assert_eq!(checked_archive_size(8, 2, 10).unwrap(), 10);
+        assert!(checked_archive_size(8, 3, 10).is_err());
+        assert!(checked_archive_size(u64::MAX, 1, u64::MAX).is_err());
+    }
 
     #[test]
     fn normalizes_copilot_send_timeout_with_tool_completion_margin() {

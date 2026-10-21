@@ -1,4 +1,5 @@
 import { isContextOverflowMessage } from '../contextOverflow';
+import { readBoundedProviderError } from '../providerEndpoint';
 
 export type ProviderRuntimeErrorKind =
   | 'reasoning_replay_required'
@@ -197,7 +198,7 @@ export const classifyProviderError = (
 };
 
 export const extractProviderErrorMessage = async (response: Response): Promise<ProviderRuntimeError> => {
-  const errorText = await response.text().catch(() => 'Unknown error');
+  const errorText = await readBoundedProviderError(response).catch(() => 'Unknown error');
   let errorMessage = `Request failed: ${response.status}`;
   let providerMessage: string | undefined;
   let providerCode: string | undefined;
@@ -211,18 +212,18 @@ export const extractProviderErrorMessage = async (response: Response): Promise<P
       type?: unknown;
     };
     const parsedMessage = errorJson.error?.message ?? errorJson.message;
-    providerMessage = typeof parsedMessage === 'string' ? parsedMessage : undefined;
+    providerMessage = typeof parsedMessage === 'string' ? parsedMessage.slice(0, 2048) : undefined;
     providerCode =
       typeof errorJson.error?.code === 'string'
-        ? errorJson.error.code
+        ? errorJson.error.code.slice(0, 256)
         : typeof errorJson.code === 'string'
-          ? errorJson.code
+          ? errorJson.code.slice(0, 256)
           : undefined;
     providerType =
       typeof errorJson.error?.type === 'string'
-        ? errorJson.error.type
+        ? errorJson.error.type.slice(0, 256)
         : typeof errorJson.type === 'string'
-          ? errorJson.type
+          ? errorJson.type.slice(0, 256)
           : undefined;
     const contextParts = [
       providerMessage,
@@ -232,8 +233,8 @@ export const extractProviderErrorMessage = async (response: Response): Promise<P
     errorMessage = contextParts.length > 0 ? contextParts.join(' ') : errorMessage;
   } catch {
     if (errorText) {
-      errorMessage = errorText;
-      providerMessage = errorText;
+      errorMessage = errorText.slice(0, 2048);
+      providerMessage = errorMessage;
     }
   }
 

@@ -125,28 +125,8 @@ fn validate_provider_fields(
             provider_type.trim()
         )));
     }
-    let parsed = reqwest::Url::parse(base_url.trim())
-        .map_err(|_| command_error("Speech provider base URL must be a valid URL."))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(command_error(
-            "Speech provider base URL must use HTTP or HTTPS.",
-        ));
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(command_error(
-            "Speech provider base URLs must not contain credentials.",
-        ));
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(command_error(
-            "Speech provider base URLs must not contain a query or fragment.",
-        ));
-    }
-    if !is_local && parsed.scheme() != "https" {
-        return Err(command_error(
-            "Remote speech provider base URLs must use HTTPS.",
-        ));
-    }
+    crate::core::provider_endpoint::validate_provider_endpoint(base_url, is_local)
+        .map_err(command_error)?;
     Ok(())
 }
 
@@ -356,6 +336,18 @@ mod tests {
             true,
         )
         .expect("local HTTP endpoint should be supported");
+    }
+
+    #[test]
+    fn rejects_remote_http_even_when_marked_local() {
+        assert!(validate_provider_fields(
+            "Remote",
+            "openai-compatible",
+            "http://example.test/v1",
+            "whisper-1",
+            true
+        )
+        .is_err());
     }
 
     #[test]

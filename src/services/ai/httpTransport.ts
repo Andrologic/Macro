@@ -2,6 +2,7 @@ import {
   ProviderRuntimeError,
 } from './providerErrors';
 import { tauriFetch } from '../tauriHttp';
+import { assertSecureProviderEndpoint } from '../providerEndpoint';
 
 export const GENERIC_RETRY_MAX_ATTEMPTS = 2;
 export const GENERIC_RETRY_MAX_DELAY_MS = 5_000;
@@ -62,9 +63,11 @@ export const fetchWithTimeout = async (
       controller.abort(new Error('Provider request timed out'));
     }, timeoutMs);
 
+    assertSecureProviderEndpoint(url);
     return await tauriFetch(url, {
       ...init,
       signal: controller.signal,
+      maxRedirections: 0,
     });
   } catch (error) {
     if (outerSignal?.aborted) {
