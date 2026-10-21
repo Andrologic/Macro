@@ -550,6 +550,8 @@
     "stop": "停止",
     "saveRegenerate": "保存と再生成",
     "mermaidDiagram": "人魚の図",
+    "renderMermaidDiagram": "図を表示",
+    "mermaidExternalResourceWarning": "この図を表示すると、外部サイトに接続する場合があります。",
     "copyCode": "コードをコピーする",
     "copied": "コピーされました",
     "showCode": "コードを表示",

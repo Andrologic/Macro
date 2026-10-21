@@ -550,6 +550,8 @@
     "stop": "멈추다",
     "saveRegenerate": "저장 및 재생성",
     "mermaidDiagram": "인어 다이어그램",
+    "renderMermaidDiagram": "다이어그램 표시",
+    "mermaidExternalResourceWarning": "이 다이어그램을 표시하면 외부 사이트에 연결될 수 있습니다.",
     "copyCode": "코드 복사",
     "copied": "복사됨",
     "showCode": "코드 표시",
