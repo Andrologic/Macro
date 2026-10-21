@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { clearRemoteRuntimeCapabilityOverrides } from './serviceRuntime';
+import { setRemoteAuthToken } from './providers/remoteAuthToken';
 
 type FetchCall = {
   url: string;
@@ -42,6 +43,7 @@ const loadServicesModule = async () => {
 
 describe('services index', () => {
   beforeEach(() => {
+    setRemoteAuthToken('test-token');
     fetchCalls = [];
     ENV_KEYS.forEach((key) => {
       originalEnv[key] = process.env[key];
@@ -60,6 +62,7 @@ describe('services index', () => {
   });
 
   afterEach(() => {
+    setRemoteAuthToken(null);
     ENV_KEYS.forEach((key) => {
       setEnv(key, originalEnv[key]);
     });
@@ -77,12 +80,14 @@ describe('services index', () => {
 
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/workspace/bootstrap');
+    expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
   });
 
-  it('keeps the remote provider active with desktop-only environment noise present', async () => {
+  it('keeps the remote provider active when remote transport is selected', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
-    setEnv('VITE_REMOTE_API_PREFIX', '/api/v2');
+    // The Vite environment is captured on module load; keep one fixture per file.
+    setEnv('VITE_REMOTE_API_PREFIX', '/custom');
 
     const { getServiceRuntime, services } = await loadServicesModule();
     const runtime = getServiceRuntime();
@@ -92,7 +97,7 @@ describe('services index', () => {
       effectiveTransport: 'remote',
       effectiveProvider: 'remote',
     });
-    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v2/workspace/bootstrap');
+    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/workspace/bootstrap');
   });
 
   it('records remote-declared runtime capabilities from bootstrap', async () => {
