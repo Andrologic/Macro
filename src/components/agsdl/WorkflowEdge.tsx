@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { BaseEdge, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react';
 import { ArrowDown, ArrowDownToLine, ArrowRightLeft, Check, CornerUpLeft, GitBranch, Info, Link2, X } from 'lucide-react';
 import type { ViewerEdge, ViewerEdgeRoute } from '../../services/agsdl/graphLayout';
-import { outsideViewerEdgePath } from '../../services/agsdl/graphLayout';
+import { viewerEdgePath } from '../../services/agsdl/graphLayout';
 import { WorkflowGraphPopup } from './WorkflowGraphPopup';
 import { useAgsdlTranslation } from './useAgsdlTranslation';
 
@@ -62,8 +62,7 @@ export function WorkflowEdge(props: EdgeProps<GraphEdge>) {
   const { t } = useAgsdlTranslation();
   const data = props.data!;
   const route = data.route;
-  const [smoothPath] = getSmoothStepPath({ ...props, centerY: route?.kind === 'channel' ? route.centerY : undefined });
-  const path = route?.kind === 'outside' ? outsideViewerEdgePath(route, props) : smoothPath;
+  const path = route ? viewerEdgePath(route, props) : getSmoothStepPath(props)[0];
   const [anchor, setAnchor] = useState<SVGGElement | null>(null);
   const pointerPosition = useRef<{ left: number; top: number } | undefined>(undefined);
   const [preview, setPreview] = useState(false);

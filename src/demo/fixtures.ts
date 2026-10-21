@@ -288,6 +288,40 @@ const crisis = scenario('demo-crisis', 'Cellule de crise', 'demo-helio', 'Croise
 }
 demoPlans.push(crisis);
 
+const testDrivenFix = scenario('demo-fix', 'Correctif piloté par les tests', 'demo-atlas', 'Qualifier un ticket, corriger jusqu’à ce que les tests passent, faire relire le correctif puis le publier après accord. Les échecs de tests et les reprises de relecture reviennent au même développeur.', {
+  triage: { title: 'Qualifier le ticket', prompt: 'Lire le ticket et choisir correctif, évolution, question ou doublon. Justifier le choix en une phrase.' },
+  designer: { title: 'Cadrer l’évolution', prompt: 'Décrire le comportement attendu et les critères d’acceptation avant tout développement.' },
+  developer: { title: 'Développer le correctif', prompt: 'Corriger le portail avec un changement minimal. Ajouter ou adapter les tests qui démontrent la correction.' },
+  reviewer: { title: 'Relire le correctif', prompt: 'Relire le changement et ses tests. Choisir accepter ou reprendre, avec les remarques bloquantes.' },
+  releaser: { title: 'Publier le correctif', prompt: 'Fusionner et publier le correctif autorisé. Indiquer la version publiée.' },
+  support: { title: 'Répondre au demandeur', prompt: 'Répondre à la question posée dans le ticket, sans engager de développement.' },
+  duplicate: { title: 'Rattacher au ticket existant', prompt: 'Identifier le ticket d’origine et expliquer le rattachement au demandeur.' },
+  recovery: { title: 'Diagnostiquer l’environnement', prompt: 'Expliquer pourquoi les tests ou la publication n’ont pas pu s’exécuter. Ne pas relancer d’action.' },
+}, 'triage', {
+  triage: { type: 'agent', agent: 'triage', decision: { binding: 'ticketDecision', choices: ['correctif', 'evolution', 'question', 'doublon'] }, next: { correctif: ['develop'], evolution: ['design'], question: ['answer'], doublon: ['link'] } },
+  design: agentStep('designer', 'develop'),
+  develop: { ...agentStep('developer', 'tests'), maxVisits: 4 },
+  tests: { type: 'call', binding: 'testSuite', arguments: { suite: { value: 'portal' } }, next: ['passed'], onError: ['recovery'] },
+  passed: { type: 'condition', test: { equals: [{ path: ['data', 'exitCode'] }, { value: 0 }] }, next: { true: ['review'], false: ['failures'] } },
+  failures: { type: 'prepare', message: { prompt: [{ value: 'Corriger les tests en échec sans modifier leurs attentes.' }], resources: { failures: { select: { path: ['data', 'report'] }, mediaType: 'application/json' } } }, next: ['develop'] },
+  review: { type: 'agent', agent: 'reviewer', decision: { binding: 'reviewDecision', choices: ['accepter', 'reprendre'] }, maxVisits: 2, next: { accepter: ['releaseApproval'], reprendre: ['remarks'] } },
+  remarks: { ...relay('develop'), message: { prompt: [{ value: 'Reprendre le correctif selon les remarques de relecture.' }], resources: { review: { source: { path: ['results', 'report'] } } } } },
+  releaseApproval: { type: 'approval', call: 'release', binding: 'releaseApproval', timeoutMs: 3600000, validForMs: 900000, next: { approved: ['release'], denied: ['remarks'] }, onError: ['recovery'] },
+  release: { ...agentStep('releaser'), scope: { action: 'release', resources: ['demo:atlas-portal'], context: { path: ['text'] } }, onError: ['recovery'] },
+  answer: agentStep('support'), link: agentStep('duplicate'), recovery: agentStep('recovery'),
+}, { tests: 'Exécuter les tests', passed: 'Tests réussis ?', failures: 'Transmettre les échecs', remarks: 'Transmettre les remarques', releaseApproval: 'Autoriser la publication' });
+{
+  const source = JSON.parse(testDrivenFix.agsdl.source);
+  const binding = (name: string, effects = 'none') => ({ contract: { identity: `demo/${name}`, version: '1' }, implementation: { identity: 'demo/local-fixtures', version: '1' }, effects });
+  source.bindings.ticketDecision = binding('ticket-decision');
+  source.bindings.reviewDecision = binding('review-decision');
+  source.bindings.testSuite = binding('test-suite');
+  source.bindings.releaseApproval = binding('release-approval');
+  testDrivenFix.agsdl.source = JSON.stringify(source, null, 2);
+  for (const [path, title] of Object.entries({ '/bindings/testSuite': 'Suite de tests du portail', '/bindings/releaseApproval': 'Responsable de publication' })) testDrivenFix.agsdl.display!.cards![path] = { title };
+}
+demoPlans.push(testDrivenFix);
+
 demoPlans.push(scenario('demo-audio-feature', 'Améliorer la lecture audio', 'demo-luma', 'Préciser le besoin, réaliser la reprise de lecture puis vérifier les cas de pause et de chargement.', {
   scope: { title: 'Préciser la reprise audio', prompt: 'Définir les situations de pause, de navigation et de chargement à couvrir.' },
   implement: { title: 'Améliorer la lecture audio', prompt: 'Conserver la dernière position de lecture et rendre l’état de chargement compréhensible.' },
@@ -404,7 +438,7 @@ const planIcons: Record<string, PlanIcon> = {
   'demo-refund': 'lock', 'demo-editorial': 'book-open', 'demo-delivery': 'layers',
   'demo-persistent': 'pencil-ruler', 'demo-resident': 'network', 'demo-competition': 'target',
   'demo-structured': 'file-code', 'demo-approvals': 'check-square', 'demo-crisis': 'server',
-  'demo-audio-feature': 'tool', 'macro-assistant': 'sparkles', 'macro-chantier': 'workflow',
+  'demo-fix': 'git-merge', 'demo-audio-feature': 'tool', 'macro-assistant': 'sparkles', 'macro-chantier': 'workflow',
 };
 for (const plan of demoPlans) plan.icon = planIcons[plan.id];
 // Same display name in two scopes tests that selection uses identity, not labels.

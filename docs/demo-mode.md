@@ -23,11 +23,12 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 
 - Quatre projets métier fictifs : Luma Mobile, Atlas Studio, Helio Data et Meridian Commerce.
   Un cinquième, Nouveau projet, ne possède aucun blueprint local.
-- Seize blueprints de projet AgSDL 0.2, avec graphes et conversations : release, assistant client,
+- Dix-sept blueprints de projet AgSDL 0.2, avec graphes et conversations : release, assistant client,
   compte rendu vocal, revue avant livraison, import de catalogue, diagnostic
   d’incident, remboursement accompagné, dossier éditorial, livraison multi-plateforme, rédaction
   supervisée, équipe support permanente, recherche en compétition, extraction avec
-  correction, publication à double accord, cellule de crise et reprise audio. Deux
+  correction, publication à double accord, cellule de crise, correctif piloté par les
+  tests et reprise audio. Deux
   blueprints communs, Assistant et Chantier coordonné, complètent ces exemples.
 - Graphes avec branches conditionnelles, contrôles parallèles et regroupement,
   points de validation humaine, traitement des erreurs et boucle de diagnostic.
@@ -43,11 +44,18 @@ lancement natif devra isoler le profil avant le démarrage du backend.
 - Cellule de crise : trois analystes en compétition, décision à trois issues, même
   composition utilisée pour trois spécialistes, double accord, effet externe,
   contrôles parallèles obligatoires et transmission de leurs résultats nommés.
+- Correctif piloté par les tests : décision à quatre issues, boucle des tests en
+  échec et boucle de relecture imbriquées vers le même développeur, limites de
+  passages, appel de tests en erreur et accord avant une étape d’agent protégée.
+- Lecture des graphes : le chemin principal reste dans une colonne, les
+  alternatives se placent à côté, les retours et les connexions éloignées suivent
+  des rails latéraux partagés par bloc cible. Les étapes de routage sont plus
+  discrètes que les agents ; un repère marque le début et la fin des parcours.
 - Les cartes distinguent les types de blocs et indiquent les compétences, les
   résultats contraints, la sélection de configuration et les effets externes déclarés.
   Le survol précise leur sens, sans prétendre à une prise en charge à l’exécution.
 - Compétences partagées, contenus référencés et équipe sans graphe imposé.
-- Quatre-vingt-quatre tâches réparties entre vingt et une exécutions fictives, dont une
+- Quatre-vingt-neuf tâches réparties entre vingt-deux exécutions fictives, dont une
   édition archivée. Elles restent individuelles dans les quatre états de la file,
   avec des dépendances et des conversations propres à chaque situation. Fichiers virtuels propres à chaque projet.
 - Consultation et modification des instructions et du modèle d'un agent.

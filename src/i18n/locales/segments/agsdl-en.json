@@ -7,7 +7,8 @@
     "externalShort": "External effect",
     "first": "First acceptable result",
     "all": "All results required",
-    "steering": "Guidance during active work"
+    "steering": "Guidance during active work",
+    "maxVisits": "Up to {{count}} visits"
   },
   "editor": "AgSDL viewer",
   "legacyStrategy": "Legacy strategy",

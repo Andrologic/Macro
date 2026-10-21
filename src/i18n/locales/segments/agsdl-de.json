@@ -7,7 +7,8 @@
     "externalShort": "Externe Auswirkung",
     "first": "Erstes akzeptables Ergebnis",
     "all": "Alle Ergebnisse erforderlich",
-    "steering": "Anweisung während der Arbeit"
+    "steering": "Anweisung während der Arbeit",
+    "maxVisits": "Bis zu {{count}} Durchläufe"
   },
   "editor": "AgSDL-Ansicht",
   "legacyStrategy": "Bisherige Strategie",

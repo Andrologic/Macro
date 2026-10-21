@@ -7,7 +7,8 @@
     "externalShort": "外部への作用",
     "first": "最初の適切な結果",
     "all": "すべての結果が必要",
-    "steering": "実行中の指示"
+    "steering": "実行中の指示",
+    "maxVisits": "最大 {{count}} 回"
   },
   "editor": "AgSDL ビューアー",
   "legacyStrategy": "従来の戦略",

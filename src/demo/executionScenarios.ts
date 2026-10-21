@@ -121,6 +121,13 @@ export const demoExecutionScenes: Scene[] = [
     step('demo-crisis-closure', 'closure', 'Blocked', 'Faire auditer les deux preuves de rétablissement.', 'L’audit attend les deux contrôles indépendants.', ['demo-crisis-technical', 'demo-crisis-business']),
     step('demo-crisis-report', 'report', 'Blocked', 'Présenter la clôture de l’incident.', 'Le rapport attend l’audit des preuves.', ['demo-crisis-closure']),
   ], completedSteps: ['launch', 'first'] },
+  { id: 'fix', planId: 'demo-fix', tasks: [
+    step('demo-fix-triage', 'triage', 'Completed', 'Le ticket est un correctif.', 'Le formulaire de contact perd la pièce jointe après une erreur de validation. Le ticket est qualifié comme correctif.'),
+    step('demo-fix-develop', 'develop', 'Completed', 'Les tests du formulaire passent à la deuxième tentative.', 'Première exécution : deux tests en échec sur la conservation du fichier. Le développeur a repris le correctif avec ces échecs ; la suite du portail passe désormais.', ['demo-fix-triage']),
+    step('demo-fix-review', 'review', 'InReview', 'Relire le correctif et ses tests.', 'Le changement conserve la pièce jointe dans l’état du formulaire. Choisissez accepter ou reprendre ; une reprise renverra vos remarques au même développeur.', ['demo-fix-develop'], { reviewAfter: true }),
+    step('demo-fix-approval', 'releaseApproval', 'Blocked', 'Autoriser la publication du correctif.', 'L’accord sera demandé après une relecture acceptée. Rien n’a été publié.', ['demo-fix-review'], { interaction: 'approval' }),
+    step('demo-fix-release', 'release', 'Blocked', 'Publier le correctif autorisé.', 'La publication attend l’accord du responsable.', ['demo-fix-approval']),
+  ], completedSteps: ['tests', 'passed', 'failures'] },
   { id: 'shared-assistant', planId: 'macro-assistant', projectId: 'demo-meridian', tasks: [
     step('demo-shared-assistant', 'agent1', 'AwaitingResponse', 'Donner une consigne à l’assistant.', 'Que souhaitez-vous réaliser ? Vous pouvez joindre vos documents dans cette tâche.', [], { interaction: 'question' }),
   ] },
@@ -161,6 +168,7 @@ export const demoDesignNotes: Record<string, string> = {
   'demo-structured': 'Le résultat doit respecter un schéma JSON. Une erreur de format retourne au même agent pour correction ; une erreur technique suit un autre chemin.',
   'demo-approvals': 'Les accords éditorial et juridique portent sur la même publication. Ils se succèdent avant l’action externe, et un refus empêche la publication.',
   'demo-crisis': 'Trois investigations alimentent une décision entre intervention, surveillance et escalade. L’intervention exige deux accords ; sa clôture attend ensuite les preuves techniques et métier.',
+  'demo-fix': 'Le ticket est qualifié parmi quatre issues. Un échec de tests repart chez le développeur avec les erreurs, tout comme une relecture à reprendre ; la publication attend un accord explicite.',
   'demo-audio-feature': 'Le besoin précède la modification du lecteur, puis les tests vérifient les cas de pause et de chargement. Le résultat de chaque agent est transmis au suivant.',
   'macro-assistant': 'L’assistant commun attend la consigne dans sa tâche. Le même blueprint peut être lancé dans chacun des projets.',
   'macro-chantier': 'Le chantier passe du cadrage à la réalisation puis à la vérification. Chaque étape possède sa propre tâche dans le projet choisi.',

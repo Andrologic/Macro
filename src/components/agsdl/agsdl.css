@@ -34,6 +34,15 @@
 .agsdl-graph-node.is-interaction { min-height: 68px; border-color: rgb(var(--primary) / 0.65); }
 .agsdl-graph-node.is-interaction .agsdl-node-icon { color: rgb(var(--primary)); }
 .agsdl-node-warning { color: rgb(var(--destructive)); flex-shrink: 0; }
+/* Routing steps stay lighter than the work they connect. */
+.agsdl-graph-node.is-control { min-height: 40px; padding: 4px 6px; background: rgb(var(--background)); border-style: dashed; }
+.agsdl-graph-node.is-control .agsdl-node-icon { width: 21px; height: 21px; background: transparent; border: 1px solid rgb(var(--border)); }
+.agsdl-graph-node.is-control .agsdl-node-title { font-weight: 400; color: rgb(var(--muted-foreground)); }
+.agsdl-graph-node.is-control:hover .agsdl-node-title, .agsdl-graph-node.is-control.is-selected .agsdl-node-title { color: rgb(var(--foreground)); }
+.agsdl-graph-node.is-start, .agsdl-graph-node.is-end { position: relative; }
+.agsdl-graph-node.is-start::before, .agsdl-graph-node.is-end::after { content: ""; position: absolute; left: 50%; transform: translateX(-50%); pointer-events: none; background: rgb(var(--muted-foreground) / 0.8); }
+.agsdl-graph-node.is-start::before { top: -12px; width: 7px; height: 7px; border-radius: 50%; }
+.agsdl-graph-node.is-end::after { bottom: -6px; width: 16px; height: 3px; border-radius: 2px; }
 .agsdl-canvas .react-flow__handle { opacity: 0; pointer-events: none; width: 1px; height: 1px; min-width: 1px; min-height: 1px; }
 .agsdl-graph-controls { display: flex; gap: 1px; border: 1px solid rgb(var(--border)); border-radius: 5px; background: rgb(var(--background)); }
 .agsdl-graph-controls button { display: grid; place-items: center; width: 27px; height: 27px; color: rgb(var(--muted-foreground)); }

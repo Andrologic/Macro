@@ -1,7 +1,7 @@
 import { groupNativeState, type NativeCardActivation } from "../../services/agsdl/executionView";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps, type NodeChange } from "@xyflow/react";
-import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Plug, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
+import { ArrowRightLeft, Bot, Box, Boxes, Braces, ChevronDown, CircleHelp, GitBranch, GitMerge, Hand, Info, Layers, MessageSquare, MessageSquarePlus, LocateFixed, Minus, Plus, Plug, RotateCcw, Shuffle, Sparkles, Trophy, Zap } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, routeViewerEdge, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import { graphNeighborhood, presentFocusedGraph, presentGraph } from "../../services/agsdl/graphPresentation";
@@ -32,6 +32,9 @@ type GraphNode = Node<{
   native?: NativeCardActivation;
   incoming: string[];
   outgoing: string[];
+  /** Path markers: no authored predecessor, or no continuation on this canvas. */
+  start: boolean;
+  end: boolean;
   attach?: () => void;
   openTask?: () => void;
   dismissSignal: number;
@@ -42,6 +45,8 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { t } = useAgsdlTranslation();
   const Icon = data.members ? Layers : card.kind === "System" ? Boxes : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : card.kind === "join" ? card.details.mode === "first" ? Trophy : GitMerge : card.kind === "compose" ? Boxes : card.kind === "call" ? Plug : card.kind === "prepare" ? ArrowRightLeft : ["Agent", "invoke", "agent"].includes(card.kind) ? Bot : Box;
   const warning = Boolean(card.issueCount) || card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
+  const control = !data.members && ["prepare", "condition", "join"].includes(card.kind);
+  const maxVisits = typeof card.details.maxVisits === "number" ? card.details.maxVisits : undefined;
   const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   return (
     <>
@@ -54,7 +59,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         ]}>
       <button
         type="button"
-        className={`agsdl-graph-node nodrag nopan${data.active ? " is-selected" : ""}${card.kind === "approval" ? " is-interaction" : ""}`}
+        className={`agsdl-graph-node nodrag nopan${data.active ? " is-selected" : ""}${card.kind === "approval" ? " is-interaction" : ""}${control ? " is-control" : ""}${data.start ? " is-start" : ""}${data.end ? " is-end" : ""}`}
         onClick={event => {
           event.stopPropagation();
           if (data.expand) data.expand();
@@ -76,6 +81,7 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
             {card.capabilities.skills.length > 0 && <span title={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`} aria-label={`${t("agsdl.graphHints.skills")}: ${card.capabilities.skills.join(", ")}`}><Sparkles size={11} aria-hidden="true" /><span className="agsdl-node-skill-name">{card.capabilities.skills.at(-1)}</span></span>}
             {card.capabilities.structuredResults && <span title={t("agsdl.graphHints.structured")} aria-label={t("agsdl.graphHints.structured")}><Braces size={12} aria-hidden="true" /></span>}
             {card.capabilities.dynamicConfiguration && <span title={t("agsdl.graphHints.dynamic")} aria-label={t("agsdl.graphHints.dynamic")}><Shuffle size={12} aria-hidden="true" /></span>}
+            {maxVisits !== undefined && <span title={t("agsdl.graphHints.maxVisits", { count: maxVisits })} aria-label={t("agsdl.graphHints.maxVisits", { count: maxVisits })}><RotateCcw size={11} aria-hidden="true" /><span>{maxVisits}</span></span>}
             {card.capabilities.externalEffects && <span title={t("agsdl.graphHints.external")} aria-label={t("agsdl.graphHints.external")}><Zap size={12} aria-hidden="true" /><span>{t("agsdl.graphHints.externalShort")}</span></span>}
           </span>}
 
@@ -160,6 +166,8 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         select: path => { setHighlighted(path); if (selectionMode === "select") select(path); }, inspect: path => { setHighlighted(path); (onInspect ?? select)(path); }, expand: group ? () => expandGroup(group.id) : undefined, focus: setHovered,
         incoming: [...new Set(presentation.edges.filter(edge => edge.target === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.source)!)))],
         outgoing: [...new Set(presentation.edges.filter(edge => edge.source === card.path).map(edge => displayTitle(presentation.cards.find(item => item.path === edge.target)!)))],
+        start: presentation.edges.length > 0 && !overview.edges.some(edge => edge.target === card.path),
+        end: presentation.edges.length > 0 && !overview.edges.some(edge => edge.source === card.path),
         attach: !group && onAttach ? () => onAttach(card.path) : undefined,
         openTask: !group && trackedTasks[card.path] && onOpenTask ? () => onOpenTask(card.path) : undefined,
         dismissSignal,
@@ -195,7 +203,7 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
   const edges: GraphEdge[] = presentation.edges.map(edge => {
     const color = edge.transfers?.length && neighborhood.edges.has(edge.id) ? "rgb(var(--primary))" : edge.dependency ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
     return {
-      ...edge, type: "workflow", data: { route: routeViewerEdge(layout.nodes, edge), connection: edge,
+      ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge,
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
         targetTitle: displayTitle(presentation.cards.find(card => card.path === edge.target)!),
         dismissSignal, focusEdge,

@@ -7,7 +7,8 @@
     "externalShort": "외부 영향",
     "first": "첫 번째 적합한 결과",
     "all": "모든 결과 필요",
-    "steering": "작업 중 지시"
+    "steering": "작업 중 지시",
+    "maxVisits": "최대 {{count}}회"
   },
   "editor": "AgSDL 뷰어",
   "legacyStrategy": "기존 전략",

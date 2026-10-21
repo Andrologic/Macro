@@ -1,116 +1,102 @@
 import { describe, expect, it } from "bun:test";
-import { layoutViewer, routeViewerEdge, outsideViewerEdgePath, type ViewerEdge } from "./graphLayout";
-import { getSmoothStepPath, Position } from "@xyflow/react";
+import { layoutViewer, routeViewerEdge, viewerEdgePath, VIEWER_CARD_WIDTH, type ViewerEdge, type ViewerLayoutNode } from "./graphLayout";
 import { presentGraph } from "./graphPresentation";
-import { projectViewer } from "./viewer";
-import { projectSystemOverview } from "./systemOverview";
-import { createLegacyExample } from "./examples";
+import type { ViewerCard } from "./viewer";
 
-const overview = () => projectSystemOverview(projectViewer(createLegacyExample("release")).graphs[0], []);
-describe("AgSDL system layout", () => {
-  it("orders the three agents without inventing input or result participants", () => {
-    const input = overview();
-    const graph = layoutViewer(input.cards, input.edges);
-    expect(graph.nodes).toHaveLength(3);
-    expect(graph.nodes.map(node => node.position.y)).toEqual([0, 100, 200]);
+const card = (id: string, kind = "agent"): ViewerCard => ({
+  path: `/flow/steps/${id}`, id, title: id, kind, mission: "", unresolved: false, inputs: [], outputs: [], branches: [], details: {},
+});
+const edge = (source: string, target: string, label = "next"): ViewerEdge => ({
+  id: `${source}/${label}/${target}`, source: `/flow/steps/${source}`, target: `/flow/steps/${target}`, label, dependency: false,
+});
+const at = (graph: { nodes: ViewerLayoutNode[] }, id: string) => graph.nodes.find(node => node.card.id === id)!;
+const center = (node: ViewerLayoutNode) => node.position.x + VIEWER_CARD_WIDTH / 2;
+const overlaps = (nodes: ViewerLayoutNode[]) => nodes.some((a, index) => nodes.slice(index + 1).some(b =>
+  a.position.x < b.position.x + VIEWER_CARD_WIDTH && b.position.x < a.position.x + VIEWER_CARD_WIDTH
+  && a.position.y < b.position.y + b.height && b.position.y < a.position.y + a.height));
+
+describe("AgSDL reading layout", () => {
+  it("keeps the main path in one straight column below the tallest card of each row", () => {
+    const cards = ["a", "b", "c"].map(id => card(id));
+    const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c")], { [cards[0].path]: 180 });
+    expect(graph.nodes.map(node => node.position.y)).toEqual([0, 240, 352]);
+    expect(new Set(graph.nodes.map(center)).size).toBe(1);
   });
-  it("keeps successors below the tallest measured card in each rank", () => {
-    const input = overview();
-    const fork = [
-      { id: "first/second", source: input.cards[0].path, target: input.cards[1].path, label: "", dependency: false },
-      { id: "first/third", source: input.cards[0].path, target: input.cards[2].path, label: "", dependency: false },
-    ];
-    const fourth = { ...input.cards[2], path: "/extra", id: "extra" };
-    const edges = [...fork, { id: "second/extra", source: input.cards[1].path, target: fourth.path, label: "", dependency: false }];
-    const graph = layoutViewer([...input.cards, fourth], edges, { [input.cards[0].path]: 180, [input.cards[2].path]: 320 });
-    expect(graph.nodes[1].position.y).toBe(228);
-    expect(graph.nodes[2].position.y).toBe(228);
-    expect(graph.nodes[3].position.y).toBe(596);
-    expect(graph.edges).toEqual(edges);
+
+  it("centres a fork under its source and the join under its members", () => {
+    const cards = ["fork", "left", "middle", "right", "join"].map(id => card(id));
+    const graph = layoutViewer(cards, [
+      edge("fork", "left"), edge("fork", "middle"), edge("fork", "right"),
+      edge("left", "join"), edge("middle", "join"), edge("right", "join"),
+    ]);
+    const members = ["left", "middle", "right"].map(id => at(graph, id));
+    expect(new Set(members.map(node => node.position.y)).size).toBe(1);
+    expect(center(at(graph, "middle"))).toBeCloseTo(center(at(graph, "fork")));
+    expect(center(at(graph, "join"))).toBeCloseTo(center(at(graph, "fork")));
+    expect(overlaps(graph.nodes)).toBe(false);
   });
-  it("lays out forks and cycles without overlap", () => {
-    const agents = overview().cards;
-    const cards = [...agents, { ...agents[2], path: "/synthetic/fourth", id: "fourth", title: "Additional review" }];
-    const edge = (from: number, to: number) => ({ id: `${from}/${to}`, source: cards[from].path, target: cards[to].path, label: "", dependency: false });
-    const edges = [edge(0, 1), edge(0, 2), edge(1, 3), edge(2, 3)];
-    const fork = layoutViewer(cards, edges);
-    expect(fork.nodes[1].position.y).toBe(fork.nodes[2].position.y);
-    expect(fork.nodes[1].position.x).not.toBe(fork.nodes[2].position.x);
-    const cycle = layoutViewer(cards, [...edges, edge(3, 0)]);
-    expect(new Set(cycle.nodes.map(node => JSON.stringify(node.position))).size).toBe(cards.length);
+
+  it("keeps the condition's main outcome straight and draws the correction loop outside the cards it spans", () => {
+    const cards = ["write", "review", "ready", "publish", "revise"].map(id => card(id));
+    const back = edge("revise", "review");
+    const graph = layoutViewer(cards, [edge("write", "review"), edge("review", "ready"), edge("ready", "publish", "true"), edge("ready", "revise", "false"), back]);
+    expect(at(graph, "publish").position.y).toBe(at(graph, "revise").position.y);
+    expect(center(at(graph, "publish"))).toBeCloseTo(center(at(graph, "ready")));
+    const route = graph.routes.get(back.id)!;
+    expect(route.loop).toBe(true);
+    const rail = route.steps[0].x!;
+    const spanned = ["review", "ready", "publish", "revise"].map(id => at(graph, id));
+    expect(spanned.every(node => rail > node.position.x + VIEWER_CARD_WIDTH || rail < node.position.x)).toBe(true);
+    expect(route.steps[0].y).toBeGreaterThan(at(graph, "revise").position.y + at(graph, "revise").height);
+    expect(route.steps[1].y).toBeLessThan(at(graph, "review").position.y);
+  });
+
+  it("terminates on cyclic drafts without a root and never stacks cards", () => {
+    const cards = ["a", "b", "c"].map(id => card(id));
+    const graph = layoutViewer(cards, [edge("a", "b"), edge("b", "c"), edge("c", "a"), edge("b", "b")]);
+    expect(overlaps(graph.nodes)).toBe(false);
+    expect(graph.routes.get(edge("b", "b").id)?.loop).toBe(true);
+  });
+
+  it("shares one side rail for distant connections to the same handler and moves the handler to that side", () => {
+    const cards = ["start", "check", "approve", "act", "done", "escalate"].map(id => card(id));
+    const edges = [edge("start", "check"), edge("check", "approve", "true"), edge("approve", "act", "approved"), edge("act", "done"),
+      edge("start", "escalate", "onError"), edge("check", "escalate", "false"), edge("act", "escalate", "onError")];
+    const graph = layoutViewer(cards, edges);
+    const distant = edges.slice(4, 6).map(item => graph.routes.get(item.id)!);
+    expect(new Set(distant.map(route => route.steps[0].x)).size).toBe(1);
+    expect(distant[0].steps[0].x).not.toBe(center(at(graph, "start")));
+    const handler = at(graph, "escalate"), done = at(graph, "done");
+    expect(handler.position.y).toBe(done.position.y);
+    const railX = distant[0].steps[0].x!;
+    expect(Math.sign(center(handler) - center(done))).toBe(Math.sign(railX - center(done)));
+    expect(new Set(["start", "check", "approve", "act"].map(id => center(at(graph, id)))).size).toBe(1);
   });
 });
 
-
-describe("AgSDL visible edge routes", () => {
-  const cards = () => {
-    const agents = overview().cards;
-    return [...agents, { ...agents[2], path: "/fourth", id: "fourth" }];
-  };
-  const edge = (source: string, target: string): ViewerEdge => ({ id: `${source}/${target}`, source, target, label: "next", dependency: false });
-
-  it("converges unequal-height branches below both cards, whichever branch is tall", () => {
-    for (const tallIndex of [1, 2]) {
-      const nodes = cards();
-      const edges = [edge(nodes[0].path, nodes[1].path), edge(nodes[0].path, nodes[2].path), edge(nodes[1].path, nodes[3].path), edge(nodes[2].path, nodes[3].path)];
-      const graph = layoutViewer(nodes, edges, { [nodes[tallIndex].path]: 519 });
-      const target = graph.nodes[3];
-      const routes = edges.slice(2).map(connection => routeViewerEdge(graph.nodes, connection));
-      expect(routes[0]).toEqual(routes[1]);
-      for (let index = 0; index < routes.length; index++) {
-        const route = routes[index]!;
-        expect(route.kind).toBe("channel");
-        if (route.kind !== "channel") throw new Error("Missing row corridor");
-        const source = graph.nodes[index + 1];
-        const rowBottom = Math.max(...graph.nodes.slice(1, 3).map(node => node.position.y + node.height));
-        expect(route.centerY).toBeGreaterThan(rowBottom);
-        expect(route.centerY).toBeLessThan(target.position.y);
-        const [, , actualChannelY] = getSmoothStepPath({
-          sourceX: source.position.x + 105, sourceY: source.position.y + source.height + 1,
-          targetX: target.position.x + 105, targetY: target.position.y - 1,
-          sourcePosition: Position.Bottom, targetPosition: Position.Top, centerY: route.centerY,
-        });
-        expect(actualChannelY).toBe(route.centerY);
-      }
-      expect(graph.edges).toEqual(edges);
-    }
+describe("AgSDL connection paths", () => {
+  it("draws rounded orthogonal paths that start and end on the actual handles", () => {
+    const path = viewerEdgePath({ kind: "orthogonal", steps: [{ y: 80, x: 300 }, { y: 400 }] }, { sourceX: 105, sourceY: 52, targetX: 105, targetY: 420 });
+    expect(path.startsWith("M105 52 ")).toBe(true);
+    expect(path.endsWith("L105 420")).toBe(true);
+    expect(path).toContain("Q300 80");
+    expect(path).toContain("Q300 400");
+    expect(viewerEdgePath({ kind: "orthogonal", steps: [{ y: 80 }] }, { sourceX: 105, sourceY: 52, targetX: 105, targetY: 112 })).toBe("M105 52 L105 112");
   });
 
-  it("routes the cycle return outside all cards and attaches to the exact original handles", () => {
-    const nodes = cards().slice(0, 3);
-    const edges = [edge(nodes[0].path, nodes[1].path), edge(nodes[1].path, nodes[2].path), edge(nodes[2].path, nodes[0].path)];
-    const graph = layoutViewer(nodes, edges, { [nodes[1].path]: 451 });
-    const route = routeViewerEdge(graph.nodes, edges[2])!;
-    expect(route.kind).toBe("outside");
-    if (route.kind !== "outside") throw new Error("Missing cycle corridor");
-    expect(route.outsideX).toBeGreaterThan(Math.max(...graph.nodes.map(node => node.position.x + 210)));
-    expect(route.exitY).toBeGreaterThan(graph.nodes[2].position.y + graph.nodes[2].height);
-    expect(route.entryY).toBeLessThan(graph.nodes[0].position.y);
-    const sourceY = graph.nodes[2].position.y + graph.nodes[2].height + 1;
-    const targetY = graph.nodes[0].position.y - 1;
-    const path = outsideViewerEdgePath(route, { sourceX: 105, sourceY, targetX: 105, targetY });
-    expect(path.startsWith(`M105 ${sourceY} `)).toBe(true);
-    expect(path.endsWith(`L105 ${targetY}`)).toBe(true);
-    expect(path).toContain(`L${route.outsideX} ${route.entryY + 5}`);
-    expect(graph.edges).toEqual(edges);
-  });
-
-  it("keeps a folded tall group's routes attached and bypasses intermediate rows for exchanges", () => {
-    const nodes = cards();
-    for (const card of nodes.slice(1, 3)) card.details = { ...card.details, displayAnnotations: { macroGroup: "Review" } };
-    const edges = [edge(nodes[0].path, nodes[1].path), edge(nodes[0].path, nodes[2].path), edge(nodes[1].path, nodes[3].path), edge(nodes[2].path, nodes[3].path)];
-    const folded = presentGraph(nodes, edges, new Set(["macro-group:Review"]), "overview");
+  it("routes revealed exchanges that are not part of the layout and ignores unknown blocks", () => {
+    const cards = ["a", "b", "c", "d"].map(id => card(id));
+    for (const item of cards.slice(1, 3)) item.details = { displayAnnotations: { macroGroup: "Review" } };
+    const edges = [edge("a", "b"), edge("a", "c"), edge("b", "d"), edge("c", "d")];
+    const folded = presentGraph(cards, edges, new Set(["macro-group:Review"]), "overview");
     const graph = layoutViewer(folded.cards, folded.edges, { "macro-group:Review": 519 });
+    const group = graph.nodes.find(node => node.card.path === "macro-group:Review")!;
     const outgoing = folded.edges.find(connection => connection.source === "macro-group:Review")!;
-    const route = routeViewerEdge(graph.nodes, outgoing)!;
-    expect(route.kind).toBe("channel");
-    if (route.kind !== "channel") throw new Error("Missing group corridor");
-    const group = graph.nodes.find(node => node.card.path === outgoing.source)!;
-    expect(route.centerY).toBeGreaterThan(group.position.y + group.height);
-    expect(route.centerY).toBeLessThan(graph.nodes.find(node => node.card.path === outgoing.target)!.position.y);
-    const exchange = { ...edge(nodes[0].path, nodes[3].path), exchangeOnly: true };
-    expect(routeViewerEdge(graph.nodes, exchange)?.kind).toBe("outside");
-    expect(routeViewerEdge(graph.nodes, edge("missing", nodes[3].path))).toBeUndefined();
+    expect(graph.routes.get(outgoing.id)!.steps[0].y).toBeGreaterThan(group.position.y + group.height);
+    const exchange = { ...edge("a", "d"), exchangeOnly: true };
+    const route = routeViewerEdge(graph.nodes, exchange)!;
+    expect(route.steps[0].x).toBeGreaterThan(Math.max(...graph.nodes.map(node => node.position.x + VIEWER_CARD_WIDTH)));
+    expect(routeViewerEdge(graph.nodes, edge("missing", "d"))).toBeUndefined();
     expect(graph.edges).toEqual(folded.edges);
   });
 });
