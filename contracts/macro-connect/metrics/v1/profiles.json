@@ -1,0 +1,217 @@
+{
+  "version": 1,
+  "fixture": {
+    "sizes": [
+      100,
+      1000,
+      10000
+    ],
+    "content_bytes": 256,
+    "seed_timestamp": "2026-01-01T00:00:00Z",
+    "targets": [
+      "pc-a",
+      "pc-b",
+      "pc-slow"
+    ],
+    "conversations": [
+      "active",
+      "other"
+    ]
+  },
+  "profiles": {
+    "loopback": {
+      "rtt_ms": 0,
+      "slow_target_rtt_ms": 0,
+      "disconnect_at_ms": null,
+      "reconnect_at_ms": null
+    },
+    "simulated-rtt": {
+      "rtt_ms": 100,
+      "slow_target_rtt_ms": 1000,
+      "disconnect_at_ms": null,
+      "reconnect_at_ms": null
+    },
+    "deterministic-interruption": {
+      "rtt_ms": 100,
+      "slow_target_rtt_ms": 1000,
+      "disconnect_at_ms": 500,
+      "reconnect_at_ms": 1500
+    }
+  },
+  "scenarios": {
+    "idle-hidden": {
+      "window_ms": 10000,
+      "steps": [
+        [
+          0,
+          "hide",
+          "pc-a",
+          "active"
+        ],
+        [
+          10000,
+          "observe",
+          "pc-a",
+          "active"
+        ]
+      ]
+    },
+    "cold-open-return": {
+      "window_ms": 10000,
+      "steps": [
+        [
+          0,
+          "cold-open",
+          "pc-a",
+          "active"
+        ],
+        [
+          4000,
+          "open",
+          "pc-a",
+          "other"
+        ],
+        [
+          6000,
+          "open",
+          "pc-a",
+          "active"
+        ]
+      ]
+    },
+    "visible-unrelated-update": {
+      "window_ms": 10000,
+      "steps": [
+        [
+          0,
+          "open",
+          "pc-a",
+          "active"
+        ],
+        [
+          1000,
+          "append",
+          "pc-a",
+          "other"
+        ],
+        [
+          2000,
+          "append",
+          "pc-a",
+          "active"
+        ],
+        [
+          3000,
+          "error",
+          "pc-a",
+          "active"
+        ],
+        [
+          4000,
+          "interaction",
+          "pc-a",
+          "active"
+        ],
+        [
+          5000,
+          "finish",
+          "pc-a",
+          "active"
+        ]
+      ]
+    },
+    "foreground-reconnect": {
+      "window_ms": 10000,
+      "steps": [
+        [
+          0,
+          "background",
+          "pc-a",
+          "active"
+        ],
+        [
+          2000,
+          "foreground",
+          "pc-a",
+          "active"
+        ]
+      ]
+    },
+    "history-pagination": {
+      "window_ms": 10000,
+      "steps": [
+        [
+          0,
+          "open",
+          "pc-a",
+          "active"
+        ],
+        [
+          2000,
+          "previous-page",
+          "pc-a",
+          "active"
+        ],
+        [
+          4000,
+          "previous-page",
+          "pc-a",
+          "active"
+        ],
+        [
+          6000,
+          "return-position",
+          "pc-a",
+          "active"
+        ]
+      ]
+    },
+    "multiple-targets": {
+      "window_ms": 10000,
+      "steps": [
+        [
+          0,
+          "open",
+          "pc-a",
+          "active"
+        ],
+        [
+          0,
+          "open",
+          "pc-b",
+          "active"
+        ],
+        [
+          0,
+          "open",
+          "pc-slow",
+          "active"
+        ],
+        [
+          2000,
+          "append",
+          "pc-slow",
+          "active"
+        ],
+        [
+          2000,
+          "append",
+          "pc-a",
+          "active"
+        ],
+        [
+          4000,
+          "error",
+          "pc-slow",
+          "active"
+        ],
+        [
+          6000,
+          "observe",
+          "pc-a",
+          "active"
+        ]
+      ]
+    }
+  }
+}
