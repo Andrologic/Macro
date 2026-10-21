@@ -5,7 +5,6 @@ import type {
   McpInteractionRequest,
   McpInteractionResponse,
 } from "../../types/generated/ipc";
-import type { MCPServer } from "../../types";
 import type {
   MCPCatalogDto,
   MCPRuntimeKey,
@@ -16,30 +15,7 @@ import type {
 import { invoke, isBrowserRuntimeBridgeEnabled } from "../tauriRuntimeBridge";
 import type {
   MCPCallToolResponseDto,
-  MCPDiscoverToolsResponseDto,
 } from "./mcp.types";
-
-export async function mcpDiscoverTools(params: {
-  server: MCPServer;
-}): Promise<MCPDiscoverToolsResponseDto> {
-  return invoke<MCPDiscoverToolsResponseDto>("mcp_discover_tools", {
-    server: params.server,
-  });
-}
-
-export async function mcpCallTool(params: {
-  server: MCPServer;
-  toolName: string;
-  arguments: Record<string, unknown>;
-  timeoutMs?: number | null;
-}): Promise<MCPCallToolResponseDto> {
-  return invoke<MCPCallToolResponseDto>("mcp_call_tool", {
-    server: params.server,
-    toolName: params.toolName,
-    arguments: params.arguments,
-    timeoutMs: params.timeoutMs ?? null,
-  });
-}
 
 export async function mcpStoreEnvSecret(params: {
   serverId: string;

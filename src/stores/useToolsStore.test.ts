@@ -71,18 +71,6 @@ const loadUseToolsStore = async () => {
       })),
       updateToolSettings: mock(async () => undefined),
       updateMCPServerSettings: mock(async () => undefined),
-      mcpDiscoverTools: mock(async () => ({
-        tools: [
-          {
-            id: 'mcp__github__list_issues',
-            serverId: 'github',
-            name: 'list_issues',
-            description: 'List issues',
-            inputSchema: { type: 'object', properties: {} },
-          },
-        ],
-      })),
-      mcpCallTool: mock(async () => ({ content: 'ok' })),
       mcpRuntimeGetSnapshot: mock(async () => ({
         generatedAt: '2026-09-05T20:00:00.000Z',
         servers: [],

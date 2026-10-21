@@ -187,7 +187,6 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::mcp::McpServerDto>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpTransportDto>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpToolDto>("mcp")?;
-    registry.add::<ipc_contracts::mcp::McpDiscoverToolsResponse>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpCallToolResponse>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeSelector>("mcp")?;
     registry.add::<ipc_contracts::mcp::McpRuntimeKey>("mcp")?;

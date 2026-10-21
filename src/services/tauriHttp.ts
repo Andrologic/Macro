@@ -37,7 +37,7 @@ export const createBrowserRuntimeFetch = (
       url: request.url,
       headers: Array.from(headers.entries()),
       data,
-      maxRedirections: options?.maxRedirections,
+      maxRedirections: 0,
       connectTimeout: options?.connectTimeout,
       proxy: options?.proxy,
       danger: options?.danger,
@@ -121,7 +121,19 @@ export const createBrowserRuntimeFetch = (
 
 const browserRuntimeFetch = createBrowserRuntimeFetch(invoke);
 
-export const tauriFetch: typeof nativeTauriFetch = (input, init) =>
-  isBrowserRuntimeBridgeEnabled()
-    ? browserRuntimeFetch(input, init)
-    : nativeTauriFetch(input, init);
+export const createTauriFetch = (
+  nativeFetch: typeof nativeTauriFetch,
+  bridgeFetch: typeof nativeTauriFetch,
+  bridgeEnabled: () => boolean,
+): typeof nativeTauriFetch => (input, init) => {
+  const guardedInit = { ...init, maxRedirections: 0 };
+  return bridgeEnabled()
+    ? bridgeFetch(input, guardedInit)
+    : nativeFetch(input, guardedInit);
+};
+
+export const tauriFetch = createTauriFetch(
+  nativeTauriFetch,
+  browserRuntimeFetch,
+  isBrowserRuntimeBridgeEnabled,
+);

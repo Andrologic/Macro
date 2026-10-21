@@ -4,7 +4,6 @@ mod ids;
 mod interaction;
 mod modern_adapter;
 mod oauth;
-mod protocol;
 pub(crate) mod result_format;
 mod rmcp_adapter;
 mod runtime;
@@ -17,11 +16,10 @@ use self::ids::{
     build_mcp_env_secret_id, build_mcp_env_secret_ref, build_mcp_oauth_client_secret_id,
     build_mcp_oauth_client_secret_ref, is_canonical_mcp_server_id, is_valid_mcp_env_key,
 };
-use self::stdio::{call_stdio_tool, discover_stdio_tools};
 pub use self::types::{
-    McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpProtocolEra, McpProtocolMode,
-    McpResultBlock, McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot,
-    McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
+    McpCallToolResponse, McpCatalogDto, McpProtocolEra, McpProtocolMode, McpResultBlock,
+    McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto,
+    McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
 };
 use crate::commands::{command_error, CommandResult};
 use crate::config::ConfigManager;
@@ -35,29 +33,6 @@ use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::AppHandle;
 use tauri::State;
-
-#[tauri::command]
-pub async fn mcp_discover_tools(
-    manager: State<'_, ConfigManager>,
-    server: McpServerDto,
-) -> CommandResult<McpDiscoverToolsResponse> {
-    let _authority = manager.lock_mcp_runtime_configuration().await;
-    Ok(McpDiscoverToolsResponse {
-        tools: discover_stdio_tools(&server, None).await?,
-    })
-}
-
-#[tauri::command]
-pub async fn mcp_call_tool(
-    manager: State<'_, ConfigManager>,
-    server: McpServerDto,
-    tool_name: String,
-    arguments: Value,
-    timeout_ms: Option<u64>,
-) -> CommandResult<McpCallToolResponse> {
-    let _authority = manager.lock_mcp_runtime_configuration().await;
-    call_stdio_tool(&server, &tool_name, arguments, timeout_ms).await
-}
 
 #[tauri::command]
 pub async fn mcp_store_env_secret(

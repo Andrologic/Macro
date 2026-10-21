@@ -47,13 +47,6 @@ pub struct McpToolDto {
     pub enabled: bool,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(ts_rs::TS)]
-pub struct McpDiscoverToolsResponse {
-    pub tools: Vec<McpToolDto>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 #[derive(ts_rs::TS, Deserialize)]

@@ -918,6 +918,14 @@ Le backend expose de nombreuses commandes Tauri, regroupées par domaine :
 
 Ces commandes sont centralisées dans le point d'entrée du backend.
 
+Le runtime Tauri utilise une version qui vérifie l'origine des requêtes IPC et
+applique les capacités aux commandes personnalisées provenant d'une origine
+distante. Il lie aussi les grandes réponses de canal à leur WebView d'origine.
+La capacité de la fenêtre principale n'accorde aucun accès distant.
+Les anciennes commandes `mcp_discover_tools` et `mcp_call_tool`, qui acceptaient
+une définition de serveur fournie par l'appelant, ne sont plus enregistrées.
+L'interface passe par le runtime MCP persistant et sa politique d'outils.
+
 ### 8.3 Plugins natifs utilisés
 
 Le runtime embarque des plugins Tauri pour :
@@ -926,6 +934,12 @@ Le runtime embarque des plugins Tauri pour :
 - les requêtes HTTP
 - les dialogues système
 - le stockage natif
+
+Le wrapper `tauriFetch` désactive les redirections automatiques du plugin HTTP
+sur le desktop et dans le pont navigateur. Un serveur qui répond par une
+redirection reçoit donc la requête initiale, mais la cible indiquée dans
+`Location` ne reçoit ni les en-têtes d'authentification ni le corps de la
+requête. Les appels fournisseur traitent cette réponse comme un échec HTTP.
 
 ---
 

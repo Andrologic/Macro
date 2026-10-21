@@ -1501,6 +1501,54 @@ fn add_page_budget(current: usize, tools: &[McpToolDto]) -> Result<usize, McpRun
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_budget_accepts_exact_limit_and_rejects_excess_or_overflow() {
+        let tools = vec![McpToolDto {
+            id: "mcp__fixture__read".into(),
+            server_id: "fixture".into(),
+            name: "read".into(),
+            description: None,
+            input_schema: json!({"type": "object"}),
+            enabled: true,
+        }];
+        let page_bytes = serde_json::to_vec(&tools).unwrap().len();
+
+        assert_eq!(
+            add_page_budget(MAX_TOOLS_CATALOG_BYTES - page_bytes, &tools).unwrap(),
+            MAX_TOOLS_CATALOG_BYTES
+        );
+        for current in [MAX_TOOLS_CATALOG_BYTES - page_bytes + 1, usize::MAX] {
+            assert_eq!(
+                add_page_budget(current, &tools).unwrap_err().code,
+                "MCP_RUNTIME_CATALOG_TOO_LARGE"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_pagination_rejects_a_cursor_after_the_page_limit() {
+        let mut fetched = 0;
+        let error = paginate_tools(
+            |_| {
+                fetched += 1;
+                Ok(async {
+                    Ok(super::super::rmcp_adapter::McpToolPageDto {
+                        tools: Vec::new(),
+                        next_cursor: Some("next".into()),
+                    })
+                })
+            },
+            &[],
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(fetched, MAX_TOOLS_LIST_PAGES);
+        assert_eq!(error.code, "MCP_RUNTIME_CATALOG_PAGE_LIMIT");
+    }
+
     #[test]
     fn state_only_round_needs_no_host_but_requires_opaque_state() {
         let result =
@@ -1542,8 +1590,6 @@ mod tests {
             "MCP_INTERACTION_INVALID_REQUEST"
         );
     }
-    use super::*;
-
     #[test]
     fn validates_timeout_bounds_without_silent_clamping() {
         assert_eq!(validated_timeout("probe", None, 500, 15_000).unwrap(), None);

@@ -224,7 +224,6 @@ export type {
 } from "./ipc/workspaceTools.types";
 
 export type {
-  MCPDiscoverToolsResponseDto,
   MCPCallToolResponseDto,
 } from "./ipc/mcp.types";
 
@@ -506,8 +505,6 @@ export {
 } from "./ipc/workspaceTools";
 
 export {
-  mcpDiscoverTools,
-  mcpCallTool,
   mcpStoreEnvSecret,
   mcpDeleteEnvSecret,
   mcpStoreOAuthClientSecret,

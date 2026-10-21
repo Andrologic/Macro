@@ -33,7 +33,6 @@ import type {
   ToolSettingsDto,
 } from './dtos';
 import type {
-  MCPServer,
   MCPTool,
   ProjectAccessChangePreview,
   ProjectGitFlowDetection,
@@ -266,15 +265,6 @@ export interface ServiceProvider {
   updateToolSettings: (settings: ToolSettingsDto) => Promise<void>;
   getMCPServerSettings: () => Promise<MCPServerSettingsDto>;
   updateMCPServerSettings: (settings: MCPServerSettingsDto) => Promise<void>;
-  mcpDiscoverTools: (server: MCPServer) => Promise<{ tools: MCPTool[] }>;
-  mcpCallTool: (data: {
-    server: MCPServer;
-    toolName: string;
-    arguments: Record<string, unknown>;
-    timeoutMs?: number | null;
-  }) => Promise<MCPCallToolResponseDto>;
-  // Persistent MCP runtime (compatibility adapters mcpDiscoverTools/mcpCallTool
-  // above stay unchanged until stores migrate to these methods).
   mcpRuntimeGetSnapshot: () => Promise<MCPRuntimeSnapshotDto>;
   mcpRuntimeConnect: (selector: MCPRuntimeSelector) => Promise<MCPRuntimeServerSnapshot>;
   mcpStoreOAuthClientSecret: (data: { serverId: string; value: string }) => Promise<string>;
