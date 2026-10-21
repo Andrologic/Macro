@@ -12,7 +12,7 @@ function example() {
       dirty: false, source_sha256: 'd'.repeat(64), lock_sha256: 'e'.repeat(64), ...contractHashes(), timestamp: '2026-10-22T00:00:00Z',
       environment: { platform: 'darwin', arch: 'arm64', runtime: 'rustc 1.99.1' } },
     limits: ['synthetic-data'],
-    runs: Object.keys(profiles.scenarios).map(scenario => ({ scenario, profile: 'loopback', fixture: { messages: 100, content_bytes: 256, targets: scenario === 'multiple-targets' ? 3 : 1 },
+    runs: Object.keys(profiles.scenarios).map(scenario => ({ scenario, profile: 'loopback', fixture: { messages: 100, content_bytes: 256, definition_sha256: '1'.repeat(64), targets: scenario === 'multiple-targets' ? 3 : 1 },
       preparation: 'excluded', temperature: 'warm-operation', warmup: 10, process_index: 1,
       metrics: Object.entries(metricUnits).map(([metric, unit]) => ({ metric, unit, role: 'native', scope: 'process', evidence: 'not-measured', reason: 'adapter-pending', recipe: scenario })),
     })),
@@ -68,6 +68,7 @@ describe('Connect measurements preserve evidence boundaries', () => {
       (r: any) => r.provenance.schema_sha256 = 'f'.repeat(64),
       (r: any) => r.provenance.profiles_sha256 = 'f'.repeat(64),
       (r: any) => recorded(r, 'native_rss_bytes', 'measured', 'native-process-rss').summary.p95 = Infinity,
+      (r: any) => recorded(r, 'native_read_ms', 'measured', 'native-repository-clock').summary.max = Infinity,
       (r: any) => recorded(r, 'native_rss_bytes', 'measured', 'native-process-rss').summary.p95 = 1,
       (r: any) => recorded(r, 'native_rss_bytes', 'measured', 'native-process-rss').summary.p50 = 1.5,
       (r: any) => { recorded(r, 'native_rss_bytes', 'measured', 'native-process-rss'); r.limits.push('no-rss'); },
@@ -90,6 +91,11 @@ describe('Connect measurements preserve evidence boundaries', () => {
     }
     const report = example(); report.provenance.environment.runtime = '/private/synthetic';
     expect(validateReport(report).valid).toBe(false);
+  });
+  test('other runtimes retain their exact fixture sizes and definition identity', () => {
+    const report = example(); report.runs[0].fixture.messages = 2000; report.runs[0].fixture.content_bytes = 2048;
+    expect(validateReport(report).valid).toBe(true);
+    delete report.runs[0].fixture.definition_sha256; expect(validateReport(report).valid).toBe(false);
   });
   test('target identity prevents combining unrelated counters', () => {
     const report = example();
@@ -147,7 +153,7 @@ describe('native report projection', () => {
   const current = { head: repositories.desktop, source: 'd'.repeat(64), lock: 'e'.repeat(64) };
   function raw() {
     return {
-      provenance: { head: current.head, dirty: false, sourceSha256: current.source, binarySha256: 'f'.repeat(64), rustc: 'rustc 1.99.1', cargo: 'cargo 1.99.1', offline: true, locked: true, profile: 'dev', cargoJobs: 1,
+      provenance: { head: current.head, dirty: false, sourceSha256: current.source, binarySha256: 'f'.repeat(64), rustc: 'rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)', cargo: 'cargo 1.99.1', offline: true, locked: true, profile: 'dev', cargoJobs: 1,
         profileOverrides: { macroDebug: 0, testMacroDebug: 0, incremental: false, testIncremental: false } },
       environment: { platform: 'darwin', arch: 'arm64', timestamp: '2026-10-22T00:00:00Z' },
       measurement: { schema: 2, samples: 100, warmup: 10, cold_disk_cache: false, build_profile: 'debug', percentile: 'nearest-rank', boundary: 'in-process Rust repository -> SQLx -> on-disk SQLite; no transport',

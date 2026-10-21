@@ -28,7 +28,7 @@ export function validateReport(report) {
       const key = [metric.metric, metric.role, metric.scope, metric.target ?? ''].join('/');
       if (keys.has(key)) errors.push(`duplicate metric: ${key}`);
       keys.add(key);
-      if (metric.summary && !(metric.summary.p50 <= metric.summary.p95 && metric.summary.p95 <= metric.summary.max)) {
+      if (metric.summary && (![metric.summary.p50, metric.summary.p95, metric.summary.max].every(value => Number.isFinite(value) && value >= 0) || !(metric.summary.p50 <= metric.summary.p95 && metric.summary.p95 <= metric.summary.max))) {
         errors.push(`unordered percentiles: ${key}`);
       }
       if (metric.evidence === 'not-measured' && metric.recipe !== run.scenario) errors.push('wrong missing-measurement recipe');

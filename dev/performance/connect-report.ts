@@ -29,7 +29,7 @@ export function convertNativeReports(inputs: unknown[], repositories: { desktop:
     provenance: { repositories, measured_repository: 'desktop', dirty: false, source_sha256: fingerprint,
       ...contractHashes(), lock_sha256: current.lock,
       timestamp: reports[0].environment?.timestamp,
-      environment: { platform: reports[0].environment?.platform, arch: reports[0].environment?.arch, runtime: reports[0].provenance?.rustc } },
+      environment: { platform: reports[0].environment?.platform, arch: reports[0].environment?.arch, runtime: reports[0].provenance?.rustc?.split(' ').slice(0, 2).join(' ') } },
     limits: ['shared-machine', 'os-cache-uncontrolled', 'debug-profile', 'no-ui', 'no-transport', 'no-rss', 'no-heap', 'physical-device-pending', 'synthetic-data', ...(inputs.length === 1 ? ['single-process-series'] : [])],
     runs: [],
   };
@@ -64,7 +64,7 @@ export function convertNativeReports(inputs: unknown[], repositories: { desktop:
             Object.assign(entry, { evidence: 'measured', method: 'native-repository-clock', summary: { count: summary.count, p50: summary.p50, p95: summary.p95, max: summary.max } });
           }
         }
-        result.runs.push({ scenario, profile: 'native-sqlite', binary_sha256: report.provenance.binarySha256, fixture: { messages: size, content_bytes: 256, targets: scenario === 'multiple-targets' ? 3 : 1 },
+        result.runs.push({ scenario, profile: 'native-sqlite', binary_sha256: report.provenance.binarySha256, fixture: { messages: size, content_bytes: 256, definition_sha256: hashFile('src-tauri/examples/performance-sqlite.rs'), targets: scenario === 'multiple-targets' ? 3 : 1 },
           preparation: 'excluded', temperature: 'warm-operation', warmup: 10, process_index: index + 1, metrics });
       }
     }

@@ -35,7 +35,10 @@ Review the adapter and retain raw evidence and commands outside Git.
 Units belong to each metric and the schema fixes them. A zero is an observation
 only when an instrument actually observed zero. Missing metrics are never zero.
 The report records all three exact repository SHAs; `measured_repository`
-identifies which one ran. The other SHAs identify the comparison cohort, not a
+identifies which one ran. Each fixture records its exact dimensions and definition SHA-256. The shared
+profile sizes are the default comparison matrix; adapters may declare existing
+fixture sizes without pretending they are the native 256-byte fixture.
+The other SHAs identify the comparison cohort, not a
 claim that its adapter ran. Source, lockfile and contract hashes are required;
 a native SQLite measurement also requires its run's verified binary hash.
 
