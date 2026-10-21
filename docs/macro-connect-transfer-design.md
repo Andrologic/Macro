@@ -129,8 +129,37 @@ Les reçus terminaux, l'époque et le fait qu'une source a été cédée survive
 à l'expiration des blocs. La purge peut compacter les détails, mais garde une
 preuve qui interdit de réutiliser une époque ou de rouvrir un transfert terminal.
 La restauration d'une sauvegarde doit réconcilier cette autorité avant de réactiver
-une instance déjà connue. Le lot doit tester ce chemin ; il ne prétend pas empêcher
-un utilisateur de cloner volontairement une base puis de l'exécuter hors protocole.
+une conversation source. La restauration officielle détache aujourd'hui les
+identités Pilot, comme le décrit la [sauvegarde de profil](local-profile-backup.md).
+Retrouver l'ancienne instance dans l'état d'authentification restauré ne suffit
+donc pas. Le traitement suivant fait partie du lot F et précède son activation.
+
+Chaque conversation transférable reçoit une filiation non secrète séparée des
+credentials : origine du relais, incarnation du compte, instance source et
+identité locale de la conversation. Cette filiation suit les sauvegardes et la
+copie source cédée, sans restaurer bearer, session, clé d'instance ni accord
+d'outil. Sa valeur aide à retrouver la décision ; elle n'accorde aucune autorité.
+La table de cession conserve le lien vers cette origine à travers une nouvelle
+association d'appareil. Une nouvelle instance ne remplace pas l'ancienne dans
+la clé d'exclusivité.
+
+À chaque restauration officielle, y compris d'une archive antérieure à cette
+filiation, le backend installe une barrière durable sur les conversations
+restaurées avant toute admission ou reprise. La lecture de l'historique reste
+possible. Files, outils, sous-agents et envois ne repartent pas sur l'identité
+restaurée tant que la propriété n'a pas été réconciliée avec une autorité valide
+sur le compte d'origine. La déconnexion ou une nouvelle connexion ne lève pas
+cette barrière. Un relais inaccessible laisse les conversations concernées
+en lecture seule ; un `not_found` sous une nouvelle instance n'est pas une preuve.
+
+Si une archive ancienne ne permet pas de reconstruire une filiation vérifiable,
+la reprise de l'ancienne conversation est refusée. L'utilisateur peut créer
+explicitement une nouvelle conversation à partir du contexte portable autorisé,
+avec de nouveaux identifiants, sans file, interaction ni effet actif hérité.
+Cette copie est présentée comme une nouvelle branche de travail et ne prétend
+pas reprendre la propriété de l'ancienne source. Elle n'est jamais automatique.
+Le lot doit tester ce chemin et la conservation des secrets détachés ; il ne
+prétend pas empêcher un clonage volontaire exécuté hors protocole.
 
 Une cible qui a perdu ses données après confirmation reste en erreur de
 récupération. Elle ne provoque pas un dégel implicite de la source. Une remise
@@ -164,7 +193,8 @@ de chemin et remappe les identifiants sans transformer des traces en outils acti
 | Ancien ACK, ancien bloc, ancienne génération | Rejet ou même reçu terminal ; aucun nouveau transfert ni nouvel effet. |
 | Chat lié à un projet ou file apparue tardivement | Refus avant scellement ; source et files préservées. |
 | Import tronqué, disque plein, asset obligatoire absent | Cible inactive ; abandon réconciliable ; pas de dégradation silencieuse. |
-| Sauvegarde antérieure à une cession | Aucune reprise automatique de l'ancienne source connue sans réconciliation. |
+| Sauvegarde antérieure à une cession, identité Pilot détachée puis nouvelle association | Barrière installée avant toute admission ; filiation vérifiée, décision d'origine retrouvée, source cédée non réactivée. |
+| Archive ancienne sans filiation ou relais inaccessible | Historique consultable, aucune reprise ni effet automatique ; copie de contexte uniquement par action explicite avec nouveaux IDs. |
 
 Ces cas valident la coordination et l'admission. Ils ne prouvent pas une
 exécution exactement une fois d'un effet externe arbitraire.

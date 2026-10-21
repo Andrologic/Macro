@@ -162,9 +162,20 @@ d'un effet déjà admis. Il prévoit le statut de récupération consultable par
 producteur encore autorisé même si l'initiateur a perdu ses droits. Ce statut
 minimal ne rend pas de transcript et n'accorde pas de nouveau droit de cession.
 
+Le chemin officiel de sauvegarde/restauration fait partie de ce lot. Il conserve
+une filiation non secrète distincte de l'identité Pilot détachée et installe une
+barrière durable sur les conversations restaurées avant toute admission. Les
+archives anciennes sans filiation et le relais inaccessible gardent l'historique
+consultable sans reprise automatique. Une copie explicite vers de nouveaux IDs
+reste distincte d'une reprise de propriété. Cette barrière ne restaure aucun secret.
+
 Critère de fin : tous les scénarios de concurrence et de panne de la conception
 passent avec le relais et les deux journaux SQLite réels sur des données
 synthétiques. Chaque arrêt est injecté avant et après chaque commit durable.
+Le test de restauration inclut une archive créée avant cession, une archive sans
+filiation, le détachement des credentials, une nouvelle association et un retour
+tardif de l'ancienne réservation. Aucun de ces chemins ne doit admettre un effet
+avant réconciliation ou création explicite d'une nouvelle copie indépendante.
 Aucune preuve d'exécution exactement une fois d'un fournisseur n'est déduite
 d'un simple ACK de transport. Une revue indépendante de ce lot est exigée avant
 intégration et annonce de capacité.
