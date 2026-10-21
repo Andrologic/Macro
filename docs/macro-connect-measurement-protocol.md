@@ -8,6 +8,12 @@ validation follow separately. No production observations or quotas change here.
 ## Reproduce the native component
 
 Use the pinned Bun, local dependencies and an offline-compatible Cargo cache.
+The public conformance helper requires the declared direct dev dependencies
+`ajv` 8.20.0 and `ajv-formats` 3.0.1. JavaScript consumer adapters pin both
+directly; Dart adapters run their emitted JSON through that helper as a separate
+conformance check. An installation from cached packages must use the frozen
+lockfile, disable lifecycle scripts, and run with network access denied.
+A reused hoisted node_modules alone does not prove import reproducibility.
 From a clean committed desktop worktree, write all reports outside Git:
 
 ```sh

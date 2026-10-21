@@ -8,8 +8,13 @@ product capability.
 
 `schema.json` is JSON Schema 2020-12. `validate.mjs::validateReport` also checks
 ordered percentiles, duplicate metrics, imported schema/profile hashes and
-measurement boundaries. Consumers use both checks. It uses the existing Ajv 8
-and ajv-formats dependencies, without remote schema resolution. `fixtures.mjs`
+measurement boundaries. Consumers use both checks. The desktop declares exact development dependencies `ajv` 8.20.0 and
+`ajv-formats` 3.0.1 in package.json and bun.lock. No remote schema resolution
+occurs. A JavaScript consumer importing `validate.mjs` must also declare these
+exact direct dependencies and lock them in its own toolchain. Transitive
+hoisting is insufficient. The mobile adapter may validate emitted JSON in this
+Bun/Node conformance helper; its Dart product runtime does not import Ajv.
+The schema and fixture JSON themselves have no package dependencies. `fixtures.mjs`
 and `profiles.json` supply deterministic generated messages and event schedules.
 The catalogue of metric names, units and permissible methods lives in the schema.
 Unknown properties are rejected throughout. Reports have no transcript, path,
