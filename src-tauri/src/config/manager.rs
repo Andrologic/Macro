@@ -3796,6 +3796,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_prompt_and_tool_policy_patches_wait_for_approval() {
+        for (kind, path, value, changed_path) in [
+            (
+                ConfigDocumentKind::Agents,
+                "/prompts",
+                json!({"chat": "Reviewed chat prompt"}),
+                "/prompts/chat",
+            ),
+            (
+                ConfigDocumentKind::Tools,
+                "/builtIn",
+                json!({"terminal_run": false}),
+                "/builtIn/terminal_run",
+            ),
+            (
+                ConfigDocumentKind::Tools,
+                "/modes",
+                json!({"Implement": {"terminal_run": false}}),
+                "/modes/Implement/terminal_run",
+            ),
+        ] {
+            let (_temp, manager) = manager().await;
+            let document = manager.get_document(kind, ConfigScope::User).await.unwrap();
+            let before = manager.get_snapshot(&[]).await.unwrap().effective;
+            let result = manager
+                .apply_patch(ConfigPatchRequest {
+                    kind,
+                    scope: ConfigScope::User,
+                    expected_etag: document.etag,
+                    patch: vec![JsonPatchOperation {
+                        op: "add".into(),
+                        path: path.into(),
+                        from: None,
+                        value: Some(value.clone()),
+                    }],
+                    source: ConfigChangeSource::Agent,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(result.status, "pendingApproval", "{path}");
+            let pending = result.pending_change.unwrap();
+            assert!(pending.changed_paths.contains(&changed_path.to_string()));
+            assert_eq!(manager.get_snapshot(&[]).await.unwrap().effective, before);
+
+            manager.accept_pending_change(&pending.id).await.unwrap();
+            let after = manager.get_snapshot(&[]).await.unwrap().effective;
+            assert_eq!(
+                after[kind.file_name().trim_end_matches(".json")].pointer(changed_path),
+                value.pointer(changed_path.strip_prefix(path).unwrap_or(""))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn project_tool_mode_patch_waits_for_approval() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        manager
+            .register_project_root("project", metadata.path().to_path_buf())
+            .await
+            .unwrap();
+        let scope = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, scope.clone())
+            .await
+            .unwrap();
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/modes".into(),
+                    from: None,
+                    value: Some(json!({"Implement": {"terminal_run": false}})),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "pendingApproval");
+        assert!(result
+            .pending_change
+            .unwrap()
+            .changed_paths
+            .contains(&"/modes/Implement/terminal_run".to_string()));
+    }
+
+    #[tokio::test]
     async fn sensitive_patch_keeps_the_document_unchanged_when_pending_write_fails() {
         let (_temp, manager) = manager().await;
         let document = manager
@@ -6850,10 +6944,7 @@ mod tests {
             .get_snapshot(&["project-123".to_string()])
             .await
             .expect("project snapshot");
-        assert_eq!(
-            snapshot.effective["tools"]["builtIn"]["terminal_execute"],
-            json!(false)
-        );
+        assert!(snapshot.effective["tools"]["builtIn"]["terminal_execute"].is_null());
         assert!(snapshot.documents.iter().any(|document| {
             document.kind == ConfigDocumentKind::Tools
                 && document.scope
@@ -6861,6 +6952,20 @@ mod tests {
                         project_id: "project-123".to_string(),
                     }
         }));
+        let pending = manager.list_pending_changes().await;
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0]
+            .changed_paths
+            .contains(&"/builtIn/terminal_execute".to_string()));
+        manager.accept_pending_change(&pending[0].id).await.unwrap();
+        let approved = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            approved.effective["tools"]["builtIn"]["terminal_execute"],
+            json!(false)
+        );
     }
 
     #[tokio::test]

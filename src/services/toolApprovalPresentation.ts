@@ -33,6 +33,8 @@ const SYSTEM_TOOL_IDS = new Set([
   "terminal_run",
   "terminal_read",
   "terminal_kill",
+  "git_add",
+  "git_commit",
   "git_checkout",
   "git_merge",
   "git_reset",

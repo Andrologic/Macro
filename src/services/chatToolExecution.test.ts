@@ -186,10 +186,20 @@ describe("chat tool execution policy and frozen ownership", () => {
     expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
   });
 
-  test("keeps the Git challenge per turn and normalizes Architect aliases before routing", async () => {
+  test("keeps the Git challenge per turn and requires approval before staging", async () => {
     const f = setup("git_add");
     expect(await f.run({ path: "src" })).toMatchObject({ errorKind: "permission", result: expect.stringContaining("explicitly asked") });
-    expect(await f.run({ path: "src" })).toBe("workspace result");
+    const staging = f.run({ repo_path: "/workspace", paths: ["src"] });
+    await checkpoint();
+    expect(f.pending.get("conversation")).toMatchObject({
+      toolId: "git_add",
+      canApproveForConversation: false,
+      summary: expect.stringContaining("filters may run commands"),
+    });
+    expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
+    f.resolve({ kind: "allow_conversation" });
+    expect(await staging).toBe("workspace result");
+    expect(f.grants.size).toBe(0);
     f.operation.turnId = f.runtime.turnId = "next-turn";
     expect(await f.run({ path: "src" })).toMatchObject({ errorKind: "permission" });
     f.operation.mode = "Architect";

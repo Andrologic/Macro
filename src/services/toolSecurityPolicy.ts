@@ -282,16 +282,18 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     summary: "Store a task artifact",
   },
   git_add: {
-    actionGroup: "change",
+    actionGroup: "escape",
     rememberStrategy: "path",
     destructiveStrategy: "never",
-    summary: "Stage git changes",
+    summary: "Stage Git changes. Repository filters may run commands.",
+    alwaysAsk: true,
   },
   git_commit: {
-    actionGroup: "change",
+    actionGroup: "escape",
     rememberStrategy: "path",
     destructiveStrategy: "never",
-    summary: "Create a git commit",
+    summary: "Create a Git commit. Staging may run filters; committing may run hooks.",
+    alwaysAsk: true,
   },
   delete: {
     actionGroup: "escape",
@@ -578,6 +580,17 @@ const getPrimaryDetail = (
   if (toolId === "skill_run_script") {
     return cleanString(args.script_path) ?? cleanString(args.skill_id) ?? undefined;
   }
+  if (toolId === "git_add") {
+    const repoPath = cleanString(args.repo_path) ?? ".";
+    const paths = getStringArray(args.paths);
+    return `${repoPath}: ${(paths.length > 0 ? paths : ["."]).join(", ")}`;
+  }
+  if (toolId === "git_commit") {
+    const repoPath = cleanString(args.repo_path) ?? ".";
+    const staging = args.stage_all === false ? "commit staged changes" : "stage all changes and commit";
+    const message = cleanString(args.message);
+    return `${repoPath}: ${staging}${message ? `; ${message}` : ""}`;
+  }
   if (pathCandidates.length === 1) {
     return pathCandidates[0];
   }
@@ -748,14 +761,6 @@ const evaluateDecisionForRiskLevel = (
   normalizedCall: NormalizedToolSecurityCall,
   riskLevel: ToolRiskLevel,
 ): ToolSecurityEvaluation => {
-  if (normalizedCall.isExternalToWorkspace) {
-    return {
-      decision: "deny",
-      denialReason: `Tool ${normalizedCall.toolId} cannot access paths outside the current workspace.`,
-      normalizedCall,
-    };
-  }
-
   if (riskLevel === "yolo") {
     return { decision: "allow", normalizedCall };
   }
@@ -806,6 +811,13 @@ export const evaluateToolSecurity = (
   }
 
   const normalizedCall = normalizeToolSecurityCall(toolId, args, options);
+  if (normalizedCall.isExternalToWorkspace) {
+    return {
+      decision: "deny",
+      denialReason: `Tool ${normalizedCall.toolId} cannot access paths outside the current workspace.`,
+      normalizedCall,
+    };
+  }
   if (!normalizedCall.canApproveForConversation) {
     return { decision: "ask", normalizedCall };
   }
@@ -856,13 +868,17 @@ export const buildToolRiskLevelSystemInstruction = (
     mode && getToolModePolicy(mode).allowedToolIds.includes("terminal_run")
       ? " The workspace constraint does not apply to the agent terminal, which is independent from every workspace. Every terminal command requires explicit user approval, and approvals cannot be remembered."
       : "";
+  const gitMutationInstruction =
+    mode && getToolModePolicy(mode).allowedToolIds.includes("git_add")
+      ? " Git staging and committing are reviewed exceptions: repository filters and hooks may run commands, so every git_add and git_commit call requires explicit user approval, and approvals cannot be remembered."
+      : "";
   if (riskLevel === "strict") {
-    return `Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, web access, and outside-workspace access are blocked.${terminalInstruction}`;
+    return `Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, web access, and outside-workspace access are blocked except for separately reviewed tools.${terminalInstruction}${gitMutationInstruction}`;
   }
 
   if (riskLevel === "yolo") {
-    return `Tool risk level is YOLO. Macro will not add extra approval prompts for other tools, but you must still respect tool-native safeguards and stay aligned with the user's request.${terminalInstruction}`;
+    return `Tool risk level is YOLO. Macro will not add extra approval prompts for other tools, but you must still respect tool-native safeguards and stay aligned with the user's request.${terminalInstruction}${gitMutationInstruction}`;
   }
 
-  return `Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.${terminalInstruction}`;
+  return `Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.${terminalInstruction}${gitMutationInstruction}`;
 };

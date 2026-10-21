@@ -904,7 +904,7 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             ApprovalRequired,
             Live,
         ),
-        descriptor(Agents, "/prompts", &["user"], Deep, Normal, Live),
+        descriptor(Agents, "/prompts", &["user"], Deep, ApprovalRequired, Live),
         descriptor(
             Agents,
             "/maxTurns",
@@ -1007,7 +1007,7 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             "/builtIn",
             &["user", "project"],
             Restrictive,
-            Normal,
+            ApprovalRequired,
             Live,
         ),
         descriptor(
@@ -1015,7 +1015,7 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             "/modes",
             &["user", "project"],
             Restrictive,
-            Normal,
+            ApprovalRequired,
             Live,
         ),
         descriptor(
