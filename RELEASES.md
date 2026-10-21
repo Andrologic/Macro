@@ -74,11 +74,13 @@ Review the draft release in GitHub before publishing it manually.
 
 ## Tauri updater
 
-A staged package is installed from its local bytes after size, SHA-256 and
-signature verification. Activation does not query the channel again, so a newer
+A staged package is installed from its local bytes after size, SHA-256, signature,
+and signed-version verification. Activation does not query the channel again, so a newer
 published version or an offline launch does not invalidate the prepared package.
 After successful replacement, cache cleanup failures are logged and retried on
 a later cache read; they do not prevent the application from restarting.
+Cached updates signed by an older CLI without a version in the signature are
+discarded. Macro downloads a current signed package on the next update check.
 
 Macro checks the selected update channel at startup. It downloads a signed
 update in the background, then waits for the user to restart the app. Tauri
@@ -94,6 +96,13 @@ manifest. Publishing the draft triggers the stable-channel workflow, which
 creates the five per-target pointers on the orphan `updates` branch. Publish
 only after checking `latest.json`, every `.sig` file, the tag-pinned URLs, and
 `SHA256SUMS.txt`.
+The updater requires a version in each Minisign signature's trusted comment.
+Build updater artifacts with Tauri CLI 2.12.4 or later and verify that the signed
+version matches `latest.json` before advancing Stable or Preview. Existing
+immutable releases signed without a version cannot be reused as update targets
+for clients with this policy; publish newly signed assets under a new release
+version. A user whose selected channel has only legacy assets must install the
+new release manually.
 
 Tauri uses a separate signing key for updater artifacts. Generate it once on a
 trusted machine and keep the private key outside the repository:
@@ -235,7 +244,12 @@ The orphan `updates` branch stores only per-platform channel manifests under
 `channels/`. Stable publication advances `stable-*.json`. A successful Preview
 workflow advances `preview-*.json` after it uploads every signed updater asset.
 Switching from Preview to Stable may offer an older stable version; the client
-asks for confirmation and enables Tauri's signed downgrade path for that check.
+asks for confirmation. Rust permits this transition only when the persisted
+channel is Stable and the installed native version is a prerelease. The WebView
+cannot select the update target or enable a downgrade. Before installing an older
+signed version, Rust asks for confirmation in a native dialog, including when a
+staged update is activated on the next launch. A refusal leaves the package
+staged for a later manual installation attempt.
 
 Scheduled previews start only after the public stable `v0.1.1` release exists.
 They build `develop` once per night when its commit changed. Use the manual

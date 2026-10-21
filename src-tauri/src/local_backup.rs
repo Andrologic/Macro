@@ -2290,7 +2290,8 @@ mod tests {
         .unwrap();
         assert!(crate::app_updates::target_matches_persisted_channel(
             &data,
-            "stable-windows-x86_64"
+            "stable-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         queue_restore(&data, &archive);
@@ -2298,26 +2299,30 @@ mod tests {
         // preference must not authorize activation before restore validation.
         assert!(!crate::app_updates::target_matches_persisted_channel(
             &data,
-            "stable-windows-x86_64"
+            "stable-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         process_startup(&data, &config).await.unwrap();
         assert!(!has_pending_startup_work(&data).unwrap());
         assert!(!crate::app_updates::target_matches_persisted_channel(
             &data,
-            "stable-windows-x86_64"
+            "stable-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         assert!(crate::app_updates::target_matches_persisted_channel(
             &data,
-            "preview-windows-x86_64"
+            "preview-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
         // An interrupted restoration also blocks even without a request file.
         fs::write(data.join("local-backup/restoring.json"), b"interrupted").unwrap();
         assert!(!crate::app_updates::target_matches_persisted_channel(
             &data,
-            "preview-windows-x86_64"
+            "preview-windows-x86_64",
+            "windows-x86_64"
         )
         .unwrap());
     }

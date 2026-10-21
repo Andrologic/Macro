@@ -1,6 +1,6 @@
 // This secret is supplied at runtime and kept only in memory. Vite environment
 // variables and browser storage are unsuitable for a bearer token.
-import i18n from '../../i18n';
+import i18n from 'i18next';
 
 let remoteAuthToken: string | null = null;
 let remoteApprovalToken: string | null = null;

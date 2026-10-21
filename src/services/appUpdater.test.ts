@@ -34,11 +34,10 @@ const createFixture = (currentVersion = '0.1.0') => {
     progressListener?.({ type: 'finished' });
     return snapshot(currentVersion);
   });
-  const installNow = mock(async () => undefined);
+  const installNow = mock(async () => true);
   const discard = mock(async () => undefined);
   const unlisten = mock(() => undefined);
   const bindings: NativeUpdaterBindings = {
-    getUpdaterTarget: mock(async () => 'windows-x86_64'),
     status,
     checkAndStage,
     installNow,
@@ -68,10 +67,7 @@ describe('TauriAppUpdaterClient', () => {
         activationError: null,
       },
     });
-    expect(fixture.checkAndStage).toHaveBeenCalledWith({
-      target: 'stable-windows-x86_64',
-      allowDowngrades: false,
-    });
+    expect(fixture.checkAndStage).toHaveBeenCalledWith();
     expect(events).toEqual([
       { type: 'started', contentLength: 12 },
       { type: 'progress', chunkLength: 12 },
@@ -80,36 +76,11 @@ describe('TauriAppUpdaterClient', () => {
     expect(fixture.unlisten).toHaveBeenCalledTimes(1);
   });
 
-  test('selects the preview target without allowing downgrades', async () => {
-    const fixture = createFixture();
-    const client = new TauriAppUpdaterClient(
-      async () => fixture.bindings,
-      async () => 'preview',
-    );
-
-    await client.checkAndDownload(() => undefined);
-    expect(fixture.checkAndStage).toHaveBeenCalledWith({
-      target: 'preview-windows-x86_64',
-      allowDowngrades: false,
-    });
-  });
-
-  test('allows returning from a prerelease to stable', async () => {
-    const fixture = createFixture('0.2.0-nightly.20260825.12');
-    const client = new TauriAppUpdaterClient(async () => fixture.bindings);
-
-    await client.checkAndDownload(() => undefined);
-    expect(fixture.checkAndStage).toHaveBeenCalledWith({
-      target: 'stable-windows-x86_64',
-      allowDowngrades: true,
-    });
-  });
-
   test('delegates installation and discard to the native updater', async () => {
     const fixture = createFixture();
     const client = new TauriAppUpdaterClient(async () => fixture.bindings);
 
-    await client.installAndRelaunch();
+    expect(await client.installAndRelaunch()).toBe(true);
     await client.reset();
 
     expect(fixture.installNow).toHaveBeenCalledTimes(1);

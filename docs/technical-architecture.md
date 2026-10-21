@@ -1074,9 +1074,9 @@ sélectionne un adaptateur de protocole. L'adaptateur OpenAI-compatible envoie u
 multipart vers `/audio/transcriptions`; l'adaptateur Deepgram envoie les octets
 audio vers `/v1/listen`. Les commandes Tauri reçoivent le contenu audio dans un
 corps IPC binaire afin d'éviter une sérialisation JSON ou base64 inutile. Les
-adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 Mo
-et imposent HTTPS aux fournisseurs distants afin que l'audio et les clés ne
-transitent pas en clair.
+adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 Mo,
+réservent HTTP aux adresses loopback et imposent HTTPS aux fournisseurs distants
+afin que l'audio et les clés ne transitent pas en clair.
 
 Le provider vocal géré `andrologic-speech` cible
 `https://lmstudio.andrologic.ai/v1/audio/transcriptions` avec le modèle public

@@ -135,6 +135,8 @@ Verify all of the following:
   size. No unexpected generated asset is present.
 - `latest.json` contains the expected version, five updater targets, embedded
   signatures, and URLs pinned to the immutable tag.
+- Every updater signature verifies cryptographically and its signed version
+  matches `latest.json`. Reject legacy signatures without a signed version.
 - The checksums file covers the release assets. The workflow's checksum and
   updater verification steps passed.
 - The macOS job verified signing and notarization. The Windows jobs verified the

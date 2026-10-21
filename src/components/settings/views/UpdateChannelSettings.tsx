@@ -316,9 +316,6 @@ export const UpdateChannelSettings: React.FC = () => {
                 <p className="break-words text-sm font-medium text-foreground">
                   {t('updates.readyVersion', 'Macro v{{version}} is ready', { version: update.version })}
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  {t('updates.installsNextLaunch', 'It will be installed the next time Macro opens.')}
-                </p>
               </>
             ) : phase === 'upToDate' ? (
               <p className="text-sm font-medium text-foreground">

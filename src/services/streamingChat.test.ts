@@ -74,6 +74,7 @@ import type {
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
+const actualTauriHttp = await import('./tauriHttp');
 const actualWebSearch = await import('./webSearch');
 
 const loadStreamingChat = async (
@@ -95,7 +96,6 @@ const loadStreamingChat = async (
   const invokeImpl = options?.invokeImpl ?? mock(async () => undefined);
   const actualCore = await import('@tauri-apps/api/core');
   const actualEvent = await import('@tauri-apps/api/event');
-  const actualHttp = await import('@tauri-apps/plugin-http');
   const actualArchitectChat = await import('./architectChat');
   mock.module('@tauri-apps/api/core', () => ({
     ...actualCore,
@@ -105,9 +105,9 @@ const loadStreamingChat = async (
     ...actualEvent,
     listen: options?.listenImpl ?? mock(async () => () => undefined),
   }));
-  mock.module('@tauri-apps/plugin-http', () => ({
-    ...actualHttp,
-    fetch:
+  mock.module('./tauriHttp', () => ({
+    ...actualTauriHttp,
+    tauriFetch:
       fetchImpl ??
       mock(async () => {
         throw new Error('HTTP fetch should not be called in streamingChat unit tests.');
@@ -1288,18 +1288,11 @@ describe('streamingChat tool rendering helpers', () => {
       const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
       requestBodies.push(body);
       if (requestBodies.length === 1) {
-        return {
-          ok: false,
-          status: 400,
-          headers: new Headers(),
-          text: async () =>
-            JSON.stringify({
-              error: {
-                message:
-                  "Invalid value 'xhigh' for reasoning_effort. Supported values are low, medium, high.",
-              },
-            }),
-        };
+        return new Response(JSON.stringify({
+          error: {
+            message: "Invalid value 'xhigh' for reasoning_effort. Supported values are low, medium, high.",
+          },
+        }), { status: 400 });
       }
       return {
         ok: true,
@@ -1346,13 +1339,10 @@ describe('streamingChat tool rendering helpers', () => {
       const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
       requestBodies.push(body);
       if (requestBodies.length === 1) {
-        return {
-          ok: false,
-          status: 400,
-          headers: new Headers(),
-          text: async () =>
-            JSON.stringify({ error: { message: 'Unknown parameter: reasoning_effort' } }),
-        };
+        return new Response(
+          JSON.stringify({ error: { message: 'Unknown parameter: reasoning_effort' } }),
+          { status: 400 },
+        );
       }
       return {
         ok: true,
@@ -2530,18 +2520,10 @@ describe('streamingChat tool rendering helpers', () => {
 
       if (requestBodies.length === 1) {
         expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
-        return {
-          ok: false,
-          status: 400,
-          headers: new Headers(),
-          text: async () =>
-            JSON.stringify({
-              error: {
-                message: 'Unknown parameter: thinking',
-              },
-            }),
-          json: async () => ({}),
-        };
+        return new Response(
+          JSON.stringify({ error: { message: 'Unknown parameter: thinking' } }),
+          { status: 400 },
+        );
       }
 
       expect(body.thinking).toBeUndefined();
@@ -2737,19 +2719,11 @@ describe('streamingChat tool rendering helpers', () => {
           (message) => message.role === 'assistant'
         );
         expect(assistantMessage?.reasoning_content).toBeUndefined();
-        return {
-          ok: false,
-          status: 400,
-          headers: new Headers(),
-          text: async () =>
-            JSON.stringify({
-              error: {
-                message:
-                  'The reasoning_content in the thinking mode must be passed back to the API.',
-              },
-            }),
-          json: async () => ({}),
-        };
+        return new Response(JSON.stringify({
+          error: {
+            message: 'The reasoning_content in the thinking mode must be passed back to the API.',
+          },
+        }), { status: 400 });
       }
 
       const assistantMessage = requestBodies[2]?.messages?.find(

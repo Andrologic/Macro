@@ -1,5 +1,6 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import type { AgentCodeCheckpoint, ChatMessage } from "../types";
+import { setRemoteAuthToken } from "./providers/remoteAuthToken";
 import {
   buildAgentCodeReplayPreview,
   buildAgentCodeReplayRollbackPreview,
@@ -52,6 +53,8 @@ const checkpoint = (
 });
 
 describe("agentCodeCheckpoints", () => {
+  afterEach(() => setRemoteAuthToken(null));
+
   it("distinguishes missing history from corrupt and unsupported data", () => {
     expect(parseCheckpointHistory(null).checkpoints).toEqual([]);
     for (const raw of ["", "{", "{}", '[{"id":"broken"}]', '{"version":99,"checkpoints":[]}']) {
@@ -589,6 +592,7 @@ describe("agentCodeCheckpoints", () => {
   });
 
   it("replays a remote checkpoint with guarded revisions and the saved Unix mode", async () => {
+    setRemoteAuthToken("synthetic-agent-token");
     const writes: Array<Record<string, unknown>> = [];
     const originalFetch = globalThis.fetch;
     const originalTransport = process.env.VITE_BACKEND_TRANSPORT;
@@ -600,6 +604,9 @@ describe("agentCodeCheckpoints", () => {
     }));
     globalThis.fetch = mock(
       async (url: string | URL | Request, init?: RequestInit) => {
+        expect((init?.headers as Record<string, string>).Authorization).toBe(
+          "Bearer synthetic-agent-token",
+        );
         const requestUrl = String(url);
         if (requestUrl.includes("/mode-policy")) {
           return new Response(
@@ -701,6 +708,7 @@ describe("agentCodeCheckpoints", () => {
   });
 
   it("refuses a remote replay when the file changes after prevalidation", async () => {
+    setRemoteAuthToken("synthetic-agent-token");
     const writes: Array<Record<string, unknown>> = [];
     let snapshotReads = 0;
     const originalFetch = globalThis.fetch;
@@ -713,6 +721,9 @@ describe("agentCodeCheckpoints", () => {
     }));
     globalThis.fetch = mock(
       async (url: string | URL | Request, init?: RequestInit) => {
+        expect((init?.headers as Record<string, string>).Authorization).toBe(
+          "Bearer synthetic-agent-token",
+        );
         const requestUrl = String(url);
         if (requestUrl.includes("/mode-policy")) {
           return new Response(

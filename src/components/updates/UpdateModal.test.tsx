@@ -126,6 +126,7 @@ describe('UpdateModal', () => {
     };
     closeDetailsMock.mockClear();
     installAndRestartMock.mockClear();
+    installAndRestartMock.mockImplementation(async () => true);
     resetMock.mockClear();
     checkForUpdatesMock.mockClear();
     prepareForPotentialShutdownMock.mockClear();
@@ -234,11 +235,23 @@ describe('UpdateModal', () => {
     expect(installAndRestartMock).toHaveBeenCalledTimes(0);
   });
   it('releases the shutdown gate when native activation cannot start', async () => {
-    installAndRestartMock.mockImplementationOnce(async () => false);
+    installAndRestartMock.mockImplementationOnce(async () => {
+      updateState.phase = 'error';
+      return false;
+    });
     await renderModal();
     await act(async () => buttonByText('Install now')?.click());
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
     expect(shutdownGateActive).toBe(false);
+    expect(notifyErrorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the shutdown gate without an error when native confirmation is declined', async () => {
+    installAndRestartMock.mockImplementationOnce(async () => false);
+    await renderModal();
+    await act(async () => buttonByText('Install now')?.click());
+    expect(shutdownGateActive).toBe(false);
+    expect(notifyErrorMock).not.toHaveBeenCalled();
   });
 
 });

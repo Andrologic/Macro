@@ -1543,7 +1543,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.isHardStop).toBe(false);
   });
 
-  it('uses a larger fallback window for OpenCode Go Kimi when model metadata is missing', () => {
+  it('uses the catalog context window for OpenCode Go Kimi', () => {
     expect(
       resolveModelContextWindowTokens({
         providerType: 'openai',
@@ -1551,7 +1551,7 @@ describe('buildCompactedMessagesForRequest', () => {
         baseUrl: 'https://opencode.ai/zen/go/v1',
         modelId: 'kimi-k2.6',
       }),
-    ).toBe(128_000);
+    ).toBe(262_144);
   });
 
   it('does not treat a non-authoritative fallback budget as automatic overflow', () => {

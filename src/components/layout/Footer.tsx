@@ -29,12 +29,17 @@ import {
 } from '../../services/footerGitContext';
 import { getPlanExecutionModesByProjectId } from '../../services/planExecutionModes';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
-import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
   presentMetadataSyncIssue,
   resolveDegradedErrorPresentation,
 } from '../../services/degradedErrorPresentation';
 import { cn } from '../../utils/cn';
+
+const UpdateStatusButton = React.lazy(() =>
+  import('../updates/UpdateStatusButton').then((module) => ({
+    default: module.UpdateStatusButton,
+  })),
+);
 
 type FooterSyncAction = 'fetch' | 'pull' | 'push';
 type CodeDivergenceStrategy = 'merge' | 'rebase' | 'fastForward';
@@ -2180,7 +2185,9 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
             )}
-            <UpdateStatusButton />
+            <React.Suspense fallback={<span className="h-7 min-w-7" aria-hidden="true" />}>
+              <UpdateStatusButton />
+            </React.Suspense>
             <Button
               ref={notificationCenterButtonRef}
               type="button"
