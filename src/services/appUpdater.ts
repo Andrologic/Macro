@@ -5,15 +5,8 @@ import {
   appUpdateDiscard,
   appUpdateInstallNow,
   appUpdateStatus,
-  updaterTarget,
   type NativeAppUpdateSnapshotDto,
 } from './tauriIpc';
-import {
-  loadUpdateChannel,
-  shouldAllowChannelDowngrade,
-  type UpdateChannel,
-  updaterTargetForChannel,
-} from './updateChannels';
 
 export interface AppUpdateMetadata {
   currentVersion: string;
@@ -49,12 +42,8 @@ type NativeDownloadEvent =
   | { type: 'finished' };
 
 export interface NativeUpdaterBindings {
-  getUpdaterTarget: () => Promise<string>;
   status: () => Promise<NativeAppUpdateSnapshotDto>;
-  checkAndStage: (options: {
-    target: string;
-    allowDowngrades: boolean;
-  }) => Promise<NativeAppUpdateSnapshotDto>;
+  checkAndStage: () => Promise<NativeAppUpdateSnapshotDto>;
   installNow: () => Promise<void>;
   discard: () => Promise<void>;
   listenForProgress: (
@@ -63,7 +52,6 @@ export interface NativeUpdaterBindings {
 }
 
 export type LoadNativeUpdaterBindings = () => Promise<NativeUpdaterBindings>;
-export type LoadUpdateChannel = () => Promise<UpdateChannel>;
 
 export const isAutomaticUpdaterEnabled = (): boolean =>
   import.meta.env.PROD && isTauriEnvironment();
@@ -71,7 +59,6 @@ export const isAutomaticUpdaterEnabled = (): boolean =>
 const loadNativeUpdaterBindings: LoadNativeUpdaterBindings = async () => {
   const { listen } = await import('@tauri-apps/api/event');
   return {
-    getUpdaterTarget: updaterTarget,
     status: appUpdateStatus,
     checkAndStage: appUpdateCheckAndStage,
     installNow: appUpdateInstallNow,
@@ -100,7 +87,6 @@ const mapSnapshot = (snapshot: NativeAppUpdateSnapshotDto): AppUpdateCheckResult
 export class TauriAppUpdaterClient implements AppUpdaterClient {
   constructor(
     private readonly loadBindings: LoadNativeUpdaterBindings = loadNativeUpdaterBindings,
-    private readonly loadChannel: LoadUpdateChannel = loadUpdateChannel,
   ) {}
 
   async status(): Promise<AppUpdateCheckResult> {
@@ -112,11 +98,6 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
     onEvent: (event: AppUpdateDownloadEvent) => void,
   ): Promise<AppUpdateCheckResult> {
     const bindings = await this.loadBindings();
-    const current = await bindings.status();
-    const [channel, nativeTarget] = await Promise.all([
-      this.loadChannel(),
-      bindings.getUpdaterTarget(),
-    ]);
     const unlisten = await bindings.listenForProgress((event) => {
       if (event.type === 'started') {
         onEvent({ type: 'started', contentLength: event.contentLength ?? null });
@@ -127,10 +108,7 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
       }
     });
     try {
-      const snapshot = await bindings.checkAndStage({
-        target: updaterTargetForChannel(channel, nativeTarget),
-        allowDowngrades: shouldAllowChannelDowngrade(channel, current.currentVersion),
-      });
+      const snapshot = await bindings.checkAndStage();
       return mapSnapshot(snapshot);
     } finally {
       unlisten();

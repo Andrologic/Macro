@@ -604,7 +604,6 @@ export {
 } from "./ipc/state";
 
 export {
-  updaterTarget,
   appUpdateStatus,
   appUpdateCheckAndStage,
   appUpdateExitAfterCleanShutdown,

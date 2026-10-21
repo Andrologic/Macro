@@ -360,12 +360,6 @@ async fn frontend_log(level: String, scope: String, message: String) -> Result<(
 }
 
 #[tauri::command]
-fn updater_target() -> Result<String, String> {
-    tauri_plugin_updater::target()
-        .ok_or_else(|| "Automatic updates are not supported on this platform.".to_string())
-}
-
-#[tauri::command]
 async fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
     window.close().map_err(|error| error.to_string())
 }
@@ -717,7 +711,6 @@ pub fn run() {
             state_manager::state_set_value,
             state_manager::state_delete_value,
             state_manager::state_clear,
-            updater_target,
             app_updates::app_update_status,
             app_updates::app_update_check_and_stage,
             app_updates::app_update_exit_after_clean_shutdown,

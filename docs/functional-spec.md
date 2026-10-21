@@ -1237,7 +1237,7 @@ vocale sont distincts des fournisseurs de chat. Macro prend en charge les
 protocoles OpenAI-compatible et Deepgram, y compris les endpoints locaux
 configurables. L'interface doit indiquer clairement si l'audio reste local ou est
 envoyé à un service distant. Un fournisseur déclaré local ou sans clé peut utiliser
-HTTP pour joindre un service de confiance sur la machine ou le réseau local ; tout
+HTTP pour joindre un service de confiance sur l'interface loopback de la machine ; tout
 fournisseur distant authentifié doit utiliser HTTPS.
 
 Un nettoyage intelligent facultatif peut faire relire le texte transcrit par le

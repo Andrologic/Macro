@@ -3,22 +3,12 @@
 import { invoke } from "../tauriRuntimeBridge";
 import type { NativeAppUpdateSnapshotDto } from "./updates.types";
 
-export async function updaterTarget(): Promise<string> {
-  return invoke<string>("updater_target");
-}
-
 export async function appUpdateStatus(): Promise<NativeAppUpdateSnapshotDto> {
   return invoke<NativeAppUpdateSnapshotDto>('app_update_status');
 }
 
-export async function appUpdateCheckAndStage(params: {
-  target: string;
-  allowDowngrades: boolean;
-}): Promise<NativeAppUpdateSnapshotDto> {
-  return invoke<NativeAppUpdateSnapshotDto>('app_update_check_and_stage', {
-    target: params.target,
-    allowDowngrades: params.allowDowngrades,
-  });
+export async function appUpdateCheckAndStage(): Promise<NativeAppUpdateSnapshotDto> {
+  return invoke<NativeAppUpdateSnapshotDto>('app_update_check_and_stage');
 }
 
 export async function appUpdateExitAfterCleanShutdown(): Promise<void> {

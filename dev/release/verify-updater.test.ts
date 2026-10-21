@@ -8,8 +8,8 @@ import { UPDATER_TARGETS } from './updater-manifest.mjs';
 import { validateUpdaterManifest, verifyLocalUpdaterAssets } from './verify-updater.mjs';
 
 const TEST_PUBLIC_KEY = Buffer.from([
-  'untrusted comment: minisign public key E7620F1842B4E81F',
-  'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3',
+  'untrusted comment: minisign public key: EFCDAB9078563412',
+  'RWQSNFZ4kKvN7wOhB7/zzhC+HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4',
 ].join('\n')).toString('base64');
 const FOREIGN_PUBLIC_KEY = Buffer.from([
   'untrusted comment: minisign public key B12797C37337126A',
@@ -18,11 +18,22 @@ const FOREIGN_PUBLIC_KEY = Buffer.from([
 const RELEASE_TOOLS_DIRECTORY = import.meta.dir;
 const REPOSITORY_ROOT = join(RELEASE_TOOLS_DIRECTORY, '../..');
 const MINISIGN_VERIFIER_MANIFEST = join(import.meta.dir, 'minisign-verifier', 'Cargo.toml');
-const TEST_SIGNATURE = Buffer.from([
+const TEST_SIGNATURES: Record<string, string> = Object.fromEntries(Object.entries({
+  '0.2.0': 'Sk5KTYbaWPlb6UrKJBVE1lfN5nyRv2NTBNEV91d2feNfbppEktBjsS34CPnTnW6IS4PFvFJyC9xPbhfT80yIBQ==',
+  '0.2.1-nightly.20260916.42': 'WRundy0jt6yPYsQdjYQjCLKAnBzCVWWmn4EGF6mmfvau1/aVw8zfYqJJqIVpMCC/8C+KiJqsZO9QSdymGSbGBw==',
+  '0.2.1-rc.1': 'nJ1x7ZXelFVYvODyxihEvzq2DizJecxGpVbiCM55QMnEtRNiONbjfQlemKUBTPTMAB2y9f8zTjWCdJzspI1YCw==',
+}).map(([version, globalSignature]) => [version, Buffer.from([
   'untrusted comment: signature from minisign secret key',
-  'RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=',
-  'trusted comment: timestamp:1556193335\tfile:test',
-  'y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==',
+  'RWQSNFZ4kKvN76VXp6pguhWceWrRkO1fvuc88dyHDQ5ampsF9laj0O5bSvJ6m1nBrK8ZEpl5M50JqGgPmEJsV9DTs+MuMKH5/gk=',
+  `trusted comment: timestamp:1700000000\tfile:test\tversion:${version}`,
+  globalSignature,
+].join('\n')).toString('base64')]));
+const TEST_SIGNATURE = TEST_SIGNATURES['0.2.0'];
+const LEGACY_TEST_SIGNATURE = Buffer.from([
+  'untrusted comment: signature from minisign secret key',
+  'RWQSNFZ4kKvN76VXp6pguhWceWrRkO1fvuc88dyHDQ5ampsF9laj0O5bSvJ6m1nBrK8ZEpl5M50JqGgPmEJsV9DTs+MuMKH5/gk=',
+  'trusted comment: timestamp:1700000000\tfile:test',
+  '61jxEsENbNOdMHHSWdAqiAdSdQJmWFyNC61/of+nwQyEXjTvX/uce9VU+kIJfe+0BLJi5jL/U+UJ0Q0fO93+AA==',
 ].join('\n')).toString('base64');
 
 function runBunScript(scriptName: string, args: string[]) {
@@ -58,7 +69,7 @@ function createSignedReleaseFixture(
     const assetPath = join(root, assetName);
     const signaturePath = join(root, `${assetName}.sig`);
     writeFileSync(assetPath, 'test');
-    writeFileSync(signaturePath, TEST_SIGNATURE);
+    writeFileSync(signaturePath, TEST_SIGNATURES[version]);
     assetNames.push(assetName, `${assetName}.sig`);
     manifestArguments.push('--artifact', target, assetPath, signaturePath, assetName);
   }
@@ -240,6 +251,8 @@ describe('updater release verification', () => {
         '--',
         '--public-key-b64',
         TEST_PUBLIC_KEY,
+        '--version',
+        '0.2.0',
         ...assetArguments,
       ];
       const verified = spawnSync('cargo', cliArguments, {
@@ -278,6 +291,53 @@ describe('updater release verification', () => {
       });
       expect(rejected.status).not.toBe(0);
       expect(rejected.stderr).toContain('Updater signature verification failed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('rejects a missing or mismatched signed version after signature verification', () => {
+    const root = mkdtempSync(join(tmpdir(), 'macro-minisign-version-'));
+    try {
+      const assetPath = join(root, 'Macro.bundle');
+      const signaturePath = join(root, 'Macro.bundle.sig');
+      writeFileSync(assetPath, 'test');
+      const args = [
+        'run', '--offline', '--locked', '--quiet', '--manifest-path', MINISIGN_VERIFIER_MANIFEST,
+        '--', '--public-key-b64', TEST_PUBLIC_KEY, '--version', '0.2.0',
+        '--asset', assetPath, '--signature', signaturePath,
+      ];
+      for (const [signature, expectedError] of [
+        [LEGACY_TEST_SIGNATURE, 'signed version is missing'],
+        [TEST_SIGNATURES['0.2.1-rc.1'], 'differs from manifest version'],
+      ]) {
+        writeFileSync(signaturePath, signature);
+        const result = spawnSync('cargo', args, {
+          encoding: 'utf8',
+          env: { ...process.env, CARGO_NET_OFFLINE: 'true' },
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(expectedError);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('rejects a release whose valid signatures belong to another version', () => {
+    const root = mkdtempSync(join(tmpdir(), 'macro-updater-wrong-version-'));
+    try {
+      const fixture = createSignedReleaseFixture(root, {
+        version: '0.2.0', channel: 'stable', tag: 'v0.2.0',
+      });
+      const manifest = JSON.parse(readFileSync(fixture.manifestPath, 'utf8'));
+      for (const target of UPDATER_TARGETS) {
+        const signature = TEST_SIGNATURES['0.2.1-rc.1'];
+        manifest.platforms[target].signature = signature;
+        writeFileSync(join(root, `Macro_0.2.0_${target}.bundle.sig`), signature);
+      }
+      expect(verifyLocalUpdaterAssets(manifest, root, undefined, { publicKey: TEST_PUBLIC_KEY }))
+        .toEqual([expect.stringContaining('differs from manifest version')]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

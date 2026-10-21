@@ -6,12 +6,7 @@ import { pathToFileURL } from 'node:url';
 export const UPDATER_ENDPOINT = 'https://raw.githubusercontent.com/Andrologic/Macro/updates/channels/{{target}}.json';
 export const LOCAL_TAURI_CONFIG_PATH = 'src-tauri/tauri.local.conf.json';
 export const TAURI_CAPABILITIES_PATH = 'src-tauri/capabilities/default.json';
-const REQUIRED_UPDATER_PERMISSIONS = Object.freeze([
-  'core:app:allow-version',
-  'core:resources:allow-close',
-  'updater:allow-check',
-  'updater:allow-download',
-  'updater:allow-install',
+const FORBIDDEN_UPDATER_PERMISSIONS = Object.freeze([
   'process:allow-restart',
 ]);
 const VERSION_PARTS = /^[=^~\s]*(\d+)\.(\d+)/;
@@ -23,8 +18,16 @@ const TAURI_PLUGIN_PAIRS = Object.freeze([
   ['@tauri-apps/plugin-opener', 'tauri-plugin-opener'],
   ['@tauri-apps/plugin-process', 'tauri-plugin-process'],
   ['@tauri-apps/plugin-store', 'tauri-plugin-store'],
-  ['@tauri-apps/plugin-updater', 'tauri-plugin-updater'],
 ]);
+
+function atLeast(version, major, minor, patch = 0) {
+  const match = String(version ?? '').match(/^[=^~\s]*(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return false;
+  const parts = match.slice(1).map(Number);
+  return parts[0] > major || (parts[0] === major && (
+    parts[1] > minor || (parts[1] === minor && parts[2] >= patch)
+  ));
+}
 
 function dependencyVersion(value, label) {
   const match = String(value ?? '').match(VERSION_PARTS);
@@ -111,10 +114,25 @@ export function validateUpdaterConfiguration({
   const permissions = Array.isArray(tauriCapabilities?.permissions)
     ? tauriCapabilities.permissions
     : [];
-  for (const permission of REQUIRED_UPDATER_PERMISSIONS) {
-    if (!permissions.includes(permission)) {
-      errors.push(`${TAURI_CAPABILITIES_PATH} must grant ${permission}.`);
-    }
+  if (permissions.some((permission) => typeof permission === 'string' && permission.startsWith('updater:'))) {
+    errors.push(`${TAURI_CAPABILITIES_PATH} must not grant updater plugin commands to the WebView.`);
+  }
+  for (const permission of FORBIDDEN_UPDATER_PERMISSIONS) {
+    if (permissions.includes(permission)) errors.push(`${TAURI_CAPABILITIES_PATH} must not grant ${permission}.`);
+  }
+
+  if (packageJson?.dependencies?.['@tauri-apps/plugin-updater']) {
+    errors.push('package.json must not include the unused JavaScript updater plugin.');
+  }
+  if (!atLeast(packageJson?.devDependencies?.['@tauri-apps/cli'], 2, 12)) {
+    errors.push('@tauri-apps/cli must be at least 2.12.0 to sign the updater version.');
+  }
+  if (!atLeast(packageJson?.dependencies?.['@tauri-apps/api'], 2, 12)) {
+    errors.push('@tauri-apps/api must be at least 2.12.0.');
+  }
+  const rustUpdater = cargoLockPackageVersion(cargoLock, 'tauri-plugin-updater');
+  if (!atLeast(rustUpdater, 2, 13, 3) || !atLeast(cargoDependencyVersion(cargoToml, 'tauri-plugin-updater'), 2, 13, 3)) {
+    errors.push('tauri-plugin-updater must resolve to at least 2.13.3.');
   }
 
   const scripts = packageJson?.scripts ?? {};
@@ -154,6 +172,12 @@ export function validateUpdaterConfiguration({
 
     if (updater.windows?.installMode !== 'quiet') {
       errors.push('plugins.updater.windows.installMode must be "quiet".');
+    }
+    if (updater.requireSignedVersion !== true) {
+      errors.push('plugins.updater.requireSignedVersion must be true.');
+    }
+    if (updater.allowDowngrades === true) {
+      errors.push('plugins.updater.allowDowngrades must not be enabled.');
     }
   }
 
