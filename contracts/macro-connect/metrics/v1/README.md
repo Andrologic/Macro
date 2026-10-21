@@ -33,6 +33,22 @@ Each metric declares its role and scope. Evidence is one of:
 A serialized estimate cannot become RSS, heap, HTTP or IPC bytes. RSS requires
 `native-process-rss`, native role and process scope. Heap uses `runtime-heap`
 and process scope. Neither memory metric admits simulated or estimated evidence.
+The validator enforces the following explicit observer exclusions:
+
+| Declared limit | Metrics that cannot be measured |
+| --- | --- |
+| `no-transport` | `http_compressed_bytes`, `http_decompressed_bytes`, `ipc_json_bytes` |
+| `no-ui` | `last_message_visible_ms`, `ui_apply_ms` |
+| `no-rss` | `native_rss_bytes` |
+| `no-heap` | `heap_bytes` |
+
+Connection, negotiation, reconciliation and wait timers may observe an
+in-process protocol state machine without HTTP or a rendered UI. These timers
+are therefore not automatically excluded by `no-transport` or `no-ui`; their
+adapter must identify its actual boundary in the accompanying evidence. Useful
+content bytes can likewise be observed before emission. Neither observation
+proves a transport or UI measurement.
+
 A schema can validate declarations, but cannot prove that an instrument ran.
 Review the adapter and retain raw evidence and commands outside Git.
 
@@ -63,3 +79,11 @@ gain. Source revisions are expected to differ during a controlled comparison.
 
 See [the protocol](../../../../docs/macro-connect-measurement-protocol.md) for the
 six recipes, exclusions, budgets and remaining validation.
+
+The shared fixture assigns globally unique message IDs
+`seed-active-NNNNNN` and `seed-other-NNNNNN`, so both conversations can be
+installed in the same SQLite database without remapping. The unchanged native
+benchmark has one conversation with IDs `seed-NNNNNN`. It retains its own
+fixture definition hash and operation boundary; its identifiers are not claimed
+to equal the two-conversation shared fixture. Text size, content and timestamps
+match, while identity differs explicitly.

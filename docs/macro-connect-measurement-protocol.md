@@ -58,6 +58,12 @@ are in `contracts/macro-connect/metrics/v1/profiles.json`. `fixtureMessages`
 creates identical ordered data; `scenarioSchedule` supplies stable event order
 and deterministic interruption events. It does not execute product code.
 Target names are synthetic. A runner maps them to its isolated test instances.
+Shared message IDs include the active/other conversation name and are unique
+across both conversations. A focused test installs them simultaneously against
+Macro's actual SQLite schema. The unchanged native benchmark uses a single
+conversation and its own seed IDs, tracked by a separate fixture definition
+hash. Its report projection requires an explicit `ms` unit on both native
+summaries; missing or other units are rejected before any numbers are copied.
 
 | Scenario | Adapter actions and readiness boundary | Observe separately |
 | --- | --- | --- |

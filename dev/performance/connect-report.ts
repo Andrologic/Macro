@@ -51,6 +51,7 @@ export function convertNativeReports(inputs: unknown[], repositories: { desktop:
       if (!nativeCase || nativeCase.read_messages !== size || nativeCase.message_bytes !== 256 || nativeCase.diagnostics !== null || nativeCase.write_start_messages !== size + 10 || nativeCase.final_messages !== size + 110 ||
         JSON.stringify(nativeCase.migrations) !== '[1,3,4,5,6,7,8,9,10,11,12]' || nativeCase.pragmas?.journal_mode !== 'wal' || nativeCase.pragmas?.synchronous !== 1 || nativeCase.pragmas?.foreign_keys !== 1 ||
         nativeCase.read?.count !== 100 || nativeCase.create_message_commit?.count !== 100 ||
+        nativeCase.read?.unit !== 'ms' || nativeCase.create_message_commit?.unit !== 'ms' ||
         !['opened_path_matches_owned_fixture', 'content_and_metadata_after_reopen', 'all_appends_after_reopen', 'integrity', 'cleanup'].every(key => nativeCase.checks?.[key] === true)) throw new Error('Incomplete native fixture checks');
       for (const scenario of Object.keys(profiles.scenarios)) {
         const metrics = Object.keys(metricUnits).map(metric => ({

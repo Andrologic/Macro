@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { readFileSync } from 'node:fs';
 import { convertNativeReports } from './connect-report';
-import { contractHashes, metricUnits, validateReport, compareMetric } from '../../contracts/macro-connect/metrics/v1/validate.mjs';
+import { contractHashes, metricUnits, validateReport, compareMetric, limitMetricExclusions } from '../../contracts/macro-connect/metrics/v1/validate.mjs';
 import { profiles, fixtureMessages, scenarioSchedule } from '../../contracts/macro-connect/metrics/v1/fixtures.mjs';
 
 // This report tests declarations only. No fixture value is exported as an
@@ -76,6 +78,32 @@ describe('Connect measurements preserve evidence boundaries', () => {
       const report = example(); change(report); expect(validateReport(report).valid).toBe(false);
     }
   });
+  test('declared missing observers forbid contradictory measurements', () => {
+    const methods: Record<string, string> = {
+      http_compressed_bytes: 'http-wire-observer', http_decompressed_bytes: 'http-decoded-observer',
+      ipc_json_bytes: 'ipc-observer', last_message_visible_ms: 'ui-ready-clock', ui_apply_ms: 'ui-ready-clock',
+      native_rss_bytes: 'native-process-rss', heap_bytes: 'runtime-heap',
+    };
+    for (const [limit, names] of Object.entries(limitMetricExclusions)) {
+      for (const name of names) {
+        const report = example();
+        recorded(report, name, 'measured', methods[name]);
+        expect(validateReport(report).valid).toBe(true);
+        report.limits.push(limit);
+        expect(validateReport(report).valid).toBe(false);
+        const entry = metric(report, name);
+        delete entry.method; delete entry.summary;
+        Object.assign(entry, { evidence: 'not-measured', reason: 'outside-boundary', recipe: report.runs[0].scenario });
+        expect(validateReport(report).valid).toBe(true);
+      }
+    }
+    // Phase clocks and pre-emission payload sizing can run in a protocol-only
+    // harness. Their observation alone proves neither HTTP transport nor UI.
+    const report = example(); report.limits.push('no-transport', 'no-ui');
+    recorded(report, 'negotiation_ms', 'measured', 'monotonic-clock');
+    recorded(report, 'useful_content_bytes', 'measured', 'payload-observer');
+    expect(validateReport(report).valid).toBe(true);
+  });
   test('native read measurement requires binary identity', () => {
     const report = example();
     const entry = recorded(report, 'native_read_ms', 'measured', 'native-repository-clock');
@@ -122,13 +150,37 @@ describe('six portable scenario fixtures', () => {
       const first = fixtureMessages(size); const second = fixtureMessages(size, 'other');
       expect(first).toHaveLength(size);
       expect(first).toEqual(fixtureMessages(size));
-      expect(first[0].id).toBe('seed-000000');
-      expect(first.at(-1).id).toBe(`seed-${String(size - 1).padStart(6, '0')}`);
+      expect(first[0].id).toBe('seed-active-000000');
+      expect(first.at(-1).id).toBe(`seed-active-${String(size - 1).padStart(6, '0')}`);
       expect(new Set(first.map((entry: any) => entry.id)).size).toBe(size);
       expect(first.every((entry: any) => entry.role === 'user' && entry.content === 'x'.repeat(256) && entry.created_at === '2026-01-01T00:00:00Z')).toBe(true);
       expect(first[0].conversation_id).not.toBe(second[0].conversation_id);
+      expect(new Set([...first, ...second].map((entry: any) => entry.id)).size).toBe(size * 2);
     }
     expect(() => fixtureMessages(7)).toThrow();
+  });
+  test('installs active and other simultaneously into the actual SQLite message schema', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('PRAGMA foreign_keys = ON');
+      db.exec(readFileSync(new URL('../../src-tauri/src/db/migrations/001_initial.sql', import.meta.url), 'utf8'));
+      const insertConversation = db.prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)');
+      const insertMessage = db.prepare('INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)');
+      db.transaction(() => {
+        for (const conversation of ['active', 'other']) {
+          const messages = fixtureMessages(100, conversation);
+          insertConversation.run(messages[0].conversation_id, 'Synthetic', profiles.fixture.seed_timestamp, profiles.fixture.seed_timestamp);
+          for (const message of messages) insertMessage.run(message.id, message.conversation_id, message.role, message.content, message.created_at);
+        }
+      })();
+      const rows = db.query('SELECT id, conversation_id FROM messages ORDER BY id').all() as Array<{ id: string; conversation_id: string }>;
+      expect(rows).toHaveLength(200);
+      for (const conversation of ['active', 'other']) {
+        expect(rows.filter(row => row.conversation_id === `synthetic-${conversation}`)).toHaveLength(100);
+        expect(rows.filter(row => row.conversation_id === `synthetic-${conversation}`).every(row => row.id.startsWith(`seed-${conversation}-`))).toBe(true);
+      }
+      expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally { db.close(); }
   });
   test('profiles have repeatable interruption ordering and no mutation between calls', () => {
     expect(Object.keys(profiles.scenarios)).toHaveLength(6);
@@ -159,7 +211,7 @@ describe('native report projection', () => {
       measurement: { schema: 2, samples: 100, warmup: 10, cold_disk_cache: false, build_profile: 'debug', percentile: 'nearest-rank', boundary: 'in-process Rust repository -> SQLx -> on-disk SQLite; no transport',
         cases: [100, 1000, 10000].map(size => ({ initial_messages: size, read_messages: size, message_bytes: 256, diagnostics: null, write_start_messages: size + 10, final_messages: size + 110,
           migrations: [1,3,4,5,6,7,8,9,10,11,12], pragmas: { journal_mode: 'wal', synchronous: 1, foreign_keys: 1 },
-          read: { count: 100, p50: 1, p95: 2, max: 3 }, create_message_commit: { count: 100, p50: 4, p95: 5, max: 6 },
+          read: { unit: 'ms', count: 100, p50: 1, p95: 2, max: 3 }, create_message_commit: { unit: 'ms', count: 100, p50: 4, p95: 5, max: 6 },
           checks: { opened_path_matches_owned_fixture: true, content_and_metadata_after_reopen: true, all_appends_after_reopen: true, integrity: true, cleanup: true } })) },
     } as Record<string, any>;
   }
@@ -171,6 +223,16 @@ describe('native report projection', () => {
     expect(observations.filter((entry: any) => entry.evidence === 'measured')).toHaveLength(6);
     expect(observations.filter((entry: any) => entry.metric === 'native_rss_bytes').every((entry: any) => entry.evidence === 'not-measured')).toBe(true);
     expect(report.runs.find((run: any) => run.scenario === 'history-pagination').metrics.find((entry: any) => entry.metric === 'native_read_ms').summary).toEqual({ count: 100, p50: 1, p95: 2, max: 3 });
+  });
+  test('requires explicit millisecond units for both native summaries', () => {
+    for (const field of ['read', 'create_message_commit']) {
+      for (const unit of [undefined, 's', 'bytes']) {
+        const report = raw();
+        if (unit === undefined) delete report.measurement.cases[0][field].unit;
+        else report.measurement.cases[0][field].unit = unit;
+        expect(() => convertNativeReports([report], repositories, current)).toThrow();
+      }
+    }
   });
   test('rejects source drift, missing checks, diagnostics, altered boundaries and duplicate inputs', () => {
     for (const change of [

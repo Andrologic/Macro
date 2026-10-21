@@ -5,7 +5,7 @@ export const profiles = JSON.parse(readFileSync(new URL('./profiles.json', impor
 export function fixtureMessages(size, conversation = 'active') {
   if (!profiles.fixture.sizes.includes(size) || !profiles.fixture.conversations.includes(conversation)) throw new Error('Unknown fixture');
   return Array.from({ length: size }, (_, index) => ({
-    id: `seed-${String(index).padStart(6, '0')}`,
+    id: `seed-${conversation}-${String(index).padStart(6, '0')}`,
     conversation_id: `synthetic-${conversation}`,
     role: 'user',
     content: 'x'.repeat(profiles.fixture.content_bytes),

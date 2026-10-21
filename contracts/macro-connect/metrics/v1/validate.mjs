@@ -10,6 +10,14 @@ export const metricUnits = Object.fromEntries(schema.$defs.metric.allOf.map(rule
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 addFormats(ajv);
 const shape = ajv.compile(schema);
+// Only metrics whose observer boundary directly contradicts a declared limit.
+// In-process protocol phase timers do not imply an observed transport or UI.
+export const limitMetricExclusions = {
+  'no-transport': ['http_compressed_bytes', 'http_decompressed_bytes', 'ipc_json_bytes'],
+  'no-ui': ['last_message_visible_ms', 'ui_apply_ms'],
+  'no-rss': ['native_rss_bytes'],
+  'no-heap': ['heap_bytes'],
+};
 export const contractHashes = () => Object.fromEntries(['schema', 'profiles'].map(name =>
   [`${name}_sha256`, createHash('sha256').update(read(`${name}.json`)).digest('hex')]));
 
@@ -37,7 +45,11 @@ export function validateReport(report) {
       if (metric.evidence === 'measured' && ['native_read_ms', 'native_write_ms'].includes(metric.metric)) {
         if (!run.binary_sha256 || metric.role !== 'native') errors.push('native measurement needs verified binary and native role');
       }
-      if (metric.evidence === 'measured' && ['native_rss_bytes', 'heap_bytes'].includes(metric.metric) && report.limits.includes(metric.metric === 'heap_bytes' ? 'no-heap' : 'no-rss')) errors.push('measured memory contradicts limits');
+      if (metric.evidence === 'measured') {
+        for (const limit of report.limits) {
+          if (limitMetricExclusions[limit]?.includes(metric.metric)) errors.push(`measured metric contradicts ${limit}: ${metric.metric}`);
+        }
+      }
     }
   }
   const scenarios = JSON.parse(read('profiles.json')).scenarios;
