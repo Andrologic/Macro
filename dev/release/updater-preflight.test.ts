@@ -160,6 +160,23 @@ describe('updater preflight', () => {
     ]));
   });
 
+  test('rejects structured updater permissions, process defaults, and a dev-only updater plugin', () => {
+    const config = fixture();
+    Object.assign(config.tauriCapabilities, {
+      permissions: [
+        { identifier: 'updater:allow-install', allow: [] },
+        { identifier: 'process:default', allow: [] },
+      ],
+    });
+    Object.assign(config.packageJson.devDependencies, { '@tauri-apps/plugin-updater': '2.13.3' });
+
+    expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
+      'src-tauri/capabilities/default.json must not grant updater plugin commands to the WebView.',
+      'src-tauri/capabilities/default.json must not grant process:default.',
+      'package.json must not include the unused JavaScript updater plugin.',
+    ]));
+  });
+
   test('keeps ordinary local builds independent from the updater signing key', () => {
     const config = fixture();
     config.localTauriConfig.bundle.createUpdaterArtifacts = true;

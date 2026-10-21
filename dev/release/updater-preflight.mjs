@@ -8,6 +8,7 @@ export const LOCAL_TAURI_CONFIG_PATH = 'src-tauri/tauri.local.conf.json';
 export const TAURI_CAPABILITIES_PATH = 'src-tauri/capabilities/default.json';
 const FORBIDDEN_UPDATER_PERMISSIONS = Object.freeze([
   'process:allow-restart',
+  'process:default',
 ]);
 const VERSION_PARTS = /^[=^~\s]*(\d+)\.(\d+)/;
 const VERSION_MAJOR = /^[=^~\s]*(\d+)/;
@@ -114,14 +115,17 @@ export function validateUpdaterConfiguration({
   const permissions = Array.isArray(tauriCapabilities?.permissions)
     ? tauriCapabilities.permissions
     : [];
-  if (permissions.some((permission) => typeof permission === 'string' && permission.startsWith('updater:'))) {
+  const permissionIds = permissions.map((permission) =>
+    typeof permission === 'string' ? permission : permission?.identifier,
+  );
+  if (permissionIds.some((identifier) => typeof identifier === 'string' && identifier.startsWith('updater:'))) {
     errors.push(`${TAURI_CAPABILITIES_PATH} must not grant updater plugin commands to the WebView.`);
   }
   for (const permission of FORBIDDEN_UPDATER_PERMISSIONS) {
-    if (permissions.includes(permission)) errors.push(`${TAURI_CAPABILITIES_PATH} must not grant ${permission}.`);
+    if (permissionIds.includes(permission)) errors.push(`${TAURI_CAPABILITIES_PATH} must not grant ${permission}.`);
   }
 
-  if (packageJson?.dependencies?.['@tauri-apps/plugin-updater']) {
+  if (packageJson?.dependencies?.['@tauri-apps/plugin-updater'] || packageJson?.devDependencies?.['@tauri-apps/plugin-updater']) {
     errors.push('package.json must not include the unused JavaScript updater plugin.');
   }
   if (!atLeast(packageJson?.devDependencies?.['@tauri-apps/cli'], 2, 12)) {

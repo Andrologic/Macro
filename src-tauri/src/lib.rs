@@ -497,8 +497,25 @@ pub fn run() {
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
-            if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
-                tracing::error!(%error, "Failed to activate staged application update");
+            match app_updates::staged_update_requires_native_confirmation(app.handle()) {
+                Ok(true) => {
+                    // The dialog's blocking API must not run on Tauri's main thread.
+                    let update_app = app.handle().clone();
+                    std::thread::spawn(move || {
+                        if let Err(error) = app_updates::activate_staged_update(&update_app, false)
+                        {
+                            tracing::error!(%error, "Failed to activate staged application update");
+                        }
+                    });
+                }
+                Ok(false) => {
+                    if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
+                        tracing::error!(%error, "Failed to activate staged application update");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Failed to inspect staged application update");
+                }
             }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {

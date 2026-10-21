@@ -23,8 +23,8 @@ export async function appUpdateDiscard(): Promise<void> {
   return invoke<void>('app_update_discard');
 }
 
-export async function appUpdateInstallNow(): Promise<void> {
-  return invoke<void>('app_update_install_now');
+export async function appUpdateInstallNow(): Promise<boolean> {
+  return invoke<boolean>('app_update_install_now');
 }
 
 export async function appInstallerCloseRequestPending(): Promise<boolean> {

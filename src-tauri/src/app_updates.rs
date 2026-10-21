@@ -16,6 +16,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_updater::UpdaterExt;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
@@ -753,8 +754,18 @@ fn read_manifest_recovering_unlocked(
     let directory = update_dir(app)?;
     let manifest = read_manifest_directory_recovering_unlocked(&directory)?;
     if let Some(manifest) = manifest.as_ref() {
+        let channel = manifest
+            .target
+            .split_once('-')
+            .map(|(channel, _)| channel)
+            .unwrap_or_default();
         if !cached_manifest_has_signed_version(manifest)
             || !update_target_matches_channel(app, &manifest.target)?
+            || !cached_update_version_allowed(
+                channel,
+                &app.package_info().version,
+                &manifest.version,
+            )
         {
             invalidate_and_clear_staged_update_directory(&directory)?;
             return Ok(None);
@@ -782,6 +793,45 @@ fn should_allow_stable_transition(channel: &str, current_version: &Version) -> b
 
 fn should_offer_stable_release(current_version: Version, release_version: Version) -> bool {
     release_version != current_version && release_version.pre.is_empty()
+}
+
+fn cached_update_version_allowed(
+    channel: &str,
+    current_version: &Version,
+    candidate_version: &str,
+) -> bool {
+    let Ok(candidate) = Version::parse(candidate_version.trim_start_matches('v')) else {
+        return false;
+    };
+    candidate > *current_version
+        || (should_allow_stable_transition(channel, current_version)
+            && should_offer_stable_release(current_version.clone(), candidate))
+}
+
+fn cached_update_is_downgrade(current_version: &Version, candidate_version: &str) -> bool {
+    Version::parse(candidate_version.trim_start_matches('v'))
+        .is_ok_and(|candidate| candidate < *current_version)
+}
+
+fn native_downgrade_approved(
+    current_version: &Version,
+    candidate_version: &str,
+    confirm: impl FnOnce() -> bool,
+) -> bool {
+    !cached_update_is_downgrade(current_version, candidate_version) || confirm()
+}
+
+pub fn staged_update_requires_native_confirmation(app: &AppHandle) -> Result<bool, String> {
+    let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(app)?)?;
+    Ok(
+        read_manifest_recovering_unlocked(app)?.is_some_and(|manifest| {
+            staged_update_belongs_to_current_install(
+                &manifest,
+                &app.package_info().version.to_string(),
+            ) && cached_update_is_downgrade(&app.package_info().version, &manifest.version)
+        }),
+    )
 }
 
 fn installer_marker(name: &str) -> PathBuf {
@@ -1015,8 +1065,19 @@ pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn app_update_install_now(app: AppHandle) -> Result<(), String> {
-    require_activation_started(activate_staged_update(&app, true)?)
+pub async fn app_update_install_now(app: AppHandle) -> Result<bool, String> {
+    let activation_app = app.clone();
+    let started =
+        tauri::async_runtime::spawn_blocking(move || activate_staged_update(&activation_app, true))
+            .await
+            .map_err(|error| format!("UPDATE_ACTIVATION_FAILED: {error}"))??;
+    if started {
+        Ok(true)
+    } else if staged_update_requires_native_confirmation(&app)? {
+        Ok(false)
+    } else {
+        require_activation_started(false).map(|_| true)
+    }
 }
 
 fn require_activation_started(started: bool) -> Result<(), String> {
@@ -1065,6 +1126,21 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
             return Err(error);
         }
     };
+    if !native_downgrade_approved(&app.package_info().version, &manifest.version, || {
+        app.dialog()
+            .message(format!(
+                "This will replace Macro {} with the older Stable release {}. Continue?",
+                current_version, manifest.version
+            ))
+            .title("Install older Macro release")
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Install older release".to_string(),
+                "Cancel".to_string(),
+            ))
+            .blocking_show()
+    }) {
+        return Ok(false);
+    }
     manifest.phase = StagedUpdatePhase::Activating;
     manifest.activation_attempts = manifest.activation_attempts.saturating_add(1);
     manifest.error = None;
@@ -1449,10 +1525,11 @@ mod tests {
 
     use super::{
         atomic_write, atomic_write_with, cached_manifest_has_signed_version,
-        clean_shutdown_matches, clear_staged_update_directory,
-        install_fail_after_manifest_publication, install_fail_after_package_publication,
-        install_publication_after_manifest_hook, invalidate_and_clear_staged_update_directory,
-        lock_update_directory, package_digest, package_file_name, persist_temporary_file,
+        cached_update_is_downgrade, cached_update_version_allowed, clean_shutdown_matches,
+        clear_staged_update_directory, install_fail_after_manifest_publication,
+        install_fail_after_package_publication, install_publication_after_manifest_hook,
+        invalidate_and_clear_staged_update_directory, lock_update_directory,
+        native_downgrade_approved, package_digest, package_file_name, persist_temporary_file,
         publish_staged_update_directory, publish_staged_update_directory_with_generation,
         read_manifest_directory_recovering, read_manifest_file, read_update_generation_directory,
         should_allow_stable_transition, should_offer_stable_release,
@@ -1664,6 +1741,45 @@ mod tests {
         assert!(should_offer_stable_release(preview.clone(), stable.clone()));
         assert!(!should_offer_stable_release(stable.clone(), stable.clone()));
         assert!(!should_offer_stable_release(stable, preview));
+    }
+
+    #[test]
+    fn cached_release_reapplies_native_version_policy_before_activation() {
+        let stable = "0.2.0".parse().unwrap();
+        let preview = "0.3.0-nightly.20260916.42".parse().unwrap();
+        assert!(cached_update_version_allowed("stable", &stable, "0.3.0"));
+        assert!(!cached_update_version_allowed("stable", &stable, "0.1.8"));
+        assert!(!cached_update_version_allowed("stable", &stable, "0.2.0"));
+        assert!(!cached_update_version_allowed(
+            "stable",
+            &stable,
+            "not-a-version"
+        ));
+        assert!(cached_update_version_allowed("stable", &preview, "0.2.0"));
+        assert!(!cached_update_version_allowed("preview", &preview, "0.2.0"));
+        assert!(!cached_update_version_allowed(
+            "stable",
+            &preview,
+            "0.2.0-rc.1"
+        ));
+        assert!(cached_update_is_downgrade(&preview, "0.2.0"));
+        assert!(!cached_update_is_downgrade(&stable, "0.3.0"));
+    }
+
+    #[test]
+    fn native_confirmation_is_required_for_a_downgrade_and_refusal_blocks_activation() {
+        let preview = "0.3.0-nightly.20260916.42".parse().unwrap();
+        let prompts = std::cell::Cell::new(0);
+        assert!(!native_downgrade_approved(&preview, "0.2.0", || {
+            prompts.set(prompts.get() + 1);
+            false
+        }));
+        assert_eq!(prompts.get(), 1);
+        assert!(native_downgrade_approved(&preview, "0.3.0", || {
+            prompts.set(prompts.get() + 1);
+            false
+        }));
+        assert_eq!(prompts.get(), 1);
     }
 
     #[test]

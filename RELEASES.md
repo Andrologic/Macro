@@ -246,7 +246,10 @@ workflow advances `preview-*.json` after it uploads every signed updater asset.
 Switching from Preview to Stable may offer an older stable version; the client
 asks for confirmation. Rust permits this transition only when the persisted
 channel is Stable and the installed native version is a prerelease. The WebView
-cannot select the update target or enable a downgrade.
+cannot select the update target or enable a downgrade. Before installing an older
+signed version, Rust asks for confirmation in a native dialog, including when a
+staged update is activated on the next launch. A refusal leaves the package
+staged for a later manual installation attempt.
 
 Scheduled previews start only after the public stable `v0.1.1` release exists.
 They build `develop` once per night when its commit changed. Use the manual

@@ -34,7 +34,7 @@ const createFixture = (currentVersion = '0.1.0') => {
     progressListener?.({ type: 'finished' });
     return snapshot(currentVersion);
   });
-  const installNow = mock(async () => undefined);
+  const installNow = mock(async () => true);
   const discard = mock(async () => undefined);
   const unlisten = mock(() => undefined);
   const bindings: NativeUpdaterBindings = {
@@ -80,7 +80,7 @@ describe('TauriAppUpdaterClient', () => {
     const fixture = createFixture();
     const client = new TauriAppUpdaterClient(async () => fixture.bindings);
 
-    await client.installAndRelaunch();
+    expect(await client.installAndRelaunch()).toBe(true);
     await client.reset();
 
     expect(fixture.installNow).toHaveBeenCalledTimes(1);

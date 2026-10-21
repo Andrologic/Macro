@@ -32,7 +32,7 @@ export interface AppUpdaterClient {
   checkAndDownload: (
     onEvent: (event: AppUpdateDownloadEvent) => void,
   ) => Promise<AppUpdateCheckResult>;
-  installAndRelaunch: () => Promise<void>;
+  installAndRelaunch: () => Promise<boolean>;
   reset: () => Promise<void>;
 }
 
@@ -44,7 +44,7 @@ type NativeDownloadEvent =
 export interface NativeUpdaterBindings {
   status: () => Promise<NativeAppUpdateSnapshotDto>;
   checkAndStage: () => Promise<NativeAppUpdateSnapshotDto>;
-  installNow: () => Promise<void>;
+  installNow: () => Promise<boolean>;
   discard: () => Promise<void>;
   listenForProgress: (
     listener: (event: NativeDownloadEvent) => void,
@@ -115,9 +115,9 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
     }
   }
 
-  async installAndRelaunch(): Promise<void> {
+  async installAndRelaunch(): Promise<boolean> {
     const bindings = await this.loadBindings();
-    await bindings.installNow();
+    return bindings.installNow();
   }
 
   async reset(): Promise<void> {
