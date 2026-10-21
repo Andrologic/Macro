@@ -920,7 +920,8 @@ Ces commandes sont centralisées dans le point d'entrée du backend.
 
 Le runtime Tauri utilise une version qui vérifie l'origine des requêtes IPC et
 applique les capacités aux commandes personnalisées provenant d'une origine
-distante. La capacité de la fenêtre principale n'accorde aucun accès distant.
+distante. Il lie aussi les grandes réponses de canal à leur WebView d'origine.
+La capacité de la fenêtre principale n'accorde aucun accès distant.
 Les anciennes commandes `mcp_discover_tools` et `mcp_call_tool`, qui acceptaient
 une définition de serveur fournie par l'appelant, ne sont plus enregistrées.
 L'interface passe par le runtime MCP persistant et sa politique d'outils.
