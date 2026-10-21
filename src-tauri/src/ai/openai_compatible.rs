@@ -23,6 +23,8 @@ const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_RETRY_ATTEMPTS: usize = 2;
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+const MAX_ERROR_MESSAGE_CHARS: usize = 2_048;
 
 #[derive(Debug, Default)]
 struct ChatCompletionAccumulator {
@@ -98,6 +100,11 @@ async fn stream_chat_inner(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
+    crate::core::provider_endpoint::validate_provider_endpoint(
+        &provider.base_url,
+        provider.is_local,
+    )
+    .map_err(str::to_string)?;
     let provider_type = provider.provider_type.clone();
     let capabilities = resolve_provider_capabilities(
         &request.provider_id,
@@ -133,6 +140,7 @@ async fn stream_chat_inner(
     let request_body = build_chat_completions_request(&request, &provider)?;
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
     timeline.emit("provider_request_sent");
@@ -143,7 +151,7 @@ async fn stream_chat_inner(
     if !response.status().is_success() {
         let status = response.status();
         let error_body = await_http_operation(
-            response.text(),
+            read_provider_error_body(response),
             ERROR_BODY_TIMEOUT,
             "Provider error response body",
         )
@@ -1043,10 +1051,52 @@ fn extract_provider_error(status: u16, body: &str) -> String {
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
         {
-            return format!("Provider error {}: {}", status, message);
+            return format!(
+                "Provider error {}: {}",
+                status,
+                bounded_error_message(message)
+            );
         }
     }
-    format!("Provider error {}: {}", status, body.trim())
+    format!(
+        "Provider error {}: {}",
+        status,
+        bounded_error_message(body.trim())
+    )
+}
+
+async fn read_provider_error_body(
+    mut response: reqwest::Response,
+) -> Result<String, reqwest::Error> {
+    let mut body = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = response.chunk().await? {
+        if append_error_chunk(&mut body, &chunk) {
+            truncated = true;
+            break;
+        }
+    }
+    let mut text = String::from_utf8_lossy(&body).into_owned();
+    if truncated {
+        text.push_str(" [truncated]");
+    }
+    Ok(text)
+}
+
+fn append_error_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+    body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    chunk.len() >= remaining
+}
+
+fn bounded_error_message(message: &str) -> String {
+    let mut chars = message.chars();
+    let prefix: String = chars.by_ref().take(MAX_ERROR_MESSAGE_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix} [truncated]")
+    } else {
+        prefix
+    }
 }
 
 fn optional_text(value: String) -> Option<String> {
@@ -1070,6 +1120,19 @@ mod tests {
     use super::super::types::AiChatMessage;
     use super::*;
     use std::future::pending;
+
+    #[test]
+    fn bounds_provider_error_chunks_and_displayed_messages() {
+        let mut body = Vec::new();
+        assert!(!append_error_chunk(&mut body, &vec![b'x'; 1024]));
+        assert!(append_error_chunk(
+            &mut body,
+            &vec![b'x'; MAX_ERROR_BODY_BYTES * 4]
+        ));
+        assert_eq!(body.len(), MAX_ERROR_BODY_BYTES);
+        let displayed = extract_provider_error(500, &String::from_utf8(body).unwrap());
+        assert!(displayed.len() <= MAX_ERROR_MESSAGE_CHARS + 40);
+    }
 
     fn request(reasoning_effort: Option<&str>) -> AiChatRequest {
         AiChatRequest {

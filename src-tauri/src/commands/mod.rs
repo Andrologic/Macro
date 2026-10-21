@@ -1362,24 +1362,8 @@ fn validate_ai_provider_fields(
         };
     }
 
-    let parsed = reqwest::Url::parse(base_url.trim())
-        .map_err(|_| command_error("Provider base URL must be a valid URL."))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(command_error("Provider base URL must use HTTP or HTTPS."));
-    }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(command_error(
-            "Provider base URLs must not contain credentials.",
-        ));
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(command_error(
-            "Provider base URLs must not contain a query or fragment.",
-        ));
-    }
-    if !is_local && parsed.scheme() != "https" {
-        return Err(command_error("Remote provider base URLs must use HTTPS."));
-    }
+    crate::core::provider_endpoint::validate_provider_endpoint(base_url, is_local)
+        .map_err(command_error)?;
 
     Ok(())
 }
@@ -2180,6 +2164,9 @@ mod tests {
         );
         assert!(
             validate_ai_provider_fields("Example", "openai", "http://example.test", false).is_err()
+        );
+        assert!(
+            validate_ai_provider_fields("Example", "openai", "http://example.test", true).is_err()
         );
         assert!(validate_ai_provider_fields(
             "Example",

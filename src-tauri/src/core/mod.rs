@@ -4,6 +4,7 @@ pub mod error;
 pub mod http_auth;
 pub mod logging;
 pub mod process;
+pub mod provider_endpoint;
 pub mod tool_policy;
 
 #[cfg(test)]

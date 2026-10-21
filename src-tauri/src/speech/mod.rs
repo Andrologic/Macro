@@ -66,19 +66,11 @@ pub async fn transcribe(
     }
     let endpoint = reqwest::Url::parse(provider.base_url.trim())
         .map_err(|error| SpeechError::Request(error.to_string()))?;
-    if !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-    {
-        return Err(SpeechError::Request(
-            "Speech provider base URL contains unsupported credentials, query, or fragment."
-                .to_string(),
-        ));
-    }
-    if !provider.is_local && endpoint.scheme() != "https" {
-        return Err(SpeechError::InsecureRemoteEndpoint);
-    }
+    crate::core::provider_endpoint::validate_provider_endpoint(
+        endpoint.as_str(),
+        provider.is_local,
+    )
+    .map_err(|_| SpeechError::InsecureRemoteEndpoint)?;
 
     match provider.provider_type.as_str() {
         "openai" | "openai-compatible" => {

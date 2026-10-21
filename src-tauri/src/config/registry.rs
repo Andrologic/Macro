@@ -656,6 +656,69 @@ pub fn validate_document(
                         "providerType est obligatoire pour un provider personnalisé.",
                     ));
                 }
+                if is_deleted {
+                    continue;
+                }
+                let default = default_providers.and_then(|entries| entries.get(provider_id));
+                let base_url = definition
+                    .get("baseUrl")
+                    .or_else(|| default.and_then(|entry| entry.get("baseUrl")))
+                    .and_then(Value::as_str);
+                let is_local = definition
+                    .get("isLocal")
+                    .or_else(|| default.and_then(|entry| entry.get("isLocal")))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if let Some(base_url) = base_url.filter(|url| !url.trim().is_empty()) {
+                    let provider_type = definition
+                        .get("providerType")
+                        .or_else(|| default.and_then(|entry| entry.get("providerType")))
+                        .and_then(Value::as_str);
+                    let endpoint_result = if provider_type == Some("copilot") {
+                        if base_url == "copilot://cli" {
+                            Ok(())
+                        } else {
+                            Err("Copilot provider base URL must use copilot://cli.")
+                        }
+                    } else {
+                        crate::core::provider_endpoint::validate_provider_endpoint(
+                            base_url, is_local,
+                        )
+                    };
+                    if let Err(message) = endpoint_result {
+                        let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+                        diagnostics.push(diagnostic(
+                            kind,
+                            scope,
+                            Some(format!("/providers/{escaped}/baseUrl")),
+                            "config.provider.endpoint_unsafe",
+                            message,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(providers) = value.get("speechProviders").and_then(Value::as_object) {
+            for (provider_id, definition) in providers {
+                let Some(base_url) = definition.get("baseUrl").and_then(Value::as_str) else {
+                    continue;
+                };
+                let is_local = definition
+                    .get("isLocal")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if let Err(message) =
+                    crate::core::provider_endpoint::validate_provider_endpoint(base_url, is_local)
+                {
+                    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+                    diagnostics.push(diagnostic(
+                        kind,
+                        scope,
+                        Some(format!("/speechProviders/{escaped}/baseUrl")),
+                        "config.speech_provider.endpoint_unsafe",
+                        message,
+                    ));
+                }
             }
         }
     }
@@ -1748,6 +1811,27 @@ mod tests {
             .diagnostics
             .iter()
             .any(|entry| entry.code == "config.provider.type_missing"));
+    }
+
+    #[test]
+    fn rejects_remote_http_disguised_as_local_in_provider_documents() {
+        let mut document = sparse_document(ConfigDocumentKind::Providers);
+        document["providers"] = json!({
+            "custom": {"providerType": "openai-compatible", "baseUrl": "http://example.test/v1", "isLocal": true}
+        });
+        document["speechProviders"] = json!({
+            "speech": {"providerType": "openai-compatible", "name": "Speech", "baseUrl": "http://example.test/v1", "model": "test", "isLocal": true}
+        });
+        let result =
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &document);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "config.provider.endpoint_unsafe"));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "config.speech_provider.endpoint_unsafe"));
     }
 
     #[test]
