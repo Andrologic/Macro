@@ -237,10 +237,16 @@ export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[], heights: 
       : sources.reduce((sum, item) => sum + item.x, 0) / sources.length - center;
     return lean >= 0 ? 1 : -1;
   };
-  const sides = new Map([...new Set(rails.map(edge => edge.target))].map(target => [target, railSide(target)]));
+  const movable = (node: LayerNode) => rails.some(edge => edge.target === node.id) && !rails.some(edge => edge.target === node.id && returns.has(edge));
+  const sides = new Map<string, number>();
+  for (const target of new Set(rails.map(edge => edge.target))) if (!movable(nodes.get(target)!)) sides.set(target, railSide(target));
+  // Handlers reached only forward share the two sides, busiest first, so their rails never cross.
+  const load = (side: number) => [...sides.values()].filter(value => value === side).length;
+  const handlers = [...new Set(rails.map(edge => edge.target))].filter(target => !sides.has(target))
+    .sort((a, b) => rails.filter(edge => edge.target === b).length - rails.filter(edge => edge.target === a).length || discovery.get(a)! - discovery.get(b)!);
+  for (const target of handlers) sides.set(target, load(-1) === load(1) ? railSide(target) : load(-1) < load(1) ? -1 : 1);
   // Blocks reached through forward rails move to their rail's side, so the rail enters without crossing.
   let reordered = false;
-  const movable = (node: LayerNode) => sides.has(node.id) && !rails.some(edge => edge.target === node.id && returns.has(edge));
   for (const layer of layers) {
     if (layer.length < 2 || !layer.some(movable)) continue;
     const next = [...layer.filter(node => movable(node) && sides.get(node.id)! < 0), ...layer.filter(node => !movable(node)), ...layer.filter(node => movable(node) && sides.get(node.id)! > 0)];

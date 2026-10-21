@@ -74,6 +74,19 @@ describe("AgSDL reading layout", () => {
   });
 });
 
+describe("AgSDL handler rails", () => {
+  it("puts two distant handlers on opposite sides so their rails never cross", () => {
+    const cards = ["a", "b", "c", "d", "e", "escalate", "recover"].map(id => card(id));
+    const edges = [edge("a", "b"), edge("b", "c"), edge("c", "d"), edge("d", "e"), edge("d", "escalate", "denied"), edge("d", "recover", "onError"),
+      edge("a", "escalate", "escalate"), edge("b", "escalate", "denied"), edge("a", "recover", "onError"), edge("b", "recover", "onError"), edge("c", "recover", "onError")];
+    const graph = layoutViewer(cards, edges);
+    const rail = (target: string) => graph.routes.get(edges.find(item => item.source.endsWith("/a") && item.target.endsWith(target))!.id)!.steps[0].x!;
+    const spine = center(at(graph, "a"));
+    expect(Math.sign(rail("escalate") - spine)).toBe(-Math.sign(rail("recover") - spine));
+    expect(Math.sign(center(at(graph, "escalate")) - center(at(graph, "e")))).toBe(Math.sign(rail("escalate") - spine));
+  });
+});
+
 describe("AgSDL connection paths", () => {
   it("draws rounded orthogonal paths that start and end on the actual handles", () => {
     const path = viewerEdgePath({ kind: "orthogonal", steps: [{ y: 80, x: 300 }, { y: 400 }] }, { sourceX: 105, sourceY: 52, targetX: 105, targetY: 420 });
