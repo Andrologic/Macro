@@ -30,6 +30,15 @@ fn provisioning_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn bootstrap_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Failed to prepare Macro AI activation: {error}"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationIdentity {
     installation_id: String,
@@ -179,11 +188,7 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
     }
 
     let identity = load_or_create_installation_identity()?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Failed to prepare Macro AI activation: {error}"))?;
+    let client = bootstrap_client()?;
     let response = client
         .post(BOOTSTRAP_URL)
         .json(&BootstrapRequest {
@@ -235,6 +240,53 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bootstrap_client_does_not_forward_installation_proof_on_redirect() {
+        use axum::{
+            http::{header, StatusCode},
+            routing::any,
+            Router,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let followed = std::sync::Arc::new(AtomicBool::new(false));
+        let leak_flag = followed.clone();
+        let app = Router::new()
+            .route(
+                "/start",
+                any(|| async {
+                    (
+                        StatusCode::TEMPORARY_REDIRECT,
+                        [(header::LOCATION, "/leak")],
+                    )
+                }),
+            )
+            .route(
+                "/leak",
+                any(move || {
+                    let flag = leak_flag.clone();
+                    async move {
+                        flag.store(true, Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let response = bootstrap_client()
+            .unwrap()
+            .post(format!("http://{address}/start"))
+            .json(&serde_json::json!({ "installation_proof": "test-proof" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert!(!followed.load(Ordering::SeqCst));
+        server.abort();
+    }
 
     #[test]
     fn installation_identity_has_stable_safe_shapes() {
