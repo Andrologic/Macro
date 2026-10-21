@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
-import type { WorkspaceScope } from './tauriIpc';
+import type { DbConversation, WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
 import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from './architectPlanReadContext';
@@ -2419,6 +2419,33 @@ describe('architectPlanService', () => {
     const listing = await service.listArchitectPlans(branchName);
     expect(listing.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
     expect(listing.activePlanId).not.toBe(created.id);
+  });
+
+  it('persists a blueprint workflow through canonical metadata without changing or activating the original', async () => {
+    const { createBlueprintWorkflowService } = await import('./blueprintWorkflowService');
+    const { defaultDesign } = await import('./agsdl/design');
+    const { BASE_SOURCE } = await import('./agsdlExecution/conformanceFixtures');
+    const blueprint = await service.createArchitectPlan({ branchName, planId: 'reusable-blueprint', label: 'Vérifier',
+      agsdl: { source: BASE_SOURCE, annexes: { guidance: 'Conserver les preuves.' },
+        design: { ...defaultDesign(), kind: 'blueprint' } } });
+    const workflow = createBlueprintWorkflowService({
+      getPlan: service.getArchitectPlan, createPlan: service.createArchitectPlan,
+      getConversation: async () => ({ project_id: 'web' }) as DbConversation,
+    });
+    const input = { blueprint: { branchName, planId: blueprint.id, revision: blueprint.revision! },
+      scope: { owner: { projectId: 'web', planId: 'workflow-snapshot', branch: branchName }, conversationId: 'workflow-chat' } };
+    const copy = await workflow.prepare(input);
+    service.clearArchitectPlanFrontendCaches();
+    expect((await service.getArchitectPlan(branchName, copy.id))?.agsdl?.source).toBe(BASE_SOURCE);
+    expect((await service.getArchitectPlan(branchName, copy.id))?.agsdl?.design?.origin).toEqual({
+      branchName, planId: blueprint.id, revision: blueprint.revision!, name: 'Vérifier',
+    });
+    expect((await service.listArchitectPlans(branchName)).activePlanId).toBe(blueprint.id);
+    expect(await service.getArchitectPlan(branchName, blueprint.id)).toEqual(blueprint);
+    await service.updateArchitectPlan({ branchName, planId: blueprint.id, expectedAgsdlRevision: 1,
+      agsdl: { ...blueprint.agsdl!, source: '{}' } });
+    expect((await workflow.prepare(input)).agsdl!.source).toBe(BASE_SOURCE);
+    expect((await service.listArchitectPlans(branchName)).plans.filter((plan: ArchitectPlanSummary) => plan.id === copy.id)).toHaveLength(1);
   });
 
   it('persists 0.2 design intent outside the unchanged closed source and includes metadata in size limits', async () => {

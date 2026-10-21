@@ -5,7 +5,7 @@ export interface DesignMetadata {
   context: string;
   rules: Array<{ id: string; title: string; instructions: string }>;
   requirements: Array<{ id: string; label: string; description: string; value: string; targetPath?: string }>;
-  origin?: { planId: string; name: string; revision: number };
+  origin?: { planId: string; name: string; revision: number; branchName?: string };
 }
 export interface AgsdlDisplayMetadata {
   title?: string;

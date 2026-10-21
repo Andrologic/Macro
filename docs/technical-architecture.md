@@ -2105,6 +2105,12 @@ Ce document ne doit pas être mis à jour pour :
 
 ### Conception AgSDL et blueprints
 
+Le raccord de lancement sans interface est défini dans
+[Blueprint workflow launch](blueprint-workflow-launch.md). Il copie un blueprint
+dans les métadonnées du projet cible, puis passe par les intentions natives et
+le moteur existant. La provenance conserve aussi la branche du blueprint. Ce
+service ne crée pas de second moteur ni de stockage de workflows parallèle.
+
 Les informations de conception Macro sont stockées dans
 `root.annotations.macroDesign`, version 1 : nature du document, objectif, contexte,
 règles, informations à compléter et provenance. Les modifications utilisent les
