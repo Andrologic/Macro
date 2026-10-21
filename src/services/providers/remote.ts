@@ -316,12 +316,6 @@ export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): P
   writeStoredMCPServers(normalizeMCPServerSettingsInput(settings));
 };
 
-export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
-  remoteUnsupported('mcpDiscoverTools');
-
-export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
-  remoteUnsupported('mcpCallTool');
-
 export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = async () =>
   remoteUnsupported('mcpRuntimeGetSnapshot');
 
@@ -486,8 +480,6 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
-  mcpDiscoverTools,
-  mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
   mcpStoreOAuthClientSecret,

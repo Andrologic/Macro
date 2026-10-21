@@ -105,11 +105,10 @@ pub mod skills {
 
 pub mod mcp {
     pub use crate::commands::mcp::{
-        McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpElicitationAction,
-        McpElicitationAnswer, McpElicitationPrompt, McpInteractionRequest, McpInteractionResponse,
-        McpProtocolEra, McpProtocolMode, McpRuntimeKey, McpRuntimeSelector,
-        McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto,
-        McpToolDto, McpTransportDto,
+        McpCallToolResponse, McpCatalogDto, McpElicitationAction, McpElicitationAnswer,
+        McpElicitationPrompt, McpInteractionRequest, McpInteractionResponse, McpProtocolEra,
+        McpProtocolMode, McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot,
+        McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
     };
 }
 

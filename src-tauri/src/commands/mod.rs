@@ -23,7 +23,10 @@ pub use crate::core::workspace_execution::{
     WorkspaceProjectMount, WorkspaceToolExecutionOptions,
 };
 #[doc(hidden)]
-pub use external_apps::{__cmd__list_external_apps, __cmd__open_external_target};
+pub use external_apps::{
+    __cmd__list_external_apps, __cmd__open_external_target,
+    __tauri_command_name_list_external_apps, __tauri_command_name_open_external_target,
+};
 pub use external_apps::{
     list_external_apps, open_external_target, ExternalAppCatalogDto, ExternalAppOptionDto,
 };

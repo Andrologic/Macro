@@ -143,7 +143,6 @@ export type { ManualFeatureMergeWorkflowRepositoryDto } from './ManualFeatureMer
 export type { ManualModelReasoningInput } from './ManualModelReasoningInput';
 export type { McpCallToolResponse } from './McpCallToolResponse';
 export type { McpCatalogDto } from './McpCatalogDto';
-export type { McpDiscoverToolsResponse } from './McpDiscoverToolsResponse';
 export type { McpElicitationAction } from './McpElicitationAction';
 export type { McpElicitationAnswer } from './McpElicitationAnswer';
 export type { McpElicitationPrompt } from './McpElicitationPrompt';

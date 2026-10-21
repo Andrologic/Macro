@@ -1172,14 +1172,6 @@
       "families": [
         "mcp"
       ],
-      "name": "McpDiscoverToolsResponse",
-      "origin": "macro_lib::commands::mcp::types::McpDiscoverToolsResponse",
-      "path": "McpDiscoverToolsResponse.ts"
-    },
-    {
-      "families": [
-        "mcp"
-      ],
       "name": "McpElicitationAction",
       "origin": "macro_lib::commands::mcp::interaction::McpElicitationAction",
       "path": "McpElicitationAction.ts"
