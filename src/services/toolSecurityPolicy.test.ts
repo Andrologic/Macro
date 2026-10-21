@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  buildToolRiskLevelSystemInstruction,
   evaluateToolSecurity,
   filterDeniedToolIdsForRiskLevel,
 } from "./toolSecurityPolicy";
@@ -310,6 +311,51 @@ describe("toolSecurityPolicy", () => {
         expect(result.normalizedCall.canApproveForConversation).toBe(false);
       }
     }
+  });
+
+  it("requires a fresh approval before Git staging or committing can run local commands", () => {
+    for (const riskLevel of ["strict", "balanced", "yolo"] as const) {
+      for (const [toolId, args] of [
+        ["git_add", { repo_path: "/repo", paths: ["src/a.ts"] }],
+        ["git_commit", { repo_path: "/repo", message: "fix: example", stage_all: true }],
+      ] as const) {
+        const result = evaluateToolSecurity(toolId, args, {
+          mode: "Implement",
+          riskLevel,
+          workspacePath: "/repo",
+          grants: [{
+            toolId,
+            rememberKey: "path:/repo",
+            createdAt: "2026-08-24T00:00:00.000Z",
+          }],
+        });
+
+        expect(result.decision).toBe("ask");
+        expect(result.normalizedCall.actionGroup).toBe("escape");
+        expect(result.normalizedCall.summary).toContain("may run");
+        expect(result.normalizedCall.canApproveForConversation).toBe(false);
+      }
+      expect(evaluateToolSecurity(
+        "git_add",
+        { repo_path: "/repo", paths: ["src/a.ts"] },
+        { mode: "Implement", riskLevel, workspacePath: "/repo" },
+      ).normalizedCall.detail).toBe("/repo: src/a.ts");
+      expect(evaluateToolSecurity(
+        "git_commit",
+        { repo_path: "/repo", message: "fix: example" },
+        { mode: "Implement", riskLevel, workspacePath: "/repo" },
+      ).normalizedCall.detail).toBe("/repo: stage all changes and commit; fix: example");
+      expect(filterDeniedToolIdsForRiskLevel(["git_add", "git_commit"], "strict", "Implement")).toEqual(["git_add", "git_commit"]);
+      expect(buildToolRiskLevelSystemInstruction(riskLevel, "Implement")).toContain(
+        "every git_add and git_commit call requires explicit user approval",
+      );
+    }
+
+    expect(evaluateToolSecurity(
+      "git_add",
+      { repo_path: "/other", paths: ["file.txt"] },
+      { mode: "Implement", riskLevel: "balanced", workspacePath: "/repo" },
+    ).decision).toBe("deny");
   });
 
   it("allows every agent mode to create a terminal outside its workspace", () => {

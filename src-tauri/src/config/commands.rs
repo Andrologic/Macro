@@ -1,3 +1,4 @@
+use super::manager::ReloadOutcome;
 use super::{
     ConfigApiError, ConfigChangeSource, ConfigDocument, ConfigDocumentKind, ConfigManager,
     ConfigPatchRequest, ConfigPatchResult, ConfigScope, ConfigSnapshot, ConfigValidationResult,
@@ -249,25 +250,29 @@ pub async fn config_reload(
     kind: ConfigDocumentKind,
     scope: Option<ConfigScope>,
 ) -> Result<ConfigDocument, ConfigApiError> {
-    let outcome = manager
-        .reload(
-            kind,
-            scope.unwrap_or_default(),
-            ConfigChangeSource::UserInterface,
-        )
-        .await?;
+    let outcome = reload_config_from_disk(&manager, kind, scope.unwrap_or_default()).await?;
     if outcome.invalid {
         let _ = app.emit(EVENT_INVALID, &outcome.document);
+    } else if let Some(pending) = &outcome.pending {
+        let _ = app.emit(EVENT_PENDING, pending);
     } else if outcome.changed {
         let _ = app.emit(EVENT_CHANGED, &outcome.document);
-    }
-    if let Some(pending) = &outcome.pending {
-        let _ = app.emit(EVENT_PENDING, pending);
     }
     if outcome.restart_required {
         let _ = app.emit(EVENT_RESTART, &outcome.document);
     }
     Ok(outcome.document)
+}
+
+async fn reload_config_from_disk(
+    manager: &ConfigManager,
+    kind: ConfigDocumentKind,
+    scope: ConfigScope,
+) -> Result<ReloadOutcome, ConfigApiError> {
+    // A reload observes bytes on disk. Clicking Reload does not authorize those bytes.
+    manager
+        .reload(kind, scope, ConfigChangeSource::ExternalEditor)
+        .await
 }
 
 #[tauri::command]
@@ -386,6 +391,38 @@ mod tests {
     use super::*;
     use crate::config::JsonPatchOperation;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn reload_command_keeps_external_tool_policy_change_pending() {
+        let temp = tempfile::tempdir().expect("temporary config root");
+        let manager = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .expect("config manager");
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools document");
+        let mut external = document.value;
+        external["builtIn"] = json!({"terminal_run": false});
+        std::fs::write(&document.file_path, serde_json::to_vec(&external).unwrap())
+            .expect("external editor writes tools document");
+
+        let outcome =
+            reload_config_from_disk(&manager, ConfigDocumentKind::Tools, ConfigScope::User)
+                .await
+                .expect("reload external file");
+
+        let pending = outcome.pending.expect("sensitive change stays pending");
+        assert_eq!(pending.source, ConfigChangeSource::ExternalEditor);
+        assert!(pending
+            .changed_paths
+            .contains(&"/builtIn/terminal_run".to_string()));
+        assert!(
+            manager.get_snapshot(&[]).await.unwrap().effective["tools"]["builtIn"]["terminal_run"]
+                .is_null()
+        );
+        assert_eq!(manager.list_pending_changes().await[0].id, pending.id);
+    }
 
     #[test]
     fn project_and_pending_documents_keep_referenced_secrets_alive() {

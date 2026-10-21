@@ -178,6 +178,27 @@ describe('ToolApprovalFooter', () => {
     expect(onDeny).toHaveBeenCalledWith('Stay inside the repo only.');
   });
 
+  it('shows Git staging and commit details with one-time approval only', async () => {
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+    const approval = {
+      conversationId: 'conv-1', assistantMessageId: 'msg-1', toolCallId: 'tool-1',
+      toolId: 'git_commit', actionGroup: 'escape' as const, riskLevel: 'balanced' as const,
+      summary: 'Create a Git commit. Staging may run filters; committing may run hooks.',
+      detail: '/repo: stage all changes and commit; fix: example',
+      rememberKey: 'path:/repo', canApproveForConversation: false,
+    };
+    await act(async () => {
+      root?.render(<ToolApprovalFooter pendingApproval={approval}
+        onAllowOnce={() => {}} onAllowForConversation={() => {}} onDeny={() => {}} />);
+    });
+
+    expect(container?.textContent).toContain('Requested details');
+    expect(container?.textContent).toContain('stage all changes and commit');
+    expect(container?.textContent).toContain('Staging may run filters');
+    expect(container?.textContent).toContain('Allow once');
+    expect(container?.textContent).not.toContain('Allow for this conversation');
+  });
+
   it('keeps the same request draft but resets it for every identity change', async () => {
     const { ToolApprovalFooter } = await loadToolApprovalFooter();
     const onDeny = mock(() => undefined);
@@ -244,12 +265,13 @@ describe('ToolApprovalFooter', () => {
               assistantMessageId: 'msg-2',
               toolCallId: 'tool-2',
               toolId: 'git_commit',
-              actionGroup: 'change',
+              actionGroup: 'escape',
               riskLevel: 'yolo',
               isDestructive: false,
-              summary: 'Create a git commit',
-              detail: '.',
+              summary: 'Create a Git commit. Staging may run filters; committing may run hooks.',
+              detail: '.: stage all changes and commit',
               rememberKey: 'path:.',
+              canApproveForConversation: false,
             }}
             onAllowOnce={() => undefined}
             onAllowForConversation={() => undefined}
@@ -261,7 +283,7 @@ describe('ToolApprovalFooter', () => {
     });
 
     expect(container?.textContent).toContain('Web');
-    expect(container?.textContent).toContain('Modify');
+    expect(container?.textContent).toContain('System');
     expect(container?.querySelector('[data-icon="lock"]')).not.toBeNull();
     expect(container?.querySelector('[data-icon="zap"]')).not.toBeNull();
   });

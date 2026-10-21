@@ -124,7 +124,6 @@ const ToolApprovalRequestFooter: React.FC<ToolApprovalFooterProps> = ({
                 pendingApproval.toolId === 'delete' ||
                 pendingApproval.toolId === 'list' ||
                 pendingApproval.toolId === 'git_add' ||
-                pendingApproval.toolId === 'git_commit' ||
                 pendingApproval.toolId === 'git_checkout' ||
                 pendingApproval.toolId === 'git_merge' ||
                 pendingApproval.toolId === 'git_reset' ||
