@@ -2,7 +2,8 @@ import { expect, test, spyOn } from 'bun:test';
 import { assertProducerPage, assertProducerTrace, expectedProducerTrace, createProducerFixture, runProducerRecipe, type ProducerSample } from './connect-producer-fixture';
 import { parseProducerArguments, projectProducerSamples, producerSourceFingerprint } from './connect-producer';
 import { contractHashes, validateReport } from '../../contracts/macro-connect/metrics/v1/validate.mjs';
-import { ConversationCaptures } from '../../src/services/macroPilot/conversationCaptures';
+import { ConversationCaptures, ConversationCaptureError } from '../../src/services/macroPilot/conversationCaptures';
+import { ConversationInteractions } from '../../src/services/macroPilot/conversationInteractions';
 import { ContentHost } from '../../src/services/macroPilot/contentHost';
 import { profiles } from '../../contracts/macro-connect/metrics/v1/fixtures.mjs';
 
@@ -276,5 +277,53 @@ test('returned delivery envelope and response exchange identities are checked be
     });
     try { await expect(runProducerRecipe('history-pagination', 100)).rejects.toThrow(/producer/); }
     finally { altered.mockRestore(); }
+  }
+});
+
+
+test('required active-history preparation rejects a first public unavailable before reset', async () => {
+  const original = ConversationCaptures.prototype.conversationRead;
+  for (const scenario of ['idle-hidden', 'visible-unrelated-update', 'foreground-reconnect']) {
+    let attempts = 0;
+    const altered = spyOn(ConversationCaptures.prototype, 'conversationRead').mockImplementation(function (this: ConversationCaptures, ...args) {
+      attempts++;
+      return attempts === 1 ? Promise.reject(new ConversationCaptureError('unavailable')) : original.apply(this, args);
+    });
+    try {
+      await expect(runProducerRecipe(scenario, 100)).rejects.toThrow(/producer preparation failed: active history/);
+      expect(attempts).toBe(1);
+    } finally { altered.mockRestore(); }
+  }
+});
+
+test('other-history and interaction preparations require public success before reset', async () => {
+  const original = ConversationCaptures.prototype.conversationRead;
+  const other = spyOn(ConversationCaptures.prototype, 'conversationRead').mockImplementation(function (this: ConversationCaptures, ...args) {
+    return args[1].conversation_id === 'synthetic-other' ? Promise.reject(new ConversationCaptureError('unavailable')) : original.apply(this, args);
+  });
+  try { await expect(runProducerRecipe('visible-unrelated-update', 100)).rejects.toThrow(/producer preparation failed: other history/); }
+  finally { other.mockRestore(); }
+  const interaction = spyOn(ConversationInteractions.prototype, 'handle').mockRejectedValue(new ConversationCaptureError('unavailable'));
+  try {
+    await expect(runProducerRecipe('visible-unrelated-update', 100)).rejects.toThrow(/producer preparation failed: interactions/);
+    expect(interaction).toHaveBeenCalledTimes(1);
+  } finally { interaction.mockRestore(); }
+});
+
+test('host initialization and preparation failures propagate before reset including extra targets', async () => {
+  for (const method of ['initialize', 'prepare'] as const) {
+    const failure = new Error(`injected host ${method} failure`);
+    const original = ContentHost.prototype[method];
+    for (const failedCall of [1, 2, 3]) {
+      let attempts = 0;
+      const altered = spyOn(ContentHost.prototype, method).mockImplementation(function (this: ContentHost) {
+        attempts++;
+        return attempts === failedCall ? Promise.reject(failure) : original.call(this);
+      });
+      try {
+        await expect(runProducerRecipe('multiple-targets', 100)).rejects.toBe(failure);
+        expect(attempts).toBe(failedCall);
+      } finally { altered.mockRestore(); }
+    }
   }
 });

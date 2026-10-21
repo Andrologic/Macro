@@ -305,11 +305,15 @@ export async function runProducerRecipe(scenario: string, size: number): Promise
   assert(Object.hasOwn(profiles.scenarios, scenario), 'unknown recipe');
   const h = createProducerFixture(size); const extra: ReturnType<typeof createProducerFixture>[] = [];
   let slowRead: Promise<any> | undefined; const checks: string[] = []; const offsets: number[] = [];
+  const requirePreparedResponse = (reply: { response: { type: string } }, step: string) => {
+    assert.equal(reply.response.type, 'response', `producer preparation failed: ${step}`);
+  };
   try {
     if (scenario !== 'cold-open-return') await h.prepare();
-    if (['idle-hidden', 'visible-unrelated-update', 'foreground-reconnect'].includes(scenario)) await h.read();
+    if (['idle-hidden', 'visible-unrelated-update', 'foreground-reconnect'].includes(scenario)) requirePreparedResponse(await h.read(), 'active history');
     if (scenario === 'visible-unrelated-update') {
-      await h.read('other'); await h.deliver('conversation.interactions', { ref: h.ref() });
+      requirePreparedResponse(await h.read('other'), 'other history');
+      requirePreparedResponse(await h.deliver('conversation.interactions', { ref: h.ref() }), 'interactions');
     }
     if (scenario === 'multiple-targets') {
       extra.push(createProducerFixture(size, 'pc-b'), createProducerFixture(size, 'pc-slow'));
