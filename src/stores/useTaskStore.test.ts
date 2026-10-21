@@ -762,6 +762,51 @@ describe('getPlanActivationCandidateTask', () => {
 });
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('refreshes native Agent Tasks in place, marks read failures stale and rejects legacy status writes', async () => {
+    const { workflowTaskFixture } = await import('../services/workflowAgentTasks.fixtures');
+    const { projectWorkflowAgentTasks } = await import('../services/workflowAgentTasks');
+    const f = await workflowTaskFixture();
+    const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+    const { useTaskStore, getTaskLifecycleCapabilities } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [buildTask(), ...tasks] });
+    let fail = false;
+    let release: (() => void) | undefined;
+    installTauriRuntimeMock(async command => {
+      if (command === 'execution_read_snapshot') {
+        if (fail) throw new Error('Native read interrupted');
+        if (release !== undefined) await new Promise<void>(resolve => { release = resolve; });
+        return f.snapshot;
+      }
+      if (command === 'execution_read_projection') return f.projection;
+      if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
+      throw new Error(`Unexpected ${command}`);
+    });
+    f.projection.activations[0] = f.activation('1', 'terminal', 'completed');
+    f.projection.cursor = '11' as typeof f.projection.cursor;
+    await useTaskStore.getState().refreshWorkflowTasks();
+    expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.status).toBe('Completed');
+    expect(useTaskStore.getState().tasks).toHaveLength(3);
+    expect(getTaskLifecycleCapabilities(tasks[0]).canRename).toBe(false);
+    await expect(useTaskStore.getState().setTaskStatus(tasks[0].id, 'InProgress')).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    await expect(useTaskStore.getState().renameTask(tasks[0].id, 'Other')).rejects.toMatchObject({ code: 'NATIVE_WORKFLOW_OWNED' });
+    fail = true;
+    await useTaskStore.getState().refreshWorkflowTasks();
+    const stale = useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)!;
+    expect(stale.status).toBe('Blocked'); expect(stale.workflow_execution?.stale).toBe(true);
+    expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === 'task-1')?.status).toBe('Pending');
+    fail = false;
+    await useTaskStore.getState().refreshWorkflowTasks();
+    expect(useTaskStore.getState().tasks.find((task: ImplementTask) => task.id === tasks[0].id)?.workflow_execution?.stale).toBeUndefined();
+    release = () => undefined;
+    const pending = useTaskStore.getState().refreshWorkflowTasks();
+    await flushPromises();
+    appStoreState.selectedProjectId = 'other-project';
+    useTaskStore.setState({ tasks: [buildTask({ id: 'other-task' })] });
+    release();
+    await pending;
+    expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['other-task']);
+  });
+
   it('does not continue catalog recovery after the bootstrap owner stops', async () => {
     let release!: () => void;
     let entered!: () => void;

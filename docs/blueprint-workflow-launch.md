@@ -82,9 +82,62 @@ It does not infer missing provider settings or copy credentials.
 A flow with an entry currently needs its initial text prompt. A graphless system
 can be captured without an initial delivery; subsequent input uses the existing
 delivery API. Passing a prompt to a graphless Start is rejected rather than
-silently dropping it. Human input steps, presets, parallel composition, workflow
-Task projections, creation of Git worktrees, and UI button wiring are outside
-this backend lot.
+silently dropping it. Human input steps, presets, parallel composition,
+creation of Git worktrees, and UI button wiring remain outside this backend lot.
+
+## Native Agents in the Operate task catalogue
+
+`workflowAgentTasks.ts` projects native Agent instances into the existing Task
+contract. A copied system is identified by `design.kind: system` and its retained
+blueprint origin. Library blueprints produce no execution Tasks. Discovery includes
+draft copies because the native journal, not the editable plan status, proves
+execution. An unreadable AgSDL plan rejects a catalogue refresh instead of silently
+removing its Tasks. Known workflow branches remain discovery candidates through
+discovery outages; an unreadable index on such a branch rejects the refresh too.
+Existing rows remain available in the store.
+
+Each Task has `task_source: agsdl` and a `workflow_execution` reference containing
+the exact source revision, system Start ID, Agent instance ID, activation IDs and
+native cursor. Its ID is `task:agsdl:v1:<encoded-start-id>:<encoded-instance-id>`.
+Repeated visits, retries and deliveries to the same instance reuse that Task.
+Different executions remain separate. Pure, Call and Condition steps create no
+Agent Tasks. No duplicate database record or independent Task status is written.
+
+| Native Agent state | Task status | Requires attention |
+| --- | --- | --- |
+| Idle without a delivery | Blocked | No |
+| Queued | Pending | No |
+| Active | InProgress | No |
+| Pending approval | AwaitingResponse | Yes |
+| Uncertain | Blocked | Yes |
+| Stop requested or confirmed | Blocked | No |
+| Last visit completed | Completed | No |
+| Last visit failed | Failed | Yes |
+
+Unresolved work takes precedence over previous completed visits. Queue sequences
+are compared as exact decimal strings. All native projection pages and approvals
+must be read before deriving absence or completion. A stale cursor, mismatched
+source or incomplete approval read cannot publish a new Task projection.
+
+`useTaskStore.refreshWorkflowTasks()` refreshes only executions already present
+in the catalogue. Its lifecycle-owned monitor runs read-only checks every three
+seconds in Operate with a native runtime. Checks never overlap or submit work.
+A failed read preserves the last native reference, marks it stale and exposes
+the Task as Blocked with attention required. The next verified read restores its
+state. Responses from a previous project, older refresh or disposed lifecycle
+cannot replace current Tasks. New executions are discovered through the normal
+catalogue refresh.
+
+`loadTaskExecutionGraph()` opens that Task's exact captured run. Agent declarations
+and every matching flat flow step resolve to the same Task identity, without
+guessing from display names or the latest blueprint revision.
+
+These Tasks are supervision projections. They have no independent conversation
+or Git worktree. Legacy chat dispatch, startup, status mutation, review and merge
+paths reject them with `NATIVE_WORKFLOW_OWNED` before side effects. Selection does
+not block deferred messages belonging to another Chat conversation. Input,
+approval and Stop still belong to the existing native execution API; this lot
+does not add per-Agent UI controls or conversations.
 
 ## Validation
 
@@ -97,6 +150,11 @@ this backend lot.
   change the workflow copy or create an extra copy on retry.
 - The existing Rust `db::agsdl_execution::tests::intent_*` tests cover real SQLite
   atomic admission, reservations, file reopening and acknowledgement loss.
+- `workflowAgentTasks.test.ts`, `loadImplementTaskCatalog.test.ts` and
+  `workflowTaskMonitor.test.ts` cover identity reuse, distinct runs, pagination,
+  exact sequence ordering, native states and read-only refresh lifecycle.
+- Store, graph, startup and file review tests cover integration with Task
+  selection, failures, scope changes, deferred Chat messages and legacy guards.
 
 These automated checks do not claim a new live-provider or UI qualification.
 The backend can be integrated independently of the ongoing interface changes.

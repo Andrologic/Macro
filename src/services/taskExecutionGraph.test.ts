@@ -12,6 +12,27 @@ const path = projectViewer(authoredSource).graphs[0].cards.find(card => card.kin
 const snapshot = (id: string) => ({ systemStartId: id, source, authoredSource, associations: {}, versions: {} });
 afterEach(removeTauriRuntimeMock);
 
+it('opens the exact native Agent run directly, without historical Task hints or latest-run guessing', async () => {
+  const { workflowTaskFixture } = await import('./workflowAgentTasks.fixtures');
+  const { projectWorkflowAgentTasks } = await import('./workflowAgentTasks');
+  const f = await workflowTaskFixture();
+  const tasks = projectWorkflowAgentTasks(f.plan, f.snapshot, f.projection, []);
+  const seen: string[] = [];
+  installTauriRuntimeMock(mock(async command => {
+    seen.push(command);
+    if (command === 'execution_read_snapshot') return f.snapshot;
+    if (command === 'execution_read_projection') return f.projection;
+    if (command === 'execution_pending_approvals') return { approvals: [], incomplete: false };
+    throw new Error(`Unexpected ${command}`);
+  }));
+  const graph = await loadTaskExecutionGraph(tasks[0], tasks);
+  expect(graph?.selectedPath).toBe('/flow/steps/work');
+  expect(graph?.taskPaths['/agents/worker']).toBe(tasks[0].id);
+  expect(graph?.taskPaths['/flow/steps/work']).toBe(tasks[0].id);
+  expect(graph?.taskPaths['/agents/reviewer']).toBe(tasks[1].id);
+  expect(seen).toEqual(['execution_read_snapshot', 'execution_read_projection', 'execution_pending_approvals']);
+});
+
 it('opens only an exact historical task association, including a run on the next page', async () => {
   const seen: string[] = [];
   installTauriRuntimeMock(mock(async (command, args) => {

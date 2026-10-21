@@ -7,6 +7,7 @@ import {
   buildMergeWorkflowFailureState, toPlanFinalizationMergeWorkflowRuntimeState,
 } from './mergeWorkflow';
 import { overlayPersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
+import { assertLegacyTaskOwnership } from './workflowTaskOwnership';
 
 export async function loadTaskPlanFinalizationReview(
   ports: Pick<TaskWorkflowPorts, 'loadPlanReview'>,
@@ -33,6 +34,7 @@ export function createTaskReviewWorkflow(ports: TaskWorkflowPorts) {
     if (!task) {
       return null;
     }
+    assertLegacyTaskOwnership(task);
 
     const kind: MergeWorkflowKind = task.task_source === 'plan_finalization'
       ? 'plan_finalization'

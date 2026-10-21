@@ -7,6 +7,8 @@ import type {
 import { buildImplementTaskCatalog } from './implementTaskCatalog';
 import { createLoadImplementTaskCatalog } from './loadImplementTaskCatalog';
 import { installArchitectPlanRuntimePorts } from './architectPlanRuntimeService';
+import { loadWorkflowAgentTasks } from './workflowAgentTasks';
+import { workflowTaskFixture } from './workflowAgentTasks.fixtures';
 
 let releasePlanRuntimePorts: (() => void) | undefined;
 beforeEach(() => {
@@ -68,6 +70,87 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
 });
 
 describe('createLoadImplementTaskCatalog', () => {
+  it('discovers draft workflow copies, projects native agents and removes fallback duplicates', async () => {
+    const f = await workflowTaskFixture();
+    const load = createLoadImplementTaskCatalog({
+      getAppState: () => ({ selectedGroupId: null, selectedProjectId: null, projectGroups: [],
+        standaloneProjects: [{ id: 'project', name: 'Synthetic project', path: '/synthetic/project', directEdit: true }],
+        activeArchitectPlanId: null, activePlanContext: null, planNodes: [], predictedBranches: [] } as never),
+      listArchitectPlans: async () => ({ activePlanId: null, plans: [{ ...toSummary(f.plan), hasAgsdl: true }] }),
+      listArchitectPlanTargetBranches: async () => ['develop'], getArchitectPlan: async () => f.plan,
+      getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: value => String(value || 'develop'), buildImplementTaskCatalog,
+      loadWorkflowAgentTasks: (plans, projects) => loadWorkflowAgentTasks(plans, projects, f.ports),
+    });
+    const initial = await load([]);
+    expect(initial.tasks).toHaveLength(2);
+    expect(initial.tasks.every(task => task.task_source === 'agsdl')).toBe(true);
+    expect(initial.plans[0].taskCount).toBe(2);
+    expect(initial.plans[0].activeTaskCount).toBe(1);
+    const again = await load(initial.tasks);
+    expect(again.tasks.map(task => task.id)).toEqual(initial.tasks.map(task => task.id));
+    f.plan.agsdl!.design!.kind = 'blueprint';
+    expect((await load(initial.tasks)).tasks).toEqual([]);
+  });
+
+  it('preserves canonical workflow ownership when the active legacy projection still contains nodes', async () => {
+    const f = await workflowTaskFixture();
+    f.plan.status = 'in_progress';
+    f.plan.nodes = [{ id: 'legacy', title: 'Old node', description: '', type: 'task', status: 'pending', dependencies: [], projectId: 'project' }];
+    const load = createLoadImplementTaskCatalog({
+      getAppState: () => ({ selectedGroupId: null, selectedProjectId: null, projectGroups: [],
+        standaloneProjects: [{ id: 'project', name: 'Synthetic project', path: '/synthetic/project', directEdit: true }],
+        activeArchitectPlanId: f.plan.id, activePlanContext: f.plan, planNodes: f.plan.nodes, predictedBranches: [] } as never),
+      listArchitectPlans: async () => ({ activePlanId: f.plan.id, plans: [{ ...toSummary(f.plan), hasAgsdl: true }] }),
+      listArchitectPlanTargetBranches: async () => ['develop'], getArchitectPlan: async () => f.plan,
+      getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: value => String(value || 'develop'), buildImplementTaskCatalog,
+      loadWorkflowAgentTasks: (plans, projects) => loadWorkflowAgentTasks(plans, projects, f.ports),
+    });
+    const catalog = await load([]);
+    expect(catalog.tasks).toHaveLength(2);
+    expect(catalog.tasks.every(task => task.task_source === 'agsdl')).toBe(true);
+  });
+  it('rejects an unreadable workflow even when another plan loads successfully', async () => {
+    const f = await workflowTaskFixture();
+    const legacy = makePlan({ id: 'legacy', title: 'Legacy', status: 'in_progress', targetBranch: 'develop' });
+    let missing = false;
+    const load = createLoadImplementTaskCatalog({
+      getAppState: () => ({ selectedGroupId: null, selectedProjectId: null, projectGroups: [],
+        activeArchitectPlanId: null, activePlanContext: null, planNodes: [], predictedBranches: [] }),
+      listArchitectPlans: async () => ({ activePlanId: null, plans: [{ ...toSummary(f.plan), hasAgsdl: true }, toSummary(legacy)] }),
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getArchitectPlan: async (_branch, id) => {
+        if (id === legacy.id) return legacy;
+        if (missing) return null;
+        throw new Error('workflow metadata unavailable');
+      },
+      getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: value => String(value || 'develop'), buildImplementTaskCatalog,
+    });
+    await expect(load([])).rejects.toThrow('workflow metadata unavailable');
+    missing = true;
+    await expect(load([])).rejects.toThrow('could not be read');
+  });
+
+  it('retains known workflow branches through discovery outages and rejects their partial index reads', async () => {
+    const f = await workflowTaskFixture();
+    const existing = await loadWorkflowAgentTasks([f.plan], null, f.ports);
+    let failIndex = false;
+    const load = createLoadImplementTaskCatalog({
+      getAppState: () => ({ selectedGroupId: null, selectedProjectId: null, projectGroups: [],
+        activeArchitectPlanId: null, activePlanContext: null, planNodes: [], predictedBranches: [] }),
+      listArchitectPlanTargetBranches: async () => { throw new Error('discovery unavailable'); },
+      listArchitectPlans: async branch => {
+        if (branch === f.plan.targetBranch && failIndex) throw new Error('workflow index unavailable');
+        return { activePlanId: null, plans: branch === f.plan.targetBranch ? [{ ...toSummary(f.plan), hasAgsdl: true }] : [] };
+      },
+      getArchitectPlan: async () => f.plan,
+      getGitFlowBaseBranch: () => 'main', resolveTargetBranch: value => String(value || 'main'), buildImplementTaskCatalog,
+      loadWorkflowAgentTasks: (plans, projects) => loadWorkflowAgentTasks(plans, projects, f.ports),
+    });
+    expect((await load(existing)).tasks.map(task => task.id)).toEqual(existing.map(task => task.id));
+    failIndex = true;
+    await expect(load(existing)).rejects.toThrow('workflow index unavailable');
+  });
+
   it('uses persisted plan status for admission and rejects partial catalog reads', async () => {
     const plan = makePlan({ id: 'plan-direct', title: 'Direct', status: 'in_progress', targetBranch: 'develop',
       executionModesByProjectId: { web: 'direct' },

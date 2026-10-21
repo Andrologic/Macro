@@ -2110,6 +2110,9 @@ Le raccord de lancement sans interface est défini dans
 dans les métadonnées du projet cible, puis passe par les intentions natives et
 le moteur existant. La provenance conserve aussi la branche du blueprint. Ce
 service ne crée pas de second moteur ni de stockage de workflows parallèle.
+Le même document décrit la projection des instances d'agents natives dans le
+catalogue de tâches d'Operate. Les identités et états proviennent du journal
+natif ; les tâches ne déclenchent pas un second chat ni un worktree Git.
 
 Les informations de conception Macro sont stockées dans
 `root.annotations.macroDesign`, version 1 : nature du document, objectif, contexte,
