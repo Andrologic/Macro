@@ -18,11 +18,69 @@ const memory = () => {
     value = next; return true;
   } };
 };
+export type ProducerEvent = {
+  target: string; phase: string; kind: string; sequence: number; resource: string; revision: number; atMs: number; sha256: string;
+};
+export type ExpectedProducerEvent = Omit<ProducerEvent, 'sha256'>;
+/** Explicit baseline oracle, independent of the events observed from the host.
+ * Streams have independent sequences. There is no cross-target total order. */
+export function expectedProducerTrace(scenario: string): ExpectedProducerEvent[] {
+  const pair = (target: string, phase: string, atMs: number, revision: number, firstSequence: number, conversation = 'active'): ExpectedProducerEvent[] => [
+    { target, phase, atMs, revision, sequence: firstSequence, kind: 'conversations.changed', resource: 'instance' },
+    { target, phase, atMs, revision, sequence: firstSequence + 1, kind: 'conversation.resource_changed', resource: `synthetic-${conversation}` },
+  ];
+  if (scenario === 'visible-unrelated-update') return [
+    ...pair('pc-a', 'other-change', 1000, 2, 1, 'other'),
+    ...pair('pc-a', 'active-change', 2000, 3, 3),
+    ...pair('pc-a', 'error', 3000, 4, 5),
+    { target: 'pc-a', phase: 'interaction', atMs: 4000, revision: 2, sequence: 7, kind: 'conversation.interactions_changed', resource: 'synthetic-active' },
+    ...pair('pc-a', 'finish', 5000, 5, 8),
+    { target: 'pc-a', phase: 'finish', atMs: 5000, revision: 3, sequence: 10, kind: 'conversation.interactions_changed', resource: 'synthetic-active' },
+  ];
+  if (scenario === 'foreground-reconnect') {
+    // The ACK is lost at 500ms, but the stored event retains its original time.
+    return pair('pc-a', 'resumed', 500, 2, 1);
+  }
+  if (scenario === 'multiple-targets') return [
+    ...pair('pc-a', 'append-2000', 2000, 2, 1),
+    ...pair('pc-slow', 'append-2000', 2000, 2, 1),
+    ...pair('pc-slow', 'error-4000', 4000, 3, 3),
+  ];
+  assert(Object.hasOwn(profiles.scenarios, scenario), 'unknown trace recipe');
+  return [];
+}
+export function assertProducerTrace(events: ProducerEvent[], expected: ExpectedProducerEvent[]) {
+  const targets = [...new Set([...events, ...expected].map(event => event.target))].sort();
+  for (const target of targets) {
+    const stream = events.filter(event => event.target === target);
+    assert(stream.every((event, index) => event.sequence === index + 1), 'producer event sequence gap or duplicate');
+    const actual = stream.map(({ sha256: _hash, ...event }) => event);
+    assert.deepEqual(actual, expected.filter(event => event.target === target), `producer event trace mismatch: ${target}`);
+  }
+}
+/** Fixture user rows all fit 100 items in the existing byte bound. Exact
+ * cardinality/content/order is checked, not just membership of returned rows. */
+export function assertProducerPage(result: any, source: readonly DbMessage[], offset: number, snapshotId?: string) {
+  const rows = [...source].sort((a, b) => a.created_at.localeCompare(b.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  assert.equal(result.page.total, rows.length, 'producer page total mismatch');
+  assert.equal(result.page.offset, offset, 'producer page offset mismatch');
+  if (snapshotId) assert.equal(result.page.snapshot_id, snapshotId, 'producer continuation snapshot mismatch');
+  const expected = rows.slice(offset, offset + 100).map((row, index) => ({
+    message_id: row.id, position: offset + index, role: row.role, created_at: new Date(row.created_at).toISOString(),
+    completion: 'complete', content_state: 'complete', text: row.content,
+  }));
+  assert.deepEqual(result.items, expected, 'producer page window mismatch');
+  const nextOffset = offset + expected.length;
+  if (nextOffset < rows.length) assert(typeof result.page.next_cursor === 'string' && result.page.next_cursor.length > 0, 'producer page missing continuation');
+  else assert.equal(result.page.next_cursor, null, 'producer page unexpected continuation');
+  return nextOffset;
+}
 export type ProducerSample = {
   scenario: string; size: number; sourceCalls: Record<string, number>; sourceRows: number;
   newCaptures: number; captureApiCalls: number; captureApiMs: number; captureApiFailures: number;
   usefulBytes: number; serializedBytes: number; observations: number; deliveries: number;
-  results: Record<string, number>; events: Array<{ target: string; phase: string; kind: string; sequence: number; resource: string; sha256: string }>;
+  results: Record<string, number>; events: ProducerEvent[]; expectedEvents: ExpectedProducerEvent[];
+  observationTrace: Array<{ target: string; phase: string; atMs: number }>;
   eventAttempts: ProducerSample['events']; elapsedMs: number; checks: string[]; pageOffsets: number[];
 };
 export function createProducerFixture(size: number, target = 'pc-a') {
@@ -32,6 +90,8 @@ export function createProducerFixture(size: number, target = 'pc-a') {
   const calls: Record<string, number> = {}; const results: Record<string, number> = {};
   const events: ProducerSample['events'] = []; const attempts: ProducerSample['events'] = [];
   const knownCaptures = new Set<string>();
+  const cursorOffsets = new Map<string, number>(); const cursorsByOffset = new Map<string, string>();
+  const observationTrace: ProducerSample['observationTrace'] = [];
   const allMessages: DbMessage[] = ['active', 'other'].flatMap(conversation => fixtureMessages(size, conversation).map((message: any) => ({
     ...message, token_count: null, hidden_context: null, tool_traces_json: null, provider_input_items_json: null, provider_turn_state_json: null,
   })));
@@ -103,9 +163,21 @@ export function createProducerFixture(size: number, target = 'pc-a') {
   const read = async (conversation = 'active', continuation?: { snapshot_id: string; cursor: string }): Promise<any> => {
     const reply = await deliver('conversation.read', { ref: ref(conversation), ...(continuation ? { continuation } : {}) });
     if (reply.response.type === 'response') {
-      const items = reply.response.result.items as Array<{ message_id: string; text?: string }>;
-      const expected = new Map(allMessages.filter(message => message.conversation_id === `synthetic-${conversation}`).map(message => [message.id, message.content]));
-      assert(items.every(item => item.text === expected.get(item.message_id)), 'public content changed');
+      const page = reply.response.result.page;
+      const source = allMessages.filter(message => message.conversation_id === `synthetic-${conversation}`);
+      const key = (cursor: string) => JSON.stringify([conversation, page.snapshot_id, cursor]);
+      const expectedOffset = continuation ? cursorOffsets.get(JSON.stringify([conversation, continuation.snapshot_id, continuation.cursor])) : 0;
+      assert.notEqual(expectedOffset, undefined, 'producer returned success for unknown continuation');
+      const nextOffset = assertProducerPage(reply.response.result, source, expectedOffset!, continuation?.snapshot_id);
+      if (page.next_cursor) {
+        const position = JSON.stringify([conversation, page.snapshot_id, nextOffset]);
+        const previous = cursorsByOffset.get(position);
+        if (previous) assert.equal(page.next_cursor, previous, 'producer replay cursor changed');
+        cursorsByOffset.set(position, page.next_cursor);
+        const oldOffset = cursorOffsets.get(key(page.next_cursor));
+        if (oldOffset !== undefined) assert.equal(oldOffset, nextOffset, 'producer cursor reused at another offset');
+        cursorOffsets.set(key(page.next_cursor), nextOffset);
+      }
     }
     return reply;
   };
@@ -114,23 +186,24 @@ export function createProducerFixture(size: number, target = 'pc-a') {
     await host.flush(async event => {
       assert(validateContentMessage(event), 'invalid producer event'); record(event);
       const scope = event.change.scope;
-      const item = { target, phase, kind: event.change.kind, sequence: event.sequence, sha256: createHash('sha256').update(JSON.stringify(event)).digest('hex'), resource: 'conversation_id' in scope ? String(scope.conversation_id) : 'instance' };
+      const item = { target, phase, kind: event.change.kind, sequence: event.sequence, revision: event.change.revision, atMs: Date.parse(event.occurred_at) - epoch, sha256: createHash('sha256').update(JSON.stringify(event)).digest('hex'), resource: 'conversation_id' in scope ? String(scope.conversation_id) : 'instance' };
       attempts.push(item);
       if (lose) { lose = false; throw new Error('Injected lost fixture acknowledgement'); }
       events.push(item);
     });
   };
-  const observe = async () => { observations++; await host.observe(); await flush(); };
+  const observeOnly = async () => { observations++; observationTrace.push({ target, phase, atMs: now - epoch }); await host.observe(); };
+  const observe = async () => { await observeOnly(); await flush(); };
   const reset = () => {
     for (const key of Object.keys(calls)) delete calls[key]; for (const key of Object.keys(results)) delete results[key];
     sourceRows = newCaptures = captureApiCalls = captureApiMs = captureApiFailures = usefulBytes = serializedBytes = observations = deliveries = 0;
-    events.length = 0; attempts.length = 0;
+    events.length = 0; attempts.length = 0; observationTrace.length = 0;
   };
   const sample = (scenario: string, elapsedMs: number, checks: string[], pageOffsets: number[] = []): ProducerSample => ({
     scenario, size, sourceCalls: { ...calls }, sourceRows, newCaptures, captureApiCalls, captureApiMs, captureApiFailures,
-    usefulBytes, serializedBytes, observations, deliveries, results: { ...results }, events: [...events], eventAttempts: [...attempts], elapsedMs, checks, pageOffsets,
+    usefulBytes, serializedBytes, observations, deliveries, results: { ...results }, events: [...events], expectedEvents: expectedProducerTrace(scenario), observationTrace: [...observationTrace], eventAttempts: [...attempts], elapsedMs, checks, pageOffsets,
   });
-  return { host, captures, prepare, deliver, read, observe, flush, reset, ref, events, attempts, sample, allMessages,
+  return { host, captures, prepare, deliver, read, observe, observeOnly, flush, reset, ref, events, attempts, sample, allMessages,
     setPhase: (value: string) => { phase = value; }, setTime: (offset: number) => { now = epoch + offset; },
     append: (conversation = 'active') => { const row = allMessages.find(message => message.conversation_id === `synthetic-${conversation}`)!;
       allMessages.push({ ...row, id: `append-${conversation}-${++appendSequence}`, content: 'synthetic appended content', created_at: date }); },
@@ -187,15 +260,9 @@ export async function runProducerRecipe(scenario: string, size: number): Promise
           assert(catalog.response.result.items.some((item: any) => item.ref.conversation_id === 'synthetic-active' && item.provider_error?.message === 'provider_failed'), 'error state lost');
         }
       }
-      assert(h.events.some(event => event.phase === 'error' && event.kind === 'conversation.resource_changed' && event.resource === 'synthetic-active'), 'error invalidation lost');
-      assert(h.events.filter(event => event.phase === 'other-change' && event.kind === 'conversation.resource_changed').every(event => event.resource === 'synthetic-other'), 'unrelated update invalidated active resource');
-      assert(h.events.some(event => event.phase === 'interaction' && event.kind === 'conversation.interactions_changed'), 'interaction event lost');
-      assert(h.events.some(event => event.phase === 'finish' && event.kind === 'conversation.interactions_changed'), 'finish state change lost');
-      const order = h.events.filter(event => ['error', 'interaction', 'finish'].includes(event.phase)).map(event => seen.indexOf(event.phase));
-      assert(order.every((value, index) => !index || value >= order[index - 1]), 'events reordered');
-      checks.push('error-state-retained', 'error-invalidation-retained', 'unrelated-resource-isolated', 'interaction-and-finish-invalidations-ordered');
+      checks.push('error-state-retained', 'exhaustive-event-trace');
     } else if (scenario === 'foreground-reconnect') {
-      h.setTime(500); h.setPhase('disconnected'); h.append(); await h.host.observe();
+      h.setTime(500); h.setPhase('disconnected'); h.append(); await h.observeOnly();
       await assert.rejects(h.flush(true), /Injected lost/);
       const lost = { ...h.attempts[0] }; h.setTime(1500); h.setPhase('resumed'); await h.flush();
       assert.equal(h.events[0].sequence, lost.sequence, 'lost ACK event changed');
@@ -207,7 +274,9 @@ export async function runProducerRecipe(scenario: string, size: number): Promise
       const first = await h.read(); assert.equal(first.response.type, 'response');
       let page = first.response.result; offsets.push(page.page.offset);
       let lastContinuation: { snapshot_id: string; cursor: string } | undefined;
-      for (let i = 0; i < 2 && page.page.next_cursor; i++) {
+      const expectedPages = Math.min(2, Math.ceil(size / 100) - 1);
+      for (let i = 0; i < expectedPages; i++) {
+        assert(page.page.next_cursor, 'history ended before expected window');
         h.setTime((i + 1) * 2000);
         lastContinuation = { snapshot_id: page.page.snapshot_id, cursor: page.page.next_cursor };
         const next = await h.read('active', lastContinuation); assert.equal(next.response.type, 'response');
@@ -221,29 +290,52 @@ export async function runProducerRecipe(scenario: string, size: number): Promise
       h.setTime(300001);
       const expired = await h.read('active', lastContinuation ?? { snapshot_id: page.page.snapshot_id, cursor: 'synthetic:missing' });
       assert.equal(expired.response.code, 'snapshot_expired');
-      checks.push('public-page-content-and-offsets', 'expiration-refused', ...(lastContinuation ? ['stale-continuation-refused'] : ['history-fits-one-page']));
+      assert.deepEqual(offsets, Array.from({ length: expectedPages + 1 }, (_, index) => index * 100), 'history window offsets mismatch');
+      if (!lastContinuation) assert(size <= 100, 'multi-page history falsely considered complete');
+      checks.push('exact-public-page-windows', 'expiration-refused', ...(lastContinuation ? ['stale-continuation-refused'] : ['history-fits-one-page']));
     } else if (scenario === 'multiple-targets') {
       const [healthy, slow] = extra; slow.block(); let settled = false;
       slowRead = slow.read().then(result => { settled = true; return result; });
-      const [firstHealthy] = await bounded(Promise.all([h.read(), healthy.read()]));
+      await bounded(Promise.all([h.read(), healthy.read()]));
       assert.equal(settled, false, 'slow barrier not exercised');
       slow.release(); assert.equal((await bounded(slowRead)).response.type, 'response');
-      slow.failSource(); slow.setTime(4000); assert.equal((await slow.read()).response.code, 'unavailable');
-      const page = firstHealthy.response.result.page;
-      const continuation = page.next_cursor ? { snapshot_id: page.snapshot_id, cursor: page.next_cursor } : undefined;
+      // Canonical data mutations at 2000ms, followed by their real observations.
+      slow.setTime(2000); slow.setPhase('append-2000'); slow.append(); await slow.observe();
+      h.setTime(2000); h.setPhase('append-2000'); h.append(); await h.observe();
+      const refreshed = await h.read(); assert.equal(refreshed.response.type, 'response');
+      assert.equal(refreshed.response.result.page.revision, 2, 'healthy append revision missing');
+      slow.setTime(4000); slow.setPhase('error-4000');
+      slow.activity({ activity: 'error', generatingMessageId: null, providerFailure: { category: 'unknown', message: 'provider_failed', recovery: 'review_before_retry' } });
+      await slow.observe();
+      const slowCatalog = await slow.deliver('conversations.list', { instance_id: 'pc-slow', kind: 'conversation' });
+      assert.equal(slowCatalog.response.type, 'response');
+      assert(slowCatalog.response.result.items.some((item: any) => item.ref.conversation_id === 'synthetic-active' && item.provider_error?.message === 'provider_failed'), 'slow public error state missing');
+      // Additional port failure, separate from the canonical public error state.
+      slow.failSource(); assert.equal((await slow.read()).response.code, 'unavailable');
+      h.setTime(6000); h.setPhase('observe-6000'); await h.observe();
+      const page = refreshed.response.result.page;
+      assert.equal(page.total, size + 1, 'healthy canonical mutation missing');
+      assert(page.next_cursor, 'appended fixture must have a continuation');
+      const continuation = { snapshot_id: page.snapshot_id, cursor: page.next_cursor };
       const unaffected = await h.read('active', continuation); assert.equal(unaffected.response.type, 'response');
-      if (continuation) assert.equal(unaffected.response.result.page.snapshot_id, page.snapshot_id, 'healthy capture reset by other host failure');
-      checks.push('healthy-hosts-finish-before-slow-release', 'slow-source-failure-isolated');
+      assert.equal(unaffected.response.result.page.snapshot_id, page.snapshot_id, 'healthy capture reset by other host failure');
+      assert.equal(unaffected.response.result.page.revision, page.revision, 'slow error changed healthy revision');
+      checks.push('healthy-hosts-finish-before-slow-release', 'slow-source-failure-isolated', 'canonical-mutations-and-observations', 'exhaustive-event-trace');
     }
     const elapsed = performance.now() - start;
     const sample = h.sample(scenario, elapsed, checks, offsets);
     for (const host of extra) {
       const value = host.sample(scenario, elapsed, [], []);
-      sample.events.push(...value.events); sample.eventAttempts.push(...value.eventAttempts);
+      sample.events.push(...value.events); sample.eventAttempts.push(...value.eventAttempts); sample.observationTrace.push(...value.observationTrace);
       for (const [method, count] of Object.entries(value.sourceCalls)) sample.sourceCalls[`${host.ref().instance_id}/${method}`] = count;
       for (const key of ['sourceRows', 'newCaptures', 'captureApiCalls', 'captureApiMs', 'captureApiFailures', 'usefulBytes', 'serializedBytes', 'observations', 'deliveries'] as const) sample[key] += value[key];
       for (const [status, count] of Object.entries(value.results)) sample.results[status] = (sample.results[status] ?? 0) + count;
     }
+    assertProducerTrace(sample.events, sample.expectedEvents);
+    if (scenario === 'multiple-targets') assert.deepEqual(sample.observationTrace, [
+      { target: 'pc-a', phase: 'append-2000', atMs: 2000 }, { target: 'pc-a', phase: 'observe-6000', atMs: 6000 },
+      { target: 'pc-slow', phase: 'append-2000', atMs: 2000 }, { target: 'pc-slow', phase: 'error-4000', atMs: 4000 },
+    ], 'canonical multi-target observations missing');
     return sample;
   } finally {
     for (const host of extra) host.release();

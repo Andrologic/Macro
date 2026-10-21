@@ -19,7 +19,16 @@ export function producerSourceFingerprint() {
   for (const file of files) hash.update(file).update('\0').update(readFileSync(new URL(file, root))).update('\0');
   return hash.digest('hex');
 }
-export function projectProducerSamples(groups: ProducerSample[][], provenance: Record<string, unknown>) {
+export function assertProducerProcessIndex(index: number) {
+  assert(Number.isInteger(index) && index >= 1 && index <= 3, 'producer process index must be 1, 2 or 3');
+}
+export function parseProducerArguments(args: string[]) {
+  assert(args.length === 3 && /^[a-f0-9]{40}$/.test(args[0]) && /^[a-f0-9]{40}$/.test(args[1]) && /^[123]$/.test(args[2]),
+    'Usage: bun dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> <process-index:1|2|3>');
+  return { mobile: args[0], relay: args[1], processIndex: Number(args[2]) };
+}
+export function projectProducerSamples(groups: ProducerSample[][], provenance: Record<string, unknown>, processIndex: number) {
+  assertProducerProcessIndex(processIndex);
   const runs = groups.map(samples => {
     assert(samples.length > 0, 'empty measurement group');
     const { scenario, size } = samples[0];
@@ -41,7 +50,7 @@ export function projectProducerSamples(groups: ProducerSample[][], provenance: R
     if (timed.length) set('capture_build_ms', timed.map(sample => sample.captureApiMs), 'measured', 'monotonic-clock');
     return { scenario, profile: 'in-process-producer', fixture: { messages: size, content_bytes: 256, targets: scenario === 'multiple-targets' ? 3 : 1,
       definition_sha256: hashFile('dev/performance/connect-producer-fixture.ts') }, preparation: scenario === 'cold-open-return' ? 'included' : 'excluded',
-      temperature: 'warm-operation', warmup: 10, process_index: 1, metrics };
+      temperature: 'warm-operation', warmup: 10, process_index: processIndex, metrics };
   });
   const report = { format_version: 1, kind: 'macro-connect-measurements', provenance,
     limits: ['synthetic-data', 'shared-machine', 'single-process-series', 'no-transport', 'no-ui', 'no-rss', 'no-heap', 'physical-device-pending'], runs };
@@ -53,7 +62,8 @@ export function projectProducerSamples(groups: ProducerSample[][], provenance: R
 /** One fresh process, 18 cells. Seeding and optional preopened captures precede
  * each action window. Report only successful groups; unexpected failure aborts
  * and prints a structured cell/sample diagnostic to stderr, never a fake zero. */
-export async function producerCampaign(mobile: string, relay: string) {
+export async function producerCampaign(mobile: string, relay: string, processIndex: number) {
+  assertProducerProcessIndex(processIndex);
   assert(/^[a-f0-9]{40}$/.test(mobile) && /^[a-f0-9]{40}$/.test(relay), 'exact cohort SHAs required');
   assert.equal(git('status', '--porcelain', '--untracked-files=all'), '', 'clean committed source required');
   const head = git('rev-parse', 'HEAD'); const fingerprint = producerSourceFingerprint();
@@ -88,23 +98,26 @@ export async function producerCampaign(mobile: string, relay: string) {
   const provenance = { repositories: { desktop: head, mobile, relay }, measured_repository: 'desktop', dirty: false,
     source_sha256: fingerprint, ...contractHashes(), lock_sha256: hashFile('bun.lock'), timestamp,
     environment: { platform: platform(), arch: arch(), runtime: `bun ${Bun.version}` } };
-  const report = projectProducerSamples(groups, provenance);
-  return { kind: 'typescript-producer-library-campaign', provenance, report,
+  const report = projectProducerSamples(groups, provenance, processIndex);
+  return { kind: 'typescript-producer-library-campaign', process_index: processIndex, provenance, report,
     boundary: { capabilities: ['network-reliability-1', 'conversations-1', 'conversation-interactions-1'], classes: ['ConversationCaptures', 'ContentHost', 'ConversationInteractions'], source: 'in-memory typed ports; no SQLite or IPC',
       clock: 'performance.now for API and scenario wall time; injected Date clock for TTL/event schedule',
       states_rebuilt: 'distinct capture snapshot IDs first returned within window; internal observations not counted',
-      capture_build_ms: 'sum of wall durations of public capture APIs, including failures, queueing and cloned in-memory source data; not pure assembly; can overlap between hosts',
-      serialized_bytes: 'UTF-8 JSON request/result/event observations, including retries; estimated allocations, no transport framing',
-      useful_content_bytes: 'UTF-8 public text fields in returned results and events; repeated deliveries counted',
+      capture_build_ms: 'sum of wall durations of projectsList, projectsConditional, conversationsList, conversationRead only, including failures, queueing and cloned memory data; excludes initialize/prepare, refreshProjects, refreshCatalog, validateCached; not pure assembly; can overlap between hosts',
+      serialized_bytes: 'UTF-8 JSON request/result/event observations, including retries; size estimate only, no allocated memory or transport framing',
+      useful_content_bytes: 'UTF-8 string values of properties named text only in observed payloads; titles and prompts excluded; repeated deliveries counted',
       terminal_events: 'not measured; raw ContentHost invalidation sequence and state checks only; no PilotRuntime or run kernel',
-      preparation: 'fixture seeding excluded; host prepare included only cold-open-return; other preopened captures excluded',
+      preparation: 'fixture seeding excluded; cold-open-return action includes host initialization; see observable-specific boundaries',
+      preparation_by_observable: { sourceCalls: 'cold includes initialize/prepare and all action/guard calls; other recipes start after prepare/preopened captures',
+        captureApiMs: 'only four wrapped API methods; host initialize/prepare/refresh/validateCached excluded even for cold-open-return',
+        elapsedMs: 'whole action including host initialization only cold-open-return; action assertions and byte observers included; final trace oracle and sample aggregation excluded',
+        newCaptures: 'first IDs returned by four wrapped API methods inside action; prior capture IDs retained in dedup set' },
       window: 'business clock simulates 10-second schedule; history adds expiry at 300001ms; no real idle/wakeup rate' },
     environment: { os: release(), cpu: cpus()[0]?.model, load: 'shared machine; OS and runtime GC uncontrolled' },
     samples: groups.flat(),
   };
 }
 if (import.meta.main) {
-  const [mobile, relay] = process.argv.slice(2);
-  assert.equal(process.argv.length, 4, 'Usage: bun dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA>');
-  console.log(JSON.stringify(await producerCampaign(mobile, relay)));
+  const { mobile, relay, processIndex } = parseProducerArguments(process.argv.slice(2));
+  console.log(JSON.stringify(await producerCampaign(mobile, relay, processIndex)));
 }

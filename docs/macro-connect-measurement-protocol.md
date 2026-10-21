@@ -141,11 +141,13 @@ From clean committed sources, run three sequential fresh processes:
 
 ```sh
 bun --no-install test dev/performance/connect-producer.test.ts dev/performance/connect-metrics.test.ts
-bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> > /tmp/connect-producer-1.json
-bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> > /tmp/connect-producer-2.json
-bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> > /tmp/connect-producer-3.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> 1 > /tmp/connect-producer-1.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> 2 > /tmp/connect-producer-2.json
+bun --no-install dev/performance/connect-producer.ts <mobile-SHA> <relay-SHA> 3 > /tmp/connect-producer-3.json
 ```
 
+The final CLI argument is the explicit fresh-process index (1, 2 or 3); the
+projection rejects any other value and preserves it in every canonical run.
 Each process runs six recipes at 100/1,000/10,000 messages, 10 warmups and 100
 retained samples per cell. Classes are the actual ConversationCaptures,
 ContentHost and ConversationInteractions; source and CAS ports are synthetic
@@ -164,17 +166,33 @@ seconds. Idle uses ten manual observations, not runtime wakeups. History also
 checks stale continuations and TTL expiry at 300001 ms. The 100-message history
 fits one page and explicitly reports that condition. Slow-target isolation uses
 a promise barrier and an explicit memory source failure, not a claimed network
-RTT. Healthy continuations remain usable after that failure. Cold-open-return includes host
-initialization, while fixture construction is always excluded. The measured
-capture API timer includes source clone/observation and public API overhead,
-but not output JSON observation after its return. Scenario wall time includes
-the harness checks and byte observers. Do not subtract their percentiles.
+RTT. The multi-target schedule appends to both pc-slow and pc-a at 2000 ms,
+observes the slow public error at 4000 ms, and re-observes pc-a at 6000 ms.
+Its four observations and six invalidations are required, with the healthy
+capture revision preserved after the slow failure. Healthy continuations remain
+usable after that failure. Cold-open-return includes host initialization in
+source-port counts and scenario wall time; fixture construction is always
+excluded. This preparation flag does not include all initialization in the
+capture timer. That timer wraps exactly projectsList, projectsConditional,
+conversationsList and conversationRead, including failures, source cloning and
+queueing inside those calls. initialize/prepare, refreshProjects, refreshCatalog
+and validateCached are not timed by this counter, although their source-port
+calls are counted. It is not pure capture assembly time. Output JSON observation
+after the API return is excluded from this timer. Scenario wall time includes
+the action checks and byte observers; final trace comparison and sample
+aggregation occur after that timer. Do not subtract their percentiles.
 
-Source calls, new returned captures, public text bytes and serialized JSON sizes
-are measured/estimated under their declared boundaries. The serialized sum
+Source calls, new returned captures, bytes of properties named text only, and
+serialized JSON sizes are measured/estimated under their declared boundaries. The serialized sum
 includes request, result and event observations and repeated attempts; it is
-not transport framing or allocated memory. The invalidation trace preserves
-phase/kind/sequence and the error/interaction/final state assertions. It does
+not transport framing or allocated memory. Useful bytes exclude titles and
+interaction prompts; repeated deliveries are counted. Each successful history
+window is compared to the exact expected source rows, IDs, positions, offset,
+total and continuation boundary. Replays must preserve opaque cursor identity.
+Empty/truncated windows or premature termination fail the recipe. The expected
+invalidation trace is exhaustive by target, phase, kind, resource, revision and
+virtual occurrence time, with consecutive sequences and no duplicates within
+each target stream. There is no cross-target total-order claim. It does
 not claim to observe dedicated run terminal events; terminal_events remains
 not-measured until A4b. No synthetic metric substitutes for A2 SQLite timings.
 
