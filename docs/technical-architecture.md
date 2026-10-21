@@ -1837,7 +1837,10 @@ instance ou transférer une conversation entre PC, consulter la
 [proposition Macro Connect entre appareils](macro-connect-peer-architecture.md).
 Elle distingue l'existant des extensions à construire, notamment l'import
 portable, la cession d'exécution et la coordination sans historique sur le relais.
-Elle ne modifie pas les contrats v1 et v2 en vigueur.
+Le [plan de réalisation](macro-connect-implementation-plan.md) place les mesures
+avant les optimisations. La [conception du transfert](macro-connect-transfer-design.md)
+fixe les réservations, les décisions et les cas de récupération à implémenter.
+Ces documents ne modifient pas les contrats v1 et v2 en vigueur.
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
 

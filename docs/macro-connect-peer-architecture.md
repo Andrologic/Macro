@@ -4,6 +4,12 @@ Statut : proposition d'architecture, sans changement du protocole ni du runtime.
 Les opérations et noms de composants futurs ci-dessous ne sont pas des API disponibles.
 Les contrats existants restent la source de vérité du comportement livré.
 
+Révision du 22 octobre 2026 : les réserves F1, F2 et F3 de la relecture de cette
+proposition sont traitées dans la conception. Les garanties restent à prouver
+par l'implémentation. Le [plan de réalisation](macro-connect-implementation-plan.md)
+fixe les lots, leur ordre et leurs critères de fin. Pour le transfert, lire aussi
+la [machine à états et les règles de cession](macro-connect-transfer-design.md).
+
 ## Besoin et décision
 
 Macro Connect doit permettre à un téléphone de consulter et piloter plusieurs
@@ -24,10 +30,18 @@ Trois actions ont des effets différents :
 | Créer un chat ou lancer une tâche à distance | L'ordinateur choisi crée ou exécute la ressource dans son propre environnement. |
 | Transférer une conversation | La destination importe un historique vérifié. La source conserve une copie et cède la poursuite du travail après une décision durable. |
 
-Le premier transfert doit couvrir le mode Chat. Les conversations Architecte et
-Implémentation nécessitent aussi les métadonnées de tâche, de plan et de projet,
-ainsi que les préconditions Git. Le contrat doit annoncer les modes effectivement
-pris en charge et refuser les autres avant de suspendre la source.
+Le premier transfert couvre uniquement un Chat sans portée projet ni groupe,
+sans tâche, à l'arrêt et sans interaction ou instruction en attente. Un Chat peut
+déjà être lié à des projets dans Macro : son seul `scope_mode` ne prouve donc pas
+sa portabilité. Le précontrôle examine la portée durable et toutes les dépendances
+avant de réserver ou suspendre la source. Un contexte incompatible est refusé
+explicitement, sans détacher silencieusement le chat de son projet.
+
+La prise en charge des Chats avec portée projet, puis d'Architecte et
+d'Implémentation, reste un lot distinct du chantier. Elle ajoute l'association
+du contexte local, des plans et tâches et les préconditions Git. La capacité
+annoncée doit distinguer ces variantes ; aucun repli vers le transfert sans
+projet n'est permis.
 
 ## Ce que Macro possède déjà
 
@@ -154,6 +168,13 @@ continuité. Il conserve les données encore autorisées en lecture seule pendan
 une panne réseau. Une révocation entraîne le retrait des données protégées et
 l'annulation des requêtes. Un délai de cache n'est jamais une durée d'autorisation.
 
+Pour le premier lot, seule la RAM du processus est concernée. L'affichage hors
+ligne reste borné par l'échéance d'autorité reçue et par l'expiration actuelle de
+la capture. Le client ne prolonge aucune des deux par une activité locale. Il
+verrouille les données si cette preuve manque ou expire. Une révocation distante
+n'est détectable qu'après un échange réussi ; le produit ne promet pas un effacement
+instantané pendant une coupure. Les actions restent désactivées jusqu'à revalidation.
+
 Une mutation dont la réponse est perdue est réconciliée par son reçu sur la même
 instance. Le client ne la rejoue pas sur un autre PC. La clé d'intention reste
 stable pendant cette réconciliation, même si l'identifiant HTTP change.
@@ -201,45 +222,17 @@ réflexions internes ne sont pas exportées par défaut pour combler ce manque.
 
 ### Préparer, sceller, importer puis céder
 
-La cession doit résister à un crash ou une réponse perdue entre deux étapes :
+La [conception du transfert](macro-connect-transfer-design.md) fixe l'autorité
+de décision, l'exclusivité par conversation source, les transitions atomiques et
+les règles de récupération. Le relais arbitre la confirmation et l'annulation
+sur des métadonnées durables. Chaque PC conserve sa réservation et ses reçus
+locaux. Un timeout ne libère ni la source ni la destination quand la décision
+est inconnue. Aucun contenu de conversation n'est persisté sur le relais.
 
-1. Vérifier les droits sur les deux instances, leurs capacités et le contexte de
-   destination. Montrer les dépendances absentes avant de suspendre la source.
-2. Attendre un point sûr sur la source ou demander un arrêt explicite. Réconcilier
-   les outils, figer les écritures de cette conversation puis sceller une révision.
-3. Transmettre le manifeste et les blocs bornés à une zone locale de préparation
-   sur la destination. Reprendre au dernier bloc vérifié après interruption.
-4. Valider l'intégrité et importer dans une transaction locale. La conversation
-   reste inactive et invisible comme exécution courante tant que la cession n'est
-   pas confirmée. La destination fournit un reçu durable de préparation.
-5. Enregistrer une décision unique de cession, liée à la révision scellée et au
-   reçu cible. La destination peut ensuite devenir le lieu de poursuite du travail.
-6. Conserver sur la source l'historique et le lien vers la destination, avec son
-   état de transfert. Un accusé perdu se résout en consultant la décision durable.
-
-Le gel doit être vérifié à l'admission des écritures de contenu et des exécutions natives,
-y compris celles du desktop local, des agents et des commandes distantes.
-Un drapeau dans l'interface ne garantit pas l'absence de double exécution.
-Un redémarrage de la source doit rétablir ce gel avant toute reprise automatique.
-
-La coordination nécessite un enregistrement durable idempotent. Le relais peut
-conserver uniquement les références source et cible, l'identifiant de transfert,
-la révision, les reçus et la décision. Il ne conserve ni transcript, ni titre,
-ni pièce jointe. Le contenu transite dans des buffers bornés et expirables,
-sans écriture de corps sur disque ni dans les journaux. Les deux PC gardent leurs
-propres journaux de transfert dans le workflow de métadonnées existant.
-
-Cette coordination et le contrôle natif du gel restent à implémenter ensemble.
-Une transaction SQLite locale ne rend pas deux machines atomiques. Pendant une
-partition réseau où la décision est inconnue, la source reste suspendue et la
-destination inactive. Un timeout ne donne pas le droit de reprendre des deux côtés.
-L'expiration d'une préparation ne supprime jamais une preuve de cession confirmée.
-
-Avant confirmation, l'annulation détruit la préparation et libère la source après
-vérification de la décision et de son autorité. Après confirmation, revenir sur
-l'autre PC demande un nouveau transfert. Une révocation avant confirmation annule
-l'accès aux blocs et empêche la cession. Après une importation confirmée, elle
-retire l'accès distant, sans prétendre effacer une copie locale déjà reçue.
+La préparation cible reste inactive jusqu'à une cession confirmée. La source
+conserve ensuite une copie en lecture seule et un lien vers la destination.
+Le gel couvre toutes les admissions locales et distantes, les reprises et les
+effets en vol. Les réservations en mémoire existantes ne suffisent pas.
 
 ### Ce que voit l'utilisateur
 
@@ -253,28 +246,20 @@ les deux ordinateurs via le relais. Le téléphone ne télécharge pas l'histori
 complet pour le réémettre. Si la source est hors ligne, un cache permet une
 consultation autorisée, sans promettre un transfert complet ni à jour.
 
-Pour Architecte et Implémentation, une étape ultérieure associe explicitement le
-projet cible, la révision Git et les modifications nécessaires. Un nom de projet
-ou une URL de dépôt identique ne prouve pas l'équivalence de deux worktrees.
-Les politiques d'outils et la confiance du projet restent locales à la destination.
+Pour les Chats liés à des projets autant que pour Architecte et Implémentation,
+le lot de portée projet associe explicitement les contextes source et cible.
+Un nom de projet ou une URL de dépôt identique ne prouve pas l'équivalence de deux
+worktrees. Les politiques d'outils et la confiance restent locales à la destination.
 
 ## Ordre d'implémentation et preuves attendues
 
-| Étape | Livrable | Critère de fin |
-| --- | --- | --- |
-| 1. Connexions par cible | Superviseur et transport consommateur desktop sur les opérations existantes ; portage du même comportement de reprise sur mobile. | Deux PC consultés simultanément pendant que le producteur local continue ; panne et révocation isolées à la cible concernée. |
-| 2. Coût des lectures | Invalidation après mutation, coalescence, caches et budgets cumulés ; télémétrie sous abonnement. | Mesures avant/après de lectures DB, octets, requêtes, mémoire et reprise ; aucune perte d'événement terminal ni recul de cohérence. |
-| 3. Import portable de Chat | Format canonique, précontrôle, capture source cohérente, import inactif et reprise des blocs. | Historique, citations et assets contrôlés ; identifiants remappés ; échec propre des contextes non portables ; aucun effet fournisseur. |
-| 4. Cession entre PC | Décision durable et gel natif couvrant toutes les admissions d'exécution. | Crash injecté à chaque frontière ; doublons et ACK perdus réconciliés ; une seule destination activable ; aucune reprise automatique de la source cédée. |
-| 5. Conversations de projet | Association projet, Git, plan et tâche, avec modes annoncés séparément. | Refus avant effet si dépôt, worktree, politique ou état d'outil ne permet pas une reprise sûre. |
+Les numéros historiques 1 à 5 sont conservés dans le
+[plan de réalisation](macro-connect-implementation-plan.md). Le nouveau point 6
+établit les mesures de référence et s'exécute en premier. Les points 7 et 8
+isolent la reprise mobile et les budgets mémoire. Le point 9 précise la
+télémétrie. Le consommateur desktop n'est pas un préalable aux corrections mobile.
 
-Les mesures doivent distinguer coût au repos, conversation sélectionnée, autre
-conversation modifiée, retour du premier plan, historique volumineux et plusieurs
-instances lentes. Les tests de transfert ajoutent modifications concurrentes,
-session révoquée entre deux blocs, paquet tronqué, chunk dupliqué, manque de disque,
-redémarrage des deux PC et résultat de commit inconnu. Les fixtures sont synthétiques.
-
-Les budgets v2 actuels restent applicables jusqu'à une extension canonique validée.
-Le format d'import, les plafonds du paquet et la table de coordination devront être
-spécifiés avec leurs migrations et tests avant d'annoncer une capacité de transfert.
-Cette proposition ne rend aucun de ces parcours disponible dans le produit.
+Les budgets v2 actuels restent applicables jusqu'à une extension canonique
+validée. Le contrat de transfert, ses migrations et ses tests constituent un
+livrable préalable à l'annonce de cette capacité. La correction de ce document
+ne rend aucun nouveau parcours disponible dans le produit.
