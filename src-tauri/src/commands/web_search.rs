@@ -803,6 +803,7 @@ async fn search_brave(
 
 fn web_search_client() -> CommandResult<reqwest::Client> {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(WEB_SEARCH_CONNECT_TIMEOUT)
         .timeout(WEB_SEARCH_TIMEOUT)
         .build()
@@ -879,6 +880,52 @@ fn format_http_error_detail(body: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn web_search_client_does_not_forward_api_key_on_redirect() {
+        use axum::{
+            http::{header, StatusCode},
+            routing::any,
+            Router,
+        };
+
+        let followed = Arc::new(AtomicBool::new(false));
+        let leak_flag = followed.clone();
+        let app = Router::new()
+            .route(
+                "/start",
+                any(|| async {
+                    (
+                        StatusCode::TEMPORARY_REDIRECT,
+                        [(header::LOCATION, "/leak")],
+                    )
+                }),
+            )
+            .route(
+                "/leak",
+                any(move || {
+                    let flag = leak_flag.clone();
+                    async move {
+                        flag.store(true, Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let response = web_search_client()
+            .unwrap()
+            .get(format!("http://{address}/start"))
+            .header("X-Subscription-Token", "test-key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert!(!followed.load(Ordering::SeqCst));
+        server.abort();
+    }
 
     #[test]
     fn web_search_secret_references_are_stable_and_do_not_contain_values() {
