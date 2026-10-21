@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
+const actualTauriIpc = await import('./tauriIpc');
+const actualTauriHttp = await import('./tauriHttp');
+
 let fetchMock: ReturnType<typeof mock>;
 let nativeWebFetchMock: ReturnType<typeof mock>;
 let nativeWebSearchMock: ReturnType<typeof mock>;
@@ -12,10 +15,12 @@ const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
   nativeWebFetchMock = mock();
   nativeWebSearchMock = mock();
   nativeWebCancelMock = mock(async () => true);
-  mock.module('@tauri-apps/plugin-http', () => ({
-    fetch: fetchMock,
+  mock.module('./tauriHttp', () => ({
+    ...actualTauriHttp,
+    tauriFetch: fetchMock,
   }));
   mock.module('./tauriIpc', () => ({
+    ...actualTauriIpc,
     isTauriAvailable: () => options.tauriAvailable ?? false,
     webFetchExecute: nativeWebFetchMock,
     webSearchExecute: nativeWebSearchMock,
