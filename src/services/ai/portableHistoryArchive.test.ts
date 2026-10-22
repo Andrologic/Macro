@@ -1,12 +1,13 @@
 import { expect, test } from 'bun:test';
+import { portableDigest } from './portableChatHistory';
 import { fixture, policy } from './portableHistoryFixtures.testSupport';
 import { PortableHistoryArchive, type PortableArchivePort, type PortableArchiveFragment } from './portableHistoryArchive';
 import { PortableWorkBudget } from './portableHistoryInspection';
 import { buildCompactedMessagesForRequest, buildMessagesWithCompactionState, validateCompactionState } from '../contextCompaction';
 import type { ChatMessage } from '../../types';
 
-async function archiveFixture() {
-  const f = await fixture('codex'); await f.run();
+async function archiveFixture(input?: Awaited<ReturnType<typeof fixture>>) {
+  const f = input ?? await fixture('codex'); await f.run();
   const fragments: PortableArchiveFragment[] = [];
   for (const { header, text } of f.output) {
     const bytes = new TextEncoder().encode(text), targetUuid = header.entry.kind === 'association' ? null : `00000000-0000-4000-8000-${String(header.ordinal).padStart(12, '0')}`;
@@ -79,4 +80,26 @@ test('imported compaction keeps summaries in user data over reuse and refuses er
   const second = await buildCompactedMessagesForRequest({ ...params, mode: 'blocking', forceCompaction: false, currentCompactionState: state });
   expect(second.usedExistingCompaction).toBe(true);
   expect(second.messages.filter(m => m.role === 'system').map(m => String(m.content)).join('\n')).not.toContain('IMPORTED_SUMMARY_ONLY');
+});
+
+test('persisted attachment positions override record and remapped UUID order', async () => {
+  const f = await fixture('codex'), rows: number[] = [];
+  for (const [id, text] of [['a-second', 'ORDER_SECOND'], ['z-first', 'ORDER_FIRST']]) {
+    const bytes = new TextEncoder().encode(text); rows.push(f.rows.length);
+    await f.appendRow(8, [id, 'u', `${id}.txt`, 'text/plain', BigInt(bytes.length), await portableDigest(bytes), bytes]);
+  }
+  const send = f.rows.length;
+  await f.appendRow(9, ['u', 'turn', 'confirmed', 1n, '["z-first","a-second"]', 'a', 'ready']);
+  f.source.relations = async function* () {
+    yield { from: send, kind: 13, position: 0, to: rows[1], status: 0 };
+    yield { from: send, kind: 13, position: 1, to: rows[0], status: 0 };
+  };
+  const { archive, budget } = await archiveFixture(f); await archive.open();
+  try {
+    await archive.withProjection(async projection => {
+      const data = projection.messages.filter(message => message.content.includes('; asset]'));
+      expect(data).toHaveLength(2); expect(data[0].content).toContain('ORDER_FIRST'); expect(data[1].content).toContain('ORDER_SECOND');
+      expect(Date.parse(data[0].timestamp)).toBeLessThan(Date.parse(data[1].timestamp));
+    });
+  } finally { archive.dispose(); expect(budget.used).toBe(0); }
 });

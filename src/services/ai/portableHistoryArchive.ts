@@ -184,7 +184,10 @@ export class PortableHistoryArchive {
           if (row.fields.has(origin.source.tag)) fail('invalid_portable_metadata'); row.fields.set(origin.source.tag, decoder.decode(bytes));
         } else if (header.entry.kind !== 'asset') additional.push({ origin, ordinal: header.ordinal, text: decoder.decode(bytes), uuid: uuid! });
       });
-      const associations = this.headers.filter(header => header.entry.kind === 'association');
+      const associations = this.headers.filter(header => header.entry.kind === 'association').sort((left, right) => {
+        if (left.entry.kind !== 'association' || right.entry.kind !== 'association') return 0;
+        return left.entry.from - right.entry.from || left.entry.relation.localeCompare(right.entry.relation) || left.entry.position - right.entry.position || left.ordinal - right.ordinal;
+      });
       const attached = new Set<number>();
       for (const header of associations) {
         if (header.entry.kind !== 'association') continue;
