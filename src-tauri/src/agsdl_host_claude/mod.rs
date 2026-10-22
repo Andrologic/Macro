@@ -119,6 +119,28 @@ pub(crate) const COMMANDS: &[&str] = &[
     "list-agents",
     "team-onboarding",
 ];
+fn qualified_commands(value: &Value) -> bool {
+    // Both catalogues were observed with this pinned CLI. No extra command is
+    // admitted, and each query's init must match its own ready catalogue.
+    let reduced: Vec<_> = COMMANDS
+        .iter()
+        .copied()
+        .filter(|name| !["heapdump", "team-onboarding"].contains(name))
+        .collect();
+    same_names(value, COMMANDS) || same_names(value, &reduced)
+}
+fn qualified_mcp_sources(value: &Value, has_tools: bool) -> bool {
+    value.as_array().is_some_and(|servers| {
+        if !has_tools {
+            servers.is_empty()
+        } else {
+            servers.len() == 1
+                && servers[0]["name"] == "macro"
+                && servers[0]["status"] == "connected"
+                && servers[0]["source"] == "sdk"
+        }
+    })
+}
 fn verify_ready(value: &Value, tools: &[String]) -> Result<Vec<String>> {
     let init = &value["initialized"];
     let command_names = Value::Array(
@@ -171,15 +193,12 @@ fn verify_ready(value: &Value, tools: &[String]) -> Result<Vec<String>> {
         || init["hooks_applied"] != true
         || init["account"]["apiKeySource"] != "ANTHROPIC_API_KEY"
         || init["account"]["apiProvider"] != "firstParty"
-        || !same_names(&command_names, COMMANDS)
+        || !qualified_commands(&command_names)
         || init["commands"]
             .as_array()
             .is_none_or(|commands| commands.iter().any(|c| c["builtin"] != true))
         || !same_names(&agent_names, AGENTS)
-        || status.len() != 1
-        || status[0]["name"] != "macro"
-        || status[0]["status"] != "connected"
-        || status[0]["source"] != "sdk"
+        || !qualified_mcp_sources(&value["mcpStatus"], !tools.is_empty())
         || actual_tools != sorted_tools
         || value["settings"]["tools"] != json!([])
         || value["settings"]["verbatimPrompts"] != true
@@ -214,6 +233,7 @@ fn verify_init(
     session: &str,
     model: &str,
     tools: &[String],
+    commands: &[String],
 ) -> Result<String> {
     let expected: Vec<_> = tools
         .iter()
@@ -238,7 +258,10 @@ fn verify_init(
         || frame["permissionMode"] != "default"
         || frame["apiKeySource"] != "ANTHROPIC_API_KEY"
         || actual != expected
-        || !same_names(&frame["slash_commands"], COMMANDS)
+        || !same_names(
+            &frame["slash_commands"],
+            &commands.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
         || frame["output_style"] != "default"
         || !same_names(&frame["agents"], AGENTS)
         || !same_names(&frame["skills"], &[])
@@ -246,12 +269,7 @@ fn verify_init(
         || frame["plugin_errors"]
             .as_array()
             .is_some_and(|e| !e.is_empty())
-        || frame["mcp_servers"].as_array().is_none_or(|s| {
-            s.len() != 1
-                || s[0]["name"] != "macro"
-                || s[0]["status"] != "connected"
-                || s[0]["source"] != "sdk"
-        })
+        || !qualified_mcp_sources(&frame["mcp_servers"], !tools.is_empty())
     {
         return Err(failure(
             "CLAUDE_CONTEXT_UNQUALIFIED",
@@ -697,19 +715,20 @@ pub(crate) async fn run(
     let mut closure = client.closure();
     let mut node_version: Option<String> = None;
     let mut run_id: Option<String> = None;
+    let mut commands = Vec::new();
     let mut calls: BTreeMap<String, (String, String)> = BTreeMap::new();
     loop {
         let frame = client.next().await?;
         let result:Result<Value>=async {
             match frame["method"].as_str() {
-                Some("ready") => { let models=verify_ready(&frame["params"],&names)?;node_version=frame["params"]["nodeVersion"].as_str().map(str::to_owned); if !models.contains(&configuration.model_id) {return Err(failure("CAPTURE_CHANGED","model","Captured Claude model unavailable"));} Ok(json!({})) },
+                Some("ready") => { let models=verify_ready(&frame["params"],&names)?;commands=frame["params"]["initialized"]["commands"].as_array().unwrap().iter().map(|command|required(command,"name")).collect::<Result<Vec<_>>>()?;node_version=frame["params"]["nodeVersion"].as_str().map(str::to_owned); if !models.contains(&configuration.model_id) {return Err(failure("CAPTURE_CHANGED","model","Captured Claude model unavailable"));} Ok(json!({})) },
                 Some("frame") => {
                     let native=&frame["params"]["frame"];
                     if native.get("user_message_uuid").is_some_and(|id|!id.is_null() && *id!=config["userMessageUuid"]) {return Err(failure("CORRELATION","input","Native reply belongs to another input"));}
                     if native["session_id"]!=session {return Err(failure("CORRELATION","session","Claude emitted another session"));}
                     if native["parent_tool_use_id"].as_str().is_some() || native["type"]=="system" && native["subtype"].as_str().is_some_and(|s|s.starts_with("task_") || s=="model_switch") {return Err(failure("CLAUDE_CONTEXT_UNQUALIFIED","task","Native task or model switch is unavailable"));}
                     if native["type"]=="system" && native["subtype"]=="init" {
-                        let id=verify_init(native,&profile,&session,&configuration.model_id,&names)?;
+                        let id=verify_init(native,&profile,&session,&configuration.model_id,&names,&commands)?;
                         if run_id.as_ref().is_some_and(|r|r!=&id) {return Err(failure("CORRELATION","run","Duplicate native initialization"));}
                         let references=json!({"sessionId":session,"runId":id,"nodeVersion":node_version,"nativeInit":native}).to_string();
                         native_operations::received(&pool,&session_op,&references).await?;
@@ -821,6 +840,31 @@ mod result_tests {
         ] {
             assert!(!successful_result(&result));
         }
+    }
+    #[test]
+    fn native_empty_diagnostic_requires_empty_mcp_and_keeps_tool_catalogues_strict() {
+        let mut ready = json!({"nodeVersion":"22.23.3","initialized":{"claude_code_version":CLI_VERSION,"current_permission_mode":"default","hooks_applied":true,"account":{"apiKeySource":"ANTHROPIC_API_KEY","apiProvider":"firstParty"},"commands":COMMANDS.iter().map(|name|json!({"name":name,"builtin":true})).collect::<Vec<_>>(),"agents":[]},"mcpStatus":[],"models":[{"resolvedModel":"claude-haiku-5-5"}],"settings":{"tools":[],"verbatimPrompts":true}});
+        assert_eq!(verify_ready(&ready, &[]).unwrap(), ["claude-haiku-5-5"]);
+        ready["initialized"]["commands"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|command| {
+                !["heapdump", "team-onboarding"].contains(&command["name"].as_str().unwrap())
+            });
+        assert_eq!(verify_ready(&ready, &[]).unwrap(), ["claude-haiku-5-5"]);
+        let reduced = ready["initialized"]["commands"].clone();
+        ready["initialized"]["commands"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"foreign-command","builtin":true}));
+        assert!(verify_ready(&ready, &[]).is_err());
+        ready["initialized"]["commands"] = reduced;
+        assert!(verify_ready(&ready, &["write".into()]).is_err());
+        ready["mcpStatus"] = json!([{"name":"macro","source":"sdk","status":"connected","tools":[{"name":"write"}]}]);
+        assert!(verify_ready(&ready, &[]).is_err());
+        assert!(verify_ready(&ready, &["write".into()]).is_ok());
+        ready["mcpStatus"][0]["source"] = json!("project");
+        assert!(verify_ready(&ready, &["write".into()]).is_err());
     }
 }
 

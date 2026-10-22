@@ -57,7 +57,12 @@ Les deux plugins builtin sont désactivés explicitement par leur ID, les agents
 builtin par le flag SDK dédié et `doctor` par son flag documenté. Les catalogues
 natifs observés de plugins, agents et skills sont vides. Macro vérifie aussi les
 commandes builtin restantes, le modèle, le cwd et la provenance MCP contre la
-référence qualifiée. Le binaire et ses instructions builtin sont capturés par
+référence qualifiée. Le CLI épinglé a présenté deux catalogues fermés, avec ou
+sans `heapdump` et `team-onboarding`. Aucun autre nom n’est accepté et le catalogue
+de chaque init doit correspondre à son propre diagnostic ready. Quand aucun outil
+n’est exposé, le SDK omet le serveur MCP vide ; Macro exige alors une liste vide.
+Avec des outils, un seul serveur SDK Macro connecté est accepté, avec les noms exacts.
+Le binaire et ses instructions builtin sont capturés par
 empreinte. Ce contrôle ne constitue pas un sandbox système pour un binaire compromis.
 
 Le hook natif corrèle chaque appel au `tool_use_id` du CLI. Un token privé lie le
