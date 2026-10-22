@@ -38,11 +38,21 @@ function syntheticContent(command: string, args: Record<string, unknown>) {
     created_at: message.created_at, completion_reason: null, provider_turn_state_json: null, tool_traces_json: null, provenance_json: null, response_revision_decimal: null }));
   return { token, items, consumed_count: items.length, admission_estimate_bytes: 8192 };
 }
+function syntheticCatalog(command: string, args: Record<string, unknown>) {
+  const token = { version: 1, generation: 'b'.repeat(32), incarnation: 'c'.repeat(32), revision: '1' };
+  const input = args.input as { expected_token?: unknown; after?: { id: string } };
+  if (input.expected_token && JSON.stringify(input.expected_token) !== JSON.stringify(token)) throw new Error('stale_revision');
+  if (command === 'db_conversation_catalog_version') return token;
+  if (command !== 'db_conversation_catalog_page') throw new Error('invalid_configuration');
+  return { token, ...(!input.after ? { total_raw: '1' } : {}), items: input.after ? [] : [structuredClone(conversation)],
+    next_after: null, admission_estimate_bytes: 8192 };
+}
 const contentRead = (command: string) => command === 'db_list_messages' || command === 'db_conversation_content_window';
 const core = await import('@tauri-apps/api/core');
 mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string, args: Record<string, unknown> = {}) => {
   calls.push(command);
   if (command.startsWith('db_conversation_content_')) return syntheticContent(command, args);
+  if (command.startsWith('db_conversation_catalog_')) return syntheticCatalog(command, args);
   // Revocation can interrupt initialization; keep its redacted diagnostic in memory.
   if (command === 'frontend_log') {
     expect(args.scope).toBe('frontend');

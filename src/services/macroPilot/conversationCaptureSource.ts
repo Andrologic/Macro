@@ -3,6 +3,7 @@ import type { DesktopStorePorts } from './desktopStorePorts';
 import {
   dbCompareAndSwapAppSetting, dbGetAppSetting, getConversation, listConversations,
   conversationContentVersion, conversationContentMetadata, conversationContentWindow,
+  conversationCatalogVersion, conversationCatalogPage,
   listMessages, listMessagesBounded, conversationMetadata, conversationResponseVersion, conversationAcknowledge, conversationAction, searchMessages, getMessage,
 } from '../tauriIpc';
 import { ConversationCaptureError, type ConversationCaptureSource } from './conversationCaptures';
@@ -23,6 +24,7 @@ export function desktopConversationCaptureSource(ports: DesktopStorePorts): Conv
     },
     tasks: async () => desktopPilotTasks(ports).map(task => ({ id: task.id, project_id: task.project_id, conversation_id: task.conversation_id })),
     listConversations,
+    nativeCatalog: { version: conversationCatalogVersion, page: conversationCatalogPage },
     catalogMetadata: conversationMetadata,
     getConversation,
     listMessages,
@@ -57,7 +59,7 @@ export function conversationCaptureStorage(configurationId: string, instanceId: 
 export function desktopConversationManagementSource(ports: DesktopStorePorts): ConversationManagementSource {
   const persistedAttention = new Map<string, 'tool_approval' | 'user_request' | 'error'>();
   const capture = desktopConversationCaptureSource(ports);
-  return { ...capture, runtimeActivity: id => capture.activity(id),
+  return { ...capture, nativeCatalog: undefined, runtimeActivity: id => capture.activity(id),
     listMessages: async id => {
       try { return await listMessagesBounded(id); }
       catch (error) {

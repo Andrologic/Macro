@@ -6,6 +6,9 @@ import type { DbConversation, DbMessage } from '../tauriIpc';
 import type { KernelStorage } from './kernel';
 import { stableJson } from './protocol';
 import { completion, controlledText, messageText, utf8Bytes, type TextPolicy } from './conversationText';
+import type { Conversation, ConversationCatalogToken, ConversationCatalogPageInput, ConversationCatalogPage, ConversationCatalogVersionInput } from '../../types/generated/ipc';
+import { CATALOG_PAGE_BYTES, catalogToken, checkCatalogPage, ownCatalogRow, sameCatalogToken } from './conversationCatalog';
+import { captureCost, parsedCaptureCost } from './conversationCaptureBudget';
 
 export type CaptureErrorCode = 'unavailable' | 'content_unavailable' | 'not_found' | 'validation_failed' | 'snapshot_expired' | 'stale_revision' | 'resource_limit';
 export class ConversationCaptureError extends Error {
@@ -23,6 +26,10 @@ export interface NativeConversationContent {
   window(input: ConversationContentWindowInput): Promise<ConversationContentWindow>;
 }
 export interface ConversationCaptureSource {
+  nativeCatalog?: {
+    version(input: ConversationCatalogVersionInput): Promise<ConversationCatalogToken>;
+    page(input: ConversationCatalogPageInput): Promise<ConversationCatalogPage>;
+  };
   nativeContent?: NativeConversationContent;
   runtimeActivity?(id: string): ConversationActivity;
   projects(): Promise<CaptureProject[]>;
@@ -62,6 +69,9 @@ interface Observation {
   transcripts: Array<{ id: string; messages: DbMessage[]; provenMessages: Array<{ id: string; text: string }>; activity: ConversationActivity; nativeToken?: ConversationContentToken }>;
   policy: TextPolicy;
   metadata?: unknown;
+}
+interface CatalogRows {
+  token: ConversationCatalogToken; total: bigint; raw: Conversation[]; visible: DbConversation[]; ticket: symbol;
 }
 export interface CatalogObservation { revision: number; refs: ConversationRef[]; resources: Record<string, number> }
 export interface HostCatalogObservation { projects: number | null; conversations: CatalogObservation | null; error?: unknown }
@@ -107,14 +117,19 @@ export class ConversationCaptures {
   private epoch = 0;
   private sourceEpoch = crypto.randomUUID();
   private reservations = new Map<symbol, number>();
+  private operationTickets?: Set<symbol>;
+  private catalog?: CatalogRows;
+  private catalogGeneration?: string;
   release(snapshotId: string): void { this.captures.delete(snapshotId); }
   get hasNativeContent(): boolean { return this.deps.source.nativeContent !== undefined; }
   constructor(private readonly deps: CaptureDependencies) {
     id(deps.instanceId); id(deps.workspaceId);
     const native = deps.source.nativeContent;
     if (native && ![native.version, native.metadata, native.window].every(port => typeof port === 'function')) throw new ConversationCaptureError('unavailable');
+    const catalog = deps.source.nativeCatalog;
+    if (catalog !== undefined && (!catalog || ![catalog.version, catalog.page].every(port => typeof port === 'function'))) throw new ConversationCaptureError('unavailable');
   }
-  clear(): void { this.epoch++; this.sourceEpoch = crypto.randomUUID(); this.captures.clear(); this.reservations.clear(); }
+  clear(): void { this.epoch++; this.sourceEpoch = crypto.randomUUID(); this.catalog = undefined; this.catalogGeneration = undefined; this.captures.clear(); this.reservations.clear(); }
   projectsList(scope: CaptureScope, continuation?: Continuation, limit = 100): Promise<CapturePage<ProjectItem>> {
     return this.read(scope, 'projects.list', null, continuation, limit) as Promise<CapturePage<ProjectItem>>;
   }
@@ -167,8 +182,8 @@ export class ConversationCaptures {
       return { revision, refs, resources };
     });
   }
-  /** Observe both host catalogs from the same verified source pair. This is not
-   * a cache: reads and delivery validation still inspect their own fresh source. */
+  /** Observe both host catalogs from the same verified source pair. Reusing
+   * persisted rows never replaces fresh source checks in either read. */
   refreshHostCatalogs(): Promise<HostCatalogObservation> {
     return this.serial(async () => {
       const epoch = this.epoch;
@@ -184,6 +199,7 @@ export class ConversationCaptures {
         return { projects: result.projectsRevision, conversations: { revision: result.revision, refs, resources: result.resources } };
       } catch (error) {
         check();
+        this.evictCatalog();
         // A failed conversation catalog must not hide an independently valid
         // project change. Partial full observations never publish a catalog.
         let projects: number | null = null;
@@ -207,21 +223,98 @@ export class ConversationCaptures {
     return this.nativeRead(scope, ref, continuation, 50, backward, messageId, true);
   }
   private quota(extra = 0): void {
-    const used = [...this.captures.values()].reduce((n, c) => n + c.bytes, 0) + [...this.reservations.values()].reduce((n, b) => n + b, 0);
-    if (used + extra > Math.min(MAX_QUOTA, this.deps.quotaBytes ?? MAX_QUOTA)) throw new ConversationCaptureError('resource_limit');
+    let used = 0;
+    for (const capture of this.captures.values()) used += capture.bytes;
+    for (const bytes of this.reservations.values()) used += bytes;
+    if (!Number.isSafeInteger(extra) || extra < 0 || used + extra > this.quotaLimit()) throw new ConversationCaptureError('resource_limit');
+  }
+  private quotaLimit(): number { return Math.min(MAX_QUOTA, this.deps.quotaBytes ?? MAX_QUOTA); }
+  private reserve(bytes: number): symbol {
+    this.quota(bytes); const ticket = Symbol(); this.reservations.set(ticket, bytes); this.operationTickets?.add(ticket); return ticket;
+  }
+  private free(ticket: symbol | undefined): void { if (ticket) { this.reservations.delete(ticket); this.operationTickets?.delete(ticket); } }
+  private resize(ticket: symbol, bytes: number): void {
+    const previous = this.reservations.get(ticket);
+    if (previous === undefined) throw new ConversationCaptureError('unavailable');
+    this.quota(Math.max(0, bytes - previous)); this.reservations.set(ticket, bytes);
+  }
+  private hold(value: unknown): symbol | undefined {
+    return this.deps.source.nativeCatalog ? this.reserve(captureCost(value, this.quotaLimit()).retained) : undefined;
+  }
+  private containers(bytes: number): void { if (this.deps.source.nativeCatalog) this.reserve(bytes); }
+  private snapshot<T>(value: T): T {
+    this.hold(value);
+    const temporary = this.hold(value);
+    try { return structuredClone(value); } finally { this.free(temporary); }
+  }
+  private async fingerprint(value: unknown): Promise<string> {
+    const ticket = this.deps.source.nativeCatalog ? this.reserve(captureCost(value, this.quotaLimit()).scratch) : undefined;
+    try { return await digest(value); } finally { this.free(ticket); }
+  }
+  private encodedBytes(value: unknown): number {
+    const ticket = this.deps.source.nativeCatalog ? this.reserve(captureCost(value, this.quotaLimit()).scratch) : undefined;
+    try { return utf8Bytes(JSON.stringify(value)); } finally { this.free(ticket); }
+  }
+  private releaseSince(before: ReadonlySet<symbol>): void {
+    for (const ticket of this.operationTickets ?? []) if (!before.has(ticket)) this.free(ticket);
+  }
+  private evictCatalog(): void { if (this.catalog) this.free(this.catalog.ticket); this.catalog = undefined; }
+  private acceptGeneration(token: ConversationCatalogToken): void {
+    if (this.catalogGeneration !== undefined && this.catalogGeneration !== token.generation) { this.clear(); throw new ConversationCaptureError('unavailable'); }
+    this.catalogGeneration = token.generation;
+  }
+  private async catalogCall<T, R>(bytes: number, work: () => Promise<T>, consume: (value: T) => R, check: () => void): Promise<R> {
+    const ticket = this.reserve(bytes);
+    try { const value = await work(); check(); return consume(value); }
+    catch (error) {
+      check();
+      const code = typeof error === 'string' ? error : error && typeof error === 'object' ? ('code' in error ? error.code : 'message' in error ? error.message : null) : null;
+      throw new ConversationCaptureError(code === 'stale_revision' || code === 'resource_limit' ? code : 'unavailable');
+    } finally { this.free(ticket); }
+  }
+  private async catalogRows(check: () => void): Promise<{ rows: CatalogRows; sealed: boolean }> {
+    const ports = this.deps.source.nativeCatalog!;
+    let token: ConversationCatalogToken | undefined;
+    if (this.catalog) {
+      token = await this.catalogCall(1024, () => ports.version({ expected_token: null }), value => catalogToken(value), check); check();
+      this.acceptGeneration(token);
+      if (sameCatalogToken(this.catalog.token, token)) return { rows: this.catalog, sealed: true };
+      this.evictCatalog();
+    }
+    const raw: Conversation[] = []; const ticket = this.reserve(2048);
+    let bytes = 2048, seen = 0n, total: bigint | undefined, after: string | null = null;
+    do {
+      await this.catalogCall(CATALOG_PAGE_BYTES, () => ports.page({ expected_token: token ?? null, after: after === null ? null : { id: after }, limit: 100 }), page => {
+        if (captureCost(page, this.quotaLimit()).retained > CATALOG_PAGE_BYTES) throw new ConversationCaptureError('resource_limit');
+        this.acceptGeneration(catalogToken(page.token));
+        const checked = checkCatalogPage(page, token, after, total, seen);
+        this.acceptGeneration(checked.token); token = checked.token; total = checked.total;
+        const added = captureCost(page.items, this.quotaLimit()).retained;
+        this.resize(ticket, bytes + added); bytes += added;
+        for (const row of page.items) raw.push(ownCatalogRow(row));
+        seen += BigInt(page.items.length); after = page.next_after?.id ?? null;
+      }, check); check();
+    } while (after !== null);
+    this.resize(ticket, bytes + 64 + raw.length * 64);
+    const visible = raw.filter((row): row is DbConversation => row.scope_mode === 'Chat' || row.scope_mode === 'Architect' || row.scope_mode === 'Implement')
+      .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || b.updated_at.localeCompare(a.updated_at) || compareId(a, b));
+    Object.freeze(raw); Object.freeze(visible);
+    return { rows: { token: token!, total: total!, raw, visible, ticket }, sealed: false };
   }
   private charge(capture: Capture): void {
     const native = capture.native!;
     capture.bytes = native.baseBytes + (native.pending?.bytes ?? 0) + (native.page?.bytes ?? 0) + capture.cursors.size * 128;
     this.quota();
   }
-  private async nativeCall<T>(work: () => Promise<T>): Promise<T> {
+  private async nativeCall<T>(work: () => Promise<T>, check: () => void): Promise<T> {
     const epoch = this.epoch; const reservation = Symbol();
     this.quota(4 * 1024 * 1024); this.reservations.set(reservation, 4 * 1024 * 1024);
     try {
       const value = await work();
       if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable');
-      if (utf8Bytes(JSON.stringify(value)) > 4 * 1024 * 1024) throw new ConversationCaptureError('resource_limit');
+      check();
+      if (this.encodedBytes(value) > 4 * 1024 * 1024) throw new ConversationCaptureError('resource_limit');
+      this.hold(value);
       return value;
     } finally { this.reservations.delete(reservation); }
   }
@@ -282,7 +375,7 @@ export class ConversationCaptures {
           const native = capture.native!; const seen = new Set<string>();
           let after: ConversationContentMetadataInput['after'] = null; let raw = 0; let exported = 0;
           do {
-            const page = await this.nativeCall(() => ports.metadata({ conversation_id: ref.conversation_id, expected_token: token, after, limit: 100 })); check();
+            const page = await this.nativeCall(() => ports.metadata({ conversation_id: ref.conversation_id, expected_token: token, after, limit: 100 }), check); check();
             if (stableJson(page.token) !== stableJson(token) || page.items.length > 100 || (!page.items.length && page.next_after)) throw new ConversationCaptureError('unavailable');
             if (!after) { if (!page.opening || page.opening.conversation.id !== ref.conversation_id) throw new ConversationCaptureError('unavailable'); raw = decimal(page.opening.total_raw); exported = decimal(page.opening.total_exportable); }
             else if (page.opening) throw new ConversationCaptureError('unavailable');
@@ -290,24 +383,27 @@ export class ConversationCaptures {
               id(descriptor.id);
               if (descriptor.conversation_id !== ref.conversation_id || typeof descriptor.role !== 'string' || !Number.isFinite(Date.parse(descriptor.created_at)) || seen.has(descriptor.id) || controlledText(descriptor.id, observation.policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
               if (after && (descriptor.created_at < after.created_at || (descriptor.created_at === after.created_at && descriptor.id <= after.id))) throw new ConversationCaptureError('unavailable');
-              seen.add(descriptor.id); native.descriptors.push(descriptor); native.baseBytes += utf8Bytes(JSON.stringify(descriptor)) + 192;
+              const bytes = this.deps.source.nativeCatalog ? captureCost(descriptor, this.quotaLimit()).retained + 192 : this.encodedBytes(descriptor) + 192;
+              this.quota(bytes);
+              seen.add(descriptor.id); native.descriptors.push(descriptor); native.baseBytes += bytes;
             }
             if (page.next_after) { const last = page.items.at(-1)!; if (last.id !== page.next_after.id || last.created_at !== page.next_after.created_at) throw new ConversationCaptureError('unavailable'); }
             this.charge(capture); after = page.next_after;
           } while (after);
           if (native.descriptors.length !== raw) throw new ConversationCaptureError('unavailable');
+          this.containers(128 + native.descriptors.length * 64);
           const descriptors = native.descriptors.filter(d => d.role === 'user' || d.role === 'assistant');
           if (descriptors.length !== exported) throw new ConversationCaptureError('unavailable');
           this.quota(descriptors.length * 16);
           descriptors.sort((a,b) => a.created_at.localeCompare(b.created_at) || compareId(a,b));
           native.descriptors = descriptors; descriptors.forEach((d, position) => native.positions.set(d.id, position));
-          native.baseBytes = 2048 + utf8Bytes(capture.binding) + utf8Bytes(JSON.stringify(descriptors)) + descriptors.length * 192;
+          native.baseBytes = 2048 + utf8Bytes(capture.binding) + (this.deps.source.nativeCatalog ? captureCost(descriptors, this.quotaLimit()).retained : this.encodedBytes(descriptors)) + descriptors.length * 192;
           this.charge(capture); observation = await this.validateNative(scope, ref, capture); check();
           offset = backward ? descriptors.length : 0;
         }
         const native = capture!.native!; const total = native.descriptors.length;
         const pageKey = stableJson([offset, limit, backward, !continuation ? messageId ?? null : null]);
-        if (native.page?.key === pageKey) { await this.validateNative(scope, ref, capture!); check(); return structuredClone(native.page.result); }
+        if (native.page?.key === pageKey) { await this.validateNative(scope, ref, capture!); check(); return this.snapshot(native.page.result); }
         // Only the current rendered page is owned here; the host accounts for
         // any response it retains independently. Old cursor boundaries survive.
         native.page = undefined; this.charge(capture!);
@@ -330,13 +426,15 @@ export class ConversationCaptures {
           if (native.pending && (native.pending.backward !== backward || native.pending.positions[0] !== position)) { native.pending = undefined; this.charge(capture!); }
           if (!native.pending) {
             const wanted = positions.slice(consumed); const ids = wanted.map(p=>native.descriptors[p].id);
-            const batch = await this.nativeCall(()=>ports.window({ conversation_id: ref.conversation_id, expected_token: native.token, ids })); check();
+            const batch = await this.nativeCall(()=>ports.window({ conversation_id: ref.conversation_id, expected_token: native.token, ids }), check); check();
             if (stableJson(batch.token) !== stableJson(native.token) || batch.consumed_count < 1 || batch.consumed_count > ids.length || batch.items.length !== batch.consumed_count) throw new ConversationCaptureError('unavailable');
             for (const [i,item] of batch.items.entries()) {
               const descriptor = native.descriptors[wanted[i]];
               if (item.id !== descriptor.id || item.conversation_id !== ref.conversation_id || item.role !== descriptor.role || item.created_at !== descriptor.created_at) throw new ConversationCaptureError('unavailable');
             }
-            native.pending = { backward, positions: wanted.slice(0,batch.consumed_count), items: batch.items, bytes: utf8Bytes(JSON.stringify(batch)) + 64 * batch.items.length };
+            const pendingBytes = (this.deps.source.nativeCatalog ? captureCost(batch, this.quotaLimit()).retained : this.encodedBytes(batch)) + 64 * batch.items.length;
+            this.quota(pendingBytes);
+            native.pending = { backward, positions: wanted.slice(0,batch.consumed_count), items: batch.items, bytes: pendingBytes };
             if (native.pending.bytes > 4 * 1024 * 1024) throw new ConversationCaptureError('resource_limit'); this.charge(capture!);
           }
           const raw = native.pending.items[0];
@@ -345,13 +443,13 @@ export class ConversationCaptures {
           const attested = await projectFinalProvenance(raw.id, raw.content, raw.provenance_json); check();
           const text = messageText(raw, generating, observation.policy, attested);
           const item: MessageItem = { message_id: raw.id, position, role: raw.role as 'user'|'assistant', created_at: new Date(raw.created_at).toISOString(), completion: generating ? 'unknown' : raw.role === 'user' ? 'complete' : completion(raw.completion_reason), ...text };
-          const size = utf8Bytes(JSON.stringify(item)) + 1;
+          const size = this.encodedBytes(item) + 1;
           if (publicBytes + size > 240 * 1024) { if (!rendered.length) throw new ConversationCaptureError('resource_limit'); break; }
           rendered.push(item); publicBytes += size;
           if (management && item.role === 'assistant' && item.completion === 'complete' && 'text' in item) responseRevisions.push({ id: raw.id, revision: raw.response_revision_decimal });
           native.pending.items.shift(); native.pending.positions.shift();
           if (!native.pending.items.length) native.pending = undefined;
-          else native.pending.bytes = utf8Bytes(JSON.stringify(native.pending.items)) + 64 * native.pending.items.length;
+          else native.pending.bytes = (this.deps.source.nativeCatalog ? captureCost(native.pending.items, this.quotaLimit()).retained : this.encodedBytes(native.pending.items)) + 64 * native.pending.items.length;
           consumed++; this.charge(capture!);
         }
         rendered.sort((a,b)=>a.position-b.position);
@@ -360,11 +458,14 @@ export class ConversationCaptures {
         const next = backward ? start : end;
         let cursor: string | null = null;
         if (backward ? next > 0 : next < total) {
-          cursor = [...capture!.cursors].find(([,p])=>p===next)?.[0] ?? crypto.randomUUID(); capture!.cursors.set(cursor,next);
+          for (const [key, position] of capture!.cursors) if (position === next) { cursor = key; break; }
+          if (!cursor) { this.quota(128); cursor = crypto.randomUUID(); capture!.cursors.set(cursor,next); }
         }
         const result: NativeCapturePage = { page: { snapshot_id: snapshotId!, revision: capture!.revision, observed_at: new Date(capture!.observed).toISOString(), expires_at: new Date(capture!.observed+300000).toISOString(), export_policy_revision: capture!.policy, offset: start, total, next_cursor: cursor, ...(backward ? {direction:'backward'} : {}) }, items: rendered, responseRevisions, contentToken: native.token };
-        native.page = { key: pageKey, result, bytes: utf8Bytes(JSON.stringify(result)) + 2048 }; this.charge(capture!);
-        await this.validateNative(scope, ref, capture!); check(); return structuredClone(result);
+        const resultBytes = (this.deps.source.nativeCatalog ? captureCost(result, this.quotaLimit()).retained : this.encodedBytes(result)) + 2048;
+        this.quota(resultBytes);
+        native.page = { key: pageKey, result, bytes: resultBytes }; this.charge(capture!);
+        await this.validateNative(scope, ref, capture!); check(); return this.snapshot(result);
       } catch (error) {
         // An obsolete completion must never destroy captures of a new epoch.
         if (ownsCapture && snapshotId && this.captures.get(snapshotId) === capture) this.captures.delete(snapshotId);
@@ -379,6 +480,7 @@ export class ConversationCaptures {
     const epoch = this.epoch;
     const result = this.tail.then(async () => {
       if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable');
+      const tickets = new Set<symbol>(); this.operationTickets = tickets;
       try {
         const value = await work();
         if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable');
@@ -388,6 +490,9 @@ export class ConversationCaptures {
         const code = error && typeof error === 'object' && 'message' in error ? error.message : null;
         if (typeof code === 'string' && ['unavailable','content_unavailable','not_found','validation_failed','snapshot_expired','stale_revision','resource_limit'].includes(code)) throw new ConversationCaptureError(code as CaptureErrorCode);
         throw new ConversationCaptureError('unavailable');
+      } finally {
+        for (const ticket of tickets) this.free(ticket);
+        if (this.operationTickets === tickets) this.operationTickets = undefined;
       }
     });
     this.tail = result.catch(() => undefined); return result;
@@ -398,85 +503,128 @@ export class ConversationCaptures {
       if (now >= capture.observed + 300000) this.captures.delete(key);
     }
   }
-  private async load(projectsOnly = false, deadline = Infinity, transcriptIds?: ReadonlySet<string>): Promise<Observation> {
-    const checkDeadline = () => { if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable'); };
+  private async load(projectsOnly = false, deadline = Infinity, transcriptIds?: ReadonlySet<string>): Promise<{ observation: Observation; catalogToken?: ConversationCatalogToken }> {
+    const epoch = this.epoch;
+    const check = () => {
+      if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable');
+      if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable');
+    };
     const source = this.deps.source;
-    const policy = structuredClone(this.deps.policy());
+    const policy = this.snapshot(this.deps.policy());
     if (policy.revision !== 'visible-1') throw new ConversationCaptureError('unavailable');
     for (const value of [this.deps.instanceId, this.deps.workspaceId]) {
       if (controlledText(value, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
     }
-    const projects = (await source.projects()).map(p => ({ id: id(p.id), name: p.name })).sort(compareId);
-    checkDeadline();
+    const projectRows = await source.projects(); check(); this.hold(projectRows);
+    this.containers(256 + projectRows.length * 256);
+    const projects = projectRows.map(p => ({ id: id(p.id), name: p.name })).sort(compareId);
     if (new Set(projects.map(p => p.id)).size !== projects.length || projects.some(p => controlledText(p.id, policy).content_state !== 'complete')) throw new ConversationCaptureError('content_unavailable');
-    if (projectsOnly) return { projects, tasks: [], conversations: [], transcripts: [], policy };
-    const tasks = (await source.tasks()).map(t => ({ id: t.id, project_id: t.project_id, conversation_id: t.conversation_id })).sort(compareId);
+    if (projectsOnly) return { observation: { projects, tasks: [], conversations: [], transcripts: [], policy } };
+    const taskRows = await source.tasks(); check(); this.hold(taskRows);
+    this.containers(256 + taskRows.length * 512);
+    const tasks = taskRows.map(t => ({ id: t.id, project_id: t.project_id, conversation_id: t.conversation_id })).sort(compareId);
     const wireTaskIds = tasks.map(task => id(pilotTaskId(task.id)));
     if (new Set(wireTaskIds).size !== tasks.length) throw new ConversationCaptureError('content_unavailable');
-    const conversations = (await source.listConversations()).slice().filter(c => c.scope_mode === 'Chat' || c.scope_mode === 'Architect' || c.scope_mode === 'Implement')
+    const catalog = source.nativeCatalog ? await this.catalogRows(check) : undefined; check();
+    const conversations = catalog ? catalog.rows.visible : (await source.listConversations()).slice().filter(c => c.scope_mode === 'Chat' || c.scope_mode === 'Architect' || c.scope_mode === 'Implement')
       .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || b.updated_at.localeCompare(a.updated_at) || compareId(a, b));
-    for (const value of [...projects.map(p => p.id), ...tasks.map(t => t.id), ...conversations.map(c => c.id)]) {
-      if (controlledText(value, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
+    check(); this.hold(conversations);
+    for (const rows of [projects, tasks, conversations]) for (const row of rows) {
+      if (controlledText(row.id, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
     }
-    checkDeadline();
     const transcripts: Observation['transcripts'] = [];
-    const seen = new Set<string>(); let bytes = utf8Bytes(JSON.stringify([projects, tasks, conversations, policy]));
+    const temporary = source.nativeCatalog ? this.reserve(256 + conversations.length * 64) : undefined;
+    if (source.nativeCatalog) this.reserve(256 + conversations.length * 128);
+    const seen = new Set<string>();
+    let bytes = source.nativeCatalog ? 0 : utf8Bytes(JSON.stringify([projects, tasks, conversations, policy]));
     if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
-    for (const conversation of conversations) {
-      checkDeadline();
-      id(conversation.id);
-      if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
-      seen.add(conversation.id);
-      const activity = (source.runtimeActivity ?? source.activity)(conversation.id);
-      if (transcriptIds !== undefined && !transcriptIds.has(conversation.id)) {
-        transcripts.push({ id: conversation.id, messages: [], provenMessages: [], activity });
-        continue;
-      }
-      if (source.nativeContent) {
-        const nativeToken = await source.nativeContent.version(conversation.id); checkToken(nativeToken); checkDeadline();
-        transcripts.push({ id: conversation.id, messages: [], provenMessages: [], activity, nativeToken });
-        continue;
-      }
-      const messages = (await source.listMessages(conversation.id)).slice().sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
-      checkDeadline();
-      const messageIds = new Set<string>(); const provenMessages: Array<{ id: string; text: string }> = [];
-      for (const message of messages) {
-        id(message.id);
-        if (controlledText(message.id, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
-        if (message.conversation_id !== conversation.id || messageIds.has(message.id) || !Number.isFinite(Date.parse(message.created_at))) throw new ConversationCaptureError('content_unavailable');
-        messageIds.add(message.id);
-        if (message.role === 'assistant') {
-          const text = await source.finalProvenance?.(message);
-          checkDeadline();
-          if (typeof text === 'string') provenMessages.push({ id: message.id, text });
+    try {
+      for (const conversation of conversations) {
+        check(); id(conversation.id);
+        if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
+        seen.add(conversation.id);
+        const currentActivity = (source.runtimeActivity ?? source.activity)(conversation.id);
+        const activity = source.nativeCatalog ? this.snapshot(currentActivity) : currentActivity;
+        if (transcriptIds !== undefined && !transcriptIds.has(conversation.id)) {
+          transcripts.push({ id: conversation.id, messages: [], provenMessages: [], activity });
+          continue;
         }
+        if (source.nativeContent) {
+          const nativeToken = await source.nativeContent.version(conversation.id); check(); checkToken(nativeToken); this.hold(nativeToken);
+          transcripts.push({ id: conversation.id, messages: [], provenMessages: [], activity, nativeToken: source.nativeCatalog ? structuredClone(nativeToken) : nativeToken });
+          continue;
+        }
+        const messageRows = await source.listMessages(conversation.id); check(); this.hold(messageRows);
+        this.containers(256 + messageRows.length * 256);
+        const messages = messageRows.slice().sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
+        const messageIds = new Set<string>(); const provenMessages: Array<{ id: string; text: string }> = [];
+        for (const message of messages) {
+          id(message.id);
+          if (controlledText(message.id, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
+          if (message.conversation_id !== conversation.id || messageIds.has(message.id) || !Number.isFinite(Date.parse(message.created_at))) throw new ConversationCaptureError('content_unavailable');
+          messageIds.add(message.id);
+          if (message.role === 'assistant') {
+            const text = await source.finalProvenance?.(message); check();
+            if (typeof text === 'string') { this.hold(text); this.containers(128); provenMessages.push({ id: message.id, text }); }
+          }
+        }
+        if (!source.nativeCatalog) {
+          bytes += utf8Bytes(JSON.stringify([messages, activity]));
+          if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
+        }
+        transcripts.push({ id: conversation.id, messages: source.nativeCatalog ? this.snapshot(messages) : messages, provenMessages, activity });
       }
-      bytes += utf8Bytes(JSON.stringify([messages, activity]));
-      if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
-      transcripts.push({ id: conversation.id, messages, provenMessages, activity });
-    }
-    return structuredClone({ projects, tasks, conversations, transcripts, policy, ...(!source.nativeContent && source.catalogMetadata ? { metadata: await source.catalogMetadata() } : {}) });
+      const metadata = !source.nativeContent && source.catalogMetadata ? await source.catalogMetadata() : undefined; check();
+      const observation: Observation = { projects, tasks, conversations, transcripts, policy, ...(!source.nativeContent && source.catalogMetadata ? { metadata: source.nativeCatalog ? this.snapshot(metadata) : metadata } : {}) };
+      if (!catalog) return { observation: source.nativeCatalog ? observation : structuredClone(observation) };
+      if (!catalog.sealed) {
+        await this.catalogCall(1024, () => source.nativeCatalog!.version({ expected_token: catalog.rows.token }), value => {
+          const token = catalogToken(value); this.acceptGeneration(token);
+          if (!sameCatalogToken(token, catalog.rows.token)) throw new ConversationCaptureError('unavailable');
+        }, check); check();
+        this.catalog = catalog.rows;
+        this.operationTickets?.delete(catalog.rows.ticket);
+      }
+      return { observation, catalogToken: catalog.rows.token };
+    } finally { this.free(temporary); }
   }
   private async observe(projectsOnly = false, transcriptIds?: ReadonlySet<string>, includeProjects = false): Promise<{ observation: Observation; revision: number; resources: Record<string, number>; projectsRevision: number | null }> {
     // Bound complete catalog inspection, including both observations and retry.
     const epoch = this.epoch; const sourceEpoch = this.sourceEpoch;
-    const guard = () => { if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable'); };
     const deadline = (this.deps.now ?? Date.now)() + 10_000;
+    const guard = () => {
+      if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable');
+      if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable');
+    };
     // Independent reads detect edits during assembly; retry once, never mix pages.
     for (let attempt = 0; attempt < 2; attempt++) {
-      const previous = await this.deps.storage.load();
-      const observation = await this.load(projectsOnly, deadline, transcriptIds);
-      if (this.hasNativeContent) this.quota(2 * utf8Bytes(JSON.stringify(observation)) + (previous === null ? 0 : utf8Bytes(previous)));
-      const fingerprint = await digest(observation);
-      if (fingerprint !== await digest(await this.load(projectsOnly, deadline, transcriptIds))) continue;
+      const before = new Set(this.operationTickets); const live = new Set<symbol>(); let kept = false;
+      try {
+      const previous = await this.deps.storage.load(); guard(); this.hold(previous);
+      const beforeLoad = new Set(this.operationTickets);
+      const first = await this.load(projectsOnly, deadline, transcriptIds); guard();
+      const observation = first.observation;
+      for (const ticket of this.operationTickets ?? []) if (!beforeLoad.has(ticket)) live.add(ticket);
+      if (this.hasNativeContent && !this.deps.source.nativeCatalog) this.quota(2 * utf8Bytes(JSON.stringify(observation)) + (previous === null ? 0 : utf8Bytes(previous)));
+      const fingerprint = await this.fingerprint(observation); guard();
+      const beforeSecond = new Set(this.operationTickets);
+      let matches = false;
+      try {
+        const second = await this.load(projectsOnly, deadline, transcriptIds); guard();
+        const secondFingerprint = await this.fingerprint(second.observation); guard();
+        matches = fingerprint === secondFingerprint && (!first.catalogToken || Boolean(second.catalogToken && sameCatalogToken(first.catalogToken, second.catalogToken)));
+      } finally { this.releaseSince(beforeSecond); }
+      if (!matches) { this.evictCatalog(); continue; }
       type Revision = { revision: number; fingerprint: string };
       type Journal = { version: number; resources?: Record<string, ResourceRevision>; projects?: Revision; conversations?: Revision; catalog?: string; transcripts?: Record<string, string> };
+      if (previous !== null && this.deps.source.nativeCatalog) this.reserve(parsedCaptureCost(previous, this.quotaLimit()));
       const journal: Journal = previous === null ? { version: 4 } : JSON.parse(previous);
       if (!journal || ![2, 3, 4].includes(journal.version)) throw new ConversationCaptureError('unavailable');
       for (const clock of [journal.projects, journal.conversations]) if (clock && (!Number.isSafeInteger(clock.revision) || clock.revision < 1 || typeof clock.fingerprint !== 'string')) throw new ConversationCaptureError('unavailable');
       if (journal.catalog !== undefined && typeof journal.catalog !== 'string') throw new ConversationCaptureError('unavailable');
       if (journal.transcripts !== undefined && (!journal.transcripts || typeof journal.transcripts !== 'object' || Array.isArray(journal.transcripts) || Object.values(journal.transcripts).some(v => typeof v !== 'string'))) throw new ConversationCaptureError('unavailable');
       if (journal.resources !== undefined && (!journal.resources || typeof journal.resources !== 'object' || Array.isArray(journal.resources))) throw new ConversationCaptureError('unavailable');
+      this.hold(journal.resources);
       const records: Record<string, ResourceRevision> = { ...journal.resources };
       for (const record of Object.values(records)) {
         if (!record || !Number.isSafeInteger(record.revision) || record.revision < 1 || typeof record.fingerprint !== 'string' || (record.transcript !== undefined && typeof record.transcript !== 'string')) throw new ConversationCaptureError('unavailable');
@@ -489,7 +637,7 @@ export class ConversationCaptures {
       let projectsRevision: number | null = null;
       if (includeProjects && !projectsOnly) {
         // Match load(true) exactly, including policy, without another source read.
-        const projectFingerprint = await digest({ projects: observation.projects, tasks: [], conversations: [], transcripts: [], policy: observation.policy });
+        const projectFingerprint = await this.fingerprint({ projects: observation.projects, tasks: [], conversations: [], transcripts: [], policy: observation.policy }); guard();
         const oldProjects = journal.projects;
         projectsRevision = oldProjects ? oldProjects.revision + Number(oldProjects.fingerprint !== projectFingerprint) : 1;
         if (!Number.isSafeInteger(projectsRevision)) throw new ConversationCaptureError('resource_limit');
@@ -500,8 +648,10 @@ export class ConversationCaptures {
       let changed = old?.fingerprint !== fingerprint;
       const changedKeys = new Set<string>();
       if (!projectsOnly) {
-        const catalog = await digest({ ...observation, transcripts: observation.transcripts.map(t => ({ id: t.id, activity: t.activity })) });
+        if (this.deps.source.nativeCatalog) this.reserve(1024 + observation.conversations.length * 256 + observation.transcripts.length * 256);
+        const catalog = await this.fingerprint({ ...observation, transcripts: observation.transcripts.map(t => ({ id: t.id, activity: t.activity })) }); guard();
         changed = journal.catalog === undefined ? old !== undefined : journal.catalog !== catalog;
+        this.hold(journal.transcripts);
         const fingerprints = { ...journal.transcripts };
         const present = new Set<string>();
         const presentIds = new Set(observation.conversations.map(c => c.id));
@@ -509,20 +659,21 @@ export class ConversationCaptures {
           const ref = this.reference(conversation, observation); if (!ref) continue;
           const key = stableJson(ref); present.add(key);
           const transcript = observation.transcripts.find(t => t.id === conversation.id)!;
-          const resourceFingerprint = await digest([conversation, ref, transcript.activity, observation.policy, ...(this.hasNativeContent ? [observation.projects, observation.tasks] : [])]);
+          const resourceFingerprint = await this.fingerprint([conversation, ref, transcript.activity, observation.policy, ...(this.hasNativeContent ? [observation.projects, observation.tasks] : [])]); guard();
           const record = records[key];
           const visited = transcriptIds === undefined || transcriptIds.has(conversation.id);
           let content = record?.content;
           let hash = record?.transcript;
           if (visited) {
             if (transcript.nativeToken) content = { kind: 'native', source_epoch: sourceEpoch, token: transcript.nativeToken };
-            else { hash = await digest(transcript); content = { kind: 'legacy', hash }; }
+            else { hash = await this.fingerprint(transcript); guard(); content = { kind: 'legacy', hash }; }
             if (hash) Object.defineProperty(fingerprints, transcript.id, { value: hash, enumerable: true, configurable: true });
           }
           // Preserve unvisited content verbatim. A first native observation is a
           // representation change even when an old hash looks token-shaped.
           const contentChanged = visited && (transcript.nativeToken ? stableJson(record?.content) !== stableJson(content) : (record?.content?.kind === 'native' || (record?.transcript !== undefined && record.transcript !== hash)));
           if (!record || record.fingerprint !== resourceFingerprint || contentChanged) changedKeys.add(key);
+          this.hold([key, content, hash, resourceFingerprint]);
           records[key] = { revision: record?.revision ?? 1, fingerprint: resourceFingerprint, ...(hash ? { transcript: hash } : {}), ...(content ? { content } : {}) };
         }
         for (const key of Object.keys(records)) if (!present.has(key)) { delete records[key]; changed = true; }
@@ -539,12 +690,23 @@ export class ConversationCaptures {
         journal.resources = records;
       }
       journal.version = 4; journal[section] = { revision, fingerprint };
+      if (this.deps.source.nativeCatalog) this.reserve(captureCost(journal, this.quotaLimit()).scratch);
+      const resultTicket = this.hold(resources);
       const next = JSON.stringify(journal);
       if (utf8Bytes(next) > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
       guard();
-      if (!await this.deps.storage.compareAndSwap(previous, next)) { guard(); continue; }
+      if (!await this.deps.storage.compareAndSwap(previous, next)) { guard(); this.evictCatalog(); continue; }
       guard();
+      if (resultTicket) live.add(resultTicket);
+      kept = true;
       return { observation, revision, resources, projectsRevision };
+      } catch (error) {
+        this.evictCatalog();
+        guard();
+        if (!(error instanceof ConversationCaptureError) || error.code !== 'stale_revision') throw error;
+      } finally {
+        for (const ticket of this.operationTickets ?? []) if (!before.has(ticket) && (!kept || !live.has(ticket))) this.free(ticket);
+      }
     }
     throw new ConversationCaptureError('content_unavailable');
   }
@@ -561,6 +723,8 @@ export class ConversationCaptures {
   }
   private read(scope: CaptureScope, operation: Operation, filter: ConversationRef | string | null, continuation: Continuation | undefined, limit: number, knownRevision?: number): Promise<CapturePage<Item> | { not_modified: true; revision: number; observed_at: string }> {
     return this.serial(async () => {
+      const epoch = this.epoch, deadline = (this.deps.now ?? Date.now)() + 10000;
+      const check = () => { if (epoch !== this.epoch) throw new ConversationCaptureError('unavailable'); if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable'); };
       id(scope.accountId); id(scope.sessionId);
       if (scope.instanceId !== this.deps.instanceId || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new ConversationCaptureError('validation_failed');
       const binding = stableJson([scope.accountId, scope.sessionId, scope.instanceId, operation, filter, Boolean(scope.reliability)]);
@@ -568,17 +732,19 @@ export class ConversationCaptures {
       this.pruneExpiredCaptures();
       let snapshotId = continuation?.snapshot_id;
       let capture = snapshotId ? this.captures.get(snapshotId) : undefined;
+      let captureTicket: symbol | undefined;
       let offset = 0;
       if (continuation) {
         if (!capture) throw new ConversationCaptureError('snapshot_expired');
         if (capture.binding !== binding || !capture.cursors.has(continuation.cursor)) throw new ConversationCaptureError('validation_failed');
         offset = capture.cursors.get(continuation.cursor)!;
       }
-      const { observation, revision: catalogRevision, resources } = await this.observe(operation === 'projects.list', new Set(operation === 'conversation.read' ? [(filter as ConversationRef).conversation_id] : []));
+      const { observation, revision: catalogRevision, resources } = await this.observe(operation === 'projects.list', new Set(operation === 'conversation.read' ? [(filter as ConversationRef).conversation_id] : [])); check();
       const revision = scope.reliability && operation === 'conversation.read' ? resources[stableJson(filter)] : catalogRevision;
       if (capture && capture.revision !== revision) throw new ConversationCaptureError('stale_revision');
       if (knownRevision !== undefined && scope.reliability && knownRevision === revision) return { not_modified: true, revision, observed_at: new Date(now).toISOString() };
       if (!capture) {
+        if (this.deps.source.nativeCatalog) this.reserve(1024 + captureCost(operation === 'projects.list' ? observation.projects : operation === 'conversations.list' ? observation.conversations : observation.transcripts, this.quotaLimit()).scratch);
         let items: Item[] = [];
         if (operation === 'projects.list') {
           items = observation.projects.map(project => {
@@ -601,7 +767,7 @@ export class ConversationCaptures {
           const ref = filter as ConversationRef;
           const conversation = observation.conversations.find(c => c.id === ref?.conversation_id);
           if (!conversation || (!scope.reliability && conversation.scope_mode === 'Architect') || stableJson(this.reference(conversation, observation)) !== stableJson(ref)) throw new ConversationCaptureError('not_found');
-          const persisted = await this.deps.source.getConversation(conversation.id);
+          const persisted = await this.deps.source.getConversation(conversation.id); check(); this.hold(persisted);
           if (stableJson(persisted) !== stableJson(conversation)) throw new ConversationCaptureError('stale_revision');
           const transcript = observation.transcripts.find(t => t.id === conversation.id)!;
           items = transcript.messages.filter(m => m.role === 'user' || m.role === 'assistant').map((message, position) => {
@@ -614,18 +780,17 @@ export class ConversationCaptures {
             return { message_id: base.message_id, position, role: base.role, created_at: base.created_at, completion: base.completion, content_state: text.content_state, reason: text.reason };
           });
         }
-        const bytes = utf8Bytes(JSON.stringify(items)) + 2048;
-        const used = [...this.captures.values()].reduce((sum, value) => sum + value.bytes, 0);
-        if (used + bytes > Math.min(MAX_QUOTA, this.deps.quotaBytes ?? MAX_QUOTA)) throw new ConversationCaptureError('resource_limit');
+        if (this.deps.source.nativeCatalog) this.reserve(captureCost(items, this.quotaLimit()).scratch);
+        const bytes = (this.deps.source.nativeCatalog ? captureCost(items, this.quotaLimit()).retained : utf8Bytes(JSON.stringify(items))) + 2048;
+        captureTicket = this.reserve(bytes);
         snapshotId = crypto.randomUUID();
         capture = { binding, revision, observed: now, policy: observation.policy.revision, items: structuredClone(items), bytes, cursors: new Map() };
         if (operation === 'conversation.read') capture.conversationId = (filter as ConversationRef).conversation_id;
-        this.captures.set(snapshotId, capture);
       }
       if ((this.deps.now ?? Date.now)() >= capture.observed + 300000) { this.captures.delete(snapshotId!); throw new ConversationCaptureError('snapshot_expired'); }
       const pageItems: Item[] = []; let bytes = 4096;
       for (const item of capture.items.slice(offset, offset + limit)) {
-        const size = utf8Bytes(JSON.stringify(item)) + 1;
+        const size = this.encodedBytes(item) + 1;
         // Reserve 16 KiB for future response/transport envelopes.
         if (bytes + size > 240 * 1024) break;
         pageItems.push(item); bytes += size;
@@ -634,15 +799,17 @@ export class ConversationCaptures {
       const nextOffset = offset + pageItems.length;
       let cursor: string | null = null;
       if (nextOffset < capture.items.length) {
-        cursor = [...capture.cursors].find(([, position]) => position === nextOffset)?.[0] ?? crypto.randomUUID();
+        for (const [key, position] of capture.cursors) if (position === nextOffset) { cursor = key; break; }
+        cursor ??= crypto.randomUUID();
         if (!capture.cursors.has(cursor)) {
-          const used = [...this.captures.values()].reduce((sum, value) => sum + value.bytes, 0);
-          if (used + 128 > Math.min(MAX_QUOTA, this.deps.quotaBytes ?? MAX_QUOTA)) throw new ConversationCaptureError('resource_limit');
+          if (captureTicket) this.resize(captureTicket, capture.bytes + 128); else this.quota(128);
           capture.cursors.set(cursor, nextOffset); capture.bytes += 128;
         }
       }
-      return structuredClone({ page: { snapshot_id: snapshotId!, revision: capture.revision, observed_at: new Date(capture.observed).toISOString(),
+      const result = this.snapshot({ page: { snapshot_id: snapshotId!, revision: capture.revision, observed_at: new Date(capture.observed).toISOString(),
         expires_at: new Date(capture.observed + 300000).toISOString(), export_policy_revision: capture.policy, offset, total: capture.items.length, next_cursor: cursor }, items: pageItems });
+      if (captureTicket) { this.captures.set(snapshotId!, capture); this.free(captureTicket); }
+      return result;
     });
   }
 }

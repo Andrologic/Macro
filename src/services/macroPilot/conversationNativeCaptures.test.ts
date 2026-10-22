@@ -181,6 +181,8 @@ test('both desktop factories expose the registered IPC trio and management bypas
   const s=setup(4);const prior=Object.getOwnPropertyDescriptor(globalThis,'window');const commands:string[]=[];
   const invoke=async(command:string,args:Record<string,unknown>={})=>{
     commands.push(command);
+    if(command==='db_conversation_catalog_version')return {version:1,generation:'d'.repeat(32),incarnation:'e'.repeat(32),revision:'0'};
+    if(command==='db_conversation_catalog_page')return {token:{version:1,generation:'d'.repeat(32),incarnation:'e'.repeat(32),revision:'0'},total_raw:'1',items:await s.source.listConversations(),next_after:null,admission_estimate_bytes:8192};
     if(command==='db_list_conversations')return s.source.listConversations();
     if(command==='db_conversation_content_version')return s.source.nativeContent!.version(args.conversationId as string);
     if(command==='db_conversation_content_metadata')return s.source.nativeContent!.metadata(args.input as Parameters<NonNullable<typeof s.source.nativeContent>['metadata']>[0]);
@@ -194,7 +196,7 @@ test('both desktop factories expose the registered IPC trio and management bypas
       const captures=new ConversationCaptures({...s.deps,source,storage:memory()});expect((await captures.conversationRead(scope,ref)).items).toHaveLength(4);
       expect(source.nativeContent).toBeDefined();
     }
-    expect(commands).toContain('db_conversation_content_metadata');expect(commands).toContain('db_conversation_content_window');expect(commands.every(c=>['db_list_conversations','db_conversation_content_version','db_conversation_content_metadata','db_conversation_content_window'].includes(c))).toBe(true);
+    expect(commands).toContain('db_conversation_content_metadata');expect(commands).toContain('db_conversation_content_window');expect(commands.every(c=>['db_conversation_catalog_version','db_conversation_catalog_page','db_list_conversations','db_conversation_content_version','db_conversation_content_metadata','db_conversation_content_window'].includes(c))).toBe(true);
   }finally{if(prior)Object.defineProperty(globalThis,'window',prior);else Reflect.deleteProperty(globalThis,'window');}
 });
 
