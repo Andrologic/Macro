@@ -34,6 +34,9 @@ describe("block details read from AgSDL", () => {
   it("shows a configuration chosen at start as its selector and cases", () => {
     const agent = card("agent", { agentDefinition: { configuration: { select: { path: ["resources", "mode", "value"] }, cases: { a: "fast", b: "thorough" } } } });
     expect(blockDetails(agent, declarations).find(item => item.key === "model")?.values).toEqual(["resources.mode.value → Fast | Thorough"]);
+    const deep = card("agent", { agentDefinition: { configuration: "deep" } });
+    expect(blockDetails(deep, [declaration("/configurations/deep", "Deep", { engine: "engine", model: { identity: "claude-opus-5-5", version: "1" } })])
+      .find(item => item.key === "model")?.values).toEqual(["claude-opus-5-5"]);
   });
 
   it("reads call arguments and declared effects, unknown when omitted", () => {

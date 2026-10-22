@@ -1,0 +1,381 @@
+{
+  "contract": "agsdl-0.2.0",
+  "id": "demo-quality",
+  "bindings": {
+    "engine": {
+      "contract": {
+        "identity": "macro/agent-engine",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      }
+    },
+    "deliveryApproval": {
+      "contract": {
+        "identity": "macro/human-approval",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "macro/desktop",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "delivery": {
+      "contract": {
+        "identity": "macro/web-deployment",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "vercel/http",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "atlasCms": {
+      "contract": {
+        "identity": "macro/cms",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "strapi/rest",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "webTesting": {
+      "contract": {
+        "identity": "macro/browser-testing",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "playwright/local",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "securityScanner": {
+      "contract": {
+        "identity": "macro/security-scanner",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "semgrep/cli",
+        "version": "1"
+      },
+      "effects": "none"
+    },
+    "atlasRepository": {
+      "contract": {
+        "identity": "macro/git-repository",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "github/rest",
+        "version": "1"
+      },
+      "effects": "external"
+    },
+    "accessibilityChecker": {
+      "contract": {
+        "identity": "macro/accessibility-audit",
+        "version": "1"
+      },
+      "implementation": {
+        "identity": "axe/cli",
+        "version": "1"
+      },
+      "effects": "none"
+    }
+  },
+  "configurations": {
+    "standard": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "atlasRepository"
+      }
+    },
+    "audit": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "atlasRepository",
+        "scanner": "securityScanner"
+      }
+    },
+    "web": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "accessibility": "accessibilityChecker",
+        "browser": "webTesting"
+      }
+    },
+    "redaction": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "cms": "atlasCms"
+      }
+    },
+    "approfondi": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-opus-5-5",
+        "version": "1"
+      }
+    },
+    "code": {
+      "engine": "engine",
+      "model": {
+        "identity": "claude-sonnet-5-5",
+        "version": "1"
+      },
+      "tools": {
+        "repository": "atlasRepository"
+      }
+    }
+  },
+  "agents": {
+    "scope": {
+      "configuration": "standard",
+      "prompt": [
+        {
+          "value": "Identifier les pages modifiées et les critères de livraison."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "security": {
+      "configuration": "audit",
+      "prompt": [
+        {
+          "value": "Examiner les accès, les formulaires et l’exposition des données. Classer les constats par gravité."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "accessibility": {
+      "configuration": "web",
+      "prompt": [
+        {
+          "value": "Contrôler le clavier, les libellés, les contrastes et les messages d’erreur."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      },
+      "skills": [
+        "wcag"
+      ]
+    },
+    "content": {
+      "configuration": "redaction",
+      "prompt": [
+        {
+          "value": "Vérifier les textes, les liens et les informations du portail client."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "synthesize": {
+      "configuration": "approfondi",
+      "prompt": [
+        {
+          "value": "Rassembler les trois rapports. Distinguer les blocages des améliorations facultatives."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    },
+    "revise": {
+      "configuration": "code",
+      "prompt": [
+        {
+          "value": "Décrire les corrections demandées par le responsable de livraison."
+        }
+      ],
+      "interface": {
+        "results": {
+          "report": {
+            "mediaTypes": [
+              "text/plain"
+            ],
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "flow": {
+    "entry": "scope",
+    "steps": {
+      "scope": {
+        "type": "agent",
+        "agent": "scope",
+        "next": [
+          "fork"
+        ]
+      },
+      "fork": {
+        "type": "prepare",
+        "message": {
+          "resources": {
+            "report": {
+              "source": {
+                "path": [
+                  "results",
+                  "report"
+                ]
+              }
+            }
+          }
+        },
+        "next": [
+          "security",
+          "accessibility",
+          "content"
+        ]
+      },
+      "security": {
+        "type": "agent",
+        "agent": "security",
+        "next": [
+          "join"
+        ]
+      },
+      "accessibility": {
+        "type": "agent",
+        "agent": "accessibility",
+        "next": [
+          "join"
+        ]
+      },
+      "content": {
+        "type": "agent",
+        "agent": "content",
+        "next": [
+          "join"
+        ]
+      },
+      "join": {
+        "type": "join",
+        "after": "fork",
+        "members": [
+          "security",
+          "accessibility",
+          "content"
+        ],
+        "next": [
+          "synthesize"
+        ]
+      },
+      "synthesize": {
+        "type": "agent",
+        "agent": "synthesize",
+        "next": [
+          "approval"
+        ]
+      },
+      "approval": {
+        "type": "approval",
+        "call": "deliver",
+        "binding": "deliveryApproval",
+        "timeoutMs": 3600000,
+        "validForMs": 3600000,
+        "next": {
+          "approved": [
+            "deliver"
+          ],
+          "denied": [
+            "revise"
+          ]
+        }
+      },
+      "deliver": {
+        "type": "call",
+        "binding": "delivery",
+        "scope": {
+          "action": "deliver",
+          "resources": [
+            "site:atlas-portal/production"
+          ],
+          "context": {
+            "value": "Version 2.4 du portail client"
+          }
+        }
+      },
+      "revise": {
+        "type": "agent",
+        "agent": "revise",
+        "next": []
+      }
+    }
+  },
+  "skills": {
+    "wcag": {
+      "prompt": [
+        {
+          "value": "Rattacher chaque constat à un critère WCAG 2.2 AA et indiquer son niveau."
+        }
+      ]
+    }
+  }
+}

@@ -132,9 +132,9 @@ describe('populated demo scenarios', () => {
     expect(writer.flow.steps.steer).toMatchObject({ delivery: 'steering', agent: writer.flow.steps.write.agent, steers: 'write' });
     expect(writer.flow.steps.steer.next).toBeUndefined();
     expect(writer.flow.steps.revise.agent).toBe(writer.flow.steps.write.agent);
-    expect(writer.agents.writer.configuration.cases).toEqual({ fast: 'fast', thorough: 'thorough' });
-    expect(writer.skills.evidence.resources.reference.ref).toBe('reference');
     const incident = JSON.parse(demoPlans.find(plan => plan.id === 'demo-incident')!.agsdl.source);
+    // The investigation model follows the severity given to the run.
+    expect(incident.agents.investigate.configuration).toEqual({ select: { path: ['resources', 'severity', 'value'] }, cases: { standard: 'analyse', critique: 'analyseApprofondie' } });
     expect(Object.keys(incident.flow.steps.triage.next)).toEqual(incident.flow.steps.triage.decision.choices);
     expect(incident.flow.steps.investigate.maxVisits).toBe(3);
     const resident = demoPlans.find(plan => plan.id === 'demo-resident')!;
@@ -149,10 +149,10 @@ describe('populated demo scenarios', () => {
       expect(JSON.parse(encode(message)).resources[resource]).toEqual({ value: 'Texte conservé\navec ses accents.', mediaType: 'text/plain' });
     }
   });
-  test('structured extraction rejects malformed output and prepares a correction for the same participant', () => {
-    const document = record(decode(demoPlans.find(plan => plan.id === 'demo-structured')!.agsdl.source));
-    const agent = record(record(document.agents).extractor), steps = record(record(document.flow).steps), step = record(steps.extract);
-    const result = (value: unknown) => decode(JSON.stringify({ results: { report: { value, mediaType: 'application/json' } } }));
+  test('catalogue normalization rejects malformed lines and prepares a correction for the same participant', () => {
+    const document = record(decode(demoPlans.find(plan => plan.id === 'demo-ingestion')!.agsdl.source));
+    const agent = record(record(document.agents).normalize), steps = record(record(document.flow).steps), step = record(steps.normalize);
+    const result = (line: unknown) => decode(JSON.stringify({ results: { report: { value: { lines: [line] }, mediaType: 'application/json' } } }));
     for (const bad of [{ sku: 'A1', price: '49', currency: 'EUR' }, { sku: 'A1', price: 49, currency: 'GBP' }, { sku: 'A1', price: 49 }, { sku: 'A1', price: 49, currency: 'EUR', extra: true }]) {
       expect(() => validateCompletion(record(agent.interface), step, result(bad))).toThrow();
     }
@@ -163,19 +163,15 @@ describe('populated demo scenarios', () => {
     expect(evaluatePredicate(predicate, { error: { ...error, code: 'AGENT_FAILED' } })).toBe(false);
     const message = JSON.parse(encode(prepareMessage(document, record(steps.feedback), { error })));
     expect(message.resources.outputErrors.value).toEqual(error);
-    expect(record(steps.feedback).next).toEqual(['extract']);
-    expect(step.agent).toBe('extractor');
+    expect(record(steps.feedback).next).toEqual(['normalize']);
   });
-  test('competition accepts only an approved result and approvals form an ordered chain for one captured action', () => {
-    const race = JSON.parse(demoPlans.find(plan => plan.id === 'demo-competition')!.agsdl.source);
-    expect(race.flow.steps.winner).toMatchObject({ mode: 'first', remaining: 'stop-and-wait' });
-    for (const approved of [true, false]) expect(evaluatePredicate(decode(JSON.stringify(race.flow.steps.winner.accept)), { results: { report: { value: { approved } } } })).toBe(approved);
-    const publication = JSON.parse(demoPlans.find(plan => plan.id === 'demo-approvals')!.agsdl.source);
-    expect(publication.flow.steps.editorial.next.approved).toEqual(['legal']);
-    expect(publication.flow.steps.legal.next.approved).toEqual(['publish']);
-    expect(publication.flow.steps.editorial.call).toBe('publish');
-    expect(publication.flow.steps.legal.call).toBe('publish');
-    expect(publication.bindings.publication.effects).toBe('external');
+  test('crisis accepts only an approved investigation and chains two approvals on one captured action', () => {
+    const crisis = JSON.parse(demoPlans.find(plan => plan.id === 'demo-crisis')!.agsdl.source);
+    for (const approved of [true, false]) expect(evaluatePredicate(decode(JSON.stringify(crisis.flow.steps.first.accept)), { results: { report: { value: { approved } } } })).toBe(approved);
+    expect(crisis.flow.steps.operationsApproval.next.approved).toEqual(['securityApproval']);
+    expect(crisis.flow.steps.securityApproval.next.approved).toEqual(['deploy']);
+    expect([crisis.flow.steps.operationsApproval.call, crisis.flow.steps.securityApproval.call]).toEqual(['deploy', 'deploy']);
+    expect(crisis.bindings[crisis.flow.steps.deploy.binding].effects).toBe('external');
   });
   test('crisis system combines first/all joins, reusable expertise, three decisions and protected external effects', () => {
     const plan = demoPlans.find(plan => plan.id === 'demo-crisis')!;
@@ -186,7 +182,7 @@ describe('populated demo scenarios', () => {
     expect(source.flow.steps.decide.decision.choices).toEqual(['intervenir', 'observer', 'escalader']);
     expect(['intervention', 'observation', 'closure'].map(name => source.flow.steps[name].composition)).toEqual(['assessment', 'assessment', 'assessment']);
     const cards = viewer.graphs[0].cards;
-    expect(cards.find(card => card.id === 'metrics')?.capabilities).toMatchObject({ skills: ['Preuves', 'Diagnostic'], structuredResults: true, dynamicConfiguration: true, externalEffects: false });
+    expect(cards.find(card => card.id === 'metrics')?.capabilities).toMatchObject({ skills: ['Diagnostic'], structuredResults: true, dynamicConfiguration: false, externalEffects: false });
     expect(cards.find(card => card.id === 'deploy')?.capabilities?.externalEffects).toBe(true);
     expect(cards.find(card => card.id === 'watch')?.capabilities?.externalEffects).toBe(false);
     expect(source.compositions.assessment.steps.review.onError).toEqual([{ error: true }]);

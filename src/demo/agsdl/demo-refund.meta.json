@@ -1,0 +1,90 @@
+{
+  "title": "Remboursement accompagné",
+  "description": "Vérifier une demande de remboursement et demander un accord avant toute décision.",
+  "projectId": "demo-meridian",
+  "planKind": "feature",
+  "icon": "lock",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Vérifier une demande de remboursement et demander un accord avant toute décision.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Remboursement accompagné",
+    "cards": {
+      "/agents/understand": {
+        "title": "Conseiller client"
+      },
+      "/agents/eligibility": {
+        "title": "Analyste des remboursements"
+      },
+      "/agents/alternative": {
+        "title": "Conseiller commercial"
+      },
+      "/agents/notify": {
+        "title": "Chargé de relation client"
+      },
+      "/flow/steps/understand": {
+        "title": "Comprendre la demande"
+      },
+      "/flow/steps/lookup": {
+        "title": "Consulter la commande"
+      },
+      "/flow/steps/eligibility": {
+        "title": "Vérifier l’éligibilité"
+      },
+      "/flow/steps/eligible": {
+        "title": "Remboursement possible ?"
+      },
+      "/flow/steps/approval": {
+        "title": "Accord du responsable"
+      },
+      "/flow/steps/refund": {
+        "title": "Effectuer le remboursement"
+      },
+      "/flow/steps/alternative": {
+        "title": "Proposer une alternative"
+      },
+      "/flow/steps/notify": {
+        "title": "Informer le client"
+      },
+      "/bindings/orders": {
+        "title": "Consultation des commandes"
+      },
+      "/bindings/refundApproval": {
+        "title": "Responsable commercial"
+      },
+      "/bindings/refunds": {
+        "title": "Remboursement"
+      },
+      "/flow": {
+        "title": "Remboursement accompagné"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/conseil": {
+        "title": "Relation client"
+      },
+      "/configurations/analyse": {
+        "title": "Analyse"
+      },
+      "/bindings/crm": {
+        "title": "CRM client"
+      },
+      "/content/refundPolicy": {
+        "title": "Politique de remboursement"
+      }
+    }
+  }
+}

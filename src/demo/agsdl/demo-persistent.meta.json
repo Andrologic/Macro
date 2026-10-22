@@ -1,0 +1,81 @@
+{
+  "title": "Rédaction supervisée avec validation éditoriale et révision du même agent",
+  "description": "Un agent de rédaction conserve son contexte. Un observateur lui transmet des consignes pendant le travail, puis une revue peut demander une nouvelle passe.",
+  "projectId": "demo-atlas",
+  "planKind": "feature",
+  "icon": "pencil-ruler",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Un agent de rédaction conserve son contexte. Un observateur lui transmet des consignes pendant le travail, puis une revue peut demander une nouvelle passe.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Rédaction supervisée avec validation éditoriale et révision du même agent",
+    "cards": {
+      "/agents/writer": {
+        "title": "Rédacteur"
+      },
+      "/agents/observer": {
+        "title": "Observateur éditorial"
+      },
+      "/agents/reviewer": {
+        "title": "Relecteur indépendant"
+      },
+      "/flow/steps/start": {
+        "title": "Lancer la rédaction supervisée"
+      },
+      "/flow/steps/write": {
+        "title": "Rédiger un dossier technique étayé sans perdre les consignes reçues en cours de travail"
+      },
+      "/flow/steps/observe": {
+        "title": "Observer le travail"
+      },
+      "/flow/steps/advice": {
+        "title": "Préparer une consigne"
+      },
+      "/flow/steps/steer": {
+        "title": "Réorienter le rédacteur"
+      },
+      "/flow/steps/review": {
+        "title": "Relire le dossier"
+      },
+      "/flow/steps/ready": {
+        "title": "Dossier prêt ?"
+      },
+      "/flow/steps/revise": {
+        "title": "Reprendre avec le même agent"
+      },
+      "/flow/steps/finish": {
+        "title": "Conserver le dossier"
+      },
+      "/flow": {
+        "title": "Rédaction supervisée avec validation éditoriale et révision du même agent"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/redaction": {
+        "title": "Rédaction"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      },
+      "/bindings/atlasCms": {
+        "title": "CMS éditorial"
+      },
+      "/content/editorialBrief": {
+        "title": "Brief éditorial"
+      }
+    }
+  }
+}

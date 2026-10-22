@@ -1,0 +1,96 @@
+{
+  "title": "Import de catalogue",
+  "description": "Importer un catalogue fournisseur, isoler les lignes invalides et produire un bilan exploitable.",
+  "projectId": "demo-helio",
+  "planKind": "feature",
+  "icon": "database",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Importer un catalogue fournisseur, isoler les lignes invalides et produire un bilan exploitable.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Import de catalogue",
+    "cards": {
+      "/agents/inspect": {
+        "title": "Analyste de données"
+      },
+      "/agents/normalize": {
+        "title": "Ingénieur de données"
+      },
+      "/agents/repair": {
+        "title": "Correcteur de données"
+      },
+      "/agents/report": {
+        "title": "Rapporteur"
+      },
+      "/flow/steps/inspect": {
+        "title": "Analyser le fichier"
+      },
+      "/flow/steps/prepare": {
+        "title": "Préparer les lignes"
+      },
+      "/flow/steps/normalize": {
+        "title": "Normaliser les données"
+      },
+      "/flow/steps/validate": {
+        "title": "Contrôler le schéma"
+      },
+      "/flow/steps/valid": {
+        "title": "Catalogue conforme ?"
+      },
+      "/flow/steps/repair": {
+        "title": "Traiter les anomalies"
+      },
+      "/flow/steps/store": {
+        "title": "Enregistrer le catalogue"
+      },
+      "/flow/steps/handoff": {
+        "title": "Transmettre les statistiques"
+      },
+      "/flow/steps/report": {
+        "title": "Présenter le bilan"
+      },
+      "/bindings/catalogValidation": {
+        "title": "Contrôle du catalogue"
+      },
+      "/bindings/catalogStorage": {
+        "title": "Catalogue fournisseur"
+      },
+      "/flow": {
+        "title": "Import de catalogue"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/analyse": {
+        "title": "Analyse"
+      },
+      "/configurations/redaction": {
+        "title": "Rédaction"
+      },
+      "/bindings/warehouse": {
+        "title": "Entrepôt de données Helio"
+      },
+      "/flow/steps/correctable": {
+        "title": "Format à corriger ?"
+      },
+      "/flow/steps/feedback": {
+        "title": "Renvoyer les erreurs de format"
+      },
+      "/content/supplierFile": {
+        "title": "Fichier fournisseur"
+      }
+    }
+  }
+}

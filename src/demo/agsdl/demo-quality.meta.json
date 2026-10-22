@@ -1,0 +1,126 @@
+{
+  "title": "Revue avant livraison",
+  "description": "Croiser une revue de sécurité, d’accessibilité et de contenu avant de demander une validation humaine.",
+  "projectId": "demo-atlas",
+  "planKind": "feature",
+  "icon": "shield",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Croiser une revue de sécurité, d’accessibilité et de contenu avant de demander une validation humaine.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Revue avant livraison",
+    "cards": {
+      "/agents/scope": {
+        "title": "Responsable qualité"
+      },
+      "/agents/security": {
+        "title": "Auditeur sécurité",
+        "macroGroup": "Contrôles indépendants"
+      },
+      "/agents/accessibility": {
+        "title": "Expert accessibilité",
+        "macroGroup": "Contrôles indépendants"
+      },
+      "/agents/content": {
+        "title": "Relecteur de contenu",
+        "macroGroup": "Contrôles indépendants"
+      },
+      "/agents/synthesize": {
+        "title": "Rapporteur"
+      },
+      "/agents/revise": {
+        "title": "Développeur"
+      },
+      "/flow/steps/scope": {
+        "title": "Définir le périmètre"
+      },
+      "/flow/steps/fork": {
+        "title": "Distribuer les contrôles"
+      },
+      "/flow/steps/security": {
+        "title": "Auditer la sécurité"
+      },
+      "/flow/steps/accessibility": {
+        "title": "Tester l’accessibilité"
+      },
+      "/flow/steps/content": {
+        "title": "Relire le contenu"
+      },
+      "/flow/steps/join": {
+        "title": "Rassembler les rapports"
+      },
+      "/flow/steps/synthesize": {
+        "title": "Synthétiser les contrôles"
+      },
+      "/flow/steps/approval": {
+        "title": "Valider la livraison"
+      },
+      "/flow/steps/deliver": {
+        "title": "Livrer le dossier"
+      },
+      "/flow/steps/revise": {
+        "title": "Préparer les corrections"
+      },
+      "/bindings/deliveryApproval": {
+        "title": "Responsable de livraison"
+      },
+      "/bindings/delivery": {
+        "title": "Livraison du dossier"
+      },
+      "/flow": {
+        "title": "Revue avant livraison"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/skills/wcag": {
+        "title": "Critères WCAG 2.2 AA"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      },
+      "/configurations/audit": {
+        "title": "Audit"
+      },
+      "/configurations/web": {
+        "title": "Tests web"
+      },
+      "/configurations/redaction": {
+        "title": "Rédaction"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      },
+      "/configurations/code": {
+        "title": "Développement"
+      },
+      "/bindings/atlasCms": {
+        "title": "CMS éditorial"
+      },
+      "/bindings/webTesting": {
+        "title": "Navigateur de test"
+      },
+      "/bindings/securityScanner": {
+        "title": "Analyse de sécurité"
+      },
+      "/bindings/atlasRepository": {
+        "title": "Dépôt du portail client"
+      },
+      "/bindings/accessibilityChecker": {
+        "title": "Contrôle d’accessibilité"
+      }
+    }
+  }
+}

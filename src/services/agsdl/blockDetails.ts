@@ -52,7 +52,9 @@ export function blockDetails(card: ViewerCard, declarations: ViewerCard[]): Bloc
     if (typeof configuration === "string") {
       const declared = object(byPath.get(`/configurations/${configuration}`)?.details);
       const engine = typeof declared.engine === "string" ? title(`/bindings/${declared.engine}`, declared.engine) : undefined;
-      add("model", [typeof declared.model === "string" ? declared.model : engine]);
+      // AgSDL declares a model as an edition; older documents wrote its name directly.
+      const model = typeof declared.model === "string" ? declared.model : object(declared.model).identity;
+      add("model", [typeof model === "string" ? model : engine]);
     } else {
       const select = object(configuration);
       const cases = Object.values(object(select.cases)).map(name => title(`/configurations/${String(name)}`, String(name)));

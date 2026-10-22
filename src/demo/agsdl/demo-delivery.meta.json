@@ -1,0 +1,120 @@
+{
+  "title": "Livraison multi-plateforme",
+  "description": "Réutiliser le même contrôle qualité pour le web et le mobile, puis autoriser une livraison avec un périmètre précis.",
+  "projectId": "demo-luma",
+  "planKind": "feature",
+  "icon": "layers",
+  "design": {
+    "version": 1,
+    "kind": "blueprint",
+    "purpose": "Réutiliser le même contrôle qualité pour le web et le mobile, puis autoriser une livraison avec un périmètre précis.",
+    "context": "Projet fictif : les services, données et résultats sont simulés.",
+    "rules": [],
+    "requirements": [
+      {
+        "id": "model",
+        "label": "Modèle des agents",
+        "description": "Choix pour cette utilisation simulée",
+        "value": "Macro AI · Démo"
+      }
+    ]
+  },
+  "display": {
+    "title": "Livraison multi-plateforme",
+    "cards": {
+      "/agents/coordinator": {
+        "title": "Coordinateur de livraison"
+      },
+      "/agents/webReviewer": {
+        "title": "Spécialiste web"
+      },
+      "/agents/mobileReviewer": {
+        "title": "Spécialiste mobile"
+      },
+      "/agents/coordinatorReview": {
+        "title": "Auditeur des preuves"
+      },
+      "/agents/repair": {
+        "title": "Développeur"
+      },
+      "/flow/steps/coordinator": {
+        "title": "Préparer la livraison"
+      },
+      "/flow/steps/web": {
+        "title": "Contrôler la version web"
+      },
+      "/flow/steps/mobile": {
+        "title": "Contrôler la version mobile"
+      },
+      "/flow/steps/coordinatorReview": {
+        "title": "Consolider les preuves"
+      },
+      "/flow/steps/approval": {
+        "title": "Autoriser la publication"
+      },
+      "/flow/steps/publish": {
+        "title": "Publier la version validée"
+      },
+      "/flow/steps/repair": {
+        "title": "Préparer une nouvelle version"
+      },
+      "/compositions/packageReview/steps/prepare": {
+        "title": "Préparer les critères"
+      },
+      "/compositions/packageReview/steps/audit": {
+        "title": "Examiner le paquet"
+      },
+      "/compositions/packageReview/steps/check": {
+        "title": "Paquet conforme ?"
+      },
+      "/compositions/evidenceReview/steps/review": {
+        "title": "Examiner les preuves"
+      },
+      "/compositions/evidenceReview/steps/check": {
+        "title": "Critères satisfaits ?"
+      },
+      "/bindings/releaseApproval": {
+        "title": "Responsable de publication"
+      },
+      "/bindings/releases": {
+        "title": "Publication de la version"
+      },
+      "/flow": {
+        "title": "Livraison multi-plateforme"
+      },
+      "/compositions/evidenceReview": {
+        "title": "Contrôle des preuves"
+      },
+      "/compositions/packageReview": {
+        "title": "Contrôle d’un paquet"
+      },
+      "/bindings/engine": {
+        "title": "Macro"
+      },
+      "/configurations/standard": {
+        "title": "Standard"
+      },
+      "/configurations/web": {
+        "title": "Tests web"
+      },
+      "/configurations/mobile": {
+        "title": "Tests mobiles"
+      },
+      "/configurations/approfondi": {
+        "title": "Approfondi"
+      },
+      "/configurations/code": {
+        "title": "Développement"
+      },
+      "/bindings/storeConsoles": {
+        "title": "Consoles App Store et Google Play"
+      },
+      "/bindings/webTesting": {
+        "title": "Navigateur de test"
+      },
+      "/bindings/lumaRepository": {
+        "title": "Dépôt Luma Mobile"
+      }
+    }
+  }
+}

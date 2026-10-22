@@ -86,6 +86,6 @@ describe('interface examples', () => {
     expect(denied.title).toContain('1049');
     expect(Object.values(denied.taskPaths).some(id => Object.values(original.taskPaths).includes(id))).toBe(false);
     expect(denied.activity?.['/flow/steps/refund']).toBeUndefined();
-    expect(demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-publication-recovery'))?.activity?.['/flow/steps/publish'].state).toBe('failed');
+    expect(demoExecutionGraphs.find(graph => Object.values(graph.taskPaths).includes('demo-fix-recovery'))?.activity?.['/flow/steps/tests'].state).toBe('failed');
   });
 });
