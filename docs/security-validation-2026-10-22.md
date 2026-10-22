@@ -4,12 +4,53 @@ La révision examinée est `57ca43aeaf79e66732667e564ea4af8b3410261c`, sur
 `develop`. La validation locale utilise une branche `feature/*` dans un
 worktree distinct, à partir de cette révision.
 
-La validation reste incomplète : Linux et macOS réussissent, mais le job
-Windows est annulé par sa limite de durée avant l'exécution des tests natifs.
-Les parcours d'installation et de mise à jour d'une application installée
-n'ont pas pu être essayés faute d'artefacts de test appropriés.
+La validation automatisée réussit au commit
+`3156d0c305948249120f12caa2e879cb232ec4ba`, après correction du timeout Windows.
+Les huit tests natifs Windows ont été exécutés et réussissent tous, sans échec
+ni test ignoré. Les parcours d'installation et de mise à jour d'une application
+installée restent non vérifiés faute d'artefacts de test appropriés.
 
-## Exécution GitHub Actions
+## CI réussie après correction
+
+[Exécution CI 39738045047](https://github.com/Andrologic/Macro/actions/runs/39738045047),
+déclenchée par le push des commits `8dd4f4c3` et `3156d0c3` dans `develop`
+distant après réussite de `bun run ci:pre-push`. La CI réussit à la première
+tentative ; aucun job n'a été relancé.
+
+| Job | Résultat vérifié dans les journaux | Durée du job |
+| --- | --- | --- |
+| [Windows native check](https://github.com/Andrologic/Macro/actions/runs/39738045047/job/119688364070) | Profil `windows` réussi, puis huit tests natifs exécutés et réussis, aucun échec ni test ignoré. | 24 min 29 s |
+| [macOS native recovery smoke](https://github.com/Andrologic/Macro/actions/runs/39738045047/job/119688364034) | Huit tests natifs exécutés et réussis. | 2 min 37 s |
+| [Linux validation](https://github.com/Andrologic/Macro/actions/runs/39738045047/job/119688364069) | Profil `native` réussi. 422 fichiers de tests frontend validés ; bibliothèque Rust : 1 406 succès, deux tests ignorés. | 13 min 46 s |
+
+Les deux exclusions Linux sont celles détaillées dans le bilan initial
+ci-dessous. Le job de classification réussit également.
+
+Les huit cas Windows de `dev/ci/native-recovery-smoke.mjs` ont chacun produit
+un résultat `1 passed; 0 failed; 0 ignored`, vérifié avec leur nom exact :
+
+| Test natif Windows | Résultat |
+| --- | --- |
+| `app_updates::tests::atomic_write_replaces_the_previous_file` | Réussi |
+| `app_updates::tests::atomic_write_preserves_previous_file_on_native_replacement_failure` | Réussi |
+| `db::tests::create_pool_applies_agent_run_migration_to_existing_baseline` | Réussi |
+| `local_backup::tests::startup_recovers_interrupted_restore_and_preserves_rollback_archive` | Réussi |
+| `fs::operations::tests::test_read_directory_returns_error` | Réussi |
+| `commands::skills::tests::script_runs_are_timed_out_and_truncated` | Réussi |
+| `workspace::tests::create_project_rejects_missing_directory_without_creating_it` | Réussi |
+| `workspace::tests::import_git_repo_rejects_missing_directory_without_creating_it` | Réussi |
+
+Le job Windows commence à 07:05:03 UTC. Son profil préalable réussit à
+07:23:40 UTC, puis les huit tests réussissent à 07:26:51 UTC. Le premier
+résultat individuel apparaît à 07:26:39 UTC, après l'ancienne limite de
+20 minutes. Le job termine à 07:29:32 UTC sous la nouvelle limite de
+40 minutes, après sauvegarde du cache. Le dépassement qui interrompait la
+première CI ne bloque donc plus ces tests.
+
+Ces succès concernent les tests natifs ciblés. Ils ne constituent pas des
+essais sur une application installée avec des paquets signés de test.
+
+## Exécution GitHub Actions initiale
 
 [Exécution CI 39735105161](https://github.com/Andrologic/Macro/actions/runs/39735105161),
 déclenchée par un push sur `develop`. Les résultats ci-dessous concernent la
@@ -33,7 +74,7 @@ qui exige un serveur TypeScript explicitement configuré, et
 Les avertissements de compilation sur des attributs Serde non interprétés par
 `ts-rs` et sur du code inutilisé n'ont pas fait échouer le profil.
 
-GitHub conclut l'exécution complète avec `cancelled`. L'annotation du job
+GitHub conclut cette première exécution avec `cancelled`. L'annotation du job
 Windows indique exactement « The job has exceeded the maximum execution time
 of 20m0s ». Le profil conservateur a réussi en 16 min 44 s, dont 11 min 7 s
 pour le contrôle des contrats de configuration et 5 min 8 s pour
@@ -46,8 +87,8 @@ n'étant disponible dans cet environnement. Les tests macOS locaux ne
 reproduisent pas les temps de compilation Windows. Lors de l'examen initial,
 aucune correction du code ou du budget CI n'a été appliquée. Les journaux ne
 démontrent pas de panne transitoire de runner, de service ou de réseau ; aucune
-relance inchangée n'est justifiée par les éléments recueillis. La validation des huit cas sur Windows
-reste à obtenir sur une future exécution du workflow corrigé ci-dessous.
+relance inchangée n'est justifiée par les éléments recueillis. La validation
+des huit cas Windows a ensuite été obtenue dans l'exécution CI 39738045047.
 
 Le job macOS a exécuté les huit cas de `dev/ci/native-recovery-smoke.mjs` :
 
@@ -104,7 +145,7 @@ tests internes du plugin.
 
 ## Essais d'installation et de mise à jour
 
-L'API GitHub retourne zéro artefact pour cette exécution. Le workflow CI ne
+L'API GitHub retourne zéro artefact pour l'exécution initiale. Le workflow CI ne
 prévoit aucune construction d'installateur ni aucun dépôt d'artefact. Aucun
 ensemble local de paquets d'installation et de mise à jour, signé avec une clé
 de test et correspondant à cette révision, n'a été identifié. Les anciens
@@ -122,17 +163,18 @@ notarisation, ainsi que d'Authenticode. Le dépôt décrit les installateurs
 Windows de la ligne 0.1 comme dépourvus de signature Authenticode. Aucun de ces
 contrôles de distribution ne peut être déduit du succès des tests de récupération.
 
-Aucune clé de production n'a été utilisée. Aucune version n'a été publiée,
-aucun canal de mise à jour n'a été modifié et aucun commit n'a été poussé.
+Aucune clé de production n'a été utilisée. Aucune version n'a été publiée et
+aucun canal de mise à jour n'a été modifié. Seuls les commits du bilan initial
+et du timeout ont été poussés dans `develop` distant pour obtenir cette CI.
 
-## Correction locale du timeout Windows
+## Correction du timeout Windows
 
 À la demande du mainteneur, la limite du job Windows passe de 20 à 40 minutes.
 Dans l'exécution examinée, les préparatifs et le profil conservateur ont occupé
 19 minutes avant l'étape des huit tests natifs. La nouvelle limite laisserait
 donc 21 minutes pour compiler et exécuter ces tests avec les mêmes durées
-préalables. Cette marge est prévue pour la compilation sans cache et les tests ;
-sa suffisance sur Windows reste à confirmer lors d'une future exécution complète.
+préalables. Cette marge a permis l'exécution complète du job Windows de la
+CI 39738045047 en 24 min 29 s, avec les huit tests natifs réussis.
 
 La modification conserve le profil de validation et l'étape qui exécute les
 huit tests. `bun run ci:workflows` réussit. La commande
