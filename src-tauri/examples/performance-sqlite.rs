@@ -191,6 +191,8 @@ async fn measure_case(
     }
     verify(pool, &conversation.id, size).await?;
     let mut reads = Vec::new();
+    let mut serialization = Vec::new();
+    let mut payload_bytes = 0;
     for i in 0..WARMUP + SAMPLES {
         let start = Instant::now();
         let messages = repository::list_messages(pool, &conversation.id).await?;
@@ -198,9 +200,20 @@ async fn measure_case(
         if messages.len() != size {
             return Err("Read fixture changed".into());
         }
-        std::hint::black_box(&messages);
+        let start = Instant::now();
+        let serialized = serde_json::to_vec(&messages)?;
+        let serialization_ms = start.elapsed().as_secs_f64() * 1000.0;
+        payload_bytes = serialized.len();
+        let decoded: Vec<db::models::Message> = serde_json::from_slice(&serialized)?;
+        if decoded.len() != size
+            || decoded.first().map(|m| &m.content) != messages.first().map(|m| &m.content)
+        {
+            return Err("Serialized fixture mismatch".into());
+        }
+        std::hint::black_box(&serialized);
         if i >= WARMUP {
             reads.push(elapsed);
+            serialization.push(serialization_ms);
         }
     }
     let mut writes = Vec::new();
@@ -255,7 +268,8 @@ async fn measure_case(
     Ok(
         json!({"initial_messages":size, "message_bytes":CONTENT.len(), "read_messages":size,
         "write_start_messages":size+WARMUP, "final_messages":final_count,
-        "read":summary(reads), "create_message_commit":summary(writes),
+        "read":summary(reads), "serialize_messages_json":summary(serialization),
+        "serialized_messages_json_bytes":payload_bytes, "create_message_commit":summary(writes),
         "fresh_pool_and_migrations_ms":migration_ms, "reopen_pool_and_migrations_ms":reopen_ms,
         "sqlite_version":sqlite_version, "migrations":migrations,
         "pragmas":{"journal_mode":journal,"synchronous":synchronous,"foreign_keys":foreign_keys},
