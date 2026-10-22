@@ -665,3 +665,32 @@ it('accepts canonical revision zero, advances to one and preserves revocation fe
     await b.read('conversation.read', { ref: ref(b.instanceId) });
   } finally { h.dispose(); }
 });
+
+describe('D2a native directory port', () => {
+  it('uses only the session bearer, exact v1 route, A1 and strict correlation', async () => {
+    const h = await harness(); const port = h.client.consumerDirectoryTransport(); const context = port.context();
+    const request = { contract_version: '1.0' as const, type: 'page_request' as const, item_type: 'instance' as const, limit: 2 };
+    h.intercept(async w => w.url.pathname.endsWith('/directory/query') ? json({ contract_version: '1.0', type: 'page', item_type: 'instance', items: [instance], has_more: false }, w.requestId) : undefined);
+    const result = await port.query(context, request, new AbortController().signal);
+    expect(result).toMatchObject({ type: 'page' });
+    const sent = h.requests.at(-1)!; expect(sent.url.pathname).toBe('/pilot/v1/directory/query');
+    expect(new Headers(sent.init.headers).has('x-instance-key')).toBe(false); expect(h.reads.every(kind => kind === 'session_token')).toBe(true);
+    h.intercept(async () => new Response(JSON.stringify({ contract_version: '1.0', type: 'page', item_type: 'instance', items: [], has_more: false }), { headers: { 'x-request-id': 'request:wrong' } }));
+    await expect(port.query(context, request, new AbortController().signal)).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(h.client.getState().status).toBe('connected'); h.dispose();
+  });
+  it('keeps directory transport failures and unproven auth local; proven /me revocation clears session', async () => {
+    for (const proof of ['network', 'valid', 'malformed', 'revoked'] as const) {
+      const h = await harness(); const port = h.client.consumerDirectoryTransport();
+      h.intercept(async w => {
+        if (w.url.pathname.endsWith('/directory/query')) {
+          if (proof === 'network') throw new Error('synthetic network');
+          return json(sessionError(w.requestId), w.requestId, 401);
+        }
+        if (w.url.pathname.endsWith('/me') && proof !== 'valid') return json(proof === 'revoked' ? sessionError(w.requestId) : {}, w.requestId, 401);
+      });
+      await expect(port.query(port.context(), { contract_version: '1.0', type: 'page_request', item_type: 'instance', limit: 2 }, new AbortController().signal)).rejects.toBeInstanceOf(PilotClientError);
+      expect(Boolean(h.client.getState().deviceSession)).toBe(proof !== 'revoked'); h.dispose();
+    }
+  });
+});

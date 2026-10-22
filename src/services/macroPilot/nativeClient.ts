@@ -9,6 +9,7 @@ import { validateContentMessage, validateContentResponse } from './contentProtoc
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
 import { validateA1 } from './protocol';
+import { validDirectoryRequest, type ConsumerDirectoryTransport } from './consumerDirectory';
 import { consumerWire, validConsumerResponse, type ConsumerTransport, type ConsumerIdentity, type ConsumerDispatch } from './consumerTransport';
 import {
   pilotDeviceName,
@@ -767,6 +768,29 @@ export class MacroPilotNativeClient {
     };
   }
 
+  /** Account-scoped v1 discovery, with consumer error isolation and no producer proof. */
+  consumerDirectoryTransport(): ConsumerDirectoryTransport {
+    return {
+      context: () => this.consumerIdentity(),
+      verify: (context, signal) => this.verifyConsumerSession(context, signal),
+      query: async (context, request, signal) => {
+        this.checkContext(context.key);
+        if (!validDirectoryRequest(context, request)) throw new PilotClientError('invalid_configuration');
+        const saved = structuredClone(request);
+        try {
+          const result = await this.sendRequest('POST', '/directory/query', saved,
+            { authenticated: true, signal, beforeSend: async () => { this.consumerIdentity(); this.checkContext(context.key); } }, 'consumer-directory');
+          this.checkContext(context.key);
+          if (!validateA1(result.data) || !isRecord(result.data) || result.data.type !== 'page' || result.data.item_type !== saved.item_type) throw new PilotClientError('invalid_response');
+          return result.data;
+        } catch (error) {
+          if (!signal.aborted && error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) await this.verifyConsumerSession(context, signal);
+          throw error;
+        }
+      },
+    };
+  }
+
   private consumerIdentity(): ConsumerIdentity {
     const state = this.persisted;
     if (!state?.relayOrigin || !state.account || !state.deviceSession || this.publicState.deviceSession?.state !== 'active') {
@@ -827,7 +851,7 @@ export class MacroPilotNativeClient {
 
   private async sendRequest<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean | 'producer' | 'consumer' | 'session-check' = false, requestId = createOpaqueId('request', this.dependencies), consumer?: ConsumerDispatch,
+    extension: boolean | 'producer' | 'consumer' | 'session-check' | 'consumer-directory' = false, requestId = createOpaqueId('request', this.dependencies), consumer?: ConsumerDispatch,
   ): Promise<PilotResponse<T>> {
     const readController = method === 'GET' ? new AbortController() : null;
     if (readController) this.pendingReads.add(readController);
@@ -840,12 +864,12 @@ export class MacroPilotNativeClient {
 
   private async sendRequestOnce<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean | 'producer' | 'consumer' | 'session-check', requestId: string, consumer?: ConsumerDispatch,
+    extension: boolean | 'producer' | 'consumer' | 'session-check' | 'consumer-directory', requestId: string, consumer?: ConsumerDispatch,
   ): Promise<PilotResponse<T>> {
     if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
     const context = this.contextKey();
-    const targetOnly = extension === 'consumer' || extension === 'session-check';
-    const v2 = Boolean(extension) && extension !== 'session-check';
+    const targetOnly = extension === 'consumer' || extension === 'session-check' || extension === 'consumer-directory';
+    const v2 = Boolean(extension) && extension !== 'session-check' && extension !== 'consumer-directory';
     const signals = [this.scopeController.signal];
     if (options.signal) signals.push(options.signal);
     let signal = AbortSignal.any(signals);
@@ -917,7 +941,7 @@ export class MacroPilotNativeClient {
       throw new PilotClientError('redirect_refused', response.status);
     }
     let data: unknown;
-    try { data = await readBoundedJson(response, extension ? 256 * 1024 : MAX_BODY_BYTES, signal); }
+    try { data = await readBoundedJson(response, extension && extension !== 'consumer-directory' ? 256 * 1024 : MAX_BODY_BYTES, signal); }
     catch (error) {
       check();
       if (options.authenticated && !targetOnly && error instanceof PilotClientError && error.code === 'offline') {
@@ -928,6 +952,10 @@ export class MacroPilotNativeClient {
     check();
     const responseHeader = response.headers.get('x-request-id');
     const responseRequestId = responseHeader || requestId;
+    if (extension === 'consumer-directory') {
+      if (responseHeader !== requestId || !validateA1(data) || !isRecord(data) ||
+        (!response.ok && (data.type !== 'error' || data.request_id !== requestId))) throw new PilotClientError('invalid_response', response.status);
+    }
     if (extension === 'session-check') {
       // Global cleanup needs a correlated canonical proof, not a status fallback.
       if (responseHeader !== requestId) throw new PilotClientError('invalid_response', response.status);
