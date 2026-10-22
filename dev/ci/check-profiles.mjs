@@ -70,7 +70,7 @@ export const CHECK_PROFILES = Object.freeze([
 export function stepsForProfile(profile, options = {}) {
   const skipInstall = options.skipInstall === true;
   const install = skipInstall ? [] : [installStep];
-  const processRecovery = (options.platform ?? process.platform) === 'win32' ? [] : [processRecoveryCheck];
+  const processRecovery = (options.platform ?? process.platform) === 'linux' ? [processRecoveryCheck] : [];
 
   switch (profile) {
     case 'documentation':

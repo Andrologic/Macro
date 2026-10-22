@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Database } from 'bun:sqlite';
+import { stopProcesses } from './processes.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const temporary = mkdtempSync(path.join(tmpdir(), 'macro-process-recovery-'));
@@ -163,34 +164,6 @@ function assertBoundary(root, scenario) {
   return state;
 }
 
-function processTable() {
-  const result = spawnSync('ps', ['-eo', 'pid=,ppid=,pgid=,stat='], { encoding: 'utf8', timeout: 5000 });
-  assert.equal(result.status, 0, `Cannot inspect native process groups: ${result.stderr}`);
-  return result.stdout.split('\n').map(line => line.trim().split(/\s+/))
-    .filter(fields => fields.length === 4).map(([pid, parent, group, state]) => ({
-      pid: Number(pid), parent: Number(parent), group: Number(group), state,
-    }));
-}
-
-function descendantGroups(roots) {
-  const rows = processTable();
-  const descendants = new Set(roots);
-  let changed;
-  do {
-    changed = false;
-    for (const row of rows) {
-      if (descendants.has(row.parent) && !descendants.has(row.pid)) { descendants.add(row.pid); changed = true; }
-    }
-  } while (changed);
-  // Native Git commands can own a new group. Include those groups as well as
-  // the two roots, so failure cleanup also reaches an in-flight fetch.
-  return [...new Set([...roots, ...rows.filter(row => descendants.has(row.pid)).map(row => row.group)])];
-}
-
-function runningInGroups(groups) {
-  return processTable().filter(row => groups.includes(row.group) && !row.state.startsWith('Z'));
-}
-
 async function runPhase(root, scenario, phase) {
   const env = {
     PATH: process.env.PATH, LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH,
@@ -202,7 +175,7 @@ async function runPhase(root, scenario, phase) {
     cwd: root, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const worker = spawn(process.execPath, [path.join(repository, 'dev/e2e/process-recovery/worker.ts'), root, scenario, phase], {
-    cwd: repository, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: root, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const processes = [native, worker];
   const groups = processes.map(child => child.pid).filter(Number.isInteger);
@@ -264,29 +237,19 @@ async function runPhase(root, scenario, phase) {
   } finally {
     finished = true;
     clearTimeout(timer);
-    // Freeze the roots before inspecting descendants, so they cannot launch
-    // another contained Git group during cleanup.
-    for (const pid of groups) {
-      try { process.kill(pid, 'SIGSTOP'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    try {
+      const stopped = await stopProcesses(groups, exits, root);
+      log += `owned process groups ${JSON.stringify(stopped.groups)}; no live fixture process remains\n`;
+      if (reachedBoundary) assert(stopped.statuses.every(status => status.signal === 'SIGKILL'), 'The crash must kill both real processes');
+    } finally {
+      nativeLines.close(); workerLines.close();
+      writeFileSync(path.join(logRoot, `${scenario}-${phase}.log`), log);
     }
-    const ownedGroups = descendantGroups(groups);
-    log += `owned process groups ${JSON.stringify(ownedGroups)}\n`;
-    for (const group of ownedGroups) {
-      try { process.kill(-group, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-    }
-    let stopTimer;
-    const statuses = await Promise.race([Promise.all(exits), new Promise((_, reject) => {
-      stopTimer = setTimeout(() => reject(new Error(`${scenario}/${phase}: process termination exceeded 5 seconds`)), 5000);
-    })]).finally(() => clearTimeout(stopTimer));
-    writeFileSync(path.join(logRoot, `${scenario}-${phase}.log`), log);
-    if (reachedBoundary) assert(statuses.every(status => status.signal === 'SIGKILL'), 'The crash must kill both real processes');
-    nativeLines.close(); workerLines.close();
-    assert.deepEqual(runningInGroups(ownedGroups), [], `${scenario}/${phase}: a child or Git descendant survived`);
   }
 }
 
 try {
-  assert.notEqual(process.platform, 'win32', 'This process-group recovery profile requires a POSIX native runner');
+  assert.equal(process.platform, 'linux', 'This recovery profile requires Linux process ownership inspection');
   await buildHelper();
   await startGitDaemon();
   for (const scenario of scenarios) {
@@ -305,13 +268,12 @@ try {
   }
   console.log('Four native process-recovery scenarios passed, including second restart and process cleanup.');
 } finally {
-  if (daemon?.pid) {
-    const ownedGroups = descendantGroups([daemon.pid]);
-    for (const group of ownedGroups) {
-      try { process.kill(-group, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  try {
+    if (daemon?.pid) {
+      const stopped = await stopProcesses([daemon.pid], [daemonExit], temporary);
+      daemonLog += `stopped fixture groups ${JSON.stringify(stopped.groups)}\n`;
     }
-    await daemonExit;
-    assert.deepEqual(runningInGroups(ownedGroups), [], 'Git daemon descendant survived cleanup');
+  } finally {
     writeFileSync(path.join(logRoot, 'git-daemon.log'), daemonLog);
   }
   rmSync(temporary, { recursive: true, force: true });

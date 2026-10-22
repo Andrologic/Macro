@@ -51,7 +51,7 @@
     "release:updater:verify": "bun ./dev/release/verify-updater.mjs",
     "release:toolchain:diagnose": "bun ./dev/release/toolchain-diagnostic.mjs",
     "release:preflight": "bun ./dev/release/preflight.mjs",
-    "test:native:process-recovery": "bun ./dev/e2e/process-recovery/run.mjs",
+    "test:native:process-recovery": "bun test ./dev/e2e/process-recovery/processes.test.ts && bun ./dev/e2e/process-recovery/run.mjs",
     "test:native:recovery-smoke": "bun ./dev/ci/native-recovery-smoke.mjs",
     "preview": "bun node_modules/vite/bin/vite.js preview",
     "tauri": "bun dev/tauri-cli.mjs",
