@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'bun:test';
 import type { AppMode, ChatMessage } from '../../types';
-import { distribution } from '../../../dev/performance/stats';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
 export const registerCompactionAndDiagnosticsScenarios = (
@@ -2031,7 +2030,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
         expect(useChatStore.getState().liveStreamContextEstimatesByConversationId['chat-conv']?.version).toBe(110);
         console.log('MACRO_DIAGNOSTICS_STORE_RESULT=' + JSON.stringify({
           historyMessages: size, warmup: 10, samples: 100,
-          callbackToStore: distribution(samples),
+          callbackSamplesMs: samples,
         }));
       });
     }
