@@ -197,10 +197,11 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
     select(selected === edge.originals[0].id ? "" : edge.originals[0].id);
   };
   const edges: GraphEdge[] = presentation.edges.map(edge => {
-    // Grey for the flow, attenuated red for failures; focus brightens without adding colour.
+    // The theme accent carries the flow, the theme's destructive colour the failures.
     const failure = edge.label === "onError";
     const focused = hasFocus && neighborhood.edges.has(edge.id);
-    const color = failure ? "rgb(var(--destructive) / 0.55)" : focused ? "rgb(var(--foreground) / 0.7)" : "rgb(var(--muted-foreground) / 0.5)";
+    // Opaque mixes keep overlapping lines at the same intensity.
+    const color = `color-mix(in srgb, rgb(var(--${failure ? "destructive" : "primary"})) ${focused ? 100 : 60}%, rgb(var(--background)))`;
     return {
       ...edge, type: "workflow", data: { route: layout.routes.get(edge.id) ?? routeViewerEdge(layout.nodes, edge), connection: edge,
         sourceTitle: displayTitle(presentation.cards.find(card => card.path === edge.source)!),
@@ -242,8 +243,8 @@ function Canvas({ cards, edges: connections, selected, select, title, changedPat
         </Panel>}
         <Panel position="bottom-left" className="agsdl-graph-controls">
           {legend && <div className="agsdl-graph-legend" role="note">
-            <div><svg width="40" height="12" aria-hidden="true"><path d="M1 6H39" stroke="rgb(var(--muted-foreground) / 0.6)" strokeWidth="1.4" /></svg>{t("agsdl.viewer.legendFlow")}</div>
-            <div><svg width="40" height="18" aria-hidden="true"><path d="M9 9H39" stroke="rgb(var(--destructive) / 0.6)" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
+            <div><svg width="40" height="12" aria-hidden="true"><path d="M1 6H39" stroke="color-mix(in srgb, rgb(var(--primary)) 60%, rgb(var(--background)))" strokeWidth="1.4" /></svg>{t("agsdl.viewer.legendFlow")}</div>
+            <div><svg width="40" height="18" aria-hidden="true"><path d="M9 9H39" stroke="color-mix(in srgb, rgb(var(--destructive)) 60%, rgb(var(--background)))" strokeWidth="1.4" /><circle cx="9" cy="9" r="7.5" fill="rgb(var(--background))" stroke="rgb(var(--destructive) / 0.4)" /><path d="M9 5.5v4M9 12.4v.1" stroke="rgb(var(--destructive))" strokeWidth="1.6" strokeLinecap="round" /></svg>{t("agsdl.viewer.legendError")}</div>
           </div>}
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>
           <button onClick={() => void flow.zoomIn()} aria-label={t("agsdl.viewer.zoomIn")} title={t("agsdl.viewer.zoomIn")}><Plus size={14} /></button>
