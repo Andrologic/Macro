@@ -280,9 +280,10 @@ départ et conserve les sources lisibles si une autre source échoue au chargeme
 
 Les contrôles de document et les champs à compléter accompagnent la conception
 progressive. Ils ne certifient pas l’exécution. Les agents peuvent conserver le
-moteur Macro ou choisir explicitement le moteur natif Codex lorsque son profil
-est disponible. Chaque moteur conserve sa politique d’outils ; voir le
-[profil Codex](agsdl-codex-native.md).
+moteur Macro ou choisir explicitement Codex ou Claude lorsque leur profil
+est disponible. Codex conserve ses outils natifs isolés ; Claude utilise les outils
+Macro contrôlés. Voir les profils [Codex](agsdl-codex-native.md) et
+[Claude](agsdl-claude-controlled.md).
 
 Trois capacités restent distinctes :
 - la conception du document, décrite ci-dessous, disponible ;

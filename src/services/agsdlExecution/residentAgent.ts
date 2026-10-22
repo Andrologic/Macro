@@ -16,7 +16,7 @@ export interface ResidentAgentRequest {
   readonly context: ExecutionContext;
   readonly configuration: FrozenAgentConfiguration;
   readonly memory: MemoryCheckpoint | null;
-  readonly providerType: 'openai' | 'ollama' | 'lmstudio' | 'codex-native';
+  readonly providerType: 'openai' | 'ollama' | 'lmstudio' | 'codex-native' | 'claude-native';
   readonly responses: Omit<ResponseCollectionOptions, 'context' | 'providerAttempts'>;
   readonly toolAliases: readonly { readonly name: string; readonly toolId: string }[];
 }
@@ -59,7 +59,7 @@ export class ResidentAgent {
     private readonly ports: ResidentAgentPorts, private readonly invokeTool: ResidentToolDispatch) {}
 
   static async prepare(request: ResidentAgentRequest, invokeTool: ResidentToolDispatch | undefined = undefined, ports = nativeResidentAgentPorts): Promise<ResidentAgent> {
-    if (request.providerType === 'codex-native' || request.configuration.providerId === 'codex-native' || record(decode(request.configuration.configurationJson)).nativeEngine !== undefined) return fail('CORRELATION', '/engine', 'Native Codex work must use its own adapter.');
+    if (['codex-native', 'claude-native'].includes(request.providerType) || ['codex-native', 'claude-native'].includes(request.configuration.providerId) || record(decode(request.configuration.configurationJson)).nativeEngine !== undefined) return fail('CORRELATION', '/engine', 'Native Codex work must use its own adapter.');
     const agent = request.context.work.agentInstanceId;
     if (!agent || request.context.permissionsJson !== request.configuration.permissionsJson || request.context.scopeJson !== request.configuration.scopeJson) {
       return fail('CORRELATION', '', 'Agent configuration does not match admitted work.');

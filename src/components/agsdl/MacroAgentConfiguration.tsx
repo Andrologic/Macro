@@ -3,27 +3,30 @@ import { qualifiedModel, useAgsdlModelCatalogue } from "../../stores/useAgsdlMod
 import type { MacroConfiguration } from "../../services/agsdl/macroAgentConfiguration";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "./macro-agent-configuration.css";
-import { executionCodexStatus } from "../../services/ipc/agsdlExecution";
-import type { CodexStatus } from "../../types/generated/ipc";
+import { executionCodexStatus, executionClaudeStatus, executionClaudeSetApiKey } from "../../services/ipc/agsdlExecution";
+import type { CodexStatus, ClaudeStatus } from "../../types/generated/ipc";
 
 export function MacroAgentConfiguration({ configuration, providerId, modelId, disabled, onChange }: {
   configuration: MacroConfiguration; providerId: string; modelId: string; disabled: boolean;
   onChange: (providerId: string, modelId: string) => void;
 }) {
   const { t } = useAgsdlTranslation();
-  const [nativeStatus, setNativeStatus] = useState<CodexStatus>();
+  const [nativeStatus, setNativeStatus] = useState<CodexStatus | ClaudeStatus>();
   const [nativeStatusError, setNativeStatusError] = useState(false);
   const codex = configuration.engine === "codex";
+  const claude = configuration.engine === "claude";
+  const [apiKey, setApiKey] = useState("");
+  const [keyState, setKeyState] = useState<"idle" | "saving" | "failed">("idle");
   useEffect(() => {
-    if (!codex) return;
+    if (!codex && !claude) return;
     let current = true;
     setNativeStatus(undefined); setNativeStatusError(false);
-    void executionCodexStatus().then(status => { if (current) setNativeStatus(status); }).catch(() => { if (current) setNativeStatusError(true); });
+    void (claude ? executionClaudeStatus() : executionCodexStatus()).then(status => { if (current) setNativeStatus(status); }).catch(() => { if (current) setNativeStatusError(true); });
     return () => { current = false; };
-  }, [codex]);
+  }, [codex, claude]);
   const { catalogue, loading, error, load } = useAgsdlModelCatalogue();
   useEffect(() => { if (configuration.editable) void load(true).catch(() => {}); }, [configuration.editable, load]);
-  const qualified = catalogue?.models.filter(model => qualifiedModel(catalogue, model.providerId, model.modelId) && (codex ? model.providerId === "codex-native" : model.providerId !== "codex-native")) ?? [];
+  const qualified = catalogue?.models.filter(model => qualifiedModel(catalogue, model.providerId, model.modelId) && (codex ? model.providerId === "codex-native" : claude ? model.providerId === "claude-native" : !["codex-native", "claude-native"].includes(model.providerId))) ?? [];
   const choices = [...new Map(qualified.map(model => [model.providerId, { id: model.providerId, name: model.providerName }])).values()];
   const models = qualified.filter(model => model.providerId === providerId);
   const nativeCode = catalogue?.unavailableProviders.find(provider => provider.providerId === "codex-native")?.code ?? nativeStatus?.code;
@@ -33,10 +36,27 @@ export function MacroAgentConfiguration({ configuration, providerId, modelId, di
     CODEX_SCOPE_CHECK_REQUIRED: "assessmentRequired", CODEX_PROFILE_UNQUALIFIED: "profileUnqualified", CODEX_SANDBOX_UNQUALIFIED: "sandboxUnqualified",
     CODEX_ACCOUNT_UNQUALIFIED: "accountUnqualified", CODEX_CONTEXT_UNQUALIFIED: "contextUnqualified", STOP_PENDING: "stopPending",
   }[nativeCode] ?? "profileUnqualified");
+  const claudeCode = catalogue?.unavailableProviders.find(provider => provider.providerId === "claude-native")?.code ?? nativeStatus?.code;
+  const claudeMessage = nativeStatusError ? "diagnosticFailed" : !claudeCode ? "checking" : ({
+    CLAUDE_NOT_INSTALLED: "notInstalled", CLAUDE_KEY_REQUIRED: "keyRequired", CLAUDE_VERSION_UNQUALIFIED: "versionUnqualified",
+    CLAUDE_PLATFORM_UNQUALIFIED: "platformUnqualified", CLAUDE_CONTROLLED_READY: "ready", STOP_PENDING: "stopPending",
+  }[claudeCode] ?? "profileUnqualified");
+  const saveKey = async () => {
+    setKeyState("saving");
+    try { await executionClaudeSetApiKey(apiKey); setApiKey(""); setNativeStatus(await executionClaudeStatus()); await load(true); setKeyState("idle"); }
+    catch { setKeyState("failed"); }
+  };
   return <section className="agsdl-macro-config">
-    <header><strong>{t("agsdl.macroConfig.title", { defaultValue: "Agent configuration" })}</strong>{configuration.editable && <span>{codex ? "Codex" : "Macro"}</span>}</header>
+    <header><strong>{t("agsdl.macroConfig.title", { defaultValue: "Agent configuration" })}</strong>{configuration.editable && <span>{codex ? "Codex" : claude ? "Claude" : "Macro"}</span>}</header>
     {codex && <><p className="agsdl-muted">{t("agsdl.codex.policy")}</p>
       <p role="status">{t(`agsdl.codex.${nativeMessage}`)}</p></>}
+    {claude && <><p className="agsdl-muted">{t("agsdl.claude.policy")}</p>
+      <p role="status">{t(`agsdl.claude.${claudeMessage}`)}</p>
+      <a href="https://platform.claude.com/docs/en/agent-sdk/quickstart" target="_blank" rel="noreferrer">{t("agsdl.claude.installation")}</a>
+      <label className="agsdl-edit-field"><span>{t("agsdl.claude.apiKey")}</span><input type="password" autoComplete="off" value={apiKey} disabled={disabled || keyState === "saving"} onChange={event => setApiKey(event.target.value)} /></label>
+      <button type="button" disabled={disabled || !apiKey.trim() || keyState === "saving"} onClick={() => void saveKey()}>{t("agsdl.save")}</button>
+      {keyState === "failed" && <p role="status">{t("agsdl.claude.keySaveFailed")}</p>}
+    </>}
     {configuration.editable ? <div className="agsdl-macro-config-fields">
       <label className="agsdl-edit-field"><span>{t("agsdl.macroConfig.provider", { defaultValue: "Provider" })}</span>
         <select value={providerId} disabled={disabled || loading || !catalogue} onChange={event => onChange(event.target.value, "")}>

@@ -71,6 +71,8 @@ pub(crate) struct ModelCapture {
     pub providers: Vec<NativeProviderObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_account_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_account_digest: Option<String>,
 }
 
 pub(crate) async fn choices(
@@ -122,6 +124,35 @@ pub(crate) async fn choices(
             message: "Native Codex prerequisites are unavailable".into(),
         });
     }
+    match crate::agsdl_host_claude::observe(
+        manager,
+        &serde_json::json!({"root":manager.root().join("native-discovery/claude")}),
+    )
+    .await
+    {
+        Ok(Some((_, models, _))) => {
+            for model in models {
+                catalogue.models.push(NativeModelChoice {
+                    edition: edition("claude-native", &model)?,
+                    provider_id: "claude-native".into(),
+                    model_id: model.clone(),
+                    provider_name: "Claude · Macro controlled tools".into(),
+                    model_name: model,
+                });
+            }
+        }
+        Ok(None) => catalogue.unavailable_providers.push(UnavailableProvider {
+            provider_id: "claude-native".into(),
+            code: "CLAUDE_NOT_INSTALLED".into(),
+            message: "Install the external Claude Agent SDK and configure its explicit paths"
+                .into(),
+        }),
+        Err(error) => catalogue.unavailable_providers.push(UnavailableProvider {
+            provider_id: "claude-native".into(),
+            code: error.code,
+            message: error.message,
+        }),
+    }
     catalogue
         .models
         .sort_by(|a, b| (&a.provider_id, &a.model_id).cmp(&(&b.provider_id, &b.model_id)));
@@ -142,15 +173,16 @@ pub(crate) async fn capture(manager: &ConfigManager, pool: &SqlitePool) -> Resul
     let document = manager
         .effective_user_document(ConfigDocumentKind::Providers)
         .await;
-    if document
-        .get("providers")
-        .and_then(|providers| providers.get("codex-native"))
-        .is_some_and(|provider| provider["deleted"] != true)
-    {
+    if ["codex-native", "claude-native"].iter().any(|id| {
+        document
+            .get("providers")
+            .and_then(|providers| providers.get(*id))
+            .is_some_and(|provider| provider["deleted"] != true)
+    }) {
         return Err(failure(
             "RESERVED_PROVIDER_ID",
             "model",
-            "Provider ID codex-native is reserved for the isolated native Codex engine",
+            "Native provider IDs are reserved for their captured native engines",
         ));
     }
     let providers = crate::commands::configured_provider_configs(manager, pool)
@@ -233,6 +265,7 @@ pub(crate) async fn capture(manager: &ConfigManager, pool: &SqlitePool) -> Resul
     observations.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
     Ok(ModelCapture {
         codex_account_digest: None,
+        claude_account_digest: None,
         providers: observations,
         catalogue: NativeModelCatalogue {
             revision: format!("sha256:{:x}", Sha256::digest(bytes)),

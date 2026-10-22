@@ -10,6 +10,7 @@ export interface NativeRegistryObservation {
   readonly version: string;
   readonly models: readonly ModelCatalogueEntry[];
   readonly codexProfileJson?: ExactJsonText;
+  readonly claudeProfileJson?: ExactJsonText;
   readonly tools: readonly {
     readonly toolId: string;
     readonly resultConstraintJson: ExactJsonText;
@@ -32,8 +33,9 @@ export function buildNativeRegistry(authoredSource: string, observed: NativeRegi
   for (const declaration of Object.values(record(document.bindings))) {
     const binding = record(declaration);
     const codex = equal(binding.implementation, { identity: 'openai/codex', version: '1' });
-    if (!equal(binding.implementation, MACRO_ENGINE_IMPLEMENTATION) && !codex) continue;
-    if (codex && !observed.codexProfileJson) continue;
+    const claude = equal(binding.implementation, { identity: 'anthropic/claude-agent-sdk', version: '1' });
+    if (!equal(binding.implementation, MACRO_ENGINE_IMPLEMENTATION) && !codex && !claude) continue;
+    if (codex && !observed.codexProfileJson || claude && !observed.claudeProfileJson) continue;
     // No binding settings have an implemented interpretation in this profile.
     if (Object.keys(record(binding.settings ?? {})).length) continue;
     let candidate: Omit<BindingAttestation, 'declarationJson'> | undefined;
@@ -41,6 +43,9 @@ export function buildNativeRegistry(authoredSource: string, observed: NativeRegi
     if (codex) {
       if (!equal(binding.contract, MACRO_ENGINE_CONTRACT)) continue;
       candidate = { target: { kind: 'engine', adapter: 'codex-app-server-v1', profileJson: observed.codexProfileJson! }, argumentSchemaJson: encode({}), resultConstraintJson: encode({ type: 'object' }), capabilities: [...ENGINE_CAPABILITIES.filter(value => value !== 'tool-admission'), 'native-tool-policy', 'contained-stop', 'typed-publication'], verifiedRequirementsJson: [] };
+    } else if (claude) {
+      if (!equal(binding.contract, MACRO_ENGINE_CONTRACT)) continue;
+      candidate = { target: { kind: 'engine', adapter: 'claude-sdk-v1', profileJson: observed.claudeProfileJson! }, argumentSchemaJson: encode({}), resultConstraintJson: encode({ type: 'object' }), capabilities: [...ENGINE_CAPABILITIES, 'contained-stop', 'typed-publication'], verifiedRequirementsJson: [] };
     } else if (equal(binding.contract, MACRO_ENGINE_CONTRACT)) {
       candidate = { target: { kind: 'engine', adapter: 'macro-streaming-v1' }, argumentSchemaJson: encode({}), resultConstraintJson: encode({ type: 'object' }), capabilities: [...ENGINE_CAPABILITIES, 'typed-publication'], verifiedRequirementsJson: [] };
     } else if (equal(binding.contract, { identity: 'macro-agsdl-publication', version: '1' })) {

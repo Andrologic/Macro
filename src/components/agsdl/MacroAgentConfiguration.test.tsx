@@ -178,3 +178,23 @@ it("selects only observed Codex models and saves the native Edition without repl
   expect(saved.configurations.project.settings).toEqual({providerId:"codex-native",modelId:"synthetic-codex-model"});
   expect(saved.bindings).toEqual(before);
 });
+
+it("selects only controlled Claude models and preserves captured Macro tool bindings", async () => {
+  const doc = JSON.parse(createExample020("release"));
+  doc.bindings[doc.configurations.project.engine].implementation = { identity: "anthropic/claude-agent-sdk", version: "1" };
+  const before = structuredClone(doc.bindings);
+  const tools = structuredClone(doc.configurations.project.tools);
+  const choice = { providerId: "claude-native", modelId: "claude-haiku-5-5", providerName: "Claude", modelName: "Haiku", edition: macroNativeModelEdition("claude-native", "claude-haiku-5-5") };
+  await mount(JSON.stringify(doc), { ...nativeCatalogue, models: [...nativeCatalogue.models, choice] });
+  const providers = document.body.querySelectorAll<HTMLSelectElement>(".agsdl-macro-config select")[0];
+  expect([...providers.options].map(option => option.value)).toEqual(["", "claude-native"]);
+  expect(document.body.querySelector('.agsdl-macro-config input[type="password"]')).not.toBeNull();
+  choose(0, "claude-native"); choose(1, "claude-haiku-5-5");
+  let persisted = "";
+  useAgsdlStore.setState({ save: async () => { persisted = useAgsdlStore.getState().sessions[key].source; } });
+  await submit();
+  const saved = JSON.parse(persisted);
+  expect(saved.configurations.project.model).toEqual(choice.edition);
+  expect(saved.configurations.project.tools).toEqual(tools);
+  expect(saved.bindings).toEqual(before);
+});

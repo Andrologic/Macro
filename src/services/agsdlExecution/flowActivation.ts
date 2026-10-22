@@ -9,6 +9,7 @@ import { evaluatePureStep, flowFailure, flowInput, retainedAgentOutcome } from '
 import { metadataArray, metadataJson, metadataObject, metadataText } from './metadata';
 import { awaitNativeTool } from './nativeToolDispatch';
 import { captureRegistry, captureToolAliases, resolveBinding, validateRegisteredResult, type CapturedRegistry } from './registry';
+import { prepareClaudeAgent } from './claudeAgent';
 import { prepareCodexAgent } from './codexAgent';
 import { ResidentAgent, nativeResidentAgentPorts, type ResidentAgentPorts, type ResidentAgentRequest } from './residentAgent';
 
@@ -68,10 +69,11 @@ export async function prepareFlowAgent(request: ResidentAgentRequest, ports: Res
   const expanded = record(decode(request.configuration.configurationJson));
   if (expanded.nativeEngine !== undefined) {
     const engine = record(expanded.nativeEngine);
+    if (engine.adapter === 'claude-sdk-v1' && request.providerType === 'claude-native' && request.configuration.providerId === 'claude-native') return prepareClaudeAgent(request);
     if (engine.adapter !== 'codex-app-server-v1' || request.providerType !== 'codex-native' || request.configuration.providerId !== 'codex-native') return fail('CORRELATION', '/engine', 'Captured engine and provider do not match.');
     return prepareCodexAgent(request);
   }
-  if (request.providerType === 'codex-native' || request.configuration.providerId === 'codex-native') return fail('CORRELATION', '/engine', 'Codex provider requires its captured native adapter.');
+  if (['codex-native', 'claude-native'].includes(request.providerType) || ['codex-native', 'claude-native'].includes(request.configuration.providerId)) return fail('CORRELATION', '/engine', 'Codex provider requires its captured native adapter.');
   const agent = await ResidentAgent.prepare(request, undefined, { ...ports, journal: { ...ports.journal,
     close: closure => retryClosure(() => ports.journal.close(closure)),
   } });
@@ -130,13 +132,14 @@ export async function executeFlowActivation(owner: EngineOwner, activation: Engi
     const provider = metadataArray(capture.catalogue.providers, '/providers').map(value => metadataObject(value, '/provider'))
       .find(value => value.providerId === configuration.providerId);
     const nativeCodex = record(expanded.nativeEngine ?? {}).adapter === 'codex-app-server-v1';
-    if (!nativeCodex && (!provider || !['openai', 'ollama', 'lmstudio'].includes(metadataText(provider.providerType, '/providerType')))) {
+    const nativeClaude = record(expanded.nativeEngine ?? {}).adapter === 'claude-sdk-v1';
+    if (!nativeCodex && !nativeClaude && (!provider || !['openai', 'ollama', 'lmstudio'].includes(metadataText(provider.providerType, '/providerType')))) {
       fail('UNSUPPORTED', '/provider', 'Captured Agent transport is unavailable.');
     }
     const context = { owner, work, permissionsJson: configuration.permissionsJson, scopeJson: configuration.scopeJson,
       registryVersion: capture.registry.version } as ExecutionContext;
     const agent = await ports.prepareAgent({ context, configuration: configuration as FrozenAgentConfiguration, memory: memory as MemoryCheckpoint | null,
-      providerType: nativeCodex ? 'codex-native' : provider!.providerType as ResidentAgentRequest['providerType'],
+      providerType: nativeCodex ? 'codex-native' : nativeClaude ? 'claude-native' : provider!.providerType as ResidentAgentRequest['providerType'],
       toolAliases: captureToolAliases(capture.document, record(expanded.configuration), capture.registry),
       responses: { agentName: configuration.agentName, interfaceJson: encode(interfaceValue),
         stepJson: declared.declarationJson as import('./contracts').ExactJsonText | null,

@@ -20,11 +20,24 @@ pub(crate) async fn admit(pool: &SqlitePool, operation: &NativeOperation) -> Res
     opaque(&operation.profile_digest)?;
     validate_json(&operation.request_json)?;
     require(
-        operation.adapter == "codex-app-server-v1" && operation.version == "0.163.0",
+        (operation.adapter == "codex-app-server-v1" && operation.version == "0.163.0")
+            || (operation.adapter == "claude-sdk-v1" && operation.version == "0.3.308"),
         "Native adapter version is unavailable",
     )?;
     require(
-        ["thread/start", "thread/resume", "turn/start"].contains(&operation.method.as_str()),
+        match operation.adapter.as_str() {
+            "codex-app-server-v1" => {
+                ["thread/start", "thread/resume", "turn/start"].contains(&operation.method.as_str())
+            }
+            "claude-sdk-v1" => [
+                "session/create",
+                "session/resume",
+                "query/start",
+                "query/result",
+            ]
+            .contains(&operation.method.as_str()),
+            _ => false,
+        },
         "Native operation is unavailable",
     )?;
     let work = &operation.context.work;

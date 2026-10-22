@@ -8,6 +8,7 @@ pub mod execution {
     pub use crate::agsdl_host_catalogue::{
         NativeModelCatalogue, NativeModelChoice, NativeModelEdition, UnavailableProvider,
     };
+    pub use crate::agsdl_host_claude::{ClaudeStatus, HostClaudeReceipt, HostClaudeRequest};
     pub use crate::agsdl_host_codex::{CodexStatus, HostCodexReceipt, HostCodexRequest};
     pub use crate::agsdl_host_compiler::HostCompileJob;
     pub use crate::agsdl_host_tasks::{PublicTaskTarget, ResolveCardTask, ResolvedCardTask};

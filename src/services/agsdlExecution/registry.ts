@@ -14,7 +14,7 @@ export const ENGINE_CAPABILITIES = ['agent-continuity', 'prompt-instructions', '
 export const INVOCATION_CAPABILITIES = ['actual-permission-scope', 'termination-evidence'] as const;
 export type BindingTarget =
   | { readonly kind: 'engine'; readonly adapter: 'macro-streaming-v1' }
-  | { readonly kind: 'engine'; readonly adapter: 'codex-app-server-v1'; readonly profileJson: ExactJsonText }
+  | { readonly kind: 'engine'; readonly adapter: 'codex-app-server-v1' | 'claude-sdk-v1'; readonly profileJson: ExactJsonText }
   | { readonly kind: 'macro-tool'; readonly toolId: string }
   | { readonly kind: 'mcp-tool'; readonly serverId: string; readonly toolId: string; readonly descriptorJson: ExactJsonText }
   | { readonly kind: 'publication'; readonly protocol: typeof PUBLICATION_PROTOCOL };
@@ -74,6 +74,11 @@ export function captureRegistry(value: unknown): CapturedRegistry {
           const profile = record(decode(profileJson));
           if (profile.format !== 'macro-codex-native-profile/1' || profile.version !== '0.163.0' || profile.toolPolicy !== 'codex-native' || profile.approvalPolicy !== 'never') return fail('UNSUPPORTED', targetPointer, 'Unknown Codex native profile.');
           capturedTarget = { kind: 'engine', adapter: 'codex-app-server-v1', profileJson };
+        } else if (target.adapter === 'claude-sdk-v1') {
+          const profileJson = metadataJson(target.profileJson, `${targetPointer}/profileJson`);
+          const profile = record(decode(profileJson));
+          if (profile.format !== 'macro-claude-controlled-profile/1' || profile.version !== '0.3.308' || profile.cliVersion !== '2.1.308' || profile.toolPolicy !== 'macro-controlled') return fail('UNSUPPORTED', targetPointer, 'Unknown Claude controlled profile.');
+          capturedTarget = { kind: 'engine', adapter: 'claude-sdk-v1', profileJson };
         } else return fail('UNSUPPORTED', `${targetPointer}/adapter`, 'Unknown Engine adapter.');
         break;
       case 'publication':
@@ -243,7 +248,8 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   const providerId = metadataIdentity(models[0].providerId, '/registry/models/providerId');
   const modelId = metadataIdentity(models[0].modelId, '/registry/models/modelId');
   const nativeCodex = engine.target.kind === 'engine' && engine.target.adapter === 'codex-app-server-v1';
-  if (nativeCodex !== (providerId === 'codex-native')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Engine adapter and native provider do not match.');
+  const nativeClaude = engine.target.kind === 'engine' && engine.target.adapter === 'claude-sdk-v1';
+  if (nativeCodex !== (providerId === 'codex-native') || nativeClaude !== (providerId === 'claude-native')) return fail('UNSUPPORTED', `/configurations/${configurationName}/model`, 'Engine adapter and native provider do not match.');
   // Native model dispatch identifies a model by provider and model ID.
   if (registry.models.filter(model => model.providerId === providerId && model.modelId === modelId).length !== 1) return fail('UNSUPPORTED', '/registry/models', 'Selected native Model identity is ambiguous.');
   const authoredSettings = record(configuration.settings ?? {});
@@ -264,7 +270,7 @@ export function captureAgent(document: ExactObject, agentName: string, initializ
   decode(proof.scopeJson);
   return {
     agentName, configurationName, providerId, modelId,
-    configurationJson: encode({ agent: clone(agent), configuration: clone(configuration), initialization: clone(initialization), bindings: clone(record(document.bindings)), ...(engine.target.kind === 'engine' && engine.target.adapter === 'codex-app-server-v1' ? { nativeEngine: clone(engine.target as unknown as ExactObject) } : {}) }),
+    configurationJson: encode({ agent: clone(agent), configuration: clone(configuration), initialization: clone(initialization), bindings: clone(record(document.bindings)), ...(engine.target.kind === 'engine' && engine.target.adapter !== 'macro-streaming-v1' ? { nativeEngine: clone(engine.target as unknown as ExactObject) } : {}) }),
     settingsJson: encode(effectiveSettings), permissionsJson: proof.permissionsJson, scopeJson: proof.scopeJson,
   };
 }
